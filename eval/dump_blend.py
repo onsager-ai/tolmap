@@ -13,9 +13,18 @@ structurally blind to `merge_tiny`.
 
     python eval/dump_blend.py <graph.json> <out.json>
 
-Emits node order, the pruned weighted edge set, the total weight, and the raw
-per-signal masses before normalisation. Diff a port's equivalent against it:
-whichever checkpoint first diverges names the stage at fault.
+Emits node order, the pruned weighted edge set, the weight total both before
+and after pruning, and the raw per-signal masses before normalisation. Diff a
+port's equivalent against it: whichever checkpoint first diverges names the
+stage at fault. Blend and prune are separately falsifiable only because both
+weight totals are present -- with just the post-prune figure a divergence
+cannot be attributed to either stage, which is the one question this artifact
+exists to answer.
+
+Compare weights with an absolute tolerance of TOLERANCE, not exact equality.
+Summing the same terms in a different order can differ in the last ulp, and a
+value sitting near a rounding boundary then differs in the emitted digit;
+compared exactly that flags every edge and buries the real divergence.
 """
 import json
 import os
@@ -27,19 +36,29 @@ from tolmap import pipeline                                        # noqa: E402
 
 SIGNALS = ("static", "cochange", "prox", "sem")
 
+#: Absolute tolerance for comparing weights against a port's output. Below
+#: this is float summation order, above it is a real difference.
+TOLERANCE = 1e-9
+
 
 def dump(graph_path):
     raw = json.load(open(graph_path))
     masses = {k: round(sum(e[k] for e in raw["edges"]), 10) for k in SIGNALS}
     candidates = len(raw["edges"])
 
-    data = pipeline.prune(pipeline.blend(json.load(open(graph_path))))
+    blended = pipeline.blend(json.load(open(graph_path)))
+    weight_sum_pre_prune = round(sum(e["w"] for e in blended["edges"]), 10)
+
+    data = pipeline.prune(blended)
     edges = sorted((e["a"], e["b"], round(e["w"], 10)) for e in data["edges"])
     return {
         "repo": raw.get("repo"),
+        "tolerance": TOLERANCE,
         "candidate_edges": candidates,
         "raw_signal_mass": masses,
         "n_nodes": len(data["nodes"]),
+        "n_blended_edges": len(blended["edges"]),
+        "weight_sum_pre_prune": weight_sum_pre_prune,
         "n_pruned_edges": len(edges),
         "weight_sum": round(sum(w for _, _, w in edges), 10),
         "node_order": [n["f"] for n in data["nodes"]],
@@ -53,4 +72,6 @@ if __name__ == "__main__":
     out = dump(sys.argv[1])
     json.dump(out, open(sys.argv[2], "w"), indent=0)
     print(f"{out['repo']}: {out['n_nodes']} nodes, {out['candidate_edges']} candidate edges, "
-          f"{out['n_pruned_edges']} pruned, weight_sum {out['weight_sum']}")
+          f"weight {out['weight_sum_pre_prune']} pre-prune -> "
+          f"{out['n_pruned_edges']} edges, weight {out['weight_sum']} post-prune "
+          f"(compare within {out['tolerance']})")
