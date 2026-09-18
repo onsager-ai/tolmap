@@ -118,7 +118,7 @@ Fixing `PYTHONHASHSEED` made the output byte-identical; leaving it unset made ev
 | quantity | before | after |
 |---|---|---|
 | membership, modularity, edges, landmarks, symbols, references | byte-stable | byte-stable |
-| coordinates, district centroids, blob polygons | median 0.28 move per run | byte-stable |
+| coordinates, district centroids, blob polygons | median 0.002–0.886 move per run, maxima to 2.47 | byte-stable |
 
 `ordered_subgraph()` in `blobs.py` builds a real graph with nodes in the caller's order and edges sorted. Every fixture is now byte-identical across four builds — two with `PYTHONHASHSEED` unset, one at 0, one at 31337 — where before the fix the same four builds produced four distinct maps:
 
