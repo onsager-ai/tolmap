@@ -1,0 +1,25 @@
+[project]
+name = "tolmap"
+version = "0.1.0"
+description = "Turn a source repository into a map a person can hold in their head"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "python-igraph>=0.11", "leidenalg>=0.10", "networkx>=3.0",
+  "numpy>=1.24", "scipy>=1.10", "scikit-image>=0.21", "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+go = ["tree_sitter>=0.21", "tree_sitter_go"]
+ts = ["tree_sitter>=0.21", "tree_sitter_typescript"]
+
+[project.scripts]
+tolmap = "tolmap.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

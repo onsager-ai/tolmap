@@ -1,0 +1,1048 @@
+<title>Seven Codebases as Territory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --chrome:#151C21;--chrome2:#1E272D;--rule:#2B363D;--canvas:#EAEDE9;
+    --coast:#BFC7BF;--ink:#121A1E;--on:#D9E1E3;--dim:#8B989E;--hot:#C0472F;
+    --c0:#2F6F63;--c1:#B05A2C;--c2:#3A6796;--c3:#8A6B1C;--c4:#5E626A;--c5:#7E3F5D;
+    --c6:#4E7A33;--c7:#8C4132;--c8:#356F7D;--c9:#93502A;--c10:#4A5E8C;--c11:#6E6A33;
+  }
+  :root[data-theme="dark"]{--canvas:#0E161A;--coast:#293539;--ink:#DCE4E4;}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){--canvas:#0E161A;--coast:#293539;--ink:#DCE4E4;}
+  }
+  html,body{height:100%;}
+  body{margin:0;background:var(--chrome);color:var(--on);
+       font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;overflow:hidden;}
+  .app{display:flex;flex-direction:column;height:100%;}
+  .bar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 12px;
+       padding-top:calc(8px + env(safe-area-inset-top,0px));background:var(--chrome);
+       border-bottom:1px solid var(--rule);flex:none;}
+  .brand{font-family:Archivo,sans-serif;font-weight:600;font-size:15px;}
+  .sp{flex:1;}
+  select,input{font-family:inherit;font-size:11.5px;background:var(--chrome2);color:var(--on);
+       border:1px solid var(--rule);border-radius:5px;padding:5px 8px;}
+  input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid #6FB39F;outline-offset:1px;}
+  .seg{display:flex;border:1px solid var(--rule);border-radius:5px;overflow:hidden;}
+  .seg button{font-family:inherit;font-size:11.5px;padding:5px 10px;border:0;cursor:pointer;
+       background:var(--chrome2);color:var(--dim);}
+  .seg button[aria-pressed="true"]{background:#2F6F63;color:#fff;}
+  .lbl{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);}
+
+  .body{display:flex;flex:1;min-height:0;}
+  .side{width:250px;flex:none;background:var(--chrome);border-right:1px solid var(--rule);
+        overflow-y:auto;padding-bottom:18px;}
+  .side h2{font-family:Archivo,sans-serif;font-size:9.5px;letter-spacing:.14em;
+       text-transform:uppercase;color:var(--dim);margin:13px 12px 6px;font-weight:600;}
+  .row{display:grid;grid-template-columns:18px 1fr;gap:7px;padding:5px 12px;cursor:pointer;
+       border-left:2px solid transparent;align-items:baseline;}
+  .row:hover,.row.on{background:var(--chrome2);border-left-color:var(--hot);}
+  .row .n{color:var(--dim);font-size:10px;}
+  .row .f{font-size:10.5px;word-break:break-all;line-height:1.35;}
+  .row .w{font-size:9px;letter-spacing:.06em;text-transform:uppercase;display:block;}
+  .w.entry{color:#6FB39F;}.w.bridge{color:#D79A4A;}.w.hub{color:#79A7D4;}
+  .w.capital{color:#9FA8B0;}.w.hazard{color:#E0705A;}
+  .dl{display:flex;align-items:center;gap:7px;padding:4px 12px;font-size:10.5px;cursor:pointer;}
+  .dl:hover{background:var(--chrome2);}
+  .dl i{width:10px;height:10px;border-radius:2px;flex:none;}
+  .dl span{margin-left:auto;color:var(--dim);font-size:9.5px;}
+
+  .canvas{flex:1;min-width:0;position:relative;background:var(--canvas);overflow:hidden;}
+  svg{display:block;width:100%;height:100%;cursor:grab;touch-action:none;}
+  svg.drag{cursor:grabbing;}
+  .hit{cursor:pointer;}
+
+  .search{position:absolute;left:11px;top:11px;width:268px;}
+  .search input{width:100%;box-sizing:border-box;background:var(--chrome);padding:7px 10px;}
+  .sug{margin-top:4px;background:var(--chrome);border:1px solid var(--rule);border-radius:5px;
+       max-height:238px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,.3);}
+  .sug div{padding:5px 10px;font-size:10.5px;cursor:pointer;word-break:break-all;}
+  .sug div:hover,.sug div.k{background:var(--chrome2);}
+  .sug em{color:var(--dim);font-style:normal;}
+
+  .zoom{position:absolute;right:11px;bottom:11px;display:flex;flex-direction:column;
+        border:1px solid var(--rule);border-radius:5px;overflow:hidden;}
+  .zoom button{width:30px;height:28px;border:0;background:var(--chrome);color:var(--on);
+        font-family:inherit;font-size:15px;cursor:pointer;border-bottom:1px solid var(--rule);}
+  .zoom button:last-child{border-bottom:0;font-size:10px;}
+
+  .phead{display:contents;}
+  .pbody{display:contents;}
+  .chev{display:none;}
+  .panel{position:absolute;right:11px;top:11px;width:230px;background:var(--chrome);
+         border:1px solid var(--rule);border-radius:6px;padding:11px 12px;
+         box-shadow:0 6px 20px rgba(0,0,0,.3);}
+  .panel h3{font-family:Archivo,sans-serif;font-size:12px;margin:0 0 2px;word-break:break-all;line-height:1.3;}
+  .panel .sub{color:var(--dim);font-size:9.5px;margin-bottom:8px;word-break:break-all;}
+  .kv{display:flex;justify-content:space-between;padding:3px 0;font-size:10.5px;
+      border-top:1px solid var(--rule);gap:8px;}
+  .kv span{color:var(--dim);}
+  /* the building directory: a composition bar plus the list, the way a lobby
+     board names what is on each floor. Not drawn on the map. */
+  .blast{border-left:2px solid var(--hot);padding:5px 0 5px 9px;margin:9px 0 2px;
+    font-size:10.5px;line-height:1.5;color:var(--on);}
+  .blast b{color:var(--hot);}
+  .blast span{display:block;color:var(--dim);font-size:9.5px;margin-top:2px;}
+  .blast.none{border-left-color:var(--rule);color:var(--dim);}
+  .comp{display:flex;height:7px;border-radius:2px;overflow:hidden;margin:9px 0 7px;gap:1px;}
+  .comp i{display:block;height:100%;}
+  .dir{max-height:148px;overflow-y:auto;margin-bottom:2px;}
+  .dir button{display:grid;grid-template-columns:8px 1fr auto;gap:7px;align-items:center;
+    width:100%;text-align:left;background:none;border:0;padding:4px 0;cursor:pointer;
+    font-family:inherit;font-size:10.5px;color:var(--on);border-top:1px solid var(--rule);}
+  .dir button:hover{color:#fff;}
+  .dir button.on{color:var(--hot);}
+  .dir i{width:8px;height:8px;border-radius:2px;}
+  .dir .ln{color:var(--dim);font-size:9.5px;}
+  .dir .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .more{color:var(--dim);font-size:9.5px;padding-top:4px;}
+  .acts{display:flex;gap:6px;margin-top:9px;}
+  .acts button{flex:1;font-family:inherit;font-size:10px;padding:5px 4px;border:1px solid var(--rule);
+      border-radius:4px;background:var(--chrome2);color:var(--on);cursor:pointer;}
+  .acts button:hover{background:#2F6F63;border-color:#2F6F63;}
+
+  .route{position:absolute;left:11px;bottom:11px;background:rgba(21,28,33,.96);
+        border:1px solid var(--rule);border-radius:6px;padding:10px 12px;font-size:10.5px;
+        max-width:min(430px,calc(100% - 22px));line-height:1.55;}
+  .route b{color:var(--on);}
+  .route .hop{color:var(--dim);word-break:break-all;}
+  .route .hop i{color:var(--hot);font-style:normal;}
+  .route .x{float:right;cursor:pointer;color:var(--dim);margin-left:10px;}
+  .foot{position:absolute;left:11px;bottom:11px;background:rgba(21,28,33,.94);
+        border:1px solid var(--rule);border-radius:6px;padding:8px 11px;font-size:9.5px;
+        color:var(--dim);max-width:min(440px,calc(100% - 22px));line-height:1.55;}
+  .foot b{color:var(--on);font-weight:500;}
+  .grad{width:96px;height:7px;border-radius:2px;display:inline-block;vertical-align:middle;
+        margin:0 6px;background:linear-gradient(90deg,#3E6E88,#B8B06A,#C0472F);}
+  /* ---- phone: the map is the app ---- */
+  .sheetbtn,.mgeo,.mlayer{display:none;}
+  @media (max-width:820px){
+    html,body{height:100%;overflow:hidden;}
+    .brand,.lbl,.seg,.foot{display:none;}
+    .bar{gap:7px;padding:7px 10px;padding-top:calc(7px + env(safe-area-inset-top,0px));}
+    select#repo{flex:1;min-width:0;padding:7px 8px;font-size:12px;}
+    .mgeo,.mlayer,.sheetbtn{display:block;font-family:inherit;font-size:11px;
+      background:var(--chrome2);color:var(--on);border:1px solid var(--rule);
+      border-radius:5px;padding:7px 9px;cursor:pointer;white-space:nowrap;}
+    .body{position:relative;flex:1;min-height:0;}
+    .canvas{position:absolute;inset:0;height:auto;}
+
+    .search{left:10px;right:10px;top:10px;width:auto;}
+    .search input{padding:9px 11px;font-size:13px;}
+    .sug div{padding:9px 11px;font-size:12px;}
+
+    .zoom{right:10px;top:74px;bottom:auto;transform:none;}
+    .zoom button{width:38px;height:36px;font-size:18px;}
+    .zoom button:last-child{font-size:11px;}
+
+    /* selected-file card: one compact block above the drawer */
+    .panel{position:absolute;left:10px;right:10px;width:auto;top:auto;
+      bottom:calc(58px + env(safe-area-inset-bottom,0px));padding:10px 12px;}
+    .panel h3{font-size:13px;}
+    .panel .sub{font-size:10px;margin-bottom:7px;}
+    .kvs{display:flex;flex-wrap:wrap;gap:3px 13px;}
+    .kv{border-top:0;padding:1px 0;font-size:11px;gap:5px;justify-content:flex-start;
+      flex-wrap:wrap;}
+    .kv b{flex:1 1 100%;}
+    .kvs .kv b{flex:0 0 auto;}
+    .acts{margin-top:8px;}
+    .acts button{padding:9px 4px;font-size:11.5px;}
+    .dir{max-height:104px;}                 /* the card must not eat the map */
+    .dir button{font-size:11px;padding:5px 0;}
+    .comp{height:8px;margin:8px 0 6px;}
+
+    /* A selection card opens as a single line and expands only when asked.
+       Anything more covers the map before the reader has touched it. */
+    .panel{padding:0;overflow:hidden;}
+    .phead{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;
+      padding:11px 13px;cursor:pointer;}
+    .phead .pt{overflow:hidden;}
+    .panel h3{margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .panel .sub{margin:1px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .chev{color:var(--dim);font-size:13px;transition:transform .2s;}
+    .panel.open .chev{transform:rotate(180deg);}
+    .pbody{display:none;padding:0 13px 12px;}
+    .panel.open .pbody{display:block;max-height:44vh;overflow-y:auto;
+      -webkit-overflow-scrolling:touch;}
+    .panel.open{max-height:58vh;}
+    .dir{max-height:132px;}
+    .zoom{top:74px;bottom:auto;transform:none;}
+    .route{left:10px;right:10px;max-width:none;
+      bottom:calc(58px + env(safe-area-inset-bottom,0px));}
+
+    /* landmark / district list as a drawer */
+    .side{position:absolute;left:0;right:0;bottom:0;width:auto;max-height:68%;
+      border-right:0;border-top:1px solid var(--rule);border-radius:12px 12px 0 0;
+      transform:translateY(calc(100% - 46px));transition:transform .26s ease;
+      padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:5;
+      box-shadow:0 -8px 26px rgba(0,0,0,.34);}
+    .side.open{transform:translateY(0);}
+    .grab{display:block;height:46px;line-height:46px;text-align:center;font-size:11px;
+      letter-spacing:.1em;text-transform:uppercase;color:var(--dim);cursor:pointer;
+      position:sticky;top:0;background:var(--chrome);border-radius:12px 12px 0 0;}
+    .grab::before{content:"";position:absolute;left:50%;top:7px;width:34px;height:3px;
+      margin-left:-17px;border-radius:2px;background:var(--rule);}
+    .row{padding:9px 12px;}
+    .row .f{font-size:11.5px;}
+    .dl{padding:9px 12px;font-size:12px;}
+  }
+  @media (min-width:821px){ .grab{display:none;} }
+</style>
+
+<div class="app">
+  <div class="bar">
+    <span class="brand">code map</span>
+    <select id="repo" aria-label="Repository"></select>
+    <button class="mgeo" id="mGeo" aria-label="Toggle geometry">regions</button>
+    <button class="mlayer" id="mLayer" aria-label="Cycle layer">district</button>
+    <span class="sp"></span>
+    <span class="lbl">geometry</span>
+    <div class="seg" role="group" aria-label="Geometry">
+      <button id="gR" aria-pressed="true">regions</button>
+      <button id="gP" aria-pressed="false">plots</button>
+      <button id="gT" aria-pressed="false">treemap</button>
+    </div>
+    <span class="lbl">layer</span>
+    <div class="seg" role="group" aria-label="Layer">
+      <button id="lD" aria-pressed="true">district</button>
+      <button id="lC" aria-pressed="false">churn</button>
+      <button id="lX" aria-pressed="false">complexity</button>
+    </div>
+  </div>
+  <div class="body">
+    <aside class="side" id="side">
+      <span class="grab" id="grab">landmarks &amp; districts</span>
+      <h2>Landmarks</h2><div id="lms"></div>
+      <h2>Districts</h2><div id="dls"></div>
+    </aside>
+    <div class="canvas" id="wrap">
+      <svg id="map" role="img" aria-label="Pannable, zoomable map of a source repository with computed districts, landmark pins and import routes"></svg>
+      <div class="search">
+        <input id="q" placeholder="search files, classes, functions…" autocomplete="off" aria-label="Search files">
+        <div class="sug" id="sug" hidden></div>
+      </div>
+      <div class="panel" id="panel"></div>
+      <div class="foot" id="foot"></div>
+      <div class="route" id="routebox" hidden></div>
+      <div class="zoom">
+        <button id="zin" aria-label="Zoom in">+</button>
+        <button id="zout" aria-label="Zoom out">−</button>
+        <button id="zfit" aria-label="Fit map">fit</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>/*__DATA__*/</script>
+<script>
+(function(){
+const NS="http://www.w3.org/2000/svg";
+const svg=document.getElementById("map"), wrap=document.getElementById("wrap");
+const css=getComputedStyle(document.documentElement);
+const col=i=>css.getPropertyValue("--c"+(i%12)).trim();
+const el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
+
+let R=null, geo="r", layer="d", sel=null, route=null, routeFrom=null;
+let k=1, tx=0, ty=0, VW=1000, VH=700;
+let maxLoc=1,maxCh=1,maxCx=1, adj=null, radj=null, nnD=null;
+
+// ---------- data accessors (rows are [d,x,y,loc,cplx,churn,fanin,rx,ry,rw,rh]) ----------
+const D_=i=>R.N[i][0], PX=i=>R.N[i][1], PY=i=>R.N[i][2];
+const LOC=i=>R.N[i][3], CX_=i=>R.N[i][4], CH=i=>R.N[i][5], FI=i=>R.N[i][6];
+const RECT=i=>R.N[i].slice(7);
+const px=i=>geo!=="t"?[PX(i),PY(i)]:[RECT(i)[0]+RECT(i)[2]/2, RECT(i)[1]+RECT(i)[3]/2];
+
+const X=v=>v*k+tx, Y=v=>v*k+ty, S=v=>v*k;
+const SYM=i=>(R.S&&R.S[i])||[];
+const KIND=["class","func","method","interface","type","const"];
+const KCOL=["#3A6796","#2F6F63","#4E7A33","#7E3F5D","#8A6B1C","#93502A"];
+// The map stops at the file. Google Maps draws building footprints and stops
+// too: below that, addressing is textual and you switch representation entirely
+// (street view, a floor directory). Plots and rooms are an opt-in cadastral
+// layer, not a zoom level — tiling a district with 200 cells erases the
+// silhouette that made the district memorable in the first place.
+const PARCEL_ZOOM=1.9;
+const BUILD_ZOOM=5.2;
+let selSym=null, blast=null, panelOpen=false, selD=null;
+
+function worldBounds(){
+  let a=[1e9,1e9,-1e9,-1e9];
+  const put=(x,y)=>{a[0]=Math.min(a[0],x);a[1]=Math.min(a[1],y);a[2]=Math.max(a[2],x);a[3]=Math.max(a[3],y);};
+  for(let i=0;i<R.N.length;i++){const p=px(i);put(p[0],p[1]);}
+  if(geo==="r"){for(const d in R.districts)for(const poly of R.districts[d].blob)for(const q of poly)put(q[0],q[1]);}
+  else for(let i=0;i<R.N.length;i++){const r=RECT(i);put(r[0]+r[2],r[1]+r[3]);}
+  return a;
+}
+function fit(anim){
+  const b=worldBounds(), pad=46;
+  const s=Math.min((VW-2*pad)/(b[2]-b[0]||1),(VH-2*pad)/(b[3]-b[1]||1));
+  const nx_=pad+((VW-2*pad)-(b[2]-b[0])*s)/2-b[0]*s;
+  const ny=pad+((VH-2*pad)-(b[3]-b[1])*s)/2-b[1]*s;
+  anim?glide(s,nx_,ny):(k=s,tx=nx_,ty=ny,draw());
+}
+function glide(nk,ntx,nty,ms=520){
+  const k0=k,x0=tx,y0=ty,t0=performance.now();
+  const ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+  const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if(reduce){k=nk;tx=ntx;ty=nty;draw();return;}
+  (function step(now){
+    const u=Math.min(1,(now-t0)/ms), e=ease(u);
+    k=k0+(nk-k0)*e; tx=x0+(ntx-x0)*e; ty=y0+(nty-y0)*e; draw();
+    if(u<1) requestAnimationFrame(step);
+  })(t0);
+}
+function flyTo(i,zoomTo){
+  const p=px(i), nk=zoomTo||Math.max(k, fitScale()*3.2);
+  glide(nk, VW/2-p[0]*nk, VH/2-p[1]*nk);
+}
+function fitScale(){
+  const b=worldBounds(), pad=46;
+  return Math.min((VW-2*pad)/(b[2]-b[0]||1),(VH-2*pad)/(b[3]-b[1]||1));
+}
+
+// ---------- colour ----------
+const hx=c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16));
+const mix=(a,b,t)=>a.map((v,i)=>Math.round(v+(b[i]-v)*t));
+function ramp(t){const A=hx("#3E6E88"),B=hx("#B8B06A"),C=hx("#C0472F");
+  const r=t<.5?mix(A,B,t*2):mix(B,C,(t-.5)*2);return `rgb(${r.join(",")})`;}
+function tint(i){
+  if(layer==="d")return col(D_(i));
+  if(layer==="c")return ramp(Math.min(1,CH(i)/(maxCh||1)));
+  return ramp(Math.min(1,CX_(i)/(maxCx||1)));
+}
+
+// ---------- routing on the directed import graph ----------
+// distance to the nearest neighbouring file, in world units. A plot is never
+// drawn wider than its own plot of land, so parcels cannot overlap.
+function buildNN(){
+  const n=R.N.length; nnD=new Float64Array(n).fill(Infinity);
+  for(let i=0;i<n;i++){
+    const xi=PX(i), yi=PY(i);
+    for(let j=i+1;j<n;j++){
+      const dx=xi-PX(j), dy=yi-PY(j), d=dx*dx+dy*dy;
+      if(d<nnD[i])nnD[i]=d;
+      if(d<nnD[j])nnD[j]=d;
+    }
+  }
+  let med=[];
+  for(let i=0;i<n;i++){ nnD[i]=Math.sqrt(nnD[i]); if(isFinite(nnD[i]))med.push(nnD[i]); }
+  med.sort((a,b)=>a-b);
+  const fallback=med.length?med[med.length>>1]:1;
+  for(let i=0;i<n;i++) if(!isFinite(nnD[i])||nnD[i]<=0) nnD[i]=fallback;
+}
+function buildAdj(){
+  adj=new Map(); radj=new Map();
+  for(const [a,b] of R.E){
+    if(!adj.has(a))adj.set(a,[]); adj.get(a).push(b);
+    if(!radj.has(b))radj.set(b,[]); radj.get(b).push(a);
+  }
+}
+function bfs(from,to,graph){
+  if(from===to)return [from];
+  const prev=new Map([[from,-1]]); const q=[from];
+  for(let h=0;h<q.length;h++){
+    const cur=q[h];
+    for(const nx_ of (graph.get(cur)||[])){
+      if(prev.has(nx_))continue;
+      prev.set(nx_,cur);
+      if(nx_===to){const p=[to];let c=cur;while(c!==-1){p.push(c);c=prev.get(c);}return p.reverse();}
+      q.push(nx_);
+    }
+  }
+  return null;
+}
+function findRoute(a,b){
+  let p=bfs(a,b,adj);
+  if(p)return {path:p,kind:"imports"};
+  p=bfs(b,a,adj);
+  if(p)return {path:p.slice().reverse(),kind:"imported-by"};
+  const und=new Map();
+  for(const [x,y] of R.E){
+    if(!und.has(x))und.set(x,[]); und.get(x).push(y);
+    if(!und.has(y))und.set(y,[]); und.get(y).push(x);
+  }
+  p=bfs(a,b,und);
+  return p?{path:p,kind:"undirected"}:null;
+}
+
+// ---------- draw ----------
+function draw(){
+  svg.setAttribute("viewBox",`0 0 ${VW} ${VH}`);
+  svg.textContent="";
+  const g=el("g",{});
+  svg.appendChild(g);
+
+  if(geo!=="t"){
+    R.roads.forEach(([a,b,w])=>{
+      const p=R.districts[a].c,q=R.districts[b].c;
+      g.appendChild(el("line",{x1:X(p[0]),y1:Y(p[1]),x2:X(q[0]),y2:Y(q[1]),
+        stroke:"var(--coast)","stroke-width":(0.5+3*w).toFixed(1),
+        "stroke-linecap":"round","stroke-opacity":.5}));
+    });
+    for(const d in R.districts){
+      const on = selD===+d;
+      R.districts[d].blob.forEach(poly=>{
+        const path=el("path",{d:"M"+poly.map(q=>X(q[0]).toFixed(1)+" "+Y(q[1]).toFixed(1)).join("L")+"Z",
+          fill:col(+d),"fill-opacity":layer==="d"?(on?.3:.14):(on?.16:.06),
+          stroke:on?"var(--hot)":col(+d),"stroke-width":on?2.6:1.5,
+          "stroke-opacity":on?1:.7,"stroke-linejoin":"round",
+          class:"hit","pointer-events":"all","data-k":"d:"+d});
+        const t=el("title");
+        t.textContent=`${R.names[d]} — ${R.districts[d].size} files`;
+        path.appendChild(t);
+        g.appendChild(path);
+      });
+    }
+  }
+
+  const zf0=k/fitScale();
+  const CELL = geo==="p" && R.P && zf0>PARCEL_ZOOM;
+  const ROOMS = geo==="p" && zf0>BUILD_ZOOM;
+  const defs = CELL ? el("defs",{}) : null;
+  if(defs) g.appendChild(defs);
+  const dim = route ? new Set(route.path)
+            : (blast ? new Set([...blast.set, sel]) : null);
+  for(let i=0;i<R.N.length;i++){
+    if(CELL && R.P[i]){
+      const p=px(i), cx=X(p[0]), cy=Y(p[1]);
+      if(cx<-260||cx>VW+260||cy<-260||cy>VH+260) continue;
+      plot(g,defs,i,dim,ROOMS); continue;
+    }
+    const p=px(i);
+    let node;
+    if(geo!=="t"){
+      const r=Math.max(1.1,(1.6+5.2*Math.sqrt(LOC(i)/maxLoc))*Math.sqrt(k/fitScale()));
+      node=el("circle",{cx:X(p[0]).toFixed(1),cy:Y(p[1]).toFixed(1),r:r.toFixed(2),
+        fill:tint(i),"fill-opacity":dim&&!dim.has(i)?.2:.85,class:"hit",
+        stroke:"transparent","stroke-width":TOUCH?16:0,"pointer-events":"all",
+        "data-k":"f:"+i});
+    }else if(geo==="t"){
+      const r=RECT(i);
+      node=el("rect",{x:X(r[0]).toFixed(1),y:Y(r[1]).toFixed(1),
+        width:Math.max(S(r[2])-1.2,.6).toFixed(1),height:Math.max(S(r[3])-1.2,.6).toFixed(1),
+        rx:1.4,fill:tint(i),"fill-opacity":dim&&!dim.has(i)?.18:(layer==="d"?.8:.92),class:"hit",
+        stroke:"transparent","stroke-width":TOUCH?12:0,"pointer-events":"all",
+        "data-k":"f:"+i});
+    }
+    const t=el("title");t.textContent=`${R.F[i]}\n${LOC(i)} loc · churn ${CH(i)} · cplx ${CX_(i)}`;
+    node.appendChild(t); g.appendChild(node);
+  }
+
+  // blast radius: a thread from every file that names this symbol
+  if(blast && sel!=null){
+    const o=px(sel), ox=X(o[0]), oy=Y(o[1]);
+    blast.files.forEach(j=>{
+      const q=px(j);
+      g.appendChild(el("line",{x1:X(q[0]).toFixed(1),y1:Y(q[1]).toFixed(1),
+        x2:ox.toFixed(1),y2:oy.toFixed(1),stroke:"var(--hot)","stroke-width":1,
+        "stroke-opacity":.34,"pointer-events":"none"}));
+    });
+    blast.files.forEach(j=>{
+      const q=px(j);
+      g.appendChild(el("circle",{cx:X(q[0]).toFixed(1),cy:Y(q[1]).toFixed(1),
+        r:4.6,fill:"none",stroke:"var(--hot)","stroke-width":1.8,
+        "stroke-opacity":.9,"pointer-events":"none"}));
+    });
+  }
+
+  // route polyline
+  if(route){
+    const pts=route.path.map(i=>{const p=px(i);return [X(p[0]),Y(p[1])];});
+    g.appendChild(el("polyline",{points:pts.map(q=>q[0].toFixed(1)+","+q[1].toFixed(1)).join(" "),
+      fill:"none",stroke:"var(--hot)","stroke-width":2.6,"stroke-linejoin":"round",
+      "stroke-linecap":"round","stroke-opacity":.92}));
+    pts.forEach((q,n)=>g.appendChild(el("circle",{cx:q[0].toFixed(1),cy:q[1].toFixed(1),
+      r:n===0||n===pts.length-1?6:3.6,fill:"var(--hot)",stroke:"var(--canvas)","stroke-width":1.6})));
+  }
+
+  drawLabels(g);
+
+  // landmark pins
+  const zf=k/fitScale();
+  R.L.forEach(([i,why,detail,rank])=>{
+    if(zf>3.4 && why==="capital") return;
+    const p=px(i), cx=X(p[0]), cy=Y(p[1]);
+    if(cx<-30||cx>VW+30||cy<-30||cy>VH+30) return;
+    const gg=el("g",{class:"hit","data-k":"f:"+i});
+    gg.appendChild(el("path",{d:`M ${cx.toFixed(1)} ${cy.toFixed(1)} l -8 -12 a 9.5 9.5 0 1 1 16 0 z`,
+      fill:"#111A1E",stroke:"#fff","stroke-width":1.25}));
+    const t=el("text",{x:cx.toFixed(1),y:(cy-12.5).toFixed(1),"font-size":9.5,fill:"#fff",
+      "text-anchor":"middle","font-family":"IBM Plex Mono, monospace","font-weight":600});
+    t.textContent=rank; gg.appendChild(t);
+    const tt=el("title");tt.textContent=`${why} — ${R.F[i]}\n${detail}`;gg.appendChild(tt);
+    g.appendChild(gg);
+  });
+
+  if(sel!=null) ring(g,sel);
+}
+
+// Label budget: districts first, then files by importance, skipping collisions.
+// A file, opened. Everything on this map is a plan view, so a file is not a
+// tower — it is a PLOT, and its symbols are rooms inside the footprint. Rooms
+// run in source order along rows, like a floor plan read left to right, and the
+// lines that belong to no symbol (imports, module-level code) stay as common
+// area so the footprint accounts for the whole file.
+function rooms(sy, loc){
+  const out=[]; let cursor=1;
+  for(const sm of sy){
+    if(sm[2]>cursor) out.push({v:sm[2]-cursor, sm:null});
+    out.push({v:Math.max(1,sm[3]-sm[2]+1), sm});
+    cursor=Math.max(cursor, sm[3]+1);
+  }
+  if(loc>cursor) out.push({v:loc-cursor, sm:null});
+  return out.filter(r=>r.v>0);
+}
+// Strip treemap: rooms stay in source order, but a row closes as soon as adding
+// another room would make the row's average aspect ratio worse. Order-preserving
+// and sliver-free, which a naive equal-sum split is not.
+function stripRows(items, w, h){
+  const total=items.reduce((a,b)=>a+b.v,0)||1;
+  const scale=(w*h)/total;
+  const A=items.map(it=>({a:Math.max(it.v*scale,0.0001), sm:it.sm}));
+  const aspect=(row,sum)=>{
+    const rh=sum/w;
+    if(rh<=0) return Infinity;
+    let acc=0;
+    for(const r of row){ const rw=r.a/rh; acc+=Math.max(rw/rh, rh/rw); }
+    return acc/row.length;
+  };
+  const rows=[]; let cur=[], sum=0;
+  for(const it of A){
+    if(!cur.length){ cur=[it]; sum=it.a; continue; }
+    if(aspect(cur.concat(it), sum+it.a) <= aspect(cur, sum)){ cur.push(it); sum+=it.a; }
+    else { rows.push({items:cur,sum}); cur=[it]; sum=it.a; }
+  }
+  if(cur.length) rows.push({items:cur,sum});
+  const out=[]; let y=0;
+  const totalA=A.reduce((a,b)=>a+b.a,0)||1;
+  for(const r of rows){
+    const rh=h*(r.sum/totalA);
+    let x=0;
+    for(const it of r.items){
+      const rw=w*(it.a/(r.sum||1));
+      out.push({x,y,w:rw,h:rh,sm:it.sm});
+      x+=rw;
+    }
+    y+=rh;
+  }
+  return out;
+}
+// A plot is the file's actual share of its district: a weighted-Voronoi cell,
+// solved so that AREA tracks line count. Rooms are laid inside it and clipped to
+// its boundary, so a file's classes divide exactly the land the file owns.
+function plot(g,defs,i,dim,rooms_on){
+  const poly=R.P[i], faded=dim&&!dim.has(i);
+  let d="M", x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(let n=0;n<poly.length;n++){
+    const X_=X(poly[n][0]), Y_=Y(poly[n][1]);
+    d+=(n?"L":"")+X_.toFixed(1)+" "+Y_.toFixed(1);
+    if(X_<x0)x0=X_; if(X_>x1)x1=X_; if(Y_<y0)y0=Y_; if(Y_>y1)y1=Y_;
+  }
+  d+="Z";
+  const dcol=col(D_(i)), sy=SYM(i);
+  const showRooms = rooms_on && sy.length && (x1-x0)>26 && (y1-y0)>20;
+
+  g.appendChild(el("path",{d,fill:showRooms?"var(--canvas)":tint(i),
+    "fill-opacity":faded?.12:(showRooms?.96:(layer==="d"?.5:.82)),
+    stroke:dcol,"stroke-width":showRooms?1.1:.8,
+    "stroke-opacity":faded?.2:.55,"stroke-linejoin":"round",
+    class:"hit","pointer-events":"all","data-k":"f:"+i}));
+
+  if(!showRooms){
+    if(sel===i) g.appendChild(el("path",{d,fill:"none",stroke:"var(--hot)","stroke-width":2.2}));
+    return;
+  }
+
+  const cid="cp"+i;
+  const cp=el("clipPath",{id:cid});
+  cp.appendChild(el("path",{d}));
+  defs.appendChild(cp);
+  const inner=el("g",{"clip-path":"url(#"+cid+")"});
+  g.appendChild(inner);
+
+  const w=x1-x0, h=y1-y0;
+  const cells=stripRows(rooms(sy,LOC(i)), w, h);
+  cells.forEach(c=>{
+    const idx=c.sm?sy.indexOf(c.sm):-1;
+    const isSel = sel===i && c.sm && selSym===idx;
+    const r=el("rect",{x:(x0+c.x).toFixed(1),y:(y0+c.y).toFixed(1),
+      width:Math.max(.6,c.w-1).toFixed(1),height:Math.max(.6,c.h-1).toFixed(1),
+      fill:c.sm?(KCOL[c.sm[1]]||"#5E626A"):dcol,
+      "fill-opacity":faded?.14:(c.sm?(isSel?1:.6):.09),
+      class:c.sm?"hit":"","pointer-events":c.sm?"all":"none",
+      ...(c.sm?{"data-k":"s:"+i+":"+idx}:{})});
+    if(c.sm){
+      const t=el("title");
+      t.textContent=`${c.sm[0]}  (${KIND[c.sm[1]]})\n${R.F[i]}:${c.sm[2]}-${c.sm[3]}`;
+      r.appendChild(t);
+    }
+    inner.appendChild(r);
+    if(isSel) inner.appendChild(el("rect",{x:(x0+c.x).toFixed(1),y:(y0+c.y).toFixed(1),
+      width:Math.max(.6,c.w-1).toFixed(1),height:Math.max(.6,c.h-1).toFixed(1),
+      fill:"none",stroke:"var(--hot)","stroke-width":1.8}));
+    if(c.sm && !faded && c.w>36 && c.h>12){
+      const short=c.sm[0].split(".").pop();
+      const fits=Math.floor((c.w-6)/5.4);
+      if(fits>=3){
+        const t2=el("text",{x:(x0+c.x+c.w/2).toFixed(1),y:(y0+c.y+c.h/2+3.2).toFixed(1),
+          "font-size":8.5,"text-anchor":"middle",fill:"#fff","fill-opacity":.95,
+          "font-family":"IBM Plex Mono, monospace","pointer-events":"none"});
+        t2.textContent = short.length>fits ? short.slice(0,fits-1)+"…" : short;
+        inner.appendChild(t2);
+      }
+    }
+  });
+  g.appendChild(el("path",{d,fill:"none",stroke:sel===i?"var(--hot)":dcol,
+    "stroke-width":sel===i?2.4:1.8,"stroke-opacity":sel===i?1:.92,
+    "stroke-linejoin":"round","pointer-events":"none"}));
+  if(w>44&&h>26){
+    const lbl=el("text",{x:((x0+x1)/2).toFixed(1),y:(y0+10).toFixed(1),"font-size":9,
+      "text-anchor":"middle",fill:"var(--ink)","fill-opacity":faded?.3:.9,
+      "font-family":"IBM Plex Mono, monospace","paint-order":"stroke",
+      stroke:"var(--canvas)","stroke-width":3.4,"stroke-linejoin":"round",
+      "pointer-events":"none","font-weight":600});
+    lbl.textContent=R.F[i].split("/").pop(); g.appendChild(lbl);
+  }
+}
+
+function drawLabels(g){
+  const placed=[];
+  const hits=(x,y,w,h)=>placed.some(r=>!(x+w<r[0]||x>r[0]+r[2]||y+h<r[1]||y>r[1]+r[3]));
+  const put=(x,y,txt,size,op,weight,dk)=>{
+    const w=txt.length*size*0.62, h=size*1.25;
+    if(hits(x-w/2,y-h,w,h))return false;
+    placed.push([x-w/2,y-h,w,h]);
+    const t=el("text",{x:x.toFixed(1),y:y.toFixed(1),"font-size":size,"text-anchor":"middle",
+      fill:"var(--ink)","fill-opacity":op,"font-family":"IBM Plex Mono, monospace",
+      "paint-order":"stroke",stroke:"var(--canvas)","stroke-width":3.2,"stroke-linejoin":"round"});
+    if(weight)t.setAttribute("font-weight",weight);
+    if(dk!=null){
+      t.setAttribute("class","hit"); t.setAttribute("pointer-events","all");
+      t.setAttribute("data-k","d:"+dk);
+    }
+    t.textContent=txt; g.appendChild(t); return true;
+  };
+  const zf=k/fitScale();
+  for(const d in R.districts){
+    const c=geo!=="t"?R.districts[d].c:tmCentre(+d);
+    const x=X(c[0]),y=Y(c[1]);
+    if(x<0||x>VW||y<0||y>VH)continue;
+    put(x,y,R.names[d],NARROW()?Math.min(13,10+zf):Math.min(17,12+zf),.82,600,+d);
+    if(zf<1.8 && !NARROW()) put(x,y+13,R.districts[d].size+" files",9.5,.45);
+  }
+  // file labels appear as you zoom in — the budget grows with scale
+  if(geo==="p" && zf>BUILD_ZOOM) return;        // plots label themselves
+  const budget=Math.round(Math.min(NARROW()?18:60,Math.max(0,(zf-1.5)*(NARROW()?10:26))));
+  if(budget>0){
+    const order=[...R.N.keys()].sort((a,b)=>(FI(b)+LOC(b)/50)-(FI(a)+LOC(a)/50));
+    let n=0;
+    for(const i of order){
+      if(n>=budget)break;
+      const p=px(i),x=X(p[0]),y=Y(p[1]);
+      if(x<10||x>VW-10||y<14||y>VH-6)continue;
+      if(put(x,y-9,R.F[i].split("/").pop(),10,.82))n++;
+    }
+  }
+}
+function tmCentre(d){
+  let a=[1e9,1e9,-1e9,-1e9];
+  for(let i=0;i<R.N.length;i++){if(D_(i)!==d)continue;const r=RECT(i);
+    a[0]=Math.min(a[0],r[0]);a[1]=Math.min(a[1],r[1]);
+    a[2]=Math.max(a[2],r[0]+r[2]);a[3]=Math.max(a[3],r[1]+r[3]);}
+  return [(a[0]+a[2])/2,(a[1]+a[3])/2];
+}
+function ring(g,i){
+  const p=px(i);
+  if(geo!=="t"){
+    g.appendChild(el("circle",{cx:X(p[0]).toFixed(1),cy:Y(p[1]).toFixed(1),
+      r:(4+5.2*Math.sqrt(LOC(i)/maxLoc)*Math.sqrt(k/fitScale())+3).toFixed(1),
+      fill:"none",stroke:"var(--hot)","stroke-width":2.3}));
+  }else{
+    const r=RECT(i);
+    g.appendChild(el("rect",{x:(X(r[0])-2.5).toFixed(1),y:(Y(r[1])-2.5).toFixed(1),
+      width:(S(r[2])+3).toFixed(1),height:(S(r[3])+3).toFixed(1),rx:3,
+      fill:"none",stroke:"var(--hot)","stroke-width":2.3}));
+  }
+}
+
+// ---------- panel ----------
+function selectDistrict(d){
+  selD=d; sel=null; selSym=null; blast=null;
+  const files=[...R.N.keys()].filter(i=>D_(i)===d);
+  const lines=files.reduce((a,i)=>a+LOC(i),0);
+  const top=files.slice().sort((a,b)=>(FI(b)+LOC(b)/60)-(FI(a)+LOC(a)/60)).slice(0,6);
+  // which districts it actually borders, by edge weight — a fact about the
+  // system that the file-level view never states outright
+  const nb=R.roads.filter(r=>r[0]===d||r[1]===d)
+    .sort((a,b)=>b[2]-a[2]).slice(0,3)
+    .map(r=>R.names[r[0]===d?r[1]:r[0]]);
+  const lm=R.L.filter(l=>D_(l[0])===d);
+  const pan=document.getElementById("panel");
+  pan.className="panel"+(NARROW()?(panelOpen?" open":""):" open");
+  pan.innerHTML=
+    `<div class="phead" id="phead"><div class="pt">
+       <h3>${R.names[d]}</h3>
+       <div class="sub">${files.length} files · ${lines.toLocaleString()} lines</div>
+     </div><span class="chev">⌄</span></div>
+     <div class="pbody">
+       ${nb.length?`<div class="kv"><span>connects to</span><b>${nb.join(", ")}</b></div>`:""}
+       ${lm.length?`<div class="kv"><span>landmarks</span><b>${lm.length}</b></div>`:""}
+       <div class="dir">${top.map(i=>
+         `<button data-i="${i}"><i style="background:${col(d)}"></i>
+            <span class="nm">${R.F[i].split("/").slice(1).join("/")}</span>
+            <span class="ln">${LOC(i)}</span></button>`).join("")}</div>
+       <div class="acts"><button id="aZ">zoom to district</button></div>
+     </div>`;
+  pan.querySelectorAll(".dir button").forEach(e=>
+    e.onclick=()=>{selD=null;panelOpen=true;select(+e.dataset.i);});
+  const ph=document.getElementById("phead");
+  if(ph) ph.onclick=()=>{panelOpen=!panelOpen;
+    pan.classList.toggle("open",panelOpen||!NARROW());};
+  document.getElementById("aZ").onclick=()=>zoomDistrict(d);
+  closeSheet(); draw();
+}
+function zoomDistrict(d){
+  const c=geo!=="t"?R.districts[d].c:tmCentre(d);
+  const nk=fitScale()*(NARROW()?2.2:2.6);
+  glide(nk, VW/2-c[0]*nk, VH/2-c[1]*nk);
+}
+
+function computeBlast(){
+  blast=null;
+  if(selSym==null || !R.U) return;
+  const refs=R.U[sel+":"+selSym];
+  if(!refs || !refs.length) return;
+  const ds=new Set(refs.map(j=>D_(j)));
+  blast={set:new Set(refs), files:refs, districts:ds};
+}
+function select(i,noFly){
+  sel=i; selD=null; computeBlast(); draw();
+  const lm=R.L.find(l=>l[0]===i);
+  const sy=SYM(i), sm=(selSym!=null&&sy[selSym])?sy[selSym]:null;
+  const pan=document.getElementById("panel");
+  pan.className="panel"+(NARROW()?(panelOpen?" open":""):" open");
+  pan.innerHTML=
+    `<div class="phead" id="phead"><div class="pt">
+       <h3>${sm?sm[0]:R.F[i].split("/").pop()}</h3>
+       <div class="sub">${sm?`${R.F[i].split("/").pop()}:${sm[2]} · `:""}${R.names[D_(i)]}</div>
+     </div><span class="chev">⌄</span></div>
+     <div class="pbody">
+     <div class="sub">${R.F[i]}${sm?`:${sm[2]}`:""}</div>
+     ${sm?`<div class="kv"><span>kind</span><b style="color:${KCOL[sm[1]]}">${KIND[sm[1]]}</b></div>
+          <div class="kv"><span>lines</span><b>${sm[2]}–${sm[3]}</b></div>`:""}
+     <div class="kvs">
+     ${lm?`<div class="kv"><span>landmark</span><b class="w ${lm[1]}">${lm[1]}</b></div>`:""}
+     <div class="kv"><span>district</span><b>${R.names[D_(i)]}</b></div>
+     <div class="kv"><span>file lines</span><b>${LOC(i)}</b></div>
+     ${sy.length?`<div class="kv"><span>symbols</span><b>${sy.length}</b></div>`:""}
+     </div>${blastLine()}${directory(i,sy,selSym)}<div class="kvs">
+     <div class="kv"><span>commits</span><b>${CH(i)}</b></div>
+     <div class="kv"><span>branches</span><b>${CX_(i)}</b></div>
+     <div class="kv"><span>imported by</span><b>${FI(i)}</b></div>
+     </div>
+     <div class="acts">
+       <button id="aF">route from</button>
+       <button id="aT">route to</button>
+     </div></div>`;
+  const ph=document.getElementById("phead");
+  if(ph) ph.onclick=()=>{panelOpen=!panelOpen;
+    pan.classList.toggle("open",panelOpen||!NARROW());};
+  document.querySelectorAll(".dir button").forEach(e=>e.onclick=()=>{
+    selSym=+e.dataset.s; select(i,true);});
+  document.getElementById("aF").onclick=()=>{routeFrom=i;routeBox();};
+  document.getElementById("aT").onclick=()=>{
+    if(routeFrom==null){routeFrom=i;routeBox();return;}
+    route=findRoute(routeFrom,i); routeBox(); draw();
+  };
+  document.querySelectorAll(".row").forEach(e=>e.classList.toggle("on",+e.dataset.i===i));
+  if(!noFly) flyTo(i);
+}
+
+// A file's contents belong in a directory, not on the map: you navigate to the
+// building, then read the board. The bar shows what share of the file each
+// symbol occupies, which is the one spatial fact worth carrying up.
+// The count is an IDE fact. The number of DISTRICTS it crosses is the one the
+// map can tell you and the editor cannot: a change contained in one concern is
+// a different risk from a change that reaches five.
+function blastLine(){
+  if(selSym==null) return "";
+  if(!blast) return `<div class="blast none">no internal file names this symbol</div>`;
+  const n=blast.files.length, d=blast.districts.size;
+  const names=[...blast.districts].map(x=>R.names[x]).slice(0,4);
+  return `<div class="blast"><b>${n}</b> file${n===1?"":"s"} reference it,
+    across <b>${d}</b> district${d===1?"":"s"}
+    <span>${names.join(" · ")}${blast.districts.size>4?" …":""}</span></div>`;
+}
+
+function directory(i,sy,cur){
+  if(!sy.length) return "";
+  const loc=LOC(i)||1;
+  const bar=sy.map(sm=>{
+    const share=Math.max(0,(sm[3]-sm[2]+1))/loc;
+    return share>0.012
+      ? `<i style="flex:${share.toFixed(4)};background:${KCOL[sm[1]]}"></i>` : "";
+  }).join("");
+  const used=sy.reduce((a,sm)=>a+Math.max(0,sm[3]-sm[2]+1),0);
+  const rest=Math.max(0,1-used/loc);
+  const rows=sy.map((sm,n)=>({sm,n,span:sm[3]-sm[2]+1}))
+    .sort((a,b)=>b.span-a.span);
+  const shown=rows.slice(0,9);
+  return `<div class="comp">${bar}${rest>0.012
+      ? `<i style="flex:${rest.toFixed(4)};background:var(--rule)"></i>`:""}</div>
+    <div class="dir">${shown.map(r=>
+      `<button data-s="${r.n}" class="${cur===r.n?"on":""}">
+         <i style="background:${KCOL[r.sm[1]]}"></i>
+         <span class="nm">${r.sm[0]}</span>
+         <span class="ln">${r.sm[2]}–${r.sm[3]}</span>
+       </button>`).join("")}</div>
+    ${rows.length>shown.length
+      ? `<div class="more">+${rows.length-shown.length} more symbols</div>`:""}`;
+}
+
+function routeBox(){
+  const b=document.getElementById("routebox"), f=document.getElementById("foot");
+  if(routeFrom==null && !route){b.hidden=true;f.hidden=false;return;}
+  b.hidden=false; f.hidden=true;
+  if(!route){
+    b.innerHTML=`<span class="x" id="rx">clear</span><b>Route from</b> ${R.F[routeFrom]}
+      <div class="hop">now pick a destination and press “route to”.</div>`;
+  } else if(!route.path){
+    b.innerHTML=`<span class="x" id="rx">clear</span><b>No import path</b>
+      <div class="hop">these two files are not connected by imports in either direction.</div>`;
+  } else {
+    const kindTxt={imports:"follows imports, source → target",
+      "imported-by":"reverse direction — the target imports the source",
+      undirected:"no directed path; shown ignoring edge direction"}[route.kind];
+    b.innerHTML=`<span class="x" id="rx">clear</span>
+      <b>${route.path.length-1} hop${route.path.length===2?"":"s"}</b> · ${kindTxt}
+      <div class="hop">${route.path.map((i,n)=>
+        (n?' <i>→</i> ':'')+R.F[i].split("/").slice(1).join("/")).join("")}</div>`;
+  }
+  const x=document.getElementById("rx");
+  if(x)x.onclick=()=>{route=null;routeFrom=null;routeBox();draw();};
+}
+
+// ---------- search ----------
+const q=document.getElementById("q"), sug=document.getElementById("sug");
+let sugItems=[],sugK=-1;
+function searchHits(v){
+  const out=[];
+  // An exact symbol name beats a filename that merely contains the query:
+  // searching "Crawler" means the class, not every file with crawler in its path.
+  for(let i=0;i<R.N.length;i++){
+    if(R.F[i].toLowerCase().includes(v)){
+      const base=R.F[i].split("/").pop().toLowerCase();
+      const stem=base.replace(/\.[a-z]+$/,"");
+      const r = stem===v ? -1000 : (base.startsWith(v)?0:1)*100;
+      out.push({i,s:null,rank:r-FI(i)});
+    }
+  }
+  // symbols are addresses too — a class or function is a door number
+  for(const key in (R.S||{})){
+    const i=+key;
+    R.S[key].forEach((sm,n)=>{
+      const nm=sm[0].toLowerCase();
+      if(nm.includes(v)){
+        const refs=(R.U&&R.U[i+":"+n]||[]).length;
+        const r = nm===v ? -2000 : (nm.startsWith(v)?0:1)*100;
+        out.push({i,s:n,rank:r - refs*2 - (sm[3]-sm[2])/20});
+      }
+    });
+  }
+  return out.sort((a,b)=>a.rank-b.rank).slice(0,14);
+}
+q.addEventListener("input",()=>{
+  const v=q.value.trim().toLowerCase();
+  if(!v){sug.hidden=true;return;}
+  sugItems=searchHits(v); sugK=-1;
+  sug.innerHTML=sugItems.map((h,n)=>{
+    const sm=h.s!=null?R.S[h.i][h.s]:null;
+    const refs=sm?((R.U&&R.U[h.i+":"+h.s]||[]).length):0;
+    return `<div data-n="${n}">${sm?
+      `<b style="color:${KCOL[sm[1]]};font-weight:400">${sm[0]}</b> <em>${KIND[sm[1]]} · ${R.F[h.i].split("/").pop()}${refs?" · "+refs+" refs":""}</em>`
+      : `${R.F[h.i].split("/").pop()} <em>${R.names[D_(h.i)]}</em>`}</div>`;}).join("")
+    || `<div><em>nothing matches</em></div>`;
+  sug.hidden=false;
+  sug.querySelectorAll("[data-n]").forEach(e=>e.onclick=()=>go(sugItems[+e.dataset.n]));
+});
+function go(h){
+  if(!h)return;
+  sug.hidden=true; q.value=""; panelOpen=true;
+  selSym=h.s;
+  if(h.s!=null){ select(h.i,true); flyTo(h.i, fitScale()*Math.max(8,BUILD_ZOOM+3)); }
+  else select(h.i);
+}
+q.addEventListener("keydown",e=>{
+  if(sug.hidden||!sugItems.length)return;
+  if(e.key==="ArrowDown"||e.key==="ArrowUp"){
+    e.preventDefault(); sugK=(sugK+(e.key==="ArrowDown"?1:sugItems.length-1))%sugItems.length;
+    sug.querySelectorAll("div").forEach((d,n)=>d.classList.toggle("k",n===sugK));
+  } else if(e.key==="Enter"){
+    e.preventDefault(); go(sugItems[Math.max(0,sugK)]);
+  } else if(e.key==="Escape"){sug.hidden=true;}
+});
+
+// ---------- pan / zoom ----------
+const TOUCH=matchMedia("(pointer:coarse)").matches;
+const NARROW=()=>innerWidth<=820;
+let dragging=false,lx=0,ly=0,moved=0;
+const pts=new Map(); let pinch=null, lastTap=0, tapped=false;
+function toSvg(ev){const r=svg.getBoundingClientRect();
+  return [(ev.clientX-r.left)/r.width*VW,(ev.clientY-r.top)/r.height*VH];}
+function mid(){const a=[...pts.values()];
+  return [(a[0][0]+a[1][0])/2,(a[0][1]+a[1][1])/2];}
+function dist(){const a=[...pts.values()];
+  return Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1])||1;}
+
+svg.addEventListener("pointerdown",e=>{
+  pts.set(e.pointerId,toSvg(e));
+  if(pts.size===2){ dragging=false; pinch={d:dist(),k:k,m:mid()}; return; }
+  // Deliberately NOT capturing here: a captured pointer retargets the click to
+  // the <svg>, so taps would never reach the shape under the finger.
+  dragging=true; moved=0; [lx,ly]=toSvg(e);
+});
+svg.addEventListener("pointermove",e=>{
+  if(!pts.has(e.pointerId))return;
+  pts.set(e.pointerId,toSvg(e));
+  if(pts.size===2&&pinch){
+    const nk=clampK(pinch.k*(dist()/pinch.d)), m=mid();
+    tx=m[0]-(pinch.m[0]-tx)*(nk/pinch.k); ty=m[1]-(pinch.m[1]-ty)*(nk/pinch.k);
+    k=nk; draw(); return;
+  }
+  if(!dragging)return;
+  const [x,y]=toSvg(e);
+  moved+=Math.abs(x-lx)+Math.abs(y-ly);
+  if(moved<5){lx=x;ly=y;return;}          // below this it is still a tap
+  if(!svg.classList.contains("drag")){
+    svg.classList.add("drag");
+    try{svg.setPointerCapture(e.pointerId);}catch(_){}
+  }
+  tx+=x-lx;ty+=y-ly;lx=x;ly=y;draw();
+});
+function endPointer(e){
+  pts.delete(e.pointerId);
+  if(pts.size<2)pinch=null;
+  if(pts.size===0){
+    dragging=false; svg.classList.remove("drag");
+    // Selection is handled by the click listener below. Redrawing here would
+    // delete the very element the click is about to be dispatched to.
+    if(moved<6 && TOUCH){
+      const now=performance.now();
+      if(now-lastTap<300){ zoomBy(2); lastTap=0; tapped=true; }
+      else lastTap=now;
+    }
+  }
+}
+svg.addEventListener("pointerup",endPointer);
+svg.addEventListener("pointercancel",endPointer);
+const clampK=v=>Math.max(fitScale()*0.5,Math.min(fitScale()*40,v));
+svg.addEventListener("wheel",e=>{
+  e.preventDefault();
+  const [x,y]=toSvg(e);
+  const f=Math.exp(-e.deltaY*0.0016), nk=clampK(k*f);
+  tx=x-(x-tx)*(nk/k); ty=y-(y-ty)*(nk/k); k=nk; draw();
+},{passive:false});
+const zoomBy=f=>{const nk=clampK(k*f);
+  glide(nk,VW/2-(VW/2-tx)*(nk/k),VH/2-(VH/2-ty)*(nk/k),240);};
+document.getElementById("zin").onclick=()=>zoomBy(1.6);
+document.getElementById("zout").onclick=()=>zoomBy(1/1.6);
+document.getElementById("zfit").onclick=()=>fit(true);
+
+// ---------- chrome ----------
+function foot(){
+  const f=document.getElementById("foot");
+  f.innerHTML = layer==="d"
+    ? `<b>${R.F.length} files</b> · <b>${Object.keys(R.districts).length} districts</b> ·
+       modularity <b>${R.q}</b> · ${R.E.length} import edges.
+       Scroll to zoom, drag to pan, search a file <i>or a symbol</i> to fly.
+       The map stops at the file; a file's classes and functions are listed in
+       its directory. Switch geometry to <i>plots</i> for the cadastral view.`
+    : `${layer==="c"?"Commits touching each file":"Branch points per file"}
+       <span class="grad"></span><b>${layer==="c"?"1 → "+maxCh:"0 → "+maxCx}</b>`;
+}
+function loadRepo(name){
+  R=ALL[name]; sel=null; selSym=null; blast=null; selD=null; route=null; routeFrom=null;
+  maxLoc=Math.max(...R.N.map(r=>r[3]));
+  maxCh=Math.max(...R.N.map(r=>r[5]));
+  maxCx=Math.max(...R.N.map(r=>r[4]));
+  buildAdj(); buildNN();
+  document.getElementById("lms").innerHTML=R.L.map(([i,why,detail,rank])=>
+    `<div class="row" data-i="${i}"><span class="n">${rank}</span>
+      <span><span class="f">${R.F[i].split("/").slice(1).join("/")}</span>
+      <span class="w ${why}">${why} · ${detail}</span></span></div>`).join("");
+  document.querySelectorAll(".row").forEach(e=>e.onclick=()=>{closeSheet();selSym=null;select(+e.dataset.i);});
+  document.getElementById("dls").innerHTML=Object.keys(R.districts)
+    .sort((a,b)=>R.districts[b].size-R.districts[a].size)
+    .map(d=>`<div class="dl" data-d="${d}"><i style="background:${col(+d)}"></i>
+      ${R.names[d]}<span>${R.districts[d].size}</span></div>`).join("");
+  document.querySelectorAll(".dl").forEach(e=>e.onclick=()=>{
+    closeSheet();
+    const d=+e.dataset.d, c=geo==="r"?R.districts[d].c:tmCentre(d);
+    glide(fitScale()*2.6, VW/2-c[0]*fitScale()*2.6, VH/2-c[1]*fitScale()*2.6);});
+  document.getElementById("panel").innerHTML="";
+  routeBox(); foot(); fit(false);
+  panelOpen=false;
+  // On a phone the map opens unobstructed; nothing is selected until tapped.
+  if(R.L.length && !NARROW()) select(R.L[0][0],true);
+  else document.getElementById("panel").innerHTML="";
+}
+const press=(id,on)=>document.getElementById(id).setAttribute("aria-pressed",on);
+const GEOS=[["gR","r"],["gP","p"],["gT","t"]];
+function setGeo(gv){geo=gv;GEOS.forEach(([id,v])=>press(id,v===gv));
+  if(mGeo)mGeo.textContent={r:"regions",p:"plots",t:"treemap"}[gv];fit(false);}
+GEOS.forEach(([id,v])=>document.getElementById(id).onclick=()=>setGeo(v));
+for(const [id,m] of [["lD","d"],["lC","c"],["lX","x"]])
+  document.getElementById(id).onclick=()=>{layer=m;
+    press("lD",m==="d");press("lC",m==="c");press("lX",m==="x");foot();draw();};
+
+// One delegated listener. Per-element handlers die with every redraw and, on a
+// captured pointer, never fire at all; a data attribute survives both.
+svg.addEventListener("click",e=>{
+  if(moved>=6) return;                     // that was a drag
+  if(tapped){ tapped=false; return; }      // that was a double-tap zoom
+  let t=e.target;
+  while(t && t!==svg && !(t.getAttribute && t.getAttribute("data-k"))) t=t.parentNode;
+  const kk = (t && t!==svg && t.getAttribute) ? t.getAttribute("data-k") : null;
+  if(!kk){
+    sel=null; selSym=null; blast=null; selD=null; panelOpen=false;
+    document.getElementById("panel").innerHTML=""; closeSheet(); draw(); return;
+  }
+  const parts=kk.split(":");
+  if(parts[0]==="d") selectDistrict(+parts[1]);
+  else if(parts[0]==="f"){ selSym=null; panelOpen=true; select(+parts[1],true); }
+  else if(parts[0]==="s"){ selSym=+parts[2]; panelOpen=true; select(+parts[1],true); }
+});
+
+// --- phone drawer + compact controls ---
+const sideEl=document.getElementById("side");
+function closeSheet(){sideEl.classList.remove("open");}
+document.getElementById("grab").onclick=()=>sideEl.classList.toggle("open");
+const mGeo=document.getElementById("mGeo"), mLayer=document.getElementById("mLayer");
+mGeo.onclick=()=>setGeo({r:"p",p:"t",t:"r"}[geo]);
+const LAYERS=[["d","district"],["c","churn"],["x","complexity"]];
+mLayer.onclick=()=>{
+  const n=(LAYERS.findIndex(l=>l[0]===layer)+1)%3; layer=LAYERS[n][0];
+  mLayer.textContent=LAYERS[n][1];
+  press("lD",layer==="d");press("lC",layer==="c");press("lX",layer==="x");foot();draw();};
+
+const sel_=document.getElementById("repo");
+function fillRepos(){
+  sel_.innerHTML=Object.keys(ALL).map(n=>
+    `<option value="${n}">${NARROW()?n:n+" · "+ALL[n].F.length+" files"}</option>`).join("");
+  sel_.value=R?R.repo:Object.keys(ALL)[0];
+}
+sel_.onchange=()=>loadRepo(sel_.value);
+fillRepos();
+
+function resize(){
+  const r=wrap.getBoundingClientRect();
+  VW=Math.max(360,r.width); VH=Math.max(300,r.height);
+  fillRepos(); fit(false);
+}
+addEventListener("resize",resize);
+loadRepo(Object.keys(ALL)[0]);
+resize();
+})();
+</script>

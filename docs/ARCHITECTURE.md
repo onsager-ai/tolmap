@@ -1,0 +1,138 @@
+# Target architecture
+
+## What the shipped code is
+
+The Python pipeline (`src/tolmap/`, 2081 lines) and the vanilla-JS viewer (`viewer/template.html`, 1048 lines) are a **reference implementation**, not the product codebase. They exist for two reasons and should not accumulate features:
+
+1. **They are the test oracle.** The port is correct when it reproduces their output on the same repository at the same commit with the same seed. `data/` holds nine such outputs to check against.
+2. **They encode findings that are expensive to rediscover.** Every non-obvious line is commented with why, and `docs/FINDINGS.md` records what was falsified. Read both before writing the Rust.
+
+Freeze them at v0.1. New work goes in the Rust/TS tree.
+
+## Stack
+
+| layer | choice | notes |
+|---|---|---|
+| indexer | Rust | tree-sitter is a Rust/C library; this is native ground, not a compromise |
+| store | SQLite embedded, Postgres for hosted | see source-of-truth below |
+| API | axum | JSON, plus SSE for indexing progress |
+| frontend | React + TypeScript + Vite | |
+| UI | Tailwind + shadcn | chrome, panels, cards |
+| data/routing | TanStack Query + TanStack Router | Router also closes the shareable-URL gap the prototype has |
+| map surface | imperative renderer behind a ref | **not** React elements — see below |
+
+## What lives where
+
+**The repository holds intent. The store holds derivation.** That single line settles every case, and it is the resolution to a mistake an earlier draft of this document made.
+
+That draft proposed committing the computed layout into the mapped repository. It was wrong: a layout is a *snapshot*, and a snapshot checked into git goes stale the first time someone merges without regenerating — silently, and carrying the authority of being committed. Coordinates, district membership, the name cache and blast radius are all derived from a specific commit and belong to the store, keyed by `(repo, commit_sha)`. Nothing derived goes in the repository.
+
+What does belong in the repository is configuration — the choices a maintainer makes that the tool cannot infer, which are stable under recomputation because they are not computed:
+
+```toml
+# .tolmap/config.toml — optional; the tool works with no file at all
+
+[[source]]                      # override auto-detection when it guesses wrong
+path = "lib/sqlalchemy"
+lang = "py"
+
+exclude = ["examples/**", "**/generated/**"]
+
+[cluster]
+resolution = 1.1                # more districts when raised
+
+[districts]                     # pin a name the team already uses
+# keyed by an ANCHOR FILE, not a district id: ids are not stable across
+# reclustering, but "whichever district contains this file" is
+"src/payments/stripe.ts" = "payments"
+
+[landmarks]
+pin = ["src/gateway/router.ts"]
+suppress = ["src/util/log.ts"]
+```
+
+The anchor-file keying matters more than it looks. District identifiers are an artefact of one clustering run; a name pinned to an id would break the next time the partition shifts, which is exactly the drift finding 4 is about. A name pinned to a file survives, because the question it asks — *what is the district containing this file called* — stays meaningful however the boundaries move.
+
+The warm start reads the previous membership from the store, not from a file. Finding 4 requires that the previous partition be *available*; it does not require it to be committed.
+
+Later, and only for teams that want layout drift visible in a pull request, a `tolmap check` run can write a small derived summary into the repo — district count, modularity, which files changed district — under the explicit lockfile contract of recording the commit it came from and refusing to be treated as current when that does not match `HEAD`. That is a reviewable *diff artifact*, not a source of truth, and it is out of MVP scope.
+
+## MVP: a site that maps any public repository
+
+The first product is a website in the shape of DeepWiki — paste a repository, get a map, no install. The map of a repository lives at `/<owner>/<repo>`, with no forge prefix: `<host>/scrapy/scrapy`.
+
+Two consequences of dropping the prefix, both worth handling on day one rather than discovering later. The router must **reserve its own top-level names** (`about`, `docs`, `api`, `new`, `settings`, `assets`, and anything else the app will ever want) before any of them collides with a real GitHub owner. And the scheme leaves no room to disambiguate a second forge, so supporting GitLab later means a query parameter, a separate host, or breaking the URLs. DeepWiki accepted the same trade; it is a reasonable one, but it is a decision, not a default.
+
+DeepWiki answers *what is this code*. tolmap answers *where is it and what does it reach*. The two are complementary, and the positioning line is that one produces prose and the other produces a place.
+
+### What a public endpoint forces that a CLI does not
+
+**Auto-detection. This is the largest piece of unbuilt work in the MVP, and it is easy to underestimate.** The reference CLI requires `--pkg lib/sqlalchemy --lang py`. Nobody pasting a URL will supply that, and getting it wrong does not fail loudly — it produces a sparse graph and a plausible-looking wrong map (finding 7). Detection needs to be its own module with its own tests:
+
+- Language: count source files by extension, excluding vendored and generated trees.
+- Source root, per ecosystem: `go.mod` puts it at the repo root; `pyproject.toml` or `setup.py` points at `src/<pkg>` or a top-level package directory; `package.json` plus `tsconfig.json` points at `src` or a `packages/*` workspace.
+- Exclusions: tests, fixtures, vendor, generated code, examples. The prototype's list is a starting point, not a complete one.
+- Confidence: when detection is uncertain, the site should say what it chose and let the user override, rather than silently mapping the wrong tree.
+
+**Polyglot repositories.** Most real repositories are not one language. The prototype maps one language per run. A site hitting arbitrary repos has to decide: dominant language only, or one map with several languages merged. Merging is the better answer, because districts are about concerns and a concern crosses languages — but note that cross-language import edges do not resolve (a TypeScript client calling a Go service shares no import), so **co-change becomes the only signal that bridges languages**. That is a strong argument for keeping β meaningful, and a thing to measure early.
+
+**Indexing is a job, not a request.** Django took minutes in Python. Submit, queue, work, stream progress over SSE, cache by `(repo, commit_sha)`. A second visitor to the same commit gets the cached map.
+
+**Clone strategy.** Co-change needs commit history, so a depth-1 clone is not enough. `--filter=blob:none` gives the full commit graph without file contents, then the working tree is materialised once — that is what the prototype used and it is the right default. Budget disk and evict.
+
+**Limits, because it is a public endpoint that clones and burns CPU on demand.** Caps on file count, clone size, history depth and wall time, with a clear "this repository is too large for the hosted index" rather than a timeout. Rate limit per IP and per repo.
+
+### MVP scope, explicitly
+
+In: public GitHub repos, auto-detection, the map view with districts, landmarks, search, blast radius, and a shareable URL.
+
+Out: private repos and auth, the committed-layout mode, `tolmap check`, incremental indexing, symbol-precise references via SCIP. All of these are real and all of them are after the site exists.
+
+## Rendering: do not put nodes in the React tree
+
+A mid-sized map is 850 files, 12 districts, a few thousand import edges, and up to 8000 symbols. Rendering nodes as React components means reconciling thousands of elements on every pan frame.
+
+Structure it as: React owns the chrome, the panels and all application state; the map is one component holding a ref, and inside that ref an imperative renderer draws. State flows down as props into an explicit `render(state)` call; interaction flows up through callbacks.
+
+Start by porting the existing SVG renderer — it works at this scale and its pointer handling is hard-won (three touch-only bugs are documented in its comments). Keep the interface narrow enough that swapping in Canvas 2D or WebGL later is a change to one file. The threshold where SVG stops being enough is somewhere past 5000 visible nodes.
+
+## Port map
+
+| module | lines | Rust equivalent | risk |
+|---|---|---|---|
+| `extract.py` | 364 | `tree-sitter-python` + `git2` | low — Python's `ast` becomes tree-sitter like every other language |
+| `multi.py` | 354 | `tree-sitter-go`, `tree-sitter-typescript` | low — same grammars, first-class bindings |
+| `pipeline.py` | 297 | **Leiden + layout, own implementation** | **high, see below** |
+| `blobs.py` | 320 | `ndarray` + own gaussian blur + own marching squares | medium — both are short and well-specified |
+| `parcels.py` | 143 | `ndarray`, the power diagram is already a raster loop | low — it was written as an array loop, it ports directly |
+| `naming.py` | 160 | plain Rust + an LLM client | low |
+| `cli.py` | 122 | `clap` | low |
+| `viewer/` | 1048 | React + TS, imperative map surface | medium — the touch handling is the subtle part |
+
+## The one real risk: Leiden
+
+`leidenalg` is Python bindings over a C++ library over igraph. There is no mature Rust equivalent, and community detection is the algorithmic core of this product — not a dependency to shop for.
+
+Three options, in the order I would consider them:
+
+1. **Implement Leiden in Rust.** The algorithm is well-specified (Traag, Waltman & van Eck 2019): local moving, refinement, aggregation, repeat. Roughly 500–800 lines. This is the recommended path, because two requirements make a binding awkward anyway: strict determinism, and warm-starting from a previous membership (`initial_membership`), which finding 4 shows is the single highest-leverage step in the pipeline.
+2. **FFI to libleidenalg.** Faster to stand up, but pulls igraph's C build into the toolchain and leaves determinism dependent on someone else's RNG handling.
+3. **Louvain plus a refinement pass.** Only if the schedule demands it. Leiden exists because Louvain produces badly connected communities; on this workload that shows up directly as unstable districts.
+
+**Acceptance test for whichever path:** on scrapy, django and vue at the pinned commits in `data/`, the Rust partition must place ≥95% of files in the district their Python counterpart assigned, and modularity must land within 0.02. That check belongs in CI from the first commit of the clustering module.
+
+## Shared schema
+
+The map JSON is the contract between indexer and viewer. Define it once as Rust types and generate the TypeScript from them (`ts-rs` or `typeshare`) rather than maintaining two hand-written definitions. The current shape is in `data/*.json`; the compact index-addressed layout (`F`, `N`, `E`, `L`, `S`, `U`) exists because nine maps had to fit in one HTML page, and can be relaxed now that data is fetched.
+
+## Milestones
+
+The MVP is the site, so the order below front-loads what the site needs and defers what only teams-with-repos need.
+
+1. **Indexer parity.** Rust `tolmap build` reproduces the nine reference maps within the acceptance thresholds. No UI, no server. The Leiden risk lives here, so it goes first and alone.
+2. **Auto-detection.** Given only a clone, choose language and source root, and report confidence. Test it against the nine reference repos, whose correct answers are already known, plus a handful of deliberately awkward ones (a monorepo, a repo with `src/` and no package metadata, a polyglot service).
+3. **Job service.** axum, SQLite, a queue, clone management, SSE progress, cache by `(repo, commit_sha)`, and the limits above.
+4. **Viewer port.** React/TS shell, imperative map surface, URL state via TanStack Router — which is also the shareable link the prototype lacks.
+5. **Ship the site.** `<host>/<owner>/<repo>`, with reserved top-level names in place from the first route.
+
+Then, in whatever order demand dictates: incremental indexing, `tolmap check` for CI, the committed-layout mode, SCIP-precise references, private repos.
