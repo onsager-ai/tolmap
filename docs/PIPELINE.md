@@ -19,6 +19,15 @@ Seeded Leiden (`RBConfigurationVertexPartition`), resolution ≈ 1.1 for 6–12 
 ## 4 · name
 `naming.py`. Deterministic IDF fallback ships; the model hook is defined and unwired. Cache against a fingerprint of cluster membership.
 
+Because the hook is unwired, **regenerating a fixture in `data/` renames every district** unless the cache is seeded first — the fallback replaces `crawl control` with `downloadermiddlewares & extensio`. The fixture carries everything needed to rebuild the cache, so seed from it before rebuilding:
+
+```
+python eval/seed_names.py out/ scrapy
+python -m tolmap.cli build ~/src/scrapy --pkg scrapy --lang py --name scrapy --out out
+```
+
+The fingerprint is a sha1 of the sorted member paths, so the cache hits only while membership is unchanged. If membership genuinely moved, the namer runs — that is the signal, not a failure.
+
 ## 5 · place
 Two tiers, and the tiering is what sidesteps non-planarity: **edges are only ever drawn within one tier**. Tier 1 is a force layout on ~10 district nodes. Tier 2 is a squarified treemap inside each district, order frozen from the previous layout and areas quantised to `round(loc/25)` so ordinary edits do not reflow the packing.
 
