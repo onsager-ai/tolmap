@@ -92,3 +92,24 @@ Each of these silently produced plausible-looking but wrong results.
 - **A featureless disc means a bad district.** Districts with no internal structure render as near-perfect circles with evenly spread points. The shape itself diagnoses partition quality — a free property nobody designed in.
 - **Weighted Voronoi keeps the area encoding.** A plain Voronoi tiles the plane but its cell areas encode point density, which is a layout artefact. A power diagram — `cell(i) = argmin |x−pᵢ|² − wᵢ` — tiles it too, and the weights can be solved until area tracks line count. Measured correlation: 0.62 (django) to 0.95 (rich).
 - **0.62 is a geometric ceiling, not a tuning problem.** Raising the raster from 168 to 320 moved it 0.618 → 0.618. Files on a district boundary have nowhere to expand into.
+
+## 9. The map was not reproducible, and the cause was the hash seed
+
+`SEED = 7` is threaded through every stage that draws a random number, and the partition really is byte-stable: leidenalg returns identical membership across runs, across `PYTHONHASHSEED` values, and — measured on scrapy and flask at their current heads — identical to the membership committed in `data/`. The geometry was not. Two runs of the reference on the same tree at the same commit moved the median file **0.28** of the map, with a maximum of **1.22**. Finding 3 calls a tenth of the map significant, so this was roughly three times the displacement that 300 commits of real churn produces.
+
+Fixing `PYTHONHASHSEED` made the output byte-identical; leaving it unset made every run differ. The leak is `nx.Graph.subgraph()`, which returns a *view* whose node iteration follows a set of the node names. Nothing reads that order deliberately, but `subdivide` builds igraph vertex indices from it and `spring_layout` seeds its position array from it, so the interpreter's per-process hash randomisation reached the coordinates through two layers that both look seeded.
+
+| quantity | before | after |
+|---|---|---|
+| membership, modularity, edges, landmarks, symbols, references | byte-stable | byte-stable |
+| coordinates, district centroids, blob polygons | median 0.28 move per run | byte-stable |
+
+`ordered_subgraph()` in `blobs.py` builds a real graph with nodes in the caller's order and edges sorted. Full pipeline including parcels is now byte-identical across runs on scrapy and flask with `PYTHONHASHSEED` unset.
+
+Three things follow, and the third is the reason this is written down.
+
+The coordinates in `data/*.json` were generated under one arbitrary hash seed and are **not** reproducible even by the corrected reference — membership, modularity, edges, landmarks, symbols and references all still reproduce exactly, and the fixtures remain a valid oracle for everything except position.
+
+The acceptance gate for the port (≥95% of files in the district the reference assigns, modularity within 0.02) tests only the half that was always stable. That was a better gate than it looked.
+
+**A faithful Rust port reproduces this bug exactly.** Rust's default `HashMap` iterates in a randomised order for the same reason Python's `set` does. Ported from the rendering logic alone it will present as "the map jiggles between runs", months after anyone remembers that a subgraph view was involved. Use `BTreeMap`/`IndexMap`, or sort at every set boundary, from the first commit of the geometry module.
