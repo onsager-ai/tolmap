@@ -40,6 +40,38 @@ NAMES = {
 }
 
 
+def ordered_subgraph(G, nodes):
+    """An induced subgraph with iteration order fixed by the caller.
+
+    `G.subgraph(nodes)` returns a *view* whose node iteration follows a set of
+    the node names, so on a str-keyed graph its order varies with
+    PYTHONHASHSEED. Nothing downstream reads that order deliberately, but
+    `subdivide` builds igraph vertex indices from it and `spring_layout` seeds
+    its position array from it, so the hash seed leaked all the way into the
+    coordinates: two runs on the same commit moved the median file 0.28 of the
+    map (finding 9). Membership and modularity never moved -- only geometry.
+
+    Build a real graph instead: nodes in the order given, edges sorted. The
+    Rust port must do the same, because its default HashMap iteration is
+    randomised too and a faithful port reproduces this exactly.
+    """
+    # Two differences from the view, both unreachable at the call sites and
+    # asserted rather than handled: this drops node attributes (`place` builds
+    # `Gf` from dict keys, so there are none) and would add an absent node as
+    # an isolate where the view ignores it (both callers pass subsets).
+    assert set(nodes) <= set(G), "ordered_subgraph: nodes must be a subset of G"
+    H = nx.Graph()
+    H.add_nodes_from(nodes)
+    keep = set(nodes)
+    seen = set()
+    for a, b, d in G.edges(data=True):
+        if a in keep and b in keep:
+            seen.add((a, b) if a <= b else (b, a))
+    for a, b in sorted(seen):
+        H.add_edge(a, b, **G[a][b])
+    return H
+
+
 def subdivide(sub, min_n=40, target=14):
     """Leiden again inside a district. Large districts have internal structure;
     laying their files out as one cloud produces a featureless disc, which is
@@ -108,7 +140,7 @@ def place(layout, graph):
     total = len(memb)
     pts, subs = {}, {}
     for c, fs in by.items():
-        sub = Gf.subgraph(fs)
+        sub = ordered_subgraph(Gf, fs)
         smemb = subdivide(sub)
         subs.update({f: (c, s) for f, s in smemb.items()})
         sby = defaultdict(list)
@@ -152,7 +184,7 @@ def place(layout, graph):
         order = []
         for s, base in zip(keys, C):
             members = sby[s]
-            g2 = sub.subgraph(members)
+            g2 = ordered_subgraph(sub, members)
             p2 = (nx.spring_layout(g2, weight="weight", seed=SEED, iterations=200)
                   if len(members) > 1 else {members[0]: np.zeros(2)})
             a2 = np.array([p2[f] for f in members], dtype=float)
