@@ -4,7 +4,7 @@
 
 The Python pipeline (`src/tolmap/`, 2081 lines) and the vanilla-JS viewer (`viewer/template.html`, 1048 lines) are a **reference implementation**, not the product codebase. They exist for two reasons and should not accumulate features:
 
-1. **They are the test oracle.** The port is correct when it reproduces their output on the same repository at the same commit with the same seed. `data/` holds nine such outputs to check against.
+1. **They are the test oracle.** The port is correct when it reproduces their output on the same repository at the same commit with the same seed. `data/` holds nine such outputs to check against — membership, modularity, edges, landmarks, symbols and references. Coordinates were not reproducible before finding 9 and the fixtures have been re-recorded since; the acceptance gate tests the half that was always stable.
 2. **They encode findings that are expensive to rediscover.** Every non-obvious line is commented with why, and `docs/FINDINGS.md` records what was falsified. Read both before writing the Rust.
 
 Freeze them at v0.1. New work goes in the Rust/TS tree.
@@ -115,11 +115,17 @@ Start by porting the existing SVG renderer — it works at this scale and its po
 
 Three options, in the order I would consider them:
 
-1. **Implement Leiden in Rust.** The algorithm is well-specified (Traag, Waltman & van Eck 2019): local moving, refinement, aggregation, repeat. Roughly 500–800 lines. This is the recommended path, because two requirements make a binding awkward anyway: strict determinism, and warm-starting from a previous membership (`initial_membership`), which finding 4 shows is the single highest-leverage step in the pipeline.
-2. **FFI to libleidenalg.** Faster to stand up, but pulls igraph's C build into the toolchain and leaves determinism dependent on someone else's RNG handling.
+1. **Implement Leiden in Rust.** The algorithm is well-specified (Traag, Waltman & van Eck 2019): local moving, refinement, aggregation, repeat. Roughly 500–800 lines.
+2. **FFI to libleidenalg.** Faster to stand up, but pulls igraph's C build into the toolchain.
 3. **Louvain plus a refinement pass.** Only if the schedule demands it. Leiden exists because Louvain produces badly connected communities; on this workload that shows up directly as unstable districts.
 
-**Acceptance test for whichever path:** on scrapy, django and vue at the pinned commits in `data/`, the Rust partition must place ≥95% of files in the district their Python counterpart assigned, and modularity must land within 0.02. That check belongs in CI from the first commit of the clustering module.
+**The chosen path is 1 by way of 2**, and the reason is not the one an earlier draft of this document gave. That draft argued for going straight to an own implementation because "two requirements make a binding awkward anyway: strict determinism, and warm-starting from a previous membership". Neither survives measurement. `leidenalg` takes `initial_membership` as a first-class argument and `eval/batch_stability.py` already uses it, so warm-starting is not a reason. And determinism points the other way: leidenalg is the *most* deterministic component in the pipeline — byte-identical membership across runs, across `PYTHONHASHSEED` values, and against the committed fixtures — while the nondeterminism that actually existed sat in the pure-Python geometry that nothing flagged as a risk (finding 9).
+
+So the fork is decomposed rather than chosen. FFI to libleidenalg first, as a scaffold, to get the parity harness green and prove the extract/blend/prune port in isolation — that is the larger surface anyway, roughly 2000 Python lines against ~20 for the partition call itself. Then an own Rust Leiden behind the same trait, with the FFI build kept in CI as a live differential oracle. One high-risk item becomes two independently verifiable ones, and the rewrite is checked against a running oracle rather than nine frozen JSON files. The C toolchain is accepted for the scaffold and not for the shipped artefact.
+
+**Acceptance test for whichever path:** on scrapy, django and vue, the Rust partition must place ≥95% of files in the district their Python counterpart assigned, and modularity must land within 0.02. That check belongs in CI from the first commit of the clustering module.
+
+The commits are **not** pinned, despite what an earlier version of this line said. The compact viewer schema carries no `params` block and no commit field — `pipeline.run()` emits one and `blobs.build()` drops it during compaction — so the nine fixtures record no SHA. They reproduce at today's upstream heads and will stop doing so silently. Pinning them is its own issue.
 
 ## Shared schema
 
