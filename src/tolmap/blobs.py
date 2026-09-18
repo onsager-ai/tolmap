@@ -55,6 +55,11 @@ def ordered_subgraph(G, nodes):
     Rust port must do the same, because its default HashMap iteration is
     randomised too and a faithful port reproduces this exactly.
     """
+    # Two differences from the view, both unreachable at the call sites and
+    # asserted rather than handled: this drops node attributes (`place` builds
+    # `Gf` from dict keys, so there are none) and would add an absent node as
+    # an isolate where the view ignores it (both callers pass subsets).
+    assert set(nodes) <= set(G), "ordered_subgraph: nodes must be a subset of G"
     H = nx.Graph()
     H.add_nodes_from(nodes)
     keep = set(nodes)

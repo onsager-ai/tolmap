@@ -109,7 +109,7 @@ Each of these silently produced plausible-looking but wrong results.
 | django | 851 | 0.267 | 1.288 |
 | httpx | 23 | 0.002 | 1.187 |
 
-Finding 3 calls a tenth of the map significant, so the median run-to-run jitter was three to nine times the displacement that 300 commits of real churn produces — on every repo above the finding-5 floor.
+The right comparison is finding 3's own churn figure, not its round-number threshold. Weighting that table by share of files gives a median displacement of `0.049·0.60 + 0.189·0.29 + 0.248·0.12` = **0.114** over 300 commits of scrapy. Against that, the median run-to-run jitter of doing nothing at all ran **2.3× to 6.6×** on every repo above the finding-5 floor — django lowest at 2.3×, rich highest at 6.6×, scrapy itself 3.4×. Below the floor flask reaches 7.8×.
 
 **The small repositories are the worse case, not the milder one.** flask's median is 0.886 against django's 0.267: a large repo's districts are big enough that a file reshuffled within its sub-cluster stays roughly where it was, while a small one has few enough sub-clusters that reordering them moves everything. httpx is the exception that confirms it — with two districts and 23 files there is almost nothing left to permute, so its median is 0.002 while its maximum is still 1.187, meaning one or two files were thrown across the map on every run.
 
@@ -120,7 +120,12 @@ Fixing `PYTHONHASHSEED` made the output byte-identical; leaving it unset made ev
 | membership, modularity, edges, landmarks, symbols, references | byte-stable | byte-stable |
 | coordinates, district centroids, blob polygons | median 0.28 move per run | byte-stable |
 
-`ordered_subgraph()` in `blobs.py` builds a real graph with nodes in the caller's order and edges sorted. Full pipeline including parcels is now byte-identical across runs on scrapy and flask with `PYTHONHASHSEED` unset.
+`ordered_subgraph()` in `blobs.py` builds a real graph with nodes in the caller's order and edges sorted. Every fixture is now byte-identical across four builds — two with `PYTHONHASHSEED` unset, one at 0, one at 31337 — where before the fix the same four builds produced four distinct maps:
+
+| | django | prometheus | sqlalchemy | vue | scrapy | celery | rich | flask | httpx |
+|---|---|---|---|---|---|---|---|---|---|
+| distinct maps, before | 4 | 4 | 4 | 4 | 4 | 4 | 4 | 4 | 4 |
+| distinct maps, after | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
 
 Three things follow, and the third is the reason this is written down.
 
