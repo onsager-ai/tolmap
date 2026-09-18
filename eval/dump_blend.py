@@ -65,7 +65,12 @@ def dump(graph_path):
 
     blended = pipeline.blend(json.load(open(graph_path)))
     weight_sum_pre_prune = round(sum(e["w"] for e in blended["edges"]), 10)
+    # prune() mutates its argument in place, so anything read off `blended`
+    # AFTER the prune call describes the pruned graph. Snapshot the pre-prune
+    # facts here: n_blended_edges read later gave the post-prune count and
+    # showed as a spurious Rust/Python difference.
     blended_weights = sorted(e["w"] for e in blended["edges"])
+    n_blended_edges = len(blended_weights)
     below_floor = sum(1 for w in blended_weights if w < 0.02) / len(blended_weights)
 
     data = pipeline.prune(blended)
@@ -85,7 +90,7 @@ def dump(graph_path):
         "max_blended_edge": round(mx, 12),
         "below_prune_floor": round(below_floor, 6),
         "n_nodes": len(data["nodes"]),
-        "n_blended_edges": len(blended["edges"]),
+        "n_blended_edges": n_blended_edges,
         "weight_sum_pre_prune": weight_sum_pre_prune,
         "n_pruned_edges": len(edges),
         "weight_sum": weight_sum,

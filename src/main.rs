@@ -27,6 +27,15 @@ enum Command {
         #[arg(long)]
         no_parcels: bool,
     },
+    DumpBlend {
+        repo: PathBuf,
+        #[arg(long, default_value = ".")]
+        pkg: String,
+        #[arg(long, default_value = "py", value_parser = ["py", "go", "ts"])]
+        lang: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
     Parity {
         reference: PathBuf,
         candidate: PathBuf,
@@ -56,6 +65,12 @@ fn main() -> Result<()> {
             !no_parcels,
         )
         .map(|_| ()),
+        Command::DumpBlend {
+            repo,
+            pkg,
+            lang,
+            out,
+        } => tolmap::blenddump::dump(&repo, &pkg, &lang, &out),
         Command::Parity {
             reference,
             candidate,

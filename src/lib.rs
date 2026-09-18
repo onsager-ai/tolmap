@@ -1,3 +1,4 @@
+pub mod blenddump;
 pub mod blobs;
 pub mod extract;
 pub mod geometry;
