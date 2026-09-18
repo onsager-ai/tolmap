@@ -8,7 +8,7 @@ The findings document records what was tried and falsified by measurement; sever
 
 ## Rules that are not style preferences
 
-- **Determinism.** `SEED = 7` everywhere. Same repo at same commit must produce a byte-identical map. Reproducibility is the product, not a nicety.
+- **Determinism.** `SEED = 7` everywhere. Same repo at same commit must produce a byte-identical map. Reproducibility is the product, not a nicety. This was a requirement the reference did not meet until finding 9 — a seeded stage is not a deterministic one if a set of strings is iterated anywhere upstream of it.
 - **Normalise on mass, not per edge** when blending signals (finding 1).
 - **Never rename a district without the previous name in hand** (finding 4 and `naming.py`). Name drift is worse than a mediocre name.
 - **The map stops at the file.** Symbols are the unit of the query, not of the map. This was tried the other way twice.
