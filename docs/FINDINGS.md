@@ -95,7 +95,23 @@ Each of these silently produced plausible-looking but wrong results.
 
 ## 9. The map was not reproducible, and the cause was the hash seed
 
-`SEED = 7` is threaded through every stage that draws a random number, and the partition really is byte-stable: leidenalg returns identical membership across runs, across `PYTHONHASHSEED` values, and — measured on scrapy and flask at their current heads — identical to the membership committed in `data/`. The geometry was not. Two runs of the reference on the same tree at the same commit moved the median file **0.28** of the map, with a maximum of **1.22**. Finding 3 calls a tenth of the map significant, so this was roughly three times the displacement that 300 commits of real churn produces.
+`SEED = 7` is threaded through every stage that draws a random number, and the partition really is byte-stable: leidenalg returns identical membership across runs, across `PYTHONHASHSEED` values, and — measured on all nine fixtures at their current heads — identical to the membership committed in `data/`. The geometry was not. Two runs of the reference on the same tree at the same commit moved files by this much:
+
+| repo | files | median | max |
+|---|---|---|---|
+| flask | 24 | 0.886 | 2.024 |
+| rich | 100 | 0.748 | 2.466 |
+| vue | 239 | 0.549 | 2.136 |
+| celery | 161 | 0.530 | 2.203 |
+| prometheus | 444 | 0.403 | 1.862 |
+| scrapy | 188 | 0.388 | 1.727 |
+| sqlalchemy | 258 | 0.355 | 1.470 |
+| django | 851 | 0.267 | 1.288 |
+| httpx | 23 | 0.002 | 1.187 |
+
+Finding 3 calls a tenth of the map significant, so the median run-to-run jitter was three to nine times the displacement that 300 commits of real churn produces — on every repo above the finding-5 floor.
+
+**The small repositories are the worse case, not the milder one.** flask's median is 0.886 against django's 0.267: a large repo's districts are big enough that a file reshuffled within its sub-cluster stays roughly where it was, while a small one has few enough sub-clusters that reordering them moves everything. httpx is the exception that confirms it — with two districts and 23 files there is almost nothing left to permute, so its median is 0.002 while its maximum is still 1.187, meaning one or two files were thrown across the map on every run.
 
 Fixing `PYTHONHASHSEED` made the output byte-identical; leaving it unset made every run differ. The leak is `nx.Graph.subgraph()`, which returns a *view* whose node iteration follows a set of the node names. Nothing reads that order deliberately, but `subdivide` builds igraph vertex indices from it and `spring_layout` seeds its position array from it, so the interpreter's per-process hash randomisation reached the coordinates through two layers that both look seeded.
 
