@@ -1,5 +1,7 @@
 /target/
-/bindings/
 __pycache__/
+*.pyc
+out/
+atlas.html
+.venv/
 /.native/
-/out/
