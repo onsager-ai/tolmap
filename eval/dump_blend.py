@@ -46,8 +46,27 @@ def dump(graph_path):
     masses = {k: round(sum(e[k] for e in raw["edges"]), 10) for k in SIGNALS}
     candidates = len(raw["edges"])
 
+    # blend() normalises each signal to its intended share of TOTAL MASS, then
+    # divides through by the largest resulting edge. Those five numbers -- the
+    # four per-signal scales and the max -- fix the whole weight distribution,
+    # and they are checkpoints in their own right rather than only inputs to
+    # the edge list. On a repo with a sparse static signal against a dense
+    # co-change one, each static edge gets a large scale, one edge dominates,
+    # and dividing by it can push most of the graph under prune()'s 0.02 floor:
+    # on sqlalchemy 96.1% of edges land below it against 0.1% on scrapy. A port
+    # whose raw masses differ slightly then gets a different max, a different
+    # floor cut and a different graph -- while every edge it does keep looks
+    # correct. Recomputed here rather than read back, since blend() keeps only
+    # the blended weight.
+    pre = json.load(open(graph_path))
+    raw_totals = {k: sum(e[k] for e in pre["edges"]) or 1.0 for k in pipeline.SHARE}
+    scale = {k: pipeline.SHARE[k] / raw_totals[k] for k in pipeline.SHARE}
+    mx = max(sum(scale[k] * e[k] for k in pipeline.SHARE) for e in pre["edges"])
+
     blended = pipeline.blend(json.load(open(graph_path)))
     weight_sum_pre_prune = round(sum(e["w"] for e in blended["edges"]), 10)
+    blended_weights = sorted(e["w"] for e in blended["edges"])
+    below_floor = sum(1 for w in blended_weights if w < 0.02) / len(blended_weights)
 
     data = pipeline.prune(blended)
     # Totals sum the RAW weights; only the emitted per-edge list is rounded.
@@ -62,6 +81,9 @@ def dump(graph_path):
         "tolerance": TOLERANCE,
         "candidate_edges": candidates,
         "raw_signal_mass": masses,
+        "signal_scale": {k: round(v, 12) for k, v in scale.items()},
+        "max_blended_edge": round(mx, 12),
+        "below_prune_floor": round(below_floor, 6),
         "n_nodes": len(data["nodes"]),
         "n_blended_edges": len(blended["edges"]),
         "weight_sum_pre_prune": weight_sum_pre_prune,
@@ -80,4 +102,5 @@ if __name__ == "__main__":
     print(f"{out['repo']}: {out['n_nodes']} nodes, {out['candidate_edges']} candidate edges, "
           f"weight {out['weight_sum_pre_prune']} pre-prune -> "
           f"{out['n_pruned_edges']} edges, weight {out['weight_sum']} post-prune "
-          f"(compare within {out['tolerance']})")
+          f"(compare within {out['tolerance']}); "
+          f"{out['below_prune_floor']*100:.1f}% of blended edges below the 0.02 floor")
