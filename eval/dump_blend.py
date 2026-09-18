@@ -50,6 +50,12 @@ def dump(graph_path):
     weight_sum_pre_prune = round(sum(e["w"] for e in blended["edges"]), 10)
 
     data = pipeline.prune(blended)
+    # Totals sum the RAW weights; only the emitted per-edge list is rounded.
+    # Summing the rounded values instead makes the total a function of the
+    # rounding -- 1561 edges at 10dp shifted scrapy's post-prune figure by
+    # 1.24e-9, which is above the tolerance below, so the two checkpoints in
+    # one artifact would have disagreed for a reason that is not the port's.
+    weight_sum = round(sum(e["w"] for e in data["edges"]), 10)
     edges = sorted((e["a"], e["b"], round(e["w"], 10)) for e in data["edges"])
     return {
         "repo": raw.get("repo"),
@@ -60,7 +66,7 @@ def dump(graph_path):
         "n_blended_edges": len(blended["edges"]),
         "weight_sum_pre_prune": weight_sum_pre_prune,
         "n_pruned_edges": len(edges),
-        "weight_sum": round(sum(w for _, _, w in edges), 10),
+        "weight_sum": weight_sum,
         "node_order": [n["f"] for n in data["nodes"]],
         "edges": [[a, b, w] for a, b, w in edges],
     }
