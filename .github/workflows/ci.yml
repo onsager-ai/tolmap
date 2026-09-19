@@ -1,0 +1,211 @@
+# Why this workflow is split into two jobs, not one:
+#
+# CLAUDE.md requires the clustering acceptance gate ("place >= 95% of files
+# in the district the reference assigns, modularity within 0.02") in CI from
+# the first commit of the clustering module. The gate needs a candidate map
+# built from an actual repository -- but the nine fixtures this project's
+# acceptance data (`data/*.json`) was measured against include django (851
+# files, full git history for co-change) and are not something CI should
+# clone on every push: it is slow, it hammers nine upstream repositories on
+# every commit, and none of that cost buys anything a push-time check needs.
+#
+# So:
+#   - `gate` runs on every push and pull request. It builds the Rust, checks
+#     formatting and lints, runs the unit test suite, and runs the real
+#     parity gate -- but offline, against `data/ci/{flask,httpx}.graph.json`,
+#     pre-extracted graphs checked into the repo for the two smallest
+#     fixtures (flask: 24 files, httpx: 23). `tolmap build --graph` runs
+#     blend -> prune -> partition -> layout -> parity on a checked-in graph
+#     without touching a network or a git clone. This is a real instance of
+#     the same gate (same code path, same thresholds), just scoped to what
+#     is reproducible without cloning.
+#   - `full-fixtures` runs the complete nine-repository suite from
+#     `docs/FINDINGS.md`'s corpus, on `workflow_dispatch` (on demand) and
+#     nightly. It clones each fixture at a pinned commit (blobless, per
+#     `docs/ARCHITECTURE.md`'s documented clone strategy -- co-change needs
+#     full commit history, so a shallow clone is not enough) and runs the
+#     same parity gate as `gate`, against the checked-in `data/*.json`.
+#
+# A known gap, reported rather than hidden: as of the commit that added this
+# workflow, `full-fixtures` is expected to be RED on four of the nine
+# fixtures (scrapy, celery, rich, prometheus) -- their district-placement
+# number lands well under the 95% gate even though the blended graph handed
+# to the partitioner matches the Python reference within the stated 1e-9
+# tolerance. Root cause, measured: Leiden's local-moving optimisation is
+# highly sensitive to the exact micro-sequence of RNG draws on a WEAKLY
+# modular graph (these four repos score 0.33-0.54; compare vue at 0.57 and
+# sqlalchemy at 0.80, which both pass at 98-100%), and the Rust FFI links a
+# separately-built copy of libleidenalg rather than the exact binary Python's
+# `leidenalg` wheel bundles. Even Python's own reference, re-run against
+# itself with a different seed, swings modularity from 0.34 to 0.35 on
+# scrapy's graph -- this is `docs/ARCHITECTURE.md`'s "one real risk" (Leiden
+# via FFI leaves determinism "dependent on someone else's RNG handling")
+# showing up exactly where that document predicted. The fix the architecture
+# doc recommends is implementing Leiden natively in Rust; that is a
+# milestone-sized undertaking on its own and out of scope here. Until then,
+# this job stays red on those four fixtures on purpose, as a standing,
+# visible record of the gap, rather than being scoped down to only the
+# fixtures that currently pass.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # 03:17 UTC nightly -- off the hour to avoid the top-of-hour GitHub
+    # Actions scheduling crush.
+    - cron: "17 3 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+  LEIDEN_PREFIX: ${{ github.workspace }}/.native/leiden
+
+jobs:
+  gate:
+    name: build, lint, offline parity gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # igraph + libleidenalg are not something to vendor or fetch on every
+      # run: scripts/install-leiden.sh builds them once from source, pinned
+      # to the versions the script names, and the result is cached by a hash
+      # of that script (the version pins live inside it, so a version bump
+      # invalidates the cache automatically).
+      - name: Cache native Leiden/igraph build
+        id: cache-leiden
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LEIDEN_PREFIX }}
+          key: leiden-${{ runner.os }}-${{ hashFiles('scripts/install-leiden.sh') }}
+
+      - name: Build native Leiden/igraph
+        if: steps.cache-leiden.outputs.cache-hit != 'true'
+        run: bash scripts/install-leiden.sh "${{ env.LEIDEN_PREFIX }}"
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      # Not -D warnings: the existing lints at HEAD are pre-existing style
+      # suggestions (collapsible-match, too-many-arguments, ...), not
+      # correctness issues, and turning them into a hard gate is a separate
+      # decision from standing this workflow up. cargo clippy still runs and
+      # its output is visible in the log.
+      - name: cargo clippy
+        run: cargo clippy --release --all-targets
+
+      - name: cargo build
+        run: cargo build --release --bin tolmap
+
+      - name: cargo test
+        run: cargo test --release
+
+      - name: Offline parity gate (flask, httpx)
+        run: |
+          set -euo pipefail
+          mkdir -p ci-out
+          for name in flask httpx; do
+            ./target/release/tolmap build \
+              --graph "data/ci/${name}.graph.json" \
+              --name "$name" \
+              --out ci-out \
+              --resolution 1.1
+            ./target/release/tolmap parity "data/${name}.json" "ci-out/${name}.json"
+          done
+
+  full-fixtures:
+    name: full nine-fixture parity (on demand / nightly)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cache native Leiden/igraph build
+        id: cache-leiden
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LEIDEN_PREFIX }}
+          key: leiden-${{ runner.os }}-${{ hashFiles('scripts/install-leiden.sh') }}
+
+      - name: Build native Leiden/igraph
+        if: steps.cache-leiden.outputs.cache-hit != 'true'
+        run: bash scripts/install-leiden.sh "${{ env.LEIDEN_PREFIX }}"
+
+      - name: cargo build
+        run: cargo build --release --bin tolmap
+
+      - name: Full nine-fixture parity
+        run: |
+          set -uo pipefail
+          # name pkg lang url commit -- commits pinned at the SHA each
+          # fixture happened to be at when this workflow was authored
+          # (2026-09-19). Not verified to be the exact commit `data/*.json`
+          # was itself measured against (that commit is not recorded
+          # anywhere in this repo) -- if a fixture's numbers drift from
+          # data/*.json, check that before assuming a regression.
+          fixtures="
+          flask      src/flask      py https://github.com/pallets/flask.git      d73fa1cdcbd8b1465c151db8924ba58b1dd14e35
+          httpx      httpx          py https://github.com/encode/httpx.git       b5addb64f0161ff6bfe94c124ef76f6a1fba5254
+          rich       rich           py https://github.com/Textualize/rich.git    9d8f9a372cc5916fd4781fec207ced7ddac2f08f
+          celery     celery         py https://github.com/celery/celery.git     208a803655672d63cf2a257d30f39c672a5b4bcf
+          scrapy     scrapy         py https://github.com/scrapy/scrapy.git      fe30c1882a12651c19c5a94d71e9f14e442456c7
+          sqlalchemy lib/sqlalchemy py https://github.com/sqlalchemy/sqlalchemy.git 4883307858ea3def775b5a1cc1c01a5be6dfe213
+          django     django         py https://github.com/django/django.git     a3f0642f69277f01611d0d3e829fc3b85aded2ec
+          vue        packages       ts https://github.com/vuejs/core.git        4ab865a848a1da3d10fb674f857e5fff13094644
+          prometheus .              go https://github.com/prometheus/prometheus.git 296080c0a504ea0e72941ef16143f0a9702b137b
+          "
+          mkdir -p full-clones full-out
+          failures=0
+          while read -r name pkg lang url sha; do
+            [ -z "$name" ] && continue
+            echo "::group::$name"
+            dir="full-clones/$name"
+            # Blobless clone: co-change needs full commit history (git log
+            # over every commit, not just the tip), so a depth-1 clone is
+            # not enough -- docs/ARCHITECTURE.md's documented clone strategy.
+            git clone --quiet --filter=blob:none "$url" "$dir"
+            git -C "$dir" checkout --quiet "$sha"
+            ./target/release/tolmap build "$dir" --pkg "$pkg" --lang "$lang" \
+              --name "$name" --out full-out --resolution 1.1
+            if ! ./target/release/tolmap parity "data/${name}.json" "full-out/${name}.json"; then
+              failures=$((failures + 1))
+            fi
+            echo "::endgroup::"
+          done <<< "$fixtures"
+          echo "$failures of 9 fixtures failed the parity gate"
+          # See the workflow-level comment: 4 known failures (scrapy, celery,
+          # rich, prometheus) are an open Leiden-FFI-determinism gap, not a
+          # regression signal on their own. Still exits non-zero on any
+          # failure so a NEW failure (a fifth fixture, or a fixture that
+          # should pass going red) is never silently absorbed into "expected".
+          [ "$failures" -eq 0 ]
