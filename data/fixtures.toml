@@ -20,6 +20,9 @@
 #
 # leidenalg/igraph versions this file's SHAs were last verified against:
 # igraph 1.0.0, leidenalg 0.12.0.
+#
+# Last full verification: 2026-09-19, all nine reproduced byte-for-byte
+# (`eval/verify_fixtures.py` with no arguments, against clones at these SHAs).
 
 [celery]
 url = "https://github.com/celery/celery.git"
