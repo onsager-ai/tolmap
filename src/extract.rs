@@ -700,7 +700,17 @@ fn multi_metrics(
         };
         if let Some(kind) = kind {
             if let Some(name) = name_of(node, source) {
-                if !name.starts_with('_') {
+                // `ts_symbols` in the reference drops a leading-underscore
+                // name as a privacy convention; `go_symbols` does not apply
+                // that filter at all -- a leading underscore is an ordinary
+                // exported-from-package-but-not-part-of-the-public-API
+                // identifier in Go, not a marker of anything, and
+                // `_newJSONEntry` in promql/query_logger.go is exactly that.
+                // Gating this to TypeScript only was previously missing,
+                // which silently dropped every such Go symbol.
+                let excluded =
+                    language == LanguageKind::TypeScript && name.starts_with('_');
+                if !excluded {
                     symbols.push(symbol_row(name, kind, node));
                 }
             }
