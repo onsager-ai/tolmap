@@ -101,7 +101,8 @@ be answered in the same request rather than always queuing a job.
   "stage": "<human-readable current step>",
   "started_at": "<RFC3339>",
   "finished_at": "<RFC3339>" | null,
-  "error": {"error": "<machine code>", "message": "<human text>"} | null
+  "error": "<human text>" | null,          // rendered directly by clients
+  "error_code": "<machine code>" | null    // branch on this, not on the text
 }
 ```
 
