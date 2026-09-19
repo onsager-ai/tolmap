@@ -231,11 +231,24 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     // the store, if there is one for this slug, and seed the partitioner
     // with it. `state.store.warm_start_source` already picks same-branch
     // history first.
-    let previous_membership = state
+    let warm_start_row = state
         .store
         .warm_start_source(&repo_ref.slug, materialized.branch.as_deref())
         .ok()
-        .flatten()
+        .flatten();
+    match &warm_start_row {
+        Some(row) => eprintln!(
+            "warm start: seeding {} from {}'s membership ({})",
+            repo_ref.slug,
+            row.commit,
+            row.map_path.display()
+        ),
+        None => eprintln!(
+            "warm start: no prior indexed commit for {} -- cold start",
+            repo_ref.slug
+        ),
+    }
+    let previous_membership = warm_start_row
         .and_then(|row| store::read_map_document(&row.map_path).ok())
         .map(|document| store::membership_by_file(&document));
 
