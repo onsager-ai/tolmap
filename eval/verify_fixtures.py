@@ -1,0 +1,179 @@
+"""Verify the nine acceptance fixtures in data/ still reproduce at their pins.
+
+For each fixture named in data/fixtures.toml: locate (or clone) the source
+repo, check out the pinned commit, seed the naming cache from the committed
+map, rebuild with the same `--pkg`/`--lang`/`--no-parcels` the fixture was
+recorded with, and diff the result byte-for-byte against data/<name>.json.
+A SHA in the manifest that nothing ever re-checks is just a comment; this is
+the check that makes it a pin.
+
+    python eval/verify_fixtures.py [name ...] [--repos DIR] [--cache DIR] [--out DIR]
+
+With no names, every fixture in the manifest is verified, in the order the
+manifest lists them (fixed by the file, not by iterating a set -- see
+CLAUDE.md on determinism). `--repos DIR` points at a directory of existing
+clones (`DIR/<name>`); it defaults to $TOLMAP_FIXTURE_REPOS. A fixture not
+found there is cloned into `--cache` (default: a tolmap-fixture-clones
+directory under the system temp dir) with `git clone --filter=blob:none` --
+blobless, not shallow: `git_cochange()` (src/tolmap/extract.py) walks up to
+4000 commits of *history* behind HEAD looking for co-changed files, and a
+depth-1 clone truncates exactly that graph before the pinned commit can see
+it. Blobless keeps the full commit graph and only defers file contents.
+
+A repo with a dirty working tree is left untouched and reported as failed
+rather than checked out over. Exits non-zero if any fixture fails to
+reproduce or could not be built.
+
+Prints one line per fixture: `ok`, or the sorted top-level JSON keys that
+differ from the committed map.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+import tomllib
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(ROOT, "data")
+MANIFEST = os.path.join(DATA, "fixtures.toml")
+EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
+
+sys.path.insert(0, EVAL_DIR)
+import seed_names                                                   # noqa: E402
+
+
+def load_manifest():
+    with open(MANIFEST, "rb") as f:
+        return tomllib.load(f)
+
+
+def run(cmd, **kw):
+    kw.setdefault("check", True)
+    return subprocess.run(cmd, **kw)
+
+
+def is_dirty(repo):
+    out = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                         capture_output=True, text=True, check=True).stdout
+    return bool(out.strip())
+
+
+def find_repo(name, spec, repos_dir, cache_dir):
+    """Return a local clone for `name`, cloning into cache_dir if absent."""
+    if repos_dir:
+        candidate = os.path.join(repos_dir, name)
+        if os.path.isdir(os.path.join(candidate, ".git")):
+            return candidate
+    cached = os.path.join(cache_dir, name)
+    if os.path.isdir(os.path.join(cached, ".git")):
+        return cached
+    os.makedirs(cache_dir, exist_ok=True)
+    print(f"{name}: cloning {spec['url']} -> {cached}")
+    run(["git", "clone", "--filter=blob:none", spec["url"], cached],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return cached
+
+
+def ensure_commit(repo, sha):
+    """Fetch the pinned SHA if this clone predates it (an existing --repos clone
+    whose default-branch fetch hasn't reached the pinned commit yet)."""
+    have = subprocess.run(["git", "-C", repo, "cat-file", "-e", f"{sha}^{{commit}}"],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    if not have:
+        run(["git", "-C", repo, "fetch", "--quiet", "origin", sha])
+
+
+def build_fixture(name, spec, repo, out_dir):
+    cmd = [sys.executable, "-m", "tolmap.cli", "build", repo,
+           "--pkg", spec["pkg"], "--lang", spec["lang"],
+           "--name", name, "--out", out_dir]
+    if not spec["parcels"]:
+        cmd.append("--no-parcels")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(ROOT, "src") + os.pathsep + env.get("PYTHONPATH", "")
+    return subprocess.run(cmd, cwd=ROOT, env=env,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
+def diff_keys(built_path, ref_path):
+    """None if byte-identical, else the sorted top-level keys that differ."""
+    with open(built_path, "rb") as f:
+        built_bytes = f.read()
+    with open(ref_path, "rb") as f:
+        ref_bytes = f.read()
+    if built_bytes == ref_bytes:
+        return None
+    built = json.loads(built_bytes)
+    ref = json.loads(ref_bytes)
+    return sorted(k for k in set(built) | set(ref) if built.get(k) != ref.get(k))
+
+
+def verify_one(name, spec, repos_dir, cache_dir, out_dir):
+    repo = find_repo(name, spec, repos_dir, cache_dir)
+    if is_dirty(repo):
+        return False, "dirty working tree, refusing to touch it"
+
+    ensure_commit(repo, spec["commit"])
+    run(["git", "-C", repo, "checkout", "--quiet", spec["commit"]])
+
+    fixture_out = os.path.join(out_dir, name)
+    os.makedirs(fixture_out, exist_ok=True)
+    # Must run before build(): a bare rerun with no cache falls back to the
+    # IDF namer and renames every district (see eval/seed_names.py docstring).
+    seed_names.seed(name, fixture_out, data_dir=DATA)
+
+    proc = build_fixture(name, spec, repo, fixture_out)
+    if proc.returncode != 0:
+        return False, f"build failed:\n{proc.stdout}"
+
+    ref_path = os.path.join(DATA, f"{name}.json")
+    built_path = os.path.join(fixture_out, f"{name}.json")
+    diffs = diff_keys(built_path, ref_path)
+    if diffs is None:
+        return True, "ok"
+    return False, f"differs: {', '.join(diffs)}"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("names", nargs="*", help="fixtures to verify (default: all)")
+    ap.add_argument("--repos", default=os.environ.get("TOLMAP_FIXTURE_REPOS"),
+                    help="directory of existing clones, one per fixture name")
+    ap.add_argument("--cache", default=os.path.join(tempfile.gettempdir(), "tolmap-fixture-clones"),
+                    help="where to clone fixtures not found under --repos")
+    ap.add_argument("--out", default=None,
+                    help="where to build (default: a fresh temp directory)")
+    args = ap.parse_args(argv)
+
+    manifest = load_manifest()
+    names = args.names or list(manifest)  # manifest order is the file's order, not a set's
+    unknown = [n for n in names if n not in manifest]
+    if unknown:
+        sys.exit(f"not in {MANIFEST}: {', '.join(unknown)}")
+
+    out_dir = args.out or tempfile.mkdtemp(prefix="tolmap-verify-")
+    os.makedirs(out_dir, exist_ok=True)
+
+    failures = []
+    for name in names:
+        spec = manifest[name]
+        try:
+            ok, msg = verify_one(name, spec, args.repos, args.cache, out_dir)
+        except subprocess.CalledProcessError as e:
+            ok, msg = False, f"{' '.join(e.cmd)} failed (exit {e.returncode})"
+        print(f"{name:12} {msg}")
+        if not ok:
+            failures.append(name)
+
+    if failures:
+        sys.exit(f"\n{len(failures)}/{len(names)} fixture(s) failed to reproduce: "
+                 f"{', '.join(failures)}")
+    print(f"\nall {len(names)} fixture(s) ok  (built into {out_dir})")
+
+
+if __name__ == "__main__":
+    main()
