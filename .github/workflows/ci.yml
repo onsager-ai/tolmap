@@ -26,26 +26,39 @@
 #     full commit history, so a shallow clone is not enough) and runs the
 #     same parity gate as `gate`, against the checked-in `data/*.json`.
 #
-# A known gap, reported rather than hidden: as of the commit that added this
-# workflow, `full-fixtures` is expected to be RED on four of the nine
-# fixtures (scrapy, celery, rich, prometheus) -- their district-placement
-# number lands well under the 95% gate even though the blended graph handed
-# to the partitioner matches the Python reference within the stated 1e-9
-# tolerance. Root cause, measured: Leiden's local-moving optimisation is
-# highly sensitive to the exact micro-sequence of RNG draws on a WEAKLY
-# modular graph (these four repos score 0.33-0.54; compare vue at 0.57 and
-# sqlalchemy at 0.80, which both pass at 98-100%), and the Rust FFI links a
-# separately-built copy of libleidenalg rather than the exact binary Python's
-# `leidenalg` wheel bundles. Even Python's own reference, re-run against
-# itself with a different seed, swings modularity from 0.34 to 0.35 on
-# scrapy's graph -- this is `docs/ARCHITECTURE.md`'s "one real risk" (Leiden
-# via FFI leaves determinism "dependent on someone else's RNG handling")
-# showing up exactly where that document predicted. The fix the architecture
-# doc recommends is implementing Leiden natively in Rust; that is a
-# milestone-sized undertaking on its own and out of scope here. Until then,
-# this job stays red on those four fixtures on purpose, as a standing,
-# visible record of the gap, rather than being scoped down to only the
-# fixtures that currently pass.
+# A known gap, reported rather than hidden -- corrected from what an earlier
+# version of this comment said. That version claimed `full-fixtures` was
+# expected to be RED on four of nine fixtures (scrapy, celery, rich,
+# prometheus) because Leiden's local-moving optimisation is "highly sensitive
+# to the exact micro-sequence of RNG draws on a weakly modular graph," an
+# inherent property of the algorithm that only a native-Rust reimplementation
+# could fix. That was wrong, and cheaply falsifiable: the Rust FFI bridge
+# (`native/leiden_bridge.cpp`) built a libleidenalg `Optimiser` and set only
+# its RNG seed, leaving `refine_consider_comms` (and six other fields) at the
+# bare C++ constructor's default -- which is NOT what `leidenalg`'s Python
+# `Optimiser` (what the reference actually calls) sets it to. Refinement is
+# the phase that distinguishes Leiden from Louvain, so the port was running a
+# different search over an identical graph, not hitting inherent chaos.
+# Pinning those seven fields to match `la.find_partition()`'s own defaults
+# (`docs/FINDINGS.md` finding 11) took placement on those four fixtures from
+# 67-82% to 100%, and modularity from drifting up to 0.0129 off the reference
+# to matching it to four decimal places, on all nine fixtures.
+#
+# One narrower gap remains, and this job is still expected to be RED because
+# of it: sqlalchemy's partition places 98.4% of files (not 100%) in the
+# district the reference assigns -- `dialects/` (74 files in the reference)
+# splits 4 files into their own community in this port's partition. That
+# specific difference is real graph-topology sensitivity in Leiden's local-
+# moving search, on one fixture, at a much smaller scale (4 files) than the
+# four-fixture, 20-30-point-placement-swing symptom the settings bug
+# produced -- not the same finding reappearing, a genuinely different and
+# far smaller one. Placement (98.4%) and modularity (matches to 4dp) both
+# clear their gates on their own; only the landmark list differs, because one
+# of its "district capital" entries follows the district that split. See
+# `docs/FINDINGS.md` finding 11's "what remains open" section for the
+# measurement. Not investigated further; this job stays red on sqlalchemy
+# alone on purpose, as a standing, visible, narrow record of it, rather than
+# being scoped down to only the fixtures that currently pass outright.
 
 name: CI
 
@@ -185,7 +198,7 @@ jobs:
           prometheus .              go https://github.com/prometheus/prometheus.git 296080c0a504ea0e72941ef16143f0a9702b137b
           "
           mkdir -p full-clones full-out
-          failures=0
+          failed=""
           while read -r name pkg lang url sha; do
             [ -z "$name" ] && continue
             echo "::group::$name"
@@ -198,14 +211,27 @@ jobs:
             ./target/release/tolmap build "$dir" --pkg "$pkg" --lang "$lang" \
               --name "$name" --out full-out --resolution 1.1
             if ! ./target/release/tolmap parity "data/${name}.json" "full-out/${name}.json"; then
-              failures=$((failures + 1))
+              failed="$failed $name"
             fi
             echo "::endgroup::"
           done <<< "$fixtures"
-          echo "$failures of 9 fixtures failed the parity gate"
-          # See the workflow-level comment: 4 known failures (scrapy, celery,
-          # rich, prometheus) are an open Leiden-FFI-determinism gap, not a
-          # regression signal on their own. Still exits non-zero on any
-          # failure so a NEW failure (a fifth fixture, or a fixture that
-          # should pass going red) is never silently absorbed into "expected".
-          [ "$failures" -eq 0 ]
+          failed="$(echo "$failed" | xargs)"  # trim
+          echo "failed fixtures:${failed:+ $failed}${failed:-" (none)"}"
+          # See the workflow-level comment: sqlalchemy failing alone, on its
+          # landmark list only, is the one open, measured gap
+          # (docs/FINDINGS.md finding 11) -- not a regression signal by
+          # itself. Anything else failing, or sqlalchemy failing alongside
+          # another fixture, is a real regression and must not be silently
+          # absorbed into "expected". Still exits non-zero even on the
+          # expected case: this job's whole purpose is to stay a visible red
+          # record of the gap until it's actually closed, not to report green
+          # over it.
+          if [ "$failed" = "sqlalchemy" ]; then
+            echo "only the known gap (sqlalchemy) failed -- see docs/FINDINGS.md finding 11"
+            exit 1
+          elif [ -z "$failed" ]; then
+            echo "all nine fixtures passed -- if sqlalchemy's gap has been closed, update the workflow comment and this check"
+          else
+            echo "UNEXPECTED failure(s), beyond the known sqlalchemy gap: $failed"
+            exit 1
+          fi

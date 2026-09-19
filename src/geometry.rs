@@ -64,12 +64,8 @@ pub fn build_from_graph(
         .collect::<Vec<_>>();
     let (names, names_cache) =
         naming::name_districts(&files, &layout.membership, Some(&names_cache_path));
-    naming::save_cache(&names_cache_path, &names_cache).with_context(|| {
-        format!(
-            "write district names cache {}",
-            names_cache_path.display()
-        )
-    })?;
+    naming::save_cache(&names_cache_path, &names_cache)
+        .with_context(|| format!("write district names cache {}", names_cache_path.display()))?;
     for (district, district_name) in &names {
         let count = layout
             .membership

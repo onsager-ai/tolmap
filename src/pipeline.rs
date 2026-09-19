@@ -991,13 +991,7 @@ mod tests {
         // regardless, which is wrong whenever endpoints=False and k < n (see
         // the comment on the rescale below) -- it reproduced neither the
         // source nor the non-source figure here.
-        let adjacency = vec![
-            vec![1],
-            vec![0, 2],
-            vec![1, 3],
-            vec![2, 4],
-            vec![3],
-        ];
+        let adjacency = vec![vec![1], vec![0, 2], vec![1, 3], vec![2, 4], vec![3]];
         let result = betweenness_centrality(&adjacency, 3, 7);
         let expected = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0 / 3.0, 0.0];
         for (value, expect) in result.iter().zip(expected) {

@@ -708,8 +708,7 @@ fn multi_metrics(
                 // `_newJSONEntry` in promql/query_logger.go is exactly that.
                 // Gating this to TypeScript only was previously missing,
                 // which silently dropped every such Go symbol.
-                let excluded =
-                    language == LanguageKind::TypeScript && name.starts_with('_');
+                let excluded = language == LanguageKind::TypeScript && name.starts_with('_');
                 if !excluded {
                     symbols.push(symbol_row(name, kind, node));
                 }

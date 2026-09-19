@@ -124,8 +124,7 @@ pub fn name_districts(
                 name = name.trim().chars().take(32).collect();
                 if used.contains(&name) {
                     let base = name.clone();
-                    let number =
-                        used.iter().filter(|value| value.starts_with(&base)).count() + 1;
+                    let number = used.iter().filter(|value| value.starts_with(&base)).count() + 1;
                     name = format!("{base} {number}");
                 }
                 cache.insert(
