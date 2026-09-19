@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Generate the complete map set the app prefers, into <repo>/.maps.
+# Generate the complete map set the app prefers, into <repo>/.maps, using the
+# RUST indexer -- the shipped product. The Python under src/tolmap/ is the
+# frozen oracle the indexer is measured against, not the thing that produces
+# what the app serves.
 #
 # The committed fixtures in data/ are the acceptance corpus, not a demo set:
 # seven of the nine were recorded with --no-parcels and carry no `P` block, so
@@ -23,7 +26,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 MANIFEST="$ROOT/data/fixtures.toml"
 OUT="$ROOT/.maps"
 REPOS=${TOLMAP_FIXTURE_REPOS:-}
-PY=${TOLMAP_PYTHON:-"$ROOT/.venv/bin/python"}
+PY=${TOLMAP_PYTHON:-python3}
+BIN=${TOLMAP_BIN:-"$ROOT/target/release/tolmap"}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,7 +41,15 @@ done
   exit 1
 }
 [ -n "$REPOS" ] || { echo "no --repos DIR and no \$TOLMAP_FIXTURE_REPOS" >&2; exit 2; }
-[ -x "$PY" ] || { echo "no interpreter at $PY (set \$TOLMAP_PYTHON)" >&2; exit 2; }
+command -v "$PY" > /dev/null || { echo "no interpreter $PY (set \$TOLMAP_PYTHON)" >&2; exit 2; }
+# Only the naming cache is seeded from Python, and eval/seed_names.py is
+# stdlib-only -- no virtualenv needed to run this.
+[ -x "$BIN" ] || {
+  echo "no indexer at $BIN -- build it first:" >&2
+  echo "  LEIDEN_PREFIX=<prefix> cargo build --release --bin tolmap" >&2
+  echo "  (scripts/install-leiden.sh builds <prefix> if you have not already)" >&2
+  exit 2
+}
 
 mkdir -p "$OUT"
 cd "$ROOT"
@@ -60,14 +72,16 @@ while read -r name pkg lang; do
     echo "skip $name: no clone at $REPOS/$name" >&2
     continue
   fi
-  PYTHONPATH=src "$PY" -m tolmap.cli build "$REPOS/$name" \
+  "$BIN" build "$REPOS/$name" \
     --pkg "$pkg" --lang "$lang" --name "$name" --out "$OUT" | tail -1
 done <<< "$names"
 
-# tolmap's own map. It has no import edges today because extract.resolve()
-# drops every `from . import x` and this package uses nothing else (issue #12);
-# the map is still a real one, and it is the shape a small repo genuinely has.
-PYTHONPATH=src "$PY" -m tolmap.cli build "$ROOT" \
+# tolmap's own map.
+"$BIN" build "$ROOT" \
   --pkg src/tolmap --lang py --name tolmap --out "$OUT" | tail -1
 
-echo "maps in $OUT"
+echo "maps in $OUT (indexer: $BIN)"
+# Coordinates here will not match data/*.json: the indexer runs its own
+# Fruchterman-Reingold where the reference runs nx.spring_layout seeded from
+# numpy's RandomState. Membership, edges, landmarks and symbols do match --
+# that is what the parity gate covers. See issue #17.
