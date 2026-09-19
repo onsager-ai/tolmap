@@ -1,5 +1,6 @@
 pub mod blenddump;
 pub mod blobs;
+pub mod detect;
 pub mod extract;
 pub mod geometry;
 pub mod naming;
