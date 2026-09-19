@@ -3,3 +3,5 @@ __pycache__/
 out/
 atlas.html
 .venv/
+/target/
+/.native/
