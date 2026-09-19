@@ -58,7 +58,11 @@ impl ApiError {
     }
 
     pub fn detection_failed(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::UNPROCESSABLE_ENTITY, "detection_failed", message)
+        Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "detection_failed",
+            message,
+        )
     }
 
     /// Detection succeeded but at low confidence (`detect::Confidence::Low`)
@@ -67,7 +71,11 @@ impl ApiError {
     /// silently. `message` is `SourceCandidate::describe()`'s evidence
     /// text, not a generic refusal.
     pub fn detection_uncertain(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::UNPROCESSABLE_ENTITY, "detection_uncertain", message)
+        Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "detection_uncertain",
+            message,
+        )
     }
 
     pub fn clone_failed(message: impl Into<String>) -> Self {

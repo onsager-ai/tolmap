@@ -58,7 +58,11 @@ pub fn resolve(repo: Option<&str>, path: Option<&str>) -> Result<RepoRef, ApiErr
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .filter(|name| !name.is_empty())
-                .ok_or_else(|| ApiError::invalid_request("path has no final component to name the repository after"))?;
+                .ok_or_else(|| {
+                    ApiError::invalid_request(
+                        "path has no final component to name the repository after",
+                    )
+                })?;
             Ok(RepoRef {
                 slug: format!("local/{repo_name}"),
                 owner: "local".to_owned(),
@@ -85,15 +89,14 @@ fn parse_repo_spec(spec: &str) -> Result<RepoRef, ApiError> {
     if trimmed.is_empty() {
         return Err(ApiError::invalid_request("\"repo\" is empty"));
     }
-    let (owner, repo, url) = if trimmed.starts_with("https://") || trimmed.starts_with("http://")
-    {
+    let (owner, repo, url) = if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
         let without_git = trimmed.strip_suffix(".git").unwrap_or(trimmed);
         let mut segments = without_git
             .rsplit('/')
             .filter(|segment| !segment.is_empty());
-        let repo = segments
-            .next()
-            .ok_or_else(|| ApiError::invalid_request("could not parse a repo name out of the url"))?;
+        let repo = segments.next().ok_or_else(|| {
+            ApiError::invalid_request("could not parse a repo name out of the url")
+        })?;
         let owner = segments
             .next()
             .ok_or_else(|| ApiError::invalid_request("could not parse an owner out of the url"))?;
@@ -170,7 +173,8 @@ pub fn materialize(
 ) -> Result<Materialized, ApiError> {
     match &repo_ref.source {
         RepoSource::Local(path) => {
-            let commit = rev_parse(path, "HEAD").map_err(|e| ApiError::clone_failed(e.to_string()))?;
+            let commit =
+                rev_parse(path, "HEAD").map_err(|e| ApiError::clone_failed(e.to_string()))?;
             let branch = current_branch(path);
             check_history_depth(path, limits)?;
             Ok(Materialized {
@@ -207,7 +211,8 @@ pub fn materialize(
                 eprintln!("cache eviction warning: {err:#}");
             }
             check_history_depth(&dest, limits)?;
-            let commit = rev_parse(&dest, "HEAD").map_err(|e| ApiError::clone_failed(e.to_string()))?;
+            let commit =
+                rev_parse(&dest, "HEAD").map_err(|e| ApiError::clone_failed(e.to_string()))?;
             let branch = current_branch(&dest);
             Ok(Materialized {
                 path: dest,
@@ -244,12 +249,7 @@ fn check_history_depth(repo: &Path, limits: &Limits) -> Result<(), ApiError> {
 
 fn clone_blobless(url: &str, dest: &Path) -> Result<()> {
     let output = Command::new("git")
-        .args([
-            "clone",
-            "--filter=blob:none",
-            url,
-            &dest.to_string_lossy(),
-        ])
+        .args(["clone", "--filter=blob:none", url, &dest.to_string_lossy()])
         .output()
         .context("run git clone")?;
     if !output.status.success() {
@@ -264,7 +264,14 @@ fn clone_blobless(url: &str, dest: &Path) -> Result<()> {
 fn fetch_and_fast_forward(dest: &Path) -> Result<()> {
     let dest_str = dest.to_string_lossy();
     let fetch = Command::new("git")
-        .args(["-C", &dest_str, "fetch", "--filter=blob:none", "--prune", "origin"])
+        .args([
+            "-C",
+            &dest_str,
+            "fetch",
+            "--filter=blob:none",
+            "--prune",
+            "origin",
+        ])
         .output()
         .context("run git fetch")?;
     ensure!(
@@ -308,7 +315,13 @@ fn fetch_and_fast_forward(dest: &Path) -> Result<()> {
         String::from_utf8_lossy(&checkout.stderr).trim()
     );
     let reset = Command::new("git")
-        .args(["-C", &dest_str, "reset", "--hard", &format!("origin/{branch}")])
+        .args([
+            "-C",
+            &dest_str,
+            "reset",
+            "--hard",
+            &format!("origin/{branch}"),
+        ])
         .output()
         .context("run git reset")?;
     ensure!(
@@ -337,7 +350,13 @@ fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
 /// name.
 fn current_branch(repo: &Path) -> Option<String> {
     let output = Command::new("git")
-        .args(["-C", &repo.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
+        .args([
+            "-C",
+            &repo.to_string_lossy(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -366,7 +385,9 @@ fn directory_size(root: &Path) -> Result<u64> {
     let mut total = 0u64;
     let mut stack = vec![root.to_owned()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))? {
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))?
+        {
             let entry = entry?;
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
@@ -407,8 +428,8 @@ fn evict_lru(repos_root: &Path, budget_bytes: u64, keep: &Path) -> Result<()> {
         }
     }
     candidates.sort_by_key(|(when, _, _)| *when);
-    let mut total: u64 = candidates.iter().map(|(_, size, _)| size).sum::<u64>()
-        + directory_size(keep).unwrap_or(0);
+    let mut total: u64 =
+        candidates.iter().map(|(_, size, _)| size).sum::<u64>() + directory_size(keep).unwrap_or(0);
     for (_, size, dir) in candidates {
         if total <= budget_bytes {
             break;

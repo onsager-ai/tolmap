@@ -29,6 +29,12 @@ pub enum Verdict {
     Denied { message: String },
 }
 
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RateLimiter {
     pub fn new() -> Self {
         RateLimiter {
@@ -39,7 +45,10 @@ impl RateLimiter {
 
     pub fn check_ip(&self, ip: IpAddr, limit: u32, window: Duration) -> Verdict {
         check(&self.per_ip, ip, limit, window, || {
-            format!("more than {limit} requests from this address in the last {}s", window.as_secs())
+            format!(
+                "more than {limit} requests from this address in the last {}s",
+                window.as_secs()
+            )
         })
     }
 
@@ -72,9 +81,7 @@ fn check<K: std::hash::Hash + Eq>(
     }
     entry.count += 1;
     if entry.count > limit {
-        Verdict::Denied {
-            message: message(),
-        }
+        Verdict::Denied { message: message() }
     } else {
         Verdict::Allowed
     }

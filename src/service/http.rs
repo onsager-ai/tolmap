@@ -194,7 +194,9 @@ struct MapsListEntry {
     indexed_at: String,
 }
 
-async fn get_maps(State(state): State<Arc<AppState>>) -> Result<Json<Vec<MapsListEntry>>, ApiError> {
+async fn get_maps(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<MapsListEntry>>, ApiError> {
     let rows = state.store.list_latest()?;
     Ok(Json(
         rows.into_iter()

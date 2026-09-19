@@ -77,7 +77,11 @@ pub fn spawn_job(state: Arc<AppState>, repo_ref: RepoRef) -> Uuid {
         error: None,
     };
     let (tx, _rx) = watch::channel(snapshot);
-    state.jobs.lock().expect("job registry mutex poisoned").insert(job_id, tx.clone());
+    state
+        .jobs
+        .lock()
+        .expect("job registry mutex poisoned")
+        .insert(job_id, tx.clone());
 
     tokio::spawn(async move {
         let max_seconds = state.config.limits.max_job_seconds;
@@ -154,14 +158,23 @@ fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
 /// needs to know *why* it stopped, only that it eventually reaches `Done`
 /// or `Failed`.
 fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSnapshot>) {
-    advance(&tx, JobStatus::Cloning, &format!("cloning {}", repo_ref.slug));
-    let materialized = match clone::materialize(&state.config.cache_dir, &repo_ref, &state.config.limits) {
-        Ok(m) => m,
-        Err(api_error) => return finish_failed(&tx, api_error.body),
-    };
+    advance(
+        &tx,
+        JobStatus::Cloning,
+        &format!("cloning {}", repo_ref.slug),
+    );
+    let materialized =
+        match clone::materialize(&state.config.cache_dir, &repo_ref, &state.config.limits) {
+            Ok(m) => m,
+            Err(api_error) => return finish_failed(&tx, api_error.body),
+        };
     set_commit(&tx, &materialized.commit);
 
-    advance(&tx, JobStatus::Detecting, "detecting language and source root");
+    advance(
+        &tx,
+        JobStatus::Detecting,
+        "detecting language and source root",
+    );
     // issue #4's real detector (src/detect.rs), landed on main after this
     // milestone's placeholder was written -- see that module's doc comment
     // for what `chosen`/`candidates` carry and why confidence is never
@@ -226,8 +239,17 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         .and_then(|row| store::read_map_document(&row.map_path).ok())
         .map(|document| store::membership_by_file(&document));
 
-    advance(&tx, JobStatus::Indexing, "indexing (partition, geometry, naming)");
-    let work_dir = state.config.cache_dir.join("work").join(&repo_ref.owner).join(&repo_ref.repo);
+    advance(
+        &tx,
+        JobStatus::Indexing,
+        "indexing (partition, geometry, naming)",
+    );
+    let work_dir = state
+        .config
+        .cache_dir
+        .join("work")
+        .join(&repo_ref.owner)
+        .join(&repo_ref.repo);
     if let Err(err) = std::fs::create_dir_all(&work_dir) {
         return finish_failed(
             &tx,
