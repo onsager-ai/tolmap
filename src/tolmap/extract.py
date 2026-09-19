@@ -35,16 +35,30 @@ def mod_name(relpath, pkg):
     return ".".join(parts)
 
 
-def resolve(node, cur_mod, known):
-    """Yield internal module targets for an Import/ImportFrom node."""
+def resolve(node, cur_mod, known, is_pkg=False):
+    """Yield internal module targets for an Import/ImportFrom node.
+
+    `is_pkg` tells us whether `cur_mod` names the file's own package (the
+    file is an `__init__.py`, and `mod_name()` already stripped `__init__`
+    off it) or an ordinary module inside that package. A relative import
+    resolves against the *containing package* -- itself, for a package
+    `__init__`, or `cur_mod` minus its last segment, for anything else --
+    and then strips `node.level - 1` further segments. Collapsing that
+    distinction into a single `+ 1` (as this used to) is correct only for
+    the `__init__` case and silently drops every other relative import:
+    for `pkg.sub.mod` at level 1 it kept the whole name, so `from . import
+    x` became `pkg.sub.mod.x` -- not a known module, and its parent equals
+    `cur_mod` and is discarded. See issue #12.
+    """
     hits = []
     if isinstance(node, ast.Import):
         for a in node.names:
             hits.append(a.name)
     elif isinstance(node, ast.ImportFrom):
         if node.level:                                   # relative import
-            base = cur_mod.split(".")
-            base = base[: len(base) - node.level + 1] if node.level <= len(base) else []
+            pkg_parts = cur_mod.split(".") if is_pkg else cur_mod.split(".")[:-1]
+            strip = node.level - 1
+            base = pkg_parts[: len(pkg_parts) - strip] if strip <= len(pkg_parts) else []
             prefix = ".".join(base)
             head = f"{prefix}.{node.module}" if node.module else prefix
         else:
@@ -160,10 +174,11 @@ def py_uses(tree, cur_mod, known, f_of, cur_file):
     calls through a variable — but it is exact about what it does report, and it
     costs nothing extra to collect.
     """
+    is_pkg = os.path.basename(cur_file) == "__init__.py"
     out, alias = [], {}
     for n in ast.walk(tree):
         if isinstance(n, ast.ImportFrom):
-            tgts = resolve(n, cur_mod, known)
+            tgts = resolve(n, cur_mod, known, is_pkg)
             if not tgts:
                 continue
             # Emit every candidate module. Which one actually defines the name is
@@ -187,8 +202,9 @@ def py_uses(tree, cur_mod, known, f_of, cur_file):
     for n in ast.walk(tree):
         if isinstance(n, ast.ImportFrom):
             if n.level:
-                base = cur_mod.split(".")
-                base = base[: len(base) - n.level + 1] if n.level <= len(base) else []
+                pkg_parts = cur_mod.split(".") if is_pkg else cur_mod.split(".")[:-1]
+                strip = n.level - 1
+                base = pkg_parts[: len(pkg_parts) - strip] if strip <= len(pkg_parts) else []
                 head = ".".join(base + ([n.module] if n.module else []))
             else:
                 head = n.module or ""
@@ -270,9 +286,10 @@ def build(repo, pkg, out_path):
     fanin = Counter()
     uses = set()
     for m, f in mods.items():
+        is_pkg = os.path.basename(f) == "__init__.py"
         for node in ast.walk(trees[f]):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
-                for tgt in resolve(node, m, known):
+                for tgt in resolve(node, m, known, is_pkg):
                     tf = f_of[tgt]
                     if tf == f:
                         continue
