@@ -38,6 +38,12 @@ pub fn build(
 /// does first. This is what lets CI exercise blend -> prune -> partition ->
 /// parity on a pre-extracted graph (`tolmap dump-graph`'s output) without
 /// cloning the source repository -- see the module doc on `schema::GraphData`.
+///
+/// Cold-start only (no warm start). Kept as the CLI's entry point rather
+/// than adding an `Option` parameter to it directly so `tolmap build`'s
+/// signature does not grow a job-service concern it cannot supply (the CLI
+/// has no store to read a previous commit's membership from). The job
+/// service calls [`build_from_graph_warm`] instead.
 pub fn build_from_graph(
     graph: GraphData,
     map_name: String,
@@ -45,9 +51,25 @@ pub fn build_from_graph(
     resolution: f64,
     with_parcels: bool,
 ) -> Result<PathBuf> {
+    build_from_graph_warm(graph, map_name, out, resolution, with_parcels, None)
+}
+
+/// As [`build_from_graph`], but `previous_membership` (a prior commit's file
+/// -> district assignment, as read back out of the store) seeds the
+/// partitioner via [`pipeline::align_initial_membership`] when present. See
+/// finding 4 and that function's doc comment for why this matters.
+pub fn build_from_graph_warm(
+    graph: GraphData,
+    map_name: String,
+    out: &Path,
+    resolution: f64,
+    with_parcels: bool,
+    previous_membership: Option<&BTreeMap<String, usize>>,
+) -> Result<PathBuf> {
     eprintln!("[2/5] partition resolution={resolution}");
     let partitioner = LeidenFfi;
-    let layout = pipeline::run(graph, resolution, &partitioner)?;
+    let initial = previous_membership.map(|prev| pipeline::align_initial_membership(&graph, prev));
+    let layout = pipeline::run(graph, resolution, &partitioner, initial.as_deref())?;
     eprintln!("[3/5] name     districts");
     // Same convention `cli.py::build` uses: the cache lives next to the map
     // it names, `<out>/<name>.names.json`, so a rerun into the same --out

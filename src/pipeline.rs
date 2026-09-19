@@ -51,6 +51,7 @@ pub fn run<P: Partitioner>(
     mut data: GraphData,
     resolution: f64,
     partitioner: &P,
+    initial_membership: Option<&[usize]>,
 ) -> Result<PipelineOutput> {
     blend(&mut data)?;
     prune(&mut data, 14, 0.02);
@@ -58,7 +59,7 @@ pub fn run<P: Partitioner>(
     let PartitionResult {
         membership,
         modularity,
-    } = partitioner.partition(&graph, resolution, SEED, None)?;
+    } = partitioner.partition(&graph, resolution, SEED, initial_membership)?;
     let membership = merge_tiny(&membership, &data, 4);
     let (districts, nodes) = layout(&membership, &data);
     let landmarks = landmarks(&membership, &data, &graph);
@@ -71,6 +72,39 @@ pub fn run<P: Partitioner>(
         weighted: data,
         graph,
     })
+}
+
+/// Builds the `initial_membership` argument `run` passes to the partitioner
+/// from a previous commit's file -> district map (finding 4: this is the
+/// single highest-leverage step in the pipeline, 46% -> 88% district
+/// retention on django at no modularity cost). Node order must match
+/// `data.nodes` -- `weighted_graph` builds its node ids in that same order
+/// and neither `blend` nor `prune` reorders or drops nodes (`prune` removes
+/// only edges), so the caller does not need to know that internal detail to
+/// get this right.
+///
+/// A file the previous commit did not have gets its own fresh singleton
+/// community rather than joining an existing one or being left unset:
+/// leidenalg requires every node to have an initial community, and seeding
+/// a new file into an arbitrary existing one would bias it towards that
+/// district before the algorithm has seen a single edge for it. This
+/// mirrors `eval/batch_stability.py::partition_seeded`, which is the script
+/// finding 4's numbers came from.
+pub fn align_initial_membership(
+    data: &GraphData,
+    previous: &BTreeMap<String, usize>,
+) -> Vec<usize> {
+    let mut next_id = previous.values().copied().max().map_or(0, |max| max + 1);
+    data.nodes
+        .iter()
+        .map(|node| {
+            previous.get(&node.file).copied().unwrap_or_else(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            })
+        })
+        .collect()
 }
 
 pub fn blend(data: &mut GraphData) -> Result<()> {
