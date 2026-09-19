@@ -21,6 +21,30 @@ tree-sitter-go = "=0.25.0"
 tree-sitter-python = "=0.25.0"
 tree-sitter-typescript = "=0.23.2"
 ts-rs = { version = "=12.0.1", features = ["serde-compat"] }
+# Milestone 3 (job service, issue #5) additions below. Kept to five crates:
+# an async runtime and HTTP framework are unavoidable for a service with SSE
+# and concurrent jobs; the rest are thin single-purpose wrappers rather than
+# hand-rolled ad hoc.
+#   axum          -- routing, JSON extraction, and the SSE response type used
+#                    by GET /api/jobs/{id}/events.
+#   tokio         -- axum's runtime; also used directly for the job queue
+#                    (spawned tasks), the per-job wall-time cap
+#                    (`tokio::time::timeout`), and shelling out to `git`
+#                    without blocking the runtime (`tokio::process::Command`).
+#   rusqlite      -- the store (SQLite, per docs/ARCHITECTURE.md). "bundled"
+#                    compiles SQLite in rather than requiring a system
+#                    libsqlite3, which this sandbox does not have.
+#   uuid          -- job ids. v4 (random) is enough; jobs are not queried by
+#                    time-ordering, only by id.
+#   tokio-stream  -- `ReceiverStream`, used to turn the per-connection mpsc
+#                    channel GET /api/jobs/{id}/events relays a job's
+#                    `watch::Receiver` through into the `Stream` axum's SSE
+#                    response wants.
+axum = "=0.8.9"
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "fs"] }
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+uuid = { version = "=1.26.1", features = ["v4", "serde"] }
+tokio-stream = "=0.1.19"
 
 [build-dependencies]
 cc = "=1.4.7"
