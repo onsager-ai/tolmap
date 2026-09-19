@@ -45,12 +45,12 @@ def build(args):
     names = naming.name_districts(
         by, layout["nodes"],
         cache_path=os.path.join(out_dir, f"{name}.names.json"))
-    blobs.NAMES[name] = {int(k): v for k, v in names.items()}
     for d, nm in sorted(names.items()):
         print(f"        d{d:<2} {len(by[d]):4d} files  {nm}")
 
     print("[4/5] geometry regions")
-    blobs.build(name, layout_path, graph_path, map_path)
+    blobs.build(name, layout_path, graph_path, map_path,
+                names={int(k): v for k, v in names.items()})
 
     if not args.no_parcels:
         print("[5/5] geometry weighted-voronoi plots")

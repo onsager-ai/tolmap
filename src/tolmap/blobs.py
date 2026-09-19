@@ -17,28 +17,6 @@ G = 420          # grid resolution
 SIG = 9.0        # gaussian sigma, in grid cells
 THRESH = 0.16    # contour level, relative to each district's own peak
 
-NAMES = {
-    "scrapy": {0:"crawl control",1:"engine & pipelines",2:"http & extraction",3:"command line",
-               4:"utilities & config",5:"transport & tls",6:"spider middleware",7:"scheme handlers"},
-    "django": {0:"mail & core utils",1:"forms & templating",2:"management & checks",
-               3:"views & middleware",4:"orm",5:"gis · geos",6:"db backends",7:"auth & admin",
-               8:"gis · gdal",9:"postgres",10:"files & cache",11:"messages"},
-    "celery": {0:"worker",1:"tasks & app",2:"result backends",3:"canvas & scheduling",
-               4:"command line",5:"events & signals"},
-    "sqlalchemy": {0:"dialects",1:"sql core",2:"testing suite",3:"orm",4:"engine",
-                   5:"extensions",6:"util",7:"event system",8:"connection pool"},
-    "rich": {0:"renderables",1:"console & live",2:"unicode tables"},
-    "flask": {0:"app & cli",1:"app core & blueprints",2:"json"},
-    "httpx": {0:"client & models",1:"transports"},
-    "prometheus": {0:"service discovery",1:"tsdb storage",2:"labels & parsing",
-                   3:"promql & rules",4:"remote write",5:"web api",6:"chunk encoding",
-                   7:"kubernetes discovery",8:"runtime util",9:"runtime probes",
-                   10:"internal tools"},
-    "vue": {0:"runtime core",1:"compiler transforms",2:"sfc compiler",
-            3:"shared & dom runtime",4:"ssr compiler",5:"v2 compat",6:"reactivity",
-            7:"server renderer",8:"test runtime"},
-}
-
 
 def ordered_subgraph(G, nodes):
     """An induced subgraph with iteration order fixed by the caller.
@@ -323,7 +301,7 @@ def chaikin(p, n=2):
     return p
 
 
-def build(repo, res_layout, res_graph, out):
+def build(repo, res_layout, res_graph, out, names=None):
     layout = json.load(open(res_layout))
     graph = json.load(open(res_graph))
     memb, pts, by, subs = place(layout, graph)
@@ -420,7 +398,7 @@ def build(repo, res_layout, res_graph, out):
 
     doc = {
         "repo": repo, "q": layout["modularity"],
-        "names": {str(k): v for k, v in NAMES.get(repo, {}).items()}
+        "names": {str(k): v for k, v in (names or {}).items()}
                  or {str(c): f"d{c}" for c in by},
         "districts": {str(c): {"size": len(fs), "c": [round(x, 4) for x in cen[c]],
                                "blob": [[[round(float(x), 4), round(float(y), 4)]
@@ -437,5 +415,19 @@ def build(repo, res_layout, res_graph, out):
 
 
 if __name__ == "__main__":
-    for repo in sys.argv[1:]:
-        build(repo, f"layout_{repo}.json", f"graph_{repo}.json", f"blob_{repo}.json")
+    # No caller here computes names the way cli.py does, so take the same
+    # <name>.names.json cache naming.name_districts() writes (and
+    # eval/seed_names.py reconstructs from a fixture) and read district names
+    # out of it. Omit it and `build()`'s own fallback -- the `or {str(c):
+    # f"d{c}" ...}` in its `names` line -- names districts d0, d1, ... .
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("repos", nargs="+")
+    ap.add_argument("--names", help="path to a <name>.names.json cache")
+    args = ap.parse_args()
+    names = None
+    if args.names:
+        names = {v["district"]: v["name"] for v in json.load(open(args.names)).values()}
+    for repo in args.repos:
+        build(repo, f"layout_{repo}.json", f"graph_{repo}.json", f"blob_{repo}.json",
+              names=names)
