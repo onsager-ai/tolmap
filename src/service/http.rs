@@ -227,7 +227,14 @@ async fn get_map(
     AxPath((owner, repo)): AxPath<(String, String)>,
     Query(query): Query<MapQuery>,
 ) -> Result<Response, ApiError> {
-    let slug = format!("{owner}/{repo}");
+    // Canonicalise the same way `clone::resolve` does (issue #23 gap 3), so
+    // `GET /api/maps/Owner/Repo` finds the row `POST /api/index {"repo":
+    // "owner/repo"}` created -- the store's key is always lowercase.
+    let slug = format!(
+        "{}/{}",
+        clone::canonicalize(&owner),
+        clone::canonicalize(&repo)
+    );
     let row = match &query.commit {
         Some(commit) => state.store.get(&slug, commit)?,
         None => state.store.latest(&slug)?,

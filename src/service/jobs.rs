@@ -51,7 +51,24 @@ pub struct JobSnapshot {
     pub stage: String,
     pub started_at: String,
     pub finished_at: Option<String>,
-    pub error: Option<ErrorBody>,
+    /// Human-readable failure text, or null. Flat, not an object: this is
+    /// rendered directly by the client, and a nested object here crashed the
+    /// progress view on every job failure -- including `repo_too_large`, the
+    /// one failure docs/ARCHITECTURE.md specifically requires to read clearly
+    /// rather than as a timeout. The machine code lives beside it.
+    pub error: Option<String>,
+    /// Machine-readable failure code (`repo_too_large`, `detection_failed`,
+    /// ...), or null. Clients branch on this rather than pattern-matching the
+    /// message text.
+    pub error_code: Option<String>,
+}
+
+impl JobSnapshot {
+    /// Splits an [`ErrorBody`] across the two flat fields above.
+    pub fn set_error(&mut self, body: ErrorBody) {
+        self.error = Some(body.message);
+        self.error_code = Some(body.error);
+    }
 }
 
 pub type JobRegistry = Mutex<HashMap<Uuid, watch::Sender<JobSnapshot>>>;
@@ -75,6 +92,7 @@ pub fn spawn_job(state: Arc<AppState>, repo_ref: RepoRef) -> Uuid {
         started_at: now_rfc3339(),
         finished_at: None,
         error: None,
+        error_code: None,
     };
     let (tx, _rx) = watch::channel(snapshot);
     state
@@ -140,6 +158,7 @@ fn finish_done(tx: &watch::Sender<JobSnapshot>) {
         snapshot.stage = "done".to_owned();
         snapshot.finished_at = Some(now_rfc3339());
         snapshot.error = None;
+        snapshot.error_code = None;
     });
 }
 
@@ -148,7 +167,7 @@ fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
         snapshot.status = JobStatus::Failed;
         snapshot.stage = "failed".to_owned();
         snapshot.finished_at = Some(now_rfc3339());
-        snapshot.error = Some(error);
+        snapshot.set_error(error);
     });
 }
 
@@ -363,6 +382,21 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
                 message: err.to_string(),
             },
         );
+    }
+
+    // Bound store growth (issue #23 gap 2): keep only the newest
+    // `retain_commits_per_repo` indexed commits for this slug, evicting
+    // older rows and their map files. Run right after `insert` succeeds so
+    // the row just written is always counted as the newest -- prune never
+    // evicts it (see `store::Store::prune`'s doc comment on why that
+    // matters for finding 4's warm start). Best-effort like cache
+    // eviction in `clone.rs`: failing to reclaim space is not a reason to
+    // fail a job that already finished successfully.
+    if let Err(err) = state
+        .store
+        .prune(&repo_ref.slug, state.config.retain_commits_per_repo)
+    {
+        eprintln!("prune warning for {}: {err:#}", repo_ref.slug);
     }
 
     finish_done(&tx);

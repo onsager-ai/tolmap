@@ -84,6 +84,21 @@ fn ensure_local(path: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Lowercases an owner or repo name (issue #23 gap 3: GitHub treats both
+/// case-insensitively, so `Owner/Repo` and `owner/repo` must resolve to one
+/// cache entry, not two). This is the single normalisation point --
+/// `owner`/`repo`/`slug` on a [`RepoRef`] are always already-canonical by
+/// construction, so every downstream consumer (the on-disk clone cache
+/// path, the store's `(slug, commit_sha)` key, `GET /api/maps/{owner}/{repo}`)
+/// can use them directly without re-normalising. The originally submitted
+/// spelling is not retained anywhere -- there is no product need to show it
+/// back, and keeping a second, non-key copy around is exactly the kind of
+/// two-places-that-must-agree this codebase avoids (CLAUDE.md: the schema
+/// is defined once for the same reason).
+pub fn canonicalize(component: &str) -> String {
+    component.to_ascii_lowercase()
+}
+
 fn parse_repo_spec(spec: &str) -> Result<RepoRef, ApiError> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
@@ -100,17 +115,22 @@ fn parse_repo_spec(spec: &str) -> Result<RepoRef, ApiError> {
         let owner = segments
             .next()
             .ok_or_else(|| ApiError::invalid_request("could not parse an owner out of the url"))?;
-        (owner.to_owned(), repo.to_owned(), trimmed.to_owned())
+        // The clone URL keeps the caller's exact casing -- an arbitrary
+        // https url is not necessarily GitHub, and some hosts *are*
+        // case-sensitive in the path, so only the derived slug/owner/repo
+        // (our cache key, never what is handed to `git`) get canonicalised.
+        (canonicalize(owner), canonicalize(repo), trimmed.to_owned())
     } else {
         let mut parts = trimmed.splitn(2, '/');
         let owner = parts.next().filter(|s| !s.is_empty());
         let repo = parts.next().filter(|s| !s.is_empty());
         match (owner, repo) {
-            (Some(owner), Some(repo)) => (
-                owner.to_owned(),
-                repo.to_owned(),
-                format!("https://github.com/{owner}/{repo}.git"),
-            ),
+            (Some(owner), Some(repo)) => {
+                let owner = canonicalize(owner);
+                let repo = canonicalize(repo);
+                let url = format!("https://github.com/{owner}/{repo}.git");
+                (owner, repo, url)
+            }
             _ => {
                 return Err(ApiError::invalid_request(
                     "\"repo\" must be \"owner/name\" or an https url",
@@ -197,14 +217,9 @@ pub fn materialize(
             }
             touch(&dest);
             let size = directory_size(&dest).unwrap_or(0);
-            if size > limits.max_clone_bytes {
-                // Over budget as soon as we can measure it -- do not run
-                // extraction over a repo we are about to reject anyway.
-                return Err(ApiError::repo_too_large(format!(
-                    "clone size {size} bytes exceeds the configured limit of {} bytes",
-                    limits.max_clone_bytes
-                )));
-            }
+            // Over budget as soon as we can measure it -- do not run
+            // extraction over a repo we are about to reject anyway.
+            check_clone_size(size, limits)?;
             if let Err(err) = evict_lru(&cache_dir.join("repos"), limits.max_clone_bytes, &dest) {
                 // Eviction is best-effort: failing to reclaim space for the
                 // *next* job is not a reason to fail *this* one.
@@ -221,6 +236,26 @@ pub fn materialize(
             })
         }
     }
+}
+
+/// The clone-size half of docs/API.md's "must not present as a timeout"
+/// pre-checks. Factored out of `materialize` so it is directly testable
+/// against a real measured size without needing a real clone -- issue #23
+/// gap 5's fixture corpus is entirely git partial clones
+/// (`promisor`/`--filter=blob:none`, see `data/fixtures.toml`'s clone
+/// step), and a partial clone cannot be re-served as a local `git` remote
+/// (`git-upload-pack` refuses with "possible repository corruption": it
+/// does not have the blobs to send). Exercising `materialize`'s `Remote`
+/// branch end to end would need live network access to GitHub, which this
+/// test environment does not have.
+fn check_clone_size(size: u64, limits: &Limits) -> Result<(), ApiError> {
+    if size > limits.max_clone_bytes {
+        return Err(ApiError::repo_too_large(format!(
+            "clone size {size} bytes exceeds the configured limit of {} bytes",
+            limits.max_clone_bytes
+        )));
+    }
+    Ok(())
 }
 
 fn check_history_depth(repo: &Path, limits: &Limits) -> Result<(), ApiError> {
@@ -477,6 +512,75 @@ mod tests {
         let repo_ref = resolve(None, Some(dir.path().to_str().unwrap())).unwrap();
         assert_eq!(repo_ref.owner, "local");
         assert!(repo_ref.slug.starts_with("local/"));
+    }
+
+    #[test]
+    fn mixed_case_owner_repo_canonicalises_to_lowercase() {
+        let repo_ref = parse_repo_spec("Owner/Repo").unwrap();
+        assert_eq!(repo_ref.slug, "owner/repo");
+        assert_eq!(repo_ref.owner, "owner");
+        assert_eq!(repo_ref.repo, "repo");
+    }
+
+    #[test]
+    fn differently_cased_specs_resolve_to_the_same_slug() {
+        let lower = parse_repo_spec("pallets/flask").unwrap();
+        let upper = parse_repo_spec("Pallets/Flask").unwrap();
+        let shout = parse_repo_spec("PALLETS/FLASK").unwrap();
+        assert_eq!(lower.slug, upper.slug);
+        assert_eq!(lower.slug, shout.slug);
+        assert_eq!(lower.owner, upper.owner);
+        assert_eq!(lower.repo, upper.repo);
+    }
+
+    #[test]
+    fn mixed_case_https_url_canonicalises_slug_but_keeps_the_clone_url_verbatim() {
+        let repo_ref = parse_repo_spec("https://github.com/Django/Django.git").unwrap();
+        assert_eq!(repo_ref.slug, "django/django");
+        match repo_ref.source {
+            RepoSource::Remote(url) => {
+                assert_eq!(url, "https://github.com/Django/Django.git")
+            }
+            RepoSource::Local(_) => panic!("expected a remote source"),
+        }
+    }
+
+    /// Issue #23 gap 5: fires `check_clone_size` (the exact function
+    /// `materialize` calls) against a real measured directory size, since a
+    /// live clone cannot be exercised here -- see that function's doc
+    /// comment. Skips with a clear message when there is no fixture corpus
+    /// to measure, mirroring `tests/fixtures_detect.rs`'s convention.
+    #[test]
+    fn clone_size_limit_fires_against_a_real_directory_over_budget() {
+        let Some(dir) = std::env::var("TOLMAP_FIXTURE_REPOS")
+            .ok()
+            .map(|repos| Path::new(&repos).join("httpx"))
+            .filter(|p| p.is_dir())
+        else {
+            eprintln!(
+                "skipping: TOLMAP_FIXTURE_REPOS is not set (or httpx is not there) -- \
+                 e.g. TOLMAP_FIXTURE_REPOS=/tmp/tolmap-fixtures.XXXXXX cargo test --release"
+            );
+            return;
+        };
+        let size = directory_size(&dir).expect("measure the fixture directory");
+        assert!(size > 0, "a real repo should have a nonzero size");
+
+        let mut limits = Limits {
+            max_clone_bytes: size - 1, // one byte under budget
+            ..Limits::default()
+        };
+        let err = check_clone_size(size, &limits).expect_err("should be rejected as too large");
+        assert_eq!(err.body.error, "repo_too_large");
+        assert!(err.body.message.contains("clone size"));
+        assert!(err
+            .body
+            .message
+            .contains(&limits.max_clone_bytes.to_string()));
+
+        // Headroom (a generously high limit) is not rejected.
+        limits.max_clone_bytes = size + 1;
+        assert!(check_clone_size(size, &limits).is_ok());
     }
 
     #[test]

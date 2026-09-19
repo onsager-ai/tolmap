@@ -20,7 +20,12 @@ export interface JobStatus {
   stage: string;
   started_at: string;
   finished_at: string | null;
+  /** Human-readable failure text. Flat, not an object — it is rendered
+   * directly, and an object here crashes React. */
   error: string | null;
+  /** Machine-readable failure code (`repo_too_large`, `detection_failed`, …).
+   * Branch on this rather than on `error`'s wording. */
+  error_code: string | null;
 }
 
 export interface IndexAccepted {

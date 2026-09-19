@@ -17,6 +17,33 @@ implementation so the frontend and the service can be built in parallel
 against the same shape; the implementation must not drift from it without
 updating this file in the same change.
 
+## Configuration
+
+Everything below is read once, at startup, from the environment; an unset
+or unparsable variable falls back to the default rather than failing
+startup. There is no config file for the service (`.tolmap/config.toml` is
+a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
+
+| variable | default | what |
+|---|---|---|
+| `TOLMAP_PORT` | `8787` | listen port (host is always `127.0.0.1`, not configurable) |
+| `TOLMAP_DB_PATH` | `<TOLMAP_CACHE_DIR>/tolmap.sqlite3` | the SQLite store |
+| `TOLMAP_CACHE_DIR` | system temp dir `/tolmap-cache` | clone cache + indexed map files |
+| `TOLMAP_MAX_FILES` | `5000` | reject a repo with more source files than this after detection |
+| `TOLMAP_MAX_CLONE_BYTES` | `2147483648` (2 GiB) | reject a clone whose working tree + `.git` exceeds this |
+| `TOLMAP_MAX_HISTORY_COMMITS` | `20000` | reject a repo whose `HEAD` history has more commits than this |
+| `TOLMAP_MAX_JOB_SECONDS` | `900` | wall-clock budget for one job before it fails as `index_failed` |
+| `TOLMAP_RATE_LIMIT_PER_IP` | `30` | requests per window, per source IP, under `/api/` |
+| `TOLMAP_RATE_LIMIT_WINDOW_SECONDS` | `60` | window for the per-IP limit |
+| `TOLMAP_RATE_LIMIT_PER_REPO` | `3` | `POST /api/index` requests per window, per slug |
+| `TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS` | `300` | window for the per-repo limit |
+| `TOLMAP_RETAIN_COMMITS_PER_REPO` | `20` | indexed commits kept per slug before older ones are pruned (see "Store" below) |
+
+All eight limit/rate-limit variables map directly to `service::config::Limits`'s
+fields, which is the single place their defaults are documented and the
+only place that reads them from the environment -- request-handling code
+only ever sees a resolved `Limits` value, never `std::env::var` itself.
+
 ## Repository identifiers
 
 A request names a repository three ways:
@@ -28,10 +55,15 @@ A request names a repository three ways:
   for tests and fixtures without hitting the network. Its `slug` is
   `local/<basename>`, so `/tmp/tolmap-fixtures/flask` becomes `local/flask`.
 
-Every repository has a canonical `slug` of the form `owner/repo` (lowercase
-as given; not normalised further). The slug, not the input string, is the
-cache key's non-commit half and the path segment used everywhere else in
-this API.
+Every repository has a canonical `slug` of the form `owner/repo`.
+`owner`/`repo` are lowercased on input (GitHub treats them
+case-insensitively, so `Owner/Repo` and `owner/repo` must resolve to the
+same cache entry rather than being cloned and indexed twice -- see
+`service::clone::canonicalize`); the originally submitted casing is not
+retained anywhere. `GET /api/maps/{owner}/{repo}` lowercases its path
+parameters the same way before looking a slug up. The slug, not the input
+string, is the cache key's non-commit half and the path segment used
+everywhere else in this API.
 
 ## Endpoints
 
@@ -69,7 +101,8 @@ be answered in the same request rather than always queuing a job.
   "stage": "<human-readable current step>",
   "started_at": "<RFC3339>",
   "finished_at": "<RFC3339>" | null,
-  "error": {"error": "<machine code>", "message": "<human text>"} | null
+  "error": "<human text>" | null,          // rendered directly by clients
+  "error_code": "<machine code>" | null    // branch on this, not on the text
 }
 ```
 
@@ -157,3 +190,12 @@ commit already indexed returns the cached map immediately (see above), and
 on record. See `src/service/store.rs` for the schema and why the map
 document itself is kept as a content-addressed file next to the database
 rather than a blob column.
+
+**Pruned, not kept forever.** After a job finishes indexing, the store
+keeps only the `TOLMAP_RETAIN_COMMITS_PER_REPO` most-recently-indexed
+commits for that slug (default 20); older `(slug, commit_sha)` rows and
+their map files are deleted. The single newest row for a slug is never
+pruned, regardless of that setting -- docs/FINDINGS.md finding 4's warm
+start reads the previous commit's district membership out of exactly this
+row, so a policy that could evict it would silently degrade the highest-
+leverage property the store has (see `service::store::Store::prune`).

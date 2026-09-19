@@ -16,14 +16,15 @@ function stepIndex(stage: JobStage | undefined): number {
   return STEPS.findIndex((s) => s.stage === stage);
 }
 
-/** The contract doesn't name a distinct job status for a repository refused
- * by the hosted size limits (docs/ARCHITECTURE.md, "Limits") — it's a
- * `status: "failed"` with `error` as human text. Recognise it by content so
- * it renders as its own state rather than a generic failure, matching the
- * heuristic in src/api/client.ts's ApiRequestError.tooLarge. */
-function looksTooLarge(message: string | null | undefined): boolean {
-  if (!message) return false;
-  return /too large|size limit|exceeds.*(limit|cap)/i.test(message);
+/** A repository refused by the hosted size limits (docs/ARCHITECTURE.md,
+ * "Limits") is not a distinct job status — it is `status: "failed"` carrying
+ * `error_code: "repo_too_large"`. Branch on the code, never on the message:
+ * the message names which limit tripped and its value, so it is display text
+ * and will be reworded. The regex below is a fallback for a service older
+ * than the `error_code` field. */
+function looksTooLarge(job: { error?: string | null; error_code?: string | null }): boolean {
+  if (job.error_code) return job.error_code === "repo_too_large";
+  return !!job.error && /too large|size limit|exceeds.*(limit|cap)/i.test(job.error);
 }
 
 /** The /new progress view: watches one indexing job via useJobProgress and
@@ -103,7 +104,7 @@ export function IndexJobView() {
   }
 
   if (job.status === "failed") {
-    const tooLarge = looksTooLarge(job.error);
+    const tooLarge = looksTooLarge(job);
     return (
       <Centered>
         <h1 className="font-sans text-lg font-semibold text-[var(--on)]">{slug}</h1>
