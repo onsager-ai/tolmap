@@ -1,0 +1,112 @@
+# The nine acceptance fixtures in this directory (data/*.json), pinned.
+#
+# The compact viewer schema they are written in has no `params` block and no
+# commit field -- `pipeline.run()` emits one and `blobs.build()` drops it
+# during compaction -- so the committed JSON alone cannot tell you what was
+# indexed to produce it (issue #2). The `commit` below is what makes each
+# fixture an oracle rather than a snapshot: check the clone out at that SHA,
+# seed the naming cache (eval/seed_names.py), rebuild with the given `pkg`/
+# `lang`/`parcels`, and the output must be byte-identical to data/<name>.json.
+# eval/verify_fixtures.py automates exactly that.
+#
+# `files`, `districts` and `q` (modularity) are read out of the committed
+# fixture, not asserted independently -- they are here so a drifted rebuild
+# is obvious from this file alone, without opening the JSON.
+#
+# `parcels` records whether the fixture was built with the weighted-Voronoi
+# plot layer (the `P` key). Only flask and sqlalchemy were: the other seven
+# were recorded with `--no-parcels`. That split is a real inconsistency in
+# the corpus, not a normalisation to paper over -- see docs/ARCHITECTURE.md.
+#
+# leidenalg/igraph versions this file's SHAs were last verified against:
+# igraph 1.0.0, leidenalg 0.12.0.
+
+[celery]
+url = "https://github.com/celery/celery.git"
+commit = "208a803655672d63cf2a257d30f39c672a5b4bcf"
+pkg = "celery"
+lang = "py"
+parcels = false
+files = 161
+districts = 6
+q = 0.3315
+
+[django]
+url = "https://github.com/django/django.git"
+commit = "a3f0642f69277f01611d0d3e829fc3b85aded2ec"
+pkg = "django"
+lang = "py"
+parcels = false
+files = 851
+districts = 12
+q = 0.4968
+
+[flask]
+url = "https://github.com/pallets/flask.git"
+commit = "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35"
+pkg = "src/flask"
+lang = "py"
+parcels = true
+files = 24
+districts = 3
+q = 0.0533
+
+[httpx]
+url = "https://github.com/encode/httpx.git"
+commit = "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+pkg = "httpx"
+lang = "py"
+parcels = false
+files = 23
+districts = 2
+q = 0.0597
+
+[prometheus]
+url = "https://github.com/prometheus/prometheus.git"
+commit = "296080c0a504ea0e72941ef16143f0a9702b137b"
+pkg = "."
+lang = "go"
+parcels = false
+files = 444
+districts = 11
+q = 0.5397
+
+[rich]
+url = "https://github.com/Textualize/rich.git"
+commit = "9d8f9a372cc5916fd4781fec207ced7ddac2f08f"
+pkg = "rich"
+lang = "py"
+parcels = false
+files = 100
+districts = 3
+q = 0.4447
+
+[scrapy]
+url = "https://github.com/scrapy/scrapy.git"
+commit = "fe30c1882a12651c19c5a94d71e9f14e442456c7"
+pkg = "scrapy"
+lang = "py"
+parcels = false
+files = 188
+districts = 8
+q = 0.3479
+
+[sqlalchemy]
+url = "https://github.com/sqlalchemy/sqlalchemy.git"
+commit = "4883307858ea3def775b5a1cc1c01a5be6dfe213"
+pkg = "lib/sqlalchemy"
+lang = "py"
+parcels = true
+files = 258
+districts = 9
+q = 0.7976
+
+[vue]
+url = "https://github.com/vuejs/core.git"
+commit = "4ab865a848a1da3d10fb674f857e5fff13094644"
+pkg = "packages"
+lang = "ts"
+parcels = false
+files = 239
+districts = 9
+q = 0.5729

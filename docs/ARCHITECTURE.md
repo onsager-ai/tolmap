@@ -125,7 +125,9 @@ So the fork is decomposed rather than chosen. FFI to libleidenalg first, as a sc
 
 **Acceptance test for whichever path:** on scrapy, django and vue, the Rust partition must place ≥95% of files in the district their Python counterpart assigned, and modularity must land within 0.02. That check belongs in CI from the first commit of the clustering module.
 
-The commits are **not** pinned, despite what an earlier version of this line said. The compact viewer schema carries no `params` block and no commit field — `pipeline.run()` emits one and `blobs.build()` drops it during compaction — so the nine fixtures record no SHA. They reproduce at today's upstream heads and will stop doing so silently. Pinning them is its own issue.
+The commits are pinned in `data/fixtures.toml`, not in the fixtures themselves — the compact viewer schema still carries no `params` block and no commit field (`pipeline.run()` emits one, `blobs.build()` drops it during compaction), so `data/*.json` alone still cannot tell you what was indexed to produce it. The manifest is the fix: one entry per fixture with its clone URL, pinned SHA, `pkg`, `lang`, whether it was built with parcels, and the headline numbers (files, districts, modularity) to make a drifted rebuild visible without opening the JSON. `eval/verify_fixtures.py` checks a fixture out at its pin, seeds the naming cache, rebuilds, and diffs the result byte-for-byte against the committed map; run it after touching anything upstream of `blobs.build()`.
+
+The manifest also records a real inconsistency in the corpus rather than hiding it: only `flask` and `sqlalchemy` were recorded with the parcels (weighted-Voronoi plot) layer: the other seven fixtures were built with `--no-parcels` and carry no `P` key. A faithful rebuild of those seven therefore differs from a plain `tolmap build` in exactly the `P` key and nowhere else; `verify_fixtures.py` passes `--no-parcels` per fixture according to the manifest so this doesn't read as drift.
 
 ## Shared schema
 
