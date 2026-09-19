@@ -101,6 +101,7 @@ async function main() {
       districts: Object.keys(doc.districts ?? {}).length,
       modularity: doc.q ?? 0,
       lang: doc.lang ?? "unknown",
+      source: "static",
     });
   }
   index.sort((a, b) => a.slug.localeCompare(b.slug));
