@@ -51,9 +51,15 @@ async function resolveSourceDir() {
 
   if (existsSync(CONFIG_PATH)) {
     const raw = JSON.parse(await readFile(CONFIG_PATH, "utf8"));
-    if (raw.mapsDir && existsSync(raw.mapsDir)) return raw.mapsDir;
-    if (raw.mapsDir) {
-      console.warn(`[collect-maps] maps.config.json's mapsDir does not exist: ${raw.mapsDir} — falling back`);
+    // A relative mapsDir is resolved against the repository root, not the
+    // process's cwd: the config is checked in and has to mean the same thing
+    // wherever the script is invoked from.
+    const configured = raw.mapsDir
+      ? path.resolve(REPO_ROOT, raw.mapsDir)
+      : null;
+    if (configured && existsSync(configured)) return configured;
+    if (configured) {
+      console.warn(`[collect-maps] maps.config.json's mapsDir does not exist: ${configured} — falling back`);
     }
   }
 

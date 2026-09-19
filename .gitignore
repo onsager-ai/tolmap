@@ -5,3 +5,7 @@ atlas.html
 .venv/
 /target/
 /.native/
+.maps
+web/node_modules/
+web/dist/
+web/public/maps/
