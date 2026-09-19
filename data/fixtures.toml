@@ -21,6 +21,15 @@
 # leidenalg/igraph versions this file's SHAs were last verified against:
 # igraph 1.0.0, leidenalg 0.12.0.
 #
+# `files`, `districts` and `q` for celery, django, flask, httpx, rich,
+# scrapy and sqlalchemy were re-derived on 2026-09-19 after issue #12's
+# relative-import fix (finding 12): the corrected resolver recovers real
+# import edges the old one silently dropped, which changed membership and
+# therefore reopened the naming cache on most districts -- see finding 12
+# for the before/after table and the renamed districts. prometheus and vue
+# are untouched (Go/TypeScript resolution was already correct; their
+# data/*.json are byte-identical to before this fix).
+#
 # Last full verification: 2026-09-19, all nine reproduced byte-for-byte
 # (`eval/verify_fixtures.py` with no arguments, against clones at these SHAs).
 
@@ -31,8 +40,8 @@ pkg = "celery"
 lang = "py"
 parcels = false
 files = 161
-districts = 6
-q = 0.3315
+districts = 7
+q = 0.3606
 
 [django]
 url = "https://github.com/django/django.git"
@@ -42,7 +51,7 @@ lang = "py"
 parcels = false
 files = 851
 districts = 12
-q = 0.4968
+q = 0.5061
 
 [flask]
 url = "https://github.com/pallets/flask.git"
@@ -51,8 +60,8 @@ pkg = "src/flask"
 lang = "py"
 parcels = true
 files = 24
-districts = 3
-q = 0.0533
+districts = 4
+q = 0.0326
 
 [httpx]
 url = "https://github.com/encode/httpx.git"
@@ -61,8 +70,8 @@ pkg = "httpx"
 lang = "py"
 parcels = false
 files = 23
-districts = 2
-q = 0.0597
+districts = 4
+q = 0.0297
 
 [prometheus]
 url = "https://github.com/prometheus/prometheus.git"
@@ -81,8 +90,8 @@ pkg = "rich"
 lang = "py"
 parcels = false
 files = 100
-districts = 3
-q = 0.4447
+districts = 4
+q = 0.3437
 
 [scrapy]
 url = "https://github.com/scrapy/scrapy.git"
@@ -92,7 +101,7 @@ lang = "py"
 parcels = false
 files = 188
 districts = 8
-q = 0.3479
+q = 0.3454
 
 [sqlalchemy]
 url = "https://github.com/sqlalchemy/sqlalchemy.git"
@@ -101,8 +110,8 @@ pkg = "lib/sqlalchemy"
 lang = "py"
 parcels = true
 files = 258
-districts = 9
-q = 0.7976
+districts = 8
+q = 0.5202
 
 [vue]
 url = "https://github.com/vuejs/core.git"
