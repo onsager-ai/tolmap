@@ -769,10 +769,18 @@ fn betweenness_centrality(adjacency: &[Vec<usize>], sample_size: usize, seed: u6
         return Vec::new();
     }
     let sample_count = count.min(sample_size);
-    let sources = if sample_count == count {
-        (0..count).collect::<Vec<_>>()
-    } else {
+    let sampled = sample_count != count;
+    let sources = if sampled {
         python_sample(count, sample_count, seed)
+    } else {
+        (0..count).collect::<Vec<_>>()
+    };
+    // Needed only to tell a sampled source from a non-source when rescaling
+    // below -- see the comment there for why that distinction matters.
+    let source_set: BTreeSet<usize> = if sampled {
+        sources.iter().copied().collect()
+    } else {
+        BTreeSet::new()
     };
     let mut centrality = vec![0.0; count];
     for source in sources {
@@ -808,12 +816,42 @@ fn betweenness_centrality(adjacency: &[Vec<usize>], sample_size: usize, seed: u6
         }
     }
     if count > 2 {
-        let mut scale = 1.0 / ((count - 1) * (count - 2)) as f64;
-        if sample_count != count {
-            scale *= count as f64 / sample_count as f64;
-        }
-        for value in &mut centrality {
-            *value *= scale;
+        if sampled {
+            // networkx's `_rescale` (networkx.algorithms.centrality.betweenness),
+            // called with `endpoints=False` and a sample of `k` source nodes,
+            // does NOT apply one scale to every node. A node that was itself
+            // one of the k sampled sources can't be its own source, so its
+            // count of possible (s, t) pairs runs over K_source - 1 choices of
+            // s; every other node's runs over the full K_source. Collapsing
+            // that to a single uniform `n / (k * (n-1) * (n-2))` factor (as an
+            // earlier version of this function did) overstates every
+            // non-source node's centrality by a `(k-1)/k`-ish factor --
+            // measured on scrapy: 0.03868767645547809 (uniform scale) against
+            // networkx's 0.03848189094241703 for scrapy/utils/python.py, a
+            // node that was not sampled -- 0.53% high, enough on its own to
+            // flip the landmark's rounded digit from .038 to .039. The raw
+            // (pre-scale) accumulated dependency sums already matched
+            // networkx's to 1e-13; only the rescale differed.
+            let k = sample_count as f64;
+            let n_minus_2 = (count - 2) as f64;
+            let scale_nonsource = 1.0 / (k * n_minus_2);
+            let scale_source = if sample_count > 1 {
+                1.0 / ((k - 1.0) * n_minus_2)
+            } else {
+                f64::NAN
+            };
+            for (index, value) in centrality.iter_mut().enumerate() {
+                *value *= if source_set.contains(&index) {
+                    scale_source
+                } else {
+                    scale_nonsource
+                };
+            }
+        } else {
+            let scale = 1.0 / ((count - 1) * (count - 2)) as f64;
+            for value in &mut centrality {
+                *value *= scale;
+            }
         }
     }
     centrality
@@ -939,6 +977,35 @@ mod tests {
         // random.Random(7).getrandbits(32), repeated.
         assert_eq!(random.next_u32(), 1_390_851_128);
         assert_eq!(random.next_u32(), 4_071_050_724);
+    }
+
+    #[test]
+    fn sampled_betweenness_scales_a_sampled_source_differently_from_a_non_source() {
+        // Ground truth from the reference's own library:
+        //   nx.betweenness_centrality(nx.path_graph(5), weight=None, seed=7, k=3)
+        //   -> {0: 0.0, 1: 0.333333, 2: 0.666667, 3: 0.333333, 4: 0.0}
+        // random.Random(7).sample([0,1,2,3,4], 3) == [2, 1, 3] -- nodes 1, 2, 3
+        // are themselves sampled sources, 0 and 4 are not, so this single graph
+        // exercises both branches of the rescale. Before the fix, a single
+        // uniform scale (n / (k*(n-1)*(n-2))) was applied to every node
+        // regardless, which is wrong whenever endpoints=False and k < n (see
+        // the comment on the rescale below) -- it reproduced neither the
+        // source nor the non-source figure here.
+        let adjacency = vec![
+            vec![1],
+            vec![0, 2],
+            vec![1, 3],
+            vec![2, 4],
+            vec![3],
+        ];
+        let result = betweenness_centrality(&adjacency, 3, 7);
+        let expected = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0 / 3.0, 0.0];
+        for (value, expect) in result.iter().zip(expected) {
+            assert!(
+                (value - expect).abs() < 1e-9,
+                "got {result:?}, want {expected:?}"
+            );
+        }
     }
 
     #[test]
