@@ -41,7 +41,7 @@ const IDENT_STOP: &[&str] = &[
     "e",
 ];
 
-const PY_SKIP_DIR: &[&str] = &[
+pub(crate) const PY_SKIP_DIR: &[&str] = &[
     "__pycache__",
     ".git",
     "tests",
@@ -54,7 +54,7 @@ const PY_SKIP_DIR: &[&str] = &[
     "node_modules",
 ];
 
-const MULTI_SKIP_DIR: &[&str] = &[
+pub(crate) const MULTI_SKIP_DIR: &[&str] = &[
     "vendor",
     "node_modules",
     "dist",
@@ -98,7 +98,7 @@ const KIND_INTERFACE: usize = 3;
 const KIND_TYPE: usize = 4;
 const KIND_CONST: usize = 5;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum LanguageKind {
     Python,
     Go,
@@ -197,7 +197,11 @@ pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData
     }
 }
 
-fn source_files(repo: &Path, pkg: &str, language: LanguageKind) -> Result<Vec<String>> {
+// pub(crate): `detect` re-walks the same tree with the same filters to count
+// candidate source roots before a real build runs -- reusing this rather
+// than a second file-matching implementation keeps the detector's file
+// counts identical to what `build` would actually index.
+pub(crate) fn source_files(repo: &Path, pkg: &str, language: LanguageKind) -> Result<Vec<String>> {
     let root = repo.join(pkg);
     ensure!(
         root.is_dir(),
