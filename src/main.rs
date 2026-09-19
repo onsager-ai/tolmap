@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -20,10 +20,15 @@ enum Command {
         // `main`, since clap's derive can't express "either, not both"
         // across a positional and a flag as cleanly as a manual check does.
         repo: Option<PathBuf>,
-        #[arg(long, default_value = ".")]
-        pkg: String,
-        #[arg(long, default_value = "py", value_parser = ["py", "go", "ts"])]
-        lang: String,
+        /// Source root inside the repository. Detected when omitted (see
+        /// `tolmap detect`) -- an explicit value always wins over detection,
+        /// since the repository holds intent and a maintainer's override is
+        /// intent (docs/ARCHITECTURE.md). Required with `--graph`.
+        #[arg(long)]
+        pkg: Option<String>,
+        /// Required with `--graph`; detected when omitted otherwise.
+        #[arg(long, value_parser = ["py", "go", "ts"])]
+        lang: Option<String>,
         #[arg(long)]
         name: Option<String>,
         #[arg(long, default_value = "out")]
@@ -68,6 +73,71 @@ enum Command {
         #[arg(long)]
         idf_names: Option<PathBuf>,
     },
+    /// Auto-detect language and source root from a bare clone, and print
+    /// what was found and why -- the thing to run when a map looks wrong
+    /// (see docs/FINDINGS.md finding 7: a wrong `--pkg` fails silently, not
+    /// loudly, so this exists to make the choice visible and overridable).
+    Detect { repo: PathBuf },
+}
+
+/// Resolves the `--pkg`/`--lang` `build` actually runs with: an explicit
+/// flag always wins, since the repository holds intent and a maintainer's
+/// override of a detected value is intent too (docs/ARCHITECTURE.md). Only
+/// the pieces that were *not* pinned get detected, and only those are
+/// printed -- an explicit `--pkg` with `--lang` omitted, for instance,
+/// prints only the detected language, not a detected `pkg` nobody asked for.
+fn resolve_build_source(
+    repo: &Path,
+    pkg: Option<String>,
+    lang: Option<String>,
+) -> Result<(String, String)> {
+    match (pkg, lang) {
+        (Some(pkg), Some(lang)) => Ok((pkg, lang)),
+        (Some(pkg), None) => {
+            let detection = tolmap::detect::detect(repo)
+                .with_context(|| format!("detect language for {}", repo.display()))?;
+            eprintln!(
+                "detected language: {} ({} confidence) -- {}",
+                detection.chosen.language.as_str(),
+                detection.chosen.confidence.as_str(),
+                detection.chosen.evidence
+            );
+            Ok((pkg, detection.chosen.language.as_str().to_owned()))
+        }
+        (None, Some(lang)) => {
+            let language = tolmap::extract::LanguageKind::parse(&lang)?;
+            let candidate = tolmap::detect::detect_language(repo, language)
+                .with_context(|| format!("detect source root for {}", repo.display()))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no {lang} source found in {}; pass --pkg explicitly",
+                        repo.display()
+                    )
+                })?;
+            eprintln!("detected pkg: {}", candidate.describe());
+            Ok((candidate.pkg, lang))
+        }
+        (None, None) => {
+            let detection = tolmap::detect::detect(repo).with_context(|| {
+                format!("detect language and source root for {}", repo.display())
+            })?;
+            eprintln!("detected: {}", detection.chosen.describe());
+            if detection.candidates.len() > 1 {
+                let others = detection.candidates[1..]
+                    .iter()
+                    .map(|c| c.describe())
+                    .collect::<Vec<_>>()
+                    .join("\n  ");
+                eprintln!(
+                    "  other sources found (not merged -- see docs/ARCHITECTURE.md):\n  {others}"
+                );
+            }
+            Ok((
+                detection.chosen.pkg.clone(),
+                detection.chosen.language.as_str().to_owned(),
+            ))
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -87,16 +157,19 @@ fn main() -> Result<()> {
                 anyhow::bail!("pass either a repository or --graph, not both")
             }
             (None, None) => anyhow::bail!("pass a repository, or a pre-extracted --graph"),
-            (Some(repo), None) => tolmap::geometry::build(
-                &repo,
-                &pkg,
-                &lang,
-                name.as_deref(),
-                &out,
-                resolution,
-                !no_parcels,
-            )
-            .map(|_| ()),
+            (Some(repo), None) => {
+                let (pkg, lang) = resolve_build_source(&repo, pkg, lang)?;
+                tolmap::geometry::build(
+                    &repo,
+                    &pkg,
+                    &lang,
+                    name.as_deref(),
+                    &out,
+                    resolution,
+                    !no_parcels,
+                )
+                .map(|_| ())
+            }
             (None, Some(graph_path)) => {
                 let name = name.ok_or_else(|| {
                     anyhow::anyhow!("--graph requires --name (no repository to name the map after)")
@@ -147,6 +220,17 @@ fn main() -> Result<()> {
             } else {
                 std::process::exit(1);
             }
+        }
+        Command::Detect { repo } => {
+            let detection = tolmap::detect::detect(&repo)?;
+            println!("chosen: {}", detection.chosen.describe());
+            if detection.candidates.len() > 1 {
+                println!("other sources found (not merged -- see docs/ARCHITECTURE.md):");
+                for candidate in &detection.candidates[1..] {
+                    println!("  {}", candidate.describe());
+                }
+            }
+            Ok(())
         }
     }
 }
