@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+ * Map palette — copied verbatim from viewer/template.html's :root block.
+ * These are NOT shadcn/Tailwind tokens: the renderer reads them directly with
+ * getComputedStyle, the same way the reference does, so district colour stays
+ * a pure function of district id. Do not derive these from the shadcn HSL
+ * tokens below — the two palettes serve different surfaces (map vs. chrome)
+ * and conflating them would make map colour depend on chrome theme choices.
+ * ------------------------------------------------------------------------- */
+:root {
+  --chrome: #151c21;
+  --chrome2: #1e272d;
+  --rule: #2b363d;
+  --canvas: #eaede9;
+  --coast: #bfc7bf;
+  --ink: #121a1e;
+  --on: #d9e1e3;
+  --dim: #8b989e;
+  --hot: #c0472f;
+  --c0: #2f6f63;
+  --c1: #b05a2c;
+  --c2: #3a6796;
+  --c3: #8a6b1c;
+  --c4: #5e626a;
+  --c5: #7e3f5d;
+  --c6: #4e7a33;
+  --c7: #8c4132;
+  --c8: #356f7d;
+  --c9: #93502a;
+  --c10: #4a5e8c;
+  --c11: #6e6a33;
+}
+:root[data-theme="dark"] {
+  --canvas: #0e161a;
+  --coast: #293539;
+  --ink: #dce4e4;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: #0e161a;
+    --coast: #293539;
+    --ink: #dce4e4;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * shadcn/ui chrome tokens (panels, cards, buttons — everything that is NOT
+ * the map surface). Values are the stock shadcn "zinc" light/dark palette.
+ * ------------------------------------------------------------------------- */
+:root {
+  --background: 0 0% 100%;
+  --foreground: 200 20% 9%;
+  --card: 0 0% 100%;
+  --card-foreground: 200 20% 9%;
+  --primary: 168 40% 29%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 200 10% 94%;
+  --secondary-foreground: 200 20% 9%;
+  --muted: 200 10% 94%;
+  --muted-foreground: 200 8% 42%;
+  --accent: 200 10% 94%;
+  --accent-foreground: 200 20% 9%;
+  --border: 200 12% 87%;
+  --input: 200 12% 87%;
+  --ring: 168 40% 29%;
+  --radius: 0.5rem;
+}
+:root[data-theme="dark"] {
+  --background: 200 18% 8%;
+  --foreground: 190 16% 87%;
+  --card: 200 16% 11%;
+  --card-foreground: 190 16% 87%;
+  --primary: 168 34% 46%;
+  --primary-foreground: 200 18% 8%;
+  --secondary: 200 12% 16%;
+  --secondary-foreground: 190 16% 87%;
+  --muted: 200 12% 16%;
+  --muted-foreground: 200 8% 60%;
+  --accent: 200 12% 16%;
+  --accent-foreground: 190 16% 87%;
+  --border: 200 12% 20%;
+  --input: 200 12% 20%;
+  --ring: 168 34% 46%;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: 200 18% 8%;
+    --foreground: 190 16% 87%;
+    --card: 200 16% 11%;
+    --card-foreground: 190 16% 87%;
+    --primary: 168 34% 46%;
+    --primary-foreground: 200 18% 8%;
+    --secondary: 200 12% 16%;
+    --secondary-foreground: 190 16% 87%;
+    --muted: 200 12% 16%;
+    --muted-foreground: 200 8% 60%;
+    --accent: 200 12% 16%;
+    --accent-foreground: 190 16% 87%;
+    --border: 200 12% 20%;
+    --input: 200 12% 20%;
+    --ring: 168 34% 46%;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+html,
+body {
+  /* Load-bearing, not incidental: the app has no page scroll, the map fills
+   * the viewport and panning/zooming is entirely the renderer's own pointer
+   * handling (see MapRenderer). Without this, an off-screen tap target can
+   * make the BODY scrollable, and a click handler (or a test driver) that
+   * scrolls the page into view shifts the map wrap's layout without firing
+   * a resize, desyncing the renderer's VW/VH from the real viewport —
+   * exactly the bug this line exists to rule out. Ported from
+   * viewer/template.html's `body{overflow:hidden}`. */
+  overflow: hidden;
+}
+body {
+  margin: 0;
+  background: var(--chrome);
+  color: var(--on);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 13px;
+  overscroll-behavior: none;
+}
+
+/* The map's own <svg> never gets touch-scroll gestures — panning and pinching
+   are handled entirely by the pointer handlers in MapRenderer. See the
+   pointerdown/pointermove comments there for why capture is deferred. */
+.map-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+.map-svg.dragging {
+  cursor: grabbing;
+}
