@@ -67,6 +67,22 @@ extern "C" int tolmap_leiden_partition(
     }
 
     Optimiser optimiser;
+    // libleidenalg's C++ constructor and leidenalg's Python Optimiser do NOT
+    // agree on their defaults, and the reference implementation is the Python
+    // one: `refine_consider_comms` is ALL_NEIGH_COMMS (2) in C++ and
+    // RAND_NEIGH_COMM (4) in Python. The refinement phase is where Leiden
+    // differs from Louvain, so inheriting the C++ default silently runs a
+    // different search -- it reproduced only 73.4% of the reference's
+    // membership on scrapy before this was set. Every field `find_partition`
+    // relies on is pinned here rather than left to whichever default the
+    // linked version happens to carry.
+    optimiser.consider_comms = Optimiser::ALL_NEIGH_COMMS;   // 2
+    optimiser.refine_consider_comms = Optimiser::RAND_NEIGH_COMM;  // 4
+    optimiser.optimise_routine = Optimiser::MOVE_NODES;      // 10
+    optimiser.refine_routine = Optimiser::MERGE_NODES;       // 11
+    optimiser.refine_partition = 1;
+    optimiser.consider_empty_community = 1;
+    optimiser.max_comm_size = 0;
     optimiser.set_rng_seed(static_cast<std::size_t>(seed));
     double improvement = 0.0;
     do {
