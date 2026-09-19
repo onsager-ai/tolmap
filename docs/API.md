@@ -6,6 +6,12 @@ to `127.0.0.1` only -- see `docs/ARCHITECTURE.md`'s "Limits" section for why,
 and note that making it publicly reachable is explicitly out of scope for
 this service and reserved to a separate, later decision.
 
+**Default listen address is `127.0.0.1:8787`** (the frontend's dev proxy
+defaults to the same address, overridable there via
+`TOLMAP_API_PROXY_TARGET`). The port is configurable service-side via the
+`TOLMAP_PORT` environment variable; the loopback-only host is not
+configurable anywhere -- see `src/service/config.rs`.
+
 This document is the contract. It is written and committed before the
 implementation so the frontend and the service can be built in parallel
 against the same shape; the implementation must not drift from it without
@@ -120,22 +126,28 @@ Every non-2xx response is JSON:
 |---|---|---|
 | 400 | `invalid_request` | body does not match the contract above |
 | 404 | `not_found` | unknown job id, or unknown slug/commit for `GET /api/maps/{owner}/{repo}` |
-| 413 | `too_large` | a configured limit was tripped -- `message` names which one and its value (e.g. `"file count 1204 exceeds the configured limit of 1000"`) |
+| 413 | `repo_too_large` | a configured limit was tripped -- `message` names which one and its value (e.g. `"file count 1204 exceeds the configured limit of 1000"`). **Fixed exactly** (code and status), by agreement with the frontend, which detects this by exact match rather than a heuristic. |
 | 429 | `rate_limited` | per-IP or per-repo rate limit tripped -- `message` says which |
-| 422 | `detection_failed` | language/source-root detection returned no answer (placeholder detector only knows the fixture corpus; see `src/service/detect.rs`) |
+| 422 | `detection_failed` | `detect::detect` (issue #4) found no supported source at all -- an empty or non-source repository, not a size or confidence problem |
+| 422 | `detection_uncertain` | detection succeeded but at `Confidence::Low` -- `message` is the chosen candidate's evidence text. Never indexed silently: a wrong source root produces a plausible-looking wrong map (finding 7) |
 | 502 | `clone_failed` | git clone/fetch failed (bad URL, network, repo does not exist) |
 | 500 | `index_failed` | the indexing pipeline itself errored on an otherwise-valid repository |
+| 500 | `internal_error` | a bug, not a caller or repository problem |
 
 A job that fails carries the same `error`/`message` shape in its `error`
 field (`GET /api/jobs/{job_id}` and the SSE stream), with `status: "failed"`
 instead of an HTTP error status, since the job accepted successfully at
-`202` and failed later.
+`202` and failed later. A job that fails with `repo_too_large` after
+already being accepted still carries that exact code in its `error` field,
+for the same reason the HTTP shape is fixed: the frontend renders it as its
+own "too large for this index" state, retry disabled, rather than a generic
+failure.
 
 **A repository rejected for size must never present as a timeout.** Every
-limit check that can run before the expensive stages (file count after
-clone, clone size on disk, history depth) runs first and fails fast with
-`too_large` naming the limit, rather than letting indexing start and time
-out.
+limit check that can run before the expensive stages (file count from
+detection, clone size on disk, history depth) runs first and fails fast
+with `repo_too_large` naming the limit, rather than letting indexing start
+and time out.
 
 ## Store
 

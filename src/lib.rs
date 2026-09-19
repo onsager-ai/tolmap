@@ -9,5 +9,6 @@ pub mod parity;
 pub mod partition;
 pub mod pipeline;
 pub mod schema;
+pub mod service;
 
 pub const SEED: u64 = 7;

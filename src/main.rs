@@ -78,6 +78,13 @@ enum Command {
     /// (see docs/FINDINGS.md finding 7: a wrong `--pkg` fails silently, not
     /// loudly, so this exists to make the choice visible and overridable).
     Detect { repo: PathBuf },
+    /// The job service (milestone 3, issue #5): clones/indexes repositories
+    /// on demand and serves the results over HTTP. Binds 127.0.0.1 only --
+    /// see docs/API.md and `service::config::ServeConfig`'s doc comment.
+    /// Not a tokio::main binary: only this subcommand needs a runtime, so
+    /// it builds one itself rather than paying async overhead on every
+    /// other `tolmap` invocation.
+    Serve,
 }
 
 /// Resolves the `--pkg`/`--lang` `build` actually runs with: an explicit
@@ -231,6 +238,11 @@ fn main() -> Result<()> {
                 }
             }
             Ok(())
+        }
+        Command::Serve => {
+            let config = tolmap::service::config::ServeConfig::from_env();
+            let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
+            runtime.block_on(tolmap::service::serve(config))
         }
     }
 }
