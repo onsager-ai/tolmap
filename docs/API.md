@@ -189,3 +189,12 @@ commit already indexed returns the cached map immediately (see above), and
 on record. See `src/service/store.rs` for the schema and why the map
 document itself is kept as a content-addressed file next to the database
 rather than a blob column.
+
+**Pruned, not kept forever.** After a job finishes indexing, the store
+keeps only the `TOLMAP_RETAIN_COMMITS_PER_REPO` most-recently-indexed
+commits for that slug (default 20); older `(slug, commit_sha)` rows and
+their map files are deleted. The single newest row for a slug is never
+pruned, regardless of that setting -- docs/FINDINGS.md finding 4's warm
+start reads the previous commit's district membership out of exactly this
+row, so a policy that could evict it would silently degrade the highest-
+leverage property the store has (see `service::store::Store::prune`).

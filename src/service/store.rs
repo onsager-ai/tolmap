@@ -168,6 +168,65 @@ impl Store {
         Ok(rows)
     }
 
+    /// Deletes indexed rows for `slug` beyond the `keep` most-recently
+    /// indexed (by `indexed_at`), and removes their map files from disk --
+    /// issue #23 gap 2: every `(repo, commit_sha)` ever indexed used to
+    /// keep its row and its map file forever, so a service indexing one
+    /// repository repeatedly grows without bound.
+    ///
+    /// `keep` is floored at 1: the single newest row for `slug` is always
+    /// kept no matter what is passed, because it is exactly what
+    /// `warm_start_source`'s branch-less fallback (and a first-ever index
+    /// of a new branch) reads. Evicting it would not just lose a row, it
+    /// would cost district retention on the *next* index of this repo
+    /// (docs/FINDINGS.md finding 4: warm-starting Leiden from the previous
+    /// membership took retention from 46% to 88% on django, at no
+    /// modularity cost -- the highest-leverage result in the project).
+    /// Callers that want a stricter cap should still pass 1, not 0.
+    ///
+    /// A commits-per-repo count, not an age or a total-bytes budget, is
+    /// the policy chosen here: it is the one that makes "the newest row
+    /// survives" true by construction (rank 1 of an `indexed_at DESC`
+    /// ordering is always kept for any `keep >= 1`), where an age or byte
+    /// budget would need a special case for "unless it is the newest" to
+    /// get the same guarantee -- and it maps directly onto the growth this
+    /// issue actually describes ("a service indexing a repository per
+    /// commit grows without bound"), which is per-repo, not global.
+    ///
+    /// Called once per slug, right after that slug's `insert`
+    /// (`jobs.rs::run_blocking`) -- so the bound holds continuously rather
+    /// than needing a separate sweep/cron.
+    pub fn prune(&self, slug: &str, keep: usize) -> Result<usize> {
+        let keep = keep.max(1);
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        let stale: Vec<(String, String)> = {
+            let mut statement = conn.prepare(
+                "SELECT commit_sha, map_path FROM maps WHERE slug = ?1 ORDER BY indexed_at DESC",
+            )?;
+            let rows = statement
+                .query_map(params![slug], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.into_iter().skip(keep).collect()
+        };
+        for (commit, map_path) in &stale {
+            conn.execute(
+                "DELETE FROM maps WHERE slug = ?1 AND commit_sha = ?2",
+                params![slug, commit],
+            )?;
+            // Best-effort: the row is the source of truth for what is
+            // "indexed" (docs/API.md), so a file already missing for
+            // whatever reason should not stop the row from being pruned.
+            if let Err(err) = std::fs::remove_file(map_path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("prune: could not remove map file {map_path}: {err}");
+                }
+            }
+        }
+        Ok(stale.len())
+    }
+
     pub fn insert(&self, row: &MapRow) -> Result<()> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         conn.execute(
@@ -246,4 +305,167 @@ pub fn membership_by_file(document: &MapDocument) -> BTreeMap<String, usize> {
         .cloned()
         .zip(document.nodes.iter().map(|node| node.district()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("test.sqlite3")).unwrap();
+        (dir, store)
+    }
+
+    fn row(slug: &str, commit: &str, indexed_at: &str, map_path: &Path) -> MapRow {
+        MapRow {
+            slug: slug.to_owned(),
+            owner: "o".to_owned(),
+            repo: "r".to_owned(),
+            commit: commit.to_owned(),
+            branch: Some("main".to_owned()),
+            lang: "py".to_owned(),
+            files: 1,
+            districts: 1,
+            modularity: 0.1,
+            map_path: map_path.to_owned(),
+            indexed_at: indexed_at.to_owned(),
+        }
+    }
+
+    #[test]
+    fn prune_keeps_only_the_newest_n_and_deletes_older_map_files() {
+        let (dir, store) = temp_store();
+        let paths: Vec<PathBuf> = (0..3)
+            .map(|i| dir.path().join(format!("map{i}.json")))
+            .collect();
+        for path in &paths {
+            std::fs::write(path, b"{}").unwrap();
+        }
+        store
+            .insert(&row("o/r", "c0", "2024-01-01T00:00:00Z", &paths[0]))
+            .unwrap();
+        store
+            .insert(&row("o/r", "c1", "2024-01-02T00:00:00Z", &paths[1]))
+            .unwrap();
+        store
+            .insert(&row("o/r", "c2", "2024-01-03T00:00:00Z", &paths[2]))
+            .unwrap();
+
+        let pruned = store.prune("o/r", 2).unwrap();
+        assert_eq!(pruned, 1);
+        assert!(
+            store.get("o/r", "c0").unwrap().is_none(),
+            "oldest row should be pruned"
+        );
+        assert!(store.get("o/r", "c1").unwrap().is_some());
+        assert!(store.get("o/r", "c2").unwrap().is_some());
+        assert!(
+            !paths[0].exists(),
+            "pruned row's map file should be removed from disk"
+        );
+        assert!(paths[1].exists());
+        assert!(paths[2].exists());
+    }
+
+    #[test]
+    fn prune_never_evicts_the_newest_row_even_when_asked_to_keep_zero() {
+        let (dir, store) = temp_store();
+        let p0 = dir.path().join("m0.json");
+        let p1 = dir.path().join("m1.json");
+        std::fs::write(&p0, b"{}").unwrap();
+        std::fs::write(&p1, b"{}").unwrap();
+        store
+            .insert(&row("o/r", "c0", "2024-01-01T00:00:00Z", &p0))
+            .unwrap();
+        store
+            .insert(&row("o/r", "c1", "2024-01-02T00:00:00Z", &p1))
+            .unwrap();
+
+        store.prune("o/r", 0).unwrap();
+        assert!(
+            store.get("o/r", "c1").unwrap().is_some(),
+            "the newest row must survive even when keep=0 is requested"
+        );
+    }
+
+    #[test]
+    fn prune_does_not_touch_other_slugs() {
+        let (dir, store) = temp_store();
+        let pa = dir.path().join("a.json");
+        let pb = dir.path().join("b.json");
+        std::fs::write(&pa, b"{}").unwrap();
+        std::fs::write(&pb, b"{}").unwrap();
+        store
+            .insert(&row("a/a", "c0", "2024-01-01T00:00:00Z", &pa))
+            .unwrap();
+        store
+            .insert(&row("b/b", "c0", "2024-01-01T00:00:00Z", &pb))
+            .unwrap();
+
+        store.prune("a/a", 0).unwrap();
+        assert!(store.get("a/a", "c0").unwrap().is_some());
+        assert!(
+            store.get("b/b", "c0").unwrap().is_some(),
+            "pruning one slug must not evict another slug's rows"
+        );
+    }
+
+    /// Finding 4: the warm start reads the *previous* commit's membership.
+    /// `jobs.rs::run_blocking` prunes right after inserting each new row --
+    /// this reproduces that sequence (insert, prune, insert, prune, ...)
+    /// and checks that a warm start launched after each prune still finds
+    /// a row, even though the row it finds was not the very first commit
+    /// ever indexed for this slug (and was itself later pruned in turn).
+    #[test]
+    fn warm_start_source_still_finds_a_row_after_prune_evicts_the_one_before_it() {
+        let (dir, store) = temp_store();
+        let p0 = dir.path().join("m0.json");
+        let p1 = dir.path().join("m1.json");
+        let p2 = dir.path().join("m2.json");
+        for path in [&p0, &p1, &p2] {
+            std::fs::write(path, b"{}").unwrap();
+        }
+
+        store
+            .insert(&row("o/r", "c0", "2024-01-01T00:00:00Z", &p0))
+            .unwrap();
+        store.prune("o/r", 1).unwrap();
+
+        // A job indexing c1 would warm-start from c0 here, before this
+        // prune (keep=1) runs and evicts c0.
+        store
+            .insert(&row("o/r", "c1", "2024-01-02T00:00:00Z", &p1))
+            .unwrap();
+        store.prune("o/r", 1).unwrap();
+        assert!(
+            store.get("o/r", "c0").unwrap().is_none(),
+            "c0 should have been pruned once c1 was indexed"
+        );
+        let source = store
+            .warm_start_source("o/r", Some("main"))
+            .unwrap()
+            .expect("a warm start source must still exist after pruning c0");
+        assert_eq!(
+            source.commit, "c1",
+            "warm start must find c1, the surviving row, not the pruned c0"
+        );
+
+        // A job indexing c2 would warm-start from c1 here, before this
+        // prune (keep=1) runs and evicts c1 in turn.
+        store
+            .insert(&row("o/r", "c2", "2024-01-03T00:00:00Z", &p2))
+            .unwrap();
+        store.prune("o/r", 1).unwrap();
+        assert!(store.get("o/r", "c1").unwrap().is_none());
+        let source = store
+            .warm_start_source("o/r", Some("main"))
+            .unwrap()
+            .expect("a warm start source must still exist after pruning c1");
+        assert_eq!(
+            source.commit, "c2",
+            "warm start must find c2 after c1 -- its own former warm-start \
+             source -- was pruned"
+        );
+    }
 }

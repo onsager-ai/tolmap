@@ -365,5 +365,20 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         );
     }
 
+    // Bound store growth (issue #23 gap 2): keep only the newest
+    // `retain_commits_per_repo` indexed commits for this slug, evicting
+    // older rows and their map files. Run right after `insert` succeeds so
+    // the row just written is always counted as the newest -- prune never
+    // evicts it (see `store::Store::prune`'s doc comment on why that
+    // matters for finding 4's warm start). Best-effort like cache
+    // eviction in `clone.rs`: failing to reclaim space is not a reason to
+    // fail a job that already finished successfully.
+    if let Err(err) = state
+        .store
+        .prune(&repo_ref.slug, state.config.retain_commits_per_repo)
+    {
+        eprintln!("prune warning for {}: {err:#}", repo_ref.slug);
+    }
+
     finish_done(&tx);
 }
