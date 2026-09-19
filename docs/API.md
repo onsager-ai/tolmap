@@ -55,10 +55,15 @@ A request names a repository three ways:
   for tests and fixtures without hitting the network. Its `slug` is
   `local/<basename>`, so `/tmp/tolmap-fixtures/flask` becomes `local/flask`.
 
-Every repository has a canonical `slug` of the form `owner/repo` (lowercase
-as given; not normalised further). The slug, not the input string, is the
-cache key's non-commit half and the path segment used everywhere else in
-this API.
+Every repository has a canonical `slug` of the form `owner/repo`.
+`owner`/`repo` are lowercased on input (GitHub treats them
+case-insensitively, so `Owner/Repo` and `owner/repo` must resolve to the
+same cache entry rather than being cloned and indexed twice -- see
+`service::clone::canonicalize`); the originally submitted casing is not
+retained anywhere. `GET /api/maps/{owner}/{repo}` lowercases its path
+parameters the same way before looking a slug up. The slug, not the input
+string, is the cache key's non-commit half and the path segment used
+everywhere else in this API.
 
 ## Endpoints
 

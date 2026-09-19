@@ -84,6 +84,21 @@ fn ensure_local(path: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Lowercases an owner or repo name (issue #23 gap 3: GitHub treats both
+/// case-insensitively, so `Owner/Repo` and `owner/repo` must resolve to one
+/// cache entry, not two). This is the single normalisation point --
+/// `owner`/`repo`/`slug` on a [`RepoRef`] are always already-canonical by
+/// construction, so every downstream consumer (the on-disk clone cache
+/// path, the store's `(slug, commit_sha)` key, `GET /api/maps/{owner}/{repo}`)
+/// can use them directly without re-normalising. The originally submitted
+/// spelling is not retained anywhere -- there is no product need to show it
+/// back, and keeping a second, non-key copy around is exactly the kind of
+/// two-places-that-must-agree this codebase avoids (CLAUDE.md: the schema
+/// is defined once for the same reason).
+pub fn canonicalize(component: &str) -> String {
+    component.to_ascii_lowercase()
+}
+
 fn parse_repo_spec(spec: &str) -> Result<RepoRef, ApiError> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
@@ -100,17 +115,22 @@ fn parse_repo_spec(spec: &str) -> Result<RepoRef, ApiError> {
         let owner = segments
             .next()
             .ok_or_else(|| ApiError::invalid_request("could not parse an owner out of the url"))?;
-        (owner.to_owned(), repo.to_owned(), trimmed.to_owned())
+        // The clone URL keeps the caller's exact casing -- an arbitrary
+        // https url is not necessarily GitHub, and some hosts *are*
+        // case-sensitive in the path, so only the derived slug/owner/repo
+        // (our cache key, never what is handed to `git`) get canonicalised.
+        (canonicalize(owner), canonicalize(repo), trimmed.to_owned())
     } else {
         let mut parts = trimmed.splitn(2, '/');
         let owner = parts.next().filter(|s| !s.is_empty());
         let repo = parts.next().filter(|s| !s.is_empty());
         match (owner, repo) {
-            (Some(owner), Some(repo)) => (
-                owner.to_owned(),
-                repo.to_owned(),
-                format!("https://github.com/{owner}/{repo}.git"),
-            ),
+            (Some(owner), Some(repo)) => {
+                let owner = canonicalize(owner);
+                let repo = canonicalize(repo);
+                let url = format!("https://github.com/{owner}/{repo}.git");
+                (owner, repo, url)
+            }
             _ => {
                 return Err(ApiError::invalid_request(
                     "\"repo\" must be \"owner/name\" or an https url",
