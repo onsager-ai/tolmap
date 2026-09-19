@@ -735,8 +735,9 @@ fn build_python(repo: &Path, pkg: &str, parsed: BTreeMap<String, ParsedFile>) ->
     for (module, file) in &modules {
         let parsed_file = &parsed[file];
         let imports = python_imports(parsed_file.tree.root_node(), &parsed_file.source);
+        let is_pkg = file.rsplit('/').next() == Some("__init__.py");
         for import in &imports {
-            for target in resolve_python(import, module, &known) {
+            for target in resolve_python(import, module, &known, is_pkg) {
                 let target_file = &file_of[&target];
                 if target_file == file {
                     continue;
@@ -855,17 +856,32 @@ fn import_name(node: Node<'_>, source: &[u8]) -> Option<(String, Option<String>)
     }
 }
 
-fn python_head(import: &PythonImport, current_module: &str) -> String {
+/// `is_pkg`: whether `current_module` names the importing file's own
+/// package (the file is an `__init__.py`, already stripped of `__init__`
+/// by `module_name()`) rather than an ordinary module inside that package.
+/// A relative import resolves against the *containing package* -- itself
+/// for a package `__init__`, `current_module` minus its last segment
+/// otherwise -- then strips `import.level - 1` further segments.
+/// Collapsing that distinction into a single `+ 1` (as this used to) is
+/// correct only for the `__init__` case and silently drops every other
+/// relative import: at level 1 it kept the whole module name, so
+/// `from . import x` resolved to a name that was never a known module.
+/// See issue #12.
+fn python_head(import: &PythonImport, current_module: &str, is_pkg: bool) -> String {
     if import.level == 0 {
         return import.module.clone();
     }
-    let parts = current_module.split('.').collect::<Vec<_>>();
-    let keep = if import.level <= parts.len() {
-        parts.len() - import.level + 1
+    let mut pkg_parts = current_module.split('.').collect::<Vec<_>>();
+    if !is_pkg {
+        pkg_parts.pop();
+    }
+    let strip = import.level - 1;
+    let keep = if strip <= pkg_parts.len() {
+        pkg_parts.len() - strip
     } else {
         0
     };
-    let prefix = parts[..keep].join(".");
+    let prefix = pkg_parts[..keep].join(".");
     if import.module.is_empty() {
         prefix
     } else if prefix.is_empty() {
@@ -879,10 +895,11 @@ fn resolve_python(
     import: &PythonImport,
     current_module: &str,
     known: &BTreeSet<String>,
+    is_pkg: bool,
 ) -> BTreeSet<String> {
     let mut hits = Vec::new();
     if import.from {
-        let head = python_head(import, current_module);
+        let head = python_head(import, current_module, is_pkg);
         hits.push(head.clone());
         for (name, _) in &import.names {
             hits.push(if head.is_empty() {
@@ -920,11 +937,12 @@ fn python_uses(
     known: &BTreeSet<String>,
     file_of: &BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
+    let is_pkg = current_file.rsplit('/').next() == Some("__init__.py");
     let mut result = Vec::new();
     let mut aliases = BTreeMap::<String, String>::new();
     for import in imports {
         if import.from {
-            let targets = resolve_python(import, current_module, known);
+            let targets = resolve_python(import, current_module, known, is_pkg);
             for target in targets {
                 let target_file = &file_of[&target];
                 if target_file != current_file {
@@ -935,7 +953,7 @@ fn python_uses(
                     }
                 }
             }
-            let head = python_head(import, current_module);
+            let head = python_head(import, current_module, is_pkg);
             for (name, alias) in &import.names {
                 let full = if head.is_empty() {
                     name.clone()
@@ -1566,17 +1584,57 @@ mod tests {
     }
 
     #[test]
-    fn relative_import_resolution_matches_python_levels() {
+    fn relative_import_resolves_against_containing_package_not_cur_mod() {
+        // Issue #12: `from . import b` in a non-package module `pkg.a.mod`
+        // (file pkg/a/mod.py, not __init__.py) must resolve to `pkg.a.b`
+        // -- the *containing* package -- not `pkg.a.mod.b`. Level 1 keeps
+        // the whole containing-package name; only `level - 1` further
+        // segments get stripped.
         let known = ["pkg.a".to_owned(), "pkg.a.b".to_owned()]
             .into_iter()
             .collect();
         let import = PythonImport {
             from: true,
-            level: 2,
+            level: 1,
             module: String::new(),
             names: vec![("b".to_owned(), None)],
         };
-        assert!(resolve_python(&import, "pkg.a.current", &known).contains("pkg.a.b"));
+        assert!(resolve_python(&import, "pkg.a.mod", &known, false).contains("pkg.a.b"));
+    }
+
+    #[test]
+    fn relative_import_level_two_climbs_one_more_from_the_containing_package() {
+        // `from .. import x` in pkg/a/mod.py: the containing package is
+        // pkg.a, and one further level up is pkg. The old `+ 1` collapse
+        // computed this from cur_mod's own segment count rather than the
+        // containing package's, which happened to agree at this depth but
+        // diverges as soon as is_pkg matters -- see the next test.
+        let known = ["pkg".to_owned(), "pkg.x".to_owned()].into_iter().collect();
+        let import = PythonImport {
+            from: true,
+            level: 2,
+            module: String::new(),
+            names: vec![("x".to_owned(), None)],
+        };
+        assert!(resolve_python(&import, "pkg.a.mod", &known, false).contains("pkg.x"));
+    }
+
+    #[test]
+    fn relative_import_from_a_package_init_resolves_against_itself() {
+        // pkg/a/__init__.py's module_name() is already "pkg.a" (__init__
+        // stripped), and a level-1 import from it resolves against that
+        // same name -- is_pkg=true skips the "minus last segment" step a
+        // non-package module needs.
+        let known = ["pkg.a".to_owned(), "pkg.a.b".to_owned()]
+            .into_iter()
+            .collect();
+        let import = PythonImport {
+            from: true,
+            level: 1,
+            module: String::new(),
+            names: vec![("b".to_owned(), None)],
+        };
+        assert!(resolve_python(&import, "pkg.a", &known, true).contains("pkg.a.b"));
     }
 
     #[test]
