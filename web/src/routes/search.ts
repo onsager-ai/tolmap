@@ -27,3 +27,20 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const d = !file && Number.isInteger(dRaw) && dRaw >= 0 ? dRaw : undefined;
   return { file, sym, d, geo, layer };
 }
+
+/** Search state for the /new progress route (see routes/IndexJobView.tsx).
+ * `job` is the id being watched; `slug` (`owner/name`) is carried along
+ * only so the view has something to display before the first job status
+ * arrives, and to re-POST the same repo on retry after a failure. */
+export interface JobSearch {
+  job?: string;
+  slug?: string;
+}
+
+const SLUG_RE = /^[^/\s]+\/[^/\s]+$/;
+
+export function validateJobSearch(search: Record<string, unknown>): JobSearch {
+  const job = typeof search.job === "string" && search.job.length > 0 ? search.job : undefined;
+  const slug = typeof search.slug === "string" && SLUG_RE.test(search.slug) ? search.slug : undefined;
+  return { job, slug };
+}

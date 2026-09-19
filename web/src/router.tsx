@@ -3,8 +3,9 @@ import { RootLayout } from "@/routes/RootLayout";
 import { CatalogueIndex } from "@/routes/CatalogueIndex";
 import { ReservedPage } from "@/routes/ReservedPage";
 import { MapView } from "@/routes/MapView";
+import { IndexJobView } from "@/routes/IndexJobView";
 import { RESERVED_NAMES } from "@/routes/reserved";
-import { validateMapSearch } from "@/routes/search";
+import { validateMapSearch, validateJobSearch } from "@/routes/search";
 
 const rootRoute = createRootRoute({ component: RootLayout });
 
@@ -14,18 +15,33 @@ const indexRoute = createRoute({
   component: CatalogueIndex,
 });
 
-// One static route per reserved name (see routes/reserved.ts). TanStack
-// Router prefers a static path segment over a dynamic one at the same
-// depth, so these win the match before $owner/$repo ever sees a request for
-// e.g. /settings — which matters the day a single-segment /$owner route (a
-// profile page, say) gets added, not just today.
-const reservedRoutes = [...RESERVED_NAMES].map((name) =>
-  createRoute({
-    getParentRoute: () => rootRoute,
-    path: `/${name}`,
-    component: ReservedPage,
-  }),
-);
+// One static route per reserved name (see routes/reserved.ts), except "new"
+// which gets its own component below — the progress view, not the generic
+// placeholder. TanStack Router prefers a static path segment over a dynamic
+// one at the same depth, so these win the match before $owner/$repo ever
+// sees a request for e.g. /settings — which matters the day a
+// single-segment /$owner route (a profile page, say) gets added, not just
+// today.
+const reservedRoutes = [...RESERVED_NAMES]
+  .filter((name) => name !== "new")
+  .map((name) =>
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: `/${name}`,
+      component: ReservedPage,
+    }),
+  );
+
+// The submit flow's progress view (milestone brief, "A progress view"):
+// /new?job=<id>&slug=<owner/name>, watching one indexing job via SSE/poll
+// and routing to /:owner/:repo on completion. "new" is already reserved
+// above's set, so this can never collide with a real GitHub owner.
+const newRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/new",
+  validateSearch: validateJobSearch,
+  component: IndexJobView,
+});
 
 const ownerRepoRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -41,7 +57,7 @@ const ownerRepoRoute = createRoute({
   component: MapView,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, ...reservedRoutes, ownerRepoRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, newRoute, ...reservedRoutes, ownerRepoRoute]);
 
 export const router = createRouter({ routeTree });
 
