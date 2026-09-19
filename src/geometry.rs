@@ -49,15 +49,27 @@ pub fn build_from_graph(
     let partitioner = LeidenFfi;
     let layout = pipeline::run(graph, resolution, &partitioner)?;
     eprintln!("[3/5] name     districts");
-    let names = naming::names_for_membership(
-        &layout
-            .weighted
-            .nodes
-            .iter()
-            .map(|node| node.file.clone())
-            .collect::<Vec<_>>(),
-        &layout.membership,
-    );
+    // Same convention `cli.py::build` uses: the cache lives next to the map
+    // it names, `<out>/<name>.names.json`, so a rerun into the same --out
+    // finds it with no extra flag. `eval/seed_names.py` writes this same
+    // shape, keyed by the same fingerprint, to seed a fixture's committed
+    // names into a fresh build directory.
+    fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
+    let names_cache_path = out.join(format!("{map_name}.names.json"));
+    let files = layout
+        .weighted
+        .nodes
+        .iter()
+        .map(|node| node.file.clone())
+        .collect::<Vec<_>>();
+    let (names, names_cache) =
+        naming::name_districts(&files, &layout.membership, Some(&names_cache_path));
+    naming::save_cache(&names_cache_path, &names_cache).with_context(|| {
+        format!(
+            "write district names cache {}",
+            names_cache_path.display()
+        )
+    })?;
     for (district, district_name) in &names {
         let count = layout
             .membership
@@ -68,7 +80,7 @@ pub fn build_from_graph(
     }
     eprintln!("[4/5] geometry regions");
     let geometry = blobs::build_geometry(&layout, &partitioner)?;
-    let mut document = compact(map_name, layout, geometry);
+    let mut document = compact(map_name, layout, geometry, names);
     if with_parcels {
         eprintln!("[5/5] geometry weighted-voronoi plots");
         document.parcels = Some(parcels::build_parcels(&document));
@@ -94,6 +106,7 @@ fn compact(
     name: String,
     layout: pipeline::PipelineOutput,
     geometry: blobs::BlobGeometry,
+    names: BTreeMap<String, String>,
 ) -> MapDocument {
     let files = layout
         .weighted
@@ -199,7 +212,6 @@ fn compact(
             )
         })
         .collect();
-    let names = naming::names_for_membership(&files, &layout.membership);
     MapDocument {
         repo: name,
         q: layout.modularity,

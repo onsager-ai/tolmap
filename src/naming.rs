@@ -1,11 +1,33 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
 const STOP: &[&str] = &[
     "src", "lib", "pkg", "internal", "packages", "core", "app", "python",
 ];
+
+/// One entry of the naming cache `naming.py::save_cache` writes to
+/// `<out>/<name>.names.json` and `name_districts` reads back. Keyed by
+/// [`fingerprint`] of the district's (sorted) member list, not by district
+/// id -- ids are an artefact of one clustering run and are not stable
+/// across a reclustering (finding 4), but "which fingerprint" survives
+/// district renumbering, member reordering and even a rerun's IDF namer
+/// being skipped entirely on a cache hit. `district`/`size` are carried
+/// along only for `eval/seed_names.py`-style tooling that wants to relate a
+/// cache entry back to a specific fixture map; naming itself never reads
+/// them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEntry {
+    pub name: String,
+    pub district: usize,
+    pub size: usize,
+}
+
+pub type NameCache = BTreeMap<String, CacheEntry>;
 
 pub fn fingerprint(members: &[String]) -> String {
     let mut members = members.to_vec();
@@ -14,7 +36,53 @@ pub fn fingerprint(members: &[String]) -> String {
     format!("{digest:x}")[..12].to_owned()
 }
 
+/// `naming.py::load_cache`: a missing or unparsable cache is not an error --
+/// a first build for a repository has no cache yet, and the tool must still
+/// run (deterministic IDF fallback) rather than fail on it.
+pub fn load_cache(path: &Path) -> NameCache {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// `naming.py::save_cache`. Formatting is not required to byte-match the
+/// Python writer (`indent=1, sort_keys=True`) -- nothing reads this file
+/// except `load_cache`/`eval/seed_names.py`, both of which only need valid
+/// JSON with this shape, and a `BTreeMap` already serialises with sorted
+/// keys.
+pub fn save_cache(path: &Path, cache: &NameCache) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(cache)?;
+    fs::write(path, json)
+}
+
+/// Deterministic-fallback-only naming, with no cache: every district gets an
+/// IDF name computed fresh from its own membership. Exists for callers (and
+/// the sole remaining direct test) that want the raw namer without the
+/// cache-read/write side effects -- `name_districts` below is what `tolmap
+/// build` actually calls, and differs only in consulting a cache first.
+#[cfg(test)]
 pub fn names_for_membership(files: &[String], membership: &[usize]) -> BTreeMap<String, String> {
+    name_districts(files, membership, None).0
+}
+
+/// `naming.py::name_districts`, minus the model hook (`naming_prompt`'s
+/// contract is unimplemented on the Rust side -- HANDOFF.md lists wiring a
+/// naming model as scaffolding, not milestone-1 scope). Returns the
+/// district-id -> name map for this build, and the cache as it should be
+/// written back (existing hits carried through unchanged, new fallback
+/// names added) -- the caller decides whether/where to persist it.
+///
+/// Never renames a district whose membership fingerprint is already in the
+/// cache (CLAUDE.md: "never rename a district without the previous name in
+/// hand"). A cache miss -- membership genuinely changed, or there is no
+/// cache at all -- falls through to the same IDF namer `names_for_membership`
+/// always used.
+pub fn name_districts(
+    files: &[String],
+    membership: &[usize],
+    cache_path: Option<&Path>,
+) -> (BTreeMap<String, String>, NameCache) {
     let mut groups = BTreeMap::<usize, Vec<String>>::new();
     let mut encounter = Vec::new();
     for (file, &district) in files.iter().zip(membership) {
@@ -28,30 +96,53 @@ pub fn names_for_membership(files: &[String], membership: &[usize]) -> BTreeMap<
         all_files.extend(groups[district].iter().cloned());
     }
     let (document_frequency, total) = segment_df(&all_files);
+
+    let mut cache = cache_path.map(load_cache).unwrap_or_default();
+
     let encounter_position = encounter
         .iter()
         .enumerate()
         .map(|(index, &district)| (district, index))
         .collect::<BTreeMap<_, _>>();
-    encounter.sort_by_key(|district| {
+    let mut ordered = encounter.clone();
+    ordered.sort_by_key(|district| {
         (
             std::cmp::Reverse(groups[district].len()),
             encounter_position[district],
         )
     });
+
     let mut used = BTreeSet::<String>::new();
     let mut output = BTreeMap::new();
-    for district in encounter {
-        let mut name = auto_name(&groups[&district], &document_frequency, total);
-        if used.contains(&name) {
-            let base = name.clone();
-            let number = used.iter().filter(|value| value.starts_with(&base)).count() + 1;
-            name = format!("{base} {number}");
-        }
+    for district in ordered {
+        let members = &groups[&district];
+        let key = fingerprint(members);
+        let name = match cache.get(&key) {
+            Some(hit) => hit.name.clone(),
+            None => {
+                let mut name = auto_name(members, &document_frequency, total);
+                name = name.trim().chars().take(32).collect();
+                if used.contains(&name) {
+                    let base = name.clone();
+                    let number =
+                        used.iter().filter(|value| value.starts_with(&base)).count() + 1;
+                    name = format!("{base} {number}");
+                }
+                cache.insert(
+                    key,
+                    CacheEntry {
+                        name: name.clone(),
+                        district,
+                        size: members.len(),
+                    },
+                );
+                name
+            }
+        };
         used.insert(name.clone());
         output.insert(district.to_string(), name);
     }
-    output
+    (output, cache)
 }
 
 fn segment_df(files: &[String]) -> (BTreeMap<String, usize>, usize) {
