@@ -14,6 +14,16 @@ The findings document records what was tried and falsified by measurement; sever
 - **The map stops at the file.** Symbols are the unit of the query, not of the map. This was tried the other way twice.
 - **Numbers must be a lower bound.** The reference graph under-reports; never make it guess upward to look better.
 
+## Checkout and worktrees
+
+The primary checkout stays on `main`. New code changes happen in a worktree beside it: `git worktree add -b <branch> ../tolmap-wt-<slug> origin/main`.
+
+This repo is read from its working tree more than most: the frozen reference under `src/tolmap/`, the acceptance fixtures in `data/`, the eval scripts and `docs/FINDINGS.md` are all consulted as files. A root parked on a feature branch makes every one of those reads quietly wrong — for a person, an editor, or an agent subprocess that reads the directory rather than a ref.
+
+`.githooks/post-checkout` enforces this in the primary worktree only, reverting a clean stray checkout and refusing to touch one with uncommitted tracked changes. It cannot *prevent* a switch: Git has no `pre-checkout` hook, so the switch has already happened by the time any hook runs. Enable it once per clone, per `.githooks/README.md`: `git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"`.
+
+When delegating to a subagent or to Codex, name the branch or the worktree path. "Read the working directory" is the instruction that goes stale.
+
 ## Naming
 
 The tool is `tolmap` — a portmanteau of **Tolman** (Edward Tolman, who coined *cognitive map*) and **map**. Lowercase `tolmap` everywhere for the package, binary, module and domain. Capitalised `Tolman` refers to the person and stays as it is in prose. Do not "correct" one to the other.
