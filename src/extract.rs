@@ -1645,19 +1645,27 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
     candidates.extend(history.cochange.keys().cloned());
 
     // Above 600 files the semantic sweep below is restricted to same-
-    // directory pairs (an O(n^2) full sweep is too slow past that size) --
-    // and a directory never spans a language in this pipeline (a source's
-    // files all live under its own `pkg` root). So in any polyglot repo
-    // large enough to cross this threshold, the semantic candidate sweep
-    // stops proposing cross-language pairs at all, on top of static edges
-    // never carrying one (see `union_sources`) and proximity going to 0 by
-    // construction across a `server/` + `web/`-style split (the path prefix
-    // never matches). Below 600 files, co-change and semantic can both
-    // bridge; above it, co-change is the only signal left standing --
-    // `docs/ARCHITECTURE.md`'s "co-change is the only bridge" claim is
-    // conditional on repository size, and this is the line where the
-    // condition starts, not a universal property of the pipeline. See
-    // `docs/FINDINGS.md` finding 13 for what this measures on the corpus.
+    // directory pairs (an O(n^2) full sweep is too slow past that size).
+    //
+    // An earlier version of this comment drew a further conclusion from
+    // that, and finding 14 falsified it. It said a directory "never spans a
+    // language in this pipeline (a source's files all live under its own
+    // `pkg` root)", and therefore that any polyglot repo above this
+    // threshold loses cross-language semantic bridging entirely. The
+    // premise only holds when the sources root at different places --
+    // prometheus's Go at `.` against a UI under `web/ui`, or the synthetic
+    // fixture's deliberate `.`/`src` split. Two sources can share a root:
+    // codex and dify both select `py at .` and `ts at .`, so their
+    // directories hold Python and TypeScript side by side and this sweep
+    // proposes cross-language pairs freely -- measured at 0.3% and 0.2% of
+    // semantic mass crossing languages, on 887 and 6,333 files respectively
+    // (finding 14).
+    //
+    // So what survives: `static` never carries a cross-language edge (see
+    // `union_sources`), and proximity goes to 0 across a `server/` +
+    // `web/`-style split by construction. Whether *semantic* bridges is a
+    // property of where the sources root, not of how many files there are.
+    // See `docs/FINDINGS.md` findings 13 and 14.
     if files.len() <= 600 {
         for i in 0..files.len() {
             for j in i + 1..files.len() {
