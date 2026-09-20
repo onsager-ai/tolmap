@@ -140,6 +140,18 @@ body {
   height: 100%;
   cursor: grab;
   touch-action: none;
+  /* District, landmark and symbol labels are real <text> nodes, so a pan that
+     starts on one otherwise begins a native text selection: the label
+     highlights and drags as a selection instead of moving the map, and on
+     touch it raises the selection handles and the callout menu. The drag
+     itself still works (pointer capture is taken in pointermove), so this is
+     purely the browser's selection competing with it. Suppressed here rather
+     than with preventDefault() in pointerdown, because pointerdown must stay
+     non-cancelling for bug fix #1 in MapRenderer — capture is deliberately
+     deferred so taps still reach the shape under the finger. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 .map-svg.dragging {
   cursor: grabbing;
