@@ -1,7 +1,12 @@
-# Fly.io deployment (2026-09-20). Committed configuration only -- nothing
-# here was applied. `flyctl` is not installed on the machine that wrote
-# this file and no `fly` command was run; the app named below does not
-# exist yet.
+# Fly.io deployment -- PRODUCTION. Staging is Railway; see docs/DEPLOY.md
+# for which target carries what and why the two exist.
+#
+# Applied 2026-09-20: app `tolmap` (org core-digital) is live, release v1,
+# deployed by hand. Deploys are NOT automatic on merge -- prod moves only
+# on a pushed `v*` tag or a manual dispatch of .github/workflows/
+# fly-deploy.yml, because a deploy replaces the single machine below and
+# any index job running at that moment dies with it (see the
+# auto_stop_machines comment further down for the same failure mode).
 #
 # One machine, one volume, always on. The job queue, the SSE progress
 # channel and the wall-time cap all live in-process (src/service/jobs.rs,
@@ -12,8 +17,7 @@
 # requests (GET /api/jobs/{id}, the SSE stream) back to the machine that
 # accepted it.
 
-app = "tolmap" # Placeholder -- confirm this name is available on Fly
-               # before `fly launch`/`fly apps create`; pick another if not.
+app = "tolmap" # Live: org core-digital, first deployed 2026-09-20.
 
 # iad (Ashburn, VA) -- chosen for proximity to where this service actually
 # spends its time, not for user latency. The MVP is "paste a URL, wait for

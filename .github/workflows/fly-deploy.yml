@@ -1,0 +1,61 @@
+# Production deploys to Fly. Deliberate, never on merge.
+#
+# A deploy replaces the single always-on machine fly.toml provisions, and
+# every index job lives in that process's memory (src/service/jobs.rs: the
+# JobRegistry, the SSE watch::Sender, the wall-clock budget). Nothing is
+# persisted that a replacement machine could resume from, so a job in
+# flight when the machine goes away does not fail -- it stops existing. No
+# error event, no SSE frame, no error_code in its row; a client polling
+# GET /api/jobs/{id} simply waits forever.
+#
+# That is an acceptable cost for a release you chose to cut. It is not an
+# acceptable cost for merging a typo, which is why this triggers on tags
+# and manual dispatch rather than on push to main. Merges go to Railway
+# staging instead -- docs/DEPLOY.md has the split.
+name: fly deploy (production)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this manual deploy (recorded in the run)"
+        required: false
+        default: "manual deploy"
+
+# Serialise deploys, and do NOT cancel one in progress: a cancelled
+# `flyctl deploy` can leave the app mid-release, which is worse than
+# waiting for the first one to finish.
+concurrency:
+  group: fly-deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: flyctl deploy
+    runs-on: ubuntu-latest
+    # Create this environment in repo settings with a required reviewer to
+    # get an approval gate on production; without it the job still runs,
+    # it just holds the secret scope.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # --remote-only: the image is built on Fly's builder rather than on
+      # the runner. The Dockerfile builds Rust, the Leiden native library
+      # and the web bundle; a remote build reuses Fly's layer cache
+      # between releases, where a runner starts cold every time.
+      - run: flyctl deploy --remote-only --wait-timeout 600
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # The healthcheck in fly.toml gates the release, but that only
+      # proves the process answers. This proves the release that answers
+      # is the one we just shipped.
+      - name: Report live release
+        run: flyctl releases -a tolmap | head -3
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
