@@ -6,7 +6,7 @@ Two targets, picked for opposite properties rather than out of indecision.
 |---|---|---|
 | platform | Fly.io, app `tolmap` (org core-digital) | Railway |
 | config | `fly.toml` | `railway.json` + `deploy/railway.staging.env` |
-| deploys on | a pushed `v*` tag, or a manual dispatch | every push to `main`, automatically |
+| deploys on | a pushed `v*` tag, or a manual dispatch | every commit on `main`, automatically, unfiltered |
 | shape | one always-on machine, 1 GB, volume at `/data` | one replica, volume at `/data` |
 | pricing model | fixed provisioned machine | metered |
 
@@ -39,7 +39,11 @@ Optionally create a `production` environment in the repo's settings with yoursel
 
 **Railway staging service** — once:
 
-1. New project → Deploy from GitHub repo → `onsager-ai/tolmap`, branch `main`. `railway.json` is picked up automatically: Dockerfile build, healthcheck on `/api/healthz`.
+1. New project → Deploy from GitHub repo → `onsager-ai/tolmap`. In the service's **Settings → Source**, set the branch to `main` and leave **Automatic Deploys** enabled — that is the whole mechanism, and it is Railway-side state, not something `railway.json` can express. `railway.json` covers only what it can: Dockerfile build, healthcheck on `/api/healthz`, restart policy.
+
+   Every commit on `main` deploys, including docs-only ones. That is deliberate — a staging environment that skips commits is a staging environment you cannot reason about. Railway's **Watch Paths** could filter them and should be left empty.
+
+   Leave **Wait for CI** off unless you want staging gated on the Rust gate finishing (~minutes). Off means staging reflects `main` immediately and can briefly run a commit CI later calls red; that is the correct trade for a box whose job is to be looked at, but it is a choice, so make it knowingly.
 2. Add a volume mounted at `/data` (5 GB is ample — the clone cache is capped at 1 GiB by `TOLMAP_MAX_CLONE_BYTES`, and maps are small). Do this **before** the first successful deploy, or the healthcheck passes against a store that a redeploy then throws away.
 3. Apply the variables: `railway variables --set-from-file deploy/railway.staging.env`, or paste that file into the dashboard's raw editor.
 4. Note that the generated `*.up.railway.app` URL is public. This service clones and indexes arbitrary public repositories on request; the rate limits in the env file are the only thing in front of it. If staging should not be an open compute endpoint, put Railway's access protection in front of it at this point.
