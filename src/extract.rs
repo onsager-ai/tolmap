@@ -123,12 +123,37 @@ impl LanguageKind {
         }
     }
 
+    /// The grammar for `self` in general. A `.tsx` file needs a different
+    /// grammar than this for JSX syntax -- see [`grammar_for_file`], which
+    /// every call site in this module uses instead of calling this directly
+    /// for a file that might be TypeScript.
     fn tree_sitter(self) -> Language {
         match self {
             Self::Python => tree_sitter_python::LANGUAGE.into(),
             Self::Go => tree_sitter_go::LANGUAGE.into(),
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         }
+    }
+}
+
+/// The tree-sitter grammar to parse `file` with. `.tsx` needs the TSX
+/// grammar (`LANGUAGE_TSX`) to accept JSX syntax; `LANGUAGE_TYPESCRIPT`
+/// rejects it outright. This is chosen per *file*, not per `LanguageKind`
+/// (`LanguageKind::TypeScript` gets no new variant): a `.tsx` file is
+/// TypeScript for every other purpose -- detection, the `lang` field,
+/// polyglot source selection -- only the grammar differs. Verified against
+/// both grammars' `node-types.json`: every node kind the TS walks in this
+/// module match on (`variable_declarator`, `class_declaration`,
+/// `import_statement`, the `BRANCHY` set, etc.) exists identically in TSX;
+/// TSX only adds JSX-specific kinds (`jsx_element` and friends) this module
+/// never looks at, and drops `type_assertion` (the `<Type>expr` cast syntax,
+/// which is ambiguous with JSX and not something this module walks for
+/// either grammar).
+fn grammar_for_file(language: LanguageKind, file: &str) -> Language {
+    if language == LanguageKind::TypeScript && file.ends_with(".tsx") {
+        tree_sitter_typescript::LANGUAGE_TSX.into()
+    } else {
+        language.tree_sitter()
     }
 }
 
@@ -261,13 +286,18 @@ fn parse_files(
 ) -> Result<(BTreeMap<String, ParsedFile>, BTreeMap<String, FileRaw>)> {
     let files = source_files(repo, pkg, language)?;
     let mut parser = Parser::new();
-    parser
-        .set_language(&language.tree_sitter())
-        .context("initialize tree-sitter parser")?;
 
     let mut parsed = BTreeMap::new();
     let mut raw = BTreeMap::new();
     for file in &files {
+        // Set per file, not once before the loop: a `.tsx` file needs the
+        // TSX grammar while a sibling `.ts` file in the same source needs
+        // the plain TypeScript one (see `grammar_for_file`). Go and Python
+        // sources only ever pick one grammar, so this is a no-op re-set for
+        // them beyond the first file.
+        parser
+            .set_language(&grammar_for_file(language, file))
+            .context("initialize tree-sitter parser")?;
         let source = fs::read(repo.join(file)).with_context(|| format!("read {file}"))?;
         let Some(tree) = parser.parse(&source, None) else {
             continue;
@@ -514,7 +544,15 @@ fn collect_source_files(
             LanguageKind::Python => name.ends_with(".py"),
             LanguageKind::Go => name.ends_with(".go") && !name.ends_with("_test.go"),
             LanguageKind::TypeScript => {
-                name.ends_with(".ts")
+                // `.tsx` alongside `.ts`: the import resolver
+                // (`resolve_multi`) has always listed `{base}.tsx` as a
+                // resolution candidate, but until this file collected it too
+                // a `.tsx` target could never be a node -- the import into
+                // it, and the component it pointed at, were silently
+                // dropped (issue #35). `.d.tsx` is not a real declaration
+                // suffix (`.d.ts` is TypeScript-only syntax), so no matching
+                // exclusion is added for it.
+                (name.ends_with(".ts") || name.ends_with(".tsx"))
                     && !name.ends_with(".d.ts")
                     && !name.contains(".test.")
                     && !name.contains(".spec.")
@@ -2061,6 +2099,90 @@ mod tests {
             )
             .len(),
             2
+        );
+    }
+
+    // -- .tsx collection and resolution (issue #35) --------------------
+
+    fn write(root: &Path, rel: &str, contents: &str) {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn tsx_file_is_collected_alongside_ts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "src/Foo.tsx",
+            "export function Foo() { return null; }\n",
+        );
+        write(dir.path(), "src/bar.ts", "export const bar = 1;\n");
+        let files = source_files(dir.path(), "src", LanguageKind::TypeScript).unwrap();
+        assert_eq!(
+            files,
+            vec!["src/Foo.tsx".to_owned(), "src/bar.ts".to_owned()]
+        );
+    }
+
+    #[test]
+    fn tsx_declaration_test_and_spec_files_are_still_excluded() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "src/Foo.tsx",
+            "export function Foo() { return null; }\n",
+        );
+        write(dir.path(), "src/Foo.test.tsx", "test('x', () => {});\n");
+        write(dir.path(), "src/Foo.spec.tsx", "test('x', () => {});\n");
+        // `.d.tsx` is not a real declaration suffix -- only `.d.ts` is -- so
+        // this is not excluded by that rule; it lacks a JSX return so it
+        // parses as an ordinary (if odd) TypeScript-flavored file.
+        write(
+            dir.path(),
+            "src/legacy.d.ts",
+            "export declare const x: number;\n",
+        );
+        let files = source_files(dir.path(), "src", LanguageKind::TypeScript).unwrap();
+        assert_eq!(files, vec!["src/Foo.tsx".to_owned()]);
+    }
+
+    #[test]
+    fn import_of_relative_path_resolves_to_tsx_target() {
+        let files = ["a.ts".to_owned(), "Foo.tsx".to_owned()]
+            .into_iter()
+            .collect();
+        let directories = BTreeMap::new();
+        let targets = resolve_multi(
+            LanguageKind::TypeScript,
+            "./Foo",
+            "a.ts",
+            "",
+            &directories,
+            &files,
+        );
+        assert_eq!(targets, vec!["Foo.tsx".to_owned()]);
+    }
+
+    #[test]
+    fn tsx_file_parses_with_the_tsx_grammar() {
+        // LANGUAGE_TYPESCRIPT rejects JSX syntax outright; if a `.tsx` file
+        // were still parsed with it (rather than `grammar_for_file`'s
+        // per-file choice), the tree would come back with parse errors and
+        // this component's `Foo` symbol/identifier would never be seen.
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "src/Foo.tsx",
+            "export function Foo() { return <div>hi</div>; }\n",
+        );
+        let (parsed, _raw) = parse_files(dir.path(), "src", LanguageKind::TypeScript).unwrap();
+        let file = parsed.get("src/Foo.tsx").expect("Foo.tsx was parsed");
+        assert!(
+            file.identifiers.contains_key("Foo"),
+            "identifiers: {:?}",
+            file.identifiers
         );
     }
 
