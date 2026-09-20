@@ -44,21 +44,31 @@
 # 67-82% to 100%, and modularity from drifting up to 0.0129 off the reference
 # to matching it to four decimal places, on all nine fixtures.
 #
-# One narrower gap remains, and this job is still expected to be RED because
-# of it: sqlalchemy's partition places 98.4% of files (not 100%) in the
-# district the reference assigns -- `dialects/` (74 files in the reference)
-# splits 4 files into their own community in this port's partition. That
-# specific difference is real graph-topology sensitivity in Leiden's local-
-# moving search, on one fixture, at a much smaller scale (4 files) than the
-# four-fixture, 20-30-point-placement-swing symptom the settings bug
-# produced -- not the same finding reappearing, a genuinely different and
-# far smaller one. Placement (98.4%) and modularity (matches to 4dp) both
-# clear their gates on their own; only the landmark list differs, because one
-# of its "district capital" entries follows the district that split. See
-# `docs/FINDINGS.md` finding 11's "what remains open" section for the
-# measurement. Not investigated further; this job stays red on sqlalchemy
-# alone on purpose, as a standing, visible, narrow record of it, rather than
-# being scoped down to only the fixtures that currently pass outright.
+# An earlier version of this comment said one narrower gap remained and that
+# this job was "still expected to be RED because of it": sqlalchemy placing
+# 98.4% of files (not 100%) in the district the reference assigns, with
+# `dialects/` splitting 4 files into their own community. That is no longer
+# true, and was corrected here rather than left to mislead the next reader.
+# `docs/FINDINGS.md` finding 12 -- the relative-import fix, which resolved
+# Python relative imports one package level too deep on both sides -- changed
+# the graph enough that sqlalchemy converges too: 100.0% district placement
+# and 0.0000 modularity delta on all nine fixtures, with F/E/L/S/U
+# byte-identical. Finding 12 is careful about what that does and does not
+# establish: it does not prove the underlying Leiden local-moving divergence
+# is closed, only that the corrected graph no longer exercises it.
+#
+# So this job is now expected to be GREEN on all nine. Treat a red run as a
+# real regression to investigate, not as the known-red state this comment
+# used to describe.
+#
+# Stated honestly, because the expectation above is a prediction and not an
+# observation: at the time of writing, `gh run list --event=schedule` returns
+# nothing -- no nightly run of this job has ever fired, so neither the old
+# red expectation nor this green one has been confirmed by an actual
+# scheduled run. The first nightly to complete is the thing that settles it.
+#
+# Coordinates are deliberately outside this gate and always will be; see
+# finding 11's "Ruling, 2026-09-20" section and `src/parity.rs`.
 
 name: CI
 
