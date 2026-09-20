@@ -1,0 +1,51 @@
+#!/bin/sh
+# The primary checkout stays on main; feature and PR work happens in worktrees.
+#
+# Why this is a revert and not a refusal: Git has no pre-checkout hook, and a
+# `reference-transaction` hook that exits non-zero on the HEAD update does NOT
+# abort `git checkout`. post-checkout runs after the switch has already
+# happened, so the only available mechanism is to undo it.
+#
+# Scope: this acts ONLY in the primary worktree. A linked worktree has its own
+# git-dir under .git/worktrees/<name>, so the comparison below is false there
+# and branch work in worktrees is left completely alone. That matters because
+# core.hooksPath is shared by every worktree of the repository.
+#
+# Partial native cover, for reference: Git already refuses to check out a branch
+# that another worktree holds ("fatal: '<b>' is already used by worktree at ...").
+# This hook covers the rest -- new branches, and branches no worktree holds.
+
+# Re-entry from our own corrective checkout below.
+[ -n "$TOLMAP_ROOT_GUARD" ] && exit 0
+
+# $3 == 1 means a branch checkout; 0 means a file checkout, which we ignore.
+[ "$3" = "1" ] || exit 0
+
+# Primary worktree only.
+[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] || exit 0
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+[ "$branch" = "main" ] && exit 0
+
+# Never revert over uncommitted work: the switch has already swapped the files,
+# so a blind `git checkout main` here could discard or confuse real changes.
+# Warn instead and let the operator decide.
+#
+# -uno is deliberate, and is where this differs from ostrom-hub's copy of the
+# hook: untracked files are carried across a branch switch untouched, and Git
+# refuses the switch outright if it would clobber one, so they are never at
+# risk from the corrective checkout. Counting them would park the root on a
+# stray branch for as long as anything untracked sits in the tree -- and a
+# scratch directory at the root is the normal state here, not the exception.
+if [ -n "$(git status --porcelain -uno)" ]; then
+  echo "GUARD: the root checkout must stay on main (now on '$branch')." >&2
+  echo "       The working tree has uncommitted changes, so it was NOT reverted." >&2
+  echo "       Commit or stash your work, then: git switch main" >&2
+  exit 0
+fi
+
+TOLMAP_ROOT_GUARD=1 git checkout -q main 2>/dev/null
+echo "GUARD: the root checkout is pinned to main; '$branch' was not kept here." >&2
+echo "       For feature work use a worktree:" >&2
+echo "         git worktree add -b <branch> ../tolmap-wt-<slug> origin/main" >&2
+exit 0
