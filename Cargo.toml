@@ -45,6 +45,14 @@ tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "process
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 uuid = { version = "=1.26.1", features = ["v4", "serde"] }
 tokio-stream = "=0.1.19"
+# Fly.io deployment (2026-09-20): tolmap serves the built web bundle from
+# the same axum process as the API when TOLMAP_STATIC_DIR is set, so a
+# single always-on machine is one origin instead of two (see
+# src/service/http.rs). tower-http's `ServeDir`/`ServeFile` is the ordinary
+# way to do that; `tower` itself was already a dev-dependency (see below),
+# this is what promotes static-file serving into a real one. "fs" is the
+# only feature needed -- no compression, tracing or CORS middleware here.
+tower-http = { version = "=0.7.1", features = ["fs"] }
 
 [build-dependencies]
 cc = "=1.4.7"
