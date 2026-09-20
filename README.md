@@ -63,6 +63,10 @@ data/           nine prebuilt maps — render these without indexing anything
 docs/           pipeline, findings, decisions
 ```
 
+## Deployment
+
+Production is Fly (`fly.toml`), deployed on a `v*` tag; staging is Railway (`railway.json`), deployed on every push to `main`. `docs/DEPLOY.md` has the split, the first-time setup and what staging does not reproduce.
+
 ## State
 
 Working prototype, measured. Not yet a product: see `HANDOFF.md` for what is missing and in what order it should be built.

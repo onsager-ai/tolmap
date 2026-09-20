@@ -207,6 +207,17 @@ jobs:
             --out polyglot-report.json
           python3 eval/check_polyglot_ceilings.py polyglot-report.json
 
+  # Cheap, no toolchain: prod (fly.toml) and staging
+  # (deploy/railway.staging.env) must describe the same set of TOLMAP_*
+  # knobs, or staging stops being evidence about prod. See the script's
+  # docstring; it compares key sets, never values.
+  deploy-env-parity:
+    name: deploy env parity (prod vs staging)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_deploy_env_parity.py
+
   full-fixtures:
     name: full nine-fixture parity (on demand / nightly)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
