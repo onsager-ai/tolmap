@@ -54,6 +54,7 @@ fn state_with_limits(limits: Limits) -> (tempfile::TempDir, Arc<AppState>) {
         bind: "127.0.0.1:0".parse().unwrap(),
         db_path,
         cache_dir,
+        static_dir: None,
         limits,
         retain_commits_per_repo: 20,
     };

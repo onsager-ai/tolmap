@@ -2,15 +2,26 @@
 
 `tolmap serve` runs an axum service that accepts a repository, indexes it as
 a background job, streams progress, and serves the resulting map. It binds
-to `127.0.0.1` only -- see `docs/ARCHITECTURE.md`'s "Limits" section for why,
-and note that making it publicly reachable is explicitly out of scope for
-this service and reserved to a separate, later decision.
+to `127.0.0.1` by default -- see `docs/ARCHITECTURE.md`'s "Limits" section
+for why. Binding off-box was out of scope until 2026-09-20, when the Fly.io
+deployment made it an explicit opt-in: set `TOLMAP_BIND_ADDR` to widen it. A
+developer who sets nothing still gets loopback-only, unchanged.
 
 **Default listen address is `127.0.0.1:8787`** (the frontend's dev proxy
 defaults to the same address, overridable there via
 `TOLMAP_API_PROXY_TARGET`). The port is configurable service-side via the
-`TOLMAP_PORT` environment variable; the loopback-only host is not
-configurable anywhere -- see `src/service/config.rs`.
+`TOLMAP_PORT` environment variable; the host via `TOLMAP_BIND_ADDR` -- see
+`src/service/config.rs`.
+
+Optionally, the service can also serve the built web bundle itself, so one
+origin answers both the API and the site: set `TOLMAP_STATIC_DIR` to the
+built `web/dist` directory. Unset (the default), the router registers only
+`/api/*`, exactly as before this existed -- local development keeps running
+the Vite dev server separately and proxying `/api` to this service
+(`web/vite.config.ts`). When set, everything under `/api/` keeps its own
+JSON 404s; every other path falls back to `index.html` so the client-side
+router can own it (`GET /django/django` on a cold load, for instance) --
+see `src/service/http.rs::router`.
 
 This document is the contract. It is written and committed before the
 implementation so the frontend and the service can be built in parallel
@@ -26,12 +37,14 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 
 | variable | default | what |
 |---|---|---|
-| `TOLMAP_PORT` | `8787` | listen port (host is always `127.0.0.1`, not configurable) |
+| `TOLMAP_PORT` | `8787` | listen port |
+| `TOLMAP_BIND_ADDR` | `127.0.0.1` | listen host -- loopback unless explicitly widened (2026-09-20) |
+| `TOLMAP_STATIC_DIR` | unset | serve the built web bundle from this directory alongside the API when set (see above) |
 | `TOLMAP_DB_PATH` | `<TOLMAP_CACHE_DIR>/tolmap.sqlite3` | the SQLite store |
 | `TOLMAP_CACHE_DIR` | system temp dir `/tolmap-cache` | clone cache + indexed map files |
 | `TOLMAP_MAX_FILES` | `5000` | reject a repo with more source files than this after detection |
 | `TOLMAP_MAX_CLONE_BYTES` | `2147483648` (2 GiB) | reject a clone whose working tree + `.git` exceeds this |
-| `TOLMAP_MAX_HISTORY_COMMITS` | `20000` | reject a repo whose `HEAD` history has more commits than this |
+| `TOLMAP_MAX_HISTORY_COMMITS` | `200000` | reject a repo whose `HEAD` history has more commits than this -- does not bound indexing cost (`extract.rs` caps its own history read at 4000 regardless of depth); see `service::config::Limits::max_history_commits`'s doc comment for what it actually guards on each of `service::clone::materialize`'s two request paths (pre-clone on a local path, a narrower post-clone refusal on a remote one). Default was 20000 until 2026-09-20, which rejected django (34942 commits) |
 | `TOLMAP_MAX_JOB_SECONDS` | `900` | wall-clock budget for one job before it fails as `index_failed` |
 | `TOLMAP_RATE_LIMIT_PER_IP` | `30` | requests per window, per source IP, under `/api/` |
 | `TOLMAP_RATE_LIMIT_WINDOW_SECONDS` | `60` | window for the per-IP limit |

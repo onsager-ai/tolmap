@@ -583,6 +583,46 @@ mod tests {
         assert!(check_clone_size(size, &limits).is_ok());
     }
 
+    /// The defect this change fixes (see `config::Limits::max_history_commits`'s
+    /// doc comment): django's real history is 34,942 commits, and the old
+    /// default of 20,000 rejected it -- the exact fixture the module doc
+    /// comment claimed the defaults "comfortably admit ... with headroom".
+    /// Exercises `check_history_depth` (the function `materialize` actually
+    /// calls) against the real fixture clone rather than a synthetic
+    /// repository, the same way `clone_size_limit_fires_against_a_real_directory_over_budget`
+    /// does for the clone-size check. Skips with a clear message when there
+    /// is no fixture corpus to check against.
+    #[test]
+    fn history_depth_check_admits_djangos_real_history_under_the_new_default() {
+        let Some(django) = std::env::var("TOLMAP_FIXTURE_REPOS")
+            .ok()
+            .map(|repos| Path::new(&repos).join("django"))
+            .filter(|p| p.is_dir())
+        else {
+            eprintln!(
+                "skipping: TOLMAP_FIXTURE_REPOS is not set (or django is not there) -- \
+                 e.g. TOLMAP_FIXTURE_REPOS=/tmp/tolmap-fixtures.XXXXXX cargo test --release"
+            );
+            return;
+        };
+
+        // The old default (20,000) rejected the real fixture -- pinning
+        // this alongside the new default's success is what makes this test
+        // a regression check for the defect, not just a happy-path check.
+        let old_default = Limits {
+            max_history_commits: 20_000,
+            ..Limits::default()
+        };
+        let err = check_history_depth(&django, &old_default)
+            .expect_err("the old 20,000 default must have rejected django's real history");
+        assert!(err.body.message.contains("34942") || err.body.message.contains("history depth"));
+
+        assert!(
+            check_history_depth(&django, &Limits::default()).is_ok(),
+            "the new default must admit django's real history"
+        );
+    }
+
     #[test]
     fn both_repo_and_path_is_rejected() {
         let err = resolve(Some("a/b"), Some("/tmp")).unwrap_err();

@@ -1,0 +1,42 @@
+# Fly.io deployment (2026-09-20). Both `cargo build` (Dockerfile's `rust`
+# stage) and `pnpm build` (its `web` stage) need the whole repository as
+# their build context -- collect-maps.mjs falls back to ../data and Vite's
+# @bindings alias resolves ../bindings, both outside web/ -- so this file
+# is what keeps that context from also dragging in everything that never
+# needs to leave the host.
+
+# Build output and local dev state -- regenerated inside the image, never
+# reused from the host; a stale local build here must never leak in.
+target/
+web/dist/
+web/node_modules/
+node_modules/
+.maps/
+web/public/maps/
+
+# VCS metadata -- irrelevant to any stage and large in a repo with any history.
+.git/
+.gitignore
+
+# The frozen reference implementation (CLAUDE.md, docs/ARCHITECTURE.md):
+# "not the product codebase," and no Dockerfile stage imports or shells
+# out to it. Excluded so it can't be mistaken for something the image
+# depends on, not because it would be expensive to include.
+src/tolmap/
+viewer/
+eval/
+pyproject.toml
+requirements.txt
+__pycache__/
+*.pyc
+.venv/
+
+# Locally-built native libs from a host run of scripts/install-leiden.sh
+# (defaults to $PWD/.native/leiden) -- the `native` stage builds its own
+# copy inside the image; a host copy must never be substituted for it.
+.native/
+
+# Editor/OS noise.
+.vscode/
+.idea/
+.DS_Store

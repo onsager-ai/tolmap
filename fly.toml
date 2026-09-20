@@ -1,0 +1,166 @@
+# Fly.io deployment (2026-09-20). Committed configuration only -- nothing
+# here was applied. `flyctl` is not installed on the machine that wrote
+# this file and no `fly` command was run; the app named below does not
+# exist yet.
+#
+# One machine, one volume, always on. The job queue, the SSE progress
+# channel and the wall-time cap all live in-process (src/service/jobs.rs,
+# an in-memory JobRegistry) -- there is no cross-machine state, so this is
+# not "one machine for now, scale out later" but a real constraint: a
+# second machine would have its own job registry and its own idea of
+# what's running, and Fly's proxy does not know to route a job's follow-up
+# requests (GET /api/jobs/{id}, the SSE stream) back to the machine that
+# accepted it.
+
+app = "tolmap" # Placeholder -- confirm this name is available on Fly
+               # before `fly launch`/`fly apps create`; pick another if not.
+
+# iad (Ashburn, VA) -- chosen for proximity to where this service actually
+# spends its time, not for user latency. The MVP is "paste a URL, wait for
+# a clone + index job," so the dominant cost is round-trip latency and
+# throughput to GitHub during `git clone --filter=blob:none`
+# (docs/ARCHITECTURE.md's clone strategy) and `git fetch`, not the
+# millisecond difference in where an interactive HTTP request originates.
+# US East is the closest big Fly region to GitHub's own primary US
+# infrastructure; if most real traffic turns out to be clustered elsewhere,
+# this is the first knob to revisit, not the VM size.
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8787 # matches TOLMAP_PORT's own default (docs/API.md) --
+                        # left unset below rather than duplicated.
+  force_https = true
+
+  # This is the setting that matters most in this file, and it is not the
+  # default for a reason: Fly's usual cost story (auto_stop_machines = true)
+  # assumes a request-scoped process that can be resumed cold. This one
+  # cannot be. A running index job (jobs::spawn_job) lives entirely in this
+  # process's memory -- the job registry, the SSE watch::Sender, the
+  # tokio::time::timeout wall-clock budget -- and none of it is persisted
+  # anywhere a suspended-then-resumed machine could recover it from. If
+  # Fly suspended this machine between requests, any job in flight when it
+  # suspended would simply vanish: no failure event, no SSE frame, no
+  # `error`/`error_code` in the job's row, just a client stuck polling a
+  # job id that will never move again. auto_stop_machines/auto_start_machines
+  # = false and min_machines_running = 1 keep exactly one machine up at all
+  # times, which is also why this deployment is billed as an always-on
+  # provisioned machine rather than Railway's metered per-vCPU pricing (the
+  # comparison the user made when choosing Fly, 2026-09-20) -- the workload
+  # is bursty and CPU-heavy during indexing, so paying for a fixed shape
+  # beats metering every vCPU-second including idle ones.
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/api/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # 1 GB. Indexing django (851 files, full history for co-change, the
+  # tree-sitter parse + Leiden partition, docs/ARCHITECTURE.md's own
+  # description of the pipeline's cost) is the memory high-water mark
+  # among the fixture corpus, and it is also the largest repository this
+  # deployment's own limits admit by design (TOLMAP_MAX_FILES below).
+  # 1 GB is the ~$5-10/month shape the user approved (2026-09-20) for
+  # shared-cpu-1x on Fly's current pricing. This was NOT measured against
+  # a real peak-RSS number for a django index run -- this machine has no
+  # `docker` to run the container and profile it, and the reference
+  # Python pipeline's memory shape is not a reliable proxy for the Rust
+  # port's (different allocator, no CPython object overhead, the FFI
+  # Leiden call holds the graph in igraph's own C structures rather than
+  # Python objects). If a django-sized index OOMs at 1 GB in practice, the
+  # fix is either to raise this to 2 GB or to lower TOLMAP_MAX_FILES so
+  # the largest admitted repo actually fits -- flagged here rather than
+  # silently bought as 2 GB up front.
+  memory = "1gb"
+
+[[mounts]]
+  source = "tolmap_data"
+  destination = "/data"
+  # 10 GB, matching the volume size this file's [env] arithmetic (below)
+  # was computed against -- see the comment on TOLMAP_MAX_CLONE_BYTES.
+
+  initial_size = "10gb"
+
+[env]
+  # Off-box binding, opt-in as of 2026-09-20 (src/service/config.rs) --
+  # 0.0.0.0 so Fly's proxy on the same machine can reach the process at
+  # all; TOLMAP_PORT is left at its default (8787) rather than duplicated
+  # here, since it already matches internal_port above.
+  TOLMAP_BIND_ADDR = "0.0.0.0"
+
+  # Both on the volume, not the container filesystem -- anything else is
+  # lost on every deploy, and losing the store specifically costs district
+  # retention (docs/FINDINGS.md finding 4: the warm start reads the
+  # previous commit's membership out of the store).
+  TOLMAP_DB_PATH = "/data/tolmap.sqlite3"
+  TOLMAP_CACHE_DIR = "/data/cache"
+
+  # ---- Limits sized for a 1 GB machine + 10 GB volume (issue: Fly.io
+  # deployment, 2026-09-20) -- arithmetic in the PR body; summary here.
+  #
+  # TOLMAP_MAX_CLONE_BYTES doubles as both a single-clone cap
+  # (service::clone::check_clone_size) AND the LRU cache's total eviction
+  # budget (service::clone::evict_lru is called with this same value) --
+  # so this is the number that actually bounds the clone cache's disk
+  # footprint, not just one repo's size. 1 GiB, down from the 2 GiB
+  # developer-machine default: the real largest fixture (django, measured
+  # via a live TOLMAP_FIXTURE_REPOS clone during this change) is 157 MB
+  # working tree + .git combined, so 1 GiB keeps ~6.5x headroom over the
+  # largest known-real repository -- comparable to TOLMAP_MAX_FILES's own
+  # ~5.9x headroom over django's file count, not an arbitrary round number.
+  TOLMAP_MAX_CLONE_BYTES = "1073741824" # 1 GiB
+
+  # File count doesn't consume volume directly (a rejected-for-file-count
+  # repo has already been cloned and measured by this point -- see
+  # service::jobs -- so this is a memory/CPU proxy, covered by the VM
+  # memory choice above, not a disk one). Left at the developer default:
+  # django (851 files) is comfortably under it, and there is no volume
+  # argument for lowering it independently of the clone-size cap above.
+  TOLMAP_MAX_FILES = "5000"
+
+  # Matches Limits::default() (service/config.rs) -- see that field's doc
+  # comment for why 200000, not 20000: the old default rejected django's
+  # real history (34,942 commits) outright, and this check bounds clone
+  # cost, not indexing cost (extract.rs's git_history only ever reads the
+  # most recent 4000 commits regardless of total depth). Set explicitly
+  # here too, not left to the compiled-in default, so it is visible and
+  # changeable without a redeploy if it needs adjusting for this specific
+  # box.
+  TOLMAP_MAX_HISTORY_COMMITS = "200000"
+
+  # Left at the developer default (900s = 15 minutes). Not adjusted for
+  # shared-cpu-1x being slower than a developer's machine, because there
+  # is no benchmark here to adjust it *by* -- this machine cannot build or
+  # run the container to time an actual django index on Fly's hardware.
+  # If real jobs are timing out near this budget in practice, raise it;
+  # do not treat this number as validated.
+  TOLMAP_MAX_JOB_SECONDS = "900"
+
+  # Rate limits unchanged from the developer defaults -- these bound
+  # request/clone *frequency*, not standing disk or memory, and the
+  # per-repo limit (3 per 5 minutes) already keeps a single hot repo from
+  # thrashing the LRU clone cache regardless of box size.
+  TOLMAP_RATE_LIMIT_PER_IP = "30"
+  TOLMAP_RATE_LIMIT_WINDOW_SECONDS = "60"
+  TOLMAP_RATE_LIMIT_PER_REPO = "3"
+  TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS = "300"
+
+  # Down from the developer default of 20. Retained maps are NOT bounded
+  # in total by this setting -- it caps disk per *slug* (repo), not across
+  # the whole store, and a public multi-tenant index has no cap on how
+  # many distinct slugs it will eventually see (see the PR body's
+  # arithmetic for why this is flagged as an open concern rather than
+  # something this change closes). 5 still satisfies docs/FINDINGS.md
+  # finding 4's actual requirement -- the single newest row per slug is
+  # never pruned regardless of this value (service::store::Store::prune)
+  # -- while shrinking the worst case per repo from 20 map files to 5.
+  TOLMAP_RETAIN_COMMITS_PER_REPO = "5"
