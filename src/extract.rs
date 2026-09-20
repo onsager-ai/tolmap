@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 use std::process::Command;
 
 use anyhow::{bail, ensure, Context, Result};
-use tree_sitter::{Language, Node, Parser, Tree};
+use tree_sitter::{Language, Node, Parser};
 
 use crate::schema::{GraphData, SignalEdge, SourceNode, SymbolRow};
 
@@ -132,14 +132,57 @@ impl LanguageKind {
     }
 }
 
+/// Per-file metrics that do not depend on any other file's content -- the
+/// only state kept alive for the whole extraction. Deliberately holds
+/// neither `source` nor `tree`: retaining those for every file
+/// simultaneously was ~95% of peak RSS (measured on n8n's 14,410 TypeScript
+/// files: 1,466 MB with source+tree retained per file vs. 71 MB with only
+/// `identifiers`, vs. 20 MB with nothing). See [`parse_files`] for where the
+/// tree is parsed, walked and dropped, one file at a time.
 #[derive(Clone)]
 struct ParsedFile {
-    source: Vec<u8>,
-    tree: Tree,
     loc: usize,
     complexity: usize,
     identifiers: BTreeMap<String, usize>,
     symbols: Vec<SymbolRow>,
+}
+
+/// The raw, single-file output of the second tree walk -- import strings and
+/// selector/attribute candidates -- captured in [`parse_files`] while the
+/// tree is still alive, so [`parse_python`] and [`parse_multi`] can resolve
+/// them against the *global* `known`/`file_of`/`by_directory` maps (which
+/// only exist once every file in the source has been parsed) without ever
+/// needing the tree back. This is what makes the two passes not require
+/// co-resident trees: phase 1 (in `parse_files`) produces `FileRaw` per file
+/// and drops the tree; phase 2 (`parse_python`/`parse_multi`) is pure string
+/// resolution over `FileRaw` plus the global maps.
+///
+/// For Go and TypeScript this is nearly free: `go_imports`/`go_selectors`
+/// and `typescript_imports`/`typescript_named` never looked at any other
+/// file to begin with (`go_selectors`'s "aliases" are the *local* `import
+/// name -> path` binding, resolved from the file's own `import_spec`
+/// nodes -- resolving a path to an actual target file, via `by_directory`,
+/// is a separate step `resolve_multi` already did in a second loop). Moving
+/// their call sites into `parse_files` changes nothing about what they
+/// compute, only when.
+///
+/// Python is the awkward case: its aliasing (`import x as y`, `from a import
+/// b as c`) has to be checked against the *global* `known` module set before
+/// a bare-attribute use like `y.thing()` can be attributed to a target file,
+/// so the attribute-node walk cannot be fully resolved at phase-1 time.
+/// `attribute_candidates` carries every `object.attribute` pair the walk
+/// finds (object identifier text, attribute name), unfiltered, for phase 2
+/// to match against the aliases it can only build once `known`/`file_of`
+/// exist.
+enum FileRaw {
+    Python {
+        imports: Vec<PythonImport>,
+        attribute_candidates: Vec<(String, String)>,
+    },
+    Multi {
+        imports: Vec<String>,
+        named_candidates: Vec<(String, String)>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -182,11 +225,11 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
 
     let mut intermediates = Vec::with_capacity(sorted_sources.len());
     for (pkg, language) in &sorted_sources {
-        let parsed = parse_files(repo, pkg, *language)?;
+        let (parsed, raw) = parse_files(repo, pkg, *language)?;
         let intermediate = match language {
-            LanguageKind::Python => parse_python(pkg, parsed),
+            LanguageKind::Python => parse_python(pkg, parsed, raw),
             LanguageKind::Go | LanguageKind::TypeScript => {
-                parse_multi(repo, pkg, *language, parsed)?
+                parse_multi(repo, pkg, *language, parsed, raw)?
             }
         };
         intermediates.push(intermediate);
@@ -197,15 +240,25 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
 }
 
 /// Parses every source file `source_files` finds for `(pkg, language)` under
-/// `repo` with tree-sitter, computing the per-file metrics (`loc`,
-/// `complexity`, `identifiers`, `symbols`) that do not depend on any other
-/// file. Split out of what used to be `build` so a multi-source build can run
-/// this once per source before the per-language resolution pass.
+/// `repo` with tree-sitter, computing both the per-file metrics (`loc`,
+/// `complexity`, `identifiers`, `symbols`) that survive for the rest of the
+/// extraction and the raw import/reference candidates (`FileRaw`) that
+/// `parse_python`/`parse_multi` resolve into cross-file edges once every
+/// file's module name is known.
+///
+/// This is phase 1 of the two-phase extraction: `source`/`tree` are local to
+/// one loop iteration and drop at the end of it, so at most one file's parse
+/// tree is ever live at a time -- never all of them at once (see the
+/// [`ParsedFile`] and [`FileRaw`] doc comments for why that matters and how
+/// the split is divided). Both walks that used to run against `parsed_file.
+/// tree` in a later pass (import extraction, and the selector/attribute walk
+/// behind `uses`) run here instead, against the same tree, before it is
+/// dropped.
 fn parse_files(
     repo: &Path,
     pkg: &str,
     language: LanguageKind,
-) -> Result<BTreeMap<String, ParsedFile>> {
+) -> Result<(BTreeMap<String, ParsedFile>, BTreeMap<String, FileRaw>)> {
     let files = source_files(repo, pkg, language)?;
     let mut parser = Parser::new();
     parser
@@ -213,6 +266,7 @@ fn parse_files(
         .context("initialize tree-sitter parser")?;
 
     let mut parsed = BTreeMap::new();
+    let mut raw = BTreeMap::new();
     for file in &files {
         let source = fs::read(repo.join(file)).with_context(|| format!("read {file}"))?;
         let Some(tree) = parser.parse(&source, None) else {
@@ -223,24 +277,42 @@ fn parse_files(
         if language == LanguageKind::Python && tree.root_node().has_error() {
             continue;
         }
+        let root = tree.root_node();
         let (complexity, identifiers, symbols) = match language {
-            LanguageKind::Python => python_metrics(tree.root_node(), &source),
-            LanguageKind::Go => multi_metrics(tree.root_node(), &source, language),
-            LanguageKind::TypeScript => multi_metrics(tree.root_node(), &source, language),
+            LanguageKind::Python => python_metrics(root, &source),
+            LanguageKind::Go => multi_metrics(root, &source, language),
+            LanguageKind::TypeScript => multi_metrics(root, &source, language),
         };
+        let file_raw = match language {
+            LanguageKind::Python => FileRaw::Python {
+                imports: python_imports(root, &source),
+                attribute_candidates: python_attribute_candidates(root, &source),
+            },
+            LanguageKind::Go => FileRaw::Multi {
+                imports: go_imports(root, &source),
+                named_candidates: go_selectors(root, &source),
+            },
+            LanguageKind::TypeScript => FileRaw::Multi {
+                imports: typescript_imports(root, &source),
+                named_candidates: typescript_named(root, &source),
+            },
+        };
+        let loc = source.iter().filter(|&&byte| byte == b'\n').count() + 1;
+        // `source` and `tree` (and `root`, which borrows `tree`) go out of
+        // scope at the end of this iteration -- the tree for this file is
+        // never retained past the file that produced it.
         parsed.insert(
             file.clone(),
             ParsedFile {
-                loc: source.iter().filter(|&&byte| byte == b'\n').count() + 1,
-                source,
-                tree,
+                loc,
                 complexity,
                 identifiers,
                 symbols,
             },
         );
+        raw.insert(file.clone(), file_raw);
     }
-    Ok(parsed)
+    Ok((parsed, raw))
 }
 
 /// The parse+resolve output of one `(pkg, language)` source: everything
@@ -919,7 +991,11 @@ fn multi_metrics(
     (complexity, identifiers, symbols)
 }
 
-fn parse_python(pkg: &str, parsed: BTreeMap<String, ParsedFile>) -> SourceIntermediate {
+fn parse_python(
+    pkg: &str,
+    parsed: BTreeMap<String, ParsedFile>,
+    raw: BTreeMap<String, FileRaw>,
+) -> SourceIntermediate {
     let mut modules = BTreeMap::<String, String>::new();
     for file in parsed.keys() {
         modules.insert(module_name(file, pkg), file.clone());
@@ -932,10 +1008,15 @@ fn parse_python(pkg: &str, parsed: BTreeMap<String, ParsedFile>) -> SourceInterm
     let mut fanin = BTreeMap::<String, f64>::new();
     let mut uses = BTreeSet::<(String, String, String)>::new();
     for (module, file) in &modules {
-        let parsed_file = &parsed[file];
-        let imports = python_imports(parsed_file.tree.root_node(), &parsed_file.source);
+        let FileRaw::Python {
+            imports,
+            attribute_candidates,
+        } = &raw[file]
+        else {
+            unreachable!("parse_python only ever stores FileRaw::Python");
+        };
         let is_pkg = file.rsplit('/').next() == Some("__init__.py");
-        for import in &imports {
+        for import in imports {
             for target in resolve_python(import, module, &known, is_pkg) {
                 let target_file = &file_of[&target];
                 if target_file == file {
@@ -950,12 +1031,11 @@ fn parse_python(pkg: &str, parsed: BTreeMap<String, ParsedFile>) -> SourceInterm
                 *fanin.entry(target_file.clone()).or_default() += 1.0;
             }
         }
-        for (target_file, name) in python_uses(
-            parsed_file.tree.root_node(),
-            &parsed_file.source,
+        for (target_file, name) in python_uses_from_raw(
             module,
             file,
-            &imports,
+            imports,
+            attribute_candidates,
             &known,
             &file_of,
         ) {
@@ -1131,12 +1211,45 @@ fn resolve_python(
     result
 }
 
-fn python_uses(
-    root: Node<'_>,
-    source: &[u8],
+/// Every `object.attribute` pair in the file whose `object` is a bare
+/// identifier -- e.g. `mod.thing()` yields `("mod", "thing")` -- with no
+/// filtering against imports at all. This is the raw half of what used to be
+/// `python_uses`'s tree walk: phase 1 (`parse_files`) can capture it while
+/// the tree is alive, but which of these pairs is actually a use of an
+/// imported module can only be decided in phase 2 (`python_uses_from_raw`),
+/// once the *global* `known` module set exists to build aliases against.
+fn python_attribute_candidates(root: Node<'_>, source: &[u8]) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    for node in walk(root) {
+        if node.kind() != "attribute" {
+            continue;
+        }
+        let Some(object) = node.child_by_field_name("object") else {
+            continue;
+        };
+        if object.kind() != "identifier" {
+            continue;
+        }
+        if let Some(attribute) = child_text(node, "attribute", source) {
+            result.push((text(object, source).to_owned(), attribute));
+        }
+    }
+    result
+}
+
+/// Phase 2 of Python's `uses` extraction: resolves `imports` (raw, from
+/// phase 1) into direct `from X import name` uses, and filters
+/// `attribute_candidates` (also raw, from phase 1) down to the pairs whose
+/// object identifier is an alias of a known module -- exactly what
+/// `python_uses` used to compute by re-walking the tree here, now done as
+/// pure string matching against candidates captured up front. No tree or
+/// source needed: `known`/`file_of` are the only things that had to wait for
+/// every file to be parsed.
+fn python_uses_from_raw(
     current_module: &str,
     current_file: &str,
     imports: &[PythonImport],
+    attribute_candidates: &[(String, String)],
     known: &BTreeSet<String>,
     file_of: &BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
@@ -1184,25 +1297,14 @@ fn python_uses(
         }
     }
     if !aliases.is_empty() {
-        for node in walk(root) {
-            if node.kind() != "attribute" {
-                continue;
-            }
-            let Some(object) = node.child_by_field_name("object") else {
-                continue;
-            };
-            if object.kind() != "identifier" {
-                continue;
-            }
-            let Some(target_file) = aliases.get(text(object, source)) else {
+        for (object, attribute) in attribute_candidates {
+            let Some(target_file) = aliases.get(object) else {
                 continue;
             };
             if target_file == current_file {
                 continue;
             }
-            if let Some(attribute) = child_text(node, "attribute", source) {
-                result.push((target_file.clone(), attribute));
-            }
+            result.push((target_file.clone(), attribute.clone()));
         }
     }
     result
@@ -1213,6 +1315,7 @@ fn parse_multi(
     pkg: &str,
     language: LanguageKind,
     parsed: BTreeMap<String, ParsedFile>,
+    raw: BTreeMap<String, FileRaw>,
 ) -> Result<SourceIntermediate> {
     let files = parsed.keys().cloned().collect::<BTreeSet<_>>();
     let mut by_directory = BTreeMap::<String, Vec<String>>::new();
@@ -1232,16 +1335,16 @@ fn parse_multi(
     let mut directed = BTreeMap::<(String, String), f64>::new();
     let mut fanin = BTreeMap::<String, f64>::new();
     let mut uses = BTreeSet::<(String, String, String)>::new();
-    for (file, parsed_file) in &parsed {
-        let imports = match language {
-            LanguageKind::Go => go_imports(parsed_file.tree.root_node(), &parsed_file.source),
-            LanguageKind::TypeScript => {
-                typescript_imports(parsed_file.tree.root_node(), &parsed_file.source)
-            }
-            LanguageKind::Python => unreachable!(),
+    for file in parsed.keys() {
+        let FileRaw::Multi {
+            imports,
+            named_candidates,
+        } = &raw[file]
+        else {
+            unreachable!("parse_multi only ever stores FileRaw::Multi");
         };
         for path in imports {
-            let targets = resolve_multi(language, &path, file, &go_module, &by_directory, &files);
+            let targets = resolve_multi(language, path, file, &go_module, &by_directory, &files);
             if targets.is_empty() {
                 continue;
             }
@@ -1255,15 +1358,8 @@ fn parse_multi(
                 *fanin.entry(target).or_default() += share;
             }
         }
-        let references = match language {
-            LanguageKind::Go => go_selectors(parsed_file.tree.root_node(), &parsed_file.source),
-            LanguageKind::TypeScript => {
-                typescript_named(parsed_file.tree.root_node(), &parsed_file.source)
-            }
-            LanguageKind::Python => unreachable!(),
-        };
-        for (path, name) in references {
-            for target in resolve_multi(language, &path, file, &go_module, &by_directory, &files) {
+        for (path, name) in named_candidates {
+            for target in resolve_multi(language, path, file, &go_module, &by_directory, &files) {
                 if &target != file {
                     uses.insert((file.clone(), target, name.clone()));
                 }
@@ -2079,14 +2175,7 @@ mod tests {
         complexity: usize,
         identifiers: &[(String, usize)],
     ) -> ParsedFile {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&LanguageKind::Python.tree_sitter())
-            .unwrap();
-        let tree = parser.parse(b"x = 1\n", None).unwrap();
         ParsedFile {
-            source: b"x = 1\n".to_vec(),
-            tree,
             loc,
             complexity,
             identifiers: identifiers.iter().cloned().collect(),
