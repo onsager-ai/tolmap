@@ -1,5 +1,6 @@
+import { useState } from "react";
 import type { MapDocument } from "@/types";
-import { districtColor } from "@/map/geometry";
+import { districtClass, districtColor } from "@/map/geometry";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 
 const WHY_COLOR: Record<string, string> = {
@@ -18,14 +19,89 @@ interface Props {
   onFlyDistrict(d: number): void;
 }
 
+/** One district row, shared by every section below. */
+function DistrictRow({ doc, d, onFlyDistrict }: { doc: MapDocument; d: string; onFlyDistrict(d: number): void }) {
+  return (
+    <div
+      onClick={() => onFlyDistrict(+d)}
+      className="flex cursor-pointer items-center gap-1.5 px-3 py-1 text-[10.5px] hover:bg-[var(--chrome2)]"
+    >
+      <i className="block h-2.5 w-2.5 flex-none rounded-sm" style={{ background: districtColor(+d) }} />
+      {doc.names[d]}
+      <span className="ml-auto text-[9.5px] text-[var(--dim)]">{doc.districts[d].size}</span>
+    </div>
+  );
+}
+
+/** Islands/unconnected section: a single-line, tappable header ("269
+ * islands") that expands into the full list on click. Collapsed by
+ * default — n8n alone puts 269 districts through this path, and a rail
+ * that dumps all of them flat would be worse than the 365-district list
+ * this feature exists to replace. A real `<button>`, not a div with an
+ * onClick like the district/landmark rows below it: this element's whole
+ * job is the toggle itself (no secondary click target competing for the
+ * same tap the way a row's "select" and "fly to" affordances share one),
+ * so it gets the element that is a toggle by default — focusable, and
+ * reachable by touch or keyboard without any of it being hand-rolled. */
+function CollapsibleSection({
+  label,
+  ids,
+  doc,
+  onFlyDistrict,
+}: {
+  label: string;
+  ids: string[];
+  doc: MapDocument;
+  onFlyDistrict(d: number): void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (ids.length === 0) return null; // a section with zero members renders nothing, not an empty header
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="mb-1.5 mt-3 flex w-full items-center gap-1.5 px-3 font-sans text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--dim)]"
+      >
+        <span className={`inline-block text-[10px] transition-transform ${open ? "rotate-90" : ""}`}>›</span>
+        {ids.length} {label}
+      </button>
+      {open && (
+        <div>
+          {ids.map((d) => (
+            <DistrictRow key={d} doc={doc} d={d} onFlyDistrict={onFlyDistrict} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 /** Landmarks and districts list. Desktop: a fixed left rail. Phone: a
  * bottom drawer that peeks a grab handle and opens on tap or drag — the
  * `.side`/`.grab`/`.open` pattern from the reference's CSS, reimplemented
  * as a translateY transition driven by the `open` prop instead of a class
- * toggled directly on the DOM node. */
+ * toggled directly on the DOM node.
+ *
+ * Districts split into up to three sections by class (issue #34): mainland
+ * districts under "Districts" as before, and islands/unconnected each
+ * collapsed behind their own count — see `CollapsibleSection`. A pre-#34
+ * document (no `class` anywhere) has every district read as mainland
+ * (`districtClass`'s default), so `islandIds`/`unconnectedIds` are both
+ * empty and this collapses to exactly the flat list that shipped before. */
 export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onFlyDistrict }: Props) {
   const narrow = useIsNarrow();
-  const districtIds = Object.keys(doc.districts).sort((a, b) => doc.districts[b].size - doc.districts[a].size);
+  const byClass = (cls: "mainland" | "island" | "unconnected") =>
+    Object.keys(doc.districts)
+      .filter((d) => districtClass(doc.districts[d]) === cls)
+      .sort((a, b) => doc.districts[b].size - doc.districts[a].size);
+  const mainlandIds = byClass("mainland");
+  const islandIds = byClass("island");
+  // Named "Unfiled", not "Districts" or "Towns": these are files the map
+  // couldn't place anywhere meaningful (no import edge to the rest of the
+  // repo), and the name has to say that rather than read as a place — spec
+  // requirement, and the same honesty SelectionPanel's note line applies.
+  const unconnectedIds = byClass("unconnected");
 
   const body = (
     <>
@@ -54,18 +130,12 @@ export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onFlyDistrict
         Districts
       </h2>
       <div>
-        {districtIds.map((d) => (
-          <div
-            key={d}
-            onClick={() => onFlyDistrict(+d)}
-            className="flex cursor-pointer items-center gap-1.5 px-3 py-1 text-[10.5px] hover:bg-[var(--chrome2)]"
-          >
-            <i className="block h-2.5 w-2.5 flex-none rounded-sm" style={{ background: districtColor(+d) }} />
-            {doc.names[d]}
-            <span className="ml-auto text-[9.5px] text-[var(--dim)]">{doc.districts[d].size}</span>
-          </div>
+        {mainlandIds.map((d) => (
+          <DistrictRow key={d} doc={doc} d={d} onFlyDistrict={onFlyDistrict} />
         ))}
       </div>
+      <CollapsibleSection label="islands" ids={islandIds} doc={doc} onFlyDistrict={onFlyDistrict} />
+      <CollapsibleSection label="unfiled" ids={unconnectedIds} doc={doc} onFlyDistrict={onFlyDistrict} />
     </>
   );
 

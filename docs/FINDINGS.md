@@ -588,3 +588,67 @@ Single alternating wall-clock builds on this host, including extraction:
 | n8n | 32.82s | 34.47s | +1.65s / 5.0% |
 
 `cargo fmt --check`, `cargo test --release` (115 tests across all targets), generated bindings `--check`, parity on all nine fixtures, and the web production build passed. Every parity run reported 100.0% placement, 0.0000 modularity delta and identical `F/E/L/S/U`. The service was not run end to end in this follow-up; the configuration unit test instead proves `TOLMAP_TERRAIN` is false when unset or invalid and true only on an explicit valid opt-in, while `jobs.rs` passes that resolved value directly as `BuildFeatures::terrain`. Deployment-env parity also passed without adding the setting to either hosted configuration. Clippy reported only the three warnings already present at HEAD. Web lint reported only its pre-existing `useJobProgress.ts` warning. A phone was not available: pinch bookkeeping, the six-pixel tap/drag threshold, delegated selection and coarse-pointer hit strokes were checked in code and through type/build/lint, but actual sub-district, parcel and arterial taps on a phone remain owed after this run.
+
+## 17. A map with 365 districts is not a map: the tail splits in two, and only one half is places
+
+Finding 14's corpus made the scale problem impossible to keep ignoring. n8n's map had **365 districts**, dify's 216, at the commit finding 14 measured. Nothing in the pipeline was wrong — modularity was fine, placement parity was 100%, the partition was finding real structure — and the artefact was still unusable, because a legend with 365 entries is a list, not a map. This finding records what was measured about that tail and what was done about it (issue #34); it does not claim to have solved it (issue #41 is the open design brief).
+
+**Re-measured after rebasing onto `main` at `cb04469`** (finding 15's module-resolution fix, #43's edgeless-partition guard and #47's opt-in terrain subdivision). Finding 15 landed after this branch was first written and, on its own, took n8n from 369 districts to 85 and dify from 226 to 136 by recovering import edges the old resolver dropped — so every count below that depends on district totals is now different from what shipped originally, even though nothing in *this* finding's mechanism changed. Classification and placement still only read the partition; membership itself is verified byte-identical between a `main` binary (no islands) and this one on all four repositories below (same `F`, `E`, `q`), so the movement in district counts is entirely finding 15's, not this feature's.
+
+### One percent of the files is the line, and it holds across a 21x range
+
+| repo | files | districts | mainland | island | unconnected |
+|---|---|---|---|---|---|
+| crawlab | 575 | 11 | 10 | 0 | 1 |
+| prometheus | 444 | 11 | 8 | 2 | 1 |
+| dify | 6,335 | 136 | 19 | 26 | 91 |
+| n8n | 11,982 | 85 | 15 | 52 | 18 |
+
+A district holding at least 1% of the repo's files is **mainland**. Before finding 15, the mainland column was 16, 27, 28 — roughly flat, and roughly increasing with repo size, across the 21x range in file count. It no longer is: 10, 19, 15 — n8n now has *fewer* mainland districts than dify despite having almost twice the files, because finding 15 concentrated n8n's structure into a few very large communities (its largest single district is 3,683 files, 30.7% of the repository — finding 15) rather than spreading it across many mid-sized ones. The share threshold is still doing real work (1% of crawlab is about 6 files, 1% of n8n about 120, and mainland's *file* share — 99.8% / 87.3% / 85.8%, matching finding 15's own column — stays high everywhere), but "the mainland count stays roughly constant across the corpus" is weaker evidence for 1% specifically than it was before finding 15 shrank the tail; see "What is not settled" below.
+
+The share is an integer percentage compared as `size * 100 >= total * 1`, not an `f64` against `0.01`, so a district sitting exactly on the boundary classifies the same way on every platform rather than depending on how the literal rounds.
+
+### Below the line there are two different things, and one of them is not a place
+
+The districts below 1% are not one population. Splitting them by whether the district holds any file incident to a resolved import edge:
+
+| | below 1% | with an import edge (**island**) | with none (**unconnected**) | files in the unconnected group |
+|---|---|---|---|---|
+| crawlab | 1 | 0 | 1 | 1 |
+| dify | 117 | 26 | 91 | 433 |
+| n8n | 70 | 52 | 18 | 105 |
+
+An island is small but real: it is connected to the repository, it just is not big enough to be one of its landmarks. An unconnected district is a group of files with no drawn edge to anything — configuration, generated code, fixtures, scripts. Drawing a region around those is the map asserting a place where there is only a residue, and it accounts for 91 of dify's 136 districts on its own. Unconnected districts therefore get **no region**: `blobs::contours`'s polygon is dropped and the viewer lists them instead of drawing them. Their files keep a defined, deterministic point and a `NodeRow`, as the schema requires.
+
+**The edge set that decides this is `imports`, not the blended graph.** Classifying against `layout.graph` — the blended, pruned, multi-signal graph the partitioner actually runs on — was tried first, on a literal reading of "kept edge", and did not reproduce either corpus at the time it was tried: a file with no import at all can still carry co-change, proximity and semantic mass. `imports` is also the edge set the viewer draws as `E`, so "unconnected" ends up meaning what a person looking at the map would take it to mean: nothing is drawn from it to anything. (The specific before/after numbers this comparison originally produced were measured against finding 14's corpus and are not re-run here; the mechanism -- `imports` over `layout.graph` -- did not change in this rebase.)
+
+### Three rules that were measured and rejected before this one
+
+- **Cap the district count by adapting the resolution.** Rejected: it changes membership, which breaks the acceptance gate by construction and makes the same repository partition differently depending on its size.
+- **Anchor each small district to the mainland district it is adjacent to.** Impossible, not merely unhelpful: re-measured on the current corpus (same `imports`/`E` edge set `classify_districts` itself reads), **105 of dify's 117** below-threshold districts and **32 of n8n's 70** have no edge to any mainland district at all. There is nothing to anchor to. (crawlab: 1 of 1. prometheus: 1 of 3, unchanged.)
+- **Group the tail by path prefix into archipelagos at adaptive depth.** Did not converge on finding 14's corpus — n8n's packages all share a `packages/` prefix, and a depth deep enough to separate them produced 96 groups of which 66 were singletons. Not re-run against the current, much smaller n8n tail (70 districts, not 337); this rejection is about the mechanism (path prefix carries no relationship information) rather than the corpus size, so it is left as originally measured rather than re-run for a number that would not change the conclusion.
+
+### What this costs, stated plainly
+
+**Membership never changes.** Classification and placement read the partition; nothing here calls the partitioner. All nine acceptance fixtures pass at 100% placement and 0.0000 modularity delta, `F`/`E`/`L`/`S`/`U` byte-identical, prometheus and sqlalchemy included (finding 15 closed the sqlalchemy gap; see finding 11). crawlab, dify, n8n and prometheus built with `main`'s binary (`cb04469`, no islands) and with this one have byte-identical membership, `F`, `E` and modularity (`q`) — re-verified on this rebase, not merely asserted.
+
+**The map gets bigger, so the viewer must frame the mainland.** Islands go on a ring around mainland's size-weighted centre of mass and unconnected districts on a second ring beyond it, which enlarges the coordinate extent:
+
+| | extent before | extent after | mainland's share of the area |
+|---|---|---|---|
+| prometheus | 3.20 x 4.69 | 6.48 x 4.72 | 48.2% |
+| crawlab | 4.12 x 3.09 | 4.92 x 3.10 | 83.4% |
+| dify | 4.59 x 3.34 | 6.23 x 6.17 | 33.7% |
+| n8n | 3.21 x 4.53 | 7.67 x 7.49 | 19.5% |
+
+Prometheus is unchanged (it has no module-resolution or terrain exposure -- a single root `go.mod`), which is a useful cross-check that this table's method reproduces the original measurement. The other three moved with finding 15's district counts: crawlab, now down to a single one-file unconnected district out of 11, keeps the great majority of its area as mainland (83.4%, up from 50.5%); dify and n8n, which still carry 91 and 18 unconnected districts respectively spread across fewer, larger mainland communities, now give up *more* of the frame to the offshore rings than before (n8n's mainland share fell from 27.2% to 19.5%). A viewer that opens on the full data extent would therefore make n8n *worse*, showing its 15 mainland districts at a fifth of the frame. The initial view still frames the mainland bounding box; the rest is reached by zooming out. (Note that the coordinate space is not `[0, 1]` before this change either — `blobs::relax()` already expands past `normalize_points`'s box.)
+
+**Prometheus's mainland moves by 0.135 and this is not a sizing bug.** Re-measured at 0.1353, unchanged. It is the only one of the nine acceptance fixtures with any pre-existing sub-1% district (re-verified on this rebase: the other eight still have none); the other eight show zero coordinate movement, by construction -- `relocate_offshore` only ever touches island/unconnected entries, and a fixture with neither leaves its `place_ring` calls with nothing to move. `blobs::relax()` pushes apart any two districts whose circles overlap, and on prometheus mainland's current position is partly the result of being pushed against one of those small districts. Moving the small district away — the entire point of the feature — removes a push that was part of today's placement. No placement rule can both relocate a district and leave undisturbed a district that only reached its position by pressing against the old location. The movement is bounded, small, and a `District.blob`/`NodeRow` coordinate, which finding 11's ruling keeps outside the acceptance gate.
+
+On the three real polyglot repositories, by contrast, mainland *does* move now, measurably: max mainland-node displacement is 0.05 (crawlab), 1.11 (dify) and 0.72 (n8n), against 574/5,531/10,280 mainland-classed nodes respectively. This was not measured or claimed at the corpus finding 14/finding 17 originally shipped against — crawlab then had only 3 sub-1% districts and the other two were not checked this way. It is not a regression in this feature (membership is unaffected, as above, and the movement is still unconditionally the `District.blob`/`NodeRow` coordinate finding 11 excludes from the acceptance gate) but it is new, larger movement than the "only prometheus moves" framing implied, and it is finding 15's doing: more of each repository's below-1% tail is now packed as islands/unconnected around fewer, larger mainland communities, so `relax()` has more offshore mass to push mainland away from than it did against the pre-finding-15 corpus.
+
+`eval/batch_stability.py` is unchanged and its numbers cannot move: it imports the frozen Python reference (`extract`, `pipeline`, `stability`) and calls leidenalg directly, so it never observes a Rust-side geometry change. The `CLAUDE.md` rule that measurement changes ship with their numbers is satisfied by this finding and by the parity evidence above.
+
+### What is not settled
+
+n8n now shows 52 islands, not 269 -- finding 15's module-resolution fix did most of the work issue #41 was opened to ask for, incidentally, by recovering edges that used to strand files into the tail in the first place. They are still on one ring, and calling them islands rather than districts still makes the map honest without making it legible on its own. The threshold is one parameter with one justification — that the mainland count stays roughly comparable across the corpus — and that justification is weaker post-finding-15 than it was (see above: n8n's mainland count is now below dify's despite being the larger repository), which is a weaker claim than "1% is the right number" was already. Nothing here addresses whether a repository of this size should be one map at all. That question is open as issue #41, deliberately stated as a brief rather than answered here.

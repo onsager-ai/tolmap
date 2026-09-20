@@ -14,15 +14,17 @@ import {
   FI,
   LOC,
   RECT,
+  districtClass,
   districtColor,
   fitScale as fitScaleOf,
+  fullFitScale as fullFitScaleOf,
+  mainlandBounds,
   px as pxOf,
   ramp,
   rooms,
   stripRows,
   symbolsOf,
   tmCentre,
-  worldBounds,
 } from "./geometry";
 import { computeBlast, type Route } from "./graph";
 
@@ -150,12 +152,27 @@ export class MapRenderer {
     if (!this.state) return 1;
     return fitScaleOf(this.state.doc, this.state.geo, this.VW, this.VH);
   }
-  private worldBounds() {
+  /** Floor for how far a viewer can zoom OUT, based on the FULL extent
+   * (mainland + offshore rings) -- never the default framing. Without this,
+   * `clampK`'s `fitScale()*0.5` floor would be a fraction of a view that
+   * itself excludes the offshore rings (see `frameBounds`), so scrolling or
+   * pinching out could never reach far enough to see an island or
+   * unconnected district at all (issue #34, requirement 2: offshore is
+   * reachable, not clamped away). */
+  private fullScale(): number {
+    if (!this.state) return 1;
+    return fullFitScaleOf(this.state.doc, this.state.geo, this.VW, this.VH);
+  }
+  /** The box the default view and the "fit" control frame: mainland only
+   * (issue #34) -- see `mainlandBounds`'s doc comment in geometry.ts for why
+   * framing the full extent by default would bury the actual map (n8n:
+   * mainland is 27.2% of the full extent) under its own offshore rings. */
+  private frameBounds() {
     if (!this.state) return [0, 0, 1, 1] as [number, number, number, number];
-    return worldBounds(this.state.doc, this.state.geo);
+    return mainlandBounds(this.state.doc, this.state.geo);
   }
   fit(anim: boolean) {
-    const b = this.worldBounds();
+    const b = this.frameBounds();
     const pad = 46;
     const s = Math.min((this.VW - 2 * pad) / (b[2] - b[0] || 1), (this.VH - 2 * pad) / (b[3] - b[1] || 1));
     const nx = pad + ((this.VW - 2 * pad) - (b[2] - b[0]) * s) / 2 - b[0] * s;
@@ -210,13 +227,33 @@ export class MapRenderer {
   }
   zoomDistrict(d: number) {
     if (!this.state) return;
-    const c = this.state.geo !== "t" ? this.state.doc.districts[d].c : tmCentre(this.state.doc, d);
+    const district = this.state.doc.districts[d];
+    let c = this.state.geo !== "t" ? district.c : tmCentre(this.state.doc, d);
+    // tmCentre folds min/max over every N row whose district matches `d`; a
+    // district with no member row would leave its accumulator at the
+    // untouched +-1e9 sentinel, averaging to a wrong-but-finite (0,0) --
+    // not NaN, but just as useless a place to fly to. Empirically
+    // unreachable today (every id `compact()` emits already carries >=1
+    // file, mainland or not, per geometry.rs), guarded anyway: `district.c`
+    // is always a valid, finite coordinate either way -- mainland's own
+    // centroid, or an island/unconnected's ring position
+    // (geometry.rs::relocate_offshore) -- so it's a correct fallback for a
+    // literal NaN too, if that invariant is ever violated from elsewhere.
+    if (!Number.isFinite(c[0]) || !Number.isFinite(c[1])) c = district.c;
     const narrow = window.innerWidth <= 820;
     const nk = this.fitScale() * (narrow ? 2.2 : 2.6);
     this.glide(nk, this.VW / 2 - c[0] * nk, this.VH / 2 - c[1] * nk);
   }
   private clampK(v: number) {
-    return Math.max(this.fitScale() * 0.5, Math.min(this.fitScale() * 40, v));
+    // The lower bound is whichever scale is smaller, so a viewer can always
+    // zoom out far enough to see the full extent -- islands, unconnected,
+    // everything -- even though the default view only frames mainland.
+    // Requirement 2 (issue #34): offshore districts are reachable by
+    // zooming out, not clamped away. On a pre-#34 fixture (no `class`
+    // anywhere) mainland IS the full extent, so fullScale() === fitScale()
+    // and this is exactly today's `fitScale() * 0.5` floor.
+    const lo = Math.min(this.fitScale() * 0.5, this.fullScale());
+    return Math.max(lo, Math.min(this.fitScale() * 40, v));
   }
   zoomBy(f: number) {
     const nk = this.clampK(this.k * f);
@@ -277,14 +314,22 @@ export class MapRenderer {
       });
       for (const d in doc.districts) {
         const on = selD === +d;
+        // Islands are real places but not the map's subject (issue #34): a
+        // thinner, fainter outline is the de-emphasis mechanism here,
+        // rather than a second colour scheme (districtColor stays the only
+        // source of hue, per spec). Unconnected districts never draw
+        // anything in this loop regardless -- the Rust side already
+        // emptied their `blob` (geometry.rs), so `.forEach` below is a
+        // no-op for them and they need no explicit case.
+        const faint = districtClass(doc.districts[d]) === "island";
         doc.districts[d].blob.forEach((poly) => {
           const path = el("path", {
             d: "M" + poly.map((q) => this.X(q[0]).toFixed(1) + " " + this.Y(q[1]).toFixed(1)).join("L") + "Z",
             fill: districtColor(+d),
-            "fill-opacity": layer === "d" ? (on ? 0.3 : 0.14) : on ? 0.16 : 0.06,
+            "fill-opacity": layer === "d" ? (on ? 0.3 : faint ? 0.07 : 0.14) : on ? 0.16 : faint ? 0.03 : 0.06,
             stroke: on ? "var(--hot)" : districtColor(+d),
-            "stroke-width": on ? 2.6 : 1.5,
-            "stroke-opacity": on ? 1 : 0.7,
+            "stroke-width": on ? 2.6 : faint ? 0.9 : 1.5,
+            "stroke-opacity": on ? 1 : faint ? 0.4 : 0.7,
             "stroke-linejoin": "round",
             class: "hit",
             "pointer-events": "all",
@@ -643,13 +688,38 @@ export class MapRenderer {
     };
     const narrow = this.narrow();
     const zf = this.k / this.fitScale();
-    for (const d in doc.districts) {
+    // Mainland labels claim the shared collision budget first; an island's
+    // `put()` below only succeeds where that leaves room -- "reduced
+    // priority within the existing label budget" (issue #34), not a second
+    // pass or a bigger one. At real density (n8n: 269 islands crowded onto
+    // one ring, measured on a 60-island synthetic stress fixture to overlap
+    // well before they'd stop colliding on screen) this is what keeps the
+    // result a sparse, legible scatter of names instead of a solid
+    // unreadable band of overlapping text. Unconnected districts are
+    // skipped outright: the Rust side gave them no polygon because they
+    // aren't places (geometry.rs), so labelling them here would strand a
+    // name and a "N files" line out on the unconnected ring where nothing
+    // is drawn to attach it to.
+    const ids = Object.keys(doc.districts).sort((a, b) => {
+      const pa = districtClass(doc.districts[a]) === "island" ? 1 : 0;
+      const pb = districtClass(doc.districts[b]) === "island" ? 1 : 0;
+      return pa - pb;
+    });
+    for (const d of ids) {
+      const cls = districtClass(doc.districts[d]);
+      if (cls === "unconnected") continue;
+      const isIsland = cls === "island";
       const c = geo !== "t" ? doc.districts[d].c : tmCentre(doc, +d);
       const x = this.X(c[0]);
       const y = this.Y(c[1]);
       if (x < 0 || x > this.VW || y < 0 || y > this.VH) continue;
-      put(x, y, doc.names[d], narrow ? Math.min(13, 10 + zf) : Math.min(17, 12 + zf), 0.82, 600, +d);
-      if (zf < 1.8 && !narrow) put(x, y + 13, doc.districts[d].size + " files", 9.5, 0.45);
+      const size = narrow ? Math.min(13, 10 + zf) : Math.min(17, 12 + zf);
+      // Islands read as minor: smaller, dimmer, lighter weight, and no "N
+      // files" subtitle -- with up to hundreds of them on a real repo, a
+      // second line per label would be its own kind of clutter even after
+      // the priority sort above thins the count that gets placed at all.
+      put(x, y, doc.names[d], isIsland ? size * 0.75 : size, isIsland ? 0.5 : 0.82, isIsland ? 500 : 600, +d);
+      if (zf < 1.8 && !narrow && !isIsland) put(x, y + 13, doc.districts[d].size + " files", 9.5, 0.45);
     }
     // file labels appear as you zoom in — the budget grows with scale
     if (geo === "p" && zf > BUILD_ZOOM) return; // plots label themselves
