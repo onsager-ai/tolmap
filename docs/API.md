@@ -44,7 +44,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_CACHE_DIR` | system temp dir `/tolmap-cache` | clone cache + indexed map files |
 | `TOLMAP_MAX_FILES` | `5000` | reject a repo with more source files than this after detection |
 | `TOLMAP_MAX_CLONE_BYTES` | `2147483648` (2 GiB) | reject a clone whose working tree + `.git` exceeds this |
-| `TOLMAP_MAX_HISTORY_COMMITS` | `200000` | reject a repo whose `HEAD` history has more commits than this -- see `service::config::Limits::max_history_commits`'s doc comment: this bounds clone cost, not indexing cost, and the default was 20000 until 2026-09-20, which rejected django (34942 commits) |
+| `TOLMAP_MAX_HISTORY_COMMITS` | `200000` | reject a repo whose `HEAD` history has more commits than this -- does not bound indexing cost (`extract.rs` caps its own history read at 4000 regardless of depth); see `service::config::Limits::max_history_commits`'s doc comment for what it actually guards on each of `service::clone::materialize`'s two request paths (pre-clone on a local path, a narrower post-clone refusal on a remote one). Default was 20000 until 2026-09-20, which rejected django (34942 commits) |
 | `TOLMAP_MAX_JOB_SECONDS` | `900` | wall-clock budget for one job before it fails as `index_failed` |
 | `TOLMAP_RATE_LIMIT_PER_IP` | `30` | requests per window, per source IP, under `/api/` |
 | `TOLMAP_RATE_LIMIT_WINDOW_SECONDS` | `60` | window for the per-IP limit |

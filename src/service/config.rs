@@ -38,19 +38,42 @@ pub struct Limits {
     /// Env: `TOLMAP_MAX_CLONE_BYTES`.
     pub max_clone_bytes: u64,
     /// Reject a repository whose `HEAD` history (`git rev-list --count
-    /// HEAD`) has more commits than this, checked before indexing starts.
+    /// HEAD`) has more commits than this.
     ///
     /// **This does not bound indexing cost** -- correcting a false claim an
     /// earlier version of this comment made. `extract.rs`'s `git_history`
     /// call is hardcoded to walk only the most recent 4000 commits for
     /// co-change no matter how deep `HEAD`'s history is (see
     /// `service::clone`'s module doc comment), so a repository with 200,000
-    /// commits costs `extract::build` exactly what one with 4,000 does. What
-    /// this actually bounds is the *clone*: `--filter=blob:none` skips blob
-    /// content but still fetches a commit+tree object for every commit
-    /// (docs/ARCHITECTURE.md's clone strategy), so `.git`'s size on disk
-    /// still grows with history depth even though nothing downstream reads
-    /// most of it.
+    /// commits costs `extract::build` exactly what one with 4,000 does.
+    ///
+    /// What it actually bounds depends on which of
+    /// `service::clone::materialize`'s two paths a request takes -- an
+    /// earlier version of *this* correction also overstated it, by
+    /// describing only one of the two paths as if it were both:
+    ///
+    /// - `RepoSource::Local` (fixtures and tests; nothing is cloned):
+    ///   `check_history_depth` runs first, before anything else, so it
+    ///   genuinely pre-empts work -- a repository over the limit never
+    ///   reaches `detect`/`extract::build`.
+    /// - `RepoSource::Remote`: `clone_blobless`/`fetch_and_fast_forward`
+    ///   run *first*, so the clone -- network transfer and disk writes
+    ///   alike -- has already happened by the time this check runs.
+    ///   `check_clone_size` has also already measured the real,
+    ///   already-materialised size with `du -sb` and rejected an
+    ///   oversized clone on its own. So on this path
+    ///   `check_history_depth` is a **post-clone refusal to index**, not a
+    ///   pre-clone gate: it cannot save the clone cost, because that cost
+    ///   is already paid by the time it runs. What it still catches that
+    ///   `check_clone_size` alone cannot is a repository with an enormous
+    ///   commit *count* but a small byte footprint (many tiny or
+    ///   near-empty commits can keep total `.git` bytes modest while
+    ///   `git rev-list`-style traversals over that history stay expensive
+    ///   in wall-clock terms, independent of size) -- a real but narrow
+    ///   case, not a restatement of the size check. Whether that narrow
+    ///   case earns a second, independent knob here rather than just
+    ///   tightening `max_clone_bytes` is an open question this change
+    ///   does not resolve -- see the PR that added this correction.
     ///
     /// The default used to be 20,000, on the belief that this "comfortably
     /// admits django ... with headroom" (this file's module doc comment).
@@ -60,8 +83,9 @@ pub struct Limits {
     /// fixture the comment claimed it admitted. 200,000 restores roughly
     /// the same ~5.9x headroom over django's real depth that `max_files`
     /// keeps over its file count (5,000 / 851 ~= 5.87), rather than a
-    /// number picked to sound safe. See the PR that made this change for
-    /// the reasoning it replaced and the fly.toml value that mirrors it.
+    /// number picked to sound safe. That part of this change stands
+    /// regardless of the open question above -- a repository this deep
+    /// should be admitted either way.
     ///
     /// Env: `TOLMAP_MAX_HISTORY_COMMITS`.
     pub max_history_commits: usize,
@@ -245,11 +269,36 @@ mod tests {
     use super::*;
 
     // std::env is process-global and cargo test runs test functions
-    // concurrently within one process, so two tests touching the same
-    // TOLMAP_* key could race. Everything these tests set, they clear
-    // before returning, and neither test's key set overlaps the other's.
+    // concurrently within one process (on separate threads by default), so
+    // two tests that touch overlapping TOLMAP_* keys race each other
+    // directly. This used to be "solved" by an assumption -- "neither
+    // test's key set overlaps the other's" -- which held only by accident
+    // and broke the moment bind_addr_unset_still_binds_loopback and
+    // bind_addr_env_override_and_garbage_fallback were added: both touch
+    // TOLMAP_PORT, one via `remove_var` expecting 8787, the other via
+    // `set_var("...", "9999")`, and interleaved runs produced the wrong
+    // port in whichever test read it mid-mutation (measured: ~15-17% of
+    // `cargo test --release --lib service::config` runs at default
+    // parallelism). Proving every test's key set disjoint from every
+    // other's by inspection is exactly the kind of thing that quietly
+    // stops being true the next time someone adds a test, so it is not
+    // the fix -- serialising is. Every test in this module that sets or
+    // removes a `TOLMAP_*` var takes this lock for its whole body (acquired
+    // once, at the top, not re-acquired around each env call, so the whole
+    // read-mutate-assert-restore sequence is atomic with respect to every
+    // other such test). `lock_env` recovers from a poisoned lock rather
+    // than propagating one test's panic into every later test's failure,
+    // since several of these tests deliberately assert on bad input.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn limits_from_env_overrides_defaults_and_falls_back_on_garbage() {
+        let _guard = lock_env();
         let keys = [
             "TOLMAP_MAX_FILES",
             "TOLMAP_MAX_CLONE_BYTES",
@@ -296,6 +345,7 @@ mod tests {
 
     #[test]
     fn retain_commits_per_repo_env_override() {
+        let _guard = lock_env();
         env::remove_var("TOLMAP_RETAIN_COMMITS_PER_REPO");
         assert_eq!(env_var_or("TOLMAP_RETAIN_COMMITS_PER_REPO", 20usize), 20);
         env::set_var("TOLMAP_RETAIN_COMMITS_PER_REPO", "3");
@@ -308,6 +358,7 @@ mod tests {
     // test rather than living in limits_from_env_overrides_defaults_and_falls_back_on_garbage.
     #[test]
     fn bind_addr_unset_still_binds_loopback() {
+        let _guard = lock_env();
         env::remove_var("TOLMAP_BIND_ADDR");
         env::remove_var("TOLMAP_PORT");
         let config = ServeConfig::from_env();
@@ -319,6 +370,7 @@ mod tests {
 
     #[test]
     fn bind_addr_env_override_and_garbage_fallback() {
+        let _guard = lock_env();
         env::set_var("TOLMAP_PORT", "9999");
 
         env::set_var("TOLMAP_BIND_ADDR", "0.0.0.0");
@@ -341,6 +393,7 @@ mod tests {
 
     #[test]
     fn static_dir_unset_by_default_set_when_configured() {
+        let _guard = lock_env();
         env::remove_var("TOLMAP_STATIC_DIR");
         assert_eq!(ServeConfig::from_env().static_dir, None);
 
