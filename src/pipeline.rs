@@ -1042,6 +1042,7 @@ mod tests {
             repo: String::new(),
             pkg: String::new(),
             lang: "py".to_owned(),
+            sources: Vec::new(),
             imports: Vec::new(),
             symbols: BTreeMap::new(),
             uses: Vec::new(),

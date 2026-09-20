@@ -8,14 +8,17 @@
 //! every candidate root it considered, which marker file decided it, how
 //! many files it counted, and an explicit confidence -- never a bare guess.
 //!
-//! **Polyglot repositories are not merged here.** Most real repositories are
-//! not one language, and `docs/ARCHITECTURE.md` argues merging is the right
-//! long-term answer (a concern crosses languages; co-change becomes the only
-//! signal that bridges them, since cross-language imports don't resolve).
-//! That is its own change. This module detects and reports *every* plausible
-//! source -- one candidate per language that has any -- and returns the one
-//! with the most files as the choice. A caller (a human via `tolmap detect`,
-//! or `tolmap build` reading `--pkg`/`--lang`) can always override.
+//! **This module does not merge polyglot repositories itself.** Most real
+//! repositories are not one language, and `docs/ARCHITECTURE.md` argues
+//! merging is the right long-term answer (a concern crosses languages, so
+//! districts should too) -- see `docs/FINDINGS.md` finding 13 for what was
+//! actually measured about which signals do and don't bridge languages. This
+//! module's job stays narrower: detect and report *every* plausible source
+//! -- one candidate per language that has any -- and return the one with the
+//! most files as `chosen`. [`all_sources`] filters that same candidate list
+//! down to the ones worth merging (`--all-sources`); `extract::build_multi_source`
+//! does the actual merge. A caller (a human via `tolmap detect`, or
+//! `tolmap build` reading `--pkg`/`--lang`) can always override either.
 //!
 //! Determinism (`CLAUDE.md`, finding 9): every candidate list is sorted by
 //! file count and then by a stable key (path or language name) before the
@@ -87,6 +90,51 @@ impl SourceCandidate {
 pub struct Detection {
     pub chosen: SourceCandidate,
     pub candidates: Vec<SourceCandidate>,
+}
+
+/// The floor `--all-sources` (`tolmap build --all-sources` and friends;
+/// `src/main.rs`) applies to `detect()`'s candidates before treating one as
+/// a real second source to merge in: below this many files, or below this
+/// share of every detected source file across all languages, a language is
+/// noise (a stray generated `.ts` file checked into a Python repo, a single
+/// vendored `.go` shim) rather than a second concern worth extracting and
+/// blending. Both numbers live in this one place because
+/// `tolmap polyglot-report` (step 2 of the polyglot work) measures whether
+/// they are right on real repositories -- see `docs/FINDINGS.md` finding 13
+/// -- and the pipeline is deliberately not retuned from what that measured;
+/// changing either constant is a decision for whoever reads that finding,
+/// not something this module should do on its own.
+pub const ALL_SOURCES_MIN_FILES: usize = 25;
+pub const ALL_SOURCES_MIN_SHARE: f64 = 0.05;
+
+/// `detect()`'s candidates that clear the `--all-sources` floor above,
+/// sorted by `(language.as_str(), pkg)` -- the same order
+/// `extract::build_multi_source` merges in, so a caller can pass this
+/// straight through with no further sorting. The share denominator is the
+/// sum of every detected candidate's `file_count` (one per language that has
+/// any source at all), not the repository's total file count -- vendored or
+/// otherwise-excluded files were never a candidate to begin with, and
+/// counting them would make the 5% floor stricter for no reason tied to
+/// what `--all-sources` is actually choosing between.
+pub fn all_sources(repo: &Path) -> Result<Vec<SourceCandidate>> {
+    let detection = detect(repo)?;
+    let total_detected_files: usize = detection.candidates.iter().map(|c| c.file_count).sum();
+    let mut selected = detection
+        .candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate.file_count >= ALL_SOURCES_MIN_FILES
+                && candidate.file_count as f64
+                    >= ALL_SOURCES_MIN_SHARE * total_detected_files as f64
+        })
+        .collect::<Vec<_>>();
+    selected.sort_by(|a, b| {
+        a.language
+            .as_str()
+            .cmp(b.language.as_str())
+            .then_with(|| a.pkg.cmp(&b.pkg))
+    });
+    Ok(selected)
 }
 
 /// Detects language and source root for `repo`, across all supported
@@ -908,6 +956,59 @@ mod tests {
             .unwrap();
         assert_eq!(python.pkg, "tiny");
         assert_eq!(python.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn all_sources_drops_a_language_below_either_floor_and_keeps_the_rest() {
+        // Go: 60 files (root go.mod) -- well over both floors.
+        // TypeScript: 40 files under src/ -- also over both floors.
+        // Python: 2 files -- under the 25-file floor AND under 5% of the
+        // 102 total detected files (2/102 ~= 2%), so it must be excluded
+        // even though it is a real, correctly-detected package.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "module example.com/big\n");
+        for i in 0..60 {
+            write(dir.path(), &format!("svc/file{i}.go"), "package svc\n");
+        }
+        write(dir.path(), "package.json", "{}\n");
+        write(dir.path(), "tsconfig.json", "{}\n");
+        for i in 0..40 {
+            write(dir.path(), &format!("src/file{i}.ts"), "export {{}}\n");
+        }
+        write(dir.path(), "pyproject.toml", "[project]\nname = \"tiny\"\n");
+        write(dir.path(), "tiny/__init__.py", "");
+        write(dir.path(), "tiny/core.py", "");
+
+        let selected = all_sources(dir.path()).unwrap();
+        let languages = selected.iter().map(|c| c.language).collect::<Vec<_>>();
+        assert_eq!(
+            languages,
+            vec![LanguageKind::Go, LanguageKind::TypeScript],
+            "python excluded (2 files: under 25 and under 5% of 102 detected); \
+             go before typescript by the (lang, pkg) sort all_sources documents"
+        );
+        for candidate in &selected {
+            assert!(candidate.file_count >= ALL_SOURCES_MIN_FILES);
+        }
+    }
+
+    #[test]
+    fn all_sources_returns_every_candidate_when_the_repo_is_small_and_balanced() {
+        // Two languages, each comfortably over 25 files and each holding
+        // well over half the total -- both must clear the share floor even
+        // though it's the smaller one being checked against the total.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "module example.com/mixed\n");
+        for i in 0..30 {
+            write(dir.path(), &format!("svc/file{i}.go"), "package svc\n");
+        }
+        write(dir.path(), "pyproject.toml", "[project]\nname = \"tiny\"\n");
+        write(dir.path(), "tiny/__init__.py", "");
+        for i in 0..30 {
+            write(dir.path(), &format!("tiny/mod{i}.py"), "x = 1\n");
+        }
+        let selected = all_sources(dir.path()).unwrap();
+        assert_eq!(selected.len(), 2);
     }
 
     #[test]

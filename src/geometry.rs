@@ -33,6 +33,38 @@ pub fn build(
     build_from_graph(graph, map_name, out, resolution, with_parcels)
 }
 
+/// As [`build`], but unions any number of `(pkg, language)` sources (see
+/// `extract::build_multi_source`) instead of parsing one -- the CLI entry
+/// point for `tolmap build --pkg . --lang go --pkg web/ui --lang ts` and
+/// `tolmap build --all-sources`.
+pub fn build_multi(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    name: Option<&str>,
+    out: &Path,
+    resolution: f64,
+    with_parcels: bool,
+) -> Result<PathBuf> {
+    let map_name = name.map(str::to_owned).unwrap_or_else(|| {
+        repo.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    });
+    let described = sources
+        .iter()
+        .map(|(pkg, language)| format!("{pkg} ({})", language.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!(
+        "[1/5] extract   {}  {} sources: {described}",
+        repo.display(),
+        sources.len()
+    );
+    let graph = extract::build_multi_source(repo, sources)?;
+    build_from_graph(graph, map_name, out, resolution, with_parcels)
+}
+
 /// Runs the pipeline (partition, naming, geometry, parcels) against an
 /// already-extracted graph, skipping the repository-parsing step `build`
 /// does first. This is what lets CI exercise blend -> prune -> partition ->

@@ -270,8 +270,10 @@ fn membership(document: &MapDocument) -> BTreeMap<String, usize> {
 /// reference_id)`, so ties favour the larger id on both sides) -- this is
 /// the established definition of "which district is this, now", already
 /// relied on for the warm-start retention numbers in `docs/FINDINGS.md`
-/// finding 4, and reused verbatim rather than re-derived.
-fn match_districts(
+/// finding 4, and reused verbatim rather than re-derived. `pub(crate)` for
+/// the same reason: `polyglot.rs`'s projection-drift number is this same
+/// question asked of a (merged graph, single-source graph) pair.
+pub(crate) fn match_districts(
     candidate: &BTreeMap<String, usize>,
     reference: &BTreeMap<String, usize>,
     common_files: &BTreeSet<&str>,

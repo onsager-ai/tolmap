@@ -249,3 +249,55 @@ Static import pairs recovered, before and after, on the fixture clones:
 Because membership changed, most district-fingerprint cache entries missed and the IDF fallback renamed those districts — the correct signal per `eval/seed_names.py`'s docstring, not a failure, and no name was hand-edited to avoid it. Districts whose membership happened to land exactly on their old fingerprint kept their name verbatim (all of prometheus's and vue's districts; django's "gis · gdal", "files & cache" and "messages"; httpx's "transports"; scrapy's "command line" and "spider middleware"; rich's "unicode tables"). Every other Python-fixture district renamed; the full old-name → new-name table is in the "data: re-record" commit that carries this finding.
 
 **The Rust port needed the same fix.** `python_head()` in `src/extract.rs` carried the identical unconditional `+ 1`. Ported the same `is_pkg` distinction through `python_head()`, `resolve_python()` and `python_uses()`. The parity gate against the re-recorded `data/*.json`, all nine repos: 100.0% district placement and 0.0000 modularity delta on every fixture, with F/E/L/S/U all byte-identical. This is not a regression from the pre-fix baseline (98.4–100% placement, sqlalchemy the one holdout on landmarks alone) — sqlalchemy now matches exactly too. Its previous 98.4% was a Leiden local-optimum difference from `dialects/` splitting 4 files into their own community on the old, sparser graph (finding 11's "what remains open"); the corrected extraction changed the graph enough that both implementations converge to the same partition on it. Whether that means the underlying divergence is closed or just not currently exercised by this graph is not established either way — nothing here traced Leiden's node-visit order to check, and the previous holdout was itself graph-specific, not universal.
+
+## 13. Polyglot union extraction: co-change is not the only bridge, and the map can redraw the file extension
+
+Step 1 (union extraction) merges any number of `(pkg, language)` sources before `finish_graph` runs co-change, semantic and proximity over the combined file set, instead of unioning two finished graphs (which would carry zero cross-language edges of any signal by construction). Step 2 measures what that merge actually produces, with `tolmap polyglot-report`, on two corpora: a small synthetic fixture built for this purpose (`eval/gen_synthetic_polyglot_fixture.py`, committed as `data/ci/synthetic_polyglot.graph.json`) and a real one that turned out to be free.
+
+**`docs/ARCHITECTURE.md`'s claim is wrong as stated, on both corpora.** "Co-change becomes the only signal that bridges languages" is false: only `static` is architecturally zero cross-language (resolution only ever looks a target up in its own source's known-file set — see `extract::union_sources`). `proximity`, `semantic` and `cochange` all measurably cross, on both a hand-built fixture and a real 522-file repository:
+
+| signal | synthetic fixture (50 files) | prometheus @ 296080c (522 files) |
+|---|---|---|
+| static | 0.0% (architectural) | 0.0% (architectural) |
+| cochange | **100.0%** of its own raw mass | 3.5% |
+| proximity | 0.0% | **0.06%** |
+| semantic | **14.4%** | 0.6% |
+
+Proximity's near-zero-but-not-zero figure on prometheus is itself informative, not noise: `docs/ARCHITECTURE.md` said proximity "does go to 0 across a `server/` + `web/` split by construction" — true when the two languages root at disjoint directories, as the synthetic fixture deliberately does (Go at `.`, TypeScript at `src/`). Prometheus's Go and TypeScript both root at `.` (the UI lives at `web/ui/...` alongside Go's own `web/api/...`), so a Go file and a TypeScript file occasionally do share a path prefix, and proximity crosses too, just barely. The mechanism is real; whether it fires depends on where the two languages' roots sit relative to each other, which is a property of the repository, not of the pipeline.
+
+**Prometheus at its pinned commit (`data/fixtures.toml`) does carry a real TypeScript UI** — verified at the pin, not assumed: 100 `.ts` files under `web/ui/{react-app,mantine-ui,module}`, two of those three with their own `package.json`+`tsconfig.json`. `tolmap detect` on the checkout finds it as a second candidate (`ts at . (78 files, low confidence)` — no *root* `package.json`, so detection falls back to mapping the repository root directly rather than resolving the workspace; the 78 is `extract::source_files` under `pkg="."`, which is lower than 100 because the walk excludes `.d.ts`/`.test.ts`/`.spec.ts`). Both `ALL_SOURCES_MIN_FILES` (78 ≥ 25) and `ALL_SOURCES_MIN_SHARE` (78 of 522 detected files = 15% ≥ 5%) are cleared, so `--all-sources` selects it. This makes the existing go-only `data/prometheus.json` fixture a free monoglot-projection baseline: nothing about the merge was built to make this comparison come out any particular way.
+
+**Below-prune-floor hazard, sized on both corpora — real, but repository-dependent, not universal.** Finding 10's mechanism (`blend()` divides every edge by the single largest blended edge in the *whole* graph; a language whose dominant edge is smaller than the other's can have its entire distribution pushed toward the floor) does reproduce across languages, but its size varies enormously with how balanced the two languages' own signal masses are:
+
+| | synthetic fixture: go | synthetic fixture: ts | prometheus: go | prometheus: ts |
+|---|---|---|---|---|
+| below floor, single-source | 0.0% | 0.0% | 1.2% | 0.0% |
+| below floor, merged | **25.0%** | 0.0% | 1.1% | 0.0% |
+
+On the synthetic fixture (deliberately built with 25 near-edgeless Go filler files diluting a small real Go static-edge cluster) a quarter of Go's intra-language edges get pushed under the floor by merging in TypeScript. On prometheus, where Go's own static graph is large and dense (6,456 single-source candidate edges against TypeScript's 122), the merge barely moves Go's floor share at all (1.2% → 1.1%) and TypeScript's stays at 0% either way. **The hazard is real and worth reporting per merge, not a fixed cost of merging as such** — exactly finding 10's own conclusion, one level up: report it, do not assume it, and do not retune the floor from what one repository shows.
+
+**NMI/adjusted Rand against the language label: near 1.0 means the map redrew the file extension, and it is repository-dependent whether that happens.**
+
+| | synthetic fixture | prometheus |
+|---|---|---|
+| NMI | 0.878 | **0.279** |
+| adjusted Rand | 0.920 | **0.112** |
+| districts | 2 | 12 |
+| files in a ≥90%-one-language district | 100.0% | 82.2% |
+
+The synthetic fixture's high NMI is an artefact of its own construction, not a property of merging in general: 46 of its 50 files are deliberately edge-less filler (to clear `--all-sources`' floor without diluting the fixture's three deliberately-placed signals — see the generator's docstring), so `merge_tiny` has nothing to do but glom each language's filler back onto its own real cluster by directory. Prometheus, a real interconnected repository with no filler, lands far lower: 12 real districts, most of them still meaningfully mixed (82.2% in a ≥90%-one-language district means 17.8% of files sit in a district that is genuinely both languages). Modularity alone does not distinguish these cases — the synthetic fixture and prometheus both score respectably on q (0.16 vs 0.578) — which is exactly why `docs/ARCHITECTURE.md`'s revised polyglot paragraph does not use q as the polyglot acceptance signal.
+
+**Projection drift is real and asymmetric, not zero.** Retention of a language's own single-source district assignment, measured against the merged map, by best-Jaccard match (the same matching `src/parity.rs` uses for placement):
+
+| | synthetic fixture | prometheus |
+|---|---|---|
+| go retention | 76.0% | 85.1% |
+| ts retention | 100.0% | **51.3%** |
+
+Neither figure is zero, confirming the prediction in the spec this finding was written against: mass shares and the semantic IDF document frequency both change when a language is added (`semantic_vectors`' document-frequency denominator is the size of the *whole* parsed set), so the blend is not a superposition of two independent maps. On prometheus the smaller side (TypeScript, 78 files against Go's 444) drifts far more than the larger one — the same "smaller corpus is the less stable one" shape finding 9's jitter table and finding 3's churn numbers already established, now showing up as a consequence of *which* language is smaller in a merge, not of repository size alone.
+
+**Per-language static_max (step 1 item 4) is exercised, not just asserted in isolation.** `single_language_static_max_matches_the_old_global_max` and `cross_language_static_max_does_not_let_one_language_drag_the_other` (`src/extract.rs`) cover the unit-level claim; on prometheus, Go's single-source candidate-edge count (6,456) against TypeScript's (122) is exactly the kind of imbalance a shared global max would have punished — TypeScript's own static edges are dense (many resolve to 1.0, single-file relative imports) while Go's `resolve_multi` spreads each import's weight across its target directory (`share = 1.0 / targets.len()`), so a shared max computed from Go's larger, more spread-out edge population would have systematically underweighted TypeScript's tighter one. Per-language buckets avoid that; this finding does not attempt to quantify what the old (hypothetical, since this repository was never mapped polyglot before) global-max behaviour would have produced, since nothing in the shipped pipeline ever computed it that way for a real merge.
+
+**Determinism.** Three `tolmap build --all-sources` runs on the synthetic fixture, sha256sum compared: byte-identical (`ac19f64...`, all three). This is the check finding 10's closing note records for the single-language path, now run for the merge; it is also a CI job (`gate`, `.github/workflows/ci.yml`), not just a one-time measurement, along with the ceilings this finding's synthetic-fixture numbers set (`eval/check_polyglot_ceilings.py`: NMI ≤ 0.95, below-floor share ≤ 0.5 per language).
+
+**What this does and does not settle.** This is a measurement, not a retuning — `ALPHA`/`BETA`/`GAMMA`/`DELTA`, the 0.02 prune floor, `keep_per_node=14`, and `ALL_SOURCES_MIN_FILES`/`ALL_SOURCES_MIN_SHARE` (25 files, 5% share) are exactly as shipped in this change, per `CLAUDE.md`. Two corpora is not a corpus-wide sweep the way findings 5/10/12 ran across all nine fixtures — prometheus is the only real polyglot repository measured here, because it is the only one of the nine already pinned that turned out to qualify (`data/fixtures.toml`'s other eight are single-language at their pins, unverified further here). Whether the below-floor hazard or the projection-drift asymmetry generalise beyond these two repositories, and what floor/threshold changes (if any) they would justify, is the next measurement, not this one.

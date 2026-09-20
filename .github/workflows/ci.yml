@@ -153,6 +153,60 @@ jobs:
             ./target/release/tolmap parity "data/${name}.json" "ci-out/${name}.json"
           done
 
+      # The union-extraction merge itself, offline: data/ci/synthetic_polyglot.graph.json
+      # is `tolmap dump-graph --all-sources` run once against
+      # eval/gen_synthetic_polyglot_fixture.py's output and checked in the
+      # same way data/ci/{flask,httpx}.graph.json are. Not a parity check
+      # (there is no oracle for polyglot -- docs/ARCHITECTURE.md) -- just
+      # confirms `build --graph` still runs blend -> prune -> partition ->
+      # layout on a merged multi-source graph without a repository or a
+      # network call.
+      - name: Offline union-extraction sanity (synthetic polyglot graph)
+        run: |
+          set -euo pipefail
+          ./target/release/tolmap build \
+            --graph data/ci/synthetic_polyglot.graph.json \
+            --name synthetic_polyglot \
+            --out ci-out \
+            --resolution 1.1
+
+      # docs/FINDINGS.md finding 13, step 2 of the polyglot work: materialise
+      # the synthetic fixture fresh (pure local git + Python, no network),
+      # then check the two things spec step 1 item 8 and step 2 require --
+      # three `--all-sources` builds are byte-identical, and
+      # `polyglot-report`'s numbers stay under the ceilings finding 13
+      # records (eval/check_polyglot_ceilings.py). ubuntu-latest ships
+      # python3; nothing here needs a version pin beyond what the stdlib
+      # `tomllib`-free scripts already assume.
+      - name: Generate synthetic polyglot fixture
+        run: python3 eval/gen_synthetic_polyglot_fixture.py --out polyglot-fixture
+
+      - name: Polyglot determinism (--all-sources, 3x sha256)
+        run: |
+          set -euo pipefail
+          hashes=""
+          for i in 1 2 3; do
+            mkdir -p "polyglot-det-$i"
+            ./target/release/tolmap build "$PWD/polyglot-fixture" --all-sources \
+              --name synthetic_polyglot --out "polyglot-det-$i" --no-parcels >/dev/null
+            hash=$(sha256sum "polyglot-det-$i/synthetic_polyglot.json" | cut -d' ' -f1)
+            echo "run $i: $hash"
+            hashes="$hashes $hash"
+          done
+          uniq_count=$(echo "$hashes" | tr ' ' '\n' | sort -u | grep -c .)
+          if [ "$uniq_count" -ne 1 ]; then
+            echo "three --all-sources runs produced different output -- determinism regression (CLAUDE.md, finding 9)"
+            exit 1
+          fi
+          echo "three --all-sources runs byte-identical"
+
+      - name: Polyglot report + ceilings (finding 13)
+        run: |
+          set -euo pipefail
+          ./target/release/tolmap polyglot-report "$PWD/polyglot-fixture" --all-sources \
+            --out polyglot-report.json
+          python3 eval/check_polyglot_ceilings.py polyglot-report.json
+
   full-fixtures:
     name: full nine-fixture parity (on demand / nightly)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

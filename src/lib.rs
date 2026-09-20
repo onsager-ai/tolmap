@@ -8,6 +8,7 @@ pub mod parcels;
 pub mod parity;
 pub mod partition;
 pub mod pipeline;
+pub mod polyglot;
 pub mod schema;
 pub mod service;
 

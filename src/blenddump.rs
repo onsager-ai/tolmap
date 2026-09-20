@@ -33,8 +33,18 @@ fn round_to(value: f64, places: i32) -> f64 {
 
 pub fn dump(repo: &Path, pkg: &str, lang: &str, out: &Path) -> Result<()> {
     let language = LanguageKind::parse(lang)?;
-    let mut data = extract::build(repo, pkg, language)?;
+    let data = extract::build(repo, pkg, language)?;
+    dump_data(data, out)
+}
 
+/// As [`dump`], but unions any number of `(pkg, language)` sources (see
+/// `extract::build_multi_source`) instead of parsing one.
+pub fn dump_multi(repo: &Path, sources: &[(String, LanguageKind)], out: &Path) -> Result<()> {
+    let data = extract::build_multi_source(repo, sources)?;
+    dump_data(data, out)
+}
+
+fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
     let candidate_edges = data.edges.len();
     let mass =
         |select: fn(&crate::schema::SignalEdge) -> f64| data.edges.iter().map(select).sum::<f64>();
