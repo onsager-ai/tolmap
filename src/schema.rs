@@ -97,6 +97,14 @@ pub struct SourceNode {
     pub churn: usize,
     pub fanin: f64,
     pub module: String,
+    // Polyglot union extraction: which language this file was parsed as.
+    // `#[serde(default)]` so `data/ci/*.graph.json`, dumped before this
+    // field existed, still deserialise -- an old graph is necessarily
+    // single-language, and every reader of this field already has
+    // `GraphData.lang` (or `GraphData.sources`) available as the
+    // single-source fallback.
+    #[serde(default)]
+    pub lang: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -115,6 +123,18 @@ pub struct GraphData {
     pub repo: String,
     pub pkg: String,
     pub lang: String,
+    // Polyglot union extraction: every `(pkg, lang)` source that was
+    // unioned to build this graph, sorted by `(lang, pkg)` -- the same
+    // order `build_multi_source` merges in. `pkg`/`lang` above stay the
+    // dominant source (by file count) for backward compatibility; this is
+    // the field that tells the whole story for a merged graph. A
+    // single-source graph carries exactly one entry, matching `pkg`/`lang`.
+    // `#[serde(default)]` so old checked-in `data/ci/*.graph.json` (recorded
+    // before this field existed) still deserialise via `tolmap build
+    // --graph` -- they are necessarily single-source, and an empty vec here
+    // is never read as "more than one source" by anything downstream.
+    #[serde(default)]
+    pub sources: Vec<(String, String)>,
     pub imports: Vec<(String, String, f64)>,
     pub symbols: BTreeMap<String, Vec<SymbolRow>>,
     pub uses: Vec<(String, String, String)>,

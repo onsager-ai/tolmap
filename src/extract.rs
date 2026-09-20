@@ -151,11 +151,61 @@ struct PythonImport {
 }
 
 pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData> {
+    build_multi_source(repo, &[(pkg.to_owned(), language)])
+}
+
+/// Unions any number of `(pkg, language)` sources into one graph, extracted
+/// before `finish_graph` runs co-change, semantic and proximity over the
+/// combined file set (see the module comment on [`finish_graph`] for why the
+/// merge has to happen there and not by unioning two finished `GraphData`
+/// values). `build(repo, pkg, language)` is a one-element call into this, so
+/// single-source output is unchanged: with one source there is nothing to
+/// merge, no cross-source file collision, and `static_max` (see
+/// [`finish_graph`]) is computed over the same one language it always was.
+///
+/// Sources are sorted by `(language.as_str(), pkg)` before parsing (finding
+/// 9: a seeded stage is not deterministic if a set of strings is iterated
+/// upstream of it) -- this fixes both the merge order below and,
+/// transitively, which source wins a file-path collision.
+pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Result<GraphData> {
     ensure!(
         repo.is_dir(),
         "repository {} is not a directory",
         repo.display()
     );
+    ensure!(
+        !sources.is_empty(),
+        "build_multi_source requires at least one (pkg, language) source"
+    );
+    let mut sorted_sources = sources.to_vec();
+    sorted_sources.sort_by(|a, b| a.1.as_str().cmp(b.1.as_str()).then_with(|| a.0.cmp(&b.0)));
+
+    let mut intermediates = Vec::with_capacity(sorted_sources.len());
+    for (pkg, language) in &sorted_sources {
+        let parsed = parse_files(repo, pkg, *language)?;
+        let intermediate = match language {
+            LanguageKind::Python => parse_python(pkg, parsed),
+            LanguageKind::Go | LanguageKind::TypeScript => {
+                parse_multi(repo, pkg, *language, parsed)?
+            }
+        };
+        intermediates.push(intermediate);
+    }
+
+    let merged = union_sources(intermediates);
+    finish_graph(repo, merged)
+}
+
+/// Parses every source file `source_files` finds for `(pkg, language)` under
+/// `repo` with tree-sitter, computing the per-file metrics (`loc`,
+/// `complexity`, `identifiers`, `symbols`) that do not depend on any other
+/// file. Split out of what used to be `build` so a multi-source build can run
+/// this once per source before the per-language resolution pass.
+fn parse_files(
+    repo: &Path,
+    pkg: &str,
+    language: LanguageKind,
+) -> Result<BTreeMap<String, ParsedFile>> {
     let files = source_files(repo, pkg, language)?;
     let mut parser = Parser::new();
     parser
@@ -190,10 +240,155 @@ pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData
             },
         );
     }
+    Ok(parsed)
+}
 
-    match language {
-        LanguageKind::Python => build_python(repo, pkg, parsed),
-        LanguageKind::Go | LanguageKind::TypeScript => build_multi(repo, pkg, language, parsed),
+/// The parse+resolve output of one `(pkg, language)` source: everything
+/// [`finish_graph`] needs, before it is unioned with any other source's.
+struct SourceIntermediate {
+    pkg: String,
+    language: LanguageKind,
+    parsed: BTreeMap<String, ParsedFile>,
+    static_edges: BTreeMap<(String, String), f64>,
+    directed: BTreeMap<(String, String), f64>,
+    fanin: BTreeMap<String, f64>,
+    uses: BTreeSet<(String, String, String)>,
+    /// File -> the module/display name `finish_graph` puts on `SourceNode`.
+    /// Python's is a dotted module name (`module_name`); Go/TypeScript's is
+    /// just the file path. Carried as a map instead of a closure so it can
+    /// be merged across sources without boxing a per-source `Fn`.
+    module_for: BTreeMap<String, String>,
+}
+
+/// The union of every [`SourceIntermediate`], with cross-source file
+/// collisions resolved (first source in sorted order wins -- see
+/// `build_multi_source`) and every signal map filtered down to edges/uses
+/// whose files both survived that resolution, so nothing downstream can
+/// index a file that got dropped.
+struct MergedSources {
+    parsed: BTreeMap<String, ParsedFile>,
+    static_edges: BTreeMap<(String, String), f64>,
+    directed: BTreeMap<(String, String), f64>,
+    fanin: BTreeMap<String, f64>,
+    uses: BTreeSet<(String, String, String)>,
+    module_for: BTreeMap<String, String>,
+    file_language: BTreeMap<String, LanguageKind>,
+    /// One `(pkg, lang)` per source, in the same sorted order they were
+    /// merged -- `GraphData.sources`.
+    sources: Vec<(String, String)>,
+    /// The source with the most surviving files, ties broken by sorted
+    /// order (earliest wins) -- `GraphData.pkg`/`GraphData.lang`.
+    dominant_pkg: String,
+    dominant_lang: LanguageKind,
+}
+
+fn union_sources(intermediates: Vec<SourceIntermediate>) -> MergedSources {
+    // First pass: decide which source owns each file path. Iterating
+    // `intermediates` in order (already sorted by (lang, pkg) in
+    // `build_multi_source`) and taking the first claim with
+    // `Entry::or_insert` is exactly "the first source in sorted order wins".
+    let mut owner_index = BTreeMap::<String, usize>::new();
+    let mut owner_source = BTreeMap::<String, (String, LanguageKind)>::new();
+    for (idx, intermediate) in intermediates.iter().enumerate() {
+        for file in intermediate.parsed.keys() {
+            if owner_index.contains_key(file) {
+                let (winner_pkg, winner_lang) = &owner_source[file];
+                eprintln!(
+                    "warning: {file} is claimed by more than one source ({} {winner_pkg} and {} {}); keeping {} {winner_pkg} (earlier in sorted source order)",
+                    winner_lang.as_str(),
+                    intermediate.language.as_str(),
+                    intermediate.pkg,
+                    winner_lang.as_str()
+                );
+            } else {
+                owner_index.insert(file.clone(), idx);
+                owner_source.insert(
+                    file.clone(),
+                    (intermediate.pkg.clone(), intermediate.language),
+                );
+            }
+        }
+    }
+
+    let mut parsed = BTreeMap::new();
+    let mut file_language = BTreeMap::new();
+    let mut module_for = BTreeMap::new();
+    let mut static_edges = BTreeMap::<(String, String), f64>::new();
+    let mut directed = BTreeMap::<(String, String), f64>::new();
+    let mut fanin = BTreeMap::<String, f64>::new();
+    let mut uses = BTreeSet::new();
+    let mut sources = Vec::with_capacity(intermediates.len());
+    let mut dominant: Option<(usize, String, LanguageKind)> = None;
+
+    for (idx, intermediate) in intermediates.into_iter().enumerate() {
+        let SourceIntermediate {
+            pkg,
+            language,
+            parsed: source_parsed,
+            static_edges: source_static,
+            directed: source_directed,
+            fanin: source_fanin,
+            uses: source_uses,
+            module_for: source_module_for,
+        } = intermediate;
+
+        sources.push((pkg.clone(), language.as_str().to_owned()));
+
+        let mut kept = 0usize;
+        for (file, value) in source_parsed {
+            if owner_index.get(&file) != Some(&idx) {
+                continue;
+            }
+            file_language.insert(file.clone(), language);
+            if let Some(module) = source_module_for.get(&file) {
+                module_for.insert(file.clone(), module.clone());
+            }
+            parsed.insert(file, value);
+            kept += 1;
+        }
+        let better = dominant.as_ref().is_none_or(|(best, _, _)| kept > *best);
+        if better {
+            dominant = Some((kept, pkg, language));
+        }
+
+        // Every edge/use below is intra-source by construction (resolution
+        // only ever looks a target up in that source's own known-file set),
+        // so a dropped file drops exactly the edges that named it, never a
+        // partial pair.
+        for ((a, b), value) in source_static {
+            if owner_index.get(&a) == Some(&idx) && owner_index.get(&b) == Some(&idx) {
+                *static_edges.entry((a, b)).or_insert(0.0) += value;
+            }
+        }
+        for ((a, b), value) in source_directed {
+            if owner_index.get(&a) == Some(&idx) && owner_index.get(&b) == Some(&idx) {
+                *directed.entry((a, b)).or_insert(0.0) += value;
+            }
+        }
+        for (file, value) in source_fanin {
+            if owner_index.get(&file) == Some(&idx) {
+                *fanin.entry(file).or_insert(0.0) += value;
+            }
+        }
+        for (a, b, name) in source_uses {
+            if owner_index.get(&a) == Some(&idx) && owner_index.get(&b) == Some(&idx) {
+                uses.insert((a, b, name));
+            }
+        }
+    }
+
+    let (_, dominant_pkg, dominant_lang) = dominant.expect("at least one source");
+    MergedSources {
+        parsed,
+        static_edges,
+        directed,
+        fanin,
+        uses,
+        module_for,
+        file_language,
+        sources,
+        dominant_pkg,
+        dominant_lang,
     }
 }
 
@@ -724,7 +919,7 @@ fn multi_metrics(
     (complexity, identifiers, symbols)
 }
 
-fn build_python(repo: &Path, pkg: &str, parsed: BTreeMap<String, ParsedFile>) -> Result<GraphData> {
+fn parse_python(pkg: &str, parsed: BTreeMap<String, ParsedFile>) -> SourceIntermediate {
     let mut modules = BTreeMap::<String, String>::new();
     for file in parsed.keys() {
         modules.insert(module_name(file, pkg), file.clone());
@@ -768,17 +963,21 @@ fn build_python(repo: &Path, pkg: &str, parsed: BTreeMap<String, ParsedFile>) ->
         }
     }
 
-    finish_graph(
-        repo,
-        pkg,
-        LanguageKind::Python,
+    let module_for = parsed
+        .keys()
+        .map(|file| (file.clone(), module_name(file, pkg)))
+        .collect();
+
+    SourceIntermediate {
+        pkg: pkg.to_owned(),
+        language: LanguageKind::Python,
         parsed,
         static_edges,
         directed,
         fanin,
         uses,
-        |file| module_name(file, pkg),
-    )
+        module_for,
+    }
 }
 
 fn module_name(relative: &str, pkg: &str) -> String {
@@ -1009,12 +1208,12 @@ fn python_uses(
     result
 }
 
-fn build_multi(
+fn parse_multi(
     repo: &Path,
     pkg: &str,
     language: LanguageKind,
     parsed: BTreeMap<String, ParsedFile>,
-) -> Result<GraphData> {
+) -> Result<SourceIntermediate> {
     let files = parsed.keys().cloned().collect::<BTreeSet<_>>();
     let mut by_directory = BTreeMap::<String, Vec<String>>::new();
     for file in &files {
@@ -1072,17 +1271,21 @@ fn build_multi(
         }
     }
 
-    finish_graph(
-        repo,
-        pkg,
+    let module_for = parsed
+        .keys()
+        .map(|file| (file.clone(), file.clone()))
+        .collect();
+
+    Ok(SourceIntermediate {
+        pkg: pkg.to_owned(),
         language,
         parsed,
         static_edges,
         directed,
         fanin,
         uses,
-        str::to_owned,
-    )
+        module_for,
+    })
 }
 
 fn go_module_path(repo: &Path) -> Result<String> {
@@ -1270,26 +1473,57 @@ fn normalize_relative(directory: &str, import: &str) -> String {
     parts.join("/")
 }
 
-fn finish_graph<F>(
-    repo: &Path,
-    pkg: &str,
-    language: LanguageKind,
-    parsed: BTreeMap<String, ParsedFile>,
-    static_edges: BTreeMap<(String, String), f64>,
-    directed: BTreeMap<(String, String), f64>,
-    fanin: BTreeMap<String, f64>,
-    uses: BTreeSet<(String, String, String)>,
-    module_for: F,
-) -> Result<GraphData>
-where
-    F: Fn(&str) -> String,
-{
+/// Computes co-change, semantic and proximity over the union of every
+/// source's parsed files, then builds the candidate edge set from static
+/// edges + co-change + semantic and blends them into the raw `SignalEdge`
+/// list `GraphData.edges` carries (not yet mass-normalised -- that is
+/// [`pipeline::blend`]).
+///
+/// **Why the merge has to happen here and not by combining two finished
+/// `GraphData` values.** Co-change keys off the file set seen in git history
+/// (any two files that changed together, whatever language), semantic is IDF
+/// over an identifier vocabulary that is only meaningful pooled across every
+/// file it was built from, and proximity is a path-prefix ratio that doesn't
+/// care about language at all. Compute any of those on one language's files
+/// and union afterwards, and every cross-language edge is thrown away before
+/// it exists -- the two graphs never had a candidate pair spanning them in
+/// the first place. `build_multi_source` therefore merges at the *parsed
+/// file + resolved static edge* stage (see [`union_sources`]) and calls this
+/// function exactly once, over the combined set.
+fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
+    let MergedSources {
+        parsed,
+        static_edges,
+        directed,
+        fanin,
+        uses,
+        module_for,
+        file_language,
+        sources,
+        dominant_pkg,
+        dominant_lang,
+    } = merged;
+
     let files = parsed.keys().cloned().collect::<Vec<_>>();
     let history = git_history(repo, &files, 4000)?;
     let semantic = semantic_vectors(&parsed);
     let mut candidates = static_edges.keys().cloned().collect::<BTreeSet<_>>();
     candidates.extend(history.cochange.keys().cloned());
 
+    // Above 600 files the semantic sweep below is restricted to same-
+    // directory pairs (an O(n^2) full sweep is too slow past that size) --
+    // and a directory never spans a language in this pipeline (a source's
+    // files all live under its own `pkg` root). So in any polyglot repo
+    // large enough to cross this threshold, the semantic candidate sweep
+    // stops proposing cross-language pairs at all, on top of static edges
+    // never carrying one (see `union_sources`) and proximity going to 0 by
+    // construction across a `server/` + `web/`-style split (the path prefix
+    // never matches). Below 600 files, co-change and semantic can both
+    // bridge; above it, co-change is the only signal left standing --
+    // `docs/ARCHITECTURE.md`'s "co-change is the only bridge" claim is
+    // conditional on repository size, and this is the line where the
+    // condition starts, not a universal property of the pipeline. See
+    // `docs/FINDINGS.md` finding 13 for what this measures on the corpus.
     if files.len() <= 600 {
         for i in 0..files.len() {
             for j in i + 1..files.len() {
@@ -1318,13 +1552,27 @@ where
         }
     }
 
-    let static_max = static_edges
-        .values()
-        .copied()
-        .fold(0.0_f64, f64::max)
-        .max(1.0);
+    // `static_max` used to be one max over every static edge in the graph.
+    // In a merged graph that punishes a language systematically rather than
+    // measuring anything real: a Go import spreads 1/|D| across the package
+    // directory (`resolve_multi`'s `share = 1.0 / targets.len()`, well below
+    // this function) while Python and TypeScript resolve to a single file at
+    // 1.0, so a shared global max makes every Go static edge lighter for a
+    // reason that is a language convention, not a signal. Computed per
+    // language instead: each edge divides by its own language's largest
+    // static edge. A static edge is always intra-language by construction
+    // (resolution only looks a target up in its own source's known-file
+    // set -- see `union_sources`), so `file_language[&a]` and
+    // `file_language[&b]` always agree for a real static edge and this
+    // lookup is unambiguous. For a single-source graph this reduces to
+    // exactly the old single global max (one language, one bucket) -- see
+    // `single_language_static_max_matches_the_old_global_max` in the tests
+    // below.
+    let static_max_by_language = static_max_by_language(&static_edges, &file_language);
+
     let mut edges = Vec::new();
     for (a, b) in candidates {
+        let static_max = static_max_by_language[&file_language[&a]];
         let static_signal = static_edges
             .get(&(a.clone(), b.clone()))
             .copied()
@@ -1358,6 +1606,7 @@ where
         .iter()
         .map(|file| {
             let value = &parsed[file];
+            let language = file_language[file];
             SourceNode {
                 file: file.clone(),
                 loc: value.loc,
@@ -1368,7 +1617,11 @@ where
                 } else {
                     round_to(fanin.get(file).copied().unwrap_or(0.0), 2)
                 },
-                module: module_for(file),
+                module: module_for
+                    .get(file)
+                    .cloned()
+                    .unwrap_or_else(|| file.clone()),
+                lang: language.as_str().to_owned(),
             }
         })
         .collect();
@@ -1384,12 +1637,15 @@ where
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned(),
-        pkg: pkg.to_owned(),
-        lang: language.as_str().to_owned(),
+        pkg: dominant_pkg,
+        lang: dominant_lang.as_str().to_owned(),
+        sources,
         imports: directed
             .into_iter()
             .map(|((a, b), value)| {
-                let value = if language == LanguageKind::Python {
+                // Always intra-language (see the static_max comment above);
+                // `file_language[&a]` alone decides the rounding.
+                let value = if file_language[&a] == LanguageKind::Python {
                     value
                 } else {
                     round_to(value, 3)
@@ -1403,6 +1659,35 @@ where
         nodes,
         edges,
     })
+}
+
+/// The largest static edge value per language, floored at 1.0 -- see the
+/// comment at its call site in `finish_graph`. Pulled out as its own
+/// function so it is directly testable against the pre-polyglot single
+/// global max without needing a full parsed repository.
+fn static_max_by_language(
+    static_edges: &BTreeMap<(String, String), f64>,
+    file_language: &BTreeMap<String, LanguageKind>,
+) -> BTreeMap<LanguageKind, f64> {
+    let mut result = BTreeMap::<LanguageKind, f64>::new();
+    for ((a, _), &value) in static_edges {
+        let language = file_language[a];
+        let entry = result.entry(language).or_insert(0.0_f64);
+        if value > *entry {
+            *entry = value;
+        }
+    }
+    // Every language present in the merged graph needs a floor entry even
+    // with zero static edges of its own (e.g. a language whose files have no
+    // resolvable imports at all), so a per-edge lookup against this map
+    // never misses.
+    for &language in file_language.values() {
+        result.entry(language).or_insert(0.0_f64);
+    }
+    for value in result.values_mut() {
+        *value = value.max(1.0);
+    }
+    result
 }
 
 fn add_semantic_candidate(
@@ -1664,6 +1949,149 @@ mod tests {
             .len(),
             2
         );
+    }
+
+    // -- polyglot union extraction (spec step 1) -----------------------
+
+    #[test]
+    fn single_language_static_max_matches_the_old_global_max() {
+        // Before per-language static_max, finish_graph computed exactly:
+        // `static_edges.values().copied().fold(0.0, f64::max).max(1.0)`, one
+        // number for the whole graph. With one language present, the new
+        // per-language computation must reduce to that same number -- this
+        // is the assertion spec item 4 calls for.
+        let mut static_edges = BTreeMap::new();
+        static_edges.insert(("a.py".to_owned(), "b.py".to_owned()), 3.0);
+        static_edges.insert(("b.py".to_owned(), "c.py".to_owned()), 7.0);
+        let mut file_language = BTreeMap::new();
+        file_language.insert("a.py".to_owned(), LanguageKind::Python);
+        file_language.insert("b.py".to_owned(), LanguageKind::Python);
+        file_language.insert("c.py".to_owned(), LanguageKind::Python);
+
+        let by_language = static_max_by_language(&static_edges, &file_language);
+        let old_global_max = static_edges
+            .values()
+            .copied()
+            .fold(0.0_f64, f64::max)
+            .max(1.0);
+        assert_eq!(by_language.len(), 1, "exactly one language present");
+        assert_eq!(by_language[&LanguageKind::Python], old_global_max);
+        assert_eq!(by_language[&LanguageKind::Python], 7.0);
+    }
+
+    #[test]
+    fn cross_language_static_max_does_not_let_one_language_drag_the_other() {
+        // finding 1's mechanism one level up: a global max would let
+        // TypeScript's dense, single-file-resolving static edges (up to
+        // 1.0 each) set the denominator for Go's directory-shared edges
+        // (share = 1/|D|, often well under 1.0) for a reason that is a
+        // language convention, not a signal -- see the comment in
+        // finish_graph. Per language, each bucket floors at 1.0
+        // independently.
+        let mut static_edges = BTreeMap::new();
+        static_edges.insert(("a.go".to_owned(), "b.go".to_owned()), 0.5);
+        static_edges.insert(("x.ts".to_owned(), "y.ts".to_owned()), 20.0);
+        let mut file_language = BTreeMap::new();
+        file_language.insert("a.go".to_owned(), LanguageKind::Go);
+        file_language.insert("b.go".to_owned(), LanguageKind::Go);
+        file_language.insert("x.ts".to_owned(), LanguageKind::TypeScript);
+        file_language.insert("y.ts".to_owned(), LanguageKind::TypeScript);
+
+        let by_language = static_max_by_language(&static_edges, &file_language);
+        assert_eq!(
+            by_language[&LanguageKind::Go],
+            1.0,
+            "Go's own max (0.5) floors at 1.0 -- not dragged up by TypeScript's 20.0"
+        );
+        assert_eq!(by_language[&LanguageKind::TypeScript], 20.0);
+    }
+
+    #[test]
+    fn union_sources_first_source_wins_a_file_path_collision_and_sums_the_rest() {
+        // Two sources claiming the same path: sorted order is (go, .) then
+        // (py, .) (LanguageKind::as_str: "go" < "py"), so the Go source
+        // wins "shared.txt" and the Python source's file (and everything
+        // that referenced it) is dropped, not silently merged into a
+        // dangling edge.
+        let mut go_parsed = BTreeMap::new();
+        go_parsed.insert(
+            "shared.txt".to_owned(),
+            test_parsed_file(3, 1, &[("shared.txt".to_owned(), 3)]),
+        );
+        go_parsed.insert("only_go.txt".to_owned(), test_parsed_file(1, 0, &[]));
+        let go_source = SourceIntermediate {
+            pkg: ".".to_owned(),
+            language: LanguageKind::Go,
+            parsed: go_parsed,
+            static_edges: [(("only_go.txt".to_owned(), "shared.txt".to_owned()), 1.0)]
+                .into_iter()
+                .collect(),
+            directed: BTreeMap::new(),
+            fanin: [("shared.txt".to_owned(), 1.0)].into_iter().collect(),
+            uses: BTreeSet::new(),
+            module_for: [
+                ("shared.txt".to_owned(), "shared.txt".to_owned()),
+                ("only_go.txt".to_owned(), "only_go.txt".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        let mut py_parsed = BTreeMap::new();
+        py_parsed.insert("shared.txt".to_owned(), test_parsed_file(9, 9, &[]));
+        let py_source = SourceIntermediate {
+            pkg: ".".to_owned(),
+            language: LanguageKind::Python,
+            parsed: py_parsed,
+            static_edges: BTreeMap::new(),
+            directed: BTreeMap::new(),
+            fanin: BTreeMap::new(),
+            uses: BTreeSet::new(),
+            module_for: [("shared.txt".to_owned(), "shared".to_owned())]
+                .into_iter()
+                .collect(),
+        };
+
+        let merged = union_sources(vec![go_source, py_source]);
+        assert_eq!(merged.parsed.len(), 2, "shared.txt kept once, from Go");
+        assert_eq!(
+            merged.parsed["shared.txt"].loc, 3,
+            "Go's version of shared.txt wins, not Python's"
+        );
+        assert_eq!(merged.file_language["shared.txt"], LanguageKind::Go);
+        assert_eq!(merged.module_for["shared.txt"], "shared.txt");
+        assert_eq!(
+            merged.static_edges[&("only_go.txt".to_owned(), "shared.txt".to_owned())],
+            1.0
+        );
+        assert_eq!(
+            merged.sources,
+            vec![
+                (".".to_owned(), "go".to_owned()),
+                (".".to_owned(), "py".to_owned())
+            ]
+        );
+        assert_eq!(merged.dominant_lang, LanguageKind::Go);
+    }
+
+    fn test_parsed_file(
+        loc: usize,
+        complexity: usize,
+        identifiers: &[(String, usize)],
+    ) -> ParsedFile {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&LanguageKind::Python.tree_sitter())
+            .unwrap();
+        let tree = parser.parse(b"x = 1\n", None).unwrap();
+        ParsedFile {
+            source: b"x = 1\n".to_vec(),
+            tree,
+            loc,
+            complexity,
+            identifiers: identifiers.iter().cloned().collect(),
+            symbols: Vec::new(),
+        }
     }
 
     fn identifiers_of(source: &str) -> BTreeMap<String, usize> {

@@ -24,11 +24,25 @@ enum Command {
         /// `tolmap detect`) -- an explicit value always wins over detection,
         /// since the repository holds intent and a maintainer's override is
         /// intent (docs/ARCHITECTURE.md). Required with `--graph`.
+        ///
+        /// Repeatable, paired positionally with `--lang` by occurrence order
+        /// (the Nth `--pkg` pairs with the Nth `--lang`): `--pkg . --lang go
+        /// --pkg web/ui --lang ts` unions two sources (see
+        /// `extract::build_multi_source`) instead of building one. With 0 or
+        /// 1 occurrences, behaves exactly as before (single source, detected
+        /// when omitted).
         #[arg(long)]
-        pkg: Option<String>,
-        /// Required with `--graph`; detected when omitted otherwise.
+        pkg: Vec<String>,
+        /// Required with `--graph`; detected when omitted otherwise. See
+        /// `--pkg` for the repeatable/paired form.
         #[arg(long, value_parser = ["py", "go", "ts"])]
-        lang: Option<String>,
+        lang: Vec<String>,
+        /// Union every source `tolmap detect` finds that clears the
+        /// `--all-sources` floor (`detect::ALL_SOURCES_MIN_FILES` files and
+        /// `detect::ALL_SOURCES_MIN_SHARE` of detected source files) instead
+        /// of building one language. Mutually exclusive with `--pkg`/`--lang`.
+        #[arg(long)]
+        all_sources: bool,
         #[arg(long)]
         name: Option<String>,
         #[arg(long, default_value = "out")]
@@ -38,18 +52,24 @@ enum Command {
         #[arg(long)]
         no_parcels: bool,
         /// A pre-extracted graph (from `dump-graph`) to run the pipeline on
-        /// instead of parsing `repo`. `pkg`/`lang` are ignored with this
-        /// (the graph already carries its language), and `name` is required,
-        /// since there is no repository directory to name the map after.
+        /// instead of parsing `repo`. `pkg`/`lang`/`--all-sources` are
+        /// ignored with this (the graph already carries its source(s)), and
+        /// `name` is required, since there is no repository directory to
+        /// name the map after.
         #[arg(long)]
         graph: Option<PathBuf>,
     },
     DumpBlend {
         repo: PathBuf,
-        #[arg(long, default_value = ".")]
-        pkg: String,
-        #[arg(long, default_value = "py", value_parser = ["py", "go", "ts"])]
-        lang: String,
+        /// Defaults to a single "." / "py" source when neither `--pkg`,
+        /// `--lang` nor `--all-sources` is given. See `build`'s `--pkg` for
+        /// the repeatable/paired multi-source form.
+        #[arg(long)]
+        pkg: Vec<String>,
+        #[arg(long, value_parser = ["py", "go", "ts"])]
+        lang: Vec<String>,
+        #[arg(long)]
+        all_sources: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -60,10 +80,15 @@ enum Command {
     /// on every push.
     DumpGraph {
         repo: PathBuf,
-        #[arg(long, default_value = ".")]
-        pkg: String,
-        #[arg(long, default_value = "py", value_parser = ["py", "go", "ts"])]
-        lang: String,
+        /// Defaults to a single "." / "py" source when neither `--pkg`,
+        /// `--lang` nor `--all-sources` is given. See `build`'s `--pkg` for
+        /// the repeatable/paired multi-source form.
+        #[arg(long)]
+        pkg: Vec<String>,
+        #[arg(long, value_parser = ["py", "go", "ts"])]
+        lang: Vec<String>,
+        #[arg(long)]
+        all_sources: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -78,6 +103,28 @@ enum Command {
     /// (see docs/FINDINGS.md finding 7: a wrong `--pkg` fails silently, not
     /// loudly, so this exists to make the choice visible and overridable).
     Detect { repo: PathBuf },
+    /// Step 2 of the polyglot union-extraction work (docs/FINDINGS.md
+    /// finding 13): measures what `--all-sources` (or an explicit
+    /// `--pkg`/`--lang` set) actually produces on a repository -- candidate
+    /// and kept edges split intra/cross-language, per-signal cross-language
+    /// edge mass, below-prune-floor share per language, NMI/adjusted-Rand
+    /// between district membership and language, and projection drift
+    /// against each language's own single-source map. Writes the full
+    /// measurement to `--out` as JSON and prints a human summary. Does not
+    /// change the map pipeline itself -- see `src/polyglot.rs`'s module doc.
+    PolyglotReport {
+        repo: PathBuf,
+        #[arg(long)]
+        pkg: Vec<String>,
+        #[arg(long, value_parser = ["py", "go", "ts"])]
+        lang: Vec<String>,
+        #[arg(long)]
+        all_sources: bool,
+        #[arg(long, default_value_t = 1.1)]
+        resolution: f64,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// The job service (milestone 3, issue #5): clones/indexes repositories
     /// on demand and serves the results over HTTP. Binds 127.0.0.1 only --
     /// see docs/API.md and `service::config::ServeConfig`'s doc comment.
@@ -93,6 +140,9 @@ enum Command {
 /// the pieces that were *not* pinned get detected, and only those are
 /// printed -- an explicit `--pkg` with `--lang` omitted, for instance,
 /// prints only the detected language, not a detected `pkg` nobody asked for.
+///
+/// This is the single-source path (0 or 1 `--pkg`/`--lang` occurrences); see
+/// `resolve_multi_source` for 2+ or `--all-sources`.
 fn resolve_build_source(
     repo: &Path,
     pkg: Option<String>,
@@ -130,14 +180,7 @@ fn resolve_build_source(
             })?;
             eprintln!("detected: {}", detection.chosen.describe());
             if detection.candidates.len() > 1 {
-                let others = detection.candidates[1..]
-                    .iter()
-                    .map(|c| c.describe())
-                    .collect::<Vec<_>>()
-                    .join("\n  ");
-                eprintln!(
-                    "  other sources found (not merged -- see docs/ARCHITECTURE.md):\n  {others}"
-                );
+                print_other_candidates(&detection.candidates[1..], repo, "  ");
             }
             Ok((
                 detection.chosen.pkg.clone(),
@@ -147,6 +190,110 @@ fn resolve_build_source(
     }
 }
 
+/// Which `(language, pkg)` keys `detect::all_sources` would select for
+/// `repo` -- shared by `tolmap detect`'s and `resolve_build_source`'s "other
+/// sources found" listings so both describe the same threshold the same
+/// way. Falls back to an empty set (nothing marked included) rather than
+/// propagating a detection error here: both call sites already have their
+/// own primary `detect()` result in hand, and a candidate listing that
+/// fails to annotate itself is a better failure mode than losing the
+/// listing entirely over a problem the caller's own detect() call didn't hit.
+fn all_sources_keys(repo: &Path) -> std::collections::BTreeSet<(&'static str, String)> {
+    tolmap::detect::all_sources(repo)
+        .map(|selected| {
+            selected
+                .into_iter()
+                .map(|c| (c.language.as_str(), c.pkg))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn describe_with_all_sources_status(
+    candidate: &tolmap::detect::SourceCandidate,
+    included: &std::collections::BTreeSet<(&'static str, String)>,
+) -> String {
+    let key = (candidate.language.as_str(), candidate.pkg.clone());
+    let status = if included.contains(&key) {
+        "included by --all-sources"
+    } else {
+        "excluded by --all-sources (below the file-count/share floor)"
+    };
+    format!("{} -- {status}", candidate.describe())
+}
+
+/// Prints every detected candidate beyond the chosen one, noting which ones
+/// `--all-sources` would actually include -- the CLI surface for
+/// `tolmap detect`'s doc comment's "print which candidates `--all-sources`
+/// would include, and stop saying 'not merged'": now that merging is a real
+/// flag, the honest statement is which side of the threshold each candidate
+/// falls on, not that merging is unavailable.
+fn print_other_candidates(
+    candidates: &[tolmap::detect::SourceCandidate],
+    repo: &Path,
+    indent: &str,
+) {
+    let included = all_sources_keys(repo);
+    for candidate in candidates {
+        eprintln!(
+            "{indent}{}",
+            describe_with_all_sources_status(candidate, &included)
+        );
+    }
+}
+
+/// Resolves an explicit 2+-occurrence `--pkg`/`--lang` set, or
+/// `--all-sources`, into the `(pkg, LanguageKind)` list
+/// `extract::build_multi_source` takes. Not used for the 0/1-occurrence
+/// case -- that stays on `resolve_build_source`'s single-source, detect-on-
+/// omission path, so `tolmap build repo` with no new flags is unchanged.
+fn resolve_multi_source(
+    repo: &Path,
+    pkg: Vec<String>,
+    lang: Vec<String>,
+    all_sources: bool,
+) -> Result<Vec<(String, tolmap::extract::LanguageKind)>> {
+    if all_sources {
+        anyhow::ensure!(
+            pkg.is_empty() && lang.is_empty(),
+            "--all-sources cannot be combined with --pkg/--lang"
+        );
+        let candidates = tolmap::detect::all_sources(repo)?;
+        anyhow::ensure!(
+            !candidates.is_empty(),
+            "no source in {} cleared the --all-sources floor ({} files or {:.0}% share of detected source files); pass --pkg/--lang explicitly",
+            repo.display(),
+            tolmap::detect::ALL_SOURCES_MIN_FILES,
+            tolmap::detect::ALL_SOURCES_MIN_SHARE * 100.0,
+        );
+        eprintln!("--all-sources: {} source(s) selected:", candidates.len());
+        for candidate in &candidates {
+            eprintln!("  {}", candidate.describe());
+        }
+        return Ok(candidates
+            .into_iter()
+            .map(|c| (c.pkg, c.language))
+            .collect());
+    }
+    anyhow::ensure!(
+        pkg.len() == lang.len(),
+        "--pkg and --lang must be given the same number of times ({} --pkg vs {} --lang); pair them positionally: --pkg . --lang go --pkg web/ui --lang ts",
+        pkg.len(),
+        lang.len()
+    );
+    pkg.into_iter()
+        .zip(lang)
+        .map(|(pkg, lang)| Ok((pkg, tolmap::extract::LanguageKind::parse(&lang)?)))
+        .collect()
+}
+
+/// True when the caller's `--pkg`/`--lang`/`--all-sources` combination names
+/// more than one source -- the signal to take the multi-source path instead
+/// of the single-source, detect-on-omission one.
+fn wants_multi_source(pkg: &[String], lang: &[String], all_sources: bool) -> bool {
+    all_sources || pkg.len() > 1 || lang.len() > 1
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -154,6 +301,7 @@ fn main() -> Result<()> {
             repo,
             pkg,
             lang,
+            all_sources,
             name,
             out,
             resolution,
@@ -165,17 +313,34 @@ fn main() -> Result<()> {
             }
             (None, None) => anyhow::bail!("pass a repository, or a pre-extracted --graph"),
             (Some(repo), None) => {
-                let (pkg, lang) = resolve_build_source(&repo, pkg, lang)?;
-                tolmap::geometry::build(
-                    &repo,
-                    &pkg,
-                    &lang,
-                    name.as_deref(),
-                    &out,
-                    resolution,
-                    !no_parcels,
-                )
-                .map(|_| ())
+                if wants_multi_source(&pkg, &lang, all_sources) {
+                    let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
+                    tolmap::geometry::build_multi(
+                        &repo,
+                        &sources,
+                        name.as_deref(),
+                        &out,
+                        resolution,
+                        !no_parcels,
+                    )
+                    .map(|_| ())
+                } else {
+                    let (pkg, lang) = resolve_build_source(
+                        &repo,
+                        pkg.into_iter().next(),
+                        lang.into_iter().next(),
+                    )?;
+                    tolmap::geometry::build(
+                        &repo,
+                        &pkg,
+                        &lang,
+                        name.as_deref(),
+                        &out,
+                        resolution,
+                        !no_parcels,
+                    )
+                    .map(|_| ())
+                }
             }
             (None, Some(graph_path)) => {
                 let name = name.ok_or_else(|| {
@@ -193,16 +358,34 @@ fn main() -> Result<()> {
             repo,
             pkg,
             lang,
+            all_sources,
             out,
-        } => tolmap::blenddump::dump(&repo, &pkg, &lang, &out),
+        } => {
+            if wants_multi_source(&pkg, &lang, all_sources) {
+                let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
+                tolmap::blenddump::dump_multi(&repo, &sources, &out)
+            } else {
+                let pkg = pkg.into_iter().next().unwrap_or_else(|| ".".to_owned());
+                let lang = lang.into_iter().next().unwrap_or_else(|| "py".to_owned());
+                tolmap::blenddump::dump(&repo, &pkg, &lang, &out)
+            }
+        }
         Command::DumpGraph {
             repo,
             pkg,
             lang,
+            all_sources,
             out,
         } => {
-            let language = tolmap::extract::LanguageKind::parse(&lang)?;
-            let graph = tolmap::extract::build(&repo, &pkg, language)?;
+            let graph = if wants_multi_source(&pkg, &lang, all_sources) {
+                let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
+                tolmap::extract::build_multi_source(&repo, &sources)?
+            } else {
+                let pkg = pkg.into_iter().next().unwrap_or_else(|| ".".to_owned());
+                let lang = lang.into_iter().next().unwrap_or_else(|| "py".to_owned());
+                let language = tolmap::extract::LanguageKind::parse(&lang)?;
+                tolmap::extract::build(&repo, &pkg, language)?
+            };
             let bytes = serde_json::to_vec(&graph)?;
             std::fs::write(&out, bytes).with_context(|| format!("write {}", out.display()))?;
             println!(
@@ -232,12 +415,51 @@ fn main() -> Result<()> {
             let detection = tolmap::detect::detect(&repo)?;
             println!("chosen: {}", detection.chosen.describe());
             if detection.candidates.len() > 1 {
-                println!("other sources found (not merged -- see docs/ARCHITECTURE.md):");
+                println!("other sources found:");
+                let included = all_sources_keys(&repo);
                 for candidate in &detection.candidates[1..] {
-                    println!("  {}", candidate.describe());
+                    println!(
+                        "  {}",
+                        describe_with_all_sources_status(candidate, &included)
+                    );
                 }
+                println!(
+                    "pass --all-sources to `tolmap build`/`dump-graph`/`dump-blend`/`polyglot-report` to merge every included candidate, or --pkg/--lang to pick one explicitly"
+                );
             }
             Ok(())
+        }
+        Command::PolyglotReport {
+            repo,
+            pkg,
+            lang,
+            all_sources,
+            resolution,
+            out,
+        } => {
+            let sources = if wants_multi_source(&pkg, &lang, all_sources) {
+                resolve_multi_source(&repo, pkg, lang, all_sources)?
+            } else {
+                // A single explicit source (or none at all) is still a
+                // legal call -- it just reports a graph with no
+                // cross-language pairs, which is itself a useful sanity
+                // check of the tool. Falls back to --all-sources' own
+                // detection when nothing was pinned at all, same as build.
+                if pkg.is_empty() && lang.is_empty() {
+                    tolmap::detect::all_sources(&repo)?
+                        .into_iter()
+                        .map(|c| (c.pkg, c.language))
+                        .collect()
+                } else {
+                    resolve_multi_source(&repo, pkg, lang, false)?
+                }
+            };
+            anyhow::ensure!(
+                !sources.is_empty(),
+                "no source to report on: no candidate in {} cleared the --all-sources floor, and none was given explicitly",
+                repo.display()
+            );
+            tolmap::polyglot::run(&repo, &sources, resolution, &out)
         }
         Command::Serve => {
             let config = tolmap::service::config::ServeConfig::from_env();
