@@ -4,7 +4,7 @@
 
 The Python pipeline (`src/tolmap/`, 2081 lines) and the vanilla-JS viewer (`viewer/template.html`, 1048 lines) are a **reference implementation**, not the product codebase. They exist for two reasons and should not accumulate features:
 
-1. **They are the test oracle.** The port is correct when it reproduces their output on the same repository at the same commit with the same seed. `data/` holds nine such outputs to check against — membership, modularity, edges, landmarks, symbols and references. Coordinates were not reproducible before finding 9 and the fixtures have been re-recorded since; the acceptance gate tests the half that was always stable.
+1. **They are the test oracle.** The port is correct when it reproduces their output on the same repository at the same commit with the same seed. `data/` holds nine such outputs to check against — membership, modularity, edges, landmarks, symbols and references. Coordinates were not reproducible before finding 9 and the fixtures have been re-recorded since; the acceptance gate tests the half that was always stable. **That is the contract, not a temporary scope:** across the two implementations the oracle covers membership, modularity, edges, landmarks, symbols and references, and *not* node or district coordinates. Ruled 2026-09-20 -- see finding 11's closing section for what was measured and why.
 2. **They encode findings that are expensive to rediscover.** Every non-obvious line is commented with why, and `docs/FINDINGS.md` records what was falsified. Read both before writing the Rust.
 
 Freeze them at v0.1. New work goes in the Rust/TS tree.
