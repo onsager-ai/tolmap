@@ -1887,6 +1887,23 @@ fn git_history(repo: &Path, files: &[String], max_commits: usize) -> Result<GitH
             "--no-merges",
             "--pretty=format:@%H",
             "--name-only",
+            // Rename detection needs blob CONTENT, which a `--filter=blob:none`
+            // clone does not have -- `service::clone` makes exactly that kind of
+            // clone, so every blob git wants here is fetched from the remote one
+            // promisor round-trip at a time. Measured on two fresh blobless
+            // clones of encode/httpx (23 source files): 74.59s with rename
+            // detection, 0.02s without. The cost scales with history, not file
+            // count, which is why it never showed up on the fixtures' file
+            // counts and why a dify-sized index spent 712s of wall clock on 3s
+            // of CPU (issue #32).
+            //
+            // What this gives up: a renamed file is reported as delete-old +
+            // add-new instead of one path, so a rename commit contributes the
+            // old path too. Old paths are not in the current file set and are
+            // dropped downstream, so the visible effect is confined to commits
+            // that renamed a file -- see the parity evidence in #32 for what
+            // that does (or does not) change on the nine fixtures.
+            "--no-renames",
         ])
         .output()
         .context("run git log for co-change")?;
