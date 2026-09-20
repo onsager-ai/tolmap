@@ -263,6 +263,8 @@ Step 1 (union extraction) merges any number of `(pkg, language)` sources before 
 | proximity | 0.0% | **0.06%** |
 | semantic | **14.4%** | 0.6% |
 
+**Superseded in part by finding 14**: the claim below that a repository above the 600-file semantic threshold loses cross-language semantic bridging entirely is false when two sources share a root, as codex and dify do. The condition is the sources' roots, not the file count. The rest of this finding stands.
+
 Proximity's near-zero-but-not-zero figure on prometheus is itself informative, not noise: `docs/ARCHITECTURE.md` said proximity "does go to 0 across a `server/` + `web/` split by construction" — true when the two languages root at disjoint directories, as the synthetic fixture deliberately does (Go at `.`, TypeScript at `src/`). Prometheus's Go and TypeScript both root at `.` (the UI lives at `web/ui/...` alongside Go's own `web/api/...`), so a Go file and a TypeScript file occasionally do share a path prefix, and proximity crosses too, just barely. The mechanism is real; whether it fires depends on where the two languages' roots sit relative to each other, which is a property of the repository, not of the pipeline.
 
 **Prometheus at its pinned commit (`data/fixtures.toml`) does carry a real TypeScript UI** — verified at the pin, not assumed: 100 `.ts` files under `web/ui/{react-app,mantine-ui,module}`, two of those three with their own `package.json`+`tsconfig.json`. `tolmap detect` on the checkout finds it as a second candidate (`ts at . (78 files, low confidence)` — no *root* `package.json`, so detection falls back to mapping the repository root directly rather than resolving the workspace; the 78 is `extract::source_files` under `pkg="."`, which is lower than 100 because the walk excludes `.d.ts`/`.test.ts`/`.spec.ts`). Both `ALL_SOURCES_MIN_FILES` (78 ≥ 25) and `ALL_SOURCES_MIN_SHARE` (78 of 522 detected files = 15% ≥ 5%) are cleared, so `--all-sources` selects it. This makes the existing go-only `data/prometheus.json` fixture a free monoglot-projection baseline: nothing about the merge was built to make this comparison come out any particular way.
@@ -301,3 +303,99 @@ Neither figure is zero, confirming the prediction in the spec this finding was w
 **Determinism.** Three `tolmap build --all-sources` runs on the synthetic fixture, sha256sum compared: byte-identical (`ac19f64...`, all three). This is the check finding 10's closing note records for the single-language path, now run for the merge; it is also a CI job (`gate`, `.github/workflows/ci.yml`), not just a one-time measurement, along with the ceilings this finding's synthetic-fixture numbers set (`eval/check_polyglot_ceilings.py`: NMI ≤ 0.95, below-floor share ≤ 0.5 per language).
 
 **What this does and does not settle.** This is a measurement, not a retuning — `ALPHA`/`BETA`/`GAMMA`/`DELTA`, the 0.02 prune floor, `keep_per_node=14`, and `ALL_SOURCES_MIN_FILES`/`ALL_SOURCES_MIN_SHARE` (25 files, 5% share) are exactly as shipped in this change, per `CLAUDE.md`. Two corpora is not a corpus-wide sweep the way findings 5/10/12 ran across all nine fixtures — prometheus is the only real polyglot repository measured here, because it is the only one of the nine already pinned that turned out to qualify (`data/fixtures.toml`'s other eight are single-language at their pins, unverified further here). Whether the below-floor hazard or the projection-drift asymmetry generalise beyond these two repositories, and what floor/threshold changes (if any) they would justify, is the next measurement, not this one.
+
+## 14. Three more real polyglot repositories: the corpus triples, and two of finding 13's claims do not survive it
+
+Finding 13 measured union extraction on one real polyglot repository (prometheus) and one synthetic fixture, and said plainly that whether its results generalised was the next measurement. This is that measurement: three more real repositories, chosen because they are polyglot in production rather than because they were convenient — crawlab (Go backend + TypeScript frontend), openai/codex (a Rust codebase whose tooling is TypeScript + Python) and dify (Python backend + TypeScript/React frontend).
+
+Pins, and what `--all-sources` selected at them:
+
+| repo | commit | sources selected | files mapped |
+|---|---|---|---|
+| crawlab | `ee11cd7` (branch `develop`) | `go at core` (219), `ts at .` (356) | 575 |
+| openai/codex | `5c5308f` | `py at .` (146), `ts at .` (741) | 887 |
+| langgenius/dify | `2590d90` | `py at .` (1,978), `ts at .` (4,355) | 6,333 |
+
+All three were measured after `.tsx` collection landed (issue #35), so the TypeScript side includes JSX components; before that change dify mapped 1,554 TypeScript files instead of 4,355 and its numbers were measured against a frontend with its components missing.
+
+**What these repositories are *not*.** Each of the three has a large body of code tolmap cannot see, and reading the numbers below without that in hand would overstate what was measured. codex is 4,631 `.rs` files — the actual product — of which tolmap maps none, so "codex" here means its tooling, not codex. crawlab has 321 `.vue` files and n8n 1,305, none collected (issue #35 covers `.tsx` only). The maps are honest about what they contain, but they are maps of a subset, and `CLAUDE.md`'s rule that numbers must be a lower bound applies to this finding as much as to the reference graph.
+
+### Districts do not redraw the file extension, and the effect strengthens with size
+
+| | synthetic (f13) | prometheus (f13) | crawlab | codex | dify |
+|---|---|---|---|---|---|
+| files | 50 | 522 | 575 | 887 | 6,333 |
+| NMI vs language | 0.878 | 0.279 | 0.386 | 0.258 | **0.245** |
+| adjusted Rand | 0.920 | 0.112 | 0.140 | 0.082 | **0.046** |
+| files in a >=90%-one-language district | 100% | 82.2% | 100% | 98.5% | 91.5% |
+
+Finding 13's headline result holds on all three: NMI against the language label sits far below 1, so the partition is finding structure rather than reproducing the file extension. The synthetic fixture's 0.878 remains an artefact of its own filler-heavy construction, now with three more real corpora saying so.
+
+The purity column is the one that complicates the story. crawlab's districts are **100% language-pure** — every district is >=90% one language — while its NMI is a middling 0.386. Those are not in tension: crawlab's map has several districts per language and never one that mixes them, which is exactly what a Go backend and a TypeScript frontend communicating over HTTP should look like to a pipeline whose only cross-language signals are co-change and semantic similarity. There are no shared imports to find, and the map correctly does not invent any.
+
+### `docs/ARCHITECTURE.md`'s size condition is wrong: it is about roots, not about 600 files
+
+Finding 13 recorded that above 600 files the semantic candidate sweep is restricted to same-directory pairs, and concluded that "in any polyglot repo large enough to cross this threshold, the semantic candidate sweep stops proposing cross-language pairs at all", leaving co-change as the only bridge. That is **falsified** by codex (887 files) and dify (6,333 files), both of which are above the threshold and both of which still show semantic crossing languages:
+
+| signal, share of its own mass crossing languages | crawlab (575) | codex (887) | dify (6,333) |
+|---|---|---|---|
+| static | 0.0% | 0.0% | 0.0% |
+| cochange | 3.0% | **9.8%** | 3.9% |
+| proximity | 0.0% | 0.0% | 0.0% |
+| semantic | 0.6% | **0.3%** | **0.2%** |
+
+The mechanism finding 13 described is right; the condition it attached is wrong. Restricting the sweep to same-directory pairs only kills cross-language bridging when a directory cannot span two languages — which is true when each source roots at its own `pkg` (prometheus's Go at `.` versus a UI under `web/ui`, or the synthetic fixture's deliberate `.`/`src` split), and false when two sources share a root. codex and dify both select `py at .` and `ts at .`, so their directories are full of Python and TypeScript files side by side, and the same-directory sweep proposes cross-language pairs freely. `static` remains the only architecturally-zero signal, exactly as finding 13 established.
+
+The practical consequence is that "does semantic bridge languages here" is answered by the repository's layout, not by its size — and the layout is visible from `tolmap detect` output before anything is indexed.
+
+### The below-floor hazard reverses direction on codex
+
+Finding 10's hazard — `blend()` dividing every edge by the largest blended edge in the whole graph, so a language with a smaller dominant edge gets pushed toward the prune floor — was measured by finding 13 as real but repository-dependent. These three add a case it did not predict.
+
+| | below floor, single-source | below floor, merged |
+|---|---|---|
+| crawlab go | 0.0% | 2.7% |
+| crawlab ts | 0.0% | 0.7% |
+| **codex py** | **88.9%** | **76.4%** |
+| **codex ts** | **79.9%** | **27.9%** |
+| dify py | 71.9% | **0.0%** |
+| dify ts | 0.0% | 0.0% |
+
+On codex and dify, **merging improves both languages' below-floor share**, in dify's case from 71.9% to zero. The hazard is not "merging pushes a language under the floor"; it is "the floor is relative to the largest edge in whatever graph is being blended", and merging can move that maximum in either direction. A language whose own single-source graph is dominated by one very heavy edge (codex's Python tooling, dify's Python backend) has most of its own distribution under the floor *before* any merge; adding a second language with a heavier edge population does not make that worse, it can make it better by changing which edge sets the scale.
+
+This does not overturn finding 10, which is about cross-repository comparison. It does mean the merged-versus-single comparison cannot be summarised as a hazard in one direction, and reporting it per merge — which `polyglot-report` does — is the right response rather than tuning the floor.
+
+### Projection drift does not track which language is smaller
+
+Finding 13 observed on prometheus that the smaller language drifted more (TypeScript 78 files, 51.3% retention; Go 444 files, 85.1%) and connected it to the "smaller corpus is less stable" shape of findings 3 and 9. That does not hold:
+
+| | smaller side | retention | larger side | retention |
+|---|---|---|---|---|
+| prometheus (f13) | ts (78) | 51.3% | go (444) | 85.1% |
+| crawlab | go (219) | 62.6% | ts (356) | 81.5% |
+| dify | py (1,978) | 40.5% | ts (4,355) | 85.5% |
+| **codex** | **py (146)** | **76.0%** | **ts (741)** | **48.0%** |
+
+Three of four match the pattern; codex inverts it, with the larger language drifting nearly twice as much as the smaller. So size is not the variable. What codex has that the others do not is a Python side that is almost entirely isolated (9 cross-language candidate edges in total, all 9 kept) attached to a TypeScript side whose own graph is weakly connected — 79.9% of its single-source edges below the floor. A language whose single-source partition was already marginal has little to retain, regardless of how many files it has.
+
+Nothing here is a reason to change a parameter. It is a reason not to predict drift from file counts, which is what finding 13's phrasing invited.
+
+### `.tsx` collection changed dify's numbers materially
+
+dify is the one repository in this corpus measured both before and after issue #35, which is worth recording because it shows how much a collection gap distorts a polyglot measurement rather than merely shrinking it:
+
+| dify | before `.tsx` | after `.tsx` |
+|---|---|---|
+| files | 3,532 | 6,333 |
+| candidate edges | 9,077 | 17,744 |
+| py+ts candidate cross-language edges | 284 (198 kept) | 294 (221 kept) |
+| NMI vs language | 0.254 | 0.245 |
+| files in a >=90%-one-language district | 84.1% | **91.5%** |
+
+Adding 2,801 React components made districts *more* language-pure, not less. The components attach to the TypeScript files that import them, thickening the TypeScript side's own structure faster than they add cross-language links — the frontend had been represented by the sliver of it that happened to be plain `.ts`, and that sliver sat closer to the Python side than the real frontend does.
+
+### What this settles and what it does not
+
+Settled: finding 13's central claim survives three more real repositories, and two of its secondary claims do not — the 600-file condition on semantic bridging is really a condition on source roots, and the below-floor hazard has no fixed direction.
+
+Not settled: still nothing about a repository with three or more languages (every corpus here is a pair), nothing about Rust, Java or C++ (tolmap parses none of them), and nothing about `.vue`. Parameters are untouched — `ALPHA`/`BETA`/`GAMMA`/`DELTA`, the 0.02 prune floor, `keep_per_node=14`, `ALL_SOURCES_MIN_FILES`/`ALL_SOURCES_MIN_SHARE` and resolution 1.1 are exactly as shipped, per `CLAUDE.md`. This finding measures; it does not retune.
