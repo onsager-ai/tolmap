@@ -595,7 +595,7 @@ Finding 14's corpus made the scale problem impossible to keep ignoring. n8n's ma
 
 **Re-measured after rebasing onto `main` at `cb04469`** (finding 15's module-resolution fix, #43's edgeless-partition guard and #47's opt-in terrain subdivision). Finding 15 landed after this branch was first written and, on its own, took n8n from 369 districts to 85 and dify from 226 to 136 by recovering import edges the old resolver dropped — so every count below that depends on district totals is now different from what shipped originally, even though nothing in *this* finding's mechanism changed. Classification and placement still only read the partition; membership itself is verified byte-identical between a `main` binary (no islands) and this one on all four repositories below (same `F`, `E`, `q`), so the movement in district counts is entirely finding 15's, not this feature's.
 
-### One percent of the files is the line, and it holds across a 21x range
+### One percent of the files is the line
 
 | repo | files | districts | mainland | island | unconnected |
 |---|---|---|---|---|---|

@@ -33,9 +33,10 @@ function DistrictRow({ doc, d, onFlyDistrict }: { doc: MapDocument; d: string; o
   );
 }
 
-/** Islands/unconnected section: a single-line, tappable header ("269
+/** Islands/unconnected section: a single-line, tappable header ("52
  * islands") that expands into the full list on click. Collapsed by
- * default — n8n alone puts 269 districts through this path, and a rail
+ * default — dify puts 117 districts through this path at cb04469 (n8n put
+ * 337 before finding 15's resolver fix), and a rail
  * that dumps all of them flat would be worse than the 365-district list
  * this feature exists to replace. A real `<button>`, not a div with an
  * onClick like the district/landmark rows below it: this element's whole

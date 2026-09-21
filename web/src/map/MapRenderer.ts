@@ -691,9 +691,10 @@ export class MapRenderer {
     // Mainland labels claim the shared collision budget first; an island's
     // `put()` below only succeeds where that leaves room -- "reduced
     // priority within the existing label budget" (issue #34), not a second
-    // pass or a bigger one. At real density (n8n: 269 islands crowded onto
-    // one ring, measured on a 60-island synthetic stress fixture to overlap
-    // well before they'd stop colliding on screen) this is what keeps the
+    // pass or a bigger one. At real density (n8n had 269 islands crowded
+    // onto one ring before finding 15's resolver fix, 52 at cb04469;
+    // measured on a 60-island synthetic stress fixture to overlap well
+    // before they'd stop colliding on screen) this is what keeps the
     // result a sparse, legible scatter of names instead of a solid
     // unreadable band of overlapping text. Unconnected districts are
     // skipped outright: the Rust side gave them no polygon because they

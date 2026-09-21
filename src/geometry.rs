@@ -26,28 +26,23 @@ pub struct BuildFeatures {
 /// A district holding at least this share of the repo's files is
 /// **mainland**; a smaller district is either an **island** (it kept at
 /// least one edge -- see [`classify_districts`]) or **unconnected** (it
-/// kept none). Measured on three real repositories (issue #34): the count
-/// of mainland districts held stable across a 21x range in file count,
-/// while a fixed file-count threshold would not have meant the same thing
-/// at both ends of it --
+/// kept none). Measured on three real repositories (issue #34, finding
+/// 17), at `cb04469` --
 ///
 /// ```text
-/// crawlab    575 files ->  19 districts, 16 mainland /   0 islands /   3 unconnected
-/// dify     6,333 files -> 216 districts, 27 mainland /  79 islands / 110 unconnected
-/// n8n     11,982 files -> 365 districts, 28 mainland / 269 islands /  68 unconnected
+/// crawlab    575 files ->  11 districts, 10 mainland /  0 islands /  1 unconnected
+/// dify     6,335 files -> 136 districts, 19 mainland / 26 islands / 91 unconnected
+/// n8n     11,982 files ->  85 districts, 15 mainland / 52 islands / 18 unconnected
 /// ```
 ///
-/// (1% of crawlab is ~6 files; 1% of n8n is ~120 -- the same *share*
-/// produced the same *count* of legible districts, which is the invariant
-/// worth keeping a threshold on.)
-///
-/// crawlab's row is 19/16 here and was 18/15 when issue #34 first measured
-/// it. The difference predates this feature and is not caused by it: built
-/// from the same corpus at the same commit, `main`'s binary also produces
-/// 19 districts with byte-identical membership, `F`, `E` and modularity
-/// (0.742). It is the igraph/leidenalg version sensitivity finding 11
-/// records. The island/unconnected split -- the part this constant decides
-/// -- is 0/3 either way, and dify's and n8n's rows reproduce exactly.
+/// (1% of crawlab is ~6 files; 1% of n8n is ~120.) A share rather than a
+/// fixed file count was chosen when the mainland count came out roughly
+/// flat (16/27/28) across that 21x range, before finding 15's
+/// module-resolution fix. It no longer is -- n8n now has fewer mainland
+/// districts than dify, because finding 15 concentrated it into a few very
+/// large communities -- so the evidence for 1% *specifically* is weaker
+/// than it was; mainland still holds 86-99.8% of each repo's files.
+/// Finding 17 records both corpora and what is not settled.
 ///
 /// Expressed as an integer percentage rather than an `f64` share so the
 /// boundary comparison (`size * 100 >= total * MAINLAND_SHARE_PERCENT`) is
@@ -72,8 +67,9 @@ const MAINLAND_SHARE_PERCENT: usize = 1;
 /// directly, `layout.graph` reclassifies a large share of dify's measured
 /// unconnected files as islands (a file with no import can still carry
 /// cochange/proximity/semantic mass) and reproduces neither dify's nor
-/// crawlab's island/unconnected split, while `imports` reproduces dify's
-/// four numbers (27/79/110/465) exactly. `imports` is also the edge set the
+/// crawlab's island/unconnected split, while `imports` reproduced dify's
+/// four numbers (27/79/110/465, finding 14's corpus, before finding 15)
+/// exactly. `imports` is also the edge set the
 /// viewer already renders (`E`), so "unconnected" ends up meaning what a
 /// person looking at the map would call it: no drawn edge to anything.
 ///
