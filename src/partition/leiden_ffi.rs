@@ -61,6 +61,33 @@ impl Partitioner for LeidenFfi {
             weights.push(edge.weight);
         }
 
+        // An edgeless graph has no community structure, and libleidenalg's
+        // modularity for it is 0/0 -- which the `non-finite modularity` check
+        // below turns into a hard error instead of an answer.
+        //
+        // The path is real, not hypothetical: `blobs::subdivide` induces a
+        // subgraph on one district's members, and a district whose files have
+        // no kept edge to each other induces a graph with no edges at all.
+        // Issue #41's tail is full of such districts (68 of n8n's 369, 121 of
+        // dify's 226). Whether a repository actually reaches the failure also
+        // needs one of them to clear `subdivide`'s 40-file floor, and measured
+        // on issue #41's four reference repositories at their pinned commits
+        // none of them does: crawlab, codex, dify and n8n all produce a map on
+        // this tree without this guard. So it changes no current output -- it
+        // is here because the alternative to answering is aborting a whole
+        // build, and the answer is not in doubt. Modularity of a graph with no
+        // edges is 0 by convention, and one community is the only partition
+        // available.
+        //
+        // Guarded at the FFI boundary rather than inside `subdivide` so both
+        // of that function's call sites are covered.
+        if graph.edges.is_empty() {
+            return Ok(PartitionResult {
+                membership: vec![0; graph.node_count],
+                modularity: 0.0,
+            });
+        }
+
         let mut membership = vec![0; graph.node_count];
         let mut modularity = 0.0;
         let mut error = vec![0_i8; 1024];
@@ -128,6 +155,36 @@ mod tests {
         assert_eq!(first.membership[0], first.membership[2]);
         assert_eq!(first.membership[3], first.membership[5]);
         assert_ne!(first.membership[0], first.membership[3]);
+    }
+
+    // Not a degenerate corner for its own sake: `blobs::subdivide` hands the
+    // partitioner a district's induced subgraph, and issue #41's zero-edge
+    // districts induce an edgeless one. Without the guard libleidenalg returns
+    // 0/0 here and the build fails instead of drawing the district.
+    #[test]
+    fn an_edgeless_graph_is_one_community_at_zero_modularity() {
+        let graph = WeightedGraph {
+            node_count: 5,
+            edges: Vec::new(),
+        };
+        let result = LeidenFfi.partition(&graph, 1.1, 7, None).unwrap();
+        assert_eq!(result.membership, vec![0; 5]);
+        assert_eq!(result.modularity, 0.0);
+    }
+
+    #[test]
+    fn an_edgeless_graph_ignores_a_warm_start() {
+        let graph = WeightedGraph {
+            node_count: 3,
+            edges: Vec::new(),
+        };
+        let result = LeidenFfi
+            .partition(&graph, 1.1, 7, Some(&[2, 1, 0]))
+            .unwrap();
+        // One community is the only answer whatever the seed membership said:
+        // with no edges there is nothing for a warm start to preserve.
+        assert_eq!(result.membership, vec![0; 3]);
+        assert_eq!(result.modularity, 0.0);
     }
 
     #[test]
