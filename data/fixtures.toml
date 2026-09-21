@@ -26,11 +26,13 @@
 # relative-import fix (finding 12): the corrected resolver recovers real
 # import edges the old one silently dropped, which changed membership and
 # therefore reopened the naming cache on most districts -- see finding 12
-# for the before/after table and the renamed districts. prometheus and vue
-# are untouched (Go/TypeScript resolution was already correct; their
-# data/*.json are byte-identical to before this fix).
+# for the before/after table and the renamed districts. prometheus was
+# untouched: its single root go.mod made nested-module resolution a no-op.
+# Vue was re-derived on 2026-09-21 after issue #41's non-relative-import fix:
+# 23.7% of its internal imports use @vue/* workspace names, so its graph and
+# membership changed. See finding 15 for the before/after and rename tables.
 #
-# Last full verification: 2026-09-19, all nine reproduced byte-for-byte
+# Last full verification: 2026-09-21, all nine reproduced byte-for-byte
 # (`eval/verify_fixtures.py` with no arguments, against clones at these SHAs).
 
 [celery]
@@ -120,5 +122,5 @@ pkg = "packages"
 lang = "ts"
 parcels = false
 files = 239
-districts = 9
-q = 0.5729
+districts = 8
+q = 0.5389
