@@ -26,6 +26,12 @@ import {
 } from "./geometry";
 import { computeBlast, type Route } from "./graph";
 
+export type TerrainSelection = {
+  kind: "subdistrict" | "parcel";
+  district: number;
+  index: number;
+};
+
 const NS = "http://www.w3.org/2000/svg";
 function el<K extends keyof SVGElementTagNameMap>(
   name: K,
@@ -43,6 +49,7 @@ export interface MapRenderState {
   sel: number | null;
   selSym: number | null;
   selD: number | null;
+  selTerrain: TerrainSelection | null;
   route: Route | null;
 }
 
@@ -50,6 +57,8 @@ export interface MapRendererCallbacks {
   onSelectDistrict(d: number): void;
   onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
+  onSelectSubdistrict(d: number, index: number): void;
+  onSelectParcel(d: number, index: number): void;
   onClearSelection(): void;
   /** Fired once a drag has actually moved the map, so React can dismiss
    * transient chrome (the mobile drawer, a suggestion list) the way a real
@@ -247,6 +256,7 @@ export class MapRenderer {
     const { doc, geo, layer, sel, selSym, selD, route } = state;
     const g = el("g", {});
     svg.appendChild(g);
+    const zf0 = this.k / this.fitScale();
 
     if (geo !== "t") {
       doc.roads.forEach(([a, b, w]) => {
@@ -286,9 +296,9 @@ export class MapRenderer {
           g.appendChild(path);
         });
       }
+      this.drawTerrain(g, zf0);
     }
 
-    const zf0 = this.k / this.fitScale();
     const CELL = geo === "p" && doc.P && zf0 > PARCEL_ZOOM;
     const ROOMS = geo === "p" && zf0 > BUILD_ZOOM;
     const defs = CELL ? el("defs", {}) : null;
@@ -447,6 +457,153 @@ export class MapRenderer {
     });
 
     if (sel != null) this.ring(g, sel);
+  }
+
+  /** Terrain stays inside the imperative surface and uses the same delegated
+   * `data-k` click path as files and districts. In particular, the invisible
+   * hit strokes below widen on coarse pointers without adding a touch-only
+   * event path (the three pointer bugs documented at the bottom of this
+   * file apply to these targets too). */
+  private drawTerrain(g: SVGGElement, zoom: number) {
+    const { doc, selTerrain } = this.state!;
+    if (!doc.terrain || zoom < 1.25) return;
+    for (const [districtKey, terrain] of Object.entries(doc.terrain)) {
+      const district = +districtKey;
+      const color = districtColor(district);
+      terrain.subdistricts.forEach((subdistrict, index) => {
+        const selected =
+          selTerrain?.kind === "subdistrict" && selTerrain.district === district && selTerrain.index === index;
+        subdistrict.blob.forEach((polygon) => {
+          const path = el("path", {
+            d: "M" + polygon.map((point) => `${this.X(point[0]).toFixed(1)} ${this.Y(point[1]).toFixed(1)}`).join("L") + "Z",
+            fill: color,
+            "fill-opacity": selected ? 0.28 : 0.07,
+            stroke: selected ? "var(--hot)" : color,
+            "stroke-width": selected ? 2.4 : 1.1,
+            "stroke-opacity": selected ? 1 : 0.82,
+            "stroke-dasharray": selected ? "none" : "4 2",
+            "stroke-linejoin": "round",
+            class: "hit",
+            "pointer-events": "all",
+            "data-k": `sd:${district}:${index}`,
+          });
+          const title = el("title");
+          title.textContent = `${doc.names[districtKey]} · ${subdistrict.suffix} — ${subdistrict.members.length} files`;
+          path.appendChild(title);
+          g.appendChild(path);
+        });
+        if (zoom > 1.7) {
+          const label = el("text", {
+            x: this.X(subdistrict.c[0]).toFixed(1),
+            y: this.Y(subdistrict.c[1]).toFixed(1),
+            "font-size": 9.5,
+            "text-anchor": "middle",
+            fill: "var(--ink)",
+            "fill-opacity": 0.82,
+            "font-family": "IBM Plex Mono, monospace",
+            "paint-order": "stroke",
+            stroke: "var(--canvas)",
+            "stroke-width": 3.2,
+            "stroke-linejoin": "round",
+            class: "hit",
+            "pointer-events": "all",
+            "data-k": `sd:${district}:${index}`,
+          });
+          label.textContent = `${doc.names[districtKey]} · ${subdistrict.suffix}`;
+          g.appendChild(label);
+        }
+      });
+
+      if (zoom > 2.4) {
+        terrain.parcels.forEach((parcel, index) => {
+          const [x, y, width, height] = parcel.rect;
+          const selected = selTerrain?.kind === "parcel" && selTerrain.district === district && selTerrain.index === index;
+          g.appendChild(
+            el("rect", {
+              x: this.X(x).toFixed(1),
+              y: this.Y(y).toFixed(1),
+              width: Math.max(0.5, this.S(width)).toFixed(1),
+              height: Math.max(0.5, this.S(height)).toFixed(1),
+              fill: color,
+              "fill-opacity": selected ? 0.34 : 0.13,
+              stroke: selected ? "var(--hot)" : color,
+              "stroke-width": selected ? 2.1 : 0.8,
+              "stroke-opacity": 0.8,
+              "pointer-events": "none",
+            }),
+          );
+          const hit = el("rect", {
+            x: this.X(x).toFixed(1),
+            y: this.Y(y).toFixed(1),
+            width: Math.max(0.5, this.S(width)).toFixed(1),
+            height: Math.max(0.5, this.S(height)).toFixed(1),
+            fill: "transparent",
+            stroke: "transparent",
+            "stroke-width": this.TOUCH ? 12 : 2,
+            class: "hit",
+            "pointer-events": "all",
+            "data-k": `p:${district}:${index}`,
+          });
+          const title = el("title");
+          title.textContent = `${parcel.address} — ${parcel.members.length} files`;
+          hit.appendChild(title);
+          g.appendChild(hit);
+          if (zoom > 4 && this.S(width) > 30 && this.S(height) > 12) {
+            const label = el("text", {
+              x: this.X(x + width / 2).toFixed(1),
+              y: (this.Y(y + height / 2) + 3).toFixed(1),
+              "font-size": 8.5,
+              "text-anchor": "middle",
+              fill: "var(--ink)",
+              "fill-opacity": 0.8,
+              "font-family": "IBM Plex Mono, monospace",
+              "paint-order": "stroke",
+              stroke: "var(--canvas)",
+              "stroke-width": 3,
+              "pointer-events": "none",
+            });
+            label.textContent = parcel.address;
+            g.appendChild(label);
+          }
+        });
+      }
+
+      terrain.arterials.forEach((arterial) => {
+        const origin = this.px(arterial.file);
+        const commands = arterial.links
+          .map((neighbour) => {
+            const target = this.px(neighbour);
+            return `M${this.X(origin[0]).toFixed(1)} ${this.Y(origin[1]).toFixed(1)}L${this.X(target[0]).toFixed(1)} ${this.Y(target[1]).toFixed(1)}`;
+          })
+          .join("");
+        if (!commands) return;
+        g.appendChild(
+          el("path", {
+            d: commands,
+            fill: "none",
+            stroke: color,
+            "stroke-width": Math.min(3.4, 1.3 + Math.log2(arterial.stranded + 1) * 0.22).toFixed(1),
+            "stroke-opacity": 0.45,
+            "stroke-linecap": "round",
+            "pointer-events": "none",
+          }),
+        );
+        const hit = el("path", {
+          d: commands,
+          fill: "none",
+          stroke: "transparent",
+          "stroke-width": this.TOUCH ? 18 : 7,
+          "stroke-linecap": "round",
+          class: "hit",
+          "pointer-events": "stroke",
+          "data-k": `f:${arterial.file}`,
+        });
+        const title = el("title");
+        title.textContent = `${doc.F[arterial.file]} — arterial, strands ${arterial.stranded} files`;
+        hit.appendChild(title);
+        g.appendChild(hit);
+      });
+    }
   }
 
   // Label budget: districts first, then files by importance, skipping
@@ -804,5 +961,7 @@ export class MapRenderer {
     if (parts[0] === "d") this.callbacks.onSelectDistrict(+parts[1]);
     else if (parts[0] === "f") this.callbacks.onSelectFile(+parts[1]);
     else if (parts[0] === "s") this.callbacks.onSelectSymbol(+parts[1], +parts[2]);
+    else if (parts[0] === "sd") this.callbacks.onSelectSubdistrict(+parts[1], +parts[2]);
+    else if (parts[0] === "p") this.callbacks.onSelectParcel(+parts[1], +parts[2]);
   }
 }

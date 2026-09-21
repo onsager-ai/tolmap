@@ -6,6 +6,7 @@ use anyhow::Result;
 use crate::partition::Partitioner;
 use crate::pipeline::{force_layout, PipelineOutput};
 use crate::schema::{RoadRow, WeightedEdge, WeightedGraph};
+use crate::terrain;
 use crate::SEED;
 
 const GRID: usize = 420;
@@ -17,26 +18,445 @@ pub struct BlobGeometry {
     pub blobs: BTreeMap<usize, Vec<Vec<[f64; 2]>>>,
     pub centroids: BTreeMap<usize, [f64; 2]>,
     pub roads: Vec<RoadRow>,
+    pub terrain: Option<BTreeMap<usize, TerrainDistrictGeometry>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerrainDistrictGeometry {
+    pub arterials: Vec<(usize, usize, Vec<usize>)>,
+    pub subdistricts: Vec<TerrainSubdistrictGeometry>,
+    pub parcels: Vec<TerrainParcelGeometry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerrainSubdistrictGeometry {
+    pub members: Vec<usize>,
+    pub center: [f64; 2],
+    pub blob: Vec<Vec<[f64; 2]>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerrainParcelGeometry {
+    pub address: String,
+    pub members: Vec<usize>,
+    pub rect: [f64; 4],
 }
 
 pub fn build_geometry<P: Partitioner>(
     layout: &PipelineOutput,
     partitioner: &P,
+    with_terrain: bool,
 ) -> Result<BlobGeometry> {
     let mut points = place(layout, partitioner)?;
     relax(&mut points, &layout.membership);
+    // Preserve the complete flag-off geometry as the top-level map. Terrain
+    // is a second level (`docs/TERRAIN.md` section 2), so its layout replaces
+    // points only inside eligible districts after inter-district relaxation;
+    // ineligible districts and every top-level contour therefore stay bit
+    // for bit on the established path.
     let blobs = contours(&points, &layout.membership);
     let centroids = district_members(&layout.membership)
         .into_iter()
         .map(|(district, members)| (district, mean_points(&points, &members)))
         .collect();
+    let terrain = if with_terrain {
+        Some(apply_terrain(layout, partitioner, &mut points)?)
+    } else {
+        None
+    };
     let roads = roads(layout);
     Ok(BlobGeometry {
         points,
         blobs,
         centroids,
         roads,
+        terrain,
     })
+}
+
+#[derive(Clone, Debug)]
+struct ParcelWork {
+    address: String,
+    members: Vec<usize>,
+    rect: [f64; 4],
+}
+
+fn apply_terrain<P: Partitioner>(
+    layout: &PipelineOutput,
+    partitioner: &P,
+    points: &mut [[f64; 2]],
+) -> Result<BTreeMap<usize, TerrainDistrictGeometry>> {
+    let paths = layout
+        .weighted
+        .nodes
+        .iter()
+        .map(|node| node.file.clone())
+        .collect::<Vec<_>>();
+    let groups = district_members(&layout.membership);
+    let mut result = BTreeMap::new();
+    for (district, members) in groups {
+        let Some(decomposition) = terrain::decompose(
+            &layout.graph,
+            &members,
+            &paths,
+            layout.membership.len(),
+            partitioner,
+        )?
+        else {
+            continue;
+        };
+
+        let mut parcels = decomposition
+            .parcels
+            .iter()
+            .map(|members| ParcelWork {
+                address: parcel_address(members, &paths),
+                members: members.clone(),
+                rect: [0.0; 4],
+            })
+            .collect::<Vec<_>>();
+        // An address is geometry, not membership: alphabetical row-major
+        // order makes a large plat browsable without inventing graph edges.
+        parcels.sort_by(|left, right| {
+            left.address
+                .cmp(&right.address)
+                .then_with(|| paths[left.members[0]].cmp(&paths[right.members[0]]))
+        });
+
+        place_terrain_district(
+            &members,
+            &decomposition,
+            &layout.graph,
+            points,
+            &mut parcels,
+        );
+
+        // The plat competes as one region while contours are found, exactly
+        // as the proposal's compactness measurement does. Individual parcel
+        // rectangles are already explicit and should not carve 834 tiny
+        // holes into an organic contour in the n8n case.
+        let mut contour_groups = decomposition.organic.clone();
+        let plat = parcels
+            .iter()
+            .flat_map(|parcel| parcel.members.iter().copied())
+            .collect::<Vec<_>>();
+        if !plat.is_empty() {
+            contour_groups.push(plat);
+        }
+        let mut contour_points = Vec::new();
+        let mut contour_membership = Vec::new();
+        for (group, files) in contour_groups.iter().enumerate() {
+            for &file in files {
+                contour_points.push(points[file]);
+                contour_membership.push(group);
+            }
+        }
+        let sub_blobs = contours(&contour_points, &contour_membership);
+        let subdistricts = decomposition
+            .organic
+            .iter()
+            .enumerate()
+            .map(|(index, members)| TerrainSubdistrictGeometry {
+                members: members.clone(),
+                center: mean_points(points, members),
+                blob: sub_blobs.get(&index).cloned().unwrap_or_default(),
+            })
+            .collect();
+
+        let member_set = members.iter().copied().collect::<BTreeSet<_>>();
+        let mut neighbours = BTreeMap::<usize, BTreeSet<usize>>::new();
+        for edge in &layout.graph.edges {
+            if member_set.contains(&edge.a) && member_set.contains(&edge.b) {
+                neighbours.entry(edge.a).or_default().insert(edge.b);
+                neighbours.entry(edge.b).or_default().insert(edge.a);
+            }
+        }
+        let arterials = decomposition
+            .arterials
+            .iter()
+            .map(|&(file, stranded)| {
+                (
+                    file,
+                    stranded,
+                    neighbours
+                        .get(&file)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .collect(),
+                )
+            })
+            .collect();
+        result.insert(
+            district,
+            TerrainDistrictGeometry {
+                arterials,
+                subdistricts,
+                parcels: parcels
+                    .into_iter()
+                    .map(|parcel| TerrainParcelGeometry {
+                        address: parcel.address,
+                        members: parcel.members,
+                        rect: parcel.rect,
+                    })
+                    .collect(),
+            },
+        );
+    }
+    Ok(result)
+}
+
+fn parcel_address(members: &[usize], paths: &[String]) -> String {
+    let parents = members
+        .iter()
+        .map(|&member| {
+            let mut parts = paths[member].split('/').collect::<Vec<_>>();
+            parts.pop();
+            parts
+        })
+        .collect::<Vec<_>>();
+    let common_len = (0..parents.iter().map(Vec::len).min().unwrap_or(0))
+        .take_while(|&index| {
+            parents
+                .iter()
+                .all(|parts| parts[index] == parents[0][index])
+        })
+        .count();
+    if common_len == 0 {
+        ".".to_owned()
+    } else {
+        parents[0][..common_len].join("/")
+    }
+}
+
+fn place_terrain_district(
+    members: &[usize],
+    decomposition: &terrain::Decomposition,
+    graph: &WeightedGraph,
+    points: &mut [[f64; 2]],
+    parcels: &mut [ParcelWork],
+) {
+    let baseline_center = mean_points(points, members);
+    let mut baseline_distances = members
+        .iter()
+        .map(|&file| {
+            norm([
+                points[file][0] - baseline_center[0],
+                points[file][1] - baseline_center[1],
+            ])
+        })
+        .collect::<Vec<_>>();
+    let baseline_radius = percentile(&mut baseline_distances, 90.0).max(1e-12);
+
+    let parcel_files = parcels
+        .iter()
+        .map(|parcel| parcel.members.len())
+        .sum::<usize>();
+    let mut major_sizes = decomposition
+        .organic
+        .iter()
+        .map(Vec::len)
+        .collect::<Vec<_>>();
+    if parcel_files > 0 {
+        major_sizes.push(parcel_files);
+    }
+    let mut centers = if major_sizes.len() <= 1 {
+        vec![[0.0, 0.0]]
+    } else {
+        // Removing arterials makes these components disconnected by
+        // definition. `pack` is the existing group fallback for exactly
+        // that case; forcing nonexistent links would assert structure the
+        // graph does not contain.
+        pack(
+            &major_sizes
+                .iter()
+                .enumerate()
+                .map(|(index, &size)| (index, size))
+                .collect::<Vec<_>>(),
+        )
+    };
+    centers = normalize_spacing(centers);
+    let mean_group_size =
+        major_sizes.iter().sum::<usize>() as f64 / major_sizes.len().max(1) as f64;
+    let mut local_points = BTreeMap::<usize, [f64; 2]>::new();
+
+    for (group_index, files) in decomposition.organic.iter().enumerate() {
+        let local_edges = induced_edges(files, graph);
+        let mut inner = if files.len() > 1 {
+            force_layout(files.len(), &local_edges, 200, 1.0, SEED)
+        } else {
+            vec![[0.0, 0.0]]
+        };
+        center_points(&mut inner);
+        let radius = percentile(
+            &mut inner.iter().map(|point| norm(*point)).collect::<Vec<_>>(),
+            88.0,
+        )
+        .max(1e-12);
+        // Terrain contours describe each group separately, unlike the
+        // top-level layout whose 0.62 spread describes the union of all its
+        // internal groups. Keeping 0.62 here made packed siblings interleave
+        // and produced long ribbon contours (the first PP falsification run
+        // in finding 16). A smaller, still area-scaled footprint leaves the
+        // normalized one-unit centre spacing room to express the split.
+        let spread = 0.12 * (files.len() as f64 / mean_group_size.max(1.0)).sqrt();
+        for (&file, point) in files.iter().zip(inner) {
+            local_points.insert(
+                file,
+                [
+                    point[0] / radius * spread + centers[group_index][0],
+                    point[1] / radius * spread + centers[group_index][1],
+                ],
+            );
+        }
+    }
+
+    if parcel_files > 0 {
+        let group_index = decomposition.organic.len();
+        let spread = 1.24 * (parcel_files as f64 / mean_group_size.max(1.0)).sqrt();
+        let grid = parcel_grid(parcels);
+        for (parcel, normalized) in parcels.iter_mut().zip(grid) {
+            let rect = [
+                centers[group_index][0] + (normalized[0] - 0.5) * spread,
+                centers[group_index][1] + (normalized[1] - 0.5) * spread,
+                normalized[2] * spread,
+                normalized[3] * spread,
+            ];
+            parcel.rect = rect;
+            let columns = (parcel.members.len() as f64).sqrt().ceil().max(1.0) as usize;
+            let rows = parcel.members.len().div_ceil(columns).max(1);
+            for (offset, &file) in parcel.members.iter().enumerate() {
+                let column = offset % columns;
+                let row = offset / columns;
+                local_points.insert(
+                    file,
+                    [
+                        rect[0] + rect[2] * (column as f64 + 0.5) / columns as f64,
+                        rect[1] + rect[3] * (row as f64 + 0.5) / rows as f64,
+                    ],
+                );
+            }
+        }
+    }
+
+    // An arterial is a file, not a new synthetic node. Solve its stated
+    // placement (weighted centroid of every in-district neighbour) by fixed
+    // point iteration so arterial-to-arterial links participate too. The
+    // non-arterial neighbours anchor every observed arterial chain; a fully
+    // isolated arterial falls back to the district centre.
+    let arterial_set = decomposition
+        .arterials
+        .iter()
+        .map(|(file, _)| *file)
+        .collect::<BTreeSet<_>>();
+    let member_set = members.iter().copied().collect::<BTreeSet<_>>();
+    let mut district_adjacency = BTreeMap::<usize, Vec<(usize, f64)>>::new();
+    for edge in &graph.edges {
+        if member_set.contains(&edge.a) && member_set.contains(&edge.b) {
+            district_adjacency
+                .entry(edge.a)
+                .or_default()
+                .push((edge.b, edge.weight));
+            district_adjacency
+                .entry(edge.b)
+                .or_default()
+                .push((edge.a, edge.weight));
+        }
+    }
+    for &arterial in &arterial_set {
+        local_points.insert(arterial, [0.0, 0.0]);
+    }
+    for _ in 0..200 {
+        let previous = arterial_set
+            .iter()
+            .map(|&file| (file, local_points[&file]))
+            .collect::<BTreeMap<_, _>>();
+        for &arterial in &arterial_set {
+            let mut weighted = [0.0, 0.0];
+            let mut mass = 0.0;
+            for &(neighbour, weight) in district_adjacency.get(&arterial).into_iter().flatten() {
+                let point = previous
+                    .get(&neighbour)
+                    .copied()
+                    .or_else(|| local_points.get(&neighbour).copied())
+                    .unwrap_or([0.0, 0.0]);
+                weighted[0] += point[0] * weight;
+                weighted[1] += point[1] * weight;
+                mass += weight;
+            }
+            if mass > 0.0 {
+                local_points.insert(arterial, [weighted[0] / mass, weighted[1] / mass]);
+            }
+        }
+    }
+
+    let local_mean = members.iter().fold([0.0, 0.0], |mut sum, file| {
+        let point = local_points[file];
+        sum[0] += point[0];
+        sum[1] += point[1];
+        sum
+    });
+    let local_mean = [
+        local_mean[0] / members.len().max(1) as f64,
+        local_mean[1] / members.len().max(1) as f64,
+    ];
+    let mut local_distances = members
+        .iter()
+        .map(|file| {
+            let point = local_points[file];
+            norm([point[0] - local_mean[0], point[1] - local_mean[1]])
+        })
+        .collect::<Vec<_>>();
+    let local_radius = percentile(&mut local_distances, 90.0).max(1e-12);
+    let scale = baseline_radius / local_radius;
+    for &file in members {
+        let point = local_points[&file];
+        points[file] = [
+            (point[0] - local_mean[0]) * scale + baseline_center[0],
+            (point[1] - local_mean[1]) * scale + baseline_center[1],
+        ];
+    }
+    for parcel in parcels {
+        parcel.rect = [
+            (parcel.rect[0] - local_mean[0]) * scale + baseline_center[0],
+            (parcel.rect[1] - local_mean[1]) * scale + baseline_center[1],
+            parcel.rect[2] * scale,
+            parcel.rect[3] * scale,
+        ];
+    }
+}
+
+/// Alphabetical row-major shelves.  A row's height is its share of all
+/// parcel files and each cell's width is its share of that row, so every
+/// rectangle has area exactly proportional to file count (finding 8) while
+/// preserving address order in both axes.
+fn parcel_grid(parcels: &[ParcelWork]) -> Vec<[f64; 4]> {
+    if parcels.is_empty() {
+        return Vec::new();
+    }
+    let columns = (parcels.len() as f64).sqrt().ceil().max(1.0) as usize;
+    let total = parcels
+        .iter()
+        .map(|parcel| parcel.members.len())
+        .sum::<usize>() as f64;
+    let mut output = vec![[0.0; 4]; parcels.len()];
+    let mut y = 0.0;
+    for start in (0..parcels.len()).step_by(columns) {
+        let end = (start + columns).min(parcels.len());
+        let row_total = parcels[start..end]
+            .iter()
+            .map(|parcel| parcel.members.len())
+            .sum::<usize>() as f64;
+        let height = row_total / total.max(1.0);
+        let mut x = 0.0;
+        for index in start..end {
+            let width = parcels[index].members.len() as f64 / row_total.max(1.0);
+            output[index] = [x, y, width, height];
+            x += width;
+        }
+        y += height;
+    }
+    output
 }
 
 fn place<P: Partitioner>(layout: &PipelineOutput, partitioner: &P) -> Result<Vec<[f64; 2]>> {

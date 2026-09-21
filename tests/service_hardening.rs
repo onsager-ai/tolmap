@@ -55,6 +55,7 @@ fn state_with_limits(limits: Limits) -> (tempfile::TempDir, Arc<AppState>) {
         db_path,
         cache_dir,
         static_dir: None,
+        terrain: false,
         limits,
         retain_commits_per_repo: 20,
     };

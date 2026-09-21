@@ -496,3 +496,95 @@ The scope-aware follow-up replayed that procedure and all nine committed fixture
 The task brief carried a different baseline — crawlab 34 districts / q .853, codex 34 / .611, dify 454 / .943, n8n 489 / .976 — and after-counts 99 / 32 / 240 / 102. Neither side reproduces on this tree. The graph half does: kept-edge counts match that brief exactly on all four repositories, before and after (259→5,363; 1,748→1,751; 6,762→17,147; 21,047→38,543), and source selection/file counts are identical (575 / 887 / 6,335 / 11,982). The divergence is downstream in partitioning.
 
 Already ruled out: `merge_tiny`'s minimum (setting it to 1 produces 54/138/1,405/1,996), Leiden resolution (raising it adds districts while lowering Q, opposite the brief), warm start (the CLI is cold-start only and repeated builds are byte-identical), source selection, and the pinned library versions. This tree reproduces the committed corpus exactly on all nine fixtures, so the table above is the result consistent with `data/`. Nothing was tuned to close the unexplained gap.
+
+## 16. Oversized districts now expose measured terrain, and two path claims in the proposal were too strong
+
+Terrain subdivision from `docs/TERRAIN.md` is implemented in Rust behind `tolmap build --terrain`. The top-level partition is not rerun or edited: an eligible district (more than `2√N/0.517` files and at least 50 files) is decomposed on the weighted, pruned partition graph into uncapped Tarjan articulation points, small connected parcels and recursive Leiden organic components. The 0.517 constant is stored once, not derived from `data/` at runtime. Arterials leave only this second clustering graph; their files, map edges, landmarks and blast radius remain.
+
+The schema carries one optional `terrain` map. Each eligible district stores ordered arterial file indices and their in-district links, organic member indices/suffix/centre/contours, parcel address/member indices/rectangle, and the suffix high-water mark. With the field absent, the old JSON serialization is unchanged. The cold CLI assigns suffixes by descending size then smallest path. The service already had the previous `MapDocument` in hand for its top-level warm start, so, when terrain is enabled, it matches both the parent district and its sub-districts through `src/parity.rs`'s existing greedy best-Jaccard matcher at overlap **at least 0.35**; unmatched suffixes advance the persisted high-water mark and retired suffixes are not reused. The acceptance gate remains byte-for-byte on its original Python-mirroring boundary (`j < 0.35` is skipped, so exactly 0.35 matches); terrain reuses that existing semantics, with a boundary unit test. `TOLMAP_TERRAIN` is an explicit service opt-in and defaults to false. It is intentionally absent from `fly.toml`, `railway.json` and `deploy/railway.staging.env`, so merging this work changes no hosted map until an owner enables it; the warm-path plumbing remains dormant while it is off.
+
+The layout deliberately starts by completing the old layout and inter-district relaxation. Terrain then replaces points only inside eligible districts, fitted back into that district's old centre and radius; top-level contours and every ineligible node remain unchanged. Disconnected organic/plat regions use the existing deterministic packer, organic files retain the force layout within their group, parcels use alphabetical row-major shelves whose rectangle area is exactly proportional to file count, and arterial files iterate to the weighted centroid of their in-district neighbours. The viewer renders these as inner contours, a higher-zoom parcel grid and intra-district roads. All three new selection shapes use `MapRenderer`'s one delegated `data-k` pointer path, including coarse-pointer hit widening; there is no second touch handler.
+
+### Default and top-level invariants
+
+The feature binary with the flag off and a separate binary built from `origin/main` produced the same SHA-256 on all thirteen pinned inputs:
+
+| map | flag-off SHA-256 (feature = `origin/main`) |
+|---|---|
+| celery | `ca2a8caddaddd82105a7fae6cf8a7d9b9d0f736f5cdf3566bf423ba77d68bffc` |
+| django | `3707caf2824bffd31939e4b25f91a3dcc82a6d324c8bdb2a2f69dfeec3c3ab86` |
+| flask | `364492da14a7c2e9b2a58d6fce01058298eff765f640fe4b824695e2c421e391` |
+| httpx | `4d7d33da6555b5fd07c870ad81510f6f15870c0f7feafad24a1387dfdd166529` |
+| prometheus | `32a73d552a62d068d69f1907a182add1fa3cc076a4f6f243361850788e6a35c6` |
+| rich | `34fd4793ba8dee3e96505020a0be5bd03298396122ea167eeceaa28030f6d82d` |
+| scrapy | `9e7b18b8bec1f8506e0ad01895eb0b96102336e788748941b8df6cbbc826e0b4` |
+| sqlalchemy | `26fcd5d015fe6119c18a038c6a5d7fdf16054c8431875c6d62622f50e250289d` |
+| vue | `0c644e6cefdcfaa2fa5fe79326d6f576ebd6bcb7355c3a19473d19917e43dce2` |
+| crawlab | `3aabf8c10b045b7fbac48e2651ac4d61226997b4ad6442e877850c19c4be9d8d` |
+| codex | `2ba1f647e9d986a4732dd9b7c7d7aab7a0bd4ae756e13acce0c3b5686d41e5e1` |
+| dify | `e501fe5c14d0cbb688174fda41c6fe1c3ef8de6ad06140a6548171b3ab119aa9` |
+| n8n | `af37bd49d715bc6258830eec5e7eb9122c1949da9b2941cffbb843da9b216555` |
+
+Offline parity on each acceptance fixture was **100.0% placement / 0.0000 Q delta**, with `F`, `E`, `L`, `S` and `U` identical on all nine. With the flag on, all thirteen retained identical membership, district count/names, Q, `F/E/L/S/U`, inter-district roads and top-level district objects. Every node row outside an eligible district was also byte-identical. Eligible-district counts were: django 2, prometheus 2, crawlab 2, codex 1, dify 8, n8n 7, and zero for celery/flask/httpx/rich/scrapy/sqlalchemy/vue.
+
+### The spike, reproduced without its 64-articulation cap
+
+The uncapped Rust articulation search chose no different arterial. All 22 districts match `/tmp/tolmap-refs/s3/spike-expected.json` on arterial paths and order, parcel count/file count, and organic sizes:
+
+| map/district | spike arterials | Rust | spike parcels/files | Rust | spike organic sizes | Rust |
+|---|---:|---:|---:|---:|---|---|
+| django d0 | 0 | 0 | 171 / 171 | 171 / 171 | 31 | 31 |
+| django d1 | 0 | 0 | 10 / 10 | 10 / 10 | 45,32,25,20,17 | 45,32,25,20,17 |
+| prometheus d0 | 0 | 0 | 0 / 0 | 0 / 0 | 49,36,24,22 | 49,36,24,22 |
+| prometheus d1 | 0 | 0 | 0 / 0 | 0 / 0 | 44,25,20,14 | 44,25,20,14 |
+| crawlab d0 | 0 | 0 | 0 / 0 | 0 / 0 | 57,35,14 | 57,35,14 |
+| crawlab d1 | 0 | 0 | 2 / 2 | 2 / 2 | 31,27,23,21 | 31,27,23,21 |
+| codex d0 | 1 | 1 | 81 / 136 | 81 / 136 | 34,31,25 | 34,31,25 |
+| dify d0 | 0 | 0 | 2 / 2 | 2 / 2 | 202,116,105,88,80,69,64,63,51 | 202,116,105,88,80,69,64,63,51 |
+| dify d1 | 0 | 0 | 3 / 4 | 3 / 4 | 230,94,93,73,57 | 230,94,93,73,57 |
+| dify d2 | 0 | 0 | 3 / 3 | 3 / 3 | 229,82,81,57,50 | 229,82,81,57,50 |
+| dify d3 | 0 | 0 | 3 / 3 | 3 / 3 | 212,101,65,50,48 | 212,101,65,50,48 |
+| dify d4 | 0 | 0 | 0 / 0 | 0 / 0 | 166,100,88,78 | 166,100,88,78 |
+| dify d5 | 0 | 0 | 172 / 177 | 172 / 177 | 202 | 202 |
+| dify d6 | 0 | 0 | 71 / 76 | 71 / 76 | 240 | 240 |
+| dify d7 | 0 | 0 | 149 / 167 | 149 / 167 | 141 | 141 |
+| n8n d0 | 8 | 8 | 834 / 2,430 | 834 / 2,430 | 369,345,178,110,92,77,74 | 369,345,178,110,92,77,74 |
+| n8n d1 | 0 | 0 | 6 / 8 | 6 / 8 | 398,239,164,140,112,105,95 | 398,239,164,140,112,105,95 |
+| n8n d2 | 0 | 0 | 41 / 42 | 41 / 42 | 125,123,122,118,116,98,96,80,79,75 | 125,123,122,118,116,98,96,80,79,75 |
+| n8n d3 | 1 | 1 | 19 / 39 | 19 / 39 | 308,162,126 | 308,162,126 |
+| n8n d4 | 0 | 0 | 8 / 8 | 8 / 8 | 172,105,98,86,70,65 | 172,105,98,86,70,65 |
+| n8n d5 | 0 | 0 | 2 / 3 | 2 / 3 | 175,157,125,69 | 175,157,125,69 |
+| n8n d6 | 1 | 1 | 2 / 2 | 2 / 2 | 370,77 | 370,77 |
+
+That is **11 arterials**, **94/94 organic sub-districts in band**, and **94/94 connected** in the weighted partition graph, exactly the spike's predictions. No acceptance-fixture district acquired an arterial (measured 0). Rich d0 is 41 files and remained ineligible (measured zero terrain districts), despite clearing the relative `hi` line.
+
+The named arterial checks also reproduce. n8n d0 starts with `packages/workflow/src/index.ts`. Codex d0 contains `codex-rs/app-server-protocol/schema/typescript/v2/index.ts`; 136/227 files, **59.9%**, became parcels against the spike's rounded 60%.
+
+Two stronger path descriptions in the proposal do **not** reproduce literally, even though the component counts above do. Django d0 has the predicted 31-file organic sub-district and 171 one-file parcels, but **170/171**, not 171/171, are under `django/conf/locale/<lang>/`; the remaining parcel is `django/core/mail/backends/__init__.py`. In n8n d0, the predicted **827/834 (99.2%)** is reproducible only as “every member shares one third-level package directory”; only **277/834 (33.2%)** parcels are literally contained in one `packages/nodes-base/nodes/<Vendor>/` directory. Many of the others are singleton credentials under `packages/nodes-base/credentials/`, so no renderer or address rule can truthfully move them under `nodes/<Vendor>` without changing membership by path. These are discrepancies in the proposal's prose, not an uncapped-search or Rust/Python decomposition difference, and neither was tuned away.
+
+### Compactness, determinism and cost
+
+The first terrain layout reused the top-level `0.62` within-group spread. It failed the compactness falsification on django (sub-district median 0.1331 vs lowest top-level 0.4047), prometheus (0.1291 vs 0.5235) and crawlab (0.1263 vs 0.4679): separately contoured siblings overlapped and became ribbons. Reducing only the within-subdistrict footprint to 0.12 of the existing normalized group spacing, while keeping the same force positions and file-count scaling, produced the final emitted-contour measurements:
+
+| map | spike prediction | median sub-district PP | lowest top-level PP | result |
+|---|---|---:|---:|---|
+| django | median ≥ lowest top-level | 0.6793 | 0.4047 | pass |
+| prometheus | same | 0.6833 | 0.5235 | pass |
+| rich | no eligible district | n/a | 0.1719 | pass |
+| crawlab | median ≥ lowest top-level | 0.6442 | 0.4679 | pass |
+| codex | same | 0.6708 | 0.0000 | pass |
+| dify | same | 0.7507 | 0.0000 | pass |
+| n8n | same | 0.7606 | 0.0000 | pass |
+
+Two cold terrain builds were byte-identical for dify (`85d63a9cfddf8c1bde8659dd5c4d71810f3da3ea7caa7e032f91d8f3583d5a2b`) and n8n (`9f5fd4663f1522f0ac910530bb16d81bd0be1bed3e4225b00a16f9b64f18f683`). Three `--all-sources --terrain` builds of the generated synthetic polyglot fixture were also identical (`5b16ccccdf34dba4d4172b91056820db6bb3bd692ab74abbb3e07f044f2bf6e3`), and the three-run check is now in CI.
+
+Single alternating wall-clock builds on this host, including extraction:
+
+| map | flag off | `--terrain` | delta |
+|---|---:|---:|---:|
+| crawlab | 0.81s | 0.92s | +0.11s / 13.6% |
+| codex | 1.21s | 1.31s | +0.10s / 8.3% |
+| dify | 11.30s | 12.14s | +0.84s / 7.4% |
+| n8n | 32.82s | 34.47s | +1.65s / 5.0% |
+
+`cargo fmt --check`, `cargo test --release` (115 tests across all targets), generated bindings `--check`, parity on all nine fixtures, and the web production build passed. Every parity run reported 100.0% placement, 0.0000 modularity delta and identical `F/E/L/S/U`. The service was not run end to end in this follow-up; the configuration unit test instead proves `TOLMAP_TERRAIN` is false when unset or invalid and true only on an explicit valid opt-in, while `jobs.rs` passes that resolved value directly as `BuildFeatures::terrain`. Deployment-env parity also passed without adding the setting to either hosted configuration. Clippy reported only the three warnings already present at HEAD. Web lint reported only its pre-existing `useJobProgress.ts` warning. A phone was not available: pinch bookkeeping, the six-pixel tap/drag threshold, delegated selection and coarse-pointer hit strokes were checked in code and through type/build/lint, but actual sub-district, parcel and arterial taps on a phone remain owed after this run.

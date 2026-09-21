@@ -267,9 +267,8 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
             repo_ref.slug
         ),
     }
-    let previous_membership = warm_start_row
-        .and_then(|row| store::read_map_document(&row.map_path).ok())
-        .map(|document| store::membership_by_file(&document));
+    let previous_document =
+        warm_start_row.and_then(|row| store::read_map_document(&row.map_path).ok());
 
     advance(
         &tx,
@@ -301,8 +300,11 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         repo_ref.repo.clone(),
         &work_dir,
         RESOLUTION,
-        WITH_PARCELS,
-        previous_membership.as_ref(),
+        geometry::BuildFeatures {
+            parcels: WITH_PARCELS,
+            terrain: state.config.terrain,
+        },
+        previous_document.as_ref(),
     ) {
         Ok(path) => path,
         Err(err) => {

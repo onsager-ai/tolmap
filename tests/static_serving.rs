@@ -46,6 +46,7 @@ fn state_with_static_dir(
         db_path,
         cache_dir,
         static_dir,
+        terrain: false,
         limits: Limits::default(),
         retain_commits_per_repo: 20,
     };

@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { MapDocument } from "@/types";
-import { MapRenderer, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
+import { MapRenderer, type MapRenderState, type MapRendererCallbacks, type TerrainSelection } from "./MapRenderer";
 import type { Geo, Layer } from "./constants";
 import type { Route } from "./graph";
 
@@ -19,6 +19,7 @@ interface MapCanvasProps {
   sel: number | null;
   selSym: number | null;
   selD: number | null;
+  selTerrain: TerrainSelection | null;
   route: Route | null;
   callbacks: MapRendererCallbacks;
   handleRef?: React.Ref<MapCanvasHandle>;
@@ -30,7 +31,7 @@ interface MapCanvasProps {
  * imperative class that never re-renders through React's reconciler. At
  * ~1000 files and several thousand symbols, diffing that as JSX on every
  * pan frame is the thing this split avoids. */
-export function MapCanvas({ doc, geo, layer, sel, selSym, selD, route, callbacks, handleRef }: MapCanvasProps) {
+export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, route, callbacks, handleRef }: MapCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<MapRenderer | null>(null);
@@ -46,6 +47,8 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, route, callbacks
       onSelectDistrict: (d) => callbacksRef.current.onSelectDistrict(d),
       onSelectFile: (i) => callbacksRef.current.onSelectFile(i),
       onSelectSymbol: (i, s) => callbacksRef.current.onSelectSymbol(i, s),
+      onSelectSubdistrict: (d, index) => callbacksRef.current.onSelectSubdistrict(d, index),
+      onSelectParcel: (d, index) => callbacksRef.current.onSelectParcel(d, index),
       onClearSelection: () => callbacksRef.current.onClearSelection(),
       onDragStart: () => callbacksRef.current.onDragStart?.(),
     };
@@ -85,9 +88,9 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, route, callbacks
   useLayoutEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
-    const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, route };
+    const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, selTerrain, route };
     renderer.render(state);
-  }, [doc, geo, layer, sel, selSym, selD, route]);
+  }, [doc, geo, layer, sel, selSym, selD, selTerrain, route]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -95,7 +98,7 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, route, callbacks
     const ro = new ResizeObserver(() => {
       const r = wrap.getBoundingClientRect();
       rendererRef.current?.resize(r.width, r.height, false);
-      rendererRef.current?.render({ doc, geo, layer, sel, selSym, selD, route });
+      rendererRef.current?.render({ doc, geo, layer, sel, selSym, selD, selTerrain, route });
     });
     ro.observe(wrap);
     return () => ro.disconnect();
@@ -106,7 +109,7 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, route, callbacks
     // this effect's own closure since it re-subscribes whenever any of them
     // change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, geo, layer, sel, selSym, selD, route]);
+  }, [doc, geo, layer, sel, selSym, selD, selTerrain, route]);
 
   return (
     <div ref={wrapRef} className="absolute inset-0">
