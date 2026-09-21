@@ -248,14 +248,28 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
     let mut sorted_sources = sources.to_vec();
     sorted_sources.sort_by(|a, b| a.1.as_str().cmp(b.1.as_str()).then_with(|| a.0.cmp(&b.0)));
 
+    // Go and TypeScript share one repository-metadata index. Build it once
+    // for the whole union rather than re-walking the tree for every source.
+    let modules = sorted_sources
+        .iter()
+        .any(|(_, language)| *language != LanguageKind::Python)
+        .then(|| module_index(repo))
+        .transpose()?;
+
     let mut intermediates = Vec::with_capacity(sorted_sources.len());
     for (pkg, language) in &sorted_sources {
         let (parsed, raw) = parse_files(repo, pkg, *language)?;
         let intermediate = match language {
             LanguageKind::Python => parse_python(pkg, parsed, raw),
-            LanguageKind::Go | LanguageKind::TypeScript => {
-                parse_multi(repo, pkg, *language, parsed, raw)?
-            }
+            LanguageKind::Go | LanguageKind::TypeScript => parse_multi(
+                pkg,
+                *language,
+                parsed,
+                raw,
+                modules
+                    .as_ref()
+                    .expect("multi-language source has an index"),
+            )?,
         };
         intermediates.push(intermediate);
     }
@@ -1349,11 +1363,11 @@ fn python_uses_from_raw(
 }
 
 fn parse_multi(
-    repo: &Path,
     pkg: &str,
     language: LanguageKind,
     parsed: BTreeMap<String, ParsedFile>,
     raw: BTreeMap<String, FileRaw>,
+    modules: &ModuleIndex,
 ) -> Result<SourceIntermediate> {
     let files = parsed.keys().cloned().collect::<BTreeSet<_>>();
     let mut by_directory = BTreeMap::<String, Vec<String>>::new();
@@ -1363,12 +1377,6 @@ fn parse_multi(
             .or_default()
             .push(file.clone());
     }
-    let go_module = if language == LanguageKind::Go {
-        go_module_path(repo)?
-    } else {
-        String::new()
-    };
-
     let mut static_edges = BTreeMap::<(String, String), f64>::new();
     let mut directed = BTreeMap::<(String, String), f64>::new();
     let mut fanin = BTreeMap::<String, f64>::new();
@@ -1382,7 +1390,7 @@ fn parse_multi(
             unreachable!("parse_multi only ever stores FileRaw::Multi");
         };
         for path in imports {
-            let targets = resolve_multi(language, path, file, &go_module, &by_directory, &files);
+            let targets = resolve_multi(language, path, file, modules, &by_directory, &files);
             if targets.is_empty() {
                 continue;
             }
@@ -1397,7 +1405,7 @@ fn parse_multi(
             }
         }
         for (path, name) in named_candidates {
-            for target in resolve_multi(language, path, file, &go_module, &by_directory, &files) {
+            for target in resolve_multi(language, path, file, modules, &by_directory, &files) {
                 if &target != file {
                     uses.insert((file.clone(), target, name.clone()));
                 }
@@ -1422,18 +1430,254 @@ fn parse_multi(
     })
 }
 
-fn go_module_path(repo: &Path) -> Result<String> {
-    let path = repo.join("go.mod");
-    if !path.is_file() {
-        return Ok(String::new());
+/// Every non-relative way a repository names its own files.
+///
+/// Both halves of this used to be a single `String`: the `module` line of a
+/// `go.mod` at the repository root, and nothing at all for TypeScript, whose
+/// resolver returned early on any specifier not starting with `.`. That is
+/// wrong in the same way for both languages: it assumes a repository has
+/// exactly one module and that internal edges are always spelled relatively.
+///
+/// Everything here is read from files the repository already has to keep
+/// correct for its own toolchain to work. Nothing is inferred or tunable.
+#[derive(Debug, Default)]
+struct ModuleIndex {
+    /// `(module path, repo-relative directory)` for every `go.mod` found.
+    go: Vec<(String, String)>,
+    /// `(specifier prefix, repo-relative directory)` for every tsconfig
+    /// `paths` entry and every workspace `package.json` name.
+    ts: Vec<(String, String)>,
+}
+
+impl ModuleIndex {
+    /// Longest prefix first, lexicographic on ties. Both orderings are fixed,
+    /// so resolution cannot depend on directory-walk order (finding 9).
+    fn sorted(mut entries: Vec<(String, String)>) -> Vec<(String, String)> {
+        entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        entries.dedup();
+        entries
     }
-    let contents = fs::read_to_string(path)?;
-    Ok(contents
+}
+
+/// Walk `repo` once, collecting `go.mod`, `tsconfig*.json` and
+/// `package.json`. The walk skips exactly the directories the Go/TypeScript
+/// source walk skips, plus dot-directories, so vendored metadata cannot add
+/// a prefix.
+fn module_index(repo: &Path) -> Result<ModuleIndex> {
+    let mut go = Vec::new();
+    let mut ts = Vec::new();
+    let mut stack = vec![repo.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut entries = entries.collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                if !MULTI_SKIP_DIR.contains(&name.as_str()) && !name.starts_with('.') {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let Ok(here) = relative_slash(repo, &directory) else {
+                continue;
+            };
+            match name.as_str() {
+                "go.mod" => {
+                    if let Some(module) = go_module_line(&path) {
+                        go.push((module, here));
+                    }
+                }
+                name if name.starts_with("tsconfig") && name.ends_with(".json") => {
+                    ts.extend(tsconfig_aliases(&path, &here));
+                }
+                "package.json" => {
+                    if let Some(package) = package_name(&path) {
+                        ts.push((package, here));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(ModuleIndex {
+        go: ModuleIndex::sorted(go),
+        ts: ModuleIndex::sorted(ts),
+    })
+}
+
+fn go_module_line(path: &Path) -> Option<String> {
+    let contents = fs::read_to_string(path).ok()?;
+    contents
         .lines()
         .find_map(|line| line.strip_prefix("module "))
         .and_then(|line| line.split_whitespace().next())
-        .unwrap_or("")
-        .to_owned())
+        .map(str::to_owned)
+        .filter(|module| !module.is_empty())
+}
+
+fn package_name(path: &Path) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    value
+        .get("name")?
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+/// Return `compilerOptions.paths` from one tsconfig as repo-relative roots.
+///
+/// `extends` is deliberately not followed. It can point into `node_modules`,
+/// and a map whose aliases depend on whether dependencies happen to be
+/// installed is not a map of the commit.
+fn tsconfig_aliases(path: &Path, here: &str) -> Vec<(String, String)> {
+    let Some(text) = fs::read_to_string(path).ok() else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&strip_jsonc(&text)) else {
+        return Vec::new();
+    };
+    let Some(options) = value.get("compilerOptions") else {
+        return Vec::new();
+    };
+    let base = options
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".");
+    let root = join_slash(here, base);
+    let Some(paths) = options.get("paths").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+    for (pattern, targets) in paths {
+        // "@/*" registers "@/", not "@". Dropping the separator would
+        // swallow unrelated packages such as @tanstack/* and @n8n/*.
+        let prefix = pattern.strip_suffix('*').unwrap_or(pattern);
+        if prefix.is_empty() {
+            continue;
+        }
+        for target in targets.as_array().into_iter().flatten() {
+            let Some(target) = target.as_str() else {
+                continue;
+            };
+            let target = target.strip_suffix('*').unwrap_or(target);
+            result.push((prefix.to_owned(), join_slash(&root, target)));
+        }
+    }
+    result
+}
+
+/// Strip JSONC comments and trailing commas while preserving string content.
+///
+/// A regex cannot do this safely: `"@/*": ["./*"]` contains `/*` inside a
+/// string, and dify's `"**/*.ts"` gives a dot-matches-newline regex the `*/`
+/// it needs to swallow the entire `paths` object.
+fn strip_jsonc(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut uncommented = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut in_string = false;
+    while i < bytes.len() {
+        if in_string {
+            let ch = text[i..].chars().next().expect("valid UTF-8 boundary");
+            uncommented.push(ch);
+            i += ch.len_utf8();
+            if ch == '\\' && i < bytes.len() {
+                let escaped = text[i..].chars().next().expect("valid UTF-8 boundary");
+                uncommented.push(escaped);
+                i += escaped.len_utf8();
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if bytes[i] == b'"' {
+            uncommented.push('"');
+            in_string = true;
+            i += 1;
+        } else if bytes[i..].starts_with(b"//") {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            while i + 1 < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+        } else {
+            let ch = text[i..].chars().next().expect("valid UTF-8 boundary");
+            uncommented.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    let bytes = uncommented.as_bytes();
+    let mut cleaned = String::with_capacity(uncommented.len());
+    let mut i = 0;
+    let mut in_string = false;
+    while i < bytes.len() {
+        let ch = uncommented[i..]
+            .chars()
+            .next()
+            .expect("valid UTF-8 boundary");
+        if in_string {
+            cleaned.push(ch);
+            i += ch.len_utf8();
+            if ch == '\\' && i < bytes.len() {
+                let escaped = uncommented[i..]
+                    .chars()
+                    .next()
+                    .expect("valid UTF-8 boundary");
+                cleaned.push(escaped);
+                i += escaped.len_utf8();
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            cleaned.push(ch);
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if ch == ',' {
+            let next = uncommented[i + 1..]
+                .chars()
+                .find(|next| !next.is_whitespace());
+            if matches!(next, Some('}') | Some(']')) {
+                i += 1;
+                continue;
+            }
+        }
+        cleaned.push(ch);
+        i += ch.len_utf8();
+    }
+    cleaned
+}
+
+fn join_slash(base: &str, relative: &str) -> String {
+    let mut parts = base
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for part in relative.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            value => parts.push(value.to_owned()),
+        }
+    }
+    parts.join("/")
 }
 
 fn go_imports(root: Node<'_>, source: &[u8]) -> Vec<String> {
@@ -1557,36 +1801,78 @@ fn resolve_multi(
     language: LanguageKind,
     import: &str,
     source_file: &str,
-    go_module: &str,
+    modules: &ModuleIndex,
     by_directory: &BTreeMap<String, Vec<String>>,
     by_file: &BTreeSet<String>,
 ) -> Vec<String> {
     match language {
         LanguageKind::Go => {
-            if go_module.is_empty() || !import.starts_with(go_module) {
-                return Vec::new();
+            // Longest module path wins, so a nested module resolves before
+            // its parent. Requiring the slash boundary also prevents a
+            // module named `example/co` from capturing `example/core`.
+            for (module, directory) in &modules.go {
+                let Some(rest) = strip_module_prefix(import, module) else {
+                    continue;
+                };
+                let package = join_slash(directory, rest);
+                return by_directory.get(&package).cloned().unwrap_or_default();
             }
-            let relative = import[go_module.len()..].trim_start_matches('/');
-            by_directory.get(relative).cloned().unwrap_or_default()
+            Vec::new()
         }
         LanguageKind::TypeScript => {
-            if !import.starts_with('.') {
-                return Vec::new();
-            }
-            let base = normalize_relative(directory_name(source_file), import);
-            [
-                format!("{base}.ts"),
-                format!("{base}/index.ts"),
-                format!("{base}.tsx"),
-                base,
-            ]
-            .into_iter()
-            .find(|candidate| by_file.contains(candidate))
-            .into_iter()
-            .collect()
+            let base = if import.starts_with('.') {
+                normalize_relative(directory_name(source_file), import)
+            } else {
+                // Keep looking when a longer alias matches syntactically but
+                // has no file target. An unresolvable alias contributes no
+                // guessed edge; every candidate must exist in the parsed set.
+                let target = modules
+                    .ts
+                    .iter()
+                    .filter_map(|(prefix, directory)| {
+                        let rest = strip_module_prefix(import, prefix)?;
+                        Some(join_slash(directory, rest))
+                    })
+                    .find_map(|base| ts_candidate(&base, by_file));
+                return target.into_iter().collect();
+            };
+            ts_candidate(&base, by_file).into_iter().collect()
         }
         LanguageKind::Python => Vec::new(),
     }
+}
+
+/// Return the path below `module`, requiring either equality or a `/`
+/// boundary. Trailing `/` is retained in the prefix table (`@/*` becomes
+/// `@/`) and stripped only for this comparison.
+fn strip_module_prefix<'a>(import: &'a str, module: &str) -> Option<&'a str> {
+    let module = module.trim_end_matches('/');
+    if module.is_empty() {
+        return None;
+    }
+    if import == module {
+        return Some("");
+    }
+    import
+        .strip_prefix(module)
+        .and_then(|rest| rest.strip_prefix('/'))
+}
+
+/// Resolve a TypeScript base only when the target is already in the parsed
+/// file set. The first four probes are the relative resolver's historical
+/// candidates; the final two cover TSX directory entries and workspace
+/// packages whose source entry point is `src/index.ts`.
+fn ts_candidate(base: &str, by_file: &BTreeSet<String>) -> Option<String> {
+    [
+        format!("{base}.ts"),
+        format!("{base}/index.ts"),
+        format!("{base}.tsx"),
+        format!("{base}/index.tsx"),
+        format!("{base}/src/index.ts"),
+        base.to_owned(),
+    ]
+    .into_iter()
+    .find(|candidate| by_file.contains(candidate))
 }
 
 fn normalize_relative(directory: &str, import: &str) -> String {
@@ -2101,7 +2387,10 @@ mod tests {
                 LanguageKind::Go,
                 "example/x",
                 "main.go",
-                "example",
+                &ModuleIndex {
+                    go: vec![("example".to_owned(), String::new())],
+                    ts: Vec::new(),
+                },
                 &directories,
                 &files
             )
@@ -2116,6 +2405,129 @@ mod tests {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    fn resolved_import_edge_count(root: &Path, pkg: &str, language: LanguageKind) -> usize {
+        let modules = module_index(root).unwrap();
+        let (parsed, raw) = parse_files(root, pkg, language).unwrap();
+        parse_multi(pkg, language, parsed, raw, &modules)
+            .unwrap()
+            .directed
+            .len()
+    }
+
+    #[test]
+    fn typescript_paths_alias_adds_one_hand_counted_edge() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        );
+        write(dir.path(), "src/main.ts", "import '@/target';\n");
+        write(dir.path(), "src/target.ts", "export const target = 1;\n");
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            1
+        );
+    }
+
+    #[test]
+    fn workspace_package_name_adds_one_hand_counted_edge() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/src/index.ts",
+            "export const core = 1;\n",
+        );
+        write(dir.path(), "apps/site/main.ts", "import '@scope/core';\n");
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            1
+        );
+    }
+
+    #[test]
+    fn nested_go_module_spreads_one_import_across_two_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "services/core/go.mod",
+            "module example.com/core\n\ngo 1.22\n",
+        );
+        write(
+            dir.path(),
+            "services/core/cmd/main.go",
+            "package main\nimport _ \"example.com/core/lib\"\nfunc main() {}\n",
+        );
+        write(
+            dir.path(),
+            "services/core/lib/a.go",
+            "package lib\nfunc A() {}\n",
+        );
+        write(
+            dir.path(),
+            "services/core/lib/b.go",
+            "package lib\nfunc B() {}\n",
+        );
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), "services/core", LanguageKind::Go),
+            2
+        );
+    }
+
+    #[test]
+    fn jsonc_paths_alias_with_comments_and_trailing_commas_adds_one_edge() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "tsconfig.json",
+            r#"{
+              // A regex must not treat the slash-star inside "@/*" as a comment.
+              "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {
+                  "@/*": ["./src/*",],
+                },
+              },
+              /* Nor may it run through to the star-slash inside this string. */
+              "include": ["**/*.ts",],
+            }"#,
+        );
+        write(dir.path(), "src/main.ts", "import '@/target';\n");
+        write(dir.path(), "src/target.ts", "export const target = 1;\n");
+
+        let modules = module_index(dir.path()).unwrap();
+        assert!(modules.ts.contains(&("@/".to_owned(), "src".to_owned())));
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            1
+        );
+    }
+
+    #[test]
+    fn unresolvable_alias_target_adds_zero_edges() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "tsconfig.json",
+            r#"{"compilerOptions":{"paths":{"@/*":["missing/*"]}}}"#,
+        );
+        write(dir.path(), "src/main.ts", "import '@/target';\n");
+        write(dir.path(), "src/target.ts", "export const target = 1;\n");
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            0
+        );
     }
 
     #[test]
@@ -2166,7 +2578,7 @@ mod tests {
             LanguageKind::TypeScript,
             "./Foo",
             "a.ts",
-            "",
+            &ModuleIndex::default(),
             &directories,
             &files,
         );
