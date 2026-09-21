@@ -331,7 +331,9 @@ All three were measured after `.tsx` collection landed (issue #35), so the TypeS
 
 Finding 13's headline result holds on all three: NMI against the language label sits far below 1, so the partition is finding structure rather than reproducing the file extension. The synthetic fixture's 0.878 remains an artefact of its own filler-heavy construction, now with three more real corpora saying so.
 
-The purity column is the one that complicates the story. crawlab's districts are **100% language-pure** — every district is >=90% one language — while its NMI is a middling 0.386. Those are not in tension: crawlab's map has several districts per language and never one that mixes them, which is exactly what a Go backend and a TypeScript frontend communicating over HTTP should look like to a pipeline whose only cross-language signals are co-change and semantic similarity. There are no shared imports to find, and the map correctly does not invent any.
+The purity column is the one that complicates the story. crawlab's districts are **100% language-pure** — every district is >=90% one language — while its NMI is a middling 0.386. Those are not in tension: crawlab's map has several districts per language and never one that mixes them, which is exactly what a Go backend and a TypeScript frontend communicating over HTTP should look like to a pipeline whose static resolver cannot cross languages.
+
+> **Falsified in part by finding 15 (2026-09-21).** This paragraph originally concluded: "There are no shared imports to find, and the map correctly does not invent any." The cross-language half survives — Go imports do not name TypeScript files — but the clean-looking Go districts were not evidence for it. crawlab's five `go.mod` files are all nested, while the resolver read only a root `go.mod`; the Go half therefore had **zero import edges, including Go-to-Go**, and its apparent structure came entirely from the other signals. Finding 15 replaces that evidence with the corrected measurement: 4,654 kept edges in the 219-file Go-only map, while the static resolver remains incapable of crossing languages.
 
 ### `docs/ARCHITECTURE.md`'s size condition is wrong: it is about roots, not about 600 files
 
@@ -399,3 +401,98 @@ Adding 2,801 React components made districts *more* language-pure, not less. The
 Settled: finding 13's central claim survives three more real repositories, and two of its secondary claims do not — the 600-file condition on semantic bridging is really a condition on source roots, and the below-floor hazard has no fixed direction.
 
 Not settled: still nothing about a repository with three or more languages (every corpus here is a pair), nothing about Rust, Java or C++ (tolmap parses none of them), and nothing about `.vue`. Parameters are untouched — `ALPHA`/`BETA`/`GAMMA`/`DELTA`, the 0.02 prune floor, `keep_per_node=14`, `ALL_SOURCES_MIN_FILES`/`ALL_SOURCES_MIN_SHARE` and resolution 1.1 are exactly as shipped, per `CLAUDE.md`. This finding measures; it does not retune.
+
+## 15. Internal module names were invisible, and high modularity was the symptom
+
+The multi-language resolver made two versions of the same assumption. TypeScript returned immediately for every specifier not beginning with `.`, dropping tsconfig `paths` aliases and workspace package names. Go read one `go.mod` at the repository root, so a repository made entirely of nested modules had no module path at all. crawlab is exactly that repository: five `go.mod` files, all below the root, and all 347 of its internal Go imports were invisible. Independent parsing of the source put the missed share at 23.7% for the vue fixture, 48.6% for n8n, 63.5% for crawlab's TypeScript, 64.9% for dify, and 100% for crawlab's Go. codex, at 0.2%, is the control.
+
+**The fix is a repository metadata index, not a heuristic.** One sorted walk, with the same skip directories as source collection, records `(module path, directory)` from every `go.mod`, and originally recorded one repository-global `(specifier prefix, directory)` table from every tsconfig `paths` entry and `package.json` name. Resolution tried longest prefixes first with a lexicographic tie-break, required equality or a `/` boundary, and accepted a candidate only when that exact file was already in the parsed set. `"@/*"` therefore registered `"@/"`, not `"@"`; an unresolved alias still contributed zero edges. TypeScript probed the relative resolver's existing candidates plus `index.tsx` and `src/index.ts`. Go kept the existing one-import-across-the-package weighting (`1/|D|`).
+
+`extends` is deliberately not followed. It can point into `node_modules`, which would make the map depend on whether dependencies happen to be installed rather than on the commit. JSONC is handled by a character scanner that preserves string literals and removes trailing commas: a regex sees the `/*` inside `"@/*"`, then the `*/` inside `"**/*.ts"`, and silently deletes the paths object between them. dify's `web/tsconfig.json` is the real file that falsified the regex version of this work.
+
+**The repository-global TypeScript table was then falsified.** A two-package synthetic repository gave both packages the same `@/*` alias. Rust sent `pkgA/src/main.ts` to `pkgB/src/target.ts`, while Python sent it to `pkgA/src/target.ts`: Rust's `stack.pop()` directory walk and Python's `os.walk` run in opposite orders, and the table's `(-prefix length, prefix)` sort did not distinguish duplicate prefixes. The oracle therefore agreed only when repositories happened not to contain a collision.
+
+n8n made the error measurable rather than merely synthetic. The first table had 177 prefixes, 55 of them duplicates; 203 of 19,558 alias-resolved imports (1.0%) chose a different package than the governing tsconfig. In `packages/cli/src/active-workflow-manager.ts`, `@/constants` incorrectly reached `packages/@n8n/ai-workflow-builder.ee/src/constants.ts`, and `@/node-types` reached `packages/@n8n/task-runner/src/node-types.ts`; both belong under `packages/cli/src/`.
+
+The replacement retains each alias's declaring tsconfig directory as a scope, distinct from its target. Workspace `package.json` names have the empty global scope. For each importing file, governing ancestors rank before non-ancestors, deeper ancestors rank first, then longer prefix, prefix text and target directory break ties. The ancestor test is path-segment-wise, so `packages/cli` does not govern `packages/cli-extra`. Non-ancestor aliases remain as the final fallback, preserving repositories whose declaration lies outside the importer's subtree. Both implementations spell out that complete ordering rather than inheriting their different walk orders. An independent audit now reports `differ=0` on all four repositories:
+
+| repo | alias-resolved imports | differ |
+|---|---:|---:|
+| crawlab | 346 | 0 |
+| codex | 4 | 0 |
+| dify | 2,782 | 0 |
+| n8n | 19,558 | 0 |
+
+Both implementations carry the same correction. Rust has hand-counted unit cases for a paths alias (one edge), a workspace package name (one), a nested Go module whose import spreads across two files (two), JSONC comments plus trailing commas (one), and a nonexistent alias target (zero). The frozen Python reference has no test suite; its coverage is the nine-fixture re-derivation below, following finding 12's correctness-oracle precedent rather than inventing a second test harness.
+
+Three more Rust cases cover the scoped correction: two packages with the same alias produce two within-package edges and no crossing edge; a nearer tsconfig alias beats a global workspace package name; and a non-ancestor alias remains usable when nothing nearer resolves. The generated collision fixture is also checked through both implementations, whose complete static edge sets are identical at 51 edges.
+
+### Four production repositories
+
+Same pinned clones, same binary otherwise, `--all-sources --no-parcels`; `eval/mapstats.py` derives the shape columns from the compact map. A mainland holds at least 1% of the files, issue #41 measurement 1's reporting threshold, not a pipeline parameter.
+
+| repo | districts | mainland | mainland file share | small | zero-edge districts | zero-edge files | small with no mainland edge | kept edges | q | largest district |
+|---|---|---|---|---|---|---|---|---|---|---|
+| crawlab | 19 → 11 | 16 → 10 | 98.3% → 99.8% | 3 → 1 | 9 → 3 | 43.7% → 6.4% | 3/3 → 1/1 | 259 → 5,363 | .7420 → .5964 | 83 → 106 |
+| codex | 34 → 31 | 20 → 19 | 94.9% → 96.1% | 14 → 12 | 14 → 14 | 7.8% → 7.8% | 12/14 → 11/12 | 1,748 → 1,751 | .4819 → .4858 | 227 → 227 |
+| dify | 226 → 136 | 26 → 19 | 76.9% → 87.3% | 200 → 117 | 121 → 92 | 7.9% → 7.0% | 188/200 → 105/117 | 6,762 → 17,147 | .8714 → .7463 | 600 → 840 |
+| n8n | 369 → 85 | 26 → 15 | 62.4% → 85.8% | 343 → 70 | 68 → 18 | 2.1% → 0.9% | 313/343 → 32/70 | 21,047 → 38,543 | .9176 → .7476 | 560 → 3,683 |
+
+Scoping changed only n8n relative to the first corrected table: districts 84 → 85, mainland file share 86.6% → 85.8%, small districts 69 → 70, stranded small districts 32/69 → 32/70, Q .7460 → .7476, and the largest district 3,726 → 3,683. Mainland count, both zero-edge columns and the 38,543 kept edges stayed fixed. Every column for crawlab, codex and dify stayed fixed.
+
+codex is the useful negative control: only three more kept edges, the same 227-file largest district, and a 0.0039 Q movement. A broad package-name matcher would have moved it much more; the boundary and parsed-file checks are doing real work.
+
+The clearest single-language case is crawlab's 219-file `core` source:
+
+| crawlab Go only | before | after |
+|---|---:|---:|
+| districts | 10 | 7 |
+| kept edges | 0 | 4,654 |
+| mainland file share | 100.0% | 100.0% |
+| small districts | 0 | 0 |
+| zero-edge districts | 10 | 1 |
+| zero-edge files | 100.0% | 13.2% |
+| q | .5339 | .3334 |
+
+This corrects finding 14's evidence, not its cross-language mechanism. A Go import still cannot point at a TypeScript file. What looked like clean Go-side architecture was a graph with no Go import edges at all, including Go-to-Go; co-change, proximity and semantics had been carrying the partition alone.
+
+**Q falls because the graph stops being shattered.** A collection of weakly connected islands has trivially high modularity: almost every retained edge stays inside the island Leiden already made a community. n8n's .9176 here — and especially the .976 carried by the earlier brief below — was a symptom of missing edges, not a quality signal. The resolver adds no tuning parameter and leaves all coefficients, the 0.02 floor, `keep_per_node=14`, resolution 1.1 and the all-source thresholds unchanged.
+
+### Determinism, performance and the synthetic failure case
+
+Two consecutive dify builds were byte-identical (`e501fe5c…`), and CI's three-run synthetic-polyglot check remained byte-identical (`ac19f644…`) with its NMI and below-floor ceilings green. The generated TypeScript fixture now has 53 source files and 51 alias imports. Its original 51-file package is unchanged: all 50 internal imports still use `@/…`, with no relative import or alternate signal to rescue the graph, so the preserved `origin/main` binary still fails with `Error: cannot blend an empty graph`. A second two-file package declares the same alias and exercises the collision; both resolvers produce the same 51 static edges, including its within-package edge. CI generates the repository locally and builds it from source, because a pre-extracted graph would bypass the resolver under test.
+
+Wall-clock on this run did not reproduce the supplied performance prediction:
+
+| repo | before | after |
+|---|---:|---:|
+| crawlab | 0.83s | 0.75s |
+| codex | 1.22s | 1.20s |
+| dify | 10.92s | 10.09s |
+| n8n | **19.21s** | **25.09s** |
+
+The supplied run measured dify 10.4s → 10.4s and n8n 27.1s → 25.8s; those n8n timings do not reproduce here. Alternating repeats confirmed 19.05s/19.63s before against 25.26s/25.74s after, while graph extraction alone was flat (11.42s → 11.44s), locating this run's difference downstream in partition/geometry on the corrected graph. Nothing in clustering or layout was changed to chase it; doing so would violate this fix's scope and make the graph measurement no longer isolated.
+
+### The oracle changed once, and only where predicted
+
+After seeding names from the committed fixtures, seven Python fixtures and prometheus reproduced byte-for-byte. prometheus has a single root `go.mod`, so nested-module lookup is a no-op. vue alone changed, exactly as the Rust-side falsification predicted: 9 → 8 districts, q .5729 → .5389, 932 → 1,186 kept edges, and largest district 48 → 53. `@vue/shared`, imported across the workspace, no longer sits behind an unresolved package name; `server-renderer` joins `runtime-dom`.
+
+Changed memberships miss the old fingerprint cache by design. The three exact memberships (`sfc compiler`, `ssr compiler`, `test runtime`) kept their names. Every actual rename, matched by best member overlap, was:
+
+| old | new |
+|---|---|
+| runtime core | runtime-core |
+| compiler transforms | compiler-core |
+| shared & dom runtime | runtime-dom & server-renderer |
+| v2 compat | compat & runtime-core |
+| server renderer | runtime-dom & server-renderer |
+
+`reactivity` also changed membership (20 → 21 files) but the deterministic fallback chose the same text, so it is not a rename. No name was hand-edited. `eval/verify_fixtures.py` then reproduced all nine files byte-for-byte, and Rust parity against them was 100.0% placement, 0.0000 Q delta, with `F`/`E`/`L`/`S`/`U` identical on every fixture.
+
+The scope-aware follow-up replayed that procedure and all nine committed fixtures were byte-identical. In particular, vue did not move a second time: it has no duplicate prefix, so the fixture already recorded by this finding remains the correct oracle.
+
+### The earlier brief's partition table remains unexplained
+
+The task brief carried a different baseline — crawlab 34 districts / q .853, codex 34 / .611, dify 454 / .943, n8n 489 / .976 — and after-counts 99 / 32 / 240 / 102. Neither side reproduces on this tree. The graph half does: kept-edge counts match that brief exactly on all four repositories, before and after (259→5,363; 1,748→1,751; 6,762→17,147; 21,047→38,543), and source selection/file counts are identical (575 / 887 / 6,335 / 11,982). The divergence is downstream in partitioning.
+
+Already ruled out: `merge_tiny`'s minimum (setting it to 1 produces 54/138/1,405/1,996), Leiden resolution (raising it adds districts while lowering Q, opposite the brief), warm start (the CLI is cold-start only and repeated builds are byte-identical), source selection, and the pinned library versions. This tree reproduces the committed corpus exactly on all nine fixtures, so the table above is the result consistent with `data/`. Nothing was tuned to close the unexplained gap.

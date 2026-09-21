@@ -38,7 +38,7 @@ The tool is `tolmap` — a portmanteau of **Tolman** (Edward Tolman, who coined 
 
 ## Checks before a change lands
 
-Clustering or layout changed: the port must still place ≥95% of files in the district the reference assigns, with modularity within 0.02, on the fixtures in `data/`. This check belongs in CI from the first commit of the clustering module.
+Clustering, layout or extraction changed: first re-derive the affected reference fixtures, then the port must still place ≥95% of files in the district those updated fixtures assign, with modularity within 0.02. Comparing against a fixture built from a graph already known to be broken rejects correctness fixes rather than regressions. This check belongs in CI from the first commit of the clustering module.
 
 Viewer changed: districts named, landmarks listed, and tapping a district, a file and a symbol each produce a card — on a phone as well as a desktop. Touch behaviour regresses easily; three touch-only bugs are documented in the reference renderer's comments and all three will recur if the port is written from the rendering logic alone.
 

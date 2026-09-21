@@ -170,6 +170,21 @@ jobs:
             --out ci-out \
             --resolution 1.1
 
+      # Issue #41's resolver regressions: the original 51-file package keeps
+      # its 50 @/... imports, and a second two-file package declares the same
+      # alias and imports its own same-named target. Before the first fix the
+      # graph was empty; before the scoped follow-up one root-package import
+      # crossed into the second package. Generating source here keeps the
+      # resolver, rather than a checked-in graph, under test.
+      - name: Generate alias-only TypeScript fixture
+        run: python3 eval/gen_synthetic_module_resolution_fixture.py --out module-resolution-fixture
+
+      - name: Build alias-only TypeScript fixture
+        run: |
+          set -euo pipefail
+          ./target/release/tolmap build "$PWD/module-resolution-fixture" \
+            --pkg . --lang ts --name module_resolution --out ci-out --no-parcels
+
       # docs/FINDINGS.md finding 13, step 2 of the polyglot work: materialise
       # the synthetic fixture fresh (pure local git + Python, no network),
       # then check the two things spec step 1 item 8 and step 2 require --

@@ -197,29 +197,219 @@ def source_files(repo, sub, cfg):
     return sorted(out)
 
 
-def go_module_path(repo):
-    gm = os.path.join(repo, "go.mod")
-    if os.path.exists(gm):
-        for line in open(gm, encoding="utf8", errors="ignore"):
-            if line.startswith("module "):
-                return line.split()[1].strip()
-    return ""
+def join_slash(base, relative):
+    """Join two repository-relative paths without consulting the filesystem."""
+    parts = [p for p in base.split("/") if p and p != "."]
+    for part in relative.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+        else:
+            parts.append(part)
+    return "/".join(parts)
 
 
-def resolve_go(path, modpath, bydir, repo):
-    if not modpath or not path.startswith(modpath):
-        return []
-    rel = path[len(modpath):].lstrip("/")
-    return bydir.get(rel, [])
+def strip_jsonc(text):
+    """Strip JSONC comments and trailing commas, respecting string literals.
+
+    A regex is wrong here: `"@/*": ["./*"]` contains a block-comment opener
+    inside a string, and dify's `"**/*.ts"` supplies the next `*/`, swallowing
+    the paths object between them.
+    """
+    out, i, in_string = [], 0, False
+    while i < len(text):
+        char = text[i]
+        if in_string:
+            out.append(char)
+            i += 1
+            if char == "\\" and i < len(text):
+                out.append(text[i])
+                i += 1
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            out.append(char)
+            in_string = True
+            i += 1
+        elif text.startswith("//", i):
+            i += 2
+            while i < len(text) and text[i] != "\n":
+                i += 1
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = len(text) if end < 0 else end + 2
+        else:
+            out.append(char)
+            i += 1
+
+    text = "".join(out)
+    out, i, in_string = [], 0, False
+    while i < len(text):
+        char = text[i]
+        if in_string:
+            out.append(char)
+            i += 1
+            if char == "\\" and i < len(text):
+                out.append(text[i])
+                i += 1
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            out.append(char)
+            in_string = True
+            i += 1
+            continue
+        if char == ",":
+            j = i + 1
+            while j < len(text) and text[j].isspace():
+                j += 1
+            if j < len(text) and text[j] in "}]":
+                i += 1
+                continue
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
-def resolve_ts(path, src_file, byfile):
-    if not path.startswith("."):
-        return []
-    base = os.path.normpath(os.path.join(os.path.dirname(src_file), path))
-    for cand in (base + ".ts", base + "/index.ts", base + ".tsx", base):
+def _sorted_prefixes(entries):
+    entries.sort(key=lambda item: (-len(item[0]), item[0]))
+    return [entry for i, entry in enumerate(entries)
+            if i == 0 or entry != entries[i - 1]]
+
+
+def _sorted_ts_prefixes(entries):
+    entries.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [entry for i, entry in enumerate(entries)
+            if i == 0 or entry != entries[i - 1]]
+
+
+def module_index(repo):
+    """Collect nested Go modules and TypeScript aliases in one sorted walk."""
+    go, ts = [], []
+    for dp, dn, fn in os.walk(repo):
+        dn[:] = sorted(d for d in dn if d not in SKIPDIR and not d.startswith("."))
+        here = os.path.relpath(dp, repo).replace(os.sep, "/")
+        here = "" if here == "." else here
+        for filename in sorted(fn):
+            path = os.path.join(dp, filename)
+            if filename == "go.mod":
+                try:
+                    lines = open(path, encoding="utf8", errors="ignore")
+                    module = next((line.split()[1] for line in lines
+                                   if line.startswith("module ") and len(line.split()) > 1), None)
+                    lines.close()
+                except OSError:
+                    module = None
+                if module:
+                    go.append((module, here))
+            elif filename == "package.json":
+                try:
+                    package = json.load(open(path)).get("name")
+                except (OSError, ValueError, AttributeError):
+                    package = None
+                if isinstance(package, str) and package:
+                    # Workspace package names are global; unlike a tsconfig
+                    # alias, they are addressable from every source directory.
+                    ts.append((package, here, ""))
+            elif filename.startswith("tsconfig") and filename.endswith(".json"):
+                try:
+                    config = json.loads(strip_jsonc(open(path).read()))
+                    options = config.get("compilerOptions", {})
+                    paths = options.get("paths", {})
+                    root = join_slash(here, options.get("baseUrl", "."))
+                except (OSError, ValueError, AttributeError, TypeError):
+                    continue
+                if not isinstance(paths, dict):
+                    continue
+                for pattern, targets in sorted(paths.items()):
+                    prefix = pattern[:-1] if pattern.endswith("*") else pattern
+                    if not prefix or not isinstance(targets, list):
+                        continue
+                    for target in targets:
+                        if not isinstance(target, str):
+                            continue
+                        target = target[:-1] if target.endswith("*") else target
+                        ts.append((prefix, join_slash(root, target), here))
+    return {"go": _sorted_prefixes(go), "ts": _sorted_ts_prefixes(ts)}
+
+
+def strip_module_prefix(path, module):
+    """Return the suffix below module, requiring equality or a `/` boundary."""
+    module = module.rstrip("/")
+    if not module:
+        return None
+    if path == module:
+        return ""
+    prefix = module + "/"
+    return path[len(prefix):] if path.startswith(prefix) else None
+
+
+def resolve_go(path, modules, bydir):
+    for module, directory in modules["go"]:
+        rest = strip_module_prefix(path, module)
+        if rest is not None:
+            return bydir.get(join_slash(directory, rest), [])
+    return []
+
+
+def ts_candidate(base, byfile):
+    for cand in (base + ".ts", base + "/index.ts", base + ".tsx",
+                 base + "/index.tsx", base + "/src/index.ts", base):
         if cand in byfile:
             return [cand]
+    return []
+
+
+def _scope_is_ancestor(scope, directory):
+    """Path-segment ancestor test; `pkg` must not match `pkg-extra`."""
+    return not scope or directory == scope or directory.startswith(scope + "/")
+
+
+def _scope_depth(scope):
+    return len([part for part in scope.split("/") if part])
+
+
+def _ordered_ts_prefixes(entries, source_directory):
+    """Order aliases exactly as the Rust oracle does for one importing file.
+
+    The total order is: governing ancestor before non-ancestor; deeper
+    (nearer) scope; longer prefix; prefix; target. Scope is the final
+    tie-break only for otherwise equivalent entries. Rust's stack.pop() walk
+    and Python's os.walk visit directories in opposite orders, so this
+    explicit comparator is what makes resolution independent of both walks.
+    Empty package.json scope is a global ancestor at depth zero. Non-ancestor
+    entries stay last but remain live when no nearer candidate names a parsed
+    file.
+    """
+    return sorted(entries, key=lambda item: (
+        0 if _scope_is_ancestor(item[2], source_directory) else 1,
+        -_scope_depth(item[2]),
+        -len(item[0]),
+        item[0],
+        item[1],
+        item[2],
+    ))
+
+
+def resolve_ts(path, src_file, modules, byfile):
+    if path.startswith("."):
+        base = os.path.normpath(os.path.join(os.path.dirname(src_file), path))
+        return ts_candidate(base, byfile)
+    source_directory = os.path.dirname(src_file).replace(os.sep, "/")
+    cache = modules.setdefault("_ts_order", {})
+    entries = cache.get(source_directory)
+    if entries is None:
+        entries = _ordered_ts_prefixes(modules["ts"], source_directory)
+        cache[source_directory] = entries
+    for prefix, directory, _scope in entries:
+        rest = strip_module_prefix(path, prefix)
+        if rest is not None:
+            target = ts_candidate(join_slash(directory, rest), byfile)
+            if target:
+                return target
     return []
 
 
@@ -255,7 +445,7 @@ def build(repo, sub, kind, out_path):
     bydir = defaultdict(list)
     for f in files:
         bydir[os.path.dirname(f)].append(f)
-    modpath = go_module_path(repo) if kind == "go" else ""
+    modules = module_index(repo)
 
     # ---- imports (directed) ----
     static, directed, fanin = Counter(), Counter(), Counter()
@@ -263,8 +453,8 @@ def build(repo, sub, kind, out_path):
     for f in files:
         raw = open(os.path.join(repo, f), "rb").read()
         for p in cfg["imps"](trees[f].root_node, raw):
-            tgts = (resolve_go(p, modpath, bydir, repo) if kind == "go"
-                    else resolve_ts(p, f, byfile))
+            tgts = (resolve_go(p, modules, bydir) if kind == "go"
+                    else resolve_ts(p, f, modules, byfile))
             if not tgts:
                 continue
             # A Go import names a package, i.e. a whole directory. Spread one
@@ -280,8 +470,8 @@ def build(repo, sub, kind, out_path):
         refs = (go_selectors(trees[f].root_node, raw) if kind == "go"
                 else ts_named(trees[f].root_node, raw))
         for p, nm in refs:
-            tgts = (resolve_go(p, modpath, bydir, repo) if kind == "go"
-                    else resolve_ts(p, f, byfile))
+            tgts = (resolve_go(p, modules, bydir) if kind == "go"
+                    else resolve_ts(p, f, modules, byfile))
             for tf in tgts:
                 if tf != f:
                     uses.add((f, tf, nm))
