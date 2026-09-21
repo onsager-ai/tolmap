@@ -253,26 +253,30 @@ fn compact(
         })
         .collect::<BTreeMap<_, _>>();
     let uses = compact_uses(&layout, &file_index);
-    let previous_district_matches = previous_document.map(|previous| {
-        let candidate = files
-            .iter()
-            .cloned()
-            .zip(layout.membership.iter().copied())
-            .collect::<BTreeMap<_, _>>();
-        let reference = previous
-            .files
-            .iter()
-            .cloned()
-            .zip(previous.nodes.iter().map(NodeRow::district))
-            .collect::<BTreeMap<_, _>>();
-        let common = candidate
-            .keys()
-            .filter(|file| reference.contains_key(*file))
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        parity::match_districts(&candidate, &reference, &common)
-    });
     let terrain = geometry.terrain.as_ref().map(|districts| {
+        // Parent matching exists only to warm terrain suffixes. Keep it
+        // inside this branch so the service's default terrain-off path does
+        // no new matching work; the prior document still seeds the existing
+        // top-level warm partition above.
+        let previous_district_matches = previous_document.map(|previous| {
+            let candidate = files
+                .iter()
+                .cloned()
+                .zip(layout.membership.iter().copied())
+                .collect::<BTreeMap<_, _>>();
+            let reference = previous
+                .files
+                .iter()
+                .cloned()
+                .zip(previous.nodes.iter().map(NodeRow::district))
+                .collect::<BTreeMap<_, _>>();
+            let common = candidate
+                .keys()
+                .filter(|file| reference.contains_key(*file))
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            parity::match_districts(&candidate, &reference, &common)
+        });
         districts
             .iter()
             .map(|(&district, district_geometry)| {

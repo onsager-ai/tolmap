@@ -205,6 +205,12 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_STATIC_DIR`.
     pub static_dir: Option<PathBuf>,
+    /// Enable terrain-aware subdivision for maps built by the job service.
+    /// This is deliberately opt-in: merging the feature must not change a
+    /// hosted environment's map artifacts until its owner enables them.
+    ///
+    /// Env: `TOLMAP_TERRAIN` (`true` or `false`).
+    pub terrain: bool,
     pub limits: Limits,
     /// Store retention policy (issue #23 gap 2): the number of most-recently-
     /// indexed commits kept per repository slug; older `(slug, commit_sha)`
@@ -220,7 +226,7 @@ pub struct ServeConfig {
 impl ServeConfig {
     /// Reads overridable settings from the environment
     /// (`TOLMAP_PORT`, `TOLMAP_BIND_ADDR`, `TOLMAP_DB_PATH`,
-    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`,
+    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`, `TOLMAP_TERRAIN`,
     /// `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus `Limits::from_env`'s
     /// `TOLMAP_MAX_*`/`TOLMAP_RATE_LIMIT_*`); anything left unset uses its
     /// documented default. No config file yet -- the job service has no
@@ -249,6 +255,9 @@ impl ServeConfig {
         // Unset (the default) keeps the router exactly as it is without
         // this -- see the `static_dir` field's doc comment.
         let static_dir = env::var("TOLMAP_STATIC_DIR").ok().map(PathBuf::from);
+        // Terrain remains an explicit operator choice in the hosted service,
+        // just as it is an explicit `tolmap build --terrain` CLI choice.
+        let terrain = env_var_or("TOLMAP_TERRAIN", false);
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the
         // unbounded growth issue #23 gap 2 reported -- see store::prune.
@@ -258,6 +267,7 @@ impl ServeConfig {
             db_path,
             cache_dir,
             static_dir,
+            terrain,
             limits: Limits::from_env(),
             retain_commits_per_repo,
         }
@@ -403,6 +413,22 @@ mod tests {
             Some(PathBuf::from("/srv/tolmap/web"))
         );
         env::remove_var("TOLMAP_STATIC_DIR");
+    }
+
+    #[test]
+    fn terrain_is_off_by_default_and_requires_an_explicit_valid_opt_in() {
+        let _guard = lock_env();
+        env::remove_var("TOLMAP_TERRAIN");
+        assert!(!ServeConfig::from_env().terrain);
+
+        env::set_var("TOLMAP_TERRAIN", "true");
+        assert!(ServeConfig::from_env().terrain);
+
+        // Match every other typed setting: invalid input falls back to the
+        // safe documented default instead of changing startup behaviour.
+        env::set_var("TOLMAP_TERRAIN", "not-a-boolean");
+        assert!(!ServeConfig::from_env().terrain);
+        env::remove_var("TOLMAP_TERRAIN");
     }
 
     /// The regression this change fixes: `max_history_commits`'s default

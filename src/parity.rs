@@ -320,7 +320,7 @@ pub(crate) fn match_districts(
         if used_candidate.contains(&candidate_id) || used_reference.contains(&reference_id) {
             continue;
         }
-        if jaccard <= JACCARD_THRESHOLD {
+        if jaccard < JACCARD_THRESHOLD {
             continue;
         }
         matched.insert(candidate_id, (reference_id, jaccard));

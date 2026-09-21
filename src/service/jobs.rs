@@ -30,9 +30,6 @@ use crate::service::AppState;
 
 const RESOLUTION: f64 = 1.1;
 const WITH_PARCELS: bool = true;
-// The hosted map is the terrain-aware consumer. CLI builds remain opt-in via
-// `tolmap build --terrain`, preserving the default artifact byte for byte.
-const WITH_TERRAIN: bool = true;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -305,7 +302,7 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         RESOLUTION,
         geometry::BuildFeatures {
             parcels: WITH_PARCELS,
-            terrain: WITH_TERRAIN,
+            terrain: state.config.terrain,
         },
         previous_document.as_ref(),
     ) {

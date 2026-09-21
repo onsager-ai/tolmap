@@ -435,7 +435,8 @@ fn organic_split<P: Partitioner>(
 
 /// Assign stable suffixes to current organic groups.  The overlap matching
 /// is the established greedy best-Jaccard implementation in `src/parity.rs`,
-/// not a terrain-specific approximation of it.
+/// including matches at the 0.35 boundary, not a terrain-specific
+/// approximation of it.
 pub fn assign_suffixes(
     current: &[Vec<String>],
     previous: Option<&[(usize, Vec<String>)]>,
@@ -638,6 +639,19 @@ mod tests {
             assign_suffixes(&current, Some(&previous), 7),
             (vec![7, 3], 7)
         );
+    }
+
+    #[test]
+    fn suffixes_match_at_the_jaccard_boundary() {
+        // Seven shared members over a twenty-member union is exactly 0.35.
+        // The acceptance gate deliberately includes this boundary, and
+        // terrain suffix matching reuses that definition.
+        let mut current = vec![(0..7).map(|i| format!("f{i}")).collect::<Vec<_>>()];
+        current.extend((7..20).map(|i| vec![format!("f{i}")]));
+        let previous = vec![(7, (0..20).map(|i| format!("f{i}")).collect())];
+        let (suffixes, maximum) = assign_suffixes(&current, Some(&previous), 7);
+        assert_eq!(suffixes[0], 7);
+        assert_eq!(maximum, 20);
     }
 
     #[test]
