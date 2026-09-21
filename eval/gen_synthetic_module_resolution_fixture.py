@@ -1,10 +1,16 @@
-"""Materialise the 51-file TypeScript alias-resolution CI fixture.
+"""Materialise the 53-file TypeScript alias-resolution CI fixture.
 
-Every internal import in this repository is a side-effect import through the
-same tsconfig alias (`@/moduleNNN`). There are no relative imports, shared
-identifiers, or qualifying co-change pairs. Before issue #41's resolver fix,
-tolmap therefore sees an empty graph and aborts at blend; after the fix the 50
-hand-counted alias imports form a chain across all 51 files and the map builds.
+The original package is unchanged: 50 side-effect imports through the root
+tsconfig's `@/moduleNNN` alias form a chain across 51 files. A second two-file
+package declares the same `@/*` prefix and imports its own `module001`; this is
+the duplicate-prefix collision that must resolve against the nearer tsconfig,
+not the root package's equally named file. There are no relative imports,
+shared identifiers, or qualifying co-change pairs.
+
+Before issue #41's first resolver fix, tolmap sees an empty graph and aborts at
+blend. The repo-global version of that fix sees 51 edges but sends the root
+package's `module000` import into the second package. The scope-aware resolver
+sees the same 51 edges without inventing that cross-package relationship.
 
 The fixture is generated locally rather than committed as an extracted graph
 because the source-to-graph resolution is the behavior under test. Git identity
@@ -28,6 +34,8 @@ ENV = {
 }
 
 FILE_COUNT = 51
+SECOND_PACKAGE = "packages/secondary"
+TOTAL_SOURCE_FILES = FILE_COUNT + 2
 
 
 def write(root, relative, contents):
@@ -59,12 +67,25 @@ def generate(out_dir):
 """)
     for index in range(FILE_COUNT):
         write(out_dir, f"src/module{index:03d}.ts", source(index))
+    write(out_dir, f"{SECOND_PACKAGE}/package.json",
+          '{\n  "name": "module-resolution-secondary",\n  "private": true\n}\n')
+    write(out_dir, f"{SECOND_PACKAGE}/tsconfig.json", """{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {"@/*": ["src/*"]}
+  }
+}
+""")
+    write(out_dir, f"{SECOND_PACKAGE}/src/main.ts",
+          'import "@/module001";\n\nexport const secondaryMain = 1;\n')
+    write(out_dir, f"{SECOND_PACKAGE}/src/module001.ts",
+          "export const secondaryValue = 1;\n")
 
     env = dict(os.environ)
     env.update(ENV)
     subprocess.run(["git", "add", "-A"], cwd=out_dir, env=env, check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    subprocess.run(["git", "commit", "--quiet", "-m", "add alias-only TypeScript package"],
+    subprocess.run(["git", "commit", "--quiet", "-m", "add scoped alias-only TypeScript packages"],
                    cwd=out_dir, env=env, check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     return subprocess.run(
@@ -82,7 +103,7 @@ def main(argv=None):
         sys.exit(f"{args.out} already exists and is not empty")
     sha = generate(args.out)
     print(f"synthetic module-resolution fixture generated at {args.out}, HEAD {sha}")
-    print(f"files: {FILE_COUNT}; internal alias imports: {FILE_COUNT - 1}")
+    print(f"files: {TOTAL_SOURCE_FILES}; internal alias imports: {FILE_COUNT}")
 
 
 if __name__ == "__main__":

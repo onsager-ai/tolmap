@@ -406,11 +406,26 @@ Not settled: still nothing about a repository with three or more languages (ever
 
 The multi-language resolver made two versions of the same assumption. TypeScript returned immediately for every specifier not beginning with `.`, dropping tsconfig `paths` aliases and workspace package names. Go read one `go.mod` at the repository root, so a repository made entirely of nested modules had no module path at all. crawlab is exactly that repository: five `go.mod` files, all below the root, and all 347 of its internal Go imports were invisible. Independent parsing of the source put the missed share at 23.7% for the vue fixture, 48.6% for n8n, 63.5% for crawlab's TypeScript, 64.9% for dify, and 100% for crawlab's Go. codex, at 0.2%, is the control.
 
-**The fix is a repository metadata index, not a heuristic.** One sorted walk, with the same skip directories as source collection, records `(module path, directory)` from every `go.mod`, and `(specifier prefix, directory)` from every tsconfig `paths` entry and `package.json` name. Resolution tries longest prefixes first with a lexicographic tie-break, requires equality or a `/` boundary, and accepts a candidate only when that exact file is already in the parsed set. `"@/*"` therefore registers `"@/"`, not `"@"`; an unresolved alias still contributes zero edges. TypeScript probes the relative resolver's existing candidates plus `index.tsx` and `src/index.ts`. Go keeps the existing one-import-across-the-package weighting (`1/|D|`).
+**The fix is a repository metadata index, not a heuristic.** One sorted walk, with the same skip directories as source collection, records `(module path, directory)` from every `go.mod`, and originally recorded one repository-global `(specifier prefix, directory)` table from every tsconfig `paths` entry and `package.json` name. Resolution tried longest prefixes first with a lexicographic tie-break, required equality or a `/` boundary, and accepted a candidate only when that exact file was already in the parsed set. `"@/*"` therefore registered `"@/"`, not `"@"`; an unresolved alias still contributed zero edges. TypeScript probed the relative resolver's existing candidates plus `index.tsx` and `src/index.ts`. Go kept the existing one-import-across-the-package weighting (`1/|D|`).
 
 `extends` is deliberately not followed. It can point into `node_modules`, which would make the map depend on whether dependencies happen to be installed rather than on the commit. JSONC is handled by a character scanner that preserves string literals and removes trailing commas: a regex sees the `/*` inside `"@/*"`, then the `*/` inside `"**/*.ts"`, and silently deletes the paths object between them. dify's `web/tsconfig.json` is the real file that falsified the regex version of this work.
 
+**The repository-global TypeScript table was then falsified.** A two-package synthetic repository gave both packages the same `@/*` alias. Rust sent `pkgA/src/main.ts` to `pkgB/src/target.ts`, while Python sent it to `pkgA/src/target.ts`: Rust's `stack.pop()` directory walk and Python's `os.walk` run in opposite orders, and the table's `(-prefix length, prefix)` sort did not distinguish duplicate prefixes. The oracle therefore agreed only when repositories happened not to contain a collision.
+
+n8n made the error measurable rather than merely synthetic. The first table had 177 prefixes, 55 of them duplicates; 203 of 19,558 alias-resolved imports (1.0%) chose a different package than the governing tsconfig. In `packages/cli/src/active-workflow-manager.ts`, `@/constants` incorrectly reached `packages/@n8n/ai-workflow-builder.ee/src/constants.ts`, and `@/node-types` reached `packages/@n8n/task-runner/src/node-types.ts`; both belong under `packages/cli/src/`.
+
+The replacement retains each alias's declaring tsconfig directory as a scope, distinct from its target. Workspace `package.json` names have the empty global scope. For each importing file, governing ancestors rank before non-ancestors, deeper ancestors rank first, then longer prefix, prefix text and target directory break ties. The ancestor test is path-segment-wise, so `packages/cli` does not govern `packages/cli-extra`. Non-ancestor aliases remain as the final fallback, preserving repositories whose declaration lies outside the importer's subtree. Both implementations spell out that complete ordering rather than inheriting their different walk orders. An independent audit now reports `differ=0` on all four repositories:
+
+| repo | alias-resolved imports | differ |
+|---|---:|---:|
+| crawlab | 346 | 0 |
+| codex | 4 | 0 |
+| dify | 2,782 | 0 |
+| n8n | 19,558 | 0 |
+
 Both implementations carry the same correction. Rust has hand-counted unit cases for a paths alias (one edge), a workspace package name (one), a nested Go module whose import spreads across two files (two), JSONC comments plus trailing commas (one), and a nonexistent alias target (zero). The frozen Python reference has no test suite; its coverage is the nine-fixture re-derivation below, following finding 12's correctness-oracle precedent rather than inventing a second test harness.
+
+Three more Rust cases cover the scoped correction: two packages with the same alias produce two within-package edges and no crossing edge; a nearer tsconfig alias beats a global workspace package name; and a non-ancestor alias remains usable when nothing nearer resolves. The generated collision fixture is also checked through both implementations, whose complete static edge sets are identical at 51 edges.
 
 ### Four production repositories
 
@@ -421,7 +436,9 @@ Same pinned clones, same binary otherwise, `--all-sources --no-parcels`; `eval/m
 | crawlab | 19 → 11 | 16 → 10 | 98.3% → 99.8% | 3 → 1 | 9 → 3 | 43.7% → 6.4% | 3/3 → 1/1 | 259 → 5,363 | .7420 → .5964 | 83 → 106 |
 | codex | 34 → 31 | 20 → 19 | 94.9% → 96.1% | 14 → 12 | 14 → 14 | 7.8% → 7.8% | 12/14 → 11/12 | 1,748 → 1,751 | .4819 → .4858 | 227 → 227 |
 | dify | 226 → 136 | 26 → 19 | 76.9% → 87.3% | 200 → 117 | 121 → 92 | 7.9% → 7.0% | 188/200 → 105/117 | 6,762 → 17,147 | .8714 → .7463 | 600 → 840 |
-| n8n | 369 → 84 | 26 → 15 | 62.4% → 86.6% | 343 → 69 | 68 → 18 | 2.1% → 0.9% | 313/343 → 32/69 | 21,047 → 38,543 | .9176 → .7460 | 560 → 3,726 |
+| n8n | 369 → 85 | 26 → 15 | 62.4% → 85.8% | 343 → 70 | 68 → 18 | 2.1% → 0.9% | 313/343 → 32/70 | 21,047 → 38,543 | .9176 → .7476 | 560 → 3,683 |
+
+Scoping changed only n8n relative to the first corrected table: districts 84 → 85, mainland file share 86.6% → 85.8%, small districts 69 → 70, stranded small districts 32/69 → 32/70, Q .7460 → .7476, and the largest district 3,726 → 3,683. Mainland count, both zero-edge columns and the 38,543 kept edges stayed fixed. Every column for crawlab, codex and dify stayed fixed.
 
 codex is the useful negative control: only three more kept edges, the same 227-file largest district, and a 0.0039 Q movement. A broad package-name matcher would have moved it much more; the boundary and parsed-file checks are doing real work.
 
@@ -443,7 +460,7 @@ This corrects finding 14's evidence, not its cross-language mechanism. A Go impo
 
 ### Determinism, performance and the synthetic failure case
 
-Two consecutive dify builds were byte-identical (`e501fe5c…`), and CI's three-run synthetic-polyglot check remained byte-identical (`ac19f644…`) with its NMI and below-floor ceilings green. The new 51-file TypeScript fixture is stronger and narrower: all 50 internal imports use `@/…`, with no relative import or alternate signal to rescue the graph. The preserved `origin/main` binary fails with `Error: cannot blend an empty graph`; the fixed binary builds eight districts from exactly 50 candidate edges. CI generates that repository locally and builds it from source, because a pre-extracted graph would bypass the resolver under test.
+Two consecutive dify builds were byte-identical (`e501fe5c…`), and CI's three-run synthetic-polyglot check remained byte-identical (`ac19f644…`) with its NMI and below-floor ceilings green. The generated TypeScript fixture now has 53 source files and 51 alias imports. Its original 51-file package is unchanged: all 50 internal imports still use `@/…`, with no relative import or alternate signal to rescue the graph, so the preserved `origin/main` binary still fails with `Error: cannot blend an empty graph`. A second two-file package declares the same alias and exercises the collision; both resolvers produce the same 51 static edges, including its within-package edge. CI generates the repository locally and builds it from source, because a pre-extracted graph would bypass the resolver under test.
 
 Wall-clock on this run did not reproduce the supplied performance prediction:
 
@@ -471,6 +488,8 @@ Changed memberships miss the old fingerprint cache by design. The three exact me
 | server renderer | runtime-dom & server-renderer |
 
 `reactivity` also changed membership (20 → 21 files) but the deterministic fallback chose the same text, so it is not a rename. No name was hand-edited. `eval/verify_fixtures.py` then reproduced all nine files byte-for-byte, and Rust parity against them was 100.0% placement, 0.0000 Q delta, with `F`/`E`/`L`/`S`/`U` identical on every fixture.
+
+The scope-aware follow-up replayed that procedure and all nine committed fixtures were byte-identical. In particular, vue did not move a second time: it has no duplicate prefix, so the fixture already recorded by this finding remains the correct oracle.
 
 ### The earlier brief's partition table remains unexplained
 

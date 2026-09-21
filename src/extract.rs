@@ -1444,9 +1444,17 @@ fn parse_multi(
 struct ModuleIndex {
     /// `(module path, repo-relative directory)` for every `go.mod` found.
     go: Vec<(String, String)>,
-    /// `(specifier prefix, repo-relative directory)` for every tsconfig
-    /// `paths` entry and every workspace `package.json` name.
-    ts: Vec<(String, String)>,
+    /// Prefix, target directory, and declaring scope for every tsconfig
+    /// `paths` entry and every workspace `package.json` name. Package names
+    /// have the empty (global) scope.
+    ts: Vec<TsPrefix>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct TsPrefix {
+    prefix: String,
+    target: String,
+    scope: String,
 }
 
 impl ModuleIndex {
@@ -1454,6 +1462,17 @@ impl ModuleIndex {
     /// so resolution cannot depend on directory-walk order (finding 9).
     fn sorted(mut entries: Vec<(String, String)>) -> Vec<(String, String)> {
         entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        entries.dedup();
+        entries
+    }
+
+    fn sorted_ts(mut entries: Vec<TsPrefix>) -> Vec<TsPrefix> {
+        entries.sort_by(|a, b| {
+            a.prefix
+                .cmp(&b.prefix)
+                .then_with(|| a.target.cmp(&b.target))
+                .then_with(|| a.scope.cmp(&b.scope))
+        });
         entries.dedup();
         entries
     }
@@ -1496,7 +1515,11 @@ fn module_index(repo: &Path) -> Result<ModuleIndex> {
                 }
                 "package.json" => {
                     if let Some(package) = package_name(&path) {
-                        ts.push((package, here));
+                        ts.push(TsPrefix {
+                            prefix: package,
+                            target: here,
+                            scope: String::new(),
+                        });
                     }
                 }
                 _ => {}
@@ -1505,7 +1528,7 @@ fn module_index(repo: &Path) -> Result<ModuleIndex> {
     }
     Ok(ModuleIndex {
         go: ModuleIndex::sorted(go),
-        ts: ModuleIndex::sorted(ts),
+        ts: ModuleIndex::sorted_ts(ts),
     })
 }
 
@@ -1533,7 +1556,7 @@ fn package_name(path: &Path) -> Option<String> {
 /// `extends` is deliberately not followed. It can point into `node_modules`,
 /// and a map whose aliases depend on whether dependencies happen to be
 /// installed is not a map of the commit.
-fn tsconfig_aliases(path: &Path, here: &str) -> Vec<(String, String)> {
+fn tsconfig_aliases(path: &Path, here: &str) -> Vec<TsPrefix> {
     let Some(text) = fs::read_to_string(path).ok() else {
         return Vec::new();
     };
@@ -1565,7 +1588,11 @@ fn tsconfig_aliases(path: &Path, here: &str) -> Vec<(String, String)> {
                 continue;
             };
             let target = target.strip_suffix('*').unwrap_or(target);
-            result.push((prefix.to_owned(), join_slash(&root, target)));
+            result.push(TsPrefix {
+                prefix: prefix.to_owned(),
+                target: join_slash(&root, target),
+                scope: here.to_owned(),
+            });
         }
     }
     result
@@ -1826,12 +1853,24 @@ fn resolve_multi(
                 // Keep looking when a longer alias matches syntactically but
                 // has no file target. An unresolvable alias contributes no
                 // guessed edge; every candidate must exist in the parsed set.
-                let target = modules
-                    .ts
-                    .iter()
-                    .filter_map(|(prefix, directory)| {
-                        let rest = strip_module_prefix(import, prefix)?;
-                        Some(join_slash(directory, rest))
+                let source_directory = directory_name(source_file);
+                let mut entries = modules.ts.iter().collect::<Vec<_>>();
+                // TypeScript aliases are scoped by their declaring tsconfig.
+                // The total order is: governing ancestor before non-ancestor;
+                // deeper (nearer) scope; longer prefix; prefix; target. Scope
+                // is the final tie-break only for otherwise equivalent entries.
+                // Rust's stack.pop() walk and Python's os.walk visit directories
+                // in opposite orders, so spelling the comparator identically in
+                // both implementations is what makes the oracle independent of
+                // either walk. Empty package.json scope is a global ancestor at
+                // depth zero. Non-ancestors remain last but stay available as a
+                // fallback when no nearer entry resolves to a parsed file.
+                entries.sort_by(|a, b| ts_prefix_order(a, b, source_directory));
+                let target = entries
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let rest = strip_module_prefix(import, &entry.prefix)?;
+                        Some(join_slash(&entry.target, rest))
                     })
                     .find_map(|base| ts_candidate(&base, by_file));
                 return target.into_iter().collect();
@@ -1840,6 +1879,30 @@ fn resolve_multi(
         }
         LanguageKind::Python => Vec::new(),
     }
+}
+
+fn ts_prefix_order(a: &TsPrefix, b: &TsPrefix, source_directory: &str) -> std::cmp::Ordering {
+    let a_ancestor = path_is_ancestor(&a.scope, source_directory);
+    let b_ancestor = path_is_ancestor(&b.scope, source_directory);
+    b_ancestor
+        .cmp(&a_ancestor)
+        .then_with(|| path_depth(&b.scope).cmp(&path_depth(&a.scope)))
+        .then_with(|| b.prefix.len().cmp(&a.prefix.len()))
+        .then_with(|| a.prefix.cmp(&b.prefix))
+        .then_with(|| a.target.cmp(&b.target))
+        .then_with(|| a.scope.cmp(&b.scope))
+}
+
+fn path_is_ancestor(scope: &str, directory: &str) -> bool {
+    scope.is_empty()
+        || directory == scope
+        || directory
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn path_depth(path: &str) -> usize {
+    path.split('/').filter(|part| !part.is_empty()).count()
 }
 
 /// Return the path below `module`, requiring either equality or a `/`
@@ -2408,12 +2471,21 @@ mod tests {
     }
 
     fn resolved_import_edge_count(root: &Path, pkg: &str, language: LanguageKind) -> usize {
+        resolved_import_edges(root, pkg, language).len()
+    }
+
+    fn resolved_import_edges(
+        root: &Path,
+        pkg: &str,
+        language: LanguageKind,
+    ) -> BTreeSet<(String, String)> {
         let modules = module_index(root).unwrap();
         let (parsed, raw) = parse_files(root, pkg, language).unwrap();
         parse_multi(pkg, language, parsed, raw, &modules)
             .unwrap()
             .directed
-            .len()
+            .into_keys()
+            .collect()
     }
 
     #[test]
@@ -2506,7 +2578,11 @@ mod tests {
         write(dir.path(), "src/target.ts", "export const target = 1;\n");
 
         let modules = module_index(dir.path()).unwrap();
-        assert!(modules.ts.contains(&("@/".to_owned(), "src".to_owned())));
+        assert!(modules.ts.contains(&TsPrefix {
+            prefix: "@/".to_owned(),
+            target: "src".to_owned(),
+            scope: String::new(),
+        }));
         assert_eq!(
             resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
             1
@@ -2527,6 +2603,107 @@ mod tests {
         assert_eq!(
             resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
             0
+        );
+    }
+
+    #[test]
+    fn duplicate_aliases_resolve_inside_each_declaring_package() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for package in ["pkgA", "pkgB"] {
+            write(
+                dir.path(),
+                &format!("{package}/tsconfig.json"),
+                r#"{"compilerOptions":{"paths":{"@/*":["src/*"]}}}"#,
+            );
+            write(
+                dir.path(),
+                &format!("{package}/src/main.ts"),
+                "import '@/target';\n",
+            );
+            write(
+                dir.path(),
+                &format!("{package}/src/target.ts"),
+                "export const target = 1;\n",
+            );
+        }
+
+        let edges = resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript);
+        assert_eq!(
+            edges,
+            [
+                (
+                    "pkgA/src/main.ts".to_owned(),
+                    "pkgA/src/target.ts".to_owned(),
+                ),
+                (
+                    "pkgB/src/main.ts".to_owned(),
+                    "pkgB/src/target.ts".to_owned(),
+                ),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn nearer_alias_beats_a_global_workspace_package_name() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/src/index.ts",
+            "export const global = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/tsconfig.json",
+            r#"{"compilerOptions":{"paths":{"@scope/core":["src/local"]}}}"#,
+        );
+        write(
+            dir.path(),
+            "apps/site/src/main.ts",
+            "import '@scope/core';\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/src/local.ts",
+            "export const local = 1;\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/src/main.ts".to_owned(),
+                "apps/site/src/local.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn non_ancestor_alias_remains_a_live_fallback() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "config/tsconfig.json",
+            r#"{"compilerOptions":{"paths":{"@/*":["../shared/*"]}}}"#,
+        );
+        write(dir.path(), "apps/site/main.ts", "import '@/target';\n");
+        write(dir.path(), "shared/target.ts", "export const target = 1;\n");
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "shared/target.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
         );
     }
 

@@ -280,6 +280,12 @@ def _sorted_prefixes(entries):
             if i == 0 or entry != entries[i - 1]]
 
 
+def _sorted_ts_prefixes(entries):
+    entries.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [entry for i, entry in enumerate(entries)
+            if i == 0 or entry != entries[i - 1]]
+
+
 def module_index(repo):
     """Collect nested Go modules and TypeScript aliases in one sorted walk."""
     go, ts = [], []
@@ -305,7 +311,9 @@ def module_index(repo):
                 except (OSError, ValueError, AttributeError):
                     package = None
                 if isinstance(package, str) and package:
-                    ts.append((package, here))
+                    # Workspace package names are global; unlike a tsconfig
+                    # alias, they are addressable from every source directory.
+                    ts.append((package, here, ""))
             elif filename.startswith("tsconfig") and filename.endswith(".json"):
                 try:
                     config = json.loads(strip_jsonc(open(path).read()))
@@ -324,8 +332,8 @@ def module_index(repo):
                         if not isinstance(target, str):
                             continue
                         target = target[:-1] if target.endswith("*") else target
-                        ts.append((prefix, join_slash(root, target)))
-    return {"go": _sorted_prefixes(go), "ts": _sorted_prefixes(ts)}
+                        ts.append((prefix, join_slash(root, target), here))
+    return {"go": _sorted_prefixes(go), "ts": _sorted_ts_prefixes(ts)}
 
 
 def strip_module_prefix(path, module):
@@ -355,11 +363,48 @@ def ts_candidate(base, byfile):
     return []
 
 
+def _scope_is_ancestor(scope, directory):
+    """Path-segment ancestor test; `pkg` must not match `pkg-extra`."""
+    return not scope or directory == scope or directory.startswith(scope + "/")
+
+
+def _scope_depth(scope):
+    return len([part for part in scope.split("/") if part])
+
+
+def _ordered_ts_prefixes(entries, source_directory):
+    """Order aliases exactly as the Rust oracle does for one importing file.
+
+    The total order is: governing ancestor before non-ancestor; deeper
+    (nearer) scope; longer prefix; prefix; target. Scope is the final
+    tie-break only for otherwise equivalent entries. Rust's stack.pop() walk
+    and Python's os.walk visit directories in opposite orders, so this
+    explicit comparator is what makes resolution independent of both walks.
+    Empty package.json scope is a global ancestor at depth zero. Non-ancestor
+    entries stay last but remain live when no nearer candidate names a parsed
+    file.
+    """
+    return sorted(entries, key=lambda item: (
+        0 if _scope_is_ancestor(item[2], source_directory) else 1,
+        -_scope_depth(item[2]),
+        -len(item[0]),
+        item[0],
+        item[1],
+        item[2],
+    ))
+
+
 def resolve_ts(path, src_file, modules, byfile):
     if path.startswith("."):
         base = os.path.normpath(os.path.join(os.path.dirname(src_file), path))
         return ts_candidate(base, byfile)
-    for prefix, directory in modules["ts"]:
+    source_directory = os.path.dirname(src_file).replace(os.sep, "/")
+    cache = modules.setdefault("_ts_order", {})
+    entries = cache.get(source_directory)
+    if entries is None:
+        entries = _ordered_ts_prefixes(modules["ts"], source_directory)
+        cache[source_directory] = entries
+    for prefix, directory, _scope in entries:
         rest = strip_module_prefix(path, prefix)
         if rest is not None:
             target = ts_candidate(join_slash(directory, rest), byfile)
