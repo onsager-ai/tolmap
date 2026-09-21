@@ -219,14 +219,16 @@ The implementation PR must report each of these, and each is a way to be wrong:
 - **The brief's baseline table.** Its district counts and Q do not reproduce on `main` before or after #44, though its edge counts do exactly (finding 15). The discrepancy is upstream of this proposal and unexplained.
 - **Mixed-vendor organic sub-districts in n8n d0** (§6). A second stranding pass inside organic components, or a lower floor there, would split them; either adds a rule this proposal does not yet have evidence for.
 
-## Decisions for the reviewer
+## Decisions
 
-1. **Reference scale**: the fixture median (c = 0.517), not codex (c = 1.041) as the brief proposed. §1 is the evidence.
-2. **The census ratios** (split 2×, merge 0.3×) as the only new constants, borrowed not tuned. §4 is the sensitivity.
-3. **Sub-districts as a second level**, leaving the top-level map unchanged.
-4. **Stranding, not degree ratio**, as the arterial test.
-5. **The 50-file eligibility floor** from finding 5, which spares rich.
-6. **Flag name**, and whether parcels get a card of their own or share the file card.
+Ruled 2026-09-21 by the project owner, in the session that wrote this proposal, after reading the measurements above:
+
+1. **Reference scale: the fixture median, c = 0.517**, not codex (c = 1.041) as the brief proposed, and not codex's mainland-only 0.638. §1 is the evidence.
+2. **Arterials by stranding**, not by a degree break and not by requiring both. §2 step 1 is the evidence.
+3. **Sequencing: this proposal is implemented first**; the top-level `merge_tiny` directory fallback (§5) goes to its own issue and its own fixture re-derivation afterwards. Its cost is accepted: the glued-plat results (django d0, dify d5–d7) are re-measured once when `merge_tiny` changes.
+4. **Implementation: one Codex PR**, reviewed and re-measured against §11 before merge.
+
+Taken as defaults, not asked: the census ratios (2×, 0.3×) as the only new constants (§4); sub-districts as a second level with the top-level map unchanged; the 50-file eligibility floor; the flag spelled `--terrain`; a parcel's card shows its address and lists its files, like a district card at parcel scale.
 
 ## How to reproduce
 
