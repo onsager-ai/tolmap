@@ -8,9 +8,20 @@ use crate::blobs;
 use crate::extract::{self, round_to, LanguageKind};
 use crate::naming;
 use crate::parcels;
+use crate::parity;
 use crate::partition::LeidenFfi;
 use crate::pipeline;
-use crate::schema::{District, GraphData, LandmarkRow, MapDocument, NodeRow, SymbolRow};
+use crate::schema::{
+    District, GraphData, LandmarkRow, MapDocument, NodeRow, SymbolRow, TerrainArterial,
+    TerrainDistrict, TerrainParcel, TerrainSubdistrict,
+};
+use crate::terrain;
+
+#[derive(Clone, Copy, Debug)]
+pub struct BuildFeatures {
+    pub parcels: bool,
+    pub terrain: bool,
+}
 
 pub fn build(
     repo: &Path,
@@ -19,7 +30,7 @@ pub fn build(
     name: Option<&str>,
     out: &Path,
     resolution: f64,
-    with_parcels: bool,
+    features: BuildFeatures,
 ) -> Result<PathBuf> {
     let language = LanguageKind::parse(lang)?;
     let map_name = name.map(str::to_owned).unwrap_or_else(|| {
@@ -30,7 +41,7 @@ pub fn build(
     });
     eprintln!("[1/5] extract   {}/{}  ({lang})", repo.display(), pkg);
     let graph = extract::build(repo, pkg, language)?;
-    build_from_graph(graph, map_name, out, resolution, with_parcels)
+    build_from_graph(graph, map_name, out, resolution, features)
 }
 
 /// As [`build`], but unions any number of `(pkg, language)` sources (see
@@ -43,7 +54,7 @@ pub fn build_multi(
     name: Option<&str>,
     out: &Path,
     resolution: f64,
-    with_parcels: bool,
+    features: BuildFeatures,
 ) -> Result<PathBuf> {
     let map_name = name.map(str::to_owned).unwrap_or_else(|| {
         repo.file_name()
@@ -62,7 +73,7 @@ pub fn build_multi(
         sources.len()
     );
     let graph = extract::build_multi_source(repo, sources)?;
-    build_from_graph(graph, map_name, out, resolution, with_parcels)
+    build_from_graph(graph, map_name, out, resolution, features)
 }
 
 /// Runs the pipeline (partition, naming, geometry, parcels) against an
@@ -81,26 +92,36 @@ pub fn build_from_graph(
     map_name: String,
     out: &Path,
     resolution: f64,
-    with_parcels: bool,
+    features: BuildFeatures,
 ) -> Result<PathBuf> {
-    build_from_graph_warm(graph, map_name, out, resolution, with_parcels, None)
+    build_from_graph_warm(graph, map_name, out, resolution, features, None)
 }
 
-/// As [`build_from_graph`], but `previous_membership` (a prior commit's file
-/// -> district assignment, as read back out of the store) seeds the
-/// partitioner via [`pipeline::align_initial_membership`] when present. See
-/// finding 4 and that function's doc comment for why this matters.
+/// As [`build_from_graph`], but a prior [`MapDocument`] both seeds the
+/// top-level partitioner and preserves matched terrain suffixes.  The job
+/// service already has that document at this call site, so the terrain warm
+/// path needs no new store or lookup plumbing.
 pub fn build_from_graph_warm(
     graph: GraphData,
     map_name: String,
     out: &Path,
     resolution: f64,
-    with_parcels: bool,
-    previous_membership: Option<&BTreeMap<String, usize>>,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
     eprintln!("[2/5] partition resolution={resolution}");
     let partitioner = LeidenFfi;
-    let initial = previous_membership.map(|prev| pipeline::align_initial_membership(&graph, prev));
+    let previous_membership = previous_document.map(|document| {
+        document
+            .files
+            .iter()
+            .cloned()
+            .zip(document.nodes.iter().map(NodeRow::district))
+            .collect::<BTreeMap<_, _>>()
+    });
+    let initial = previous_membership
+        .as_ref()
+        .map(|prev| pipeline::align_initial_membership(&graph, prev));
     let layout = pipeline::run(graph, resolution, &partitioner, initial.as_deref())?;
     eprintln!("[3/5] name     districts");
     // Same convention `cli.py::build` uses: the cache lives next to the map
@@ -129,9 +150,9 @@ pub fn build_from_graph_warm(
         eprintln!("        d{district:<2} {count:4} files  {district_name}");
     }
     eprintln!("[4/5] geometry regions");
-    let geometry = blobs::build_geometry(&layout, &partitioner)?;
-    let mut document = compact(map_name, layout, geometry, names);
-    if with_parcels {
+    let geometry = blobs::build_geometry(&layout, &partitioner, features.terrain)?;
+    let mut document = compact(map_name, layout, geometry, names, previous_document);
+    if features.parcels {
         eprintln!("[5/5] geometry weighted-voronoi plots");
         document.parcels = Some(parcels::build_parcels(&document));
         if let Some(correlation) = parcels::area_correlation(&document) {
@@ -157,6 +178,7 @@ fn compact(
     layout: pipeline::PipelineOutput,
     geometry: blobs::BlobGeometry,
     names: BTreeMap<String, String>,
+    previous_document: Option<&MapDocument>,
 ) -> MapDocument {
     let files = layout
         .weighted
@@ -231,6 +253,129 @@ fn compact(
         })
         .collect::<BTreeMap<_, _>>();
     let uses = compact_uses(&layout, &file_index);
+    let previous_district_matches = previous_document.map(|previous| {
+        let candidate = files
+            .iter()
+            .cloned()
+            .zip(layout.membership.iter().copied())
+            .collect::<BTreeMap<_, _>>();
+        let reference = previous
+            .files
+            .iter()
+            .cloned()
+            .zip(previous.nodes.iter().map(NodeRow::district))
+            .collect::<BTreeMap<_, _>>();
+        let common = candidate
+            .keys()
+            .filter(|file| reference.contains_key(*file))
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        parity::match_districts(&candidate, &reference, &common)
+    });
+    let terrain = geometry.terrain.as_ref().map(|districts| {
+        districts
+            .iter()
+            .map(|(&district, district_geometry)| {
+                let current_files = district_geometry
+                    .subdistricts
+                    .iter()
+                    .map(|subdistrict| {
+                        subdistrict
+                            .members
+                            .iter()
+                            .map(|&file| files[file].clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                let previous_district_id = previous_district_matches
+                    .as_ref()
+                    .and_then(|matches| matches.get(&district))
+                    .map(|(previous, _)| *previous);
+                let previous_district = previous_document
+                    .and_then(|document| document.terrain.as_ref())
+                    .and_then(|terrain| terrain.get(&previous_district_id?.to_string()));
+                let previous_groups = previous_district.map(|previous| {
+                    previous
+                        .subdistricts
+                        .iter()
+                        .map(|subdistrict| {
+                            (
+                                subdistrict.suffix,
+                                subdistrict
+                                    .members
+                                    .iter()
+                                    .filter_map(|&file| {
+                                        previous_document
+                                            .and_then(|document| document.files.get(file))
+                                            .cloned()
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                });
+                let (suffixes, max_suffix) = terrain::assign_suffixes(
+                    &current_files,
+                    previous_groups.as_deref(),
+                    previous_district.map_or(0, |previous| previous.max_suffix),
+                );
+                let mut subdistricts = district_geometry
+                    .subdistricts
+                    .iter()
+                    .zip(suffixes)
+                    .map(|(subdistrict, suffix)| TerrainSubdistrict {
+                        suffix,
+                        members: subdistrict.members.clone(),
+                        c: [
+                            round_to(subdistrict.center[0], 4),
+                            round_to(subdistrict.center[1], 4),
+                        ],
+                        blob: subdistrict
+                            .blob
+                            .iter()
+                            .map(|polygon| {
+                                polygon
+                                    .iter()
+                                    .map(|point| [round_to(point[0], 4), round_to(point[1], 4)])
+                                    .collect()
+                            })
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>();
+                subdistricts.sort_by_key(|subdistrict| subdistrict.suffix);
+                (
+                    district.to_string(),
+                    TerrainDistrict {
+                        arterials: district_geometry
+                            .arterials
+                            .iter()
+                            .map(|(file, stranded, links)| TerrainArterial {
+                                file: *file,
+                                stranded: *stranded,
+                                links: links.clone(),
+                            })
+                            .collect(),
+                        subdistricts,
+                        parcels: district_geometry
+                            .parcels
+                            .iter()
+                            .map(|parcel| TerrainParcel {
+                                address: parcel.address.clone(),
+                                members: parcel.members.clone(),
+                                rect: [
+                                    round_to(parcel.rect[0], 4),
+                                    round_to(parcel.rect[1], 4),
+                                    round_to(parcel.rect[2], 4),
+                                    round_to(parcel.rect[3], 4),
+                                ],
+                            })
+                            .collect(),
+                        max_suffix,
+                    },
+                )
+            })
+            .collect()
+    });
     let mut groups = BTreeMap::<usize, Vec<usize>>::new();
     for (index, &district) in layout.membership.iter().enumerate() {
         groups.entry(district).or_default().push(index);
@@ -276,6 +421,7 @@ fn compact(
         roads: geometry.roads,
         lang: layout.weighted.lang,
         parcels: None,
+        terrain,
     }
 }
 

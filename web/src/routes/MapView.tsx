@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useCatalogue, useMapDocument } from "@/data/queries";
 import { MapCanvas, type MapCanvasHandle } from "@/map/MapCanvas";
-import type { MapRendererCallbacks } from "@/map/MapRenderer";
+import type { MapRendererCallbacks, TerrainSelection } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
 import type { SearchHit } from "@/map/search";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
@@ -38,6 +38,7 @@ export function MapView() {
   const [sideOpen, setSideOpen] = useState(false);
   const [routeFrom, setRouteFrom] = useState<number | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
+  const [selTerrain, setSelTerrain] = useState<TerrainSelection | null>(null);
 
   const adj = useMemo(() => (doc ? buildAdj(doc).adj : new Map()), [doc]);
   const { maxCh, maxCx } = useMemo(() => {
@@ -62,6 +63,7 @@ export function MapView() {
 
   function selectFile(i: number, opts: { fly?: boolean; symbol?: number } = {}) {
     if (!doc) return;
+    setSelTerrain(null);
     updateSearch({ file: doc.F[i], sym: opts.symbol, d: undefined });
     setPanelOpen(true);
     setSideOpen(false);
@@ -69,17 +71,20 @@ export function MapView() {
   }
   function selectSymbolDetail(i: number, s: number) {
     if (!doc) return;
+    setSelTerrain(null);
     updateSearch({ file: doc.F[i], sym: s, d: undefined });
     setPanelOpen(true);
     setSideOpen(false);
     canvasRef.current?.flyToDetail(i);
   }
   function selectDistrict(d: number) {
+    setSelTerrain(null);
     updateSearch({ file: undefined, sym: undefined, d });
     setPanelOpen(true);
     setSideOpen(false);
   }
   function clearSelection() {
+    setSelTerrain(null);
     updateSearch({ file: undefined, sym: undefined, d: undefined });
     setPanelOpen(false);
   }
@@ -88,6 +93,18 @@ export function MapView() {
     // Taps directly on the map never fly — the file is already in view.
     onSelectFile: (i) => selectFile(i, { fly: false }),
     onSelectSymbol: (i, s) => selectFile(i, { fly: false, symbol: s }),
+    onSelectSubdistrict: (district, index) => {
+      updateSearch({ file: undefined, sym: undefined, d: undefined });
+      setSelTerrain({ kind: "subdistrict", district, index });
+      setPanelOpen(true);
+      setSideOpen(false);
+    },
+    onSelectParcel: (district, index) => {
+      updateSearch({ file: undefined, sym: undefined, d: undefined });
+      setSelTerrain({ kind: "parcel", district, index });
+      setPanelOpen(true);
+      setSideOpen(false);
+    },
     onSelectDistrict: (d) => selectDistrict(d),
     onClearSelection: () => clearSelection(),
   };
@@ -155,6 +172,7 @@ export function MapView() {
             sel={sel}
             selSym={selSym}
             selD={selD}
+            selTerrain={selTerrain}
             route={route}
             callbacks={rendererCallbacks}
             handleRef={canvasRef}
@@ -171,6 +189,7 @@ export function MapView() {
             sel={sel}
             selSym={selSym}
             selD={selD}
+            selTerrain={selTerrain}
             open={panelOpen}
             onToggleOpen={() => setPanelOpen((v) => !v)}
             onSelectFile={(i, opts) => selectFile(i, opts)}

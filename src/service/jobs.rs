@@ -30,6 +30,9 @@ use crate::service::AppState;
 
 const RESOLUTION: f64 = 1.1;
 const WITH_PARCELS: bool = true;
+// The hosted map is the terrain-aware consumer. CLI builds remain opt-in via
+// `tolmap build --terrain`, preserving the default artifact byte for byte.
+const WITH_TERRAIN: bool = true;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -267,9 +270,8 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
             repo_ref.slug
         ),
     }
-    let previous_membership = warm_start_row
-        .and_then(|row| store::read_map_document(&row.map_path).ok())
-        .map(|document| store::membership_by_file(&document));
+    let previous_document =
+        warm_start_row.and_then(|row| store::read_map_document(&row.map_path).ok());
 
     advance(
         &tx,
@@ -301,8 +303,11 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         repo_ref.repo.clone(),
         &work_dir,
         RESOLUTION,
-        WITH_PARCELS,
-        previous_membership.as_ref(),
+        geometry::BuildFeatures {
+            parcels: WITH_PARCELS,
+            terrain: WITH_TERRAIN,
+        },
+        previous_document.as_ref(),
     ) {
         Ok(path) => path,
         Err(err) => {

@@ -215,6 +215,25 @@ jobs:
           fi
           echo "three --all-sources runs byte-identical"
 
+      - name: Terrain determinism (--all-sources --terrain, 3x sha256)
+        run: |
+          set -euo pipefail
+          hashes=""
+          for i in 1 2 3; do
+            mkdir -p "terrain-det-$i"
+            ./target/release/tolmap build "$PWD/polyglot-fixture" --all-sources --terrain \
+              --name synthetic_polyglot --out "terrain-det-$i" --no-parcels >/dev/null
+            hash=$(sha256sum "terrain-det-$i/synthetic_polyglot.json" | cut -d' ' -f1)
+            echo "run $i: $hash"
+            hashes="$hashes $hash"
+          done
+          uniq_count=$(echo "$hashes" | tr ' ' '\n' | sort -u | grep -c .)
+          if [ "$uniq_count" -ne 1 ]; then
+            echo "three --terrain runs produced different output -- determinism regression"
+            exit 1
+          fi
+          echo "three --terrain runs byte-identical"
+
       - name: Polyglot report + ceilings (finding 13)
         run: |
           set -euo pipefail

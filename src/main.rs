@@ -51,6 +51,11 @@ enum Command {
         resolution: f64,
         #[arg(long)]
         no_parcels: bool,
+        /// Subdivide oversized districts into arterials, organic
+        /// sub-districts, and address-ordered parcels. Off by default so the
+        /// established map remains byte-identical.
+        #[arg(long)]
+        terrain: bool,
         /// A pre-extracted graph (from `dump-graph`) to run the pipeline on
         /// instead of parsing `repo`. `pkg`/`lang`/`--all-sources` are
         /// ignored with this (the graph already carries its source(s)), and
@@ -306,6 +311,7 @@ fn main() -> Result<()> {
             out,
             resolution,
             no_parcels,
+            terrain,
             graph,
         } => match (repo, graph) {
             (Some(_), Some(_)) => {
@@ -321,7 +327,10 @@ fn main() -> Result<()> {
                         name.as_deref(),
                         &out,
                         resolution,
-                        !no_parcels,
+                        tolmap::geometry::BuildFeatures {
+                            parcels: !no_parcels,
+                            terrain,
+                        },
                     )
                     .map(|_| ())
                 } else {
@@ -337,7 +346,10 @@ fn main() -> Result<()> {
                         name.as_deref(),
                         &out,
                         resolution,
-                        !no_parcels,
+                        tolmap::geometry::BuildFeatures {
+                            parcels: !no_parcels,
+                            terrain,
+                        },
                     )
                     .map(|_| ())
                 }
@@ -350,8 +362,17 @@ fn main() -> Result<()> {
                     .with_context(|| format!("read {}", graph_path.display()))?;
                 let data: tolmap::schema::GraphData = serde_json::from_str(&raw)
                     .with_context(|| format!("parse graph {}", graph_path.display()))?;
-                tolmap::geometry::build_from_graph(data, name, &out, resolution, !no_parcels)
-                    .map(|_| ())
+                tolmap::geometry::build_from_graph(
+                    data,
+                    name,
+                    &out,
+                    resolution,
+                    tolmap::geometry::BuildFeatures {
+                        parcels: !no_parcels,
+                        terrain,
+                    },
+                )
+                .map(|_| ())
             }
         },
         Command::DumpBlend {
