@@ -6,7 +6,7 @@
 // the constructor. React owns selection/geo/layer state and the URL; this
 // class only draws and reports gestures.
 import type { LandmarkRow, MapDocument } from "@/types";
-import { BUILD_ZOOM, KCOL, KIND, PARCEL_ZOOM, type Geo, type Layer } from "./constants";
+import { BUILD_ZOOM, DOT_DENSITY_FLOOR, KCOL, KIND, PARCEL_ZOOM, type Geo, type Layer } from "./constants";
 import {
   CH,
   CX_,
@@ -16,6 +16,7 @@ import {
   RECT,
   districtClass,
   districtColor,
+  districtWorldArea,
   fitScale as fitScaleOf,
   fullFitScale as fullFitScaleOf,
   mainlandBounds,
@@ -77,6 +78,16 @@ export class MapRenderer {
   private maxCh = 1;
   private maxCx = 1;
 
+  // Issue #48: per-district file-dot prominence order, and each district's
+  // world-space area, precomputed once per document in loadDocument() --
+  // not per frame, since a pinch-zoom redraws dozens of times a second and
+  // sorting every district's members each time would defeat the point of
+  // thinning dots for performance. draw() only ever does an O(1) map lookup
+  // (fileRank, districtArea) plus a multiply by k² per file; see dotFactor.
+  private districtOrder = new Map<number, number[]>();
+  private districtArea = new Map<number, number>();
+  private fileRank = new Map<number, number>();
+
   private k = 1;
   private tx = 0;
   private ty = 0;
@@ -130,6 +141,81 @@ export class MapRenderer {
     this.maxLoc = Math.max(1, ...doc.N.map((r) => r[3]));
     this.maxCh = Math.max(1, ...doc.N.map((r) => r[5]));
     this.maxCx = Math.max(1, ...doc.N.map((r) => r[4]));
+
+    // Prominence order per district (issue #48): landmark files first (the
+    // map already treats them as a district's headline files), then the
+    // same FI + LOC/50 score drawLabels uses to decide which file labels
+    // earn the budget at low zoom -- so a district's first dots to reveal
+    // are the same files that would earn a label, not an unrelated ranking.
+    // Ties are broken by file index explicitly: two files can tie on every
+    // ranking term (zero fan-in, zero loc), and CLAUDE.md's determinism
+    // rule means that has to be spelled out rather than left to whatever
+    // order doc.N happens to iterate in (stable-sort would preserve that
+    // order today, but "today's iteration order" is not a rule).
+    this.districtOrder.clear();
+    this.districtArea.clear();
+    this.fileRank.clear();
+    const isLandmark = new Set(doc.L.map(([i]) => i));
+    const byDistrict = new Map<number, number[]>();
+    for (let i = 0; i < doc.N.length; i++) {
+      const d = D_(doc, i);
+      if (!byDistrict.has(d)) byDistrict.set(d, []);
+      byDistrict.get(d)!.push(i);
+    }
+    for (const [d, members] of byDistrict) {
+      members.sort((a, b) => {
+        const la = isLandmark.has(a) ? 1 : 0;
+        const lb = isLandmark.has(b) ? 1 : 0;
+        if (la !== lb) return lb - la;
+        const sa = FI(doc, a) + LOC(doc, a) / 50;
+        const sb = FI(doc, b) + LOC(doc, b) / 50;
+        if (sa !== sb) return sb - sa;
+        return a - b;
+      });
+      this.districtOrder.set(d, members);
+      members.forEach((i, rank) => this.fileRank.set(i, rank));
+    }
+    for (const key in doc.districts) {
+      this.districtArea.set(+key, districtWorldArea(doc.districts[key]));
+    }
+  }
+
+  /** issue #48: how much of file `i`'s dot to draw this frame, from 0 (skip
+   * the element entirely -- the perf win, and a tap there falls through to
+   * the district path underneath, data-k="d:...") to 1 (full strength).
+   * Callers that need a file drawn unconditionally (landmarks, the current
+   * selection, a route or blast set) must check that themselves first --
+   * this function only ever answers the density question. */
+  private dotFactor(i: number): number {
+    const { doc } = this.state!;
+    const d = D_(doc, i);
+    const district = doc.districts[String(d)];
+    // Unconnected districts carry no polygon at all -- geometry.rs empties
+    // their `blob` (districtClass's doc comment) -- so there is no area to
+    // budget against. They are already the map's most de-emphasised places
+    // (no polygon, no road, no label: drawLabels skips them outright), and
+    // a file's dot is its ONLY trace on the map; thinning it would erase
+    // the file rather than declutter a place, so the simplest defensible
+    // rule is to never budget these districts at all.
+    if (districtClass(district) === "unconnected" || district.size <= 0) return 1;
+    const area = this.districtArea.get(d) ?? 0;
+    const edge = (area * this.k * this.k) / DOT_DENSITY_FLOOR;
+    // Fast path: once the budget covers every file in the district there is
+    // nothing to rank or fade, and every acceptance fixture + crawlab lives
+    // here at the fit zoom (DOT_DENSITY_FLOOR's comment) -- skip straight to
+    // "draw everything" so the DOM stays byte-identical to the pre-#48
+    // renderer there, rather than asymptotically approaching 1 through the
+    // fade math below.
+    if (edge >= district.size) return 1;
+    const rank = this.fileRank.get(i) ?? district.size;
+    // Fade band: the last ~half of the CURRENT (continuous, unfloored)
+    // budget ramps in rather than popping, so a pinch-zoom fills a district
+    // in gradually instead of one file blinking on at a time. Using the
+    // continuous `edge` (not Math.floor(edge)) is what makes the ramp itself
+    // continuous -- floored, every whole-number crossing would still be a
+    // pop for whichever one file sits at that exact rank.
+    const fadeWidth = Math.max(1, edge * 0.5);
+    return Math.min(1, Math.max(0, (edge - rank) / fadeWidth));
   }
 
   /** VW/VH track the canvas element's own box, not the window — the sidebar
@@ -350,6 +436,18 @@ export class MapRenderer {
     if (defs) g.appendChild(defs);
     const blast = computeBlast(doc, sel, selSym);
     const dim = route ? new Set(route.path) : blast ? new Set([...blast.set, sel!]) : null;
+    // Issue #48: files that must never be thinned or culled, whatever their
+    // district's dot budget says -- landmarks, the current selection, and
+    // anything a route or blast radius is highlighting. `dim`, despite the
+    // name, is exactly "the set to keep at full strength" whenever it's
+    // non-null (see its use below); folding it in here means this list
+    // can't drift from what the existing dim/undim opacity logic already
+    // treats as important, including a search/flyTo landing on `sel` --
+    // flyTo/flyToDetail don't need their own zoom-reveals-target logic
+    // because the file they land on is always in this set.
+    const alwaysDrawn = new Set<number>(doc.L.map(([i]) => i));
+    if (sel != null) alwaysDrawn.add(sel);
+    if (dim) for (const i of dim) alwaysDrawn.add(i);
     for (let i = 0; i < doc.N.length; i++) {
       if (CELL && doc.P![String(i)]) {
         const p = this.px(i);
@@ -362,13 +460,31 @@ export class MapRenderer {
       const p = this.px(i);
       let node: SVGElement;
       if (geo !== "t") {
+        // Density budget (issue #48): below the floor, don't create the
+        // element at all -- that's the perf win, and it's also what makes
+        // hit-testing fall through to the district path underneath for
+        // free (there is no invisible dot left to swallow the tap).
+        const factor = alwaysDrawn.has(i) ? 1 : this.dotFactor(i);
+        if (factor <= 0) continue;
         const r = Math.max(1.1, (1.6 + 5.2 * Math.sqrt(LOC(doc, i) / this.maxLoc)) * Math.sqrt(this.k / this.fitScale()));
+        // Cull margin covers the dot's own radius plus its touch hit-stroke
+        // halo (up to 16px, see stroke-width below) -- the same treatment
+        // the CELL/parcel path above already gives its (larger) plots.
+        const cx = this.X(p[0]);
+        const cy = this.Y(p[1]);
+        const margin = r + 20;
+        if (cx < -margin || cx > this.VW + margin || cy < -margin || cy > this.VH + margin) continue;
+        const baseOpacity = dim && !dim.has(i) ? 0.2 : 0.85;
+        // Keep the exact pre-#48 numeric literal when factor is 1 (the
+        // common case, and required for the no-change proof's byte-for-byte
+        // DOM comparison on the nine fixtures + crawlab at fit zoom) --
+        // only files actually being thinned pay for the extra rounding.
         node = el("circle", {
-          cx: this.X(p[0]).toFixed(1),
-          cy: this.Y(p[1]).toFixed(1),
+          cx: cx.toFixed(1),
+          cy: cy.toFixed(1),
           r: r.toFixed(2),
           fill: this.tint(i),
-          "fill-opacity": dim && !dim.has(i) ? 0.2 : 0.85,
+          "fill-opacity": factor === 1 ? baseOpacity : Math.round(baseOpacity * factor * 1000) / 1000,
           class: "hit",
           stroke: "transparent",
           "stroke-width": this.TOUCH ? 16 : 0,
@@ -376,12 +492,24 @@ export class MapRenderer {
           "data-k": "f:" + i,
         });
       } else {
+        // Treemap tiles are left ungated by the #48 budget: unlike a
+        // fixed-radius dot, a treemap rect already occupies exactly this
+        // file's share of its district's box, sized down and never
+        // overlapping (the Math.max(...,0.6) floor below is the only
+        // shrink limit) -- a dense district degenerates into a fine but
+        // legible mosaic of colour rather than the illegible scatter of
+        // overlapping circles the issue measured. Still viewport-culled.
         const r = RECT(doc, i);
+        const rx = this.X(r[0]);
+        const ry = this.Y(r[1]);
+        const rw = Math.max(this.S(r[2]) - 1.2, 0.6);
+        const rh = Math.max(this.S(r[3]) - 1.2, 0.6);
+        if (rx + rw < -20 || rx > this.VW + 20 || ry + rh < -20 || ry > this.VH + 20) continue;
         node = el("rect", {
-          x: this.X(r[0]).toFixed(1),
-          y: this.Y(r[1]).toFixed(1),
-          width: Math.max(this.S(r[2]) - 1.2, 0.6).toFixed(1),
-          height: Math.max(this.S(r[3]) - 1.2, 0.6).toFixed(1),
+          x: rx.toFixed(1),
+          y: ry.toFixed(1),
+          width: rw.toFixed(1),
+          height: rh.toFixed(1),
           rx: 1.4,
           fill: this.tint(i),
           "fill-opacity": dim && !dim.has(i) ? 0.18 : layer === "d" ? 0.8 : 0.92,
@@ -465,7 +593,7 @@ export class MapRenderer {
       );
     }
 
-    this.drawLabels(g);
+    this.drawLabels(g, alwaysDrawn);
 
     // landmark pins
     const zf = this.k / this.fitScale();
@@ -653,7 +781,7 @@ export class MapRenderer {
 
   // Label budget: districts first, then files by importance, skipping
   // collisions.
-  private drawLabels(g: SVGGElement) {
+  private drawLabels(g: SVGGElement, alwaysDrawn: Set<number>) {
     const { doc, geo } = this.state!;
     const placed: [number, number, number, number][] = [];
     const hits = (x: number, y: number, w: number, h: number) =>
@@ -730,6 +858,11 @@ export class MapRenderer {
       let n = 0;
       for (const i of order) {
         if (n >= budget) break;
+        // Issue #48: never label a file whose dot the density budget hid --
+        // a floating name with nothing under it reads as a bug, not a
+        // place. Treemap ("t") dots are left ungated (see the draw() loop),
+        // so this check only ever applies to "r"/"p".
+        if (geo !== "t" && !alwaysDrawn.has(i) && this.dotFactor(i) <= 0) continue;
         const p = this.px(i);
         const x = this.X(p[0]);
         const y = this.Y(p[1]);

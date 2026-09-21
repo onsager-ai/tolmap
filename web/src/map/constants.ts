@@ -12,5 +12,25 @@ export const KCOL = ["#3A6796", "#2F6F63", "#4E7A33", "#7E3F5D", "#8A6B1C", "#93
 export const PARCEL_ZOOM = 1.9;
 export const BUILD_ZOOM = 5.2;
 
+// Issue #48: at the overview, a large repo draws one SVG circle per file --
+// n8n puts 11,982 of them on screen, most a handful of pixels apart. Rather
+// than an all-or-nothing per-district gate (tried first, replaced by ranked
+// thinning: a district's files fade in by prominence as its on-screen area
+// grows, so the map fills in the way a map app reveals points of interest,
+// not by popping a whole district on at once), every district gets a dot
+// BUDGET = floor(on-screen area px² / DOT_DENSITY_FLOOR), and draws only its
+// top `budget` files (see MapRenderer.dotFactor). The floor has to sit
+// inside a gap wide enough that no acceptance fixture ever budgets below its
+// own file count. Measured on-screen area per file at FIT ZOOM on a 390x700
+// viewport, mainland districts (min / median px², cb04469 + #42):
+//   flask 272/272  httpx 407/407  sqlalchemy 104/255  vue 77/145
+//   prometheus 151/185  django 52/78  crawlab 50/97  dify 11/13  n8n 7/12
+// Every fixture + crawlab clears 50; dify and n8n never clear 13. 30 sits in
+// that gap: comfortably below every fixture's floor (so `budget >= size`
+// there and the fast path in `dotFactor` keeps the DOM byte-identical to
+// before this change -- see web/scripts/no-change-proof.ts), comfortably
+// above dify/n8n's ceiling (so thinning always engages there at fit zoom).
+export const DOT_DENSITY_FLOOR = 30;
+
 export type Geo = "r" | "p" | "t";
 export type Layer = "d" | "c" | "x";
