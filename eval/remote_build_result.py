@@ -221,6 +221,8 @@ def main() -> int:
         "landmarks": primary_stats["landmarks"],
         "placement": primary_stats["placement"],
         "modularity_delta": primary_stats["modularity_delta"],
+        "stability_back": int(env("BACK")) if env("BACK").strip() else None,
+        "stability_retention": None,
         "compare_status": None,
         "compare_exit_code": None,
         "compare_reason": None,
@@ -231,6 +233,16 @@ def main() -> int:
         "compare_below_prune_floor": None,
         "identical": None,
     }
+
+    if command == "stability" and primary_status == "built":
+        previous_path = Path("out-previous") / f"{stem}.json"
+        current_path = Path("out-primary") / f"{stem}.json"
+        try:
+            previous_doc = json.loads(previous_path.read_text())
+            current_doc = json.loads(current_path.read_text())
+            result["stability_retention"], _ = placement(current_doc, previous_doc)
+        except (json.JSONDecodeError, OSError):
+            pass
 
     if has_compare:
         compare_wall, compare_peak = time_fields(Path("compare.time.txt"))

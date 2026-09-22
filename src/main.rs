@@ -60,6 +60,11 @@ enum Command {
         /// pipeline and remains the default.
         #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::Absolute)]
         prune_variant: tolmap::pipeline::PruneVariant,
+        /// Prior map document used to warm-start Leiden membership. Intended
+        /// for reproducible two-commit stability measurements; ordinary CLI
+        /// builds remain cold when omitted.
+        #[arg(long)]
+        previous_map: Option<PathBuf>,
         /// A pre-extracted graph (from `dump-graph`) to run the pipeline on
         /// instead of parsing `repo`. `pkg`/`lang`/`--all-sources` are
         /// ignored with this (the graph already carries its source(s)), and
@@ -323,19 +328,76 @@ fn main() -> Result<()> {
             no_parcels,
             terrain,
             prune_variant,
+            previous_map,
             graph,
-        } => match (repo, graph) {
-            (Some(_), Some(_)) => {
-                anyhow::bail!("pass either a repository or --graph, not both")
-            }
-            (None, None) => anyhow::bail!("pass a repository, or a pre-extracted --graph"),
-            (Some(repo), None) => {
-                if wants_multi_source(&pkg, &lang, all_sources) {
-                    let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
-                    tolmap::geometry::build_multi(
-                        &repo,
-                        &sources,
-                        name.as_deref(),
+        } => {
+            let previous_document: Option<tolmap::schema::MapDocument> = previous_map
+                .as_ref()
+                .map(|path| {
+                    let raw = std::fs::read_to_string(path)
+                        .with_context(|| format!("read previous map {}", path.display()))?;
+                    serde_json::from_str(&raw)
+                        .with_context(|| format!("parse previous map {}", path.display()))
+                })
+                .transpose()?;
+            match (repo, graph) {
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("pass either a repository or --graph, not both")
+                }
+                (None, None) => anyhow::bail!("pass a repository, or a pre-extracted --graph"),
+                (Some(repo), None) => {
+                    if wants_multi_source(&pkg, &lang, all_sources) {
+                        let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
+                        tolmap::geometry::build_multi_warm(
+                            &repo,
+                            &sources,
+                            name.as_deref(),
+                            &out,
+                            resolution,
+                            tolmap::geometry::BuildFeatures {
+                                parcels: !no_parcels,
+                                terrain,
+                                prune_variant,
+                            },
+                            previous_document.as_ref(),
+                        )
+                        .map(|_| ())
+                    } else {
+                        let (pkg, lang) = resolve_build_source(
+                            &repo,
+                            pkg.into_iter().next(),
+                            lang.into_iter().next(),
+                        )?;
+                        tolmap::geometry::build_warm(
+                            &repo,
+                            &pkg,
+                            &lang,
+                            name.as_deref(),
+                            &out,
+                            resolution,
+                            tolmap::geometry::BuildFeatures {
+                                parcels: !no_parcels,
+                                terrain,
+                                prune_variant,
+                            },
+                            previous_document.as_ref(),
+                        )
+                        .map(|_| ())
+                    }
+                }
+                (None, Some(graph_path)) => {
+                    let name = name.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--graph requires --name (no repository to name the map after)"
+                        )
+                    })?;
+                    let raw = std::fs::read_to_string(&graph_path)
+                        .with_context(|| format!("read {}", graph_path.display()))?;
+                    let data: tolmap::schema::GraphData = serde_json::from_str(&raw)
+                        .with_context(|| format!("parse graph {}", graph_path.display()))?;
+                    tolmap::geometry::build_from_graph_warm(
+                        data,
+                        name,
                         &out,
                         resolution,
                         tolmap::geometry::BuildFeatures {
@@ -343,52 +405,12 @@ fn main() -> Result<()> {
                             terrain,
                             prune_variant,
                         },
-                    )
-                    .map(|_| ())
-                } else {
-                    let (pkg, lang) = resolve_build_source(
-                        &repo,
-                        pkg.into_iter().next(),
-                        lang.into_iter().next(),
-                    )?;
-                    tolmap::geometry::build(
-                        &repo,
-                        &pkg,
-                        &lang,
-                        name.as_deref(),
-                        &out,
-                        resolution,
-                        tolmap::geometry::BuildFeatures {
-                            parcels: !no_parcels,
-                            terrain,
-                            prune_variant,
-                        },
+                        previous_document.as_ref(),
                     )
                     .map(|_| ())
                 }
             }
-            (None, Some(graph_path)) => {
-                let name = name.ok_or_else(|| {
-                    anyhow::anyhow!("--graph requires --name (no repository to name the map after)")
-                })?;
-                let raw = std::fs::read_to_string(&graph_path)
-                    .with_context(|| format!("read {}", graph_path.display()))?;
-                let data: tolmap::schema::GraphData = serde_json::from_str(&raw)
-                    .with_context(|| format!("parse graph {}", graph_path.display()))?;
-                tolmap::geometry::build_from_graph(
-                    data,
-                    name,
-                    &out,
-                    resolution,
-                    tolmap::geometry::BuildFeatures {
-                        parcels: !no_parcels,
-                        terrain,
-                        prune_variant,
-                    },
-                )
-                .map(|_| ())
-            }
-        },
+        }
         Command::DumpBlend {
             repo,
             pkg,

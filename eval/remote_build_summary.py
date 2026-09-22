@@ -70,6 +70,7 @@ def write_markdown(results: list[dict], path: Path) -> None:
     has_floor = any(row.get("below_prune_floor") is not None for row in results)
     has_map_stats = any(row.get("modularity_q") is not None for row in results)
     has_parity = any(row.get("placement") is not None for row in results)
+    has_stability = any(row.get("stability_retention") is not None for row in results)
     has_reason = any(row.get("reason") or row.get("compare_reason") for row in results)
     built = sum(1 for row in results if row.get("status") == "built")
     failed = len(results) - built
@@ -89,6 +90,9 @@ def write_markdown(results: list[dict], path: Path) -> None:
         sep_cells += ["---:", "---:", "---:", "---:"]
     if has_parity:
         header_cells += ["placement", "q delta"]
+        sep_cells += ["---:", "---:"]
+    if has_stability:
+        header_cells += ["commits back", "warm retention"]
         sep_cells += ["---:", "---:"]
     if has_compare:
         header_cells += ["compare status", "identical"]
@@ -123,6 +127,12 @@ def write_markdown(results: list[dict], path: Path) -> None:
             cells += [
                 "—" if placed is None else f"{placed:.1%}",
                 fmt(row.get("modularity_delta"), 4),
+            ]
+        if has_stability:
+            retention = row.get("stability_retention")
+            cells += [
+                fmt(row.get("stability_back"), 0),
+                "—" if retention is None else f"{retention:.1%}",
             ]
         if has_compare:
             identical = row.get("identical")

@@ -323,6 +323,22 @@ pub fn build(
     resolution: f64,
     features: BuildFeatures,
 ) -> Result<PathBuf> {
+    build_warm(repo, pkg, lang, name, out, resolution, features, None)
+}
+
+/// As [`build`], with an optional prior map to seed finding 4's warm path.
+/// The service normally supplies this from its store; the CLI exposes it for
+/// remote two-commit stability measurement.
+pub fn build_warm(
+    repo: &Path,
+    pkg: &str,
+    lang: &str,
+    name: Option<&str>,
+    out: &Path,
+    resolution: f64,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
+) -> Result<PathBuf> {
     let language = LanguageKind::parse(lang)?;
     let map_name = name.map(str::to_owned).unwrap_or_else(|| {
         repo.file_name()
@@ -332,7 +348,14 @@ pub fn build(
     });
     eprintln!("[1/5] extract   {}/{}  ({lang})", repo.display(), pkg);
     let graph = extract::build(repo, pkg, language)?;
-    build_from_graph(graph, map_name, out, resolution, features)
+    build_from_graph_warm(
+        graph,
+        map_name,
+        out,
+        resolution,
+        features,
+        previous_document,
+    )
 }
 
 /// As [`build`], but unions any number of `(pkg, language)` sources (see
@@ -346,6 +369,19 @@ pub fn build_multi(
     out: &Path,
     resolution: f64,
     features: BuildFeatures,
+) -> Result<PathBuf> {
+    build_multi_warm(repo, sources, name, out, resolution, features, None)
+}
+
+/// Multi-source counterpart of [`build_warm`].
+pub fn build_multi_warm(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    name: Option<&str>,
+    out: &Path,
+    resolution: f64,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
     let map_name = name.map(str::to_owned).unwrap_or_else(|| {
         repo.file_name()
@@ -364,7 +400,14 @@ pub fn build_multi(
         sources.len()
     );
     let graph = extract::build_multi_source(repo, sources)?;
-    build_from_graph(graph, map_name, out, resolution, features)
+    build_from_graph_warm(
+        graph,
+        map_name,
+        out,
+        resolution,
+        features,
+        previous_document,
+    )
 }
 
 /// Runs the pipeline (partition, naming, geometry, parcels) against an

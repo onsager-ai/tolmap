@@ -211,13 +211,8 @@ pub fn blend_mass_normalized(data: &mut GraphData) -> Result<()> {
     ensure!(!data.edges.is_empty(), "cannot blend an empty graph");
     let (raw_static, raw_cochange, raw_proximity, raw_semantic) = signal_masses(data);
     for edge in &mut data.edges {
-        edge.weight = mass_normalized_weight(
-            edge,
-            raw_static,
-            raw_cochange,
-            raw_proximity,
-            raw_semantic,
-        );
+        edge.weight =
+            mass_normalized_weight(edge, raw_static, raw_cochange, raw_proximity, raw_semantic);
     }
     Ok(())
 }
@@ -232,13 +227,7 @@ pub fn mass_normalized_weights(data: &GraphData) -> Result<Vec<f64>> {
         .edges
         .iter()
         .map(|edge| {
-            mass_normalized_weight(
-                edge,
-                raw_static,
-                raw_cochange,
-                raw_proximity,
-                raw_semantic,
-            )
+            mass_normalized_weight(edge, raw_static, raw_cochange, raw_proximity, raw_semantic)
         })
         .collect())
 }
@@ -355,7 +344,11 @@ fn apply_prune_variant_inner(
         PruneVariant::Percentile => {
             blend(data)?;
             let floor = quantile_type7(
-                &data.edges.iter().map(|edge| edge.weight).collect::<Vec<_>>(),
+                &data
+                    .edges
+                    .iter()
+                    .map(|edge| edge.weight)
+                    .collect::<Vec<_>>(),
                 PERCENTILE_FLOOR,
             );
             let stats = prune_stats(
@@ -376,8 +369,7 @@ fn apply_prune_variant_inner(
                     .iter()
                     .filter(|edge| {
                         edge.weight < NODE_RELATIVE_FRACTION * strongest[edge.a.as_str()]
-                            && edge.weight
-                                < NODE_RELATIVE_FRACTION * strongest[edge.b.as_str()]
+                            && edge.weight < NODE_RELATIVE_FRACTION * strongest[edge.b.as_str()]
                     })
                     .count()
             } else {
@@ -388,8 +380,7 @@ fn apply_prune_variant_inner(
                     .iter()
                     .map(|edge| {
                         edge.weight < NODE_RELATIVE_FRACTION * strongest[edge.a.as_str()]
-                            && edge.weight
-                                < NODE_RELATIVE_FRACTION * strongest[edge.b.as_str()]
+                            && edge.weight < NODE_RELATIVE_FRACTION * strongest[edge.b.as_str()]
                     })
                     .collect()
             } else {
@@ -408,7 +399,12 @@ fn apply_prune_variant_inner(
                     0.0
                 },
             };
-            prune_node_relative(data, PRUNE_KEEP_PER_NODE, NODE_RELATIVE_FRACTION, &strongest);
+            prune_node_relative(
+                data,
+                PRUNE_KEEP_PER_NODE,
+                NODE_RELATIVE_FRACTION,
+                &strongest,
+            );
             Ok(stats)
         }
         PruneVariant::PreRescale => {
@@ -435,10 +431,7 @@ fn prune_stats(
     collect_floor_edges: bool,
 ) -> PruneStats {
     let below_floor_count = if collect_floor_edges {
-        data.edges
-            .iter()
-            .filter(|edge| edge.weight < floor)
-            .count()
+        data.edges.iter().filter(|edge| edge.weight < floor).count()
     } else {
         0
     };
@@ -448,10 +441,7 @@ fn prune_stats(
         floor_basis,
         candidate_edges: data.edges.len(),
         below_floor_edges: if collect_floor_edges {
-            data.edges
-                .iter()
-                .map(|edge| edge.weight < floor)
-                .collect()
+            data.edges.iter().map(|edge| edge.weight < floor).collect()
         } else {
             Vec::new()
         },

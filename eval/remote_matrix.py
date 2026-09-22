@@ -6,6 +6,8 @@ matrix, for .github/workflows/remote-build.yml's `setup` job.
   - "all" (case-insensitive): every [[repo]] entry in the manifest.
   - a band name ("small", "medium", "large", "ultra", case-insensitive):
     every entry with that band.
+  - "fixtures": the nine exact pins from data/fixtures.toml.
+  - "stability": scrapy, django and celery 300 commits back, plus httpx 200.
   - a comma-separated list of slugs ("owner/repo,owner/repo"): exactly
     those entries, in manifest order (duplicates collapsed). This is the
     form issue #59's owed comparison uses (msgraph-sdk-go, aws-sdk-go-v2,
@@ -38,6 +40,12 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "eval" / "corpus.toml"
 FIXTURE_MANIFEST = ROOT / "data" / "fixtures.toml"
 BANDS = ("small", "medium", "large", "ultra")
+STABILITY_BACK = {
+    "scrapy/scrapy": 300,
+    "django/django": 300,
+    "celery/celery": 300,
+    "encode/httpx": 200,
+}
 
 
 def load_manifest(path: Path) -> list[dict]:
@@ -110,6 +118,7 @@ def to_matrix(entries: list[dict]) -> dict:
                 "commit": entry["commit"],
                 "band": entry["band"],
                 "args": list(entry.get("args", ["--all-sources"])),
+                **({"back": entry["back"]} if "back" in entry else {}),
             }
         )
     return {"include": include}
@@ -137,6 +146,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     entries = load_manifest(args.manifest)
+    if args.repos.strip().lower() == "stability":
+        by_slug = {entry["slug"]: entry for entry in entries}
+        matched = []
+        for slug, back in STABILITY_BACK.items():
+            entry = dict(by_slug[slug])
+            entry["back"] = back
+            matched.append(entry)
+        print(json.dumps(to_matrix(matched), sort_keys=True))
+        print(
+            f"matched {len(matched)} warm-start repositories from {args.manifest}",
+            file=sys.stderr,
+        )
+        return 0
     matched = resolve(entries, args.repos)
     if not matched:
         print(

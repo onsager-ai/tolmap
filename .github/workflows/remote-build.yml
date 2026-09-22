@@ -58,12 +58,13 @@ on:
         required: false
         default: ""
       command:
-        description: "tolmap subcommand to run per repo: build (default map build), or dump-blend (issue #57's below-prune-floor measurement: repos=microsoftgraph/msgraph-sdk-python,date-fns/date-fns)"
+        description: "operation per repo: build, dump-blend, or two-commit warm-start stability (use repos=stability)"
         required: false
         type: choice
         options:
           - build
           - dump-blend
+          - stability
         default: build
 
 permissions:
@@ -353,6 +354,8 @@ jobs:
           REPO_ARGS: ${{ join(matrix.args, ' ') }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
           COMMAND: ${{ inputs.command }}
+          BACK: ${{ matrix.back }}
+          COMMIT: ${{ matrix.commit }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
         run: |
           set -uo pipefail
@@ -364,6 +367,28 @@ jobs:
               ./bin-primary/tolmap dump-blend "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
               --out "out-primary/${STEM}.json" \
               > primary.log 2>&1
+          elif [ "$COMMAND" = "stability" ]; then
+            mkdir -p out-previous
+            git -C clone checkout --quiet --detach "$COMMIT"
+            git -C clone checkout --quiet --detach "HEAD~${BACK}"
+            prlimit "--as=${BUILD_MEM_BYTES}" -- \
+              ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              --name "$STEM" --out out-previous \
+              > previous.log 2>&1
+            previous_rc=$?
+            if [ "$previous_rc" -eq 0 ]; then
+              git -C clone checkout --quiet --detach "$COMMIT"
+              /usr/bin/time -v -o primary.time.txt \
+                prlimit "--as=${BUILD_MEM_BYTES}" -- \
+                ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+                --previous-map "out-previous/${STEM}.json" \
+                --name "$STEM" --out out-primary \
+                > primary.log 2>&1
+              rc=$?
+            else
+              cp previous.log primary.log
+              rc=$previous_rc
+            fi
           else
             /usr/bin/time -v -o primary.time.txt \
               prlimit "--as=${BUILD_MEM_BYTES}" -- \
@@ -383,6 +408,8 @@ jobs:
           REPO_ARGS: ${{ join(matrix.args, ' ') }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
           COMMAND: ${{ inputs.command }}
+          BACK: ${{ matrix.back }}
+          COMMIT: ${{ matrix.commit }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
         run: |
           set -uo pipefail
@@ -394,6 +421,28 @@ jobs:
               ./bin-compare/tolmap dump-blend "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
               --out "out-compare/${STEM}.json" \
               > compare.log 2>&1
+          elif [ "$COMMAND" = "stability" ]; then
+            mkdir -p out-compare-previous
+            git -C clone checkout --quiet --detach "$COMMIT"
+            git -C clone checkout --quiet --detach "HEAD~${BACK}"
+            prlimit "--as=${BUILD_MEM_BYTES}" -- \
+              ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              --name "$STEM" --out out-compare-previous \
+              > compare-previous.log 2>&1
+            previous_rc=$?
+            if [ "$previous_rc" -eq 0 ]; then
+              git -C clone checkout --quiet --detach "$COMMIT"
+              /usr/bin/time -v -o compare.time.txt \
+                prlimit "--as=${BUILD_MEM_BYTES}" -- \
+                ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+                --previous-map "out-compare-previous/${STEM}.json" \
+                --name "$STEM" --out out-compare \
+                > compare.log 2>&1
+              rc=$?
+            else
+              cp compare-previous.log compare.log
+              rc=$previous_rc
+            fi
           else
             /usr/bin/time -v -o compare.time.txt \
               prlimit "--as=${BUILD_MEM_BYTES}" -- \
@@ -426,6 +475,7 @@ jobs:
           PRIMARY_EXIT: ${{ steps.build_primary.outputs.exit_code }}
           COMPARE_EXIT: ${{ steps.build_compare.outputs.exit_code }}
           HAS_COMPARE: ${{ needs.setup.outputs.has_compare }}
+          BACK: ${{ matrix.back }}
         run: python3 eval/remote_build_result.py
 
       # actions/upload-artifact preserves each given path's directory
@@ -445,6 +495,8 @@ jobs:
           cp -f primary.log artifact/primary.log 2>/dev/null || true
           cp -f primary.time.txt artifact/primary.time.txt 2>/dev/null || true
           cp -f "out-primary/${STEM}.json" "artifact/${STEM}.json" 2>/dev/null || true
+          cp -f previous.log artifact/previous.log 2>/dev/null || true
+          cp -f "out-previous/${STEM}.json" "artifact/${STEM}.previous.json" 2>/dev/null || true
           cp -f compare.log artifact/compare.log 2>/dev/null || true
           cp -f compare.time.txt artifact/compare.time.txt 2>/dev/null || true
           cp -f "out-compare/${STEM}.json" "artifact/${STEM}.compare.json" 2>/dev/null || true

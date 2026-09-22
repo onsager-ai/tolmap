@@ -75,12 +75,8 @@ pub fn report(
     // floor classification for the per-language report.
     let mut pruned = merged.clone();
     let merged_prune_stats = pipeline::apply_prune_variant(&mut pruned, prune_variant)?;
-    let below_floor_merged = below_floor_share_per_language(
-        &merged,
-        &merged_prune_stats,
-        &file_language,
-        &languages,
-    );
+    let below_floor_merged =
+        below_floor_share_per_language(&merged, &merged_prune_stats, &file_language, &languages);
     let (kept_intra, kept_cross) = split_intra_cross(
         pruned.edges.iter().map(|e| (e.a.as_str(), e.b.as_str())),
         &file_language,
@@ -124,8 +120,7 @@ pub fn report(
         let single = extract::build(repo, pkg, *language)?;
         let single_candidate_edges = single.edges.len();
         let mut single_pruned = single.clone();
-        let single_prune_stats =
-            pipeline::apply_prune_variant(&mut single_pruned, prune_variant)?;
+        let single_prune_stats = pipeline::apply_prune_variant(&mut single_pruned, prune_variant)?;
         let single_below_floor = single_prune_stats.below_floor_share();
 
         let single_output = pipeline::run_with_variant(
