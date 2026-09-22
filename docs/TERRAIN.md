@@ -1,6 +1,6 @@
-# Terrain-aware subdivision of oversized districts — proposal
+# Terrain-aware subdivision of oversized districts
 
-Stage 3 of issue #41. **A proposal with measurements, for review before any pipeline code is written.** Nothing here changes the map; the implementation lands behind a flag that leaves the default map byte-identical until the numbers below have been reviewed.
+This began as the measured Stage 3 proposal for issue #41. Terrain shipped behind `--terrain` in #47; finding 22 records the later policy that makes it automatic above 2,000 mapped source files, while keeping smaller default maps byte-identical.
 
 Every number is from `eval/terrain_spike.py` against maps built at `586d5be` (post-#44), on the four reference repositories at their pinned commits (crawlab `ee11cd7`, codex `5c5308f`, dify `e2bdeec`, n8n `0b2ff22`) and the acceptance fixtures in `data/`. "How to reproduce" at the end.
 

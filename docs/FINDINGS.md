@@ -875,7 +875,7 @@ Parcels establishing *after* full file reveal (not before, as the sub-district n
 
 ### Cost: `--terrain` on vs off, same commit, GitHub-hosted runners
 
-Terrain builds ([remote-build run 35732732308](https://github.com/onsager-ai/tolmap/actions/runs/35732732308)) at `main`/1ec9320 for the sample issue #54 asked for, against the flag-off numbers already recorded for the same commit in [run 35728161408](https://github.com/onsager-ai/tolmap/actions/runs/35728161408) (`~/.cache/tolmap-corpus/builds.json`). Both are **single, unrepeated wall-clock runs on shared GitHub-hosted runners** — not a median of several, unlike finding 16's own local-host table — so treat the smaller deltas as noise and only the larger ones as signal:
+Terrain builds ([remote-build run 35732732308](https://github.com/onsager-ai/tolmap/actions/runs/35732732308)) at `main`/1ec9320 for the sample issue #54 asked for, against the flag-off numbers already recorded for the same commit in [run 35728161408](https://github.com/onsager-ai/tolmap/actions/runs/35728161408) (`~/.cache/tolmap-corpus/builds.json`). Both are single wall-clock runs on shared GitHub-hosted runners:
 
 | repo | files | wall s, off → on | Δ% | peak RSS MB, off → on | Δ% |
 |---|---:|---|---:|---|---:|
@@ -888,7 +888,20 @@ Terrain builds ([remote-build run 35732732308](https://github.com/onsager-ai/tol
 | twentyhq/twenty | 22,033 | 60.94 → 56.21 | −7.8% | 1,325.2 → 1,325.8 | +0.0% |
 | aws/aws-sdk-go-v2 | 26,520 | 334.78 → 472.08 | **+41.0%** | 2,254.9 → 2,254.7 | −0.0% |
 
-Most repos show wall-time deltas inside single-run runner noise (±16%, and three of the eight are *negative*, which terrain enabling cannot itself cause — it only adds work). Two are real outliers and worth the owner's attention before any default-on decision: **`aws/aws-sdk-go-v2` costs 41% more wall time** with terrain on (no RSS change) — plausibly recursive Leiden running across many mid-sized eligible Go-service districts (finding 19's fan-out shape), each cheap alone but numerous; and **`microsoft/vscode` costs 19% more peak RSS** (no meaningful time change) — its terrain districts are comparatively few (6) but this is the one repo in the sample where memory, not time, moved. Peak RSS otherwise barely moves anywhere (≤1% on the other six), consistent with finding 16's "terrain adds a second, smaller clustering pass per eligible district" cost model. Not repeated to separate signal from noise further — a repeated-run cost table is unmeasured, listed below.
+The decision used a follow-up at the same `main`/1ec9320 commit: three flag-off runs ([35736240399](https://github.com/onsager-ai/tolmap/actions/runs/35736240399), [35736256364](https://github.com/onsager-ai/tolmap/actions/runs/35736256364), [35736270568](https://github.com/onsager-ai/tolmap/actions/runs/35736270568)) and three `--terrain` runs ([35736232192](https://github.com/onsager-ai/tolmap/actions/runs/35736232192), [35736249067](https://github.com/onsager-ai/tolmap/actions/runs/35736249067), [35736263167](https://github.com/onsager-ai/tolmap/actions/runs/35736263167)). Each run built all eight repositories. Medians from their `results.json` artifacts:
+
+| repo | wall s, off → on | Δ% | peak RSS MB, off → on | Δ% |
+|---|---:|---:|---:|---:|
+| django/django | 3.30 → 3.55 | +7.6% | 121.9 → 121.9 | +0.1% |
+| crawlab-team/crawlab | 1.39 → 1.39 | +0.0% | 52.5 → 52.5 | 0.0% |
+| langgenius/dify | 26.29 → 23.76 | −9.6% | 485.9 → 485.3 | −0.1% |
+| microsoft/vscode | 32.50 → 33.21 | +2.2% | 684.4 → 814.7 | **+19.0%** |
+| elastic/kibana | 104.00 → 106.19 | +2.1% | 2,194.0 → 2,194.1 | +0.0% |
+| n8n-io/n8n | 55.21 → 57.31 | +3.8% | 1,824.2 → 1,824.1 | 0.0% |
+| twentyhq/twenty | 61.12 → 65.59 | +7.3% | 1,325.1 → 1,325.4 | +0.0% |
+| aws/aws-sdk-go-v2 | 430.83 → 477.32 | +10.8% | 2,254.7 → 2,254.7 | 0.0% |
+
+Every median wall-time movement is within the observed runner noise: the on/off direction still reverses for dify, and the original aws +41% single-run outlier contracts to +10.8%. Peak RSS is unchanged to rounding except for **`microsoft/vscode` at +19%**, which repeats the original signal. This matches finding 16's cost model: terrain adds a smaller clustering pass per eligible district without retaining another repository-sized graph.
 
 ### Viewer checks
 
@@ -898,7 +911,6 @@ The CLAUDE.md viewer check (districts named, landmarks listed, tapping a distric
 
 ### What is unmeasured
 
-- **A repeated-run cost table.** Every number in the cost table above is one wall-clock sample per side; `aws/aws-sdk-go-v2`'s 41% and `microsoft/vscode`'s 19% RSS delta are large enough to look real but neither is confirmed against run-to-run variance on a shared runner.
 - **Arterial tap, live.** See above — structurally verified, not clicked.
 - **A phone.** Every touch check in this and finding 16 is Playwright's touch emulation.
 - **The two owner decisions issue #54 asks for**: whether `--terrain` becomes the default above some file count (or for all repos, or stays opt-in — the default map is byte-for-byte unaffected by anything in this finding, since only viewer zoom thresholds changed), and whether `TOLMAP_TERRAIN` gets enabled on staging or production. Both need the cost table above and are not decided here.
