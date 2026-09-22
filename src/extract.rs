@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::{bail, ensure, Context, Result};
 use tree_sitter::{Language, Node, Parser};
 
-use crate::schema::{GraphData, SignalEdge, SourceNode, SymbolRow};
+use crate::schema::{FileId, GraphData, SignalEdge, SourceNode, SymbolRow};
 
 const ALPHA: f64 = 0.45;
 const BETA: f64 = 0.35;
@@ -260,7 +260,7 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
     for (pkg, language) in &sorted_sources {
         let (parsed, raw) = parse_files(repo, pkg, *language)?;
         let intermediate = match language {
-            LanguageKind::Python => parse_python(pkg, parsed, raw),
+            LanguageKind::Python => parse_python(pkg, parsed, raw)?,
             LanguageKind::Go | LanguageKind::TypeScript => parse_multi(
                 pkg,
                 *language,
@@ -274,7 +274,7 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
         intermediates.push(intermediate);
     }
 
-    let merged = union_sources(intermediates);
+    let merged = union_sources(intermediates)?;
     finish_graph(repo, merged)
 }
 
@@ -365,10 +365,14 @@ struct SourceIntermediate {
     pkg: String,
     language: LanguageKind,
     parsed: BTreeMap<String, ParsedFile>,
-    static_edges: BTreeMap<(String, String), f64>,
-    directed: BTreeMap<(String, String), f64>,
-    fanin: BTreeMap<String, f64>,
-    uses: BTreeSet<(String, String, String)>,
+    /// File paths in lexical order. Their indices are the `FileId`s used by
+    /// every high-cardinality structure below, so tuple order is identical
+    /// to the previous `(String, String)` BTree order.
+    files: Vec<String>,
+    static_edges: BTreeMap<(FileId, FileId), f64>,
+    directed: BTreeMap<(FileId, FileId), f64>,
+    fanin: BTreeMap<FileId, f64>,
+    uses: BTreeSet<(FileId, FileId, String)>,
     /// File -> the module/display name `finish_graph` puts on `SourceNode`.
     /// Python's is a dotted module name (`module_name`); Go/TypeScript's is
     /// just the file path. Carried as a map instead of a closure so it can
@@ -383,10 +387,11 @@ struct SourceIntermediate {
 /// index a file that got dropped.
 struct MergedSources {
     parsed: BTreeMap<String, ParsedFile>,
-    static_edges: BTreeMap<(String, String), f64>,
-    directed: BTreeMap<(String, String), f64>,
-    fanin: BTreeMap<String, f64>,
-    uses: BTreeSet<(String, String, String)>,
+    files: Vec<String>,
+    static_edges: BTreeMap<(FileId, FileId), f64>,
+    directed: BTreeMap<(FileId, FileId), f64>,
+    fanin: BTreeMap<FileId, f64>,
+    uses: BTreeSet<(FileId, FileId, String)>,
     module_for: BTreeMap<String, String>,
     file_language: BTreeMap<String, LanguageKind>,
     /// One `(pkg, lang)` per source, in the same sorted order they were
@@ -398,7 +403,65 @@ struct MergedSources {
     dominant_lang: LanguageKind,
 }
 
-fn union_sources(intermediates: Vec<SourceIntermediate>) -> MergedSources {
+fn file_ids(
+    paths: impl IntoIterator<Item = String>,
+) -> Result<(Vec<String>, BTreeMap<String, FileId>)> {
+    let mut files = paths.into_iter().collect::<Vec<_>>();
+    files.sort();
+    ensure!(
+        files.len() <= FileId::MAX as usize,
+        "source has more files than u32 can index"
+    );
+    let ids = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| (file.clone(), index as FileId))
+        .collect();
+    Ok((files, ids))
+}
+
+fn ordered_file_pair(a: FileId, b: FileId) -> (FileId, FileId) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSources> {
+    // The common path, including both repositories that exposed issue #52,
+    // has one detected source. Its lexical FileIds already are the global
+    // FileIds, so rebuilding tens of millions of compact entries here would
+    // add a second tree with no remapping benefit.
+    if intermediates.len() == 1 {
+        let intermediate = intermediates.pop().expect("one source");
+        let SourceIntermediate {
+            pkg,
+            language,
+            parsed,
+            files,
+            static_edges,
+            directed,
+            fanin,
+            uses,
+            module_for,
+        } = intermediate;
+        let file_language = files.iter().map(|file| (file.clone(), language)).collect();
+        return Ok(MergedSources {
+            parsed,
+            files,
+            static_edges,
+            directed,
+            fanin,
+            uses,
+            module_for,
+            file_language,
+            sources: vec![(pkg.clone(), language.as_str().to_owned())],
+            dominant_pkg: pkg,
+            dominant_lang: language,
+        });
+    }
+
     // First pass: decide which source owns each file path. Iterating
     // `intermediates` in order (already sorted by (lang, pkg) in
     // `build_multi_source`) and taking the first claim with
@@ -426,12 +489,13 @@ fn union_sources(intermediates: Vec<SourceIntermediate>) -> MergedSources {
         }
     }
 
+    let (files, global_ids) = file_ids(owner_index.keys().cloned())?;
     let mut parsed = BTreeMap::new();
     let mut file_language = BTreeMap::new();
     let mut module_for = BTreeMap::new();
-    let mut static_edges = BTreeMap::<(String, String), f64>::new();
-    let mut directed = BTreeMap::<(String, String), f64>::new();
-    let mut fanin = BTreeMap::<String, f64>::new();
+    let mut static_edges = BTreeMap::<(FileId, FileId), f64>::new();
+    let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
+    let mut fanin = BTreeMap::<FileId, f64>::new();
     let mut uses = BTreeSet::new();
     let mut sources = Vec::with_capacity(intermediates.len());
     let mut dominant: Option<(usize, String, LanguageKind)> = None;
@@ -441,6 +505,7 @@ fn union_sources(intermediates: Vec<SourceIntermediate>) -> MergedSources {
             pkg,
             language,
             parsed: source_parsed,
+            files: source_files,
             static_edges: source_static,
             directed: source_directed,
             fanin: source_fanin,
@@ -472,30 +537,42 @@ fn union_sources(intermediates: Vec<SourceIntermediate>) -> MergedSources {
         // so a dropped file drops exactly the edges that named it, never a
         // partial pair.
         for ((a, b), value) in source_static {
-            if owner_index.get(&a) == Some(&idx) && owner_index.get(&b) == Some(&idx) {
-                *static_edges.entry((a, b)).or_insert(0.0) += value;
+            let a = &source_files[a as usize];
+            let b = &source_files[b as usize];
+            if owner_index.get(a) == Some(&idx) && owner_index.get(b) == Some(&idx) {
+                *static_edges
+                    .entry((global_ids[a], global_ids[b]))
+                    .or_insert(0.0) += value;
             }
         }
         for ((a, b), value) in source_directed {
-            if owner_index.get(&a) == Some(&idx) && owner_index.get(&b) == Some(&idx) {
-                *directed.entry((a, b)).or_insert(0.0) += value;
+            let a = &source_files[a as usize];
+            let b = &source_files[b as usize];
+            if owner_index.get(a) == Some(&idx) && owner_index.get(b) == Some(&idx) {
+                *directed
+                    .entry((global_ids[a], global_ids[b]))
+                    .or_insert(0.0) += value;
             }
         }
-        for (file, value) in source_fanin {
-            if owner_index.get(&file) == Some(&idx) {
-                *fanin.entry(file).or_insert(0.0) += value;
+        for (file_id, value) in source_fanin {
+            let file = &source_files[file_id as usize];
+            if owner_index.get(file) == Some(&idx) {
+                *fanin.entry(global_ids[file]).or_insert(0.0) += value;
             }
         }
-        for (a, b, name) in source_uses {
-            if owner_index.get(&a) == Some(&idx) && owner_index.get(&b) == Some(&idx) {
-                uses.insert((a, b, name));
+        for (a_id, b_id, name) in source_uses {
+            let a = &source_files[a_id as usize];
+            let b = &source_files[b_id as usize];
+            if owner_index.get(a) == Some(&idx) && owner_index.get(b) == Some(&idx) {
+                uses.insert((global_ids[a], global_ids[b], name));
             }
         }
     }
 
     let (_, dominant_pkg, dominant_lang) = dominant.expect("at least one source");
-    MergedSources {
+    Ok(MergedSources {
         parsed,
+        files,
         static_edges,
         directed,
         fanin,
@@ -505,7 +582,7 @@ fn union_sources(intermediates: Vec<SourceIntermediate>) -> MergedSources {
         sources,
         dominant_pkg,
         dominant_lang,
-    }
+    })
 }
 
 // pub(crate): `detect` re-walks the same tree with the same filters to count
@@ -1047,7 +1124,8 @@ fn parse_python(
     pkg: &str,
     parsed: BTreeMap<String, ParsedFile>,
     raw: BTreeMap<String, FileRaw>,
-) -> SourceIntermediate {
+) -> Result<SourceIntermediate> {
+    let (files, ids) = file_ids(parsed.keys().cloned())?;
     let mut modules = BTreeMap::<String, String>::new();
     for file in parsed.keys() {
         modules.insert(module_name(file, pkg), file.clone());
@@ -1055,11 +1133,12 @@ fn parse_python(
     let known = modules.keys().cloned().collect::<BTreeSet<_>>();
     let file_of = modules.clone();
 
-    let mut static_edges = BTreeMap::<(String, String), f64>::new();
-    let mut directed = BTreeMap::<(String, String), f64>::new();
-    let mut fanin = BTreeMap::<String, f64>::new();
-    let mut uses = BTreeSet::<(String, String, String)>::new();
+    let mut static_edges = BTreeMap::<(FileId, FileId), f64>::new();
+    let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
+    let mut fanin = BTreeMap::<FileId, f64>::new();
+    let mut uses = BTreeSet::<(FileId, FileId, String)>::new();
     for (module, file) in &modules {
+        let file_id = ids[file];
         let FileRaw::Python {
             imports,
             attribute_candidates,
@@ -1071,16 +1150,15 @@ fn parse_python(
         for import in imports {
             for target in resolve_python(import, module, &known, is_pkg) {
                 let target_file = &file_of[&target];
-                if target_file == file {
+                let target_id = ids[target_file];
+                if target_id == file_id {
                     continue;
                 }
                 *static_edges
-                    .entry(ordered_pair(file, target_file))
+                    .entry(ordered_file_pair(file_id, target_id))
                     .or_default() += 1.0;
-                *directed
-                    .entry((file.clone(), target_file.clone()))
-                    .or_default() += 1.0;
-                *fanin.entry(target_file.clone()).or_default() += 1.0;
+                *directed.entry((file_id, target_id)).or_default() += 1.0;
+                *fanin.entry(target_id).or_default() += 1.0;
             }
         }
         for (target_file, name) in python_uses_from_raw(
@@ -1091,7 +1169,7 @@ fn parse_python(
             &known,
             &file_of,
         ) {
-            uses.insert((file.clone(), target_file, name));
+            uses.insert((file_id, ids[&target_file], name));
         }
     }
 
@@ -1100,16 +1178,17 @@ fn parse_python(
         .map(|file| (file.clone(), module_name(file, pkg)))
         .collect();
 
-    SourceIntermediate {
+    Ok(SourceIntermediate {
         pkg: pkg.to_owned(),
         language: LanguageKind::Python,
         parsed,
+        files,
         static_edges,
         directed,
         fanin,
         uses,
         module_for,
-    }
+    })
 }
 
 fn module_name(relative: &str, pkg: &str) -> String {
@@ -1369,19 +1448,20 @@ fn parse_multi(
     raw: BTreeMap<String, FileRaw>,
     modules: &ModuleIndex,
 ) -> Result<SourceIntermediate> {
-    let files = parsed.keys().cloned().collect::<BTreeSet<_>>();
-    let mut by_directory = BTreeMap::<String, Vec<String>>::new();
+    let (files, ids) = file_ids(parsed.keys().cloned())?;
+    let mut by_directory = BTreeMap::<String, Vec<FileId>>::new();
     for file in &files {
         by_directory
             .entry(directory_name(file).to_owned())
             .or_default()
-            .push(file.clone());
+            .push(ids[file]);
     }
-    let mut static_edges = BTreeMap::<(String, String), f64>::new();
-    let mut directed = BTreeMap::<(String, String), f64>::new();
-    let mut fanin = BTreeMap::<String, f64>::new();
-    let mut uses = BTreeSet::<(String, String, String)>::new();
+    let mut static_edges = BTreeMap::<(FileId, FileId), f64>::new();
+    let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
+    let mut fanin = BTreeMap::<FileId, f64>::new();
+    let mut uses = BTreeSet::<(FileId, FileId, String)>::new();
     for file in parsed.keys() {
+        let source_id = ids[file];
         let FileRaw::Multi {
             imports,
             named_candidates,
@@ -1390,24 +1470,29 @@ fn parse_multi(
             unreachable!("parse_multi only ever stores FileRaw::Multi");
         };
         for path in imports {
-            let targets = resolve_multi(language, path, file, modules, &by_directory, &files);
+            let targets = resolve_multi(language, path, file, modules, &by_directory, &ids);
+            let targets = targets.as_slice();
             if targets.is_empty() {
                 continue;
             }
             let share = 1.0 / targets.len() as f64;
-            for target in targets {
-                if &target == file {
+            for &target in targets {
+                if target == source_id {
                     continue;
                 }
-                *static_edges.entry(ordered_pair(file, &target)).or_default() += share;
-                *directed.entry((file.clone(), target.clone())).or_default() += share;
+                *static_edges
+                    .entry(ordered_file_pair(source_id, target))
+                    .or_default() += share;
+                *directed.entry((source_id, target)).or_default() += share;
                 *fanin.entry(target).or_default() += share;
             }
         }
         for (path, name) in named_candidates {
-            for target in resolve_multi(language, path, file, modules, &by_directory, &files) {
-                if &target != file {
-                    uses.insert((file.clone(), target, name.clone()));
+            let targets = resolve_multi(language, path, file, modules, &by_directory, &ids);
+            let targets = targets.as_slice();
+            for &target in targets {
+                if target != source_id {
+                    uses.insert((source_id, target, name.clone()));
                 }
             }
         }
@@ -1422,6 +1507,7 @@ fn parse_multi(
         pkg: pkg.to_owned(),
         language,
         parsed,
+        files,
         static_edges,
         directed,
         fanin,
@@ -1824,14 +1910,30 @@ fn typescript_named(root: Node<'_>, source: &[u8]) -> Vec<(String, String)> {
     result
 }
 
-fn resolve_multi(
+enum ResolvedTargets<'a> {
+    Empty,
+    One(FileId),
+    Many(&'a [FileId]),
+}
+
+impl ResolvedTargets<'_> {
+    fn as_slice(&self) -> &[FileId] {
+        match self {
+            Self::Empty => &[],
+            Self::One(target) => std::slice::from_ref(target),
+            Self::Many(targets) => targets,
+        }
+    }
+}
+
+fn resolve_multi<'a>(
     language: LanguageKind,
     import: &str,
     source_file: &str,
     modules: &ModuleIndex,
-    by_directory: &BTreeMap<String, Vec<String>>,
-    by_file: &BTreeSet<String>,
-) -> Vec<String> {
+    by_directory: &'a BTreeMap<String, Vec<FileId>>,
+    by_file: &BTreeMap<String, FileId>,
+) -> ResolvedTargets<'a> {
     match language {
         LanguageKind::Go => {
             // Longest module path wins, so a nested module resolves before
@@ -1842,9 +1944,13 @@ fn resolve_multi(
                     continue;
                 };
                 let package = join_slash(directory, rest);
-                return by_directory.get(&package).cloned().unwrap_or_default();
+                return by_directory
+                    .get(&package)
+                    .map_or(ResolvedTargets::Empty, |targets| {
+                        ResolvedTargets::Many(targets)
+                    });
             }
-            Vec::new()
+            ResolvedTargets::Empty
         }
         LanguageKind::TypeScript => {
             let base = if import.starts_with('.') {
@@ -1873,11 +1979,11 @@ fn resolve_multi(
                         Some(join_slash(&entry.target, rest))
                     })
                     .find_map(|base| ts_candidate(&base, by_file));
-                return target.into_iter().collect();
+                return target.map_or(ResolvedTargets::Empty, ResolvedTargets::One);
             };
-            ts_candidate(&base, by_file).into_iter().collect()
+            ts_candidate(&base, by_file).map_or(ResolvedTargets::Empty, ResolvedTargets::One)
         }
-        LanguageKind::Python => Vec::new(),
+        LanguageKind::Python => ResolvedTargets::Empty,
     }
 }
 
@@ -1925,7 +2031,7 @@ fn strip_module_prefix<'a>(import: &'a str, module: &str) -> Option<&'a str> {
 /// file set. The first four probes are the relative resolver's historical
 /// candidates; the final two cover TSX directory entries and workspace
 /// packages whose source entry point is `src/index.ts`.
-fn ts_candidate(base: &str, by_file: &BTreeSet<String>) -> Option<String> {
+fn ts_candidate(base: &str, by_file: &BTreeMap<String, FileId>) -> Option<FileId> {
     [
         format!("{base}.ts"),
         format!("{base}/index.ts"),
@@ -1935,7 +2041,7 @@ fn ts_candidate(base: &str, by_file: &BTreeSet<String>) -> Option<String> {
         base.to_owned(),
     ]
     .into_iter()
-    .find(|candidate| by_file.contains(candidate))
+    .find_map(|candidate| by_file.get(&candidate).copied())
 }
 
 fn normalize_relative(directory: &str, import: &str) -> String {
@@ -1976,6 +2082,7 @@ fn normalize_relative(directory: &str, import: &str) -> String {
 fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
     let MergedSources {
         parsed,
+        files,
         static_edges,
         directed,
         fanin,
@@ -1987,11 +2094,20 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
         dominant_lang,
     } = merged;
 
-    let files = parsed.keys().cloned().collect::<Vec<_>>();
     let history = git_history(repo, &files, 4000)?;
     let semantic = semantic_vectors(&parsed);
-    let mut candidates = static_edges.keys().cloned().collect::<BTreeSet<_>>();
-    candidates.extend(history.cochange.keys().cloned());
+    let file_ids = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| (file.as_str(), index as FileId))
+        .collect::<BTreeMap<_, _>>();
+    let cochange = history
+        .cochange
+        .iter()
+        .map(|((a, b), &value)| ((file_ids[a.as_str()], file_ids[b.as_str()]), value))
+        .collect::<BTreeMap<_, _>>();
+    let mut candidates = static_edges.keys().copied().collect::<BTreeSet<_>>();
+    candidates.extend(cochange.keys().copied());
 
     // Above 600 files the semantic sweep below is restricted to same-
     // directory pairs (an O(n^2) full sweep is too slow past that size).
@@ -2018,16 +2134,22 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
     if files.len() <= 600 {
         for i in 0..files.len() {
             for j in i + 1..files.len() {
-                add_semantic_candidate(&files[i], &files[j], &semantic, &mut candidates);
+                add_semantic_candidate(
+                    i as FileId,
+                    j as FileId,
+                    &files,
+                    &semantic,
+                    &mut candidates,
+                );
             }
         }
     } else {
-        let mut by_directory = BTreeMap::<String, Vec<&String>>::new();
-        for file in &files {
+        let mut by_directory = BTreeMap::<String, Vec<FileId>>::new();
+        for (file_id, file) in files.iter().enumerate() {
             by_directory
                 .entry(directory_name(file).to_owned())
                 .or_default()
-                .push(file);
+                .push(file_id as FileId);
         }
         for directory_files in by_directory.values() {
             for i in 0..directory_files.len() {
@@ -2035,6 +2157,7 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
                     add_semantic_candidate(
                         directory_files[i],
                         directory_files[j],
+                        &files,
                         &semantic,
                         &mut candidates,
                     );
@@ -2059,32 +2182,29 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
     // exactly the old single global max (one language, one bucket) -- see
     // `single_language_static_max_matches_the_old_global_max` in the tests
     // below.
-    let static_max_by_language = static_max_by_language(&static_edges, &file_language);
+    let languages = files
+        .iter()
+        .map(|file| file_language[file])
+        .collect::<Vec<_>>();
+    let static_max_by_language = static_max_by_language(&static_edges, &languages);
 
     let mut edges = Vec::new();
-    for (a, b) in candidates {
-        let static_max = static_max_by_language[&file_language[&a]];
-        let static_signal = static_edges
-            .get(&(a.clone(), b.clone()))
-            .copied()
-            .unwrap_or(0.0)
-            / static_max;
-        let cochange = history
-            .cochange
-            .get(&(a.clone(), b.clone()))
-            .copied()
-            .unwrap_or(0.0)
-            .min(1.0);
-        let proximity = proximity(&a, &b);
-        let semantic_signal = cosine(&a, &b, &semantic);
+    for (a_id, b_id) in candidates {
+        let a = &files[a_id as usize];
+        let b = &files[b_id as usize];
+        let static_max = static_max_by_language[&languages[a_id as usize]];
+        let static_signal = static_edges.get(&(a_id, b_id)).copied().unwrap_or(0.0) / static_max;
+        let cochange = cochange.get(&(a_id, b_id)).copied().unwrap_or(0.0).min(1.0);
+        let proximity = proximity(a, b);
+        let semantic_signal = cosine(a, b, &semantic);
         let weight =
             ALPHA * static_signal + BETA * cochange + GAMMA * proximity + DELTA * semantic_signal;
         if weight < 0.02 {
             continue;
         }
         edges.push(SignalEdge {
-            a,
-            b,
+            a: a.clone(),
+            b: b.clone(),
             weight: round_to(weight, 5),
             static_signal: round_to(static_signal, 4),
             cochange: round_to(cochange, 4),
@@ -2092,21 +2212,29 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
             semantic: round_to(semantic_signal, 4),
         });
     }
+    // These compact lookup structures are no longer needed once every
+    // candidate has been blended. Drop them before materialising the final
+    // node/import/use vectors so their high-water marks do not overlap.
+    drop(static_edges);
+    drop(cochange);
+    drop(semantic);
+    drop(file_ids);
 
     let nodes = files
         .iter()
-        .map(|file| {
+        .enumerate()
+        .map(|(file_id, file)| {
             let value = &parsed[file];
-            let language = file_language[file];
+            let language = languages[file_id];
             SourceNode {
                 file: file.clone(),
                 loc: value.loc,
                 complexity: value.complexity,
                 churn: history.churn.get(file).copied().unwrap_or(0),
                 fanin: if language == LanguageKind::Python {
-                    fanin.get(file).copied().unwrap_or(0.0)
+                    fanin.get(&(file_id as FileId)).copied().unwrap_or(0.0)
                 } else {
-                    round_to(fanin.get(file).copied().unwrap_or(0.0), 2)
+                    round_to(fanin.get(&(file_id as FileId)).copied().unwrap_or(0.0), 2)
                 },
                 module: module_for
                     .get(file)
@@ -2136,7 +2264,7 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
             .map(|((a, b), value)| {
                 // Always intra-language (see the static_max comment above);
                 // `file_language[&a]` alone decides the rounding.
-                let value = if file_language[&a] == LanguageKind::Python {
+                let value = if languages[a as usize] == LanguageKind::Python {
                     value
                 } else {
                     round_to(value, 3)
@@ -2157,12 +2285,12 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
 /// function so it is directly testable against the pre-polyglot single
 /// global max without needing a full parsed repository.
 fn static_max_by_language(
-    static_edges: &BTreeMap<(String, String), f64>,
-    file_language: &BTreeMap<String, LanguageKind>,
+    static_edges: &BTreeMap<(FileId, FileId), f64>,
+    file_language: &[LanguageKind],
 ) -> BTreeMap<LanguageKind, f64> {
     let mut result = BTreeMap::<LanguageKind, f64>::new();
     for ((a, _), &value) in static_edges {
-        let language = file_language[a];
+        let language = file_language[*a as usize];
         let entry = result.entry(language).or_insert(0.0_f64);
         if value > *entry {
             *entry = value;
@@ -2172,7 +2300,7 @@ fn static_max_by_language(
     // with zero static edges of its own (e.g. a language whose files have no
     // resolvable imports at all), so a per-edge lookup against this map
     // never misses.
-    for &language in file_language.values() {
+    for &language in file_language {
         result.entry(language).or_insert(0.0_f64);
     }
     for value in result.values_mut() {
@@ -2182,13 +2310,16 @@ fn static_max_by_language(
 }
 
 fn add_semantic_candidate(
-    a: &str,
-    b: &str,
+    a: FileId,
+    b: FileId,
+    files: &[String],
     semantic: &BTreeMap<String, BTreeMap<String, f64>>,
-    candidates: &mut BTreeSet<(String, String)>,
+    candidates: &mut BTreeSet<(FileId, FileId)>,
 ) {
-    let pair = ordered_pair(a, b);
-    if !candidates.contains(&pair) && cosine(a, b, semantic) > 0.28 {
+    let pair = ordered_file_pair(a, b);
+    if !candidates.contains(&pair)
+        && cosine(&files[a as usize], &files[b as usize], semantic) > 0.28
+    {
         candidates.insert(pair);
     }
 }
@@ -2251,14 +2382,6 @@ fn proximity(a: &str, b: &str) -> f64 {
 
 fn directory_name(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(directory, _)| directory)
-}
-
-fn ordered_pair(a: &str, b: &str) -> (String, String) {
-    if a < b {
-        (a.to_owned(), b.to_owned())
-    } else {
-        (b.to_owned(), a.to_owned())
-    }
 }
 
 fn strip_quotes(value: &str) -> &str {
@@ -2436,15 +2559,10 @@ mod tests {
 
     #[test]
     fn go_package_import_spreads_across_directory() {
-        let files = ["x/a.go".to_owned(), "x/b.go".to_owned()]
+        let files = [("x/a.go".to_owned(), 0), ("x/b.go".to_owned(), 1)]
             .into_iter()
             .collect();
-        let directories = [(
-            "x".to_owned(),
-            vec!["x/a.go".to_owned(), "x/b.go".to_owned()],
-        )]
-        .into_iter()
-        .collect();
+        let directories = [("x".to_owned(), vec![0, 1])].into_iter().collect();
         assert_eq!(
             resolve_multi(
                 LanguageKind::Go,
@@ -2457,6 +2575,23 @@ mod tests {
                 &directories,
                 &files
             )
+            .as_slice(),
+            &[0, 1],
+            "target ids retain lexical file order"
+        );
+        assert_eq!(
+            resolve_multi(
+                LanguageKind::Go,
+                "example/x",
+                "main.go",
+                &ModuleIndex {
+                    go: vec![("example".to_owned(), String::new())],
+                    ts: Vec::new(),
+                },
+                &directories,
+                &files
+            )
+            .as_slice()
             .len(),
             2
         );
@@ -2481,10 +2616,16 @@ mod tests {
     ) -> BTreeSet<(String, String)> {
         let modules = module_index(root).unwrap();
         let (parsed, raw) = parse_files(root, pkg, language).unwrap();
-        parse_multi(pkg, language, parsed, raw, &modules)
-            .unwrap()
+        let intermediate = parse_multi(pkg, language, parsed, raw, &modules).unwrap();
+        intermediate
             .directed
-            .into_keys()
+            .keys()
+            .map(|&(a, b)| {
+                (
+                    intermediate.files[a as usize].clone(),
+                    intermediate.files[b as usize].clone(),
+                )
+            })
             .collect()
     }
 
@@ -2554,6 +2695,41 @@ mod tests {
             resolved_import_edge_count(dir.path(), "services/core", LanguageKind::Go),
             2
         );
+    }
+
+    #[test]
+    fn go_package_fanout_keeps_edge_counts_and_weights_with_file_ids() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "module example.com/repo\n\ngo 1.22\n");
+        write(
+            dir.path(),
+            "cmd/a.go",
+            "package cmd\nimport _ \"example.com/repo/lib\"\n",
+        );
+        write(
+            dir.path(),
+            "cmd/b.go",
+            "package cmd\nimport _ \"example.com/repo/lib\"\n",
+        );
+        write(dir.path(), "lib/a.go", "package lib\n");
+        write(dir.path(), "lib/b.go", "package lib\n");
+
+        let modules = module_index(dir.path()).unwrap();
+        let (parsed, raw) = parse_files(dir.path(), ".", LanguageKind::Go).unwrap();
+        let intermediate = parse_multi(".", LanguageKind::Go, parsed, raw, &modules).unwrap();
+
+        let expected = [((0, 2), 0.5), ((0, 3), 0.5), ((1, 2), 0.5), ((1, 3), 0.5)]
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            intermediate.files,
+            ["cmd/a.go", "cmd/b.go", "lib/a.go", "lib/b.go"]
+        );
+        assert_eq!(intermediate.static_edges, expected);
+        assert_eq!(intermediate.directed.len(), 4);
+        assert!(intermediate.directed.values().all(|&weight| weight == 0.5));
+        assert_eq!(intermediate.fanin.get(&2), Some(&1.0));
+        assert_eq!(intermediate.fanin.get(&3), Some(&1.0));
     }
 
     #[test]
@@ -2747,7 +2923,7 @@ mod tests {
 
     #[test]
     fn import_of_relative_path_resolves_to_tsx_target() {
-        let files = ["a.ts".to_owned(), "Foo.tsx".to_owned()]
+        let files = [("Foo.tsx".to_owned(), 0), ("a.ts".to_owned(), 1)]
             .into_iter()
             .collect();
         let directories = BTreeMap::new();
@@ -2759,7 +2935,7 @@ mod tests {
             &directories,
             &files,
         );
-        assert_eq!(targets, vec!["Foo.tsx".to_owned()]);
+        assert_eq!(targets.as_slice(), &[0]);
     }
 
     #[test]
@@ -2793,12 +2969,9 @@ mod tests {
         // per-language computation must reduce to that same number -- this
         // is the assertion spec item 4 calls for.
         let mut static_edges = BTreeMap::new();
-        static_edges.insert(("a.py".to_owned(), "b.py".to_owned()), 3.0);
-        static_edges.insert(("b.py".to_owned(), "c.py".to_owned()), 7.0);
-        let mut file_language = BTreeMap::new();
-        file_language.insert("a.py".to_owned(), LanguageKind::Python);
-        file_language.insert("b.py".to_owned(), LanguageKind::Python);
-        file_language.insert("c.py".to_owned(), LanguageKind::Python);
+        static_edges.insert((0, 1), 3.0);
+        static_edges.insert((1, 2), 7.0);
+        let file_language = vec![LanguageKind::Python; 3];
 
         let by_language = static_max_by_language(&static_edges, &file_language);
         let old_global_max = static_edges
@@ -2821,13 +2994,14 @@ mod tests {
         // finish_graph. Per language, each bucket floors at 1.0
         // independently.
         let mut static_edges = BTreeMap::new();
-        static_edges.insert(("a.go".to_owned(), "b.go".to_owned()), 0.5);
-        static_edges.insert(("x.ts".to_owned(), "y.ts".to_owned()), 20.0);
-        let mut file_language = BTreeMap::new();
-        file_language.insert("a.go".to_owned(), LanguageKind::Go);
-        file_language.insert("b.go".to_owned(), LanguageKind::Go);
-        file_language.insert("x.ts".to_owned(), LanguageKind::TypeScript);
-        file_language.insert("y.ts".to_owned(), LanguageKind::TypeScript);
+        static_edges.insert((0, 1), 0.5);
+        static_edges.insert((2, 3), 20.0);
+        let file_language = vec![
+            LanguageKind::Go,
+            LanguageKind::Go,
+            LanguageKind::TypeScript,
+            LanguageKind::TypeScript,
+        ];
 
         let by_language = static_max_by_language(&static_edges, &file_language);
         assert_eq!(
@@ -2855,11 +3029,10 @@ mod tests {
             pkg: ".".to_owned(),
             language: LanguageKind::Go,
             parsed: go_parsed,
-            static_edges: [(("only_go.txt".to_owned(), "shared.txt".to_owned()), 1.0)]
-                .into_iter()
-                .collect(),
+            files: vec!["only_go.txt".to_owned(), "shared.txt".to_owned()],
+            static_edges: [((0, 1), 1.0)].into_iter().collect(),
             directed: BTreeMap::new(),
-            fanin: [("shared.txt".to_owned(), 1.0)].into_iter().collect(),
+            fanin: [(1, 1.0)].into_iter().collect(),
             uses: BTreeSet::new(),
             module_for: [
                 ("shared.txt".to_owned(), "shared.txt".to_owned()),
@@ -2875,6 +3048,7 @@ mod tests {
             pkg: ".".to_owned(),
             language: LanguageKind::Python,
             parsed: py_parsed,
+            files: vec!["shared.txt".to_owned()],
             static_edges: BTreeMap::new(),
             directed: BTreeMap::new(),
             fanin: BTreeMap::new(),
@@ -2884,7 +3058,7 @@ mod tests {
                 .collect(),
         };
 
-        let merged = union_sources(vec![go_source, py_source]);
+        let merged = union_sources(vec![go_source, py_source]).unwrap();
         assert_eq!(merged.parsed.len(), 2, "shared.txt kept once, from Go");
         assert_eq!(
             merged.parsed["shared.txt"].loc, 3,
@@ -2892,10 +3066,7 @@ mod tests {
         );
         assert_eq!(merged.file_language["shared.txt"], LanguageKind::Go);
         assert_eq!(merged.module_for["shared.txt"], "shared.txt");
-        assert_eq!(
-            merged.static_edges[&("only_go.txt".to_owned(), "shared.txt".to_owned())],
-            1.0
-        );
+        assert_eq!(merged.static_edges[&(0, 1)], 1.0);
         assert_eq!(
             merged.sources,
             vec![

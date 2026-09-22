@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::ser::{SerializeSeq, SerializeStruct};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use ts_rs::TS;
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -189,7 +190,9 @@ pub struct SignalEdge {
     pub semantic: f64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+pub type FileId = u32;
+
+#[derive(Clone, Debug)]
 pub struct GraphData {
     pub repo: String,
     pub pkg: String,
@@ -204,14 +207,148 @@ pub struct GraphData {
     // before this field existed) still deserialise via `tolmap build
     // --graph` -- they are necessarily single-source, and an empty vec here
     // is never read as "more than one source" by anything downstream.
-    #[serde(default)]
     pub sources: Vec<(String, String)>,
-    pub imports: Vec<(String, String, f64)>,
+    /// Resolved imports indexed into `nodes`. Keeping the two paths only in
+    /// `SourceNode::file` avoids repeating them for every package fan-out
+    /// edge; the serde implementation below retains the established
+    /// path-based graph JSON format.
+    pub imports: Vec<(FileId, FileId, f64)>,
     pub symbols: BTreeMap<String, Vec<SymbolRow>>,
-    pub uses: Vec<(String, String, String)>,
+    /// Resolved symbol uses indexed into `nodes`; names remain strings.
+    pub uses: Vec<(FileId, FileId, String)>,
     pub commits_scanned: usize,
     pub nodes: Vec<SourceNode>,
     pub edges: Vec<SignalEdge>,
+}
+
+#[derive(Deserialize)]
+struct GraphDataWire {
+    repo: String,
+    pkg: String,
+    lang: String,
+    #[serde(default)]
+    sources: Vec<(String, String)>,
+    imports: Vec<(String, String, f64)>,
+    symbols: BTreeMap<String, Vec<SymbolRow>>,
+    uses: Vec<(String, String, String)>,
+    commits_scanned: usize,
+    nodes: Vec<SourceNode>,
+    edges: Vec<SignalEdge>,
+}
+
+struct GraphImports<'a>(&'a GraphData);
+
+impl Serialize for GraphImports<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.imports.len()))?;
+        for &(a, b, value) in &self.0.imports {
+            let a = &self.0.nodes[a as usize].file;
+            let b = &self.0.nodes[b as usize].file;
+            sequence.serialize_element(&(a, b, value))?;
+        }
+        sequence.end()
+    }
+}
+
+struct GraphUses<'a>(&'a GraphData);
+
+impl Serialize for GraphUses<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.uses.len()))?;
+        for (a, b, name) in &self.0.uses {
+            let a = &self.0.nodes[*a as usize].file;
+            let b = &self.0.nodes[*b as usize].file;
+            sequence.serialize_element(&(a, b, name))?;
+        }
+        sequence.end()
+    }
+}
+
+impl Serialize for GraphData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Keep the derived serializer's established field order so
+        // `tolmap dump-graph` remains byte-identical.
+        let mut state = serializer.serialize_struct("GraphData", 10)?;
+        state.serialize_field("repo", &self.repo)?;
+        state.serialize_field("pkg", &self.pkg)?;
+        state.serialize_field("lang", &self.lang)?;
+        state.serialize_field("sources", &self.sources)?;
+        state.serialize_field("imports", &GraphImports(self))?;
+        state.serialize_field("symbols", &self.symbols)?;
+        state.serialize_field("uses", &GraphUses(self))?;
+        state.serialize_field("commits_scanned", &self.commits_scanned)?;
+        state.serialize_field("nodes", &self.nodes)?;
+        state.serialize_field("edges", &self.edges)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for GraphData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = GraphDataWire::deserialize(deserializer)?;
+        if wire.nodes.len() > FileId::MAX as usize {
+            return Err(D::Error::custom("graph has more files than u32 can index"));
+        }
+        let file_ids = wire
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.file.as_str(), index as FileId))
+            .collect::<BTreeMap<_, _>>();
+        let imports =
+            wire.imports
+                .into_iter()
+                .map(|(a, b, value)| {
+                    let a = file_ids.get(a.as_str()).copied().ok_or_else(|| {
+                        D::Error::custom(format!("import names unknown file {a:?}"))
+                    })?;
+                    let b = file_ids.get(b.as_str()).copied().ok_or_else(|| {
+                        D::Error::custom(format!("import names unknown file {b:?}"))
+                    })?;
+                    Ok((a, b, value))
+                })
+                .collect::<Result<Vec<_>, D::Error>>()?;
+        let uses = wire
+            .uses
+            .into_iter()
+            .map(|(a, b, name)| {
+                let a = file_ids
+                    .get(a.as_str())
+                    .copied()
+                    .ok_or_else(|| D::Error::custom(format!("use names unknown file {a:?}")))?;
+                let b = file_ids
+                    .get(b.as_str())
+                    .copied()
+                    .ok_or_else(|| D::Error::custom(format!("use names unknown file {b:?}")))?;
+                Ok((a, b, name))
+            })
+            .collect::<Result<Vec<_>, D::Error>>()?;
+        drop(file_ids);
+        Ok(Self {
+            repo: wire.repo,
+            pkg: wire.pkg,
+            lang: wire.lang,
+            sources: wire.sources,
+            imports,
+            symbols: wire.symbols,
+            uses,
+            commits_scanned: wire.commits_scanned,
+            nodes: wire.nodes,
+            edges: wire.edges,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -225,4 +362,52 @@ pub struct WeightedEdge {
 pub struct WeightedGraph {
     pub node_count: usize,
     pub edges: Vec<WeightedEdge>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_data_keeps_path_based_json_with_indexed_edges() {
+        let data = GraphData {
+            repo: "fixture".to_owned(),
+            pkg: ".".to_owned(),
+            lang: "go".to_owned(),
+            sources: vec![(".".to_owned(), "go".to_owned())],
+            imports: vec![(0, 1, 0.5)],
+            symbols: BTreeMap::new(),
+            uses: vec![(0, 1, "Target".to_owned())],
+            commits_scanned: 0,
+            nodes: ["a.go", "pkg/b.go"]
+                .into_iter()
+                .map(|file| SourceNode {
+                    file: file.to_owned(),
+                    loc: 1,
+                    complexity: 0,
+                    churn: 0,
+                    fanin: 0.0,
+                    module: file.to_owned(),
+                    lang: "go".to_owned(),
+                })
+                .collect(),
+            edges: Vec::new(),
+        };
+
+        let bytes = serde_json::to_vec(&data).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            value["imports"],
+            serde_json::json!([["a.go", "pkg/b.go", 0.5]])
+        );
+        assert_eq!(
+            value["uses"],
+            serde_json::json!([["a.go", "pkg/b.go", "Target"]])
+        );
+
+        let round_trip: GraphData = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(round_trip.imports, data.imports);
+        assert_eq!(round_trip.uses, data.uses);
+        assert_eq!(serde_json::to_vec(&round_trip).unwrap(), bytes);
+    }
 }
