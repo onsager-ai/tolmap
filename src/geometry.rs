@@ -416,11 +416,9 @@ pub fn build_multi_warm(
 /// parity on a pre-extracted graph (`tolmap dump-graph`'s output) without
 /// cloning the source repository -- see the module doc on `schema::GraphData`.
 ///
-/// Cold-start only (no warm start). Kept as the CLI's entry point rather
-/// than adding an `Option` parameter to it directly so `tolmap build`'s
-/// signature does not grow a job-service concern it cannot supply (the CLI
-/// has no store to read a previous commit's membership from). The job
-/// service calls [`build_from_graph_warm`] instead.
+/// Cold-start only (no warm start). Kept as the simple library entry point;
+/// the service and `tolmap build --previous-map` call
+/// [`build_from_graph_warm`] instead.
 pub fn build_from_graph(
     graph: GraphData,
     map_name: String,

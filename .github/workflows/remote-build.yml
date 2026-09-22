@@ -367,6 +367,7 @@ jobs:
               ./bin-primary/tolmap dump-blend "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
               --out "out-primary/${STEM}.json" \
               > primary.log 2>&1
+            rc=$?
           elif [ "$COMMAND" = "stability" ]; then
             mkdir -p out-previous
             git -C clone checkout --quiet --detach "$COMMIT"
@@ -395,8 +396,8 @@ jobs:
               ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
               --name "$STEM" --out out-primary \
               > primary.log 2>&1
+            rc=$?
           fi
-          rc=$?
           set -e
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
 
@@ -421,6 +422,7 @@ jobs:
               ./bin-compare/tolmap dump-blend "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
               --out "out-compare/${STEM}.json" \
               > compare.log 2>&1
+            rc=$?
           elif [ "$COMMAND" = "stability" ]; then
             mkdir -p out-compare-previous
             git -C clone checkout --quiet --detach "$COMMIT"
@@ -449,8 +451,8 @@ jobs:
               ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
               --name "$STEM" --out out-compare \
               > compare.log 2>&1
+            rc=$?
           fi
-          rc=$?
           set -e
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
 
