@@ -46,7 +46,7 @@ on:
         required: false
         default: "main"
       repos:
-        description: "comma-separated slugs (owner/repo,owner/repo), a band (small/medium/large/ultra), or 'all'"
+        description: "slugs, band, all, stability, or stability:owner/repo,... (300 commits back; httpx 200)"
         required: false
         default: "all"
       extra_args:
@@ -58,7 +58,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation per repo: build, dump-blend, or two-commit warm-start stability (use repos=stability)"
+        description: "operation per repo: build, dump-blend, or two-commit warm-start stability (use repos=stability or stability:owner/repo,...)"
         required: false
         type: choice
         options:
