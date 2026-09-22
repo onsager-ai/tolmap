@@ -21,6 +21,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use crate::geometry::TerrainMode;
+
 #[derive(Clone, Debug)]
 pub struct Limits {
     /// Reject a repository with more source files than this, after
@@ -205,12 +207,12 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_STATIC_DIR`.
     pub static_dir: Option<PathBuf>,
-    /// Enable terrain-aware subdivision for maps built by the job service.
-    /// This is deliberately opt-in: merging the feature must not change a
-    /// hosted environment's map artifacts until its owner enables them.
+    /// Select terrain-aware subdivision for maps built by the job service.
+    /// The service stays off when unset so each hosted environment must make
+    /// its rollout choice explicitly.
     ///
-    /// Env: `TOLMAP_TERRAIN` (`true` or `false`).
-    pub terrain: bool,
+    /// Env: `TOLMAP_TERRAIN` (`false`, `auto`, or `true`).
+    pub terrain: TerrainMode,
     pub limits: Limits,
     /// Store retention policy (issue #23 gap 2): the number of most-recently-
     /// indexed commits kept per repository slug; older `(slug, commit_sha)`
@@ -255,9 +257,9 @@ impl ServeConfig {
         // Unset (the default) keeps the router exactly as it is without
         // this -- see the `static_dir` field's doc comment.
         let static_dir = env::var("TOLMAP_STATIC_DIR").ok().map(PathBuf::from);
-        // Terrain remains an explicit operator choice in the hosted service,
-        // just as it is an explicit `tolmap build --terrain` CLI choice.
-        let terrain = env_var_or("TOLMAP_TERRAIN", false);
+        // Unlike the CLI's Auto default, the hosted service stays Off unless
+        // an operator explicitly chooses Auto or On for that environment.
+        let terrain = env_var_or("TOLMAP_TERRAIN", TerrainMode::Off);
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the
         // unbounded growth issue #23 gap 2 reported -- see store::prune.
@@ -419,15 +421,21 @@ mod tests {
     fn terrain_is_off_by_default_and_requires_an_explicit_valid_opt_in() {
         let _guard = lock_env();
         env::remove_var("TOLMAP_TERRAIN");
-        assert!(!ServeConfig::from_env().terrain);
+        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Off);
 
         env::set_var("TOLMAP_TERRAIN", "true");
-        assert!(ServeConfig::from_env().terrain);
+        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::On);
+
+        env::set_var("TOLMAP_TERRAIN", "auto");
+        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Auto);
+
+        env::set_var("TOLMAP_TERRAIN", "false");
+        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Off);
 
         // Match every other typed setting: invalid input falls back to the
         // safe documented default instead of changing startup behaviour.
         env::set_var("TOLMAP_TERRAIN", "not-a-boolean");
-        assert!(!ServeConfig::from_env().terrain);
+        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Off);
         env::remove_var("TOLMAP_TERRAIN");
     }
 

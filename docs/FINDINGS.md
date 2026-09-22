@@ -903,3 +903,17 @@ The CLAUDE.md viewer check (districts named, landmarks listed, tapping a distric
 - **A phone.** Every touch check in this and finding 16 is Playwright's touch emulation.
 - **The two owner decisions issue #54 asks for**: whether `--terrain` becomes the default above some file count (or for all repos, or stays opt-in — the default map is byte-for-byte unaffected by anything in this finding, since only viewer zoom thresholds changed), and whether `TOLMAP_TERRAIN` gets enabled on staging or production. Both need the cost table above and are not decided here.
 - **`aws/aws-sdk-go-v2`'s wall-time cost, mechanistically.** The cost table above flags it; nothing here traced which of its many eligible districts is driving it or whether it is the recursive-Leiden-per-district cost finding 16's model predicts or something else.
+
+## 22. Terrain defaults on above 2,000 mapped files; staging goes first
+
+Ruled 2026-09-22 by the project owner after finding 21's terrain zoom and cost review:
+
+1. **“Default on above 2,000 files.”** The CLI's default is now `auto`: terrain is enabled only when the graph contains **more than 2,000 mapped source files**, the same count serialized as `F`. Exactly 2,000 remains off. `--terrain` forces it on and `--no-terrain` forces it off. The threshold is named once in `src/geometry.rs`. Finding 21's follow-up medians of three GitHub runner builds with terrain on and off put build-time changes within runner noise; peak memory was unchanged except for vscode at +19%.
+2. **“Staging now, prod after a look.”** `TOLMAP_TERRAIN` accepts `false`, `auto`, and `true`, but an unset or invalid value still resolves to `false`. Railway staging explicitly sets `auto`; Fly production leaves the setting absent until the owner approves production after inspecting staging.
+
+At the pinned counts in `eval/corpus.toml`, **39 successfully built corpus repositories** now clear the automatic threshold:
+
+- Large band: `DataDog/datadog-agent` (7,968), `angular/angular` (3,082), `ant-design/ant-design` (2,166), `apache/airflow` (4,637), `apache/superset` (3,668), `aws/aws-sdk-go` (2,386), `backstage/backstage` (2,844), `calcom/cal.com` (4,432), `cockroachdb/cockroach` (6,785), `elastic/beats` (3,196), `getsentry/sentry` (4,583), `go-gitea/gitea` (2,254), `googleapis/google-cloud-go` (7,288), `grafana/grafana` (5,498), `hashicorp/terraform-provider-aws` (4,931), `hashicorp/terraform-provider-azurerm` (3,490), `hashicorp/terraform-provider-google` (2,508), `hashicorp/vault` (2,093), `huggingface/transformers` (3,020), `langgenius/dify` (6,347), `mattermost/mattermost` (4,667), `microsoft/vscode` (5,919), `odoo/odoo` (6,178), `prefecthq/prefect` (2,096), `pulumi/pulumi-gcp` (6,831), `storybookjs/storybook` (3,302), `supabase/supabase` (5,292), and `vercel/next.js` (2,035).
+- Ultra band: `Azure/azure-sdk-for-python` (40,129), `aws/aws-sdk-go-v2` (26,520), `elastic/kibana` (10,216), `googleapis/google-cloud-python` (39,964), `home-assistant/core` (10,209), `kubernetes/kubernetes` (8,570), `microsoftgraph/msgraph-sdk-python` (16,636), `n8n-io/n8n` (11,991), `pulumi/pulumi-aws` (8,757), `pulumi/pulumi-azure-native` (11,650), and `twentyhq/twenty` (22,033).
+
+All nine acceptance fixtures contain at most 851 mapped files. None crosses the threshold, no fixture was re-derived or changed, and the CI offline parity gate continues to prove their default artifacts byte-identical.

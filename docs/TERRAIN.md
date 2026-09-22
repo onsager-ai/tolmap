@@ -185,10 +185,10 @@ So: path is **usable** to order parcels inside an established district, and to n
 
 ## 10. Rendering and schema
 
-- **Schema** (defined once in Rust, TypeScript generated — `CLAUDE.md`): per file, an optional sub-district index within its district, or a parcel marker; per district, its arterials and the parcel order. All fields optional and absent unless the flag is on, so the default map's bytes do not change.
+- **Schema** (defined once in Rust, TypeScript generated — `CLAUDE.md`): per file, an optional sub-district index within its district, or a parcel marker; per district, its arterials and the parcel order. All fields are optional and absent whenever terrain resolves off, so maps at or below the automatic threshold retain their bytes.
 - **Map surface**: arterials as roads inside the district; organic sub-districts as sub-contours within the district contour; parcels as a grid packed into the plat part of the district's area, ordered by address, cell area proportional to file count so finding 8's area encoding holds.
 - **Cards**: tapping a sub-district, a parcel, or an arterial each produces a card, on a phone as well as a desktop. The three touch-only bugs documented in the reference renderer apply to every new hit target.
-- **Flag**: `tolmap build --terrain` (name open). Off by default; the default map is byte-identical with it off, checked in CI.
+- **Mode**: `tolmap build` defaults to automatic terrain above 2,000 mapped source files. `--terrain` forces it on and `--no-terrain` forces it off. The 2026-09-22 decision and threshold are recorded in finding 22.
 
 ## 11. Scale, and the falsification tests
 

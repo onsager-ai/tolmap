@@ -65,4 +65,4 @@ A deploy with no tag to cut — a rollback, or shipping a fix that is already on
 
 Change it in `fly.toml` and in `deploy/railway.staging.env`, in the same PR, with the arithmetic in `fly.toml`'s comment. CI's `deploy env parity` job fails the build if only one side moves. A deliberate one-sided knob goes in `EXPECTED_ONLY_IN_*` in `scripts/check_deploy_env_parity.py` with the reason written next to it.
 
-`TOLMAP_TERRAIN` is a feature opt-in, not a deployment limit. It defaults to false and is deliberately absent from both hosted configurations; enabling terrain on staging or production is a separate owner decision after merge. Its accepted values are documented with the other service settings in `docs/API.md`.
+`TOLMAP_TERRAIN` is a feature setting, not a deployment limit. It accepts `false`, `auto`, or `true` and defaults to `false` when unset or invalid. By the owner's 2026-09-22 decision, staging sets it to `auto`, which enables terrain only above 2,000 mapped source files. Production deliberately leaves it unset until the owner has looked at staging. This one-sided setting is recorded in `scripts/check_deploy_env_parity.py`.

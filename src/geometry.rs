@@ -17,10 +17,46 @@ use crate::schema::{
 };
 use crate::terrain;
 
+/// Terrain's automatic-mode boundary, measured against the mapped source
+/// files the build actually indexes (the same count serialized as `F`).
+/// Finding 21's medians of three GitHub runner builds per side put build-time
+/// changes inside runner noise and peak RSS unchanged except vscode (+19%).
+pub const TERRAIN_AUTO_FILE_THRESHOLD: usize = 2_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerrainMode {
+    Off,
+    Auto,
+    On,
+}
+
+impl TerrainMode {
+    pub fn enabled_for(self, file_count: usize) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Auto => file_count > TERRAIN_AUTO_FILE_THRESHOLD,
+            Self::On => true,
+        }
+    }
+}
+
+impl std::str::FromStr for TerrainMode {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "false" => Ok(Self::Off),
+            "auto" => Ok(Self::Auto),
+            "true" => Ok(Self::On),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BuildFeatures {
     pub parcels: bool,
-    pub terrain: bool,
+    pub terrain: TerrainMode,
     pub prune_variant: pipeline::PruneVariant,
 }
 
@@ -441,6 +477,10 @@ pub fn build_from_graph_warm(
     features: BuildFeatures,
     previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
+    // Extraction assigns one graph node to every mapped source file, and
+    // compact() later serializes those same nodes as F. Resolve Auto here so
+    // repository, --all-sources and --graph builds all use that exact count.
+    let with_terrain = features.terrain.enabled_for(graph.nodes.len());
     eprintln!("[2/5] partition resolution={resolution}");
     let partitioner = LeidenFfi;
     let previous_membership = previous_document.map(|document| {
@@ -496,7 +536,7 @@ pub fn build_from_graph_warm(
         eprintln!("        d{district:<2} {count:4} files  {district_name}");
     }
     eprintln!("[4/5] geometry regions");
-    let mut geometry = blobs::build_geometry(&layout, &partitioner, features.terrain)?;
+    let mut geometry = blobs::build_geometry(&layout, &partitioner, with_terrain)?;
     // Unconnected districts get no region: they are not places (issue #34).
     // Their files already have a defined, deterministic point from the
     // scatter above (`compact` still emits a `NodeRow` for every file
@@ -882,6 +922,14 @@ fn define_site(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_auto_starts_above_two_thousand_mapped_files() {
+        assert!(!TerrainMode::Auto.enabled_for(TERRAIN_AUTO_FILE_THRESHOLD));
+        assert!(TerrainMode::Auto.enabled_for(TERRAIN_AUTO_FILE_THRESHOLD + 1));
+        assert!(!TerrainMode::Off.enabled_for(TERRAIN_AUTO_FILE_THRESHOLD + 1));
+        assert!(TerrainMode::On.enabled_for(0));
+    }
 
     /// District 0 is a lone file (index 0); every other file is one large
     /// district (1, always mainland regardless of the boundary under test),

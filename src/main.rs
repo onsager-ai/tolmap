@@ -51,11 +51,14 @@ enum Command {
         resolution: f64,
         #[arg(long)]
         no_parcels: bool,
-        /// Subdivide oversized districts into arterials, organic
-        /// sub-districts, and address-ordered parcels. Off by default so the
-        /// established map remains byte-identical.
-        #[arg(long)]
+        /// Force terrain on. By default terrain is automatic: on above 2,000
+        /// mapped source files and off at or below 2,000.
+        #[arg(long, conflicts_with = "no_terrain")]
         terrain: bool,
+        /// Force terrain off, including for repositories above 2,000 mapped
+        /// source files.
+        #[arg(long)]
+        no_terrain: bool,
         /// Blend/prune experiment to run. `absolute` is the established
         /// pipeline and remains the default.
         #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::Absolute)]
@@ -327,6 +330,7 @@ fn main() -> Result<()> {
             resolution,
             no_parcels,
             terrain,
+            no_terrain,
             prune_variant,
             previous_map,
             graph,
@@ -340,6 +344,13 @@ fn main() -> Result<()> {
                         .with_context(|| format!("parse previous map {}", path.display()))
                 })
                 .transpose()?;
+            let terrain = if terrain {
+                tolmap::geometry::TerrainMode::On
+            } else if no_terrain {
+                tolmap::geometry::TerrainMode::Off
+            } else {
+                tolmap::geometry::TerrainMode::Auto
+            };
             match (repo, graph) {
                 (Some(_), Some(_)) => {
                     anyhow::bail!("pass either a repository or --graph, not both")

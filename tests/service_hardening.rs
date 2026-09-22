@@ -25,6 +25,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+use tolmap::geometry::TerrainMode;
 use tolmap::service::config::{Limits, ServeConfig};
 use tolmap::service::ratelimit::RateLimiter;
 use tolmap::service::store::Store;
@@ -55,7 +56,7 @@ fn state_with_limits(limits: Limits) -> (tempfile::TempDir, Arc<AppState>) {
         db_path,
         cache_dir,
         static_dir: None,
-        terrain: false,
+        terrain: TerrainMode::Off,
         limits,
         retain_commits_per_repo: 20,
     };
