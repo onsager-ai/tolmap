@@ -29,6 +29,8 @@ DEFAULT_CSV = ROOT / "eval" / "corpus_stats.csv"
 DEFAULT_MARKDOWN = ROOT / "eval" / "corpus_summary.md"
 VIEWPORTS = ((390, 700), (1440, 900))
 BANDS = ("small", "medium", "large", "ultra")
+# web/src/map/constants.ts's DOT_DENSITY_FLOOR (#48).
+DOT_DENSITY_FLOOR = 30.0
 
 FIELDS = (
     "slug",
@@ -48,6 +50,10 @@ FIELDS = (
     "px2_file_390x700_median",
     "px2_file_1440x900_min",
     "px2_file_1440x900_median",
+    "share_under_floor_390x700",
+    "share_under_floor_1440x900",
+    "zero_blob_included_districts",
+    "files_in_zero_blob_districts",
     "build_seconds",
     "peak_rss_mb",
     "failure_reason",
@@ -67,6 +73,8 @@ SUMMARY_FIELDS = (
     "px2_file_390x700_median",
     "px2_file_1440x900_min",
     "px2_file_1440x900_median",
+    "share_under_floor_390x700",
+    "share_under_floor_1440x900",
     "build_seconds",
     "peak_rss_mb",
 )
@@ -116,14 +124,26 @@ def world_fit_scale(doc: dict, width: int, height: int) -> float:
     )
 
 
-def px_per_file(doc: dict, classes: dict, viewport: tuple[int, int]) -> tuple[float, float]:
-    # Matches no-change-proof.ts's densityByDistrict: every district except
-    # "unconnected" ones (no polygon -- geometry.rs empties their blob, so
-    # there is no area to budget against) is included, not just mainland.
-    # An island district still has a drawn region and a file-dot budget.
+def district_densities(doc: dict, classes: dict, viewport: tuple[int, int]) -> list[tuple[int, float]]:
+    """Per-district (size, px²/file) at fit zoom, matching no-change-proof.ts's
+    densityByDistrict: every district except "unconnected" ones is included,
+    not just mainland -- an island district still has a drawn region and a
+    file-dot budget.
+
+    A district can measure exactly 0.0 px²/file here for a reason that has
+    nothing to do with viewport size or zoom: `contours()` in src/blobs.rs
+    only keeps a marching-squares contour with >=12 points that is also
+    >=12% of that district's largest contour's point count, so a district
+    with too few member files (empirically, almost always <=12 files; see
+    docs/FINDINGS.md finding 17) never clears that filter and gets an empty
+    `blob` -- no polygon at any zoom, not a small one. Both `zero_blob_*`
+    columns below count these separately from the px2_file_*_min column,
+    which a single such district anywhere in a large map can otherwise pin
+    at 0.0 regardless of everything else in that map.
+    """
     included = classes["mainland_ids"] | classes["island_ids"]
     scale = world_fit_scale(doc, *viewport)
-    values = []
+    out = []
     for district_id in sorted(included):
         size = len(classes["members"][district_id])
         if size <= 0:
@@ -132,10 +152,32 @@ def px_per_file(doc: dict, classes: dict, viewport: tuple[int, int]) -> tuple[fl
             polygon_area(polygon)
             for polygon in doc["districts"][str(district_id)]["blob"]
         )
-        values.append(area * scale * scale / size)
-    if not values:
+        out.append((size, area * scale * scale / size))
+    return out
+
+
+def px_per_file(densities: list[tuple[int, float]]) -> tuple[float, float]:
+    if not densities:
         return math.nan, math.nan
+    values = [px2 for _, px2 in densities]
     return min(values), statistics.median(values)
+
+
+def share_under_floor(
+    densities: list[tuple[int, float]], total_files: int, floor: float = DOT_DENSITY_FLOOR
+) -> float:
+    """Share of ALL mapped files (not just mainland/island ones) that sit in
+    a district whose px²/file is below the floor at fit zoom -- the file-dot
+    budget in web/src/map/MapRenderer.ts's dotFactor engages for these.
+    Unconnected files are never thinned (PR #49: "there's no area to budget
+    against"), so they never contribute to the numerator, but they do sit in
+    the denominator; this makes the share a whole-map figure, not one scoped
+    to files the budget could possibly apply to.
+    """
+    if total_files <= 0:
+        return math.nan
+    under = sum(size for size, px2 in densities if px2 < floor)
+    return under / total_files
 
 
 def load_builds(path: Path) -> dict[str, dict]:
@@ -172,8 +214,20 @@ def map_row(entry: dict, map_path: Path, build: dict) -> dict:
         raise ValueError(
             f"{entry['slug']}: manifest says {expected_files} files, map has {measured_files}"
         )
-    mobile_min, mobile_median = px_per_file(doc, classes, VIEWPORTS[0])
-    desktop_min, desktop_median = px_per_file(doc, classes, VIEWPORTS[1])
+    mobile_densities = district_densities(doc, classes, VIEWPORTS[0])
+    desktop_densities = district_densities(doc, classes, VIEWPORTS[1])
+    mobile_min, mobile_median = px_per_file(mobile_densities)
+    desktop_min, desktop_median = px_per_file(desktop_densities)
+    # Zero-blob districts are a fixed geometric fact of the map (src/blobs.rs
+    # never gives them a polygon at any zoom), so this is the same set for
+    # both viewports -- computed once from either density list.
+    included = classes["mainland_ids"] | classes["island_ids"]
+    zero_blob_ids = {
+        district_id
+        for district_id in included
+        if not doc["districts"][str(district_id)]["blob"]
+        or sum(polygon_area(p) for p in doc["districts"][str(district_id)]["blob"]) == 0.0
+    }
     base.update(
         status="built",
         files=measured_files,
@@ -189,6 +243,10 @@ def map_row(entry: dict, map_path: Path, build: dict) -> dict:
         px2_file_390x700_median=mobile_median,
         px2_file_1440x900_min=desktop_min,
         px2_file_1440x900_median=desktop_median,
+        share_under_floor_390x700=share_under_floor(mobile_densities, measured_files),
+        share_under_floor_1440x900=share_under_floor(desktop_densities, measured_files),
+        zero_blob_included_districts=len(zero_blob_ids),
+        files_in_zero_blob_districts=sum(len(classes["members"][d]) for d in zero_blob_ids),
     )
     return base
 
@@ -208,6 +266,8 @@ def percentile(values: list[float], fraction: float) -> float:
 def format_number(value: float, field: str) -> str:
     if field in {"q"}:
         return f"{value:.3f}"
+    if field.startswith("share_under_floor"):
+        return f"{value:.1%}"
     if field.startswith("px2_") or field in {"build_seconds", "peak_rss_mb"}:
         return f"{value:.1f}"
     return f"{value:,.0f}"
@@ -238,6 +298,8 @@ def write_markdown(path: Path, rows: list[dict]) -> None:
         "px2_file_390x700_median": "390×700 px²/file district median",
         "px2_file_1440x900_min": "1440×900 px²/file min",
         "px2_file_1440x900_median": "1440×900 px²/file district median",
+        "share_under_floor_390x700": "390×700 share of files under floor",
+        "share_under_floor_1440x900": "1440×900 share of files under floor",
         "build_seconds": "build seconds",
         "peak_rss_mb": "peak RSS MB",
     }
@@ -245,6 +307,8 @@ def write_markdown(path: Path, rows: list[dict]) -> None:
         "# Evaluation corpus summary",
         "",
         "Each cell is the per-repository median [p10–p90]. Failed repositories are counted but excluded from metric distributions.",
+        "",
+        "The px²/file *min* columns are dominated by a geometric artifact, not zoom: a district with too few member files (empirically almost always <=12) never clears the >=12-point marching-squares contour filter in src/blobs.rs and gets no polygon at any zoom, which floors that repo's minimum at 0.0 regardless of everything else in the map (see docs/FINDINGS.md finding 17). The *share of files under floor* rows are the robust statistic: the fraction of all mapped files sitting in a mainland/island district whose px²/file is below the 30 px²/file floor (#48) at fit zoom, including these zero-blob districts (their file-dot budget is genuinely 0, which is what \"under floor\" means for them too).",
         "",
         "| metric | small | medium | large | ultra |",
         "|---|---:|---:|---:|---:|",

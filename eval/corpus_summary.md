@@ -2,6 +2,8 @@
 
 Each cell is the per-repository median [p10–p90]. Failed repositories are counted but excluded from metric distributions.
 
+The px²/file *min* columns are dominated by a geometric artifact, not zoom: a district with too few member files (empirically almost always <=12) never clears the >=12-point marching-squares contour filter in src/blobs.rs and gets no polygon at any zoom, which floors that repo's minimum at 0.0 regardless of everything else in the map (see docs/FINDINGS.md finding 17). The *share of files under floor* rows are the robust statistic: the fraction of all mapped files sitting in a mainland/island district whose px²/file is below the 30 px²/file floor (#48) at fit zoom, including these zero-blob districts (their file-dot budget is genuinely 0, which is what "under floor" means for them too).
+
 | metric | small | medium | large | ultra |
 |---|---:|---:|---:|---:|
 | repositories (built/failed) | 49/0 | 40/1 | 28/2 | 11/1 |
@@ -18,5 +20,7 @@ Each cell is the per-repository median [p10–p90]. Failed repositories are coun
 | 390×700 px²/file district median | 189.5 [123.8–286.7] | 60.2 [28.9–99.0] | 12.2 [5.9–28.4] | 2.0 [0.0–5.5] |
 | 1440×900 px²/file min | 904.2 [251.6–1435.6] | 223.8 [141.4–395.9] | 51.1 [0.0–101.3] | 0.0 [0.0–0.0] |
 | 1440×900 px²/file district median | 1338.7 [858.5–1820.7] | 356.0 [207.0–748.8] | 91.4 [40.3–162.2] | 16.8 [0.0–38.9] |
+| 390×700 share of files under floor | 0.0% [0.0%–0.0%] | 0.0% [0.0%–64.3%] | 99.6% [30.9%–99.9%] | 99.8% [60.9%–100.0%] |
+| 1440×900 share of files under floor | 0.0% [0.0%–0.0%] | 0.0% [0.0%–0.0%] | 0.0% [0.0%–4.9%] | 42.0% [2.6%–97.0%] |
 | build seconds | 0.3 [0.2–0.9] | 2.9 [1.5–8.2] | 19.5 [8.4–52.9] | 81.6 [42.1–380.9] |
 | peak RSS MB | 20.8 [17.5–34.1] | 114.2 [42.9–254.5] | 519.8 [213.3–1266.9] | 1786.7 [838.9–5305.8] |
