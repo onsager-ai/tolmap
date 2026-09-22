@@ -172,3 +172,41 @@ body {
 .map-svg.previewing polyline {
   vector-effect: non-scaling-stroke;
 }
+
+/* Desktop hover (readable-overview PR, scope item 4): MapRenderer toggles
+   this directly on the hovered element via classList -- never a repaint.
+   filter+drop-shadow reads consistently across every hoverable shape
+   (circle file dots, path districts/parcels, rect treemap tiles, g pins,
+   text sub-district labels) without a per-element-type highlight rule, and
+   composites over whatever fill/stroke-opacity paint() already baked in
+   rather than fighting it. */
+.map-svg .hovered {
+  filter: brightness(1.3) drop-shadow(0 0 3px var(--hot));
+}
+
+/* The desktop-hover quick card (MapRenderer's ensureCard/showCard):
+   replaces the native SVG <title> tooltip on fine pointers only -- the
+   <title> elements themselves are untouched, so a keyboard/screen-reader
+   user on any device still gets that text. Positioned absolutely by
+   MapRenderer, appended as a sibling of the map <svg> inside MapCanvas's
+   wrapper. */
+.tolmap-hover-card {
+  position: absolute;
+  z-index: 20;
+  display: none;
+  pointer-events: none;
+  max-width: 280px;
+  padding: 6px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--chrome2);
+  color: var(--on);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+.tolmap-hover-card-title {
+  font-weight: 600;
+  word-break: break-all;
+}
