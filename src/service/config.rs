@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use crate::geometry::TerrainMode;
+use crate::pipeline::PruneVariant;
 
 #[derive(Clone, Debug)]
 pub struct Limits {
@@ -213,6 +214,13 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_TERRAIN` (`false`, `auto`, or `true`).
     pub terrain: TerrainMode,
+    /// Select the blend/prune route for maps built by the job service.
+    /// Node-relative is the owner-approved default; every measured route
+    /// remains available for controlled comparisons.
+    ///
+    /// Env: `TOLMAP_PRUNE_VARIANT` (`absolute`, `percentile`,
+    /// `node-relative`, or `pre-rescale`).
+    pub prune_variant: PruneVariant,
     pub limits: Limits,
     /// Store retention policy (issue #23 gap 2): the number of most-recently-
     /// indexed commits kept per repository slug; older `(slug, commit_sha)`
@@ -229,7 +237,8 @@ impl ServeConfig {
     /// Reads overridable settings from the environment
     /// (`TOLMAP_PORT`, `TOLMAP_BIND_ADDR`, `TOLMAP_DB_PATH`,
     /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`, `TOLMAP_TERRAIN`,
-    /// `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus `Limits::from_env`'s
+    /// `TOLMAP_PRUNE_VARIANT`, `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus
+    /// `Limits::from_env`'s
     /// `TOLMAP_MAX_*`/`TOLMAP_RATE_LIMIT_*`); anything left unset uses its
     /// documented default. No config file yet -- the job service has no
     /// equivalent of `.tolmap/config.toml` to read limits from, and env
@@ -260,6 +269,7 @@ impl ServeConfig {
         // Unlike the CLI's Auto default, the hosted service stays Off unless
         // an operator explicitly chooses Auto or On for that environment.
         let terrain = env_var_or("TOLMAP_TERRAIN", TerrainMode::Off);
+        let prune_variant = env_var_or("TOLMAP_PRUNE_VARIANT", PruneVariant::default());
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the
         // unbounded growth issue #23 gap 2 reported -- see store::prune.
@@ -270,6 +280,7 @@ impl ServeConfig {
             cache_dir,
             static_dir,
             terrain,
+            prune_variant,
             limits: Limits::from_env(),
             retain_commits_per_repo,
         }
@@ -437,6 +448,33 @@ mod tests {
         env::set_var("TOLMAP_TERRAIN", "not-a-boolean");
         assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Off);
         env::remove_var("TOLMAP_TERRAIN");
+    }
+
+    #[test]
+    fn prune_variant_defaults_to_node_relative_and_accepts_every_route() {
+        let _guard = lock_env();
+        env::remove_var("TOLMAP_PRUNE_VARIANT");
+        assert_eq!(
+            ServeConfig::from_env().prune_variant,
+            PruneVariant::NodeRelative
+        );
+
+        for (value, expected) in [
+            ("absolute", PruneVariant::Absolute),
+            ("percentile", PruneVariant::Percentile),
+            ("node-relative", PruneVariant::NodeRelative),
+            ("pre-rescale", PruneVariant::PreRescale),
+        ] {
+            env::set_var("TOLMAP_PRUNE_VARIANT", value);
+            assert_eq!(ServeConfig::from_env().prune_variant, expected);
+        }
+
+        env::set_var("TOLMAP_PRUNE_VARIANT", "invalid");
+        assert_eq!(
+            ServeConfig::from_env().prune_variant,
+            PruneVariant::NodeRelative
+        );
+        env::remove_var("TOLMAP_PRUNE_VARIANT");
     }
 
     /// The regression this change fixes: `max_history_commits`'s default

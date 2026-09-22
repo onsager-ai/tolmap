@@ -260,7 +260,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: |
+            data
             eval
+            src/tolmap
 
       - name: Download tolmap binary (primary)
         uses: actions/download-artifact@v4
@@ -356,10 +358,19 @@ jobs:
           COMMAND: ${{ inputs.command }}
           BACK: ${{ matrix.back }}
           COMMIT: ${{ matrix.commit }}
+          BAND: ${{ matrix.band }}
+          FIXTURE_NO_PARCELS: ${{ matrix.fixture_no_parcels }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
         run: |
           set -uo pipefail
           mkdir -p out-primary
+          if [ "$BAND" = "fixture" ] && [ "$COMMAND" = "build" ]; then
+            PYTHONPATH="$PWD/src" python3 eval/seed_names.py out-primary "$STEM"
+          fi
+          parcels_arg=""
+          if [ "$FIXTURE_NO_PARCELS" = "true" ]; then
+            parcels_arg="--no-parcels"
+          fi
           set +e
           if [ "$COMMAND" = "dump-blend" ]; then
             /usr/bin/time -v -o primary.time.txt \
@@ -374,6 +385,7 @@ jobs:
             git -C clone checkout --quiet --detach "HEAD~${BACK}"
             prlimit "--as=${BUILD_MEM_BYTES}" -- \
               ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              $parcels_arg \
               --name "$STEM" --out out-previous \
               > previous.log 2>&1
             previous_rc=$?
@@ -382,6 +394,7 @@ jobs:
               /usr/bin/time -v -o primary.time.txt \
                 prlimit "--as=${BUILD_MEM_BYTES}" -- \
                 ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+                $parcels_arg \
                 --previous-map "out-previous/${STEM}.json" \
                 --name "$STEM" --out out-primary \
                 > primary.log 2>&1
@@ -394,6 +407,7 @@ jobs:
             /usr/bin/time -v -o primary.time.txt \
               prlimit "--as=${BUILD_MEM_BYTES}" -- \
               ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              $parcels_arg \
               --name "$STEM" --out out-primary \
               > primary.log 2>&1
             rc=$?
@@ -411,10 +425,19 @@ jobs:
           COMMAND: ${{ inputs.command }}
           BACK: ${{ matrix.back }}
           COMMIT: ${{ matrix.commit }}
+          BAND: ${{ matrix.band }}
+          FIXTURE_NO_PARCELS: ${{ matrix.fixture_no_parcels }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
         run: |
           set -uo pipefail
           mkdir -p out-compare
+          if [ "$BAND" = "fixture" ] && [ "$COMMAND" = "build" ]; then
+            PYTHONPATH="$PWD/src" python3 eval/seed_names.py out-compare "$STEM"
+          fi
+          parcels_arg=""
+          if [ "$FIXTURE_NO_PARCELS" = "true" ]; then
+            parcels_arg="--no-parcels"
+          fi
           set +e
           if [ "$COMMAND" = "dump-blend" ]; then
             /usr/bin/time -v -o compare.time.txt \
@@ -429,6 +452,7 @@ jobs:
             git -C clone checkout --quiet --detach "HEAD~${BACK}"
             prlimit "--as=${BUILD_MEM_BYTES}" -- \
               ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              $parcels_arg \
               --name "$STEM" --out out-compare-previous \
               > compare-previous.log 2>&1
             previous_rc=$?
@@ -437,6 +461,7 @@ jobs:
               /usr/bin/time -v -o compare.time.txt \
                 prlimit "--as=${BUILD_MEM_BYTES}" -- \
                 ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+                $parcels_arg \
                 --previous-map "out-compare-previous/${STEM}.json" \
                 --name "$STEM" --out out-compare \
                 > compare.log 2>&1
@@ -449,6 +474,7 @@ jobs:
             /usr/bin/time -v -o compare.time.txt \
               prlimit "--as=${BUILD_MEM_BYTES}" -- \
               ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              $parcels_arg \
               --name "$STEM" --out out-compare \
               > compare.log 2>&1
             rc=$?

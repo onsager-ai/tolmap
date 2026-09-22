@@ -59,9 +59,9 @@ enum Command {
         /// source files.
         #[arg(long)]
         no_terrain: bool,
-        /// Blend/prune experiment to run. `absolute` is the established
-        /// pipeline and remains the default.
-        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::Absolute)]
+        /// Blend/prune route to run. Defaults to `node-relative`; pass
+        /// `--prune-variant absolute` to reproduce the original fixed floor.
+        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::NodeRelative)]
         prune_variant: tolmap::pipeline::PruneVariant,
         /// Prior map document used to warm-start Leiden membership. Intended
         /// for reproducible two-commit stability measurements; ordinary CLI
@@ -89,9 +89,8 @@ enum Command {
         all_sources: bool,
         #[arg(long)]
         out: PathBuf,
-        /// Blend/prune experiment to report. Defaults to the established
-        /// absolute floor.
-        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::Absolute)]
+        /// Blend/prune route to report. Defaults to `node-relative`.
+        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::NodeRelative)]
         prune_variant: tolmap::pipeline::PruneVariant,
     },
     /// Extraction only: parse a repository and dump the resulting graph as
@@ -145,7 +144,8 @@ enum Command {
         resolution: f64,
         #[arg(long)]
         out: PathBuf,
-        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::Absolute)]
+        /// Blend/prune route to measure. Defaults to `node-relative`.
+        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::NodeRelative)]
         prune_variant: tolmap::pipeline::PruneVariant,
     },
     /// The job service (milestone 3, issue #5): clones/indexes repositories
