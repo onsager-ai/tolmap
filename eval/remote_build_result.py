@@ -17,10 +17,10 @@ keys are present rather than branching on COMMAND, so a result.json's
 shape always matches what its JSON actually contains.
 
 All inputs come from environment variables (SLUG, COMMIT, BAND,
-REPO_ARGS_JSON, TOLMAP_REF, COMPARE_REF, COMMAND, STEM, PRIMARY_EXIT,
-COMPARE_EXIT, HAS_COMPARE) rather than argv, matching the workflow step's
-`env:` block -- this script has exactly one caller and is not meant to grow
-a CLI.
+REPO_ARGS_JSON, EXTRA_ARGS, TOLMAP_REF, COMPARE_REF, COMMAND, STEM,
+PRIMARY_EXIT, COMPARE_EXIT, HAS_COMPARE) rather than argv, matching the
+workflow step's `env:` block -- this script has exactly one caller and is
+not meant to grow a CLI.
 
 Deliberately tolerant of a missing map (a failed or OOM-killed build still
 gets a result.json recording that, per CLAUDE.md's "numbers must be a
@@ -203,6 +203,7 @@ def main() -> int:
         "commit": env("COMMIT"),
         "band": env("BAND"),
         "args": json.loads(env("REPO_ARGS_JSON") or "[]"),
+        "extra_args": env("EXTRA_ARGS"),
         "tolmap_ref": tolmap_ref,
         "compare_ref": compare_ref,
         "command": command,

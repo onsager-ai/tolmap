@@ -470,6 +470,7 @@ jobs:
           COMMIT: ${{ matrix.commit }}
           BAND: ${{ matrix.band }}
           REPO_ARGS_JSON: ${{ toJSON(matrix.args) }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
           TOLMAP_REF: ${{ inputs.ref }}
           COMPARE_REF: ${{ inputs.compare_ref }}
           COMMAND: ${{ inputs.command }}

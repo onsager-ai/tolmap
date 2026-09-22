@@ -1,6 +1,6 @@
-# Terrain-aware subdivision of oversized districts — proposal
+# Terrain-aware subdivision of oversized districts
 
-Stage 3 of issue #41. **A proposal with measurements, for review before any pipeline code is written.** Nothing here changes the map; the implementation lands behind a flag that leaves the default map byte-identical until the numbers below have been reviewed.
+This began as the measured Stage 3 proposal for issue #41. Terrain shipped behind `--terrain` in #47; finding 22 records the later policy that makes it automatic above 2,000 mapped source files, while keeping smaller default maps byte-identical.
 
 Every number is from `eval/terrain_spike.py` against maps built at `586d5be` (post-#44), on the four reference repositories at their pinned commits (crawlab `ee11cd7`, codex `5c5308f`, dify `e2bdeec`, n8n `0b2ff22`) and the acceptance fixtures in `data/`. "How to reproduce" at the end.
 
@@ -185,10 +185,10 @@ So: path is **usable** to order parcels inside an established district, and to n
 
 ## 10. Rendering and schema
 
-- **Schema** (defined once in Rust, TypeScript generated — `CLAUDE.md`): per file, an optional sub-district index within its district, or a parcel marker; per district, its arterials and the parcel order. All fields optional and absent unless the flag is on, so the default map's bytes do not change.
+- **Schema** (defined once in Rust, TypeScript generated — `CLAUDE.md`): per file, an optional sub-district index within its district, or a parcel marker; per district, its arterials and the parcel order. All fields are optional and absent whenever terrain resolves off, so maps at or below the automatic threshold retain their bytes.
 - **Map surface**: arterials as roads inside the district; organic sub-districts as sub-contours within the district contour; parcels as a grid packed into the plat part of the district's area, ordered by address, cell area proportional to file count so finding 8's area encoding holds.
 - **Cards**: tapping a sub-district, a parcel, or an arterial each produces a card, on a phone as well as a desktop. The three touch-only bugs documented in the reference renderer apply to every new hit target.
-- **Flag**: `tolmap build --terrain` (name open). Off by default; the default map is byte-identical with it off, checked in CI.
+- **Mode**: `tolmap build` defaults to automatic terrain above 2,000 mapped source files. `--terrain` forces it on and `--no-terrain` forces it off. The 2026-09-22 decision and threshold are recorded in finding 22.
 
 ## 11. Scale, and the falsification tests
 

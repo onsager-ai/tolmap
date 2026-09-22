@@ -40,7 +40,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_PORT` | `8787` | listen port |
 | `TOLMAP_BIND_ADDR` | `127.0.0.1` | listen host -- loopback unless explicitly widened (2026-09-20) |
 | `TOLMAP_STATIC_DIR` | unset | serve the built web bundle from this directory alongside the API when set (see above) |
-| `TOLMAP_TERRAIN` | `false` | opt the job service into terrain-aware maps; unset, invalid, or `false` preserves the default map artifact |
+| `TOLMAP_TERRAIN` | `false` | terrain mode: `false` disables it, `auto` enables it above 2,000 mapped source files, and `true` forces it on; unset or invalid stays `false` |
 | `TOLMAP_DB_PATH` | `<TOLMAP_CACHE_DIR>/tolmap.sqlite3` | the SQLite store |
 | `TOLMAP_CACHE_DIR` | system temp dir `/tolmap-cache` | clone cache + indexed map files |
 | `TOLMAP_MAX_FILES` | `5000` | reject a repo with more source files than this after detection |
