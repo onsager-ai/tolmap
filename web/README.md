@@ -12,6 +12,8 @@ pnpm build    # tsc -b && vite build
 
 `predev`/`prebuild` run `scripts/collect-maps.mjs`, which copies map JSON into `public/maps/` (gitignored, regenerated every run) and writes `public/maps/index.json`. Source directory precedence: `$TOLMAP_MAPS_DIR`, then `maps.config.json`'s `mapsDir`, then `../data` (the committed fixtures — fewer geometry modes, since only two of nine carry parcel polygons).
 
+Set `$TOLMAP_CORPUS_DIR` to add the pinned evaluation maps from its `maps/` directory using `../eval/corpus.toml`; `$TOLMAP_CORPUS_MANIFEST` can point at another manifest. With neither variable set, corpus discovery is disabled and the baseline catalogue above is unchanged.
+
 ## Layout
 
 - `src/map/MapRenderer.ts` — the imperative SVG renderer. Not React; see `docs/ARCHITECTURE.md`, "Rendering: do not put nodes in the React tree".
