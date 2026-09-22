@@ -9,6 +9,36 @@ pub struct District {
     pub size: usize,
     pub c: [f64; 2],
     pub blob: Vec<Vec<[f64; 2]>>,
+    // Issue #34 ("islands"): a district's legibility class, over the same
+    // partition Leiden already produced -- a rendering decision, not a
+    // repartition (see `geometry::classify_districts`). `#[serde(default)]`
+    // for the same reason `GraphData::sources` carries it: the nine
+    // committed `data/*.json` fixtures were recorded before this field
+    // existed, and every one of them predates the concept -- they still
+    // deserialise, defaulting to `Mainland`, which is the closest thing to
+    // "unclassified" this type has (and is also correct for eight of the
+    // nine: only prometheus has any sub-1% district at all, and parity.rs
+    // never reads this field, so the default never feeds a comparison).
+    #[serde(default)]
+    pub class: DistrictClass,
+}
+
+/// A district's legibility class -- see `geometry::classify_districts` for
+/// how it's computed and `docs/FINDINGS.md`/issue #34 for the measurement
+/// that motivated it. Lowercase on the wire (`#[serde(rename_all =
+/// "lowercase")]`) to match every other string the map JSON hands the
+/// viewer (`lang`, `names`'s values, landmark `why`/`detail`).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum DistrictClass {
+    // See `District::class`'s doc comment: `#[default]` is only reached
+    // deserialising a pre-#34 fixture, where it is also numerically correct
+    // on all but one of the nine.
+    #[default]
+    Mainland,
+    Island,
+    Unconnected,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]

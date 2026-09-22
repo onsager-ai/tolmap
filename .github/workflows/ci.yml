@@ -241,6 +241,23 @@ jobs:
             --out polyglot-report.json
           python3 eval/check_polyglot_ceilings.py polyglot-report.json
 
+      # docs/FINDINGS.md finding 17 (issue #34): the three district classes.
+      # None of the nine acceptance fixtures can exercise this -- eight have
+      # no sub-1% district at all, and the ninth (prometheus) is not built on
+      # this job's offline path -- so the fixture is generated here, the same
+      # way the polyglot one above is, and checked against the counts its
+      # generator constructs by hand. Not a parity check: there is no
+      # reference implementation of classification to compare against.
+      - name: Generate synthetic islands fixture
+        run: python3 eval/gen_synthetic_islands_fixture.py --out islands-fixture
+
+      - name: Islands classification (finding 17)
+        run: |
+          set -euo pipefail
+          ./target/release/tolmap build "$PWD/islands-fixture" --pkg . --lang py \
+            --name synthetic_islands --out islands-out --no-parcels >/dev/null
+          python3 eval/check_islands_fixture.py islands-out/synthetic_islands.json
+
   # Cheap, no toolchain: prod (fly.toml) and staging
   # (deploy/railway.staging.env) must describe the same set of TOLMAP_*
   # knobs, or staging stops being evidence about prod. See the script's

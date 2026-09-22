@@ -1,5 +1,19 @@
-import type { MapDocument } from "@/types";
+import type { District, DistrictClass, MapDocument } from "@/types";
 import type { Geo } from "./constants";
+
+/** A district's legibility class (issue #34), defaulting to "mainland" when
+ * absent or unrecognised. ts-rs types `District.class` as required, but the
+ * nine `data/*.json` acceptance fixtures were recorded before this field
+ * existed and carry no such key at all -- at runtime `district.class` is
+ * `undefined` for every district in those maps. Reading it through this
+ * helper everywhere (never `district.class` directly) is what keeps a
+ * pre-#34 fixture rendering byte-for-byte as it does on `main`: unclassified
+ * reads as mainland, which is what every district effectively was before
+ * this feature existed, and is also what `#[serde(default)]` on the Rust
+ * struct itself resolves to for the same fixtures. */
+export function districtClass(district: District): DistrictClass {
+  return district.class === "island" || district.class === "unconnected" ? district.class : "mainland";
+}
 
 // ---------- row accessors ----------
 // NodeRow = [d, x, y, loc, cplx, churn, fanin, rx, ry, rw, rh] — a fixed tuple
@@ -56,7 +70,69 @@ export function worldBounds(doc: MapDocument, geo: Geo): [number, number, number
   return a;
 }
 
+/** Same as `worldBounds`, but scoped to mainland districts only (issue #34).
+ * This is the box the default view and the "fit" control frame -- islands
+ * and unconnected districts sit on rings well outside it
+ * (`geometry.rs::relocate_offshore`), and framing the full extent by
+ * default would open a repository like n8n on a mostly-empty frame with the
+ * actual 28-district map squeezed into a corner of it (measured: mainland
+ * is 27.2% of n8n's full extent, 31.6% of dify's). The full extent stays
+ * reachable by zooming out -- see `MapRenderer`'s `clampK`, which floors on
+ * `fullFitScale`, not this -- offshore districts are meant to be reachable,
+ * not foregrounded.
+ *
+ * When every district is mainland (every pre-#34 fixture: a missing `class`
+ * defaults there, see `districtClass`), every `continue` below is a no-op
+ * and this returns exactly what `worldBounds` does -- today's framing is
+ * unchanged. */
+export function mainlandBounds(doc: MapDocument, geo: Geo): [number, number, number, number] {
+  const a: [number, number, number, number] = [1e9, 1e9, -1e9, -1e9];
+  const put = (x: number, y: number) => {
+    a[0] = Math.min(a[0], x);
+    a[1] = Math.min(a[1], y);
+    a[2] = Math.max(a[2], x);
+    a[3] = Math.max(a[3], y);
+  };
+  const isMainland = (i: number) => districtClass(doc.districts[String(D_(doc, i))]) === "mainland";
+  for (let i = 0; i < doc.N.length; i++) {
+    if (!isMainland(i)) continue;
+    const p = px(doc, geo, i);
+    put(p[0], p[1]);
+  }
+  if (geo === "r") {
+    for (const d in doc.districts) {
+      if (districtClass(doc.districts[d]) !== "mainland") continue;
+      for (const poly of doc.districts[d].blob) {
+        for (const q of poly) put(q[0], q[1]);
+      }
+    }
+  } else {
+    for (let i = 0; i < doc.N.length; i++) {
+      if (!isMainland(i)) continue;
+      const r = RECT(doc, i);
+      put(r[0] + r[2], r[1] + r[3]);
+    }
+  }
+  // A document with no mainland district at all is a degenerate case no
+  // real corpus reaches (it needs >=100 districts of near-equal size to
+  // clear MAINLAND_SHARE_PERCENT's 1% floor nowhere -- geometry.rs's own
+  // classify_districts doc comment) -- fall back to the full extent rather
+  // than hand the caller the untouched +-1e9 sentinel.
+  if (a[2] < a[0]) return worldBounds(doc, geo);
+  return a;
+}
+
 export function fitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): number {
+  const b = mainlandBounds(doc, geo);
+  const pad = 46;
+  return Math.min((vw - 2 * pad) / (b[2] - b[0] || 1), (vh - 2 * pad) / (b[3] - b[1] || 1));
+}
+
+/** Like `fitScale`, but against the FULL extent (mainland + islands +
+ * unconnected). `MapRenderer` uses this only as the floor for how far a
+ * viewer can zoom OUT -- never as the default framing, which is
+ * `fitScale`/`mainlandBounds` (see that function's doc comment for why). */
+export function fullFitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): number {
   const b = worldBounds(doc, geo);
   const pad = 46;
   return Math.min((vw - 2 * pad) / (b[2] - b[0] || 1), (vh - 2 * pad) / (b[3] - b[1] || 1));

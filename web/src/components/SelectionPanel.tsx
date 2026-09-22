@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { MapDocument, SymbolRow } from "@/types";
-import { CH, CX_, D_, FI, LOC, districtColor, symbolsOf } from "@/map/geometry";
+import { CH, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
 import { KCOL, KIND } from "@/map/constants";
 import { computeBlast } from "@/map/graph";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
@@ -154,12 +154,26 @@ function TerrainBody({
 function DistrictHead({ doc, d }: { doc: MapDocument; d: number }) {
   const files = [...doc.N.keys()].filter((i) => D_(doc, i) === d);
   const lines = files.reduce((a, i) => a + LOC(doc, i), 0);
+  const cls = districtClass(doc.districts[d]);
   return (
     <>
       <h3 className="truncate font-sans text-[13px] font-semibold">{doc.names[d]}</h3>
       <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">
         {files.length} files · {lines.toLocaleString()} lines
       </p>
+      {/* Say what the class MEANS, not the jargon word for it (spec): an
+       * island is below the 1% mainland floor but still tied into the repo
+       * by an import (it is drawn, offshore — not absent from the map);
+       * unconnected has no such tie to anything else at all. Styled like
+       * FileBody's own one-line callout (BlastLine below) — the panel's
+       * existing idiom for "one fact worth calling out", not a new one. */}
+      {cls !== "mainland" && (
+        <p className="mt-1.5 border-l-2 border-[var(--hot)] py-0.5 pl-2 text-[10px] leading-snug text-[var(--dim)]">
+          {cls === "island"
+            ? "island — under 1% of the repo's files, still tied in by an import"
+            : "unfiled — no import edge to anything else in the repo"}
+        </p>
+      )}
     </>
   );
 }
