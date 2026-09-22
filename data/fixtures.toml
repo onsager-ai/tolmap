@@ -32,8 +32,14 @@
 # 23.7% of its internal imports use @vue/* workspace names, so its graph and
 # membership changed. See finding 15 for the before/after and rename tables.
 #
-# Last full verification: 2026-09-21, all nine reproduced byte-for-byte
-# (`eval/verify_fixtures.py` with no arguments, against clones at these SHAs).
+# On 2026-09-23 issue #57 changed the Rust product default to node-relative
+# pruning, a route the frozen Python reference does not implement. sqlalchemy
+# and prometheus are the only fixtures whose membership moves under that
+# default. They were rebuilt by the Rust product on GitHub-hosted runners with
+# their old naming caches seeded first; see finding 23 and Remote build
+# 35756191891. The other seven remain Python-reference fixtures and were not
+# changed. `generator = "rust-node-relative"` makes that boundary explicit to
+# `eval/verify_fixtures.py` instead of pretending Python can reproduce it.
 
 [celery]
 url = "https://github.com/celery/celery.git"
@@ -81,9 +87,10 @@ commit = "296080c0a504ea0e72941ef16143f0a9702b137b"
 pkg = "."
 lang = "go"
 parcels = false
+generator = "rust-node-relative"
 files = 444
-districts = 11
-q = 0.5397
+districts = 9
+q = 0.5430
 
 [rich]
 url = "https://github.com/Textualize/rich.git"
@@ -111,9 +118,10 @@ commit = "4883307858ea3def775b5a1cc1c01a5be6dfe213"
 pkg = "lib/sqlalchemy"
 lang = "py"
 parcels = true
+generator = "rust-node-relative"
 files = 258
-districts = 8
-q = 0.5202
+districts = 6
+q = 0.4318
 
 [vue]
 url = "https://github.com/vuejs/core.git"

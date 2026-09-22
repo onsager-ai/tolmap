@@ -1023,3 +1023,40 @@ The owner-approved result is that `node-relative` is now the default for CLI
 builds, blend dumps, polyglot reports, and service jobs. `absolute`,
 `percentile`, and `pre-rescale` remain selectable so every table above stays
 reproducible.
+
+### Fixture re-derivation
+
+[Remote build 35756191891](https://github.com/onsager-ai/tolmap/actions/runs/35756191891)
+rebuilt all nine exact fixture pins with the new Rust default, each fixture's
+recorded parcel setting, and its naming cache seeded from the committed map.
+Only sqlalchemy and prometheus move between the absolute and node-relative
+routes, matching PR #70's prediction:
+
+| fixture | districts | q | placement against old fixture | Δq |
+|---|---:|---:|---:|---:|
+| sqlalchemy | 8 → **6** | 0.5202 → **0.4318** | 74.03% | 0.0884 |
+| prometheus | 11 → **9** | 0.5397 → **0.5430** | 91.89% | 0.0033 |
+
+Both re-derived maps keep `F`, `E`, `S`, and `U` byte-equivalent to their old
+fixtures; `L` moves with district membership. The other seven committed maps
+and every `data/ci/*` graph remain untouched. The frozen Python pipeline has no
+node-relative route, so these two fixtures explicitly record
+`generator = "rust-node-relative"`; `eval/verify_fixtures.py` continues to
+byte-verify the seven Python-reference fixtures and reports these two as
+remote-generated rather than claiming it can reproduce them.
+
+Changed memberships reopen the deterministic naming cache, as in finding 15.
+The matched district renames are recorded rather than hidden:
+
+| fixture | previous name | re-derived name |
+|---|---|---|
+| sqlalchemy | engine | mysql & engine |
+| sqlalchemy | dialects | dialects & postgresql |
+| sqlalchemy | util | util & engine |
+| prometheus | tsdb storage | tsdb |
+| prometheus | labels & parsing | model |
+| prometheus | promql & rules | promql |
+| prometheus | remote write | storage |
+| prometheus | web api | web & notifier |
+| prometheus | chunk encoding | chunkenc & tsdb |
+| prometheus | kubernetes discovery | kubernetes |
