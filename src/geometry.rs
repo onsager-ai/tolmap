@@ -21,6 +21,7 @@ use crate::terrain;
 pub struct BuildFeatures {
     pub parcels: bool,
     pub terrain: bool,
+    pub prune_variant: pipeline::PruneVariant,
 }
 
 /// A district holding at least this share of the repo's files is
@@ -412,7 +413,13 @@ pub fn build_from_graph_warm(
     let initial = previous_membership
         .as_ref()
         .map(|prev| pipeline::align_initial_membership(&graph, prev));
-    let mut layout = pipeline::run(graph, resolution, &partitioner, initial.as_deref())?;
+    let mut layout = pipeline::run_with_variant(
+        graph,
+        resolution,
+        &partitioner,
+        initial.as_deref(),
+        features.prune_variant,
+    )?;
     // Classification and offshore placement (issue #34) read the partition
     // `pipeline::run` just produced -- they never feed back into it. Doing
     // this before naming/geometry rather than after keeps every downstream

@@ -19,14 +19,8 @@ use serde_json::{json, Value};
 use crate::extract::{self, LanguageKind};
 use crate::parity::match_districts;
 use crate::partition::LeidenFfi;
-use crate::pipeline;
+use crate::pipeline::{self, PruneStats, PruneVariant};
 use crate::schema::GraphData;
-
-/// Matches `pipeline::run`'s own call (`prune(&mut data, 14, 0.02)`) --
-/// reused here rather than re-derived so "below the prune floor" means the
-/// same floor the product actually prunes at.
-const PRUNE_KEEP_PER_NODE: usize = 14;
-const PRUNE_FLOOR: f64 = 0.02;
 
 /// Runs the full measurement and writes it to `out` as JSON, printing a
 /// human summary to stdout. `sources` should already be sorted the way
@@ -36,9 +30,10 @@ pub fn run(
     repo: &Path,
     sources: &[(String, LanguageKind)],
     resolution: f64,
+    prune_variant: PruneVariant,
     out: &Path,
 ) -> Result<()> {
-    let report = report(repo, sources, resolution)?;
+    let report = report(repo, sources, resolution, prune_variant)?;
     std::fs::write(out, serde_json::to_string_pretty(&report)?)?;
     println!("{}", summarize(&report));
     Ok(())
@@ -48,7 +43,12 @@ pub fn run(
 /// measurement tool, not a schema anything else in the codebase deserialises
 /// -- a typed struct would buy nothing a `json!` literal doesn't already
 /// give the two call sites, `run` above and the CI ceiling check).
-pub fn report(repo: &Path, sources: &[(String, LanguageKind)], resolution: f64) -> Result<Value> {
+pub fn report(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    resolution: f64,
+    prune_variant: PruneVariant,
+) -> Result<Value> {
     let mut sorted_sources = sources.to_vec();
     sorted_sources.sort_by(|a, b| a.1.as_str().cmp(b.1.as_str()).then_with(|| a.0.cmp(&b.0)));
 
@@ -71,15 +71,16 @@ pub fn report(repo: &Path, sources: &[(String, LanguageKind)], resolution: f64) 
         &file_language,
     );
 
-    // Blend (mass-normalise), snapshot the pre-prune below-floor share per
-    // language, then prune -- same two calls `pipeline::run` makes, just
-    // with the intermediate state kept instead of thrown away.
-    let mut blended = merged.clone();
-    pipeline::blend(&mut blended)?;
-    let below_floor_merged = below_floor_share_per_language(&blended, &file_language, &languages);
-
-    let mut pruned = blended.clone();
-    pipeline::prune(&mut pruned, PRUNE_KEEP_PER_NODE, PRUNE_FLOOR);
+    // Run the same selected route as the product, retaining its pre-prune
+    // floor classification for the per-language report.
+    let mut pruned = merged.clone();
+    let merged_prune_stats = pipeline::apply_prune_variant(&mut pruned, prune_variant)?;
+    let below_floor_merged = below_floor_share_per_language(
+        &merged,
+        &merged_prune_stats,
+        &file_language,
+        &languages,
+    );
     let (kept_intra, kept_cross) = split_intra_cross(
         pruned.edges.iter().map(|e| (e.a.as_str(), e.b.as_str())),
         &file_language,
@@ -89,7 +90,13 @@ pub fn report(repo: &Path, sources: &[(String, LanguageKind)], resolution: f64) 
     // (not re-derived) so "district" here means the same thing `tolmap
     // build` means by it.
     let partitioner = LeidenFfi;
-    let output = pipeline::run(merged.clone(), resolution, &partitioner, None)?;
+    let output = pipeline::run_with_variant(
+        merged.clone(),
+        resolution,
+        &partitioner,
+        None,
+        prune_variant,
+    )?;
     let files_in_order = output
         .weighted
         .nodes
@@ -116,11 +123,18 @@ pub fn report(repo: &Path, sources: &[(String, LanguageKind)], resolution: f64) 
         let lang_key = language.as_str();
         let single = extract::build(repo, pkg, *language)?;
         let single_candidate_edges = single.edges.len();
-        let mut single_blended = single.clone();
-        pipeline::blend(&mut single_blended)?;
-        let single_below_floor = below_floor_share(&single_blended.edges);
+        let mut single_pruned = single.clone();
+        let single_prune_stats =
+            pipeline::apply_prune_variant(&mut single_pruned, prune_variant)?;
+        let single_below_floor = single_prune_stats.below_floor_share();
 
-        let single_output = pipeline::run(single.clone(), resolution, &partitioner, None)?;
+        let single_output = pipeline::run_with_variant(
+            single.clone(),
+            resolution,
+            &partitioner,
+            None,
+            prune_variant,
+        )?;
         let single_membership = single_output
             .weighted
             .nodes
@@ -172,8 +186,10 @@ pub fn report(repo: &Path, sources: &[(String, LanguageKind)], resolution: f64) 
         "per_language_pair": per_language_pair,
         "clustering_vs_language": clustering_vs_language,
         "resolution": resolution,
-        "prune_keep_per_node": PRUNE_KEEP_PER_NODE,
-        "prune_floor": PRUNE_FLOOR,
+        "prune_variant": prune_variant.to_string(),
+        "prune_keep_per_node": pipeline::PRUNE_KEEP_PER_NODE,
+        "prune_floor": merged_prune_stats.floor,
+        "prune_floor_basis": merged_prune_stats.floor_basis,
     }))
 }
 
@@ -250,47 +266,36 @@ fn signal_cross_language_mass(
     Value::Object(result)
 }
 
-/// Share of a language's own intra-language edges sitting below
-/// [`PRUNE_FLOOR`] after `blend()` but before `prune()` -- the finding-10
-/// hazard one level up: `blend()` divides every edge by the single largest
-/// blended edge in the WHOLE graph, so one language's dominant edge can drag
-/// the other language's distribution under the floor even though each
-/// language's own signal looks fine in isolation.
+/// Share of a language's own intra-language candidate edges classified below
+/// the selected route's floor before the top-N cap is applied.
 fn below_floor_share_per_language(
-    blended: &GraphData,
+    candidates: &GraphData,
+    stats: &PruneStats,
     file_language: &BTreeMap<String, LanguageKind>,
     languages: &BTreeSet<LanguageKind>,
 ) -> BTreeMap<String, f64> {
     let mut result = BTreeMap::new();
     for &language in languages {
-        let intra = blended
+        let intra = candidates
             .edges
             .iter()
-            .filter(|edge| file_language[&edge.a] == language && file_language[&edge.b] == language)
+            .enumerate()
+            .filter(|(_, edge)| {
+                file_language[&edge.a] == language && file_language[&edge.b] == language
+            })
             .collect::<Vec<_>>();
         let share = if intra.is_empty() {
             0.0
         } else {
             intra
                 .iter()
-                .filter(|edge| edge.weight < PRUNE_FLOOR)
+                .filter(|(index, _edge)| stats.below_floor_edges[*index])
                 .count() as f64
                 / intra.len() as f64
         };
         result.insert(language.as_str().to_owned(), share);
     }
     result
-}
-
-fn below_floor_share(edges: &[crate::schema::SignalEdge]) -> f64 {
-    if edges.is_empty() {
-        return 0.0;
-    }
-    edges
-        .iter()
-        .filter(|edge| edge.weight < PRUNE_FLOOR)
-        .count() as f64
-        / edges.len() as f64
 }
 
 /// The fraction of `lang_files` whose merged-map district matches (by

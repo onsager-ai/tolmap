@@ -19,32 +19,45 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::extract::{self, LanguageKind};
-use crate::pipeline;
+use crate::pipeline::{self, PruneVariant};
 
 /// Below this, a weight difference is float summation order; above it, real.
 pub const TOLERANCE: f64 = 1e-9;
-
-const FLOOR: f64 = 0.02;
 
 fn round_to(value: f64, places: i32) -> f64 {
     let factor = 10f64.powi(places);
     (value * factor).round() / factor
 }
 
-pub fn dump(repo: &Path, pkg: &str, lang: &str, out: &Path) -> Result<()> {
+pub fn dump(
+    repo: &Path,
+    pkg: &str,
+    lang: &str,
+    prune_variant: PruneVariant,
+    out: &Path,
+) -> Result<()> {
     let language = LanguageKind::parse(lang)?;
     let data = extract::build(repo, pkg, language)?;
-    dump_data(data, out)
+    dump_data(data, prune_variant, out)
 }
 
 /// As [`dump`], but unions any number of `(pkg, language)` sources (see
 /// `extract::build_multi_source`) instead of parsing one.
-pub fn dump_multi(repo: &Path, sources: &[(String, LanguageKind)], out: &Path) -> Result<()> {
+pub fn dump_multi(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    prune_variant: PruneVariant,
+    out: &Path,
+) -> Result<()> {
     let data = extract::build_multi_source(repo, sources)?;
-    dump_data(data, out)
+    dump_data(data, prune_variant, out)
 }
 
-fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
+fn dump_data(
+    mut data: crate::schema::GraphData,
+    prune_variant: PruneVariant,
+    out: &Path,
+) -> Result<()> {
     let candidate_edges = data.edges.len();
     let mass =
         |select: fn(&crate::schema::SignalEdge) -> f64| data.edges.iter().map(select).sum::<f64>();
@@ -61,28 +74,17 @@ fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
     // pre-rescale route uses `weight` directly. The vector is sorted so the
     // dump stays deterministic and a consumer can evaluate any percentile
     // without rebuilding the repository.
-    let mut mass_normalized = data.clone();
-    pipeline::blend_mass_normalized(&mut mass_normalized)?;
-    let mass_normalized_max = mass_normalized
-        .edges
+    let mut mass_normalized_weights = pipeline::mass_normalized_weights(&data)?;
+    let mass_normalized_max = mass_normalized_weights
         .iter()
-        .map(|edge| edge.weight)
+        .copied()
         .fold(f64::NEG_INFINITY, f64::max);
-    let mut mass_normalized_weights = mass_normalized
-        .edges
-        .iter()
-        .map(|edge| edge.weight)
-        .collect::<Vec<_>>();
     mass_normalized_weights.sort_by(f64::total_cmp);
 
-    pipeline::blend(&mut data)?;
-    let blended: Vec<f64> = data.edges.iter().map(|e| e.weight).collect();
-    let weight_sum_pre_prune = round_to(blended.iter().sum::<f64>(), 10);
-    let n_blended_edges = blended.len();
-    let below_prune_floor =
-        blended.iter().filter(|w| **w < FLOOR).count() as f64 / n_blended_edges.max(1) as f64;
-
-    pipeline::prune(&mut data, 14, FLOOR);
+    let stats = pipeline::apply_prune_variant(&mut data, prune_variant)?;
+    let weight_sum_pre_prune = round_to(stats.weight_sum_pre_prune, 10);
+    let n_blended_edges = stats.candidate_edges;
+    let below_prune_floor = stats.below_floor_share();
     let weight_sum = round_to(data.edges.iter().map(|e| e.weight).sum::<f64>(), 10);
     let mut edges: Vec<(String, String, f64)> = data
         .edges
@@ -94,6 +96,9 @@ fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
     let document = json!({
         "repo": data.repo,
         "tolerance": TOLERANCE,
+        "prune_variant": prune_variant.to_string(),
+        "prune_floor": stats.floor,
+        "prune_floor_basis": stats.floor_basis,
         "candidate_edges": candidate_edges,
         "raw_signal_mass": raw,
         "mass_normalized_max": mass_normalized_max,
@@ -103,6 +108,7 @@ fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
         "weight_sum_pre_prune": weight_sum_pre_prune,
         "n_pruned_edges": edges.len(),
         "weight_sum": weight_sum,
+        "below_prune_floor_count": stats.below_floor_count,
         "below_prune_floor": round_to(below_prune_floor, 6),
         "node_order": data.nodes.iter().map(|n| n.file.clone()).collect::<Vec<_>>(),
         "edges": edges,
@@ -110,7 +116,7 @@ fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
     std::fs::write(out, serde_json::to_string_pretty(&document)?)?;
     println!(
         "{}: {} nodes, {} candidate edges, weight {} pre-prune -> {} edges, weight {} post-prune \
-         (compare within {}); {:.1}% of blended edges below the {} floor",
+         (compare within {}); {:.1}% of blended edges below the {} {} floor",
         data.repo,
         data.nodes.len(),
         candidate_edges,
@@ -119,7 +125,8 @@ fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
         weight_sum,
         TOLERANCE,
         below_prune_floor * 100.0,
-        FLOOR
+        stats.floor,
+        stats.floor_basis,
     );
     Ok(())
 }

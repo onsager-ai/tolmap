@@ -56,6 +56,10 @@ enum Command {
         /// established map remains byte-identical.
         #[arg(long)]
         terrain: bool,
+        /// Blend/prune experiment to run. `absolute` is the established
+        /// pipeline and remains the default.
+        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::Absolute)]
+        prune_variant: tolmap::pipeline::PruneVariant,
         /// A pre-extracted graph (from `dump-graph`) to run the pipeline on
         /// instead of parsing `repo`. `pkg`/`lang`/`--all-sources` are
         /// ignored with this (the graph already carries its source(s)), and
@@ -77,6 +81,10 @@ enum Command {
         all_sources: bool,
         #[arg(long)]
         out: PathBuf,
+        /// Blend/prune experiment to report. Defaults to the established
+        /// absolute floor.
+        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::Absolute)]
+        prune_variant: tolmap::pipeline::PruneVariant,
     },
     /// Extraction only: parse a repository and dump the resulting graph as
     /// JSON, without running blend/prune/partition/layout. Exists so a small
@@ -129,6 +137,8 @@ enum Command {
         resolution: f64,
         #[arg(long)]
         out: PathBuf,
+        #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::Absolute)]
+        prune_variant: tolmap::pipeline::PruneVariant,
     },
     /// The job service (milestone 3, issue #5): clones/indexes repositories
     /// on demand and serves the results over HTTP. Binds 127.0.0.1 only --
@@ -312,6 +322,7 @@ fn main() -> Result<()> {
             resolution,
             no_parcels,
             terrain,
+            prune_variant,
             graph,
         } => match (repo, graph) {
             (Some(_), Some(_)) => {
@@ -330,6 +341,7 @@ fn main() -> Result<()> {
                         tolmap::geometry::BuildFeatures {
                             parcels: !no_parcels,
                             terrain,
+                            prune_variant,
                         },
                     )
                     .map(|_| ())
@@ -349,6 +361,7 @@ fn main() -> Result<()> {
                         tolmap::geometry::BuildFeatures {
                             parcels: !no_parcels,
                             terrain,
+                            prune_variant,
                         },
                     )
                     .map(|_| ())
@@ -370,6 +383,7 @@ fn main() -> Result<()> {
                     tolmap::geometry::BuildFeatures {
                         parcels: !no_parcels,
                         terrain,
+                        prune_variant,
                     },
                 )
                 .map(|_| ())
@@ -381,14 +395,15 @@ fn main() -> Result<()> {
             lang,
             all_sources,
             out,
+            prune_variant,
         } => {
             if wants_multi_source(&pkg, &lang, all_sources) {
                 let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
-                tolmap::blenddump::dump_multi(&repo, &sources, &out)
+                tolmap::blenddump::dump_multi(&repo, &sources, prune_variant, &out)
             } else {
                 let pkg = pkg.into_iter().next().unwrap_or_else(|| ".".to_owned());
                 let lang = lang.into_iter().next().unwrap_or_else(|| "py".to_owned());
-                tolmap::blenddump::dump(&repo, &pkg, &lang, &out)
+                tolmap::blenddump::dump(&repo, &pkg, &lang, prune_variant, &out)
             }
         }
         Command::DumpGraph {
@@ -457,6 +472,7 @@ fn main() -> Result<()> {
             all_sources,
             resolution,
             out,
+            prune_variant,
         } => {
             let sources = if wants_multi_source(&pkg, &lang, all_sources) {
                 resolve_multi_source(&repo, pkg, lang, all_sources)?
@@ -480,7 +496,7 @@ fn main() -> Result<()> {
                 "no source to report on: no candidate in {} cleared the --all-sources floor, and none was given explicitly",
                 repo.display()
             );
-            tolmap::polyglot::run(&repo, &sources, resolution, &out)
+            tolmap::polyglot::run(&repo, &sources, resolution, prune_variant, &out)
         }
         Command::Serve => {
             let config = tolmap::service::config::ServeConfig::from_env();
