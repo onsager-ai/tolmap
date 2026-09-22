@@ -17,15 +17,15 @@ import {
   districtClass,
   districtColor,
   districtWorldArea,
-  fitScale as fitScaleOf,
-  fullFitScale as fullFitScaleOf,
   mainlandBounds,
   px as pxOf,
   ramp,
   rooms,
+  scaleToFit,
   stripRows,
   symbolsOf,
   tmCentre,
+  worldBounds,
 } from "./geometry";
 import { computeBlast, type Route } from "./graph";
 import { pinchTransform, type PinchAnchor } from "./pinch";
@@ -97,6 +97,31 @@ export class MapRenderer {
   private districtOrder = new Map<number, number[]>();
   private districtArea = new Map<number, number>();
   private fileRank = new Map<number, number>();
+
+  // Issue #51 perf follow-up: cache of mainlandBounds()/worldBounds() and
+  // the two scales derived from them (see geometry.ts's scaleToFit), keyed
+  // by (doc reference, geo, VW, VH). A plain field compared by reference
+  // plus numbers, not a WeakMap keyed on doc alone: MapRenderer is already
+  // one instance per canvas with its own render()/resize()/loadDocument()
+  // lifecycle (districtOrder etc. above use the same "one instance, one
+  // current document" assumption), so there's exactly one cache entry worth
+  // keeping at a time, and a WeakMap would need geo/VW/VH in its own key
+  // anyway -- no simpler than this. bounds() below checks all four fields on
+  // every call and recomputes lazily, so a document swap (loadDocument), a
+  // geo change (render()/fit(state)), or a viewport change (resize()) all
+  // invalidate it for free without a separate invalidate() call at each of
+  // those sites -- there's no other path back to fitScale()/fullScale()/
+  // frameBounds() below that could observe a stale entry.
+  private boundsCache: {
+    doc: MapDocument;
+    geo: Geo;
+    vw: number;
+    vh: number;
+    mainland: [number, number, number, number];
+    world: [number, number, number, number];
+    fit: number;
+    full: number;
+  } | null = null;
 
   private k = 1;
   private tx = 0;
@@ -330,9 +355,33 @@ export class MapRenderer {
   }
 
   // ---------- viewport ----------
+  /** The one place mainlandBounds()/worldBounds() are actually called from
+   * this class -- fitScale()/fullScale()/frameBounds() below all read off
+   * the cached result instead of walking doc.N themselves. See
+   * `boundsCache`'s comment for the profile numbers this fixes and the
+   * invalidation argument. */
+  private bounds() {
+    const { doc, geo } = this.state!;
+    const c = this.boundsCache;
+    if (c && c.doc === doc && c.geo === geo && c.vw === this.VW && c.vh === this.VH) return c;
+    const mainland = mainlandBounds(doc, geo);
+    const world = worldBounds(doc, geo);
+    const next = {
+      doc,
+      geo,
+      vw: this.VW,
+      vh: this.VH,
+      mainland,
+      world,
+      fit: scaleToFit(mainland, this.VW, this.VH),
+      full: scaleToFit(world, this.VW, this.VH),
+    };
+    this.boundsCache = next;
+    return next;
+  }
   private fitScale(): number {
     if (!this.state) return 1;
-    return fitScaleOf(this.state.doc, this.state.geo, this.VW, this.VH);
+    return this.bounds().fit;
   }
   /** Floor for how far a viewer can zoom OUT, based on the FULL extent
    * (mainland + offshore rings) -- never the default framing. Without this,
@@ -343,7 +392,7 @@ export class MapRenderer {
    * reachable, not clamped away). */
   private fullScale(): number {
     if (!this.state) return 1;
-    return fullFitScaleOf(this.state.doc, this.state.geo, this.VW, this.VH);
+    return this.bounds().full;
   }
   /** The box the default view and the "fit" control frame: mainland only
    * (issue #34) -- see `mainlandBounds`'s doc comment in geometry.ts for why
@@ -351,7 +400,7 @@ export class MapRenderer {
    * mainland is 27.2% of the full extent) under its own offshore rings. */
   private frameBounds() {
     if (!this.state) return [0, 0, 1, 1] as [number, number, number, number];
-    return mainlandBounds(this.state.doc, this.state.geo);
+    return this.bounds().mainland;
   }
   /** `state` is for MapCanvas's repoKey effect only: on a repo change it has
    * to fit the NEW document, but frameBounds()/draw() both read `this.state`,
@@ -544,6 +593,15 @@ export class MapRenderer {
     this.drawnTx = this.tx;
     this.drawnTy = this.ty;
     const zf0 = this.k / this.fitScale();
+    // Issue #51 perf follow-up: file-dot radius below used to recompute
+    // `Math.sqrt(this.k / this.fitScale())` once per file inside the
+    // doc.N loop -- with fitScale() now O(1) (see boundsCache) that's just a
+    // function-call and Math.sqrt cost repeated doc.N.length times for a
+    // value that cannot change mid-paint (this.k, this.state, VW/VH are all
+    // fixed for the duration of one paint()). Hoisted to the one value the
+    // loop actually needs; same float either way since it's the same
+    // deterministic computation, just done once instead of N times.
+    const dotZoom = Math.sqrt(zf0);
 
     if (geo !== "t") {
       doc.roads.forEach(([a, b, w]) => {
@@ -630,7 +688,7 @@ export class MapRenderer {
         // free (there is no invisible dot left to swallow the tap).
         const factor = alwaysDrawn.has(i) ? 1 : this.dotFactor(i);
         if (factor <= 0) continue;
-        const r = Math.max(1.1, (1.6 + 5.2 * Math.sqrt(LOC(doc, i) / this.maxLoc)) * Math.sqrt(this.k / this.fitScale()));
+        const r = Math.max(1.1, (1.6 + 5.2 * Math.sqrt(LOC(doc, i) / this.maxLoc)) * dotZoom);
         // Cull margin covers the dot's own radius plus its touch hit-stroke
         // halo (up to 16px, see stroke-width below) -- the same treatment
         // the CELL/parcel path above already gives its (larger) plots.

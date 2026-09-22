@@ -122,10 +122,23 @@ export function mainlandBounds(doc: MapDocument, geo: Geo): [number, number, num
   return a;
 }
 
+// Split out of fitScale/fullFitScale so MapRenderer can reuse it against a
+// CACHED bounds box (issue #51 perf follow-up). MapRenderer.paint() used to
+// call fitScale() -- which recomputes mainlandBounds(), an O(N + blob
+// points) walk -- once PER FILE DOT, turning an O(N) paint into O(N^2)
+// (profiled on langgenius/dify, 6.3k files: 3.1s of 3.5s paint CPU was
+// mainlandBounds's own self time). The fix caches the BOUNDS, not the
+// scale -- a viewport resize changes the scale but not the bounds, and
+// caching the final number would have to be invalidated on VW/VH anyway --
+// so this is the one place both the uncached callers below and
+// MapRenderer's cached ones turn a bounds box back into a scale.
+const FIT_PAD = 46;
+export function scaleToFit(b: [number, number, number, number], vw: number, vh: number): number {
+  return Math.min((vw - 2 * FIT_PAD) / (b[2] - b[0] || 1), (vh - 2 * FIT_PAD) / (b[3] - b[1] || 1));
+}
+
 export function fitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): number {
-  const b = mainlandBounds(doc, geo);
-  const pad = 46;
-  return Math.min((vw - 2 * pad) / (b[2] - b[0] || 1), (vh - 2 * pad) / (b[3] - b[1] || 1));
+  return scaleToFit(mainlandBounds(doc, geo), vw, vh);
 }
 
 /** Like `fitScale`, but against the FULL extent (mainland + islands +
@@ -133,9 +146,7 @@ export function fitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): nu
  * viewer can zoom OUT -- never as the default framing, which is
  * `fitScale`/`mainlandBounds` (see that function's doc comment for why). */
 export function fullFitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): number {
-  const b = worldBounds(doc, geo);
-  const pad = 46;
-  return Math.min((vw - 2 * pad) / (b[2] - b[0] || 1), (vh - 2 * pad) / (b[3] - b[1] || 1));
+  return scaleToFit(worldBounds(doc, geo), vw, vh);
 }
 
 // ---------- colour ----------
