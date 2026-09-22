@@ -652,3 +652,109 @@ On the three real polyglot repositories, by contrast, mainland *does* move now, 
 ### What is not settled
 
 n8n now shows 52 islands, not 269 -- finding 15's module-resolution fix did most of the work issue #41 was opened to ask for, incidentally, by recovering edges that used to strand files into the tail in the first place. They are still on one ring, and calling them islands rather than districts still makes the map honest without making it legible on its own. The threshold is one parameter with one justification — that the mainland count stays roughly comparable across the corpus — and that justification is weaker post-finding-15 than it was (see above: n8n's mainland count is now below dify's despite being the larger repository), which is a weaker claim than "1% is the right number" was already. Nothing here addresses whether a repository of this size should be one map at all. That question is open as issue #41, deliberately stated as a brief rather than answered here.
+
+## 18. An evaluation corpus of 132 repositories, and three assumptions tuned on nine do not survive it
+
+Issue #50 asked for ~100 pinned repositories, ~25 per band, so layout and viewer tuning (#48, #42, #34) could be checked against a distribution instead of the nine committed fixtures plus crawlab/dify/n8n. What actually got built is 132 repositories — 128 built, 4 failed — pinned in `eval/corpus.toml` and built with `eval/build_corpus.py`. The 12 `ultra`-band repositories (see "Bands were wrong twice" below) were driven one at a time by an external wrapper calling `build_corpus.py --candidates ... --jobs 1`, after a machine crash partway through the corpus run; everything else ran through the normal `--jobs 4` path. Maps and per-repo `/usr/bin/time -v` logs live under `$TOLMAP_CORPUS_DIR` (`~/.cache/tolmap-corpus`), never in this repository.
+
+Reviewing the WIP before building on it found three things wrong, in `eval/build_corpus.py`, `eval/corpus_stats.py`, and the missing manifest itself. Each is described where it was found, below.
+
+### Bands were wrong twice, and `build_corpus.py` itself is fine
+
+`eval/build_corpus.py`'s `--candidates` mode assigns a band to a repository *before* building it, from an external size estimate — its own docstring calls this "candidate screening", not a measurement. Issue #50 defines a band by what `--all-sources` actually indexes: small < 300, medium 300–2k, large 2k–8k, ultra ≥ 8k *mapped source files*, explicitly not total repo files. `builds.json` never reconciled the two. Recomputing band from each built repo's measured `files` count disagreed with its stored screening band on **81 of 128 built repositories — 63%**. `Azure/azure-sdk-for-go` was screened `ultra` and measured 349 files (`small`); `DataDog/datadog-agent` was screened `ultra` and measured 7,968 (`large`, 32 files under the 8,000-file `ultra` line). The corpus's screened distribution was small 24 / medium 29 / large 32 / ultra 47; its measured distribution is **small 49 / medium 41 / large 30 / ultra 12** — the twelve-repository `ultra` band that the external wrapper drove one at a time is the corrected count, not the screening guess. `eval/manifest_from_builds.py` (new, committed alongside the manifest it writes) recomputes band from measured files for every built repo; a failed repo has no measured count, so it keeps its screening band as the only estimate available. `eval/build_corpus.py` itself has no bug — it does exactly what its docstring says (resumable, one failure doesn't stop the run, `ultra` repos serialized after `regular` ones) — the band field just meant "guess" all along and nothing downstream had said so.
+
+The 13 repositories built with explicit `--pkg`/`--lang` instead of `--all-sources` (`encode/httpx`, `immerjs/immer`, `odoo/odoo`, `pallets/click`, `pallets/flask`, `pallets/itsdangerous`, `pmndrs/zustand`, `psf/requests`, `pytest-dev/pytest`, `python-attrs/attrs`, `spf13/cobra`, `spf13/viper`, `tiangolo/sqlmodel`) carry no reason in `builds.json` either — it isn't a field `build_corpus.py` records. Their `eval/corpus.toml` `reason` entries were written by inspecting each cached clone's top-level layout (`ls`, not a rebuild): eleven are `src/`-layout or root-level single-package repos where auto-detection could otherwise land on the wrong directory; `python-attrs/attrs` genuinely has two sibling packages under `src/` (`attr`, the original, and `attrs`, its re-export) and needs two `--pkg` flags to cover both; `odoo/odoo` is a monorepo of hundreds of sibling addon packages under `addons/` plus the core `odoo/` package, where `--all-sources`' single-source auto-detect is ambiguous, so the whole repo is forced to one Python source instead. This is read from the filesystem, not recovered from a record that no longer exists, and is noted as such in `manifest_from_builds.py`.
+
+### `corpus_stats.py`'s px²/file did not match #48's no-change proof
+
+Issue #50 deliverable 3 asks for on-screen px² per file at fit zoom, "same method as #48's no-change proof" (`web/scripts/no-change-proof.ts`, PR #49). The WIP's `mainland_fit_scale` bounded the fit-zoom viewport to only the *mainland* districts' blob polygons, and `px_per_file` only measured mainland districts. Neither matches the actual proof: `geometry.ts`'s `fitScale` (unchanged by #49, and the function `no-change-proof.ts` calls) bounds the viewport over **every** file's node position and **every** district's blob, mainland or not; `densityByDistrict` in `no-change-proof.ts` measures every district *except* `unconnected` ones — mainland and island alike, since an island still gets a drawn region and a dot budget. The WIP's version silently shrank the box (dropping island/unconnected blobs and any node outside a mainland blob) and silently shrank the district set, which inflates px²/file in both directions at once. Fixed in `eval/corpus_stats.py`: `world_fit_scale` now unions all node positions and all district blobs exactly as `worldBounds(doc, "r")` does, and `px_per_file` includes `mainland_ids | island_ids`. Sanity check against PR #49's own reported n8n figures (mainland-only, 11,982 files, cb04469+#42: min 7 / median 12 px²/file at 390×700) — this corpus's n8n pin (11,991 files, a few commits later) now measures min 0.0 / median 7.5 including islands, which is the expected direction: adding smaller island districts to the set can only pull the minimum down.
+
+### `collect-maps.mjs` reads the manifest, and the baseline catalogue is untouched
+
+With neither `$TOLMAP_CORPUS_DIR` nor `$TOLMAP_MAPS_DIR` set, `web/scripts/collect-maps.mjs`'s output (`public/maps/index.json`) is byte-for-byte identical to the pre-WIP script's output — checked by running the committed `HEAD` version and the WIP version back to back and diffing. With `TOLMAP_CORPUS_DIR` set, the catalogue grows from 9 hardcoded `STEM_OWNERS` entries to all 128 built corpus repositories; all 9 baseline slugs (`scrapy/scrapy`, `django/django`, `pallets/flask`, `sqlalchemy/sqlalchemy`, `celery/celery`, `Textualize/rich`, `encode/httpx`, `prometheus/prometheus`, `vuejs/core`) turn out to already be corpus members at their own pins, so the corpus version wins each and the catalogue has exactly 128 entries, not 137. `public/maps/` stays gitignored and nothing under it is committed.
+
+### The per-band table
+
+| metric | small | medium | large | ultra |
+|---|---:|---:|---:|---:|
+| repositories (built/failed) | 49/0 | 40/1 | 28/2 | 11/1 |
+| files | 51 [19–224] | 704 [353–1,517] | 4,050 [2,145–6,799] | 11,991 [8,757–39,964] |
+| districts | 5 [3–8] | 16 [11–50] | 52 [21–364] | 330 [87–3,411] |
+| mainland | 5 [3–8] | 13 [9–22] | 18 [9–25] | 16 [3–27] |
+| islands | 0 [0–0] | 1 [0–5] | 16 [2–230] | 309 [45–1,867] |
+| unconnected | 0 [0–0] | 1 [0–11] | 7 [0–63] | 13 [0–335] |
+| landmarks | 10 [7–13] | 21 [15–55] | 56 [27–371] | 338 [90–2,548] |
+| modularity q | 0.254 [-0.003–0.454] | 0.563 [0.439–0.706] | 0.716 [0.511–0.865] | 0.823 [0.692–0.987] |
+| kept edges | 133 [21–1,234] | 4,986 [512–27,090] | 21,976 [5,428–168,774] | 41,758 [28,709–160,031] |
+| zero-edge files | 1 [0–18] | 36 [2–462] | 142 [15–1,264] | 338 [6–25,620] |
+| 390×700 px²/file min | 127.4 [37.4–250.8] | 33.3 [19.9–58.1] | 6.7 [0.0–21.7] | 0.0 [0.0–0.0] |
+| 390×700 px²/file district median | 189.5 [123.8–286.7] | 60.2 [28.9–99.0] | 12.2 [5.9–28.4] | 2.0 [0.0–5.5] |
+| 1440×900 px²/file min | 904.2 [251.6–1435.6] | 223.8 [141.4–395.9] | 51.1 [0.0–101.3] | 0.0 [0.0–0.0] |
+| 1440×900 px²/file district median | 1338.7 [858.5–1820.7] | 356.0 [207.0–748.8] | 91.4 [40.3–162.2] | 16.8 [0.0–38.9] |
+| build seconds | 0.3 [0.2–0.9] | 2.9 [1.5–8.2] | 19.5 [8.4–52.9] | 81.6 [42.1–380.9] |
+| peak RSS MB | 20.8 [17.5–34.1] | 114.2 [42.9–254.5] | 519.8 [213.3–1266.9] | 1786.7 [838.9–5305.8] |
+
+Each cell is the per-repository median [p10–p90]; failed repositories are counted in the first row and excluded from every metric row below it (no map, nothing to measure) — under CLAUDE.md's lower-bound rule, that means every distribution above is a floor on how bad things get, not the whole truth. Reproduce with `python eval/manifest_from_builds.py && python eval/corpus_stats.py`.
+
+### The 1% mainland share (#42) does not stay flat — it was never tested past 21x
+
+PR #42 measured mainland-district *count* staying roughly flat (16/27/28 before finding 15's resolver fix) across a 21x file-count range and flagged in its own text that this was weaker evidence than it looked. This corpus measures the thing that actually matters for readability — mainland *file share*, not district count — across a ~5,016x range (8 to 40,129 files), by band:
+
+| band | mainland file share, median [p10–p90] | mainland district count, median |
+|---|---|---|
+| small | 100.0% [100.0–100.0%] | 5 |
+| medium | 98.9% [90.9–100.0%] | 13 |
+| large | 92.3% [40.9–97.9%] | 18.5 |
+| ultra | **54.7% [7.7–88.9%]** | 16 |
+
+Small and medium hold the 1%-threshold's implicit promise — mainland is nearly everything. Large already shows a p10 of 40.9%: one in ten large repos has fewer than half its files inside a mainland district. Ultra breaks it outright: the median ultra repo has barely more than half its files classified mainland, and the worst-case (p10) ultra repo has 92.3% of its files outside the 1% line — in a district too small by that rule to be a "place" at all. The threshold is a constant fraction of file count; district size distributions get heavier-tailed as repos grow (that is exactly what finding 15 measured happening to n8n), so a fixed 1% line inevitably classifies a shrinking share of a growing repo as mainland. **Falsified as a scale-invariant rule** — 1% works because the corpus PR #42 measured it on topped out at 11,982 files, a fifth of this corpus's largest ultra repo.
+
+### #48's 30 px²/file floor is already crossed by most `large` repos, not just repos past dify/n8n's size
+
+PR #49 derived `DOT_DENSITY_FLOOR = 30` from nine repositories (24 to 11,982 files) and reported a "clean gap": everything up to crawlab (575 files) clears 50 px²/file, dify and n8n (6,335 / 11,982) never clear 13, and 30 sits in between. Counting how many repositories per band have *any* district under the floor at fit zoom (the condition that actually engages #48's thinning), using the corrected method above:
+
+| band | under floor @ 390×700 (phone) | under floor @ 1440×900 (desktop) |
+|---|---|---|
+| small | 1 / 49 (2%) — `trpc/trpc`, 204 files, min 23.3 | 0 / 49 (0%) |
+| medium | 15 / 40 (38%) | 1 / 40 (2%) — `date-fns/date-fns`, 1,549 files, min 0.0 |
+| large | 27 / 28 (**96%**) | 12 / 28 (**43%**) |
+| ultra | 11 / 11 (**100%**) | 11 / 11 (**100%**) |
+
+There is no gap at large-repo scale — the floor engages for nearly every `large`-band repo on a phone and for over 4 in 10 on a desktop, and for every single `ultra` repo on both. The nine-repo derivation's "clean gap" was real for the nine repos it measured, dominated by small/medium; it was never evidence the gap holds at `large` scale, because the derivation set had no repository in the `large` band (2k–8k files) at all — its largest sub-`large` point was medium-band crawlab (575 files), and the next point up was dify at 6,335, already deep into `large`. `trpc/trpc` at 204 files (small band, min 23.3) and `date-fns/date-fns` at 1,549 files (medium band, min 0.0 at desktop) both cross the floor well inside bands the nine-repo set called safe — `date-fns` in particular has a district with a degenerate on-screen area at desktop fit zoom, not merely a sparse one. **Not falsified as a floor value** — 30 is still a defensible threshold — but falsified as evidence that the floor is a `large`/`ultra`-only concern; it already governs most of the corpus above small.
+
+### Landmark counts per band, and the every-zoom cost of one outlier
+
+| band | landmarks, median [p10–p90] | max |
+|---|---|---|
+| small | 10 [7–13] | 22 |
+| medium | 21 [15–55] | 969 (`date-fns/date-fns`) |
+| large | 56 [27–371] | 919 (`microsoft/vscode`) |
+| ultra | 338 [90–2,548] | **10,034** (`microsoftgraph/msgraph-sdk-python`) |
+
+n8n and dify (both cited in the task as 88/140) measure **90 and 136 landmarks** on this corpus's pins — close but not identical, since these are n8n-io/n8n at `d9dc457` and langgenius/dify at `9a0961a`, a few commits past whatever pins produced 88/140. The viewer draws every landmark pin at every zoom level regardless of band, so the number that matters for cost is the max, not the median: `microsoftgraph/msgraph-sdk-python` has 10,034 landmarks on 16,636 files — **60% of its files are landmarks**, all drawn as pins from the first frame. That repository is also this corpus's single largest build-cost outlier (next section), and the two are likely the same underlying structural property: whatever makes almost every file "important" by the landmark heuristic is also driving the edge/blend cost that made it slow and memory-heavy to build. `date-fns/date-fns` (969 landmarks on 1,549 files, 63%) shows the same pattern one band down. Landmark count is not simply proportional to file count within a band — it is bimodal, with a normal range and a small set of repos where the heuristic saturates.
+
+### Build cost vs. size holds in aggregate, and both msgraph SDKs are the exception, not the rule
+
+Across all 128 built repos (8 to 40,129 files), build seconds and peak RSS both track file count with a strong power-law relationship: Pearson r = 0.963 on log(files) vs. log(seconds), 0.937 on log(files) vs. log(peak RSS) — three and a half orders of magnitude of file count, one consistent trend. Median cost per band, normalized:
+
+| band | median build seconds | median peak RSS MB | sec / 1,000 files | MB / file |
+|---|---|---|---|---|
+| small | 0.3 | 20.8 | 7.2 | 0.42 |
+| medium | 2.9 | 114.2 | 3.8 | 0.13 |
+| large | 19.5 | 519.8 | 4.2 | 0.13 |
+| ultra | 81.6 | 1,786.7 | 5.5 | 0.12 |
+
+Cost per file actually *drops* from small to medium and then holds roughly flat — there is no evidence of runaway superlinear cost in the typical case. `microsoftgraph/msgraph-sdk-go` and `microsoftgraph/msgraph-sdk-python` are both well outside that typical case, and both are the same product's two language SDKs:
+
+- `microsoftgraph/msgraph-sdk-go` **failed**: `--all-sources` selected `go at . (17,160 files, high confidence)`; extraction hit 23,880 MB (23.3 GiB) peak RSS against the 24 GiB `prlimit` cap and died with `memory allocation of 74 bytes failed` (returncode 134) — a genuine OOM, not a timeout, and it never produced a file count to band it by.
+- `microsoftgraph/msgraph-sdk-python` **built**, ultra band (16,636 files), but at 844.5s / 13,788.6 MB (13.8 GB) peak RSS — **2.6x the memory and 2.6x the wall time of `Azure/azure-sdk-for-python`**, which indexed 2.4x more files (40,129) in 326.4s / 5,305.8 MB. No other repo in the corpus, at any file count, used more than 5.3 GB.
+
+Both point at #52, not at a general scaling problem: the typical repo's cost is well-behaved and predictable from file count alone; whatever is expensive about the msgraph SDK family (both languages) is a property of that codebase — plausibly an extremely high-fanin shared type/schema layer, consistent with `msgraph-sdk-python`'s landmark saturation above — not of size, since repos more than twice its size cost a fraction as much.
+
+### What is unmeasured
+
+- The corpus is 132 repositories, not the ~100 issue #50 asked for, and its measured-band split (49/41/30/12) is far from the ~25-per-band target, particularly at `ultra` (12, not ~25) and `small` (49, nearly double). Nothing here rebalances it — rebuilding was out of scope for this change, per the task's own instruction not to rebuild anything.
+- Four repositories never produced a map: `axios/axios`, `sveltejs/svelte`, `withastro/astro` (`--all-sources` found no qualifying source in any of the three — all are JavaScript-heavy repos with no `.py`/`.go`/`.ts` majority, which the indexer does not extract) and `microsoftgraph/msgraph-sdk-go` (OOM, above). Per issue #50's failure policy, all four stay in `eval/corpus.toml` with their status and reason; none of the tables above are informed by their structure, because there is none to measure.
+- The px²/file numbers are fit-zoom only, both viewports fixed at the two sizes #48 used; nothing here measures the zoom levels between fit and full reveal, which is what #48's own `drawnCount`/`fullRevealZoom` helpers characterize and this corpus does not re-derive.
+- No visual/touch check ran against the corpus — deliverable 5 is numeric only. The `microsoftgraph/msgraph-sdk-python` 10,034-pin case in particular has not been opened in the viewer to see what "every landmark drawn at fit zoom" actually looks like.
+- The 13 explicit-`--pkg`/`--lang` reasons in `eval/corpus.toml` are inferred from each clone's on-disk layout at review time, not recovered from a decision record; if any of those repos' pin commits move, the layout could no longer match the reason given.
