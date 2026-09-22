@@ -12,7 +12,7 @@ use crate::parity;
 use crate::partition::LeidenFfi;
 use crate::pipeline::{self, LayoutDistrict};
 use crate::schema::{
-    District, DistrictClass, GraphData, LandmarkRow, MapDocument, NodeRow, SymbolRow,
+    District, DistrictClass, FileId, GraphData, LandmarkRow, MapDocument, NodeRow, SymbolRow,
     TerrainArterial, TerrainDistrict, TerrainParcel, TerrainSubdistrict,
 };
 use crate::terrain;
@@ -53,7 +53,7 @@ const MAINLAND_SHARE_PERCENT: usize = 1;
 
 /// Classifies every district in `membership` against
 /// [`MAINLAND_SHARE_PERCENT`], using `imports` -- the resolved static-import
-/// pairs (file names) `data.imports` carries, the same edges `compact()`
+/// pairs (file indices) `data.imports` carries, the same edges `compact()`
 /// turns into the map's own `E` -- to decide whether a below-threshold
 /// district is an island or unconnected: a file counts as connected if it
 /// is incident to at least one import edge, intra- or inter-district both,
@@ -74,27 +74,23 @@ const MAINLAND_SHARE_PERCENT: usize = 1;
 /// person looking at the map would call it: no drawn edge to anything.
 ///
 /// This reads the partition; it does not change it -- membership is never
-/// touched, and nothing here calls the partitioner. `nodes` supplies the
-/// file -> index map (`membership`'s own indexing), the same way
-/// `compact()` builds `file_index`.
+/// touched, and nothing here calls the partitioner. `FileId` is the node
+/// index because extraction emits nodes in the same lexical order used to
+/// assign ids.
 ///
 /// Iterates `BTreeMap`s throughout, never a `HashMap`/`HashSet` -- finding 9:
 /// a set's iteration order leaking into a seeded stage is exactly how the
 /// reference's geometry stopped being reproducible.
 fn classify_districts(
     membership: &[usize],
-    nodes: &[crate::schema::SourceNode],
-    imports: &[(String, String, f64)],
+    imports: &[(FileId, FileId, f64)],
 ) -> BTreeMap<usize, DistrictClass> {
     let total = membership.len();
-    let file_index = nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (node.file.as_str(), index))
-        .collect::<BTreeMap<_, _>>();
     let mut connected = vec![false; membership.len()];
-    for (a, b, _) in imports {
-        if let (Some(&a), Some(&b)) = (file_index.get(a.as_str()), file_index.get(b.as_str())) {
+    for &(a, b, _) in imports {
+        let a = a as usize;
+        let b = b as usize;
+        if a < connected.len() && b < connected.len() {
             connected[a] = true;
             connected[b] = true;
         }
@@ -423,11 +419,7 @@ pub fn build_from_graph_warm(
     // step (naming, `blobs::build_geometry`) working against the final
     // island/unconnected centroids, so there is exactly one geometry pass,
     // not a normal one followed by a patch-up.
-    let classes = classify_districts(
-        &layout.membership,
-        &layout.weighted.nodes,
-        &layout.weighted.imports,
-    );
+    let classes = classify_districts(&layout.membership, &layout.weighted.imports);
     relocate_offshore(&mut layout.districts, &classes);
     eprintln!("[3/5] name     districts");
     // Same convention `cli.py::build` uses: the cache lives next to the map
@@ -543,7 +535,7 @@ fn compact(
         .weighted
         .imports
         .iter()
-        .filter_map(|(a, b, _)| Some([*file_index.get(a.as_str())?, *file_index.get(b.as_str())?]))
+        .map(|(a, b, _)| [*a as usize, *b as usize])
         .collect::<Vec<_>>();
     let landmarks = layout
         .landmarks
@@ -777,32 +769,22 @@ fn compact_uses(
         }
         symbol_index.insert(index, names);
     }
-    let raw = layout
-        .weighted
-        .uses
-        .iter()
-        .filter_map(|(a, b, name)| {
-            Some((
-                *file_index.get(a.as_str())?,
-                *file_index.get(b.as_str())?,
-                name.clone(),
-            ))
-        })
-        .collect::<Vec<_>>();
     let mut outgoing = BTreeMap::<(usize, String), BTreeSet<usize>>::new();
-    for (source, target, name) in &raw {
+    for (source, target, name) in &layout.weighted.uses {
         outgoing
-            .entry((*source, name.clone()))
+            .entry((*source as usize, name.clone()))
             .or_default()
-            .insert(*target);
+            .insert(*target as usize);
     }
     let mut cache = BTreeMap::<(usize, String), Option<(usize, usize)>>::new();
     let mut result = BTreeMap::<String, BTreeSet<usize>>::new();
-    for (source, target, name) in raw {
+    for (source, target, name) in &layout.weighted.uses {
+        let source = *source as usize;
+        let target = *target as usize;
         let key = (target, name.clone());
         let definition = cache
             .entry(key)
-            .or_insert_with(|| define_site(target, &name, &symbol_index, &outgoing, 4));
+            .or_insert_with(|| define_site(target, name, &symbol_index, &outgoing, 4));
         if let Some((file, symbol)) = *definition {
             if file != source {
                 result
@@ -852,37 +834,22 @@ fn define_site(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::SourceNode;
 
-    fn node(file: &str) -> SourceNode {
-        SourceNode {
-            file: file.to_owned(),
-            loc: 1,
-            complexity: 1,
-            churn: 0,
-            fanin: 0.0,
-            module: file.to_owned(),
-            lang: "py".to_owned(),
-        }
-    }
-
-    /// `total` files, named `f0..f{total-1}`, in file-index order. District
-    /// 0 is a lone file (index 0); every other file is one large district
-    /// (1, always mainland regardless of the boundary under test) so
-    /// `total` reflects the repo size the percentage is taken against.
-    fn membership_with_singleton(total: usize) -> (Vec<usize>, Vec<SourceNode>) {
+    /// District 0 is a lone file (index 0); every other file is one large
+    /// district (1, always mainland regardless of the boundary under test),
+    /// so `total` reflects the repo size the percentage is taken against.
+    fn membership_with_singleton(total: usize) -> Vec<usize> {
         let mut membership = vec![1; total];
         membership[0] = 0;
-        let nodes = (0..total).map(|index| node(&format!("f{index}"))).collect();
-        (membership, nodes)
+        membership
     }
 
     #[test]
     fn a_district_exactly_at_one_percent_is_mainland() {
         // 1 file out of 100 is exactly MAINLAND_SHARE_PERCENT -- the
         // threshold is `>=`, so this must land on mainland, not island.
-        let (membership, nodes) = membership_with_singleton(100);
-        let classes = classify_districts(&membership, &nodes, &[]);
+        let membership = membership_with_singleton(100);
+        let classes = classify_districts(&membership, &[]);
         assert_eq!(classes[&0], DistrictClass::Mainland);
     }
 
@@ -891,9 +858,9 @@ mod tests {
         // 1 file out of 200 is below 1%, and it is incident to a resolved
         // import edge (to a file in the mainland district) -- island, not
         // unconnected.
-        let (membership, nodes) = membership_with_singleton(200);
-        let imports = vec![("f0".to_owned(), "f1".to_owned(), 1.0)];
-        let classes = classify_districts(&membership, &nodes, &imports);
+        let membership = membership_with_singleton(200);
+        let imports = vec![(0, 1, 1.0)];
+        let classes = classify_districts(&membership, &imports);
         assert_eq!(classes[&0], DistrictClass::Island);
     }
 
@@ -902,8 +869,8 @@ mod tests {
         // Same below-threshold share as the island case above, but with no
         // import edge anywhere -- the only difference between the two
         // outcomes classify_districts can produce below the mainland floor.
-        let (membership, nodes) = membership_with_singleton(200);
-        let classes = classify_districts(&membership, &nodes, &[]);
+        let membership = membership_with_singleton(200);
+        let classes = classify_districts(&membership, &[]);
         assert_eq!(classes[&0], DistrictClass::Unconnected);
     }
 

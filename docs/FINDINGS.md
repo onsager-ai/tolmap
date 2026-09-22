@@ -773,3 +773,42 @@ Both point at #52, not at a general scaling problem: the typical repo's cost is 
 - No visual/touch check ran against the corpus — deliverable 5 is numeric only. The `microsoftgraph/msgraph-sdk-python` 10,034-pin case in particular has not been opened in the viewer to see what "every landmark drawn at fit zoom" actually looks like.
 - The 13 explicit-`--pkg`/`--lang` reasons in `eval/corpus.toml` are inferred from each clone's on-disk layout at review time, not recovered from a decision record; if any of those repos' pin commits move, the layout could no longer match the reason given.
 - Issue #57 (partition fragmentation on `microsoftgraph/msgraph-sdk-python`/`date-fns/date-fns`; near-total edge loss on `microsoft/vscode`) is filed, not fixed. Their district, landmark, mainland-share and px²/file numbers elsewhere in this finding are real measurements of what the pipeline currently produces for them, not typical `large`/`ultra`/`medium`-band behavior — a fix would change those three repos' numbers without necessarily changing the per-band medians much, since they are minority outliers within their bands.
+
+## 19. Go package fan-out multiplied owned path strings; lexical file IDs cut msgraph-sdk-go below 8 GiB
+
+Issue #52 was not a general large-repository failure. `aws/aws-sdk-go-v2` had already built locally at roughly 2.5 GiB despite having more files and substantially more source than `microsoftgraph/msgraph-sdk-go`; msgraph instead exhausted a 24 GiB address-space cap during extraction. The difference was the shape of the Go packages. A Go import resolves to every source file in the imported package directory, and msgraph contains generated packages with 3,499, 2,223 and 1,663 files that are imported by thousands of files. The resolver therefore expands one source-level package import into thousands of per-file edges.
+
+### The measured driver was fan-out times string ownership
+
+Temporary counters at the post-resolution boundary, run locally before the machine build hold, measured:
+
+| repository | resolved static entries | directed entries | resolved uses |
+|---|---:|---:|---:|
+| `microsoftgraph/msgraph-sdk-go` | **24,447,093** | **24,447,093** | **30,291,465** |
+| `aws/aws-sdk-go-v2` | 160,031 | 160,031 | 450,092 |
+
+That is about **153x** as many static entries for msgraph. The old representation made the count much more expensive than the edge payload alone suggests: static and directed edges used `BTreeMap<(String, String), f64>`, so every entry owned both endpoint paths; uses owned the two paths plus the symbol name; Go resolution cloned the imported package's complete target vector for every import; and the single-source union rebuilt those maps once resolution finished. The local msgraph baseline reached 24,453,860 KiB RSS and then failed after resolution. This confirms the proposed driver directly: package fan-out created tens of millions of entries, and owned path strings multiplied their memory cost.
+
+The fix assigns every file a lexical `u32` `FileId` and carries `(FileId, FileId)` keys through extraction, `GraphData` and geometry. Go package targets are borrowed slices rather than per-import clones. The common single-source path moves its compact maps instead of rebuilding them, and large candidate lookup maps are dropped after their last use. Lexical IDs preserve the former string-key `BTreeMap` order; multi-source remapping preserves source order and ownership filtering; float additions occur in the same order. `GraphData` has a custom serializer and deserializer so checked-in graph JSON still contains paths, in the established field and element order. Every resolved edge remains present with the same weight: memory was reduced by representation, never by sampling or thinning.
+
+### The held acceptance run now completes
+
+The comparison ran remotely on a GitHub-hosted 4-vCPU / 16-GB runner, with `prlimit --as` set to approximately 14 GiB: [remote-build run 35723119573](https://github.com/onsager-ai/tolmap/actions/runs/35723119573). The workflow's `primary` binary was `main`; `compare` was this change.
+
+| repository | `main` | lexical-`FileId` branch | output comparison |
+|---|---|---|---|
+| `microsoftgraph/msgraph-sdk-go` | exit 134 in `[1/5] extract` (`memory allocation of 9 bytes failed`); 14,630,972 KiB peak; 133.29 s | **built 17,160 files**; **7,933,056 KiB peak**; 422.34 s | n/a: `main` produced no map |
+| `aws/aws-sdk-go-v2` | built 26,520 files; 2,451,836 KiB; 421.87 s | built; **2,309,052 KiB**; 416.60 s | **byte-identical** |
+| `prometheus/prometheus` | built 631 files; 87,184 KiB; 3.04 s | built; **85,776 KiB**; 3.01 s | **byte-identical** |
+
+The msgraph branch completed at about 7.6 GiB RSS, with roughly 6.4 GiB of headroom beneath the same cap that killed `main`. Its 422.34-second completion time cannot be compared as a slowdown against `main`'s 133.29 seconds because `main` stopped partway through extraction and never ran the remaining pipeline. AWS and Prometheus provide the completed-run controls: both use less memory, take essentially the same time, and emit byte-identical maps.
+
+### The graph did not move
+
+Before the remote run, a separate `origin/main` binary and the branch binary were compared locally on every source small enough for the machine's build hold. The final map bytes matched for Flask, HTTPX, the checked-in synthetic polyglot graph, a freshly generated 50-file Go/TypeScript polyglot source fixture, and tolmap's local Python reference package. The extracted synthetic-polyglot `GraphData` JSON also matched byte for byte, exercising the new indexed internal representation and path-based wire serializer. The remote AWS and Prometheus comparisons extend that evidence to real Go repositories, including a 26,520-file SDK.
+
+No reference fixture was re-derived. Placement and modularity therefore did not need a new acceptance derivation: the serialized graphs and maps are unchanged, and the existing fixtures remain the lower bound they were before this representation change.
+
+### The Python SDK is a different unresolved mechanism
+
+`microsoftgraph/msgraph-sdk-python` still reached 13.8 GB for 16,636 files in finding 18. Python imports resolve to one file, so it cannot have this Go directory fan-out mechanism. Issue #57's remote `dump-blend` measurement found **99.998% of its blended edges below the 0.02 prune floor** after global-maximum normalization. That result explains the SDK's near-singleton partition and landmark explosion: almost every extracted edge disappears before Leiden. It does not explain why constructing the Python graph consumes 13.8 GB. The Python memory driver remains unmeasured and is not changed here; a blend/prune fix for #57 would also change every affected map and requires its own stability measurements and finding.
