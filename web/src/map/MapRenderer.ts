@@ -29,7 +29,7 @@ import {
 } from "./geometry";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
 import { pinchTransform, type PinchAnchor } from "./pinch";
-import { selectPins } from "./pins";
+import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
 
 declare global {
   interface Window {
@@ -182,6 +182,21 @@ export class MapRenderer {
   private static readonly DRIFT_ZOOM_LO = 0.67;
   private static readonly DRIFT_ZOOM_HI = 4;
   private static readonly DRIFT_REDRAW_MS = 250;
+
+  // Issue #63: island districts fade in with zoom instead of being visible
+  // (or nearly so) at the opening fit view. zf0 (= k/fitScale(), computed
+  // once per paint below) is 1 exactly at fit; ISLAND_FADE_START_ZF is where
+  // the reveal begins on the way IN, PIN_CAPITAL_HIDE_ZF (imported from
+  // pins.ts) is where it finishes -- see islandFadeOpacity's own comment for
+  // why zoom-relative rather than area-relative, and why reusing
+  // PIN_CAPITAL_HIDE_ZF rather than a second new "now it's legible" cutoff.
+  // ISLAND_FADE_VISIBLE_EPS is both the interactivity cutoff (below it, an
+  // island's polygon/dots/labels are not even drawn -- #49's own
+  // "don't create the element" rule, so a tap falls through to nothing) and
+  // the "visible" threshold the PR's own measurements use, so the two
+  // definitions of "invisible" can never disagree.
+  private static readonly ISLAND_FADE_START_ZF = 1;
+  private static readonly ISLAND_FADE_VISIBLE_EPS = 0.05;
 
   private readonly TOUCH = matchMedia("(pointer: coarse)").matches;
   private readonly onPointerDown = (e: PointerEvent) => this.pointerDown(e);
@@ -383,6 +398,54 @@ export class MapRenderer {
       if (alwaysDrawn.has(order[idx])) hidden--;
     }
     return hidden;
+  }
+
+  /** Issue #63: an island's fade multiplier for THIS zoom, 0 at fit rising
+   * continuously to 1 by PIN_CAPITAL_HIDE_ZF. Zoom-relative rather than
+   * area-relative (the other option the issue offered: fade once a typical
+   * island's on-screen area clears DOT_DENSITY_FLOOR) because, measured on
+   * dify (PR description has the full table), a MEDIAN island's on-screen
+   * area already clears DOT_DENSITY_FLOOR at zf0 as low as ~0.09 (desktop) /
+   * ~0.31 (phone) -- both comfortably below fit. An area threshold can't be
+   * what keeps an island hidden AT fit, because by that measure it is
+   * already "established" before the map even opens -- that gap between
+   * area-established and zoom-hidden is exactly issue #63's bug (21 of 26 of
+   * dify's islands sat inside the phone viewport at fit, per the issue).
+   * Only a zoom-relative rule can hide it at fit and reveal it on zoom-in,
+   * which is why this uses `zf0` (`ISLAND_FADE_START_ZF`, the "zf above 1+e"
+   * option the issue also offered) rather than a per-island area check.
+   *
+   * Requirement 2 of issue #34 (mirrored in `clampK`'s own comment): zooming
+   * OUT past fit to reach the full extent must show islands, not fade them
+   * further. That is a deliberate, different user action -- leaving the
+   * mainland-only opening view on purpose to see everything -- not a
+   * continuation of the zoom-IN reveal below, so it is its own explicit
+   * branch with its own (deliberately discontinuous) jump to full strength
+   * the instant the viewer drops below fit, never a third case smoothed into
+   * the ramp. The ramp itself stays continuous across its own domain
+   * (zf0 >= ISLAND_FADE_START_ZF), which is the "no pop" that matters for
+   * the zoom-IN journey the issue actually describes. */
+  private islandFadeOpacity(zf0: number): number {
+    if (zf0 < MapRenderer.ISLAND_FADE_START_ZF) return 1;
+    return Math.min(1, (zf0 - MapRenderer.ISLAND_FADE_START_ZF) / (PIN_CAPITAL_HIDE_ZF - MapRenderer.ISLAND_FADE_START_ZF));
+  }
+
+  /** `d`'s fade multiplier for THIS paint: 1 for every non-island district
+   * (mainland, unconnected -- both keep whatever treatment they already
+   * have, per #63's spec) and for any island in `exceptionDistricts` (a
+   * selection, route, blast radius or search result touching it -- see
+   * paint()'s own build of that set from the SAME dim/alwaysDrawn machinery
+   * the file-level treatment already uses), `islandFadeOpacity(zf0)`
+   * otherwise. The one function every island-affecting draw call below goes
+   * through, so the polygon, its labels/badges and its file dots can never
+   * disagree about how faded a given island is this frame. Always exactly 1
+   * for a pre-#63 fixture (no district is ever "island" there), and ×1 is
+   * exact in floating point, so every opacity multiplication below is a
+   * byte-for-byte no-op on the nine acceptance fixtures. */
+  private islandFadeForDistrict(d: number, zf0: number, exceptionDistricts: Set<number>): number {
+    if (districtClass(this.state!.doc.districts[String(d)]) !== "island") return 1;
+    if (exceptionDistricts.has(d)) return 1;
+    return this.islandFadeOpacity(zf0);
   }
 
   /** VW/VH track the canvas element's own box, not the window — the sidebar
@@ -724,6 +787,20 @@ export class MapRenderer {
     const dimDistricts = selNeighbours
       ? new Set([D_(doc, sel!), ...selNeighbours.out.map((j) => D_(doc, j)), ...selNeighbours.in.map((j) => D_(doc, j))])
       : null;
+    // Issue #63's fade exceptions: an island touched by a selection, route,
+    // blast radius or search result is drawn at full strength. Reuses the
+    // SAME sets built above rather than a parallel notion of "important" --
+    // `selD` directly (a district picked from the sidebar's islands list,
+    // see Sidebar.tsx/MapView.tsx), `sel`'s own district (the selected
+    // file's island, including a search hit -- MapView.tsx resolves a
+    // search result to `sel`/`selSym` before this ever renders), and every
+    // district `dim` touches (route path, blast set, or plain-selection
+    // neighbours -- exactly the file-level alwaysDrawn/dim treatment,
+    // projected onto districts).
+    const islandExceptionDistricts = new Set<number>();
+    if (selD != null) islandExceptionDistricts.add(selD);
+    if (sel != null) islandExceptionDistricts.add(D_(doc, sel));
+    if (dim) for (const i of dim) islandExceptionDistricts.add(D_(doc, i));
 
     if (geo !== "t") {
       doc.roads.forEach(([a, b, w]) => {
@@ -753,14 +830,27 @@ export class MapRenderer {
         // no-op for them and they need no explicit case.
         const faint = districtClass(doc.districts[d]) === "island";
         const districtFaded = dimDistricts != null && !dimDistricts.has(+d);
+        // Issue #63: an island below ISLAND_FADE_VISIBLE_EPS this frame
+        // draws NOTHING here -- the same #49 "don't create the element at
+        // all" rule the file-dot budget already uses, so a tap over its area
+        // falls through to whatever's underneath (nothing, on an island's
+        // own offshore ring) instead of selecting an effectively-invisible
+        // place. Above the threshold, `iFade` scales fill/stroke opacity
+        // continuously toward 1, so crossing the threshold itself is not a
+        // visible pop -- 0 to ~0.05 opacity is imperceptible; only the
+        // element's PRESENCE changes, not a jump in how it looks once
+        // present. Always exactly 1 (a no-op ×1) for mainland/unconnected,
+        // so this never touches their numbers.
+        const iFade = faint ? this.islandFadeForDistrict(+d, zf0, islandExceptionDistricts) : 1;
+        if (faint && iFade <= MapRenderer.ISLAND_FADE_VISIBLE_EPS) continue;
         doc.districts[d].blob.forEach((poly) => {
           const path = el("path", {
             d: "M" + poly.map((q) => this.X(q[0]).toFixed(1) + " " + this.Y(q[1]).toFixed(1)).join("L") + "Z",
             fill: districtColor(+d),
-            "fill-opacity": layer === "d" ? (on ? 0.3 : districtFaded ? 0.035 : faint ? 0.07 : 0.14) : on ? 0.16 : districtFaded ? 0.02 : faint ? 0.03 : 0.06,
+            "fill-opacity": (layer === "d" ? (on ? 0.3 : districtFaded ? 0.035 : faint ? 0.07 : 0.14) : on ? 0.16 : districtFaded ? 0.02 : faint ? 0.03 : 0.06) * iFade,
             stroke: on ? "var(--hot)" : districtColor(+d),
             "stroke-width": on ? 2.6 : faint ? 0.9 : 1.5,
-            "stroke-opacity": on ? 1 : districtFaded ? 0.22 : faint ? 0.4 : 0.7,
+            "stroke-opacity": (on ? 1 : districtFaded ? 0.22 : faint ? 0.4 : 0.7) * iFade,
             "stroke-linejoin": "round",
             class: "hit",
             "pointer-events": "all",
@@ -809,6 +899,18 @@ export class MapRenderer {
         // free (there is no invisible dot left to swallow the tap).
         const factor = alwaysDrawn.has(i) ? 1 : this.dotFactor(i);
         if (factor <= 0) continue;
+        // Issue #63: a file inside a still-faded island is hidden the same
+        // way an over-budget file already is just above -- skipped outright,
+        // not drawn transparent, so a tap falls through (the island's own
+        // polygon is equally non-interactive below the same threshold; see
+        // the districts loop). This check runs even for a landmark file
+        // (`alwaysDrawn` already forced `factor` to 1 for it): #48's dot
+        // budget and #63's island-zoom fade are independent gates, and a
+        // landmark being budget-exempt doesn't make its island's
+        // reveal-by-zoom exempt too -- only the exceptions in
+        // `islandExceptionDistricts` (selection/route/blast/search) do that.
+        const dIsland = this.islandFadeForDistrict(D_(doc, i), zf0, islandExceptionDistricts);
+        if (dIsland <= MapRenderer.ISLAND_FADE_VISIBLE_EPS) continue;
         const r = Math.max(1.1, (1.6 + 5.2 * Math.sqrt(LOC(doc, i) / this.maxLoc)) * dotZoom);
         // Cull margin covers the dot's own radius plus its touch hit-stroke
         // halo (up to 16px, see stroke-width below) -- the same treatment
@@ -827,7 +929,7 @@ export class MapRenderer {
           cy: cy.toFixed(1),
           r: r.toFixed(2),
           fill: this.tint(i),
-          "fill-opacity": factor === 1 ? baseOpacity : Math.round(baseOpacity * factor * 1000) / 1000,
+          "fill-opacity": factor === 1 && dIsland === 1 ? baseOpacity : Math.round(baseOpacity * factor * dIsland * 1000) / 1000,
           class: "hit",
           stroke: "transparent",
           "stroke-width": this.TOUCH ? 16 : 0,
@@ -978,6 +1080,13 @@ export class MapRenderer {
     // districts loop) is the same k/fitScale() ratio this needs -- no
     // reason for a second identical computation.
     const pinScreenOf = (i: number): [number, number] | null => {
+      // Issue #63: reuses the SAME "return null = culled" contract
+      // selectPins already defines for an off-screen candidate (see its own
+      // doc comment) -- an invisible island's landmark pin is excluded from
+      // collision placement entirely, not merely drawn transparent, so it
+      // can't take a placement slot a visible pin might have wanted.
+      const dIsland = this.islandFadeForDistrict(D_(doc, i), zf0, islandExceptionDistricts);
+      if (dIsland <= MapRenderer.ISLAND_FADE_VISIBLE_EPS) return null;
       const p = this.px(i);
       const cx = this.X(p[0]);
       const cy = this.Y(p[1]);
@@ -985,10 +1094,17 @@ export class MapRenderer {
       return [cx, cy];
     };
     const pins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel);
-    this.drawLabels(g, alwaysDrawn);
+    this.drawLabels(g, alwaysDrawn, islandExceptionDistricts);
 
     pins.forEach(({ row: [i, why, detail, rank], cx, cy }) => {
-      const gg = el("g", { class: "hit", "data-k": "f:" + i });
+      const pFade = this.islandFadeForDistrict(D_(doc, i), zf0, islandExceptionDistricts);
+      // opacity attribute only when < 1 (islands only): keeps every fixture
+      // without islands byte-identical to before #63 (pFade is always
+      // exactly 1 there -- islandFadeForDistrict's own early return), rather
+      // than adding a never-before-present attribute unconditionally.
+      const pinAttrs: Record<string, string | number> = { class: "hit", "data-k": "f:" + i };
+      if (pFade !== 1) pinAttrs.opacity = pFade.toFixed(3);
+      const gg = el("g", pinAttrs);
       gg.appendChild(
         el("path", {
           d: `M ${cx.toFixed(1)} ${cy.toFixed(1)} l -8 -12 a 9.5 9.5 0 1 1 16 0 z`,
@@ -1198,7 +1314,7 @@ export class MapRenderer {
 
   // Label budget: districts first, then files by importance, skipping
   // collisions.
-  private drawLabels(g: SVGGElement, alwaysDrawn: Set<number>) {
+  private drawLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandExceptionDistricts: Set<number>) {
     const { doc, geo } = this.state!;
     const placed: [number, number, number, number][] = [];
     const hits = (x: number, y: number, w: number, h: number) =>
@@ -1255,6 +1371,16 @@ export class MapRenderer {
       const cls = districtClass(doc.districts[d]);
       if (cls === "unconnected") continue;
       const isIsland = cls === "island";
+      // Issue #63: the SAME fade the polygon and its file dots use (see
+      // islandFadeForDistrict) -- a label/badge is the district's own
+      // wayfinding text, so it has to disappear and reappear in lockstep
+      // with the place it names, never lagging or leading it. Skipped
+      // entirely below the visibility threshold (like the polygon), rather
+      // than placed at ~0 opacity, so an invisible island's name can't still
+      // consume a slot in the label collision budget (`hits()` below) that a
+      // visible label might have wanted.
+      const iFade = isIsland ? this.islandFadeForDistrict(+d, zf, islandExceptionDistricts) : 1;
+      if (isIsland && iFade <= MapRenderer.ISLAND_FADE_VISIBLE_EPS) continue;
       const c = geo !== "t" ? doc.districts[d].c : tmCentre(doc, +d);
       const x = this.X(c[0]);
       const y = this.Y(c[1]);
@@ -1264,7 +1390,7 @@ export class MapRenderer {
       // files" subtitle -- with up to hundreds of them on a real repo, a
       // second line per label would be its own kind of clutter even after
       // the priority sort above thins the count that gets placed at all.
-      const labelPlaced = put(x, y, doc.names[d], isIsland ? size * 0.75 : size, isIsland ? 0.5 : 0.82, isIsland ? 500 : 600, +d);
+      const labelPlaced = put(x, y, doc.names[d], isIsland ? size * 0.75 : size, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
       // Issue's scope item 2: a "+N files" badge once #49's budget is
       // actually hiding members of this district AND the name label itself
       // found room -- a floating count with no name above it would read
@@ -1282,7 +1408,7 @@ export class MapRenderer {
       // if there's no room, the same trade every label on this map makes.
       const hidden = labelPlaced ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
       if (hidden > 0) {
-        put(x, y + (isIsland ? 10 : 13), `+${hidden} files`, isIsland ? 8.5 : 9.5, isIsland ? 0.55 : 0.7, 600, +d);
+        put(x, y + (isIsland ? 10 : 13), `+${hidden} files`, isIsland ? 8.5 : 9.5, (isIsland ? 0.55 : 0.7) * iFade, 600, +d);
       } else if (zf < 1.8 && !narrow && !isIsland) {
         put(x, y + 13, doc.districts[d].size + " files", 9.5, 0.45);
       }

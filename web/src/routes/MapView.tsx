@@ -4,6 +4,7 @@ import { useCatalogue, useMapDocument } from "@/data/queries";
 import { MapCanvas, type MapCanvasHandle } from "@/map/MapCanvas";
 import type { MapRendererCallbacks, TerrainSelection } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
+import { districtClass } from "@/map/geometry";
 import type { SearchHit } from "@/map/search";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
@@ -161,6 +162,17 @@ export function MapView() {
           }}
           onFlyDistrict={(d) => {
             setSideOpen(false);
+            // Issue #63: a non-mainland row (island or unfiled) also
+            // SELECTS the district, not just flies to it -- selecting is
+            // what exempts an island from the fade (MapRenderer's
+            // islandExceptionDistricts reads `selD`) and is also what opens
+            // its card (selectDistrict's own setPanelOpen), matching #63's
+            // own check ("select an island from the drawer list, and it's
+            // visible and its card opens"). A mainland row keeps today's
+            // fly-only behaviour: mainland is never faded, and changing its
+            // established "fly to look, don't select" affordance is out of
+            // this issue's scope.
+            if (doc && districtClass(doc.districts[String(d)]) !== "mainland") selectDistrict(d);
             canvasRef.current?.zoomDistrict(d);
           }}
         />
