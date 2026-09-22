@@ -32,5 +32,33 @@ export const BUILD_ZOOM = 5.2;
 // above dify/n8n's ceiling (so thinning always engages there at fit zoom).
 export const DOT_DENSITY_FLOOR = 30;
 
+// Cap on how many direct-import lines get DRAWN for a hovered or selected
+// file (in + out, combined) -- shared by MapRenderer's hover preview and
+// persistent selection links, and by SelectionPanel's "links: showing N of
+// M" line, so the three can never disagree about where the cut is. Without
+// one, a hub file's fan-in alone can run into the thousands (issue #57's
+// build log: one file with a fan-in of 26,342) and "lines to every
+// neighbour" stops being a preview and starts being another unreadable-
+// overview problem. This caps DRAWING only -- the dim/highlight set that
+// marks which files are connected is never capped (every neighbour still
+// fades in or gets a ring; see MapRenderer.paint()'s selNeighbours/dim).
+export const LINK_PREVIEW_MAX = 40;
+
 export type Geo = "r" | "p" | "t";
 export type Layer = "d" | "c" | "x";
+
+// GEO_LABEL/GEO_ORDER used to drive GeoLayerControls.tsx's geometry toggle
+// (regions/plots/treemap). Hidden from the UI on 2026-09-22 by owner
+// decision: plots needs `P` parcel data only 2 of the 9 acceptance fixtures
+// carry, and treemap trades away the map's own silhouette. Left here (not
+// deleted, and moved from GeoLayerControls.tsx to this file specifically so
+// it stays a plain constants module -- a component file re-exporting unused
+// constants breaks Vite's fast-refresh detection) rather than in the
+// component that used to render them: re-enable by adding "p"/"t" back to
+// GEO_ORDER and restoring the toggle UI in GeoLayerControls.tsx (git
+// history has it) and the "r"-only allowlist in routes/search.ts's GEOS.
+// Nothing in MapRenderer.ts changed -- geo="p"/"t" still render correctly,
+// there's just no control (or valid deep link, after search.ts's
+// normalisation) that sets them anymore.
+export const GEO_LABEL: Record<Geo, string> = { r: "regions", p: "plots", t: "treemap" };
+export const GEO_ORDER: Geo[] = ["r"];

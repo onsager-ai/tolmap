@@ -26,8 +26,11 @@
 // at the new document, so it framed the PREVIOUS repo's bounds, or nothing
 // at all on first mount), that the mainland's on-screen extent actually
 // sits inside fit()'s own pad -- not overflowing the viewport -- on first
-// load and after a repo switch, plus that desktop's auto-select of the top
-// landmark on load still fires.
+// load and after a repo switch, plus (readable-overview PR review finding)
+// that NEITHER profile auto-selects anything or opens with a dimmed dot on
+// a fresh load -- desktop used to auto-select the top landmark, which,
+// once selection started dimming non-neighbour files, made a fresh
+// django/django load open with most of the map already dimmed; removed.
 //
 // Usage:
 //   pnpm exec vite --port 5176 --strictPort &
@@ -266,23 +269,56 @@ async function runOne({ browser, base, slug, profile }) {
   // MapRenderer.state still held, which on first mount is nothing at all).
   report(fitsWithinPad(await districtUnionBox(page), vw, vh), `${label}: first load fits within the pad`);
 
-  // Desktop auto-selects the top landmark on load (MapView.tsx); check that
-  // before clearing it -- this fix touched the same repoKey effect that
-  // precedes it, so it's worth confirming that behaviour is still intact
-  // rather than assuming it because nothing here looks like it should touch
-  // it.
-  if (!profile.isMobile) {
-    const autoSelectedFile = await page.evaluate(() => new URL(location.href).searchParams.get("file"));
-    report(!!autoSelectedFile, `${label}: desktop still auto-selects the top landmark on load`);
-  }
-
-  // Desktop auto-selects the top landmark on load (MapView.tsx); clear it at
-  // fit zoom, where there's reliably blank margin along the fit's letterboxed
-  // axis, before establishing the zoomed-in baseline below.
-  if (!profile.isMobile) {
-    const empty = await findEmptyPoint(page, vw, vh);
-    if (empty) await tap(page, profile, empty[0], empty[1]);
-  }
+  // Desktop used to auto-select the top landmark on load (MapView.tsx).
+  // Removed as a readable-overview PR review finding: once selection
+  // started dimming non-neighbour files (that PR's own change), the
+  // auto-select made a FRESH desktop load of django/django open with 685 of
+  // 851 dots already dimmed -- the overview auto-obstructing itself before
+  // a reader had asked for anything. This is the opposite of what this
+  // check used to assert (desktop DID auto-select): now BOTH profiles must
+  // open with no file selected and nothing dimmed -- phone always did,
+  // desktop now matches it, and there is no longer a selection to "clear"
+  // before establishing the zoomed-in baseline below (the old clear-it tap
+  // that used to sit here is gone with it).
+  // "Dimmed" here means the SELECTION dim/undim path specifically
+  // (MapRenderer.paint()'s `baseOpacity = dim && !dim.has(i) ? 0.2 : 0.85`),
+  // not #49's UNRELATED density-fade opacity -- a large, not-yet-fully-
+  // revealed district (dify at fit zoom is exactly this: it never clears
+  // DOT_DENSITY_FLOOR's fast path the way every acceptance fixture does)
+  // legitimately draws dots at all kinds of partial opacity with no
+  // selection active at all, via `factor` in that same expression.
+  //
+  // Two things were tried and failed here before landing on the check
+  // below, kept as the record of why it looks like this:
+  //   1. `fill-opacity < some threshold` -- 28 false positives on dify
+  //      desktop, 570 on phone (the fade band is wide at fit zoom).
+  //   2. `fill-opacity === "0.2"` exactly, over every file dot -- narrower,
+  //      but the fade path computes `Math.round(0.85 * factor * 1000) /
+  //      1000`, and SOME `factor` in a large district's continuous fade
+  //      band rounds to exactly 0.2 too (0.85 * 0.235294... = 0.2 before
+  //      rounding) -- 1 false positive on dify phone, not zero.
+  // A landmark file's dot is exempt from the fade multiplier entirely:
+  // `alwaysDrawn.has(i) ? 1 : this.dotFactor(i)` forces `factor = 1` for
+  // every landmark unconditionally, so its fill-opacity is ALWAYS exactly
+  // `baseOpacity` with no multiplication -- 0.2 there can only mean `dim`
+  // was real. Scoping the exact-match check to landmark dots (fetched from
+  // the map's own JSON, the same pattern checkSelectionDim below uses)
+  // keeps the check meaningful while removing the collision entirely.
+  const landmarkFiles = await page.evaluate(async (s) => {
+    const res = await fetch(`/maps/${s}.json`);
+    const doc = await res.json();
+    return doc.L.map((l) => l[0]);
+  }, slug);
+  const openState = await page.evaluate((landmarks) => {
+    const file = new URL(location.href).searchParams.get("file");
+    const dimmed = landmarks.filter((i) => {
+      const c = document.querySelector(`svg.map-svg circle.hit[data-k="f:${i}"]`);
+      return c && c.getAttribute("fill-opacity") === "0.2";
+    }).length;
+    return { file, dimmed, landmarksOnScreen: landmarks.filter((i) => document.querySelector(`svg.map-svg circle.hit[data-k="f:${i}"]`)).length };
+  }, landmarkFiles);
+  report(!openState.file, `${label}: no auto-selected file on a fresh load`, JSON.stringify(openState));
+  report(openState.dimmed === 0, `${label}: no landmark dot is selection-dimmed on a fresh load`, JSON.stringify(openState));
 
   const centre = [vw / 2, vh / 2];
   await zoomIn(page, centre[0], centre[1]);
@@ -407,6 +443,144 @@ async function checkRepoSwitch(browser, base, profile) {
   await context.close();
 }
 
+// readable-overview PR: "when hovering an isolated area of a district, only
+// that area is highlighted, not the whole district" -- a district whose
+// `blob` has several polygons draws one <path> per polygon (plus its label)
+// all sharing data-k="d:N"; the fix highlights every element for that key,
+// not just the one the pointer resolved to. Wants dify per the user's
+// report, but dify's OWN build (every worktree's copy of it checked, none
+// built with tolmap build for this task) happens to have ZERO multi-polygon
+// districts -- every one of its districts is a single contiguous blob, so
+// there is nothing there to exercise this on. django DOES have one
+// (district "sessions", 3 polygons, found by exactly the districts[d].blob
+// .length > 1 scan the task asked for) and is well inside the browser-size
+// limit, so this runs there instead; the fix itself is generic (keyElements
+// is built from every element carrying a data-k, not district-specific), so
+// this is still a real exercise of the code path dify would use too.
+async function checkMultiPolygonHover(browser, base) {
+  const label = "multi-polygon district hover (django, desktop -- dify has none, see comment)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  const districtId = await page.evaluate(async () => {
+    const res = await fetch("/maps/django/django.json");
+    const doc = await res.json();
+    for (const k in doc.districts) {
+      if (doc.districts[k].blob.length > 1) return k;
+    }
+    return null;
+  });
+  if (districtId == null) {
+    report(false, `${label}: no multi-polygon district found in django either`, "fixture data may have changed");
+    await context.close();
+    return;
+  }
+
+  const before = await page.evaluate((d) => {
+    const els = [...document.querySelectorAll(`svg.map-svg [data-k="d:${d}"]`)];
+    return els.length;
+  }, districtId);
+  report(before > 1, `${label}: district d:${districtId} has multiple elements sharing its key`, `found ${before}`);
+
+  const polyCentre = await page.evaluate((d) => {
+    const el = document.querySelector(`svg.map-svg path.hit[data-k="d:${d}"]`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, districtId);
+  if (!polyCentre) {
+    report(false, `${label}: no polygon path found for d:${districtId}`);
+    await context.close();
+    return;
+  }
+  await page.mouse.move(polyCentre.x, polyCentre.y, { steps: 4 });
+  await page.waitForTimeout(150);
+  const after = await page.evaluate((d) => {
+    const els = [...document.querySelectorAll(`svg.map-svg [data-k="d:${d}"]`)];
+    return { total: els.length, hovered: els.filter((e) => e.classList.contains("hovered")).length };
+  }, districtId);
+  report(after.total === before && after.hovered === after.total, `${label}: hovering one polygon highlights every polygon (and the label)`, JSON.stringify(after));
+  await context.close();
+}
+
+// readable-overview PR: selecting a file (no symbol, no route) dims files
+// it has no direct import edge to and keeps its neighbours at full opacity
+// -- the same dim/highlight treatment hovering already had, extended to a
+// persistent selection (tap-select included, so this runs on phone too).
+async function checkSelectionDim(browser, base, profile) {
+  const label = `selection dim/highlight (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  // A file with both in- and out-edges, so the dim/highlight split is
+  // actually exercised in both directions, picked from the map's own data
+  // rather than hardcoded (this build's file indices aren't guaranteed
+  // stable across a corpus refresh).
+  const target = await page.evaluate(async () => {
+    const res = await fetch("/maps/langgenius/dify.json");
+    const doc = await res.json();
+    const outDeg = new Map();
+    const inDeg = new Map();
+    for (const [a, b] of doc.E) {
+      outDeg.set(a, (outDeg.get(a) || 0) + 1);
+      inDeg.set(b, (inDeg.get(b) || 0) + 1);
+    }
+    for (const [i, od] of outDeg) {
+      if (od > 2 && (inDeg.get(i) || 0) > 2) return { i, file: doc.F[i], neighbour: [...outDeg.keys()][0] === i ? null : i };
+    }
+    return null;
+  });
+  if (!target) {
+    report(false, `${label}: no file with in+out edges found`);
+    await context.close();
+    return;
+  }
+
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=d&file=${encodeURIComponent(target.file)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+
+  const result = await page.evaluate((i) => {
+    const circles = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+    const nonSelected = circles.filter((c) => c.getAttribute("data-k") !== `f:${i}`);
+    // Exact "0.2" only (see the fresh-load check's own comment above for
+    // why a threshold isn't safe on dify specifically: #49's UNRELATED
+    // density-fade opacity can coincidentally sit under any threshold too).
+    const dimmed = nonSelected.filter((c) => c.getAttribute("fill-opacity") === "0.2");
+    // A neighbour ring (MapRenderer.ring(), var(--hot) or var(--cold) stroke)
+    // marks a file that's connected -- find one and check ITS dot opacity,
+    // which should read as full strength (alwaysDrawn), not dimmed.
+    const rings = [...document.querySelectorAll("svg.map-svg circle[stroke]:not(.hit)")];
+    let neighbourFull = null;
+    for (const ring of rings) {
+      const cx = parseFloat(ring.getAttribute("cx"));
+      const cy = parseFloat(ring.getAttribute("cy"));
+      const dot = circles.find((c) => Math.abs(parseFloat(c.getAttribute("cx")) - cx) < 1 && Math.abs(parseFloat(c.getAttribute("cy")) - cy) < 1);
+      if (dot && dot.getAttribute("data-k") !== `f:${i}`) {
+        neighbourFull = parseFloat(dot.getAttribute("fill-opacity"));
+        break;
+      }
+    }
+    return { totalCircles: circles.length, dimmedCount: dimmed.length, neighbourFull };
+  }, target.i);
+  report(result.dimmedCount > 0, `${label}: at least one non-neighbour dot is dimmed`, JSON.stringify(result));
+  report(result.neighbourFull != null && result.neighbourFull >= 0.8, `${label}: a ringed neighbour's dot stays at full opacity`, JSON.stringify(result));
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const browser = await chromium.launch();
@@ -417,6 +591,10 @@ async function main() {
   }
   for (const profile of PROFILES) {
     await checkRepoSwitch(browser, args.base, profile);
+  }
+  await checkMultiPolygonHover(browser, args.base);
+  for (const profile of PROFILES) {
+    await checkSelectionDim(browser, args.base, profile);
   }
   await browser.close();
 

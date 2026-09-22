@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import type { MapDocument, SymbolRow } from "@/types";
 import { CH, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
-import { KCOL, KIND } from "@/map/constants";
-import { computeBlast } from "@/map/graph";
+import { KCOL, KIND, LINK_PREVIEW_MAX } from "@/map/constants";
+import { computeBlast, type AdjMap } from "@/map/graph";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,8 @@ interface Props {
   selSym: number | null;
   selD: number | null;
   selTerrain: TerrainSelection | null;
+  adj: AdjMap;
+  radj: AdjMap;
   open: boolean;
   onToggleOpen(): void;
   onSelectFile(i: number, opts?: { fly?: boolean }): void;
@@ -34,6 +36,8 @@ export function SelectionPanel({
   selSym,
   selD,
   selTerrain,
+  adj,
+  radj,
   open,
   onToggleOpen,
   onSelectFile,
@@ -80,6 +84,8 @@ export function SelectionPanel({
               doc={doc}
               i={sel!}
               selSym={selSym}
+              adj={adj}
+              radj={radj}
               onSelectSymbol={onSelectSymbol}
               onRouteFrom={onRouteFrom}
               onRouteTo={onRouteTo}
@@ -257,6 +263,8 @@ function FileBody({
   doc,
   i,
   selSym,
+  adj,
+  radj,
   onSelectSymbol,
   onRouteFrom,
   onRouteTo,
@@ -264,6 +272,8 @@ function FileBody({
   doc: MapDocument;
   i: number;
   selSym: number | null;
+  adj: AdjMap;
+  radj: AdjMap;
   onSelectSymbol: Props["onSelectSymbol"];
   onRouteFrom: Props["onRouteFrom"];
   onRouteTo: Props["onRouteTo"];
@@ -272,6 +282,13 @@ function FileBody({
   const sm = selSym != null ? sy[selSym] : null;
   const lm = doc.L.find((l) => l[0] === i);
   const blast = computeBlast(doc, i, selSym);
+  // Total degree only (O(1) -- adj/radj are already-built adjacency maps,
+  // no sort needed for a count); MapRenderer's own selNeighbours branch on
+  // the map only draws these links when blast is ALSO null (a symbol's
+  // blast radius takes precedence there, same as here), so this line
+  // states a fact about exactly what's currently drawn, never something
+  // the map isn't showing.
+  const linkTotal = blast ? 0 : (adj.get(i)?.length ?? 0) + (radj.get(i)?.length ?? 0);
   return (
     <div>
       <p className="break-all text-[10px] text-[var(--dim)]">
@@ -311,6 +328,11 @@ function FileBody({
         )}
       </div>
       <BlastLine blast={blast} doc={doc} />
+      {linkTotal > LINK_PREVIEW_MAX && (
+        <p className="mt-1 text-[9.5px] text-[var(--dim)]">
+          links: showing <b className="text-[var(--on)]">{LINK_PREVIEW_MAX}</b> of {linkTotal}
+        </p>
+      )}
       <SymbolDirectory doc={doc} i={i} sy={sy} cur={selSym} onSelectSymbol={onSelectSymbol} />
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
         <Row label="commits">

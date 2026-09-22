@@ -1,5 +1,5 @@
 import type { MapDocument } from "@/types";
-import { D_ } from "./geometry";
+import { D_, FI } from "./geometry";
 
 export type AdjMap = Map<number, number[]>;
 
@@ -63,6 +63,33 @@ export function findRoute(doc: MapDocument, adj: AdjMap, a: number, b: number): 
   }
   p = bfs(a, b, und);
   return p ? { path: p, kind: "undirected" } : null;
+}
+
+export interface RankedEdge {
+  j: number;
+  dir: "out" | "in";
+}
+
+/** File `i`'s direct import neighbours (`adj` = out, i.e. files `i`
+ * imports; `radj` = in, i.e. files that import `i`), ranked by neighbour
+ * fan-in and capped -- shared by MapRenderer's hover preview, its
+ * persistent selection links, and SelectionPanel's "links: showing N of M"
+ * line, so none of the three can drift from what the others draw or state.
+ * The schema has no literal per-edge weight (`doc.E` is bare `[from, to]`
+ * pairs); a neighbour's own fan-in (`FI`) is the existing structural-
+ * importance proxy this codebase already uses elsewhere (file-dot
+ * prominence order, `pipeline.rs`'s hub-landmark pick), so truncation keeps
+ * the neighbours most likely to matter rather than an arbitrary `doc.E`-
+ * order prefix. `total` is the UNCAPPED degree -- callers that need "is
+ * this file connected to anything" or a full dim/highlight set should read
+ * `adj.get(i)`/`radj.get(i)` directly rather than this capped `shown`. */
+export function rankedNeighbours(doc: MapDocument, adj: AdjMap, radj: AdjMap, i: number, cap: number): { shown: RankedEdge[]; total: number } {
+  const edges: RankedEdge[] = [
+    ...(adj.get(i) ?? []).map((j): RankedEdge => ({ j, dir: "out" })),
+    ...(radj.get(i) ?? []).map((j): RankedEdge => ({ j, dir: "in" })),
+  ];
+  edges.sort((a, b) => FI(doc, b.j) - FI(doc, a.j) || a.j - b.j);
+  return { shown: edges.slice(0, cap), total: edges.length };
 }
 
 export interface Blast {

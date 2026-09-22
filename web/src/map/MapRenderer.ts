@@ -5,8 +5,8 @@
 // file, a symbol, or empty space) flows out through the callbacks passed to
 // the constructor. React owns selection/geo/layer state and the URL; this
 // class only draws and reports gestures.
-import type { LandmarkRow, MapDocument } from "@/types";
-import { BUILD_ZOOM, DOT_DENSITY_FLOOR, KCOL, KIND, PARCEL_ZOOM, type Geo, type Layer } from "./constants";
+import type { MapDocument } from "@/types";
+import { BUILD_ZOOM, DOT_DENSITY_FLOOR, KCOL, KIND, LINK_PREVIEW_MAX, PARCEL_ZOOM, type Geo, type Layer } from "./constants";
 import {
   CH,
   CX_,
@@ -27,8 +27,9 @@ import {
   tmCentre,
   worldBounds,
 } from "./geometry";
-import { computeBlast, type Route } from "./graph";
+import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
 import { pinchTransform, type PinchAnchor } from "./pinch";
+import { selectPins } from "./pins";
 
 declare global {
   interface Window {
@@ -189,6 +190,52 @@ export class MapRenderer {
   private readonly onWheel = (e: WheelEvent) => this.wheel(e);
   private readonly onClick = (e: MouseEvent) => this.click(e);
 
+  // ---------- desktop hover (readable-overview PR, scope item 4) ----------
+  // Fine-pointer only: matched once at construction, the same pattern as
+  // TOUCH above, so a touch profile never registers these listeners at all
+  // -- new listeners, not a rewire of pointerDown/pointerMove/endPointer/
+  // click, which is what keeps every touch-only bug fix documented at the
+  // bottom of this file completely unchanged.
+  private readonly HOVER = matchMedia("(hover: hover) and (pointer: fine)").matches;
+  private readonly onHoverMove = (e: PointerEvent) => this.hoverMove(e);
+  private readonly onHoverLeave = () => this.clearHover();
+  private hoverKey: string | null = null;
+  // Every element sharing hoverKey's data-k, not just the one the pointer
+  // happened to land on: a multi-polygon district's blob draws one <path>
+  // per polygon under the SAME "d:N" key (and its label carries it too), so
+  // highlighting only the event target used to light up one polygon of a
+  // district while leaving the rest of it dark. keyElements (below) is
+  // rebuilt once per paint(); this is just the current key's slice of it.
+  private hoverEls: Element[] = [];
+  private hoverCard: HTMLDivElement | null = null;
+  private hoverImportG: SVGGElement | null = null;
+  private hoverImportTimer: ReturnType<typeof setTimeout> | null = null;
+  // Direct-neighbour indices for the import-link preview, built once per
+  // document (loadDocument()) by reusing graph.ts's buildAdj -- the same
+  // function MapView.tsx already builds route-finding's adjacency from --
+  // rather than re-scanning doc.E (which can be tens of thousands of pairs
+  // on the corpus's large repos) on every hover.
+  private outAdj: AdjMap = new Map();
+  private inAdj: AdjMap = new Map();
+  // data-k -> every element carrying it, rebuilt once per paint() (one
+  // querySelectorAll + one loop over exactly what paint() just drew, not a
+  // per-pointermove DOM query) -- see hoverMove()/reapplyHover() and the
+  // multi-polygon-district fix above. Also what a persistent SELECTION's
+  // own re-ring/re-line logic would use if it ever needed to look an
+  // element back up by key (it doesn't today: selection drawing happens
+  // inline during the SAME paint() that built this map).
+  private keyElements: Map<string, Element[]> = new Map();
+  // Selection's ranked/capped neighbour list (map/graph.ts's
+  // rankedNeighbours), cached by `sel` so a paint() NOT triggered by a
+  // selection change (a layer switch, a resize, a repo-unrelated
+  // re-render) doesn't re-sort a hub file's degree -- which can be in the
+  // thousands (see LINK_PREVIEW_MAX's doc comment) -- every time. The
+  // separate perf/cache-fit-scale PR fixes an O(N²) elsewhere in paint();
+  // this cache is what keeps this feature from adding a new per-paint cost
+  // of its own. Invalidated in loadDocument() (a new document invalidates
+  // outAdj/inAdj too, which this is derived from).
+  private linkCache: { sel: number; result: { shown: RankedEdge[]; total: number } } | null = null;
+
   constructor(svg: SVGSVGElement, callbacks: MapRendererCallbacks) {
     this.svg = svg;
     this.callbacks = callbacks;
@@ -198,6 +245,10 @@ export class MapRenderer {
     svg.addEventListener("pointercancel", this.onPointerUp);
     svg.addEventListener("wheel", this.onWheel, { passive: false });
     svg.addEventListener("click", this.onClick);
+    if (this.HOVER) {
+      svg.addEventListener("pointermove", this.onHoverMove);
+      svg.addEventListener("pointerleave", this.onHoverLeave);
+    }
   }
 
   destroy() {
@@ -209,6 +260,13 @@ export class MapRenderer {
     this.svg.removeEventListener("pointercancel", this.onPointerUp);
     this.svg.removeEventListener("wheel", this.onWheel);
     this.svg.removeEventListener("click", this.onClick);
+    if (this.HOVER) {
+      this.svg.removeEventListener("pointermove", this.onHoverMove);
+      this.svg.removeEventListener("pointerleave", this.onHoverLeave);
+      this.clearHover();
+      this.hoverCard?.remove();
+      this.hoverCard = null;
+    }
   }
 
   /** Call once per repo/document change, before the first render(). Resets
@@ -220,6 +278,12 @@ export class MapRenderer {
     this.maxLoc = Math.max(1, ...doc.N.map((r) => r[3]));
     this.maxCh = Math.max(1, ...doc.N.map((r) => r[5]));
     this.maxCx = Math.max(1, ...doc.N.map((r) => r[4]));
+    // Desktop hover's import-link preview (scope item 4): built once here,
+    // not per-hover -- see the HOVER fields' doc comment above.
+    const { adj, radj } = buildAdj(doc);
+    this.outAdj = adj;
+    this.inAdj = radj;
+    this.linkCache = null;
 
     // Prominence order per district (issue #48): landmark files first (the
     // map already treats them as a district's headline files), then the
@@ -295,6 +359,30 @@ export class MapRenderer {
     // pop for whichever one file sits at that exact rank.
     const fadeWidth = Math.max(1, edge * 0.5);
     return Math.min(1, Math.max(0, (edge - rank) / fadeWidth));
+  }
+
+  /** How many of district `d`'s files #49's budget hides this frame (issue's
+   * scope item 2: count badges) -- files with `dotFactor(i) <= 0`, i.e.
+   * budgeted OUT entirely, minus any that `alwaysDrawn` forces onto the map
+   * regardless (a landmark, the selection, a route/blast member). Shares
+   * `dotFactor`'s exact edge/fast-path math rather than re-deriving it, so
+   * the badge's count can never disagree with what actually got drawn.
+   * `districtOrder` is already rank-sorted ascending (loadDocument), so the
+   * hidden set is exactly its tail from `Math.ceil(edge)` on -- no need to
+   * re-walk or re-sort the whole district to find it. */
+  private hiddenFileCount(d: number, alwaysDrawn: Set<number>): number {
+    const district = this.state!.doc.districts[String(d)];
+    if (districtClass(district) === "unconnected" || district.size <= 0) return 0;
+    const area = this.districtArea.get(d) ?? 0;
+    const edge = (area * this.k * this.k) / DOT_DENSITY_FLOOR;
+    if (edge >= district.size) return 0;
+    const order = this.districtOrder.get(d) ?? [];
+    const cut = Math.ceil(edge);
+    let hidden = Math.max(0, order.length - cut);
+    for (let idx = cut; idx < order.length; idx++) {
+      if (alwaysDrawn.has(order[idx])) hidden--;
+    }
+    return hidden;
   }
 
   /** VW/VH track the canvas element's own box, not the window — the sidebar
@@ -592,16 +680,50 @@ export class MapRenderer {
     this.drawnK = this.k;
     this.drawnTx = this.tx;
     this.drawnTy = this.ty;
-    const zf0 = this.k / this.fitScale();
-    // Issue #51 perf follow-up: file-dot radius below used to recompute
-    // `Math.sqrt(this.k / this.fitScale())` once per file inside the
-    // doc.N loop -- with fitScale() now O(1) (see boundsCache) that's just a
-    // function-call and Math.sqrt cost repeated doc.N.length times for a
-    // value that cannot change mid-paint (this.k, this.state, VW/VH are all
-    // fixed for the duration of one paint()). Hoisted to the one value the
-    // loop actually needs; same float either way since it's the same
-    // deterministic computation, just done once instead of N times.
+    // Hoisted once for the whole paint(), not re-read per ring()/dot call --
+    // #64 already made fitScale() itself O(1) (boundsCache), but there's
+    // still no reason for a ring per selection neighbour (up to
+    // LINK_PREVIEW_MAX of them), or the per-file dot-radius loop below, to
+    // each re-call it when one value serves the whole frame.
+    const fs = this.fitScale();
+    const zf0 = this.k / fs;
+    // Issue #51 perf follow-up (#64): file-dot radius below used to
+    // recompute `Math.sqrt(this.k / this.fitScale())` once per file inside
+    // the doc.N loop. Hoisted to the one value that loop actually needs;
+    // same float either way since it's the same deterministic computation,
+    // just done once instead of N times.
     const dotZoom = Math.sqrt(zf0);
+
+    // Selection links (a user-reported readability gap: hovering a file
+    // showed its import neighbours, selecting one showed nothing). Only
+    // when nothing more specific already owns the highlight -- a symbol's
+    // blast radius and an active route keep EXACT precedence over a plain
+    // file selection, unchanged from before this feature (`computeBlast`
+    // requires `selSym`; `route` is independent of `sel`). `out`/`in` are
+    // the UNCAPPED direct neighbours straight from `outAdj`/`inAdj` -- O(1)
+    // lookups into the adjacency built once per DOCUMENT in loadDocument(),
+    // not a scan of doc.E here, so this is cheaper than "one pass per
+    // selection change" even asks for. Every one of them gets dimmed/
+    // undimmed and joins `alwaysDrawn` below, the same as a blast member
+    // does; the separately RANKED, CAPPED subset (getSelLinks(), further
+    // down) only decides which lines get drawn and never narrows this set.
+    const blast = computeBlast(doc, sel, selSym);
+    const selNeighbours = !route && !blast && sel != null ? { out: this.outAdj.get(sel) ?? [], in: this.inAdj.get(sel) ?? [] } : null;
+    const dim = route
+      ? new Set(route.path)
+      : blast
+        ? new Set([...blast.set, sel!])
+        : selNeighbours
+          ? new Set([sel!, ...selNeighbours.out, ...selNeighbours.in])
+          : null;
+    // Districts touched by the plain-selection dim set, for fading the
+    // ones that aren't (route/blast's district rendering is intentionally
+    // untouched -- "keep precedence exactly as today"). Uses the same
+    // opacity-only de-emphasis language an island already has; colour
+    // stays districtColor's alone.
+    const dimDistricts = selNeighbours
+      ? new Set([D_(doc, sel!), ...selNeighbours.out.map((j) => D_(doc, j)), ...selNeighbours.in.map((j) => D_(doc, j))])
+      : null;
 
     if (geo !== "t") {
       doc.roads.forEach(([a, b, w]) => {
@@ -630,14 +752,15 @@ export class MapRenderer {
         // emptied their `blob` (geometry.rs), so `.forEach` below is a
         // no-op for them and they need no explicit case.
         const faint = districtClass(doc.districts[d]) === "island";
+        const districtFaded = dimDistricts != null && !dimDistricts.has(+d);
         doc.districts[d].blob.forEach((poly) => {
           const path = el("path", {
             d: "M" + poly.map((q) => this.X(q[0]).toFixed(1) + " " + this.Y(q[1]).toFixed(1)).join("L") + "Z",
             fill: districtColor(+d),
-            "fill-opacity": layer === "d" ? (on ? 0.3 : faint ? 0.07 : 0.14) : on ? 0.16 : faint ? 0.03 : 0.06,
+            "fill-opacity": layer === "d" ? (on ? 0.3 : districtFaded ? 0.035 : faint ? 0.07 : 0.14) : on ? 0.16 : districtFaded ? 0.02 : faint ? 0.03 : 0.06,
             stroke: on ? "var(--hot)" : districtColor(+d),
             "stroke-width": on ? 2.6 : faint ? 0.9 : 1.5,
-            "stroke-opacity": on ? 1 : faint ? 0.4 : 0.7,
+            "stroke-opacity": on ? 1 : districtFaded ? 0.22 : faint ? 0.4 : 0.7,
             "stroke-linejoin": "round",
             class: "hit",
             "pointer-events": "all",
@@ -656,8 +779,6 @@ export class MapRenderer {
     const ROOMS = geo === "p" && zf0 > BUILD_ZOOM;
     const defs = CELL ? el("defs", {}) : null;
     if (defs) g.appendChild(defs);
-    const blast = computeBlast(doc, sel, selSym);
-    const dim = route ? new Set(route.path) : blast ? new Set([...blast.set, sel!]) : null;
     // Issue #48: files that must never be thinned or culled, whatever their
     // district's dot budget says -- landmarks, the current selection, and
     // anything a route or blast radius is highlighting. `dim`, despite the
@@ -815,16 +936,58 @@ export class MapRenderer {
       );
     }
 
-    this.drawLabels(g, alwaysDrawn);
+    // Selection links: persistent, redrawn by every real paint() (not an
+    // ephemeral hover overlay -- this lives inside `g`, so it moves with
+    // rootG's own preview transform during a gesture same as everything
+    // else here, and simply gets rebuilt like the rest of `g` on the next
+    // real paint()). Ranked/capped the same way hover's own preview is
+    // (getSelLinks -> map/graph.ts's rankedNeighbours, LINK_PREVIEW_MAX);
+    // the dim/highlight set above is NOT capped -- only which lines get
+    // DRAWN is. Direction shown by colour AND dash (never colour alone):
+    // solid var(--hot) for what `sel` imports, dashed var(--cold) for what
+    // imports `sel`.
+    if (selNeighbours && sel != null) {
+      const { shown } = this.getSelLinks(sel);
+      const o = this.px(sel);
+      const ox = this.X(o[0]);
+      const oy = this.Y(o[1]);
+      for (const { j, dir } of shown) {
+        const p = this.px(j);
+        g.appendChild(
+          el("line", {
+            x1: ox.toFixed(1),
+            y1: oy.toFixed(1),
+            x2: this.X(p[0]).toFixed(1),
+            y2: this.Y(p[1]).toFixed(1),
+            stroke: dir === "out" ? "var(--hot)" : "var(--cold)",
+            "stroke-width": 1.4,
+            "stroke-opacity": 0.55,
+            "stroke-dasharray": dir === "in" ? "4 3" : "none",
+            "pointer-events": "none",
+          }),
+        );
+      }
+      for (const { j, dir } of shown) this.ring(g, j, dir === "out" ? "var(--hot)" : "var(--cold)", fs);
+    }
 
-    // landmark pins
-    const zf = this.k / this.fitScale();
-    doc.L.forEach(([i, why, detail, rank]: LandmarkRow) => {
-      if (zf > 3.4 && why === "capital") return;
+    // Ranked-pin selection (readable-overview PR, scope item 1; see pins.ts's
+    // top comment for issue #57, the msgraph-sdk-python case this fixes):
+    // global landmarks always draw, a capital only once its district is
+    // "established" on screen, and a deterministic rank-ordered collision
+    // pass keeps pins from stacking. zf0 (computed above, before the
+    // districts loop) is the same k/fitScale() ratio this needs -- no
+    // reason for a second identical computation.
+    const pinScreenOf = (i: number): [number, number] | null => {
       const p = this.px(i);
       const cx = this.X(p[0]);
       const cy = this.Y(p[1]);
-      if (cx < -30 || cx > this.VW + 30 || cy < -30 || cy > this.VH + 30) return;
+      if (cx < -30 || cx > this.VW + 30 || cy < -30 || cy > this.VH + 30) return null;
+      return [cx, cy];
+    };
+    const pins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel);
+    this.drawLabels(g, alwaysDrawn);
+
+    pins.forEach(({ row: [i, why, detail, rank], cx, cy }) => {
       const gg = el("g", { class: "hit", "data-k": "f:" + i });
       gg.appendChild(
         el("path", {
@@ -851,7 +1014,39 @@ export class MapRenderer {
       g.appendChild(gg);
     });
 
-    if (sel != null) this.ring(g, sel);
+    if (sel != null) this.ring(g, sel, "var(--hot)", fs);
+
+    // key -> every element carrying it, rebuilt fresh this paint (one
+    // querySelectorAll over exactly what was just drawn, one loop -- see
+    // keyElements' own field comment for why this is a map lookup per
+    // hover change rather than a DOM query per pointermove, and how it
+    // fixes a multi-polygon district only highlighting the one polygon the
+    // pointer happened to land on). Skipped entirely off the hover-capable
+    // profile: touch never reads this map, and the traversal isn't free on
+    // the largest maps.
+    if (this.HOVER) {
+      this.keyElements.clear();
+      for (const e of Array.from(svg.querySelectorAll("[data-k]"))) {
+        const k = e.getAttribute("data-k")!;
+        let bucket = this.keyElements.get(k);
+        if (!bucket) {
+          bucket = [];
+          this.keyElements.set(k, bucket);
+        }
+        bucket.push(e);
+      }
+    }
+
+    // "Re-apply it after any paint if the pointer is still over the same
+    // data-k" (scope item 4): paint() just replaced svg.textContent, which
+    // destroyed the elements the highlight class was on (and any
+    // import-preview overlay, satisfying that feature's own "clear ... on
+    // any paint" requirement for free -- it's a child of `svg`, same as
+    // everything else paint() wipes). Re-find the new elements for the SAME
+    // key (from the map just rebuilt above) and re-toggle the class; this
+    // is not a repaint of its own, just one more DOM read/write on the
+    // paint that already happened.
+    if (this.HOVER && this.hoverKey) this.reapplyHover();
   }
 
   /** Terrain stays inside the imperative surface and uses the same delegated
@@ -1069,8 +1264,28 @@ export class MapRenderer {
       // files" subtitle -- with up to hundreds of them on a real repo, a
       // second line per label would be its own kind of clutter even after
       // the priority sort above thins the count that gets placed at all.
-      put(x, y, doc.names[d], isIsland ? size * 0.75 : size, isIsland ? 0.5 : 0.82, isIsland ? 500 : 600, +d);
-      if (zf < 1.8 && !narrow && !isIsland) put(x, y + 13, doc.districts[d].size + " files", 9.5, 0.45);
+      const labelPlaced = put(x, y, doc.names[d], isIsland ? size * 0.75 : size, isIsland ? 0.5 : 0.82, isIsland ? 500 : 600, +d);
+      // Issue's scope item 2: a "+N files" badge once #49's budget is
+      // actually hiding members of this district AND the name label itself
+      // found room -- a floating count with no name above it would read
+      // like the file-label bug #48's own comment warns about ("a floating
+      // name with nothing under it reads as a bug"). It takes the name
+      // label's slot (mainland's "N files" subtitle, or an island's blank
+      // second line) rather than adding a third line, so it costs no extra
+      // vertical room and can't newly collide with anything the old
+      // subtitle didn't already contend with. Tappable with the SAME
+      // data-k="d:..." the district polygon and name label already use
+      // (put()'s dk param) -- a tap on it is a district tap, not a new
+      // touch path. Placement/overlap goes through the same `put()`/`hits()`
+      // budget as every other label here, so it's deterministic and can
+      // never overlap a previously placed label -- it simply doesn't render
+      // if there's no room, the same trade every label on this map makes.
+      const hidden = labelPlaced ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
+      if (hidden > 0) {
+        put(x, y + (isIsland ? 10 : 13), `+${hidden} files`, isIsland ? 8.5 : 9.5, isIsland ? 0.55 : 0.7, 600, +d);
+      } else if (zf < 1.8 && !narrow && !isIsland) {
+        put(x, y + 13, doc.districts[d].size + " files", 9.5, 0.45);
+      }
     }
     // file labels appear as you zoom in — the budget grows with scale
     if (geo === "p" && zf > BUILD_ZOOM) return; // plots label themselves
@@ -1094,7 +1309,27 @@ export class MapRenderer {
     }
   }
 
-  private ring(g: SVGGElement, i: number) {
+  /** Ranked/capped direct neighbours of the SELECTED file, cached by `sel`
+   * -- see linkCache's own doc comment for why. `rankedNeighbours` itself
+   * (map/graph.ts) does the O(degree log degree) sort; this is what keeps
+   * that sort from re-running on every paint() while the same file stays
+   * selected (a layer switch, a resize -- anything that repaints without
+   * changing `sel`). */
+  private getSelLinks(sel: number): { shown: RankedEdge[]; total: number } {
+    if (this.linkCache?.sel === sel) return this.linkCache.result;
+    const result = rankedNeighbours(this.state!.doc, this.outAdj, this.inAdj, sel, LINK_PREVIEW_MAX);
+    this.linkCache = { sel, result };
+    return result;
+  }
+
+  /** `color` defaults to the selection ring's own `var(--hot)`; the
+   * readable-overview PR's selection-links feature also calls this per
+   * neighbour with `var(--hot)` (imports) or `var(--cold)` (imported-by),
+   * one ring style shared rather than a second copy of this geometry. `fs`
+   * is paint()'s own hoisted fitScale() (its `fs` local) -- passed through
+   * rather than re-read here, so a selection with many neighbours doesn't
+   * re-call fitScale() once per ring. */
+  private ring(g: SVGGElement, i: number, color = "var(--hot)", fs = this.fitScale()) {
     const { doc, geo } = this.state!;
     const p = this.px(i);
     if (geo !== "t") {
@@ -1102,9 +1337,9 @@ export class MapRenderer {
         el("circle", {
           cx: this.X(p[0]).toFixed(1),
           cy: this.Y(p[1]).toFixed(1),
-          r: (4 + 5.2 * Math.sqrt(LOC(doc, i) / this.maxLoc) * Math.sqrt(this.k / this.fitScale()) + 3).toFixed(1),
+          r: (4 + 5.2 * Math.sqrt(LOC(doc, i) / this.maxLoc) * Math.sqrt(this.k / fs) + 3).toFixed(1),
           fill: "none",
-          stroke: "var(--hot)",
+          stroke: color,
           "stroke-width": 2.3,
         }),
       );
@@ -1118,7 +1353,7 @@ export class MapRenderer {
           height: (this.S(r[3]) + 3).toFixed(1),
           rx: 3,
           fill: "none",
-          stroke: "var(--hot)",
+          stroke: color,
           "stroke-width": 2.3,
         }),
       );
@@ -1331,6 +1566,13 @@ export class MapRenderer {
    * one rebuild every quarter second instead of one per frame -- and always
    * (re)starts the settle timer that eventually bakes a final paint(). */
   private gestureFrame() {
+    // Hover must not survive into a gesture: the highlighted element and
+    // the import-preview overlay were both computed against a (k, tx, ty)
+    // that a drag/pinch/wheel/glide frame is about to move out from under
+    // them -- "hide during drag, pinch, wheel and gesture preview." Every
+    // one of those funnels through this one method, so clearing it here
+    // covers all four without a separate guard at each call site.
+    if (this.HOVER) this.clearHover();
     const now = performance.now();
     if (this.driftExceeded() && now - this.lastDriftRedraw > MapRenderer.DRIFT_REDRAW_MS) {
       this.lastDriftRedraw = now;
@@ -1368,6 +1610,269 @@ export class MapRenderer {
       cancelAnimationFrame(this.previewRaf);
       this.previewRaf = null;
     }
+  }
+
+  // ---------- desktop hover (readable-overview PR, scope item 4) ----------
+  // Fine-pointer only (HOVER, checked at construction); touch never
+  // registers onHoverMove/onHoverLeave at all -- see those fields' doc
+  // comment. Everything below is new listeners reading the SAME data-k
+  // convention click() already reads, never a repaint: the highlight is a
+  // class toggle on the element the browser already resolved for us, and
+  // the card is one HTML element this class owns outright, repositioned and
+  // its text replaced on demand -- never a React re-render, per spec.
+
+  // Hover-intent dwell before the import preview draws. The cap on how many
+  // edges it draws is LINK_PREVIEW_MAX (constants.ts) -- shared with the
+  // persistent selection-links feature and SelectionPanel's "showing N of
+  // M" line, not a private constant here, so the three can't disagree.
+  private static readonly IMPORT_PREVIEW_DELAY_MS = 150;
+
+  private hoverMove(e: PointerEvent) {
+    // Never mid-gesture or mid-preview-transform: the painted DOM's
+    // data-k'd elements may not correspond to the CURRENT (k, tx, ty) yet
+    // (see the "transform during gestures" block above), so highlighting
+    // one now could light up the wrong element relative to the cursor.
+    // gestureFrame() already clears hover the instant a gesture starts;
+    // this guard additionally covers the pointermove that reports the
+    // gesture itself (dragging/pinch true by the time THIS listener runs
+    // in the same dispatch). e.pointerType excludes a touch/pen contact
+    // reaching this HOVER-gated listener at all (defensive: the device-level
+    // matchMedia check that gates registering it in the first place already
+    // makes this unlikely).
+    if (e.pointerType !== "mouse" || this.dragging || this.pinch || this.svg.classList.contains("previewing")) {
+      this.clearHover();
+      return;
+    }
+    let t: Element | null = e.target as Element;
+    while (t && t !== this.svg && !t.getAttribute?.("data-k")) t = t.parentNode as Element | null;
+    const key = t && t !== this.svg ? t.getAttribute?.("data-k") : null;
+    if (key !== this.hoverKey) this.setHover(key);
+    this.positionCard(e.clientX, e.clientY);
+  }
+
+  /** Every hoverable element genuinely under this file is already selected
+   * (persistent links drawn inline in paint()) is a duplicate the hover
+   * overlay shouldn't also draw -- "the hover preview ... must not clear or
+   * duplicate the selection's links." Only the DRAWING is skipped; the
+   * highlight class and card still behave normally when hovering the
+   * selected file itself. */
+  private isSelectionLinksTarget(i: number): boolean {
+    const s = this.state;
+    return !!s && s.sel === i && s.selSym == null && !s.route;
+  }
+
+  private setHover(key: string | null) {
+    for (const e of this.hoverEls) e.classList.remove("hovered");
+    if (this.hoverImportTimer != null) {
+      clearTimeout(this.hoverImportTimer);
+      this.hoverImportTimer = null;
+    }
+    this.clearImportPreview();
+    this.hoverKey = key;
+    this.hoverEls = key ? (this.keyElements.get(key) ?? []) : [];
+    for (const e of this.hoverEls) e.classList.add("hovered");
+    if (!key) {
+      this.hideCard();
+      return;
+    }
+    const content = this.hoverContent(key);
+    if (!content) {
+      this.hideCard();
+      return;
+    }
+    this.showCard(content);
+    if (key.startsWith("f:")) {
+      const i = +key.slice(2);
+      if (!this.isSelectionLinksTarget(i)) {
+        this.hoverImportTimer = setTimeout(() => this.drawImportPreview(i), MapRenderer.IMPORT_PREVIEW_DELAY_MS);
+      }
+    }
+  }
+
+  /** Re-finds every element for the CURRENT hoverKey after a real paint() --
+   * the one paint() itself was already told to call (its own comment), now
+   * from the FRESH keyElements map that SAME paint() just rebuilt (paint()
+   * calls this after rebuilding it). Leaves hoverKey/the card alone: only
+   * the element references and their class need refreshing, and the
+   * import-preview overlay was already wiped as a side effect of
+   * `svg.textContent = ""` -- re-arm its timer too, the same as a fresh
+   * hover would get, so a paint triggered by something OTHER than this
+   * pointer moving (a different selection, a layer switch) doesn't leave
+   * the preview dark until the mouse next jiggles. */
+  private reapplyHover() {
+    if (!this.hoverKey) return;
+    this.hoverEls = this.keyElements.get(this.hoverKey) ?? [];
+    for (const e of this.hoverEls) e.classList.add("hovered");
+    this.hoverImportG = null;
+    if (this.hoverImportTimer != null) clearTimeout(this.hoverImportTimer);
+    if (this.hoverKey.startsWith("f:")) {
+      const i = +this.hoverKey.slice(2);
+      if (!this.isSelectionLinksTarget(i)) {
+        this.hoverImportTimer = setTimeout(() => this.drawImportPreview(i), MapRenderer.IMPORT_PREVIEW_DELAY_MS);
+      }
+    }
+  }
+
+  private clearHover() {
+    for (const e of this.hoverEls) e.classList.remove("hovered");
+    this.hoverEls = [];
+    this.hoverKey = null;
+    if (this.hoverImportTimer != null) {
+      clearTimeout(this.hoverImportTimer);
+      this.hoverImportTimer = null;
+    }
+    this.clearImportPreview();
+    this.hideCard();
+  }
+
+  private clearImportPreview() {
+    this.hoverImportG?.remove();
+    this.hoverImportG = null;
+  }
+
+  /** Content for the hover card, by data-k prefix -- the same five kinds
+   * click() dispatches on. Returns null for a key whose target this paint
+   * doesn't actually have data for (e.g. a stale key from just before a
+   * document swap); callers treat that as "nothing to show." */
+  private hoverContent(key: string): { lines: string[] } | null {
+    const { doc } = this.state!;
+    const parts = key.split(":");
+    if (parts[0] === "d") {
+      const d = +parts[1];
+      const district = doc.districts[String(d)];
+      if (!district) return null;
+      return { lines: [doc.names[d] ?? `district ${d}`, `${district.size} files`] };
+    }
+    if (parts[0] === "f") {
+      const i = +parts[1];
+      if (!doc.F[i]) return null;
+      const d = D_(doc, i);
+      const outDeg = this.outAdj.get(i)?.length ?? 0;
+      const inDeg = this.inAdj.get(i)?.length ?? 0;
+      const total = outDeg + inDeg;
+      const lines = [doc.F[i], doc.names[String(d)] ?? "", `${LOC(doc, i)} loc · churn ${CH(doc, i)} · cplx ${CX_(doc, i)}`];
+      // Never hide truncation (spec): stated here, immediately, from the
+      // cheap O(1) degree counts -- not deferred to whenever
+      // drawImportPreview's own 150ms timer fires and actually sorts/slices
+      // the edge list.
+      if (total > 0) {
+        lines.push(
+          total > LINK_PREVIEW_MAX
+            ? `imports: top ${LINK_PREVIEW_MAX} of ${total} shown`
+            : `${outDeg} import${outDeg === 1 ? "" : "s"} out · ${inDeg} in`,
+        );
+      }
+      return { lines };
+    }
+    if (parts[0] === "s") {
+      const i = +parts[1];
+      const s = +parts[2];
+      const sm = symbolsOf(doc, i)[s];
+      if (!sm) return null;
+      return { lines: [sm[0], KIND[sm[1]] ?? "symbol", `lines ${sm[2]}-${sm[3]}`] };
+    }
+    if (parts[0] === "sd") {
+      const d = parts[1];
+      const index = +parts[2];
+      const sub = doc.terrain?.[d]?.subdistricts[index];
+      if (!sub) return null;
+      return { lines: [`${doc.names[d]} · ${sub.suffix}`, `${sub.members.length} files`] };
+    }
+    if (parts[0] === "p") {
+      const d = parts[1];
+      const index = +parts[2];
+      const parcel = doc.terrain?.[d]?.parcels[index];
+      if (!parcel) return null;
+      return { lines: [parcel.address, `${parcel.members.length} files`] };
+    }
+    return null;
+  }
+
+  /** Direct import edges (in and out) of file `i`, faint lines in an
+   * overlay `<g>` appended straight to `svg` -- deliberately NOT a child of
+   * `rootG` (the group paint()/preview() transform together), since this
+   * has to disappear the instant a real paint() runs (svg.textContent = ""
+   * takes it with everything else) and never itself be part of that
+   * rebuild. Same ranked/capped neighbour list (map/graph.ts's
+   * rankedNeighbours) the persistent selection-links feature draws, so a
+   * hover on one file and a selection on another can never disagree about
+   * which neighbours "matter." isSelectionLinksTarget() (setHover/
+   * reapplyHover) is what keeps this from ever running for the file that's
+   * ALREADY drawing this same set persistently. */
+  private drawImportPreview(i: number) {
+    if (this.hoverKey !== "f:" + i) return; // stale timer: hover moved on before it fired
+    const { shown } = rankedNeighbours(this.state!.doc, this.outAdj, this.inAdj, i, LINK_PREVIEW_MAX);
+    if (shown.length === 0) return;
+    const g = el("g", { class: "hover-imports", "pointer-events": "none" });
+    const o = this.px(i);
+    const ox = this.X(o[0]);
+    const oy = this.Y(o[1]);
+    for (const { j, dir } of shown) {
+      const p = this.px(j);
+      g.appendChild(
+        el("line", {
+          x1: ox.toFixed(1),
+          y1: oy.toFixed(1),
+          x2: this.X(p[0]).toFixed(1),
+          y2: this.Y(p[1]).toFixed(1),
+          stroke: dir === "out" ? "var(--hot)" : "var(--ink)",
+          "stroke-width": 1,
+          "stroke-opacity": 0.4,
+          "pointer-events": "none",
+        }),
+      );
+    }
+    this.svg.appendChild(g);
+    this.hoverImportG = g;
+  }
+
+  private ensureCard(): HTMLDivElement {
+    if (this.hoverCard) return this.hoverCard;
+    const card = document.createElement("div");
+    card.className = "tolmap-hover-card";
+    (this.svg.parentElement ?? this.svg.ownerDocument!.body).appendChild(card);
+    this.hoverCard = card;
+    return card;
+  }
+
+  /** Replaces the SVG's native <title> tooltip on fine pointers (spec).
+   * `<title>` elements stay in the DOM either way -- removing them would
+   * cost the aria-label a screen reader / keyboard user gets from the same
+   * markup on a device this class never activates on -- this card is
+   * purely an additional, visual, mouse-only affordance layered on top. */
+  private showCard(content: { lines: string[] }) {
+    const card = this.ensureCard();
+    card.replaceChildren(
+      ...content.lines.map((line, idx) => {
+        const row = document.createElement("div");
+        if (idx === 0) row.className = "tolmap-hover-card-title";
+        row.textContent = line;
+        return row;
+      }),
+    );
+    card.style.display = "block";
+  }
+
+  private hideCard() {
+    if (this.hoverCard) this.hoverCard.style.display = "none";
+  }
+
+  private positionCard(clientX: number, clientY: number) {
+    if (!this.hoverCard || this.hoverCard.style.display === "none") return;
+    const host = this.svg.parentElement;
+    const origin = host ? host.getBoundingClientRect() : this.svg.getBoundingClientRect();
+    // Offset down-right of the cursor, clamped so the card can't run past
+    // the host's own right/bottom edge (the map wrap, not the window --
+    // this renders inside MapCanvas's positioned wrapper) and get clipped
+    // or overlap chrome outside it.
+    const cardW = 300; // generous estimate; exact width is a DOM read away, not worth it for a tooltip
+    const cardH = 90;
+    let x = clientX - origin.left + 16;
+    let y = clientY - origin.top + 16;
+    x = Math.min(x, host ? host.clientWidth - cardW : x);
+    y = Math.min(y, host ? host.clientHeight - cardH : y);
+    this.hoverCard.style.left = `${Math.max(4, x)}px`;
+    this.hoverCard.style.top = `${Math.max(4, y)}px`;
   }
 
   // ---------- pan / zoom / tap (the subtle part) ----------
