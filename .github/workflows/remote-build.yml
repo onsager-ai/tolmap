@@ -1,0 +1,428 @@
+# Manually triggered: build and measure tolmap maps on GitHub-hosted
+# runners, not on the maintainer's laptop.
+#
+# Why this exists: eval/build_corpus.py and the heavy `cargo`/`tolmap`
+# commands it drives are exactly the sustained CPU load that hard-resets
+# that machine (CLAUDE.md). The owner's decision was to move all of that
+# to Actions and never run it locally again -- this workflow is the
+# result. It is `workflow_dispatch`-only (no `push`/`pull_request`/
+# `schedule` trigger): a corpus build is expensive enough, and rare
+# enough, that it should always be a deliberate choice, not something that
+# fires on every commit.
+#
+# Runner budget -- read before changing `runs-on` or adding a matrix knob.
+# Standard GitHub-hosted Ubuntu runners (ubuntu-latest/-24.04/-22.04),
+# free and unlimited on public repositories:
+#   4 vCPU, 16 GB RAM, 14 GB SSD
+#   https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+# Each job may run at most 6 hours before GitHub terminates it:
+#   https://docs.github.com/en/actions/reference/limits
+# There is no budget for larger (paid) runners here -- the owner's
+# instruction is no new spend, on a public repo that already gets the
+# standard runners for free. Every choice below is sized to fit 4
+# vCPU/16 GB/14 GB, not to a bigger machine:
+#   - one repository per matrix job, never the whole 132-repository corpus
+#     on one runner (eval/build_corpus.py's local clones alone total
+#     ~32 GB, several times this runner's entire disk);
+#   - the tolmap build itself runs under `prlimit --as=` a cap comfortably
+#     below the runner's 16 GB, so an out-of-memory repository fails with
+#     a clean, recorded exit code instead of the runner's kernel OOM-killer
+#     taking the whole job down uninformatively;
+#   - `max-parallel` and `timeout-minutes` below are chosen so a full
+#     "all" dispatch queues within GitHub's per-workflow concurrent-job
+#     ceiling instead of stalling.
+#
+# No secrets are used or needed: every corpus repository is public, and
+# the default GITHUB_TOKEN is sufficient to upload/download this run's own
+# artifacts.
+
+name: Remote build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "tolmap git ref to build the binary from"
+        required: false
+        default: "main"
+      repos:
+        description: "comma-separated slugs (owner/repo,owner/repo), a band (small/medium/large/ultra), or 'all'"
+        required: false
+        default: "all"
+      extra_args:
+        description: "extra tolmap build flags appended to every repo's own args, e.g. --terrain"
+        required: false
+        default: ""
+      compare_ref:
+        description: "optional second tolmap git ref; when set, each job builds with both refs' binaries and records whether the two maps are byte-identical (issue #59's owed measurement: repos=microsoftgraph/msgraph-sdk-go,aws/aws-sdk-go-v2,prometheus/prometheus, compare_ref=fix/extract-go-fanout)"
+        required: false
+        default: ""
+      command:
+        description: "tolmap subcommand to run per repo: build (default map build), or dump-blend (issue #57's below-prune-floor measurement: repos=microsoftgraph/msgraph-sdk-python,date-fns/date-fns)"
+        required: false
+        type: choice
+        options:
+          - build
+          - dump-blend
+        default: build
+
+permissions:
+  contents: read
+
+env:
+  # ~14 GiB, chosen the same way ci.yml's LEIDEN_PREFIX is: comfortably
+  # inside the runner's real 16 GB (see the header comment), leaving
+  # headroom for the OS, git, and /usr/bin/time itself. A build that needs
+  # more than this fails on its own prlimit, not on the runner being
+  # killed out from under the job -- issue #59 is exactly a repository
+  # (microsoftgraph/msgraph-sdk-go) that is expected to hit this.
+  BUILD_MEM_BYTES: "15032385536"
+  # src/extract.rs's git_history() reads at most 4000 commits for co-change
+  # (`let history = git_history(repo, &files, 4000)?;`), regardless of
+  # TOLMAP_MAX_HISTORY_COMMITS -- that env var is a pre-clone/post-clone
+  # admission ceiling on service::clone::materialize (default 200000; see
+  # docs/API.md), not a bound on how much history extraction itself reads
+  # (src/service/config.rs's doc comment on Limits::max_history_commits
+  # says so explicitly, and eval/build_corpus.py's own clone comment
+  # repeats it). A commit beyond 4000 back from the pinned commit can never
+  # affect co-change, so `--depth=4000` on the fetch below is not a
+  # heuristic guess at "enough history" -- it is the exact horizon the
+  # indexer itself reads, on a public GitHub remote that (unlike the
+  # dev-machine corpus cache) is used exactly once per job and then
+  # deleted, so there is no reason to fetch more than that horizon.
+  CLONE_DEPTH: "4000"
+  LEIDEN_PREFIX: ${{ github.workspace }}/.native/leiden
+
+jobs:
+  # Builds the tolmap release binary(ies) once -- `ref` always, plus
+  # `compare_ref` when given -- and works out which corpus repositories
+  # `repos` selects, so neither cost is repeated per matrix job below.
+  setup:
+    name: build binary(ies) + plan matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_compare: ${{ steps.plan.outputs.has_compare }}
+    steps:
+      # Default checkout: whatever ref this workflow file itself is
+      # running from. Used only for eval/ scripts and scripts/
+      # install-leiden.sh -- infrastructure that does not depend on which
+      # tolmap ref's binary is being measured.
+      - uses: actions/checkout@v4
+
+      - name: Checkout tolmap ref (primary)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: repo-primary
+
+      - name: Checkout tolmap ref (compare)
+        if: inputs.compare_ref != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.compare_ref }}
+          path: repo-compare
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Python 3.11+ for eval/remote_matrix.py's `tomllib` (ubuntu-latest's
+      # system python3 is expected to already qualify, but pinning removes
+      # that assumption rather than trusting the runner image of the day).
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache cargo (primary)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            repo-primary/target
+          key: cargo-${{ runner.os }}-primary-${{ hashFiles('repo-primary/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-primary-
+
+      - name: Cache cargo (compare)
+        if: inputs.compare_ref != ''
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            repo-compare/target
+          key: cargo-${{ runner.os }}-compare-${{ hashFiles('repo-compare/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-compare-
+
+      # Same cache as ci.yml's "Cache native Leiden/igraph build" step,
+      # keyed the same way (a hash of install-leiden.sh, whose version
+      # pins live inside the script). Built from repo-primary's copy of
+      # the script; repo-compare is expected to want the same
+      # igraph/libleidenalg build (this infra hasn't moved in the commits
+      # a compare_ref run spans) -- if that stops being true, the compare
+      # binary's build step below will fail loudly against mismatched
+      # headers, not silently produce a wrong binary.
+      - name: Cache native Leiden/igraph build
+        id: cache-leiden
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LEIDEN_PREFIX }}
+          key: leiden-${{ runner.os }}-${{ hashFiles('repo-primary/scripts/install-leiden.sh') }}
+
+      - name: Build native Leiden/igraph
+        if: steps.cache-leiden.outputs.cache-hit != 'true'
+        run: bash repo-primary/scripts/install-leiden.sh "${{ env.LEIDEN_PREFIX }}"
+
+      - name: Build tolmap (primary)
+        run: cargo build --release --bin tolmap --manifest-path repo-primary/Cargo.toml
+
+      - name: Build tolmap (compare)
+        if: inputs.compare_ref != ''
+        run: cargo build --release --bin tolmap --manifest-path repo-compare/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: repo-primary/target/release/tolmap
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.compare_ref != ''
+        with:
+          name: tolmap-binary-compare
+          path: repo-compare/target/release/tolmap
+          if-no-files-found: error
+
+      - name: Plan matrix from eval/corpus.toml
+        id: plan
+        env:
+          REPOS_INPUT: ${{ inputs.repos }}
+          COMPARE_REF: ${{ inputs.compare_ref }}
+        run: |
+          set -euo pipefail
+          matrix="$(python3 eval/remote_matrix.py --repos "$REPOS_INPUT")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [ -n "$COMPARE_REF" ]; then
+            echo "has_compare=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_compare=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build ${{ matrix.slug }}
+    needs: setup
+    runs-on: ubuntu-latest
+    # Under 6h (see header comment) with a lot of margin: issue #59's own
+    # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
+    # largest "ultra" repo) at 6m29s wall time before its fix. 90 minutes
+    # gives slow-runner and cold-cache headroom without letting one stuck
+    # job silently eat the whole 6h ceiling.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # Never bigger than the free-tier standard-runner concurrency this
+      # repo actually has; 8 keeps queueing reasonable for a full "all"
+      # (132-repo) dispatch without asking for a runner-count exception.
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      # Cone mode (the default) checks out the whole named directory
+      # recursively; non-cone mode needs gitignore-style patterns to do the
+      # same and is easy to get subtly wrong, so this leaves the default
+      # alone rather than setting sparse-checkout-cone-mode: false.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+
+      - name: Download tolmap binary (primary)
+        uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: bin-primary
+
+      - name: Download tolmap binary (compare)
+        if: needs.setup.outputs.has_compare == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-compare
+          path: bin-compare
+
+      - name: Make binaries executable
+        run: |
+          chmod +x bin-primary/tolmap
+          if [ -f bin-compare/tolmap ]; then
+            chmod +x bin-compare/tolmap
+          fi
+
+      # --filter=blob:none defers blob content (docs/ARCHITECTURE.md's
+      # documented clone strategy: co-change needs full commit history, a
+      # depth-1 clone is not enough); --depth=$CLONE_DEPTH bounds *how
+      # much* of that history is fetched to exactly the 4000-commit
+      # horizon src/extract.rs's git_history() ever reads (see the
+      # env.CLONE_DEPTH comment above) -- fetching the SHA directly
+      # (rather than a branch) works because GitHub allows fetching any
+      # reachable commit object by SHA. eval/build_corpus.py deliberately
+      # does NOT do this (its clones are long-lived and disk-evicted, not
+      # single-use), so this is a real divergence from it, not an
+      # oversight -- a runner's clone exists for one job and is deleted
+      # below, so there is no reuse to amortize a fuller clone against.
+      - name: Minimal clone at pinned commit
+        env:
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p clone
+          git -C clone init --quiet
+          git -C clone remote add origin "https://github.com/${SLUG}.git"
+          git -C clone fetch --quiet --filter=blob:none --depth="$CLONE_DEPTH" origin "$COMMIT"
+          git -C clone checkout --quiet --detach FETCH_HEAD
+
+      - name: Install /usr/bin/time
+        run: command -v /usr/bin/time || { sudo apt-get update && sudo apt-get install -y time; }
+
+      # `command: build` (default) writes out-*/<stem>.json via `tolmap
+      # build ... --name <stem> --out out-*` (--out is a directory).
+      # `command: dump-blend` writes the same path directly (dump-blend's
+      # --out is a file, and it has no --name flag), and its JSON is a
+      # different document entirely -- the weighted graph the partitioner
+      # receives, not a map (src/blenddump.rs) -- with a `below_prune_floor`
+      # field: issue #57's hypothesis is finding 10's below-floor hazard
+      # (blend() normalises every edge against the single largest blended
+      # edge in the whole graph, so one dominant edge can push most other
+      # real edges under the prune floor) manifesting on
+      # microsoftgraph/msgraph-sdk-python and date-fns/date-fns, both of
+      # which degenerate into near-singleton-district partitions. `--terrain`
+      # in `extra_args` is a `build`-only flag and errors on `dump-blend`;
+      # that is a real clap error, not silently ignored, if the two are
+      # combined.
+      - name: Build with primary binary
+        id: build_primary
+        env:
+          STEM: ${{ matrix.stem }}
+          REPO_ARGS: ${{ join(matrix.args, ' ') }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+          COMMAND: ${{ inputs.command }}
+        run: |
+          set -uo pipefail
+          mkdir -p out-primary
+          if [ "$COMMAND" = "dump-blend" ]; then
+            /usr/bin/time -v -o primary.time.txt \
+              prlimit "--as=${BUILD_MEM_BYTES}" -- \
+              ./bin-primary/tolmap dump-blend "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              --out "out-primary/${STEM}.json" \
+              > primary.log 2>&1
+          else
+            /usr/bin/time -v -o primary.time.txt \
+              prlimit "--as=${BUILD_MEM_BYTES}" -- \
+              ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              --name "$STEM" --out out-primary \
+              > primary.log 2>&1
+          fi
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Build with compare binary
+        id: build_compare
+        if: needs.setup.outputs.has_compare == 'true'
+        env:
+          STEM: ${{ matrix.stem }}
+          REPO_ARGS: ${{ join(matrix.args, ' ') }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+          COMMAND: ${{ inputs.command }}
+        run: |
+          set -uo pipefail
+          mkdir -p out-compare
+          if [ "$COMMAND" = "dump-blend" ]; then
+            /usr/bin/time -v -o compare.time.txt \
+              prlimit "--as=${BUILD_MEM_BYTES}" -- \
+              ./bin-compare/tolmap dump-blend "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              --out "out-compare/${STEM}.json" \
+              > compare.log 2>&1
+          else
+            /usr/bin/time -v -o compare.time.txt \
+              prlimit "--as=${BUILD_MEM_BYTES}" -- \
+              ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
+              --name "$STEM" --out out-compare \
+              > compare.log 2>&1
+          fi
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      # The clone (working tree + fetched history) is this job's biggest
+      # disk user on a 14 GB SSD; delete it as soon as both builds that
+      # need it are done, before writing/uploading anything else.
+      - name: Delete clone
+        if: always()
+        run: rm -rf clone
+
+      - name: Write result.json
+        if: always()
+        env:
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+          BAND: ${{ matrix.band }}
+          REPO_ARGS_JSON: ${{ toJSON(matrix.args) }}
+          TOLMAP_REF: ${{ inputs.ref }}
+          COMPARE_REF: ${{ inputs.compare_ref }}
+          COMMAND: ${{ inputs.command }}
+          STEM: ${{ matrix.stem }}
+          PRIMARY_EXIT: ${{ steps.build_primary.outputs.exit_code }}
+          COMPARE_EXIT: ${{ steps.build_compare.outputs.exit_code }}
+          HAS_COMPARE: ${{ needs.setup.outputs.has_compare }}
+        run: python3 eval/remote_build_result.py
+
+      # actions/upload-artifact preserves each given path's directory
+      # structure relative to their common ancestor, which would bury the
+      # maps under out-primary/out-compare inside the artifact.
+      # eval/fetch_remote_build.py expects a flat layout (result.json,
+      # <stem>.json, <stem>.compare.json alongside the logs), so stage one
+      # here rather than teaching the fetch script two layouts.
+      - name: Stage artifact files
+        if: always()
+        env:
+          STEM: ${{ matrix.stem }}
+        run: |
+          set -uo pipefail
+          mkdir -p artifact
+          cp -f result.json artifact/result.json 2>/dev/null || true
+          cp -f primary.log artifact/primary.log 2>/dev/null || true
+          cp -f primary.time.txt artifact/primary.time.txt 2>/dev/null || true
+          cp -f "out-primary/${STEM}.json" "artifact/${STEM}.json" 2>/dev/null || true
+          cp -f compare.log artifact/compare.log 2>/dev/null || true
+          cp -f compare.time.txt artifact/compare.time.txt 2>/dev/null || true
+          cp -f "out-compare/${STEM}.json" "artifact/${STEM}.compare.json" 2>/dev/null || true
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.stem }}
+          if-no-files-found: warn
+          path: artifact
+
+  summary:
+    name: combine results
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: results
+
+      - name: Build combined results.json and step summary
+        run: python3 eval/remote_build_summary.py --results-dir results --out results.json --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-combined
+          path: results.json
