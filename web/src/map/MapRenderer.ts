@@ -370,7 +370,22 @@ export class MapRenderer {
   }
 
   // ---------- draw ----------
+  // Issue #51: performance.mark/measure around every draw(), so a browser
+  // benchmark (web/scripts/perf-bench.mjs) can read draw() cost straight off
+  // the Performance timeline via performance.getEntriesByName("tolmap:draw")
+  // without any dev-only instrumentation flag to remember to flip on. A
+  // mark/measure pair is a handful of microseconds -- cheap enough next to a
+  // draw() that is itself milliseconds on the corpus maps to leave permanently
+  // on, in production too, rather than gating it behind a build flag that
+  // would make "reproduce the numbers in FINDINGS.md" require a special build.
   private draw() {
+    performance.mark("tolmap:draw:start");
+    this.paint();
+    performance.mark("tolmap:draw:end");
+    performance.measure("tolmap:draw", "tolmap:draw:start", "tolmap:draw:end");
+  }
+
+  private paint() {
     const state = this.state;
     const svg = this.svg;
     svg.setAttribute("viewBox", `0 0 ${this.VW} ${this.VH}`);
