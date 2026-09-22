@@ -212,9 +212,7 @@ export function MapView() {
         catalogue={catalogue}
         owner={owner}
         repo={repo}
-        geo={search.geo}
         layer={search.layer}
-        onGeo={(g) => updateSearch({ geo: g })}
         onLayer={(l) => updateSearch({ layer: l })}
       />
       <div className="relative flex min-h-0 flex-1">

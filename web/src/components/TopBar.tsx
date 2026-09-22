@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import type { CatalogueEntry } from "@/types";
-import type { Geo, Layer } from "@/map/constants";
+import type { Layer } from "@/map/constants";
 import { GeoLayerControls } from "./GeoLayerControls";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 
@@ -8,9 +8,7 @@ interface Props {
   catalogue: CatalogueEntry[] | undefined;
   owner: string;
   repo: string;
-  geo: Geo;
   layer: Layer;
-  onGeo(g: Geo): void;
   onLayer(l: Layer): void;
 }
 
@@ -18,7 +16,7 @@ interface Props {
  * HTML page; here each repo is its own route, so the same dropdown just
  * navigates. It's the one piece of chrome that reaches outside this map's
  * own state. */
-export function TopBar({ catalogue, owner, repo, geo, layer, onGeo, onLayer }: Props) {
+export function TopBar({ catalogue, owner, repo, layer, onLayer }: Props) {
   const navigate = useNavigate();
   const narrow = useIsNarrow();
   const slug = `${owner}/${repo}`;
@@ -64,7 +62,7 @@ export function TopBar({ catalogue, owner, repo, geo, layer, onGeo, onLayer }: P
         ))}
       </select>
       <span className="flex-1" />
-      <GeoLayerControls geo={geo} layer={layer} onGeo={onGeo} onLayer={onLayer} />
+      <GeoLayerControls layer={layer} onLayer={onLayer} />
     </div>
   );
 }

@@ -46,3 +46,19 @@ export const LINK_PREVIEW_MAX = 40;
 
 export type Geo = "r" | "p" | "t";
 export type Layer = "d" | "c" | "x";
+
+// GEO_LABEL/GEO_ORDER used to drive GeoLayerControls.tsx's geometry toggle
+// (regions/plots/treemap). Hidden from the UI on 2026-09-22 by owner
+// decision: plots needs `P` parcel data only 2 of the 9 acceptance fixtures
+// carry, and treemap trades away the map's own silhouette. Left here (not
+// deleted, and moved from GeoLayerControls.tsx to this file specifically so
+// it stays a plain constants module -- a component file re-exporting unused
+// constants breaks Vite's fast-refresh detection) rather than in the
+// component that used to render them: re-enable by adding "p"/"t" back to
+// GEO_ORDER and restoring the toggle UI in GeoLayerControls.tsx (git
+// history has it) and the "r"-only allowlist in routes/search.ts's GEOS.
+// Nothing in MapRenderer.ts changed -- geo="p"/"t" still render correctly,
+// there's just no control (or valid deep link, after search.ts's
+// normalisation) that sets them anymore.
+export const GEO_LABEL: Record<Geo, string> = { r: "regions", p: "plots", t: "treemap" };
+export const GEO_ORDER: Geo[] = ["r"];

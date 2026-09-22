@@ -14,7 +14,17 @@ export interface MapSearch {
   layer: Layer;
 }
 
-const GEOS: Geo[] = ["r", "p", "t"];
+// "r" only: the geometry toggle that used to set "p" (plots) or "t"
+// (treemap) is gone from the UI (owner decision, 2026-09-22 -- see
+// GeoLayerControls.tsx's GEO_ORDER comment). A stored/shared link that
+// still carries ?geo=p or ?geo=t must not land on a hidden mode with no way
+// back to it, so those values fall through to the same "r" default an
+// omitted geo already gets, exactly as GEOS.includes() below already
+// handles any OTHER invalid value -- this is that same fallback, just
+// narrowed to accept one fewer value than before. The renderer/schema
+// still understand "p"/"t" (MapRenderer.ts is untouched); only the URL
+// surface stops offering them.
+const GEOS: Geo[] = ["r"];
 const LAYERS: Layer[] = ["d", "c", "x"];
 
 export function validateMapSearch(search: Record<string, unknown>): MapSearch {
