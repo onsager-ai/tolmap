@@ -19,8 +19,15 @@
 // centre at the centre" contract resize() now has), which is a strong
 // positive check that a resize does NOT quietly re-fit: a re-fit would
 // reframe from mainlandBounds() and essentially never produce that exact
-// half-delta by coincidence. Finally it checks the fit button and repo
-// switching still do fit -- the two places fitting is supposed to remain.
+// half-delta by coincidence. It checks the fit button and repo switching
+// still do fit -- the two places fitting is supposed to remain -- and,
+// since fixing the ResizeObserver bug surfaced a second, previously-papered-
+// over bug in the repoKey effect (fit() ran before MapRenderer.state pointed
+// at the new document, so it framed the PREVIOUS repo's bounds, or nothing
+// at all on first mount), that the mainland's on-screen extent actually
+// sits inside fit()'s own pad -- not overflowing the viewport -- on first
+// load and after a repo switch, plus that desktop's auto-select of the top
+// landmark on load still fires.
 //
 // Usage:
 //   pnpm exec vite --port 5176 --strictPort &
@@ -73,6 +80,44 @@ async function stableBox(page) {
 function boxesClose(a, b, eps = 1) {
   if (!a || !b) return false;
   return Math.abs(a.x - b.x) <= eps && Math.abs(a.y - b.y) <= eps && Math.abs(a.w - b.w) <= eps && Math.abs(a.h - b.h) <= eps;
+}
+
+/** The union of every district polygon's on-screen box -- the mainland
+ * extent fit() actually frames (mainlandBounds(), see MapRenderer.ts), not
+ * the full SVG viewport. Used to catch the repoKey-effect bug (fit() run
+ * before MapRenderer.state pointed at the new document fit the PREVIOUS
+ * repo's bounds, or the [0,0,1,1] sentinel on first mount, so the new
+ * document's geometry painted far outside the pad, or even outside the
+ * viewport entirely) on first load and on repo switch. */
+async function districtUnionBox(page) {
+  return page.evaluate(() => {
+    const els = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
+    if (els.length === 0) return null;
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      x0 = Math.min(x0, r.x);
+      y0 = Math.min(y0, r.y);
+      x1 = Math.max(x1, r.x + r.width);
+      y1 = Math.max(y1, r.y + r.height);
+    }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  });
+}
+
+// fit()'s own padding constant (MapRenderer.ts's fit()); at least one axis
+// of the fitted mainland touches it exactly, the other has equal or more
+// margin (fit() picks the smaller scale of the two axes and centres on the
+// other) -- so "fits inside the pad" is the general, always-true shape of a
+// correctly fitted view, not something specific to one map's aspect ratio.
+const FIT_PAD = 46;
+
+function fitsWithinPad(box, vw, vh, eps = 2) {
+  if (!box) return false;
+  return box.x >= FIT_PAD - eps && box.y >= FIT_PAD - eps && box.x + box.w <= vw - FIT_PAD + eps && box.y + box.h <= vh - FIT_PAD + eps;
 }
 
 /** A file dot (or, at low zoom / dense districts, a symbol room) reasonably
@@ -144,27 +189,33 @@ async function readDot(page, dataK) {
   }, dataK);
 }
 
-async function zoomIn(page, profile, cx, cy) {
-  if (profile.hasTouch) {
-    // Double-tap zoom (MapRenderer.endPointer's TOUCH lastTap<300ms path,
-    // zoomBy(2)) -- the same gesture perf-bench.mjs's doubleTapZoom uses,
-    // and the one a phone user would actually perform. A scripted two-finger
-    // pinch was tried here first and dropped: MapRenderer's pinch math reads
-    // `this.tx`/`this.ty` (already updated by the previous frame) rather
-    // than the pinch's own anchor, so a burst of CDP touchmove events faster
-    // than the gesture was tuned for compounds into a large, unrealistic
-    // pan -- a real finger never delivers events that fast. zoomBy(2) has no
-    // such sensitivity: it's one deterministic multiply, not an integral
-    // over synthetic event timing.
-    await page.touchscreen.tap(cx, cy);
-    await page.waitForTimeout(80);
-    await page.touchscreen.tap(cx, cy);
-  } else {
-    await page.mouse.move(cx, cy);
-    for (let i = 0; i < 3; i++) {
-      await page.mouse.wheel(0, -200);
-      await page.waitForTimeout(50);
-    }
+/** A wheel zoom, on every profile including the touch one -- not the
+ * gesture a phone user would actually perform (that's a pinch or a
+ * double-tap), but this script isn't testing gesture input, it's testing
+ * that selection/layer changes and resizes leave an already-established
+ * zoomed-in view alone, which doesn't care how the zoom got there. Two
+ * touch-native alternatives were tried and dropped:
+ *   - Double-tap zoom (MapRenderer.endPointer's TOUCH lastTap<300ms path):
+ *     in this headless/CDP setup, the gap Chromium actually delivers the
+ *     second tap's pointerdown at measured over 1s after the first tap's
+ *     pointerup even with only an 80ms wait requested in between -- CDP
+ *     touch-event dispatch latency here, not anything about the app -- so
+ *     it blew the 300ms window every time and never zoomed at all.
+ *   - A scripted two-finger pinch: MapRenderer's pinch math reads
+ *     `this.tx`/`this.ty` (already updated by the previous frame) rather
+ *     than the pinch's own anchor, and a single CDP touchmove event with
+ *     both touch points moved together is delivered to the page as two
+ *     separate PointerEvent dispatches (one per pointer id) -- so
+ *     mid()/dist() briefly see one point already moved and one still stale,
+ *     compounding into a large, unrealistic pan a real two-finger gesture
+ *     never produces. Plausibly a real (if minor) bug in the pinch handler,
+ *     but out of scope here -- a real finger's touchmove events aren't
+ *     synthesized that way. */
+async function zoomIn(page, cx, cy) {
+  await page.mouse.move(cx, cy);
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(50);
   }
   await page.waitForTimeout(650); // glide()/settle
 }
@@ -172,9 +223,9 @@ async function zoomIn(page, profile, cx, cy) {
 /** Finds a point that's actually empty map to tap, zooming out one notch at
  * a time (via the real zoom-out button, not by resetting state) if the
  * current zoom leaves none. n8n's mainland is dense enough (thousands of
- * file dots -- see constants.ts's DOT_DENSITY_FLOOR comment) that a 2x
- * double-tap zoom on a 390px phone viewport can leave no blank pixel
- * anywhere on screen; a real person in that situation zooms out a little
+ * file dots -- see constants.ts's DOT_DENSITY_FLOOR comment) that the
+ * zoomed-in view zoomIn() establishes can leave no blank pixel anywhere on a
+ * 390px phone viewport; a real person in that situation zooms out a little
  * before they find water to tap, so this does the same rather than special-
  * casing the assertion away for dense maps. */
 async function findEmptyPointWithZoomOut(page, vw, vh, maxAttempts = 3) {
@@ -210,6 +261,21 @@ async function runOne({ browser, base, slug, profile }) {
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(800); // initial fit()/auto-select glide
 
+  // First load must fit the mainland inside the pad, not overflow the
+  // viewport -- the repoKey-effect bug (fit() run against whatever document
+  // MapRenderer.state still held, which on first mount is nothing at all).
+  report(fitsWithinPad(await districtUnionBox(page), vw, vh), `${label}: first load fits within the pad`);
+
+  // Desktop auto-selects the top landmark on load (MapView.tsx); check that
+  // before clearing it -- this fix touched the same repoKey effect that
+  // precedes it, so it's worth confirming that behaviour is still intact
+  // rather than assuming it because nothing here looks like it should touch
+  // it.
+  if (!profile.isMobile) {
+    const autoSelectedFile = await page.evaluate(() => new URL(location.href).searchParams.get("file"));
+    report(!!autoSelectedFile, `${label}: desktop still auto-selects the top landmark on load`);
+  }
+
   // Desktop auto-selects the top landmark on load (MapView.tsx); clear it at
   // fit zoom, where there's reliably blank margin along the fit's letterboxed
   // axis, before establishing the zoomed-in baseline below.
@@ -219,7 +285,7 @@ async function runOne({ browser, base, slug, profile }) {
   }
 
   const centre = [vw / 2, vh / 2];
-  await zoomIn(page, profile, centre[0], centre[1]);
+  await zoomIn(page, centre[0], centre[1]);
   const baseline = await stableBox(page);
   report(!!baseline, `${label}: map rendered after zoom-in`);
   if (!baseline) {
@@ -306,11 +372,17 @@ async function runOne({ browser, base, slug, profile }) {
   await context.close();
 }
 
-async function checkRepoSwitch(browser, base) {
-  const label = "repo switching still fits";
+async function checkRepoSwitch(browser, base, profile) {
+  const label = `repo switching still fits / ${profile.name}`;
   console.log(`\n${label}`);
-  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
   const page = await context.newPage();
+  const { width: vw, height: vh } = profile.viewport;
   await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(800);
@@ -327,6 +399,11 @@ async function checkRepoSwitch(browser, base) {
   const after = await stableBox(page);
   report(!!after, `${label}: new repo rendered`);
   report(!boxesClose(before, after, 3), `${label}: new repo's view differs from the old repo's (it fit its own bounds, not a stale one)`);
+  // The bug this reviews: fit() ran against whatever document
+  // MapRenderer.state still held (the OLD repo, one commit behind), so n8n's
+  // geometry painted at django's transform -- massively overflowing the
+  // viewport rather than sitting inside the pad.
+  report(fitsWithinPad(await districtUnionBox(page), vw, vh), `${label}: new repo fits within the pad after switching`);
   await context.close();
 }
 
@@ -338,7 +415,9 @@ async function main() {
       await runOne({ browser, base: args.base, slug, profile });
     }
   }
-  await checkRepoSwitch(browser, args.base);
+  for (const profile of PROFILES) {
+    await checkRepoSwitch(browser, args.base, profile);
+  }
   await browser.close();
 
   console.log(`\n${checks - failures}/${checks} checks passed`);
