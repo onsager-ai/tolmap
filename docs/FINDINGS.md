@@ -812,3 +812,24 @@ No reference fixture was re-derived. Placement and modularity therefore did not 
 ### The Python SDK is a different unresolved mechanism
 
 `microsoftgraph/msgraph-sdk-python` still reached 13.8 GB for 16,636 files in finding 18. Python imports resolve to one file, so it cannot have this Go directory fan-out mechanism. Issue #57's remote `dump-blend` measurement found **99.998% of its blended edges below the 0.02 prune floor** after global-maximum normalization. That result explains the SDK's near-singleton partition and landmark explosion: almost every extracted edge disappears before Leiden. It does not explain why constructing the Python graph consumes 13.8 GB. The Python memory driver remains unmeasured and is not changed here; a blend/prune fix for #57 would also change every affected map and requires its own stability measurements and finding.
+
+## 20. NodeNext `.js` specifiers erased TypeScript graphs, and restoring them loses no existing edge
+
+Finding 18's `microsoft/vscode` outlier — one kept edge across 5,919 files — was an extraction failure, not a codebase with no internal structure. VS Code writes the relative import paths that NodeNext/Node16 expects to reach at runtime, such as `./arrays.js`, while its repository contains the TypeScript source `arrays.ts`. Of the relative import specifiers under `src/**/*.ts` measured for issue #58, **100,896 end in `.js` and 19 do not**. The resolver previously treated the written `.js` as part of an extensionless base and probed impossible names such as `.js.ts`, so nearly every internal import contributed no static edge.
+
+The fix follows TypeScript's [file extension substitution](https://www.typescriptlang.org/docs/handbook/modules/reference.html#file-extension-substitution) rule for both relative paths and tsconfig aliases. An exact parsed JavaScript path wins; otherwise `.js` probes `.ts` and then `.tsx`, while `.jsx` probes `.tsx`. Every candidate still has to exist in the parsed-file set, and the historical extensionless probe order is unchanged. This is the same lower-bound contract as the rest of extraction: the resolver recovers only a file that was actually parsed, never a path inferred to exist.
+
+GitHub-hosted [remote-build run 35723131758](https://github.com/onsager-ai/tolmap/actions/runs/35723131758) built `main` as the primary and this fix as the comparison at the same four pinned repository commits. The edge counts below are the map's committed-order `E` entries; peak RSS is `/usr/bin/time -v`'s maximum resident set size. Blank RSS cells were not reported in the supplied comparison.
+
+| repo | files | edges, main → fix | edges lost | districts, main → fix | q, main → fix | peak RSS, main → fix |
+|---|---:|---:|---:|---:|---:|---:|
+| microsoft/vscode | 5,919 | 1 → **74,719** | 0 | 914 → **21** | 0.0000 → **0.5325** | 1,381,044 → **822,204 KiB** |
+| colinhacks/zod | 247 | 24 → **580** | 0 | 9 → 9 | 0.4498 → **0.4893** | — |
+| apollographql/apollo-client | 500 | 60 → **760** | 0 | 47 → **19** | 0.7651 → **0.6680** | — |
+| n8n-io/n8n | 11,991 | 38,586 → **39,402** | 0 | 87 → **75** | 0.7454 → **0.7516** | — |
+
+The loss check compared `E` as sets after confirming the two maps had the same `F` order. **Every edge present on `main` remains present after the fix on all four repositories; the comparison only adds edges.** The district and modularity movements are downstream results of supplying the partitioner with the graph that was previously missing. In particular, the task's prediction that n8n would be byte-identical was wrong: n8n also contains `.js` specifiers, gains 816 edges, and changes from 87 to 75 districts. The no-loss result is the relevant invariant under the lower-bound rule, and it holds.
+
+No committed fixture changes. The seven Python fixtures and the Go fixture cannot exercise this TypeScript path. The pinned Vue fixture is the only committed TypeScript acceptance source; its files admitted by source collection contain no affected import or export specifier. The graphs under `data/ci/` are already extracted and bypass resolution. Nothing under `data/` was re-derived.
+
+Two gaps remain outside this fix. TypeScript also substitutes `.mjs` → `.mts` and `.cjs` → `.cts`, but tolmap does not collect `.mts` or `.cts`; widening collection is a separate change, so those source substitutions remain unavailable here. `langchain-ai/langchain` having zero edges in finding 18's corpus is also unrelated: it is Python, and issue #58's comment records it as a separate likely source-root or package-name resolution failure.
