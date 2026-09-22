@@ -26,8 +26,11 @@
 // at the new document, so it framed the PREVIOUS repo's bounds, or nothing
 // at all on first mount), that the mainland's on-screen extent actually
 // sits inside fit()'s own pad -- not overflowing the viewport -- on first
-// load and after a repo switch, plus that desktop's auto-select of the top
-// landmark on load still fires.
+// load and after a repo switch, plus (readable-overview PR review finding)
+// that NEITHER profile auto-selects anything or opens with a dimmed dot on
+// a fresh load -- desktop used to auto-select the top landmark, which,
+// once selection started dimming non-neighbour files, made a fresh
+// django/django load open with most of the map already dimmed; removed.
 //
 // Usage:
 //   pnpm exec vite --port 5176 --strictPort &
@@ -266,23 +269,56 @@ async function runOne({ browser, base, slug, profile }) {
   // MapRenderer.state still held, which on first mount is nothing at all).
   report(fitsWithinPad(await districtUnionBox(page), vw, vh), `${label}: first load fits within the pad`);
 
-  // Desktop auto-selects the top landmark on load (MapView.tsx); check that
-  // before clearing it -- this fix touched the same repoKey effect that
-  // precedes it, so it's worth confirming that behaviour is still intact
-  // rather than assuming it because nothing here looks like it should touch
-  // it.
-  if (!profile.isMobile) {
-    const autoSelectedFile = await page.evaluate(() => new URL(location.href).searchParams.get("file"));
-    report(!!autoSelectedFile, `${label}: desktop still auto-selects the top landmark on load`);
-  }
-
-  // Desktop auto-selects the top landmark on load (MapView.tsx); clear it at
-  // fit zoom, where there's reliably blank margin along the fit's letterboxed
-  // axis, before establishing the zoomed-in baseline below.
-  if (!profile.isMobile) {
-    const empty = await findEmptyPoint(page, vw, vh);
-    if (empty) await tap(page, profile, empty[0], empty[1]);
-  }
+  // Desktop used to auto-select the top landmark on load (MapView.tsx).
+  // Removed as a readable-overview PR review finding: once selection
+  // started dimming non-neighbour files (that PR's own change), the
+  // auto-select made a FRESH desktop load of django/django open with 685 of
+  // 851 dots already dimmed -- the overview auto-obstructing itself before
+  // a reader had asked for anything. This is the opposite of what this
+  // check used to assert (desktop DID auto-select): now BOTH profiles must
+  // open with no file selected and nothing dimmed -- phone always did,
+  // desktop now matches it, and there is no longer a selection to "clear"
+  // before establishing the zoomed-in baseline below (the old clear-it tap
+  // that used to sit here is gone with it).
+  // "Dimmed" here means the SELECTION dim/undim path specifically
+  // (MapRenderer.paint()'s `baseOpacity = dim && !dim.has(i) ? 0.2 : 0.85`),
+  // not #49's UNRELATED density-fade opacity -- a large, not-yet-fully-
+  // revealed district (dify at fit zoom is exactly this: it never clears
+  // DOT_DENSITY_FLOOR's fast path the way every acceptance fixture does)
+  // legitimately draws dots at all kinds of partial opacity with no
+  // selection active at all, via `factor` in that same expression.
+  //
+  // Two things were tried and failed here before landing on the check
+  // below, kept as the record of why it looks like this:
+  //   1. `fill-opacity < some threshold` -- 28 false positives on dify
+  //      desktop, 570 on phone (the fade band is wide at fit zoom).
+  //   2. `fill-opacity === "0.2"` exactly, over every file dot -- narrower,
+  //      but the fade path computes `Math.round(0.85 * factor * 1000) /
+  //      1000`, and SOME `factor` in a large district's continuous fade
+  //      band rounds to exactly 0.2 too (0.85 * 0.235294... = 0.2 before
+  //      rounding) -- 1 false positive on dify phone, not zero.
+  // A landmark file's dot is exempt from the fade multiplier entirely:
+  // `alwaysDrawn.has(i) ? 1 : this.dotFactor(i)` forces `factor = 1` for
+  // every landmark unconditionally, so its fill-opacity is ALWAYS exactly
+  // `baseOpacity` with no multiplication -- 0.2 there can only mean `dim`
+  // was real. Scoping the exact-match check to landmark dots (fetched from
+  // the map's own JSON, the same pattern checkSelectionDim below uses)
+  // keeps the check meaningful while removing the collision entirely.
+  const landmarkFiles = await page.evaluate(async (s) => {
+    const res = await fetch(`/maps/${s}.json`);
+    const doc = await res.json();
+    return doc.L.map((l) => l[0]);
+  }, slug);
+  const openState = await page.evaluate((landmarks) => {
+    const file = new URL(location.href).searchParams.get("file");
+    const dimmed = landmarks.filter((i) => {
+      const c = document.querySelector(`svg.map-svg circle.hit[data-k="f:${i}"]`);
+      return c && c.getAttribute("fill-opacity") === "0.2";
+    }).length;
+    return { file, dimmed, landmarksOnScreen: landmarks.filter((i) => document.querySelector(`svg.map-svg circle.hit[data-k="f:${i}"]`)).length };
+  }, landmarkFiles);
+  report(!openState.file, `${label}: no auto-selected file on a fresh load`, JSON.stringify(openState));
+  report(openState.dimmed === 0, `${label}: no landmark dot is selection-dimmed on a fresh load`, JSON.stringify(openState));
 
   const centre = [vw / 2, vh / 2];
   await zoomIn(page, centre[0], centre[1]);
@@ -520,7 +556,10 @@ async function checkSelectionDim(browser, base, profile) {
   const result = await page.evaluate((i) => {
     const circles = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
     const nonSelected = circles.filter((c) => c.getAttribute("data-k") !== `f:${i}`);
-    const dimmed = nonSelected.filter((c) => parseFloat(c.getAttribute("fill-opacity")) <= 0.25);
+    // Exact "0.2" only (see the fresh-load check's own comment above for
+    // why a threshold isn't safe on dify specifically: #49's UNRELATED
+    // density-fade opacity can coincidentally sit under any threshold too).
+    const dimmed = nonSelected.filter((c) => c.getAttribute("fill-opacity") === "0.2");
     // A neighbour ring (MapRenderer.ring(), var(--hot) or var(--cold) stroke)
     // marks a file that's connected -- find one and check ITS dot opacity,
     // which should read as full strength (alwaysDrawn), not dimmed.

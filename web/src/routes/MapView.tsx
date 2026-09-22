@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useCatalogue, useMapDocument } from "@/data/queries";
 import { MapCanvas, type MapCanvasHandle } from "@/map/MapCanvas";
 import type { MapRendererCallbacks, TerrainSelection } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
 import type { SearchHit } from "@/map/search";
-import { useIsNarrow } from "@/hooks/useIsNarrow";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
 import { SearchBox } from "@/components/SearchBox";
@@ -29,7 +28,6 @@ export function MapView() {
     layer: "d" | "c" | "x";
   };
   const navigate = useNavigate();
-  const narrow = useIsNarrow();
   const { data: catalogue } = useCatalogue();
   const { data: doc, isLoading, isError, error } = useMapDocument(owner, repo);
 
@@ -54,59 +52,20 @@ export function MapView() {
     };
   }, [doc]);
 
-  // Issue #51: desktop's landmark auto-select (further down) used to run in
-  // its own useEffect, so the first paint showed the map with nothing
-  // selected and a SECOND paint moments later added the selection once that
-  // effect had flipped the URL -- one full extra draw() on every desktop
-  // load. `doc`, `narrow` and `search` are all already available synchronously
-  // by the time this component first renders with a real `doc` (useIsNarrow
-  // reads matchMedia() directly in getSnapshot, no effect-driven correction;
-  // there's no SSR here), so the choice of what to auto-select doesn't
-  // actually need to wait for an effect -- only WRITING it into the URL does
-  // (navigate() is a side effect, not something render can do). Computing it
-  // here means `sel` below already reflects the auto-selected file on the
-  // very first commit, and fit() bakes it into the one paint MapCanvas's
-  // repoKey effect already does.
-  //
-  // autoSelectRef latches WHAT to auto-select, once per repo, in a ref
-  // written during render -- safe because the guard (`repo !== doc.repo`)
-  // makes it idempotent under StrictMode's double-render (the second call
-  // sees the latch already set and leaves it alone), the same "lazy
-  // initialization" shape React's own docs allow for a ref written during
-  // render.
-  //
-  // That alone isn't enough: `pendingAutoSelectFile` must also stop being a
-  // fallback for `effectiveFile` after the FIRST commit, or a later
-  // onClearSelection() -- which sets search.file back to undefined, looking
-  // identical to "nothing selected yet" -- would fall through to it again
-  // and make the selection uncloseable on desktop. committedRef is the gate:
-  // it starts pointing at whatever repo was last PAINTED (not just
-  // rendered), so the first commit for a new repo still sees it stale and
-  // gets to use the fallback, and every commit after that (including one
-  // from a clear, still within the same repo) sees it caught up and doesn't.
-  // It's only ever written from an effect (after a commit has already
-  // happened), never mutated during render, so it can't fall into the same
-  // StrictMode-double-render trap a `consumed` flag written during render
-  // would: both of StrictMode's render calls for a given commit read the
-  // SAME committedRef value, because nothing changes it between them.
-  const autoSelectRef = useRef<{ repo: string; file: string | undefined } | null>(null);
-  if (doc && (!autoSelectRef.current || autoSelectRef.current.repo !== doc.repo)) {
-    autoSelectRef.current = {
-      repo: doc.repo,
-      file: !narrow && !search.file && search.d == null && doc.L.length ? doc.F[doc.L[0][0]] : undefined,
-    };
-  }
-  const committedRef = useRef<string | null>(null);
-  const pendingAutoSelectFile =
-    doc && autoSelectRef.current?.repo === doc.repo && committedRef.current !== doc.repo
-      ? autoSelectRef.current.file
-      : undefined;
-  useEffect(() => {
-    if (doc) committedRef.current = doc.repo;
-  }, [doc]);
-
-  const effectiveFile = search.file ?? pendingAutoSelectFile;
-  const sel = doc && effectiveFile ? (() => { const i = doc.F.indexOf(effectiveFile!); return i >= 0 ? i : null; })() : null;
+  // Desktop used to auto-select the top landmark on load (the reference did
+  // this too: `if(R.L.length && !NARROW()) select(R.L[0][0],true)`), landing
+  // every fresh /:owner/:repo view with something already highlighted; a
+  // phone never did (that was the whole point of the NARROW() check).
+  // Removed (review finding on the readable-overview PR): once selection
+  // started dimming non-neighbour files (that PR's own change), the
+  // auto-select made a FRESH desktop load of django/django open with 685 of
+  // 851 dots dimmed -- the overview auto-obstructing itself before a reader
+  // had asked for anything. The reference could afford landing on a
+  // landmark because selection had no visual cost there; it does now, so
+  // desktop opens unobstructed the same as phone always has. A `?file=`
+  // deep link is unaffected -- it's an explicit selection, and dimming is
+  // the correct, requested behaviour for one.
+  const sel = doc && search.file ? (() => { const i = doc.F.indexOf(search.file!); return i >= 0 ? i : null; })() : null;
   const selSym = sel != null && search.sym != null ? search.sym : null;
   const selD = sel == null && search.d != null ? search.d : null;
 
@@ -165,30 +124,6 @@ export function MapView() {
     onSelectDistrict: (d) => selectDistrict(d),
     onClearSelection: () => clearSelection(),
   };
-
-  // On desktop, land on the top landmark the way the reference does
-  // (`if(R.L.length && !NARROW()) select(R.L[0][0],true)`); on a phone the
-  // map opens unobstructed. Only when the URL didn't already ask for
-  // something, and only once per repo — a deep link always wins. `sel`
-  // above already reflects this decision (pendingAutoSelectFile) so the map
-  // itself is correct from the first paint; all this effect does is persist
-  // it into the URL for shareability/back-button parity. It must NOT be the
-  // thing that flips `sel` for the first time -- that used to be a second
-  // draw() (issue #51, draw #5 of 5), because navigate() can't resolve
-  // before the browser paints what render() already returned. Once this
-  // fires, `search.file` reads back the same file pendingAutoSelectFile
-  // already held, so `sel`'s VALUE doesn't change and MapCanvas's own
-  // effects don't re-run -- no draw from this either. Deliberately excludes
-  // search.file/search.d from deps, same as the original version of this
-  // effect: they're read once, at the moment doc/pendingAutoSelectFile
-  // change (i.e. once per repo), not on every subsequent change (a later
-  // onClearSelection() must not re-trigger this).
-  useEffect(() => {
-    if (!doc || !pendingAutoSelectFile) return;
-    if (search.file || search.d != null) return;
-    updateSearch({ file: pendingAutoSelectFile });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, pendingAutoSelectFile]);
 
   if (isLoading) {
     return (
