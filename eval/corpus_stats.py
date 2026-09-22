@@ -103,7 +103,7 @@ def world_fit_scale(doc: dict, width: int, height: int) -> float:
     outside any mainland blob, and island/unconnected blobs, are dropped)
     and so inflates the resulting px²/file figures relative to what the
     viewer actually draws. Fixed for issue #50; see docs/FINDINGS.md
-    finding 17.
+    finding 18.
     """
     xs: list[float] = []
     ys: list[float] = []
@@ -135,7 +135,7 @@ def district_densities(doc: dict, classes: dict, viewport: tuple[int, int]) -> l
     only keeps a marching-squares contour with >=12 points that is also
     >=12% of that district's largest contour's point count, so a district
     with too few member files (empirically, almost always <=12 files; see
-    docs/FINDINGS.md finding 17) never clears that filter and gets an empty
+    docs/FINDINGS.md finding 18) never clears that filter and gets an empty
     `blob` -- no polygon at any zoom, not a small one. Both `zero_blob_*`
     columns below count these separately from the px2_file_*_min column,
     which a single such district anywhere in a large map can otherwise pin
@@ -308,7 +308,7 @@ def write_markdown(path: Path, rows: list[dict]) -> None:
         "",
         "Each cell is the per-repository median [p10–p90]. Failed repositories are counted but excluded from metric distributions.",
         "",
-        "The px²/file *min* columns are dominated by a geometric artifact, not zoom: a district with too few member files (empirically almost always <=12) never clears the >=12-point marching-squares contour filter in src/blobs.rs and gets no polygon at any zoom, which floors that repo's minimum at 0.0 regardless of everything else in the map (see docs/FINDINGS.md finding 17). The *share of files under floor* rows are the robust statistic: the fraction of all mapped files sitting in a mainland/island district whose px²/file is below the 30 px²/file floor (#48) at fit zoom, including these zero-blob districts (their file-dot budget is genuinely 0, which is what \"under floor\" means for them too).",
+        "The px²/file *min* columns are dominated by a geometric artifact, not zoom: a district with too few member files (empirically almost always <=12) never clears the >=12-point marching-squares contour filter in src/blobs.rs and gets no polygon at any zoom, which floors that repo's minimum at 0.0 regardless of everything else in the map (see docs/FINDINGS.md finding 18). The *share of files under floor* rows are the robust statistic: the fraction of all mapped files sitting in a mainland/island district whose px²/file is below the 30 px²/file floor (#48) at fit zoom, including these zero-blob districts (their file-dot budget is genuinely 0, which is what \"under floor\" means for them too).",
         "",
         "| metric | small | medium | large | ultra |",
         "|---|---:|---:|---:|---:|",
