@@ -152,7 +152,7 @@ Only these four repositories were swept across the floor; the other five in the 
 
 **Consequence for the port's acceptance gate.** The gate in `CLAUDE.md` reads "modularity within 0.02" of the reference. On sqlalchemy, modularity itself swings 0.33 across plausible floors, and the shipped floor sits between the 90th and 99th percentile of its normalised weights — so a port whose raw signal masses differ even slightly from the reference's can fall on the other side of that cut into a different modularity regime, while every edge it keeps still looks correct in isolation. See issue #3.
 
-**The decision, recorded rather than hidden.** Three routes were available: a relative floor (a percentile of the normalised distribution) instead of an absolute one, applying the floor before the max-rescale, or leaving `prune()` and `blend()` exactly as shipped and reporting the sensitivity instead. This document takes the third: **the pipeline is unchanged, deliberately.** The mitigation is textual, not algorithmic — from this finding on, kept-edge count and below-floor share are reported alongside any modularity figure being used for a cross-repo comparison, not modularity alone. A finding that records the option not taken is more useful than one that pretends there was no choice.
+**The decision, recorded rather than hidden.** Three routes were available: a relative floor (a percentile of the normalised distribution) instead of an absolute one, applying the floor before the max-rescale, or leaving `prune()` and `blend()` exactly as shipped and reporting the sensitivity instead. This document took the third: **the pipeline was unchanged at the time.** Finding 23 revisits that ruling with the larger issue #57 corpus and the owner's decision to make node-relative pruning the default. The mitigation here still applies to historical and explicit-`absolute` comparisons: kept-edge count and below-floor share are reported alongside any modularity figure being used for a cross-repo comparison, not modularity alone.
 **A faithful Rust port reproduces this bug exactly.** Rust's default `HashMap` iterates in a randomised order for the same reason Python's `set` does. Ported from the rendering logic alone it will present as "the map jiggles between runs", months after anyone remembers that a subgraph view was involved. Use `BTreeMap`/`IndexMap`, or sort at every set boundary, from the first commit of the geometry module. (Verified on the Rust port: it uses `BTreeMap`/`BTreeSet` throughout, no `std::collections::HashMap`/`HashSet` anywhere in `src/`, and three independent `tolmap build` runs on scrapy produced byte-identical output, `sha256sum` checked.)
 
 ## 11. The Leiden gap was never the algorithm — it was seven unset fields
@@ -929,3 +929,97 @@ At the pinned counts in `eval/corpus.toml`, **39 successfully built corpus repos
 - Ultra band: `Azure/azure-sdk-for-python` (40,129), `aws/aws-sdk-go-v2` (26,520), `elastic/kibana` (10,216), `googleapis/google-cloud-python` (39,964), `home-assistant/core` (10,209), `kubernetes/kubernetes` (8,570), `microsoftgraph/msgraph-sdk-python` (16,636), `n8n-io/n8n` (11,991), `pulumi/pulumi-aws` (8,757), `pulumi/pulumi-azure-native` (11,650), and `twentyhq/twenty` (22,033).
 
 All nine acceptance fixtures contain at most 851 mapped files. None crosses the threshold, no fixture was re-derived or changed, and the CI offline parity gate continues to prove their default artifacts byte-identical.
+
+## 23. Node-relative pruning fixes the global-outlier collapse, with one owner-accepted retention regression
+
+Issue #57 confirmed finding 10's mechanism at corpus scale. `blend()` first
+normalises each signal on total mass, then divides every blended edge by one
+global maximum. `absolute` applies a fixed 0.02 floor after that rescale. One
+dominant edge therefore sets the scale for the entire repository and can push
+otherwise useful local links below the floor. On msgraph-sdk-python and
+date-fns, respectively 99.9982% and 99.8449% of candidate edges fell below
+it. `node-relative` keeps the union of each endpoint's top 14 edges whose
+weight is at least 2% of that endpoint's strongest incident edge, so a global
+outlier no longer crushes unrelated neighborhoods.
+
+PR #70 measured the alternatives without changing the default. The headline
+comparison below is the old `absolute` route against `node-relative`, from
+[absolute build 35736394530](https://github.com/onsager-ai/tolmap/actions/runs/35736394530),
+[absolute dump 35736420144](https://github.com/onsager-ai/tolmap/actions/runs/35736420144),
+[node-relative build 35736407326](https://github.com/onsager-ai/tolmap/actions/runs/35736407326),
+and [node-relative dump 35736432761](https://github.com/onsager-ai/tolmap/actions/runs/35736432761).
+“Below floor” uses each route's own rule, so the node-relative percentage is
+the share rejected by both endpoints' local thresholds.
+
+| repository | q, absolute → node-relative | districts | kept edges | below floor |
+|---|---:|---:|---:|---:|
+| microsoftgraph/msgraph-sdk-python | 0.0000 → **0.6079** | 10,030 → **45** | 1 → **43,713** | 99.9982% → **0.0000%** |
+| date-fns/date-fns | 0.4922 → **0.5155** | 963 → **11** | 8 → **4,842** | 99.8449% → **0.0194%** |
+| Azure/azure-sdk-for-python | 0.9942 → 0.9924 | 3,411 → **1,185** | 225 → **215,925** | 99.9652% → **0.0431%** |
+| elastic/kibana | 0.9775 → 0.7625 | 1,553 → **57** | 1,265 → **37,990** | 96.8873% → **0.2461%** |
+| crawlab-team/crawlab | 0.5476 → 0.4056 | 13 → **7** | 386 → **4,840** | 98.6007% → **1.3306%** |
+| sqlalchemy/sqlalchemy | 0.5202 → 0.4318 | 8 → 6 | 1,168 → **2,445** | 82.3343% → **0.6063%** |
+| prometheus/prometheus | 0.5397 → 0.5430 | 11 → 9 | 3,479 → 3,499 | 1.1927% → **0.0000%** |
+| langgenius/dify | 0.7470 → 0.7470 | 133 → 133 | 23,967 → 23,967 | 0.0000% → 0.0000% |
+| microsoft/vscode | 0.5325 → 0.5325 | 21 → 21 | 47,617 → 47,617 | 0.0000% → 0.0000% |
+| django/django | 0.5092 → 0.5092 | 12 → 12 | 3,369 → 3,369 | 0.0000% → 0.0000% |
+
+The first warm-start pass covered the established stability set. Absolute
+[run 35741348832](https://github.com/onsager-ai/tolmap/actions/runs/35741348832)
+and node-relative
+[run 35741357110](https://github.com/onsager-ai/tolmap/actions/runs/35741357110)
+were identical on all four:
+
+| repository | absolute | node-relative | Δ |
+|---|---:|---:|---:|
+| django | 0.9186 | 0.9186 | 0.0000 |
+| celery | 0.9814 | 0.9814 | 0.0000 |
+| httpx (200 commits back) | 0.9565 | 0.9565 | 0.0000 |
+| scrapy | 0.8512 | 0.8512 | 0.0000 |
+
+The follow-up covered repositories whose current maps actually moved, using
+the rule fixed before dispatch that node-relative could be at most 0.005 below
+absolute on any repository. Absolute
+[run 35743254814](https://github.com/onsager-ai/tolmap/actions/runs/35743254814)
+and node-relative
+[run 35743262096](https://github.com/onsager-ai/tolmap/actions/runs/35743262096)
+produced:
+
+| repository | absolute | node-relative | Δ |
+|---|---:|---:|---:|
+| sqlalchemy | 0.9881 | 0.9643 | **−0.0238** |
+| prometheus | 0.9825 | 0.9857 | +0.0032 |
+| kubernetes | 0.9230 | 0.9699 | +0.0469 |
+| n8n | 0.9594 | 0.9691 | +0.0097 |
+| msgraph-sdk-python | 0.8227 (8,327 districts, 11.8 GB) | 0.9355 (44 districts, 2.1 GB) | +0.1128 |
+| crawlab | 0.0 | 0.0 | uninformative |
+| date-fns | 0.0 | 0.0 | uninformative |
+
+The sqlalchemy result plainly breaks the pre-set 0.005 rule: retention falls
+from 0.9881 to 0.9643, a regression of 0.0238. On 2026-09-23 the project owner
+reviewed that result and decided **“Switch anyway.”** This finding records the
+override rather than weakening the rule after seeing the data.
+
+Under absolute pruning, 82.3343% of sqlalchemy's candidate links fall below
+the floor. **Inference, not measurement:** because so few links remain, its
+districts appear to be held stable largely by `merge_tiny`'s directory
+fallback; directory placement is stable by construction, so replacing the
+global floor can reduce measured retention even while restoring graph links.
+No run here isolated or counted fallback-driven assignments directly.
+
+Crawlab and date-fns do not supply retention evidence in the second table.
+Both were restructured within the 300-commit window: crawlab moved from Python
+to Go, while date-fns moved files from `src/` to `pkgs/core/`. Their common-file
+retention denominator collapses, so 0.0 versus 0.0 says nothing about either
+prune route.
+
+These remote two-commit runs stand in for `eval/batch_stability.py` in this
+change. That script imports the frozen Python reference, which has no
+`PruneVariant` route and cannot measure a Rust default switch. The remote mode
+uses the product pipeline at both commits, supplies the earlier map through
+`--previous-map`, and reports the same common-file district retention concept.
+
+The owner-approved result is that `node-relative` is now the default for CLI
+builds, blend dumps, polyglot reports, and service jobs. `absolute`,
+`percentile`, and `pre-rescale` remain selectable so every table above stays
+reproducible.

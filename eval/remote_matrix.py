@@ -122,6 +122,7 @@ def load_fixtures(path: Path) -> list[dict]:
                 "commit": fixture["commit"],
                 "band": "fixture",
                 "args": ["--pkg", fixture["pkg"], "--lang", fixture["lang"]],
+                "fixture_no_parcels": not fixture["parcels"],
             }
         )
     return entries
@@ -171,6 +172,11 @@ def to_matrix(entries: list[dict]) -> dict:
                 "band": entry["band"],
                 "args": list(entry.get("args", ["--all-sources"])),
                 **({"back": entry["back"]} if "back" in entry else {}),
+                **(
+                    {"fixture_no_parcels": entry["fixture_no_parcels"]}
+                    if "fixture_no_parcels" in entry
+                    else {}
+                ),
             }
         )
     return {"include": include}

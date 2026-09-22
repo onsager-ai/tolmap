@@ -108,6 +108,10 @@ primary_region = "iad"
   TOLMAP_DB_PATH = "/data/tolmap.sqlite3"
   TOLMAP_CACHE_DIR = "/data/cache"
 
+  # Owner-approved default from issue #57. Keep this explicit so production
+  # cannot retain the old absolute floor through configuration drift.
+  TOLMAP_PRUNE_VARIANT = "node-relative"
+
   # ---- Limits sized for a 1 GB machine + 10 GB volume (issue: Fly.io
   # deployment, 2026-09-20) -- arithmetic in the PR body; summary here.
   #

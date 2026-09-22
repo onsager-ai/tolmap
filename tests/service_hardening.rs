@@ -57,6 +57,7 @@ fn state_with_limits(limits: Limits) -> (tempfile::TempDir, Arc<AppState>) {
         cache_dir,
         static_dir: None,
         terrain: TerrainMode::Off,
+        prune_variant: tolmap::pipeline::PruneVariant::NodeRelative,
         limits,
         retain_commits_per_repo: 20,
     };

@@ -31,9 +31,9 @@ const PRE_RESCALE_FLOOR: f64 = 0.000_077_526_049_820_726_55;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PruneVariant {
-    #[default]
     Absolute,
     Percentile,
+    #[default]
     NodeRelative,
     PreRescale,
 }
@@ -133,7 +133,7 @@ pub fn run<P: Partitioner>(
         resolution,
         partitioner,
         initial_membership,
-        PruneVariant::Absolute,
+        PruneVariant::default(),
     )
 }
 
@@ -316,9 +316,9 @@ pub fn prune(data: &mut GraphData, keep_per_node: usize, floor: f64) {
         .retain(|edge| keep.contains(&(edge.a.clone(), edge.b.clone())));
 }
 
-/// Applies one complete blend/prune route. `Absolute` is deliberately the
-/// existing two calls verbatim, including comparison strictness and edge
-/// ordering; the default path therefore remains byte-identical.
+/// Applies one complete blend/prune route. `Absolute` preserves the original
+/// two calls verbatim, including comparison strictness and edge ordering, so
+/// explicit `absolute` measurements remain comparable with the old default.
 pub fn apply_prune_variant(data: &mut GraphData, variant: PruneVariant) -> Result<PruneStats> {
     apply_prune_variant_inner(data, variant, true)
 }

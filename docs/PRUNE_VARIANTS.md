@@ -1,8 +1,19 @@
 # Blend/prune variants
 
-Issue #57's alternatives are experiments behind `--prune-variant`; they do
-not change the default. `absolute` remains the default for `build`,
-`dump-blend`, the service, and `polyglot-report`.
+`node-relative` is the default for `build`, `dump-blend`, the service, and
+`polyglot-report`. The project owner approved the switch on 2026-09-23 after
+issue #57's measurements showed that a single globally dominant edge can make
+the old `absolute` floor discard nearly every other link. The local threshold
+keeps the strongest structure around each endpoint while retaining the
+existing top-14 cap and union semantics. `--prune-variant absolute` and the
+other measured routes remain available for reproduction and comparison.
+
+The owner chose “Switch anyway” after the pre-set retention rule failed on
+sqlalchemy: warm-start retention moved from 0.9881 to 0.9643, a −0.0238 change
+against a maximum allowed regression of 0.005. The full measurements and the
+explicit override are recorded in finding 23. This is a measured default
+choice with a known cost, rather than a claim that node-relative wins every
+repository.
 
 The calibration below used the nine acceptance repositories at the exact
 commits and source roots in `data/fixtures.toml`. It ran on GitHub-hosted
