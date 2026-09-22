@@ -25,7 +25,9 @@ a CLI.
 Deliberately tolerant of a missing map (a failed or OOM-killed build still
 gets a result.json recording that, per CLAUDE.md's "numbers must be a
 lower bound" spirit applied to this corpus run itself: a repository that
-failed is a recorded fact, not a silently dropped row).
+failed is a recorded fact, not a silently dropped row). `reason`/
+`compare_reason` carry the failing log's tail (eval/build_corpus.py's own
+`failure_tail`, reproduced here) whenever status is not "built".
 """
 
 from __future__ import annotations
@@ -60,6 +62,19 @@ def time_fields(path: Path) -> tuple[float | None, int | None]:
             except ValueError:
                 pass
     return wall_s, peak_kb
+
+
+def failure_tail(log_path: Path, lines: int = 8) -> str:
+    """Same idea as eval/build_corpus.py's `failure_tail`: the last few
+    non-blank lines of the build log, so a failed row's result.json carries
+    enough to triage without downloading the full artifact. "no build
+    output" covers the case where the log was never written at all (e.g.
+    the clone step itself failed before this build step ever ran).
+    """
+    if not log_path.exists():
+        return "no build output"
+    tail = log_path.read_text(errors="replace").splitlines()[-lines:]
+    return " | ".join(part.strip() for part in tail if part.strip())[-1200:]
 
 
 def sha256_and_stats(json_path: Path) -> tuple[str | None, int | None, float | None]:
@@ -103,6 +118,7 @@ def main() -> int:
     primary_exit_raw = env("PRIMARY_EXIT")
     primary_exit = int(primary_exit_raw) if primary_exit_raw.strip() else None
     primary_status = "built" if primary_exit == 0 and primary_sha else "failed"
+    primary_reason = None if primary_status == "built" else failure_tail(Path("primary.log"))
 
     result = {
         "slug": slug,
@@ -114,6 +130,7 @@ def main() -> int:
         "command": command,
         "status": primary_status,
         "exit_code": primary_exit,
+        "reason": primary_reason,
         "peak_rss_kb": primary_peak,
         "wall_s": primary_wall,
         "map_sha256": primary_sha,
@@ -121,6 +138,7 @@ def main() -> int:
         "below_prune_floor": primary_floor,
         "compare_status": None,
         "compare_exit_code": None,
+        "compare_reason": None,
         "compare_peak_rss_kb": None,
         "compare_wall_s": None,
         "compare_map_sha256": None,
@@ -135,9 +153,11 @@ def main() -> int:
         compare_exit_raw = env("COMPARE_EXIT")
         compare_exit = int(compare_exit_raw) if compare_exit_raw.strip() else None
         compare_status = "built" if compare_exit == 0 and compare_sha else "failed"
+        compare_reason = None if compare_status == "built" else failure_tail(Path("compare.log"))
         result.update(
             compare_status=compare_status,
             compare_exit_code=compare_exit,
+            compare_reason=compare_reason,
             compare_peak_rss_kb=compare_peak,
             compare_wall_s=compare_wall,
             compare_map_sha256=compare_sha,

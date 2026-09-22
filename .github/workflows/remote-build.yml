@@ -175,6 +175,30 @@ jobs:
         if: steps.cache-leiden.outputs.cache-hit != 'true'
         run: bash repo-primary/scripts/install-leiden.sh "${{ env.LEIDEN_PREFIX }}"
 
+      # build.rs links the binary with `-Wl,-rpath,$LEIDEN_PREFIX/lib`
+      # (baked in at compile time), but a `build` job only downloads the
+      # *binary* artifact -- not this directory -- so `tolmap` fails at
+      # startup with "error while loading shared libraries". Bundling
+      # lib/*.so with the binary artifact (rather than having each build
+      # job do its own `actions/cache/restore` on the same
+      # `leiden-${{ runner.os }}-${{ hashFiles(...) }}` key) was chosen
+      # over the alternative for two reasons: it needs exactly the one
+      # download step each build job already has (no second,
+      # dependent-on-cache-state step to reason about), and it can't fan
+      # out into redundant native-library compilation -- up to 8
+      # `max-parallel` build jobs hitting a cache miss at the same time
+      # would otherwise each start compiling igraph/libleidenalg from
+      # source concurrently. The build job sets LD_LIBRARY_PATH from the
+      # downloaded copy explicitly rather than relying on the rpath match
+      # (github.workspace is in fact identical across jobs on the same
+      # repo, but being explicit doesn't depend on that staying true).
+      - name: Upload native Leiden/igraph runtime libs
+        uses: actions/upload-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+          if-no-files-found: error
+
       - name: Build tolmap (primary)
         run: cargo build --release --bin tolmap --manifest-path repo-primary/Cargo.toml
 
@@ -250,6 +274,17 @@ jobs:
           name: tolmap-binary-compare
           path: bin-compare
 
+      # Both binaries were linked against the same $LEIDEN_PREFIX in the
+      # `setup` job (see that job's "Upload native Leiden/igraph runtime
+      # libs" step for why this is a separate downloaded artifact rather
+      # than a per-job cache restore or relying on the binary's baked-in
+      # rpath alone).
+      - name: Download native Leiden/igraph runtime libs
+        uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+
       - name: Make binaries executable
         run: |
           chmod +x bin-primary/tolmap
@@ -299,6 +334,18 @@ jobs:
       # in `extra_args` is a `build`-only flag and errors on `dump-blend`;
       # that is a real clap error, not silently ignored, if the two are
       # combined.
+      # GitHub Actions runs a default `run:` step as `bash -e ...` (the `-e`
+      # is on before this script's own first line ever executes), and
+      # `set -uo pipefail` does not touch `-e` -- it only adds `-u` and
+      # `pipefail`. Without an explicit `set +e` around the fallible
+      # command, a non-zero `tolmap` exit aborts the step immediately
+      # (bash's `-e`) and the `echo "exit_code=..."` line below it never
+      # runs at all: the step is reported as a bare failure with no
+      # recorded PRIMARY_EXIT and no reason, which is exactly what
+      # happened on run 35721289435 (every job died in ~0s with exit 127
+      # from the missing Leiden libs above, and result.json still came out
+      # with exit_code/reason both null). `rc=$?` is captured immediately
+      # after the command, before any other command can overwrite `$?`.
       - name: Build with primary binary
         id: build_primary
         env:
@@ -306,9 +353,11 @@ jobs:
           REPO_ARGS: ${{ join(matrix.args, ' ') }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
           COMMAND: ${{ inputs.command }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
         run: |
           set -uo pipefail
           mkdir -p out-primary
+          set +e
           if [ "$COMMAND" = "dump-blend" ]; then
             /usr/bin/time -v -o primary.time.txt \
               prlimit "--as=${BUILD_MEM_BYTES}" -- \
@@ -322,7 +371,9 @@ jobs:
               --name "$STEM" --out out-primary \
               > primary.log 2>&1
           fi
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          rc=$?
+          set -e
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
 
       - name: Build with compare binary
         id: build_compare
@@ -332,9 +383,11 @@ jobs:
           REPO_ARGS: ${{ join(matrix.args, ' ') }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
           COMMAND: ${{ inputs.command }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
         run: |
           set -uo pipefail
           mkdir -p out-compare
+          set +e
           if [ "$COMMAND" = "dump-blend" ]; then
             /usr/bin/time -v -o compare.time.txt \
               prlimit "--as=${BUILD_MEM_BYTES}" -- \
@@ -348,7 +401,9 @@ jobs:
               --name "$STEM" --out out-compare \
               > compare.log 2>&1
           fi
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          rc=$?
+          set -e
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
 
       # The clone (working tree + fetched history) is this job's biggest
       # disk user on a 14 GB SSD; delete it as soon as both builds that

@@ -49,12 +49,26 @@ def short_sha(value: str | None) -> str:
     return value[:12] if value else "—"
 
 
+def short_reason(row: dict, limit: int = 90) -> str:
+    """A one-line, table-safe excerpt of whichever of reason/compare_reason
+    is set (eval/remote_build_result.py's `failure_tail`, already a
+    pipe-joined single line) -- so a failure is diagnosable straight from
+    $GITHUB_STEP_SUMMARY, without downloading the result-* artifact first.
+    """
+    reason = row.get("reason") or row.get("compare_reason")
+    if not reason:
+        return "—"
+    reason = reason.replace("|", "\\|").replace("\n", " ")
+    return reason if len(reason) <= limit else reason[: limit - 1] + "…"
+
+
 def write_markdown(results: list[dict], path: Path) -> None:
     has_compare = any(row.get("compare_ref") for row in results)
     # Set only on `dump-blend` rows (src/blenddump.rs) -- issue #57's
     # below-prune-floor measurement. A `build` run's rows leave this
     # column out entirely rather than showing an all-"—" column.
     has_floor = any(row.get("below_prune_floor") is not None for row in results)
+    has_reason = any(row.get("reason") or row.get("compare_reason") for row in results)
     built = sum(1 for row in results if row.get("status") == "built")
     failed = len(results) - built
     lines = [
@@ -71,6 +85,9 @@ def write_markdown(results: list[dict], path: Path) -> None:
     if has_compare:
         header_cells += ["compare status", "identical"]
         sep_cells += ["---", "---"]
+    if has_reason:
+        header_cells.append("reason (if failed)")
+        sep_cells.append("---")
     lines += ["| " + " | ".join(header_cells) + " |", "|" + "|".join(sep_cells) + "|"]
     for row in results:
         cells = [
@@ -89,6 +106,8 @@ def write_markdown(results: list[dict], path: Path) -> None:
             identical = row.get("identical")
             identical_cell = "—" if identical is None else ("yes" if identical else "**no**")
             cells += [row.get("compare_status") or "—", identical_cell]
+        if has_reason:
+            cells.append(short_reason(row))
         lines.append("| " + " | ".join(cells) + " |")
     with path.open("a") as handle:
         handle.write("\n".join(lines) + "\n")
