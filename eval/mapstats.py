@@ -19,9 +19,14 @@ import sys
 from collections import defaultdict
 
 
-def stats(path):
-    with open(path) as handle:
-        doc = json.load(handle)
+def classify(doc):
+    """Return PR #42's district classes and the edge incidence they use.
+
+    The 1% comparison deliberately stays in integer arithmetic.  Besides
+    matching the issue's `size * 100 >= total` definition exactly, this
+    avoids moving a boundary because a large file count was rounded through
+    a float.
+    """
     files = doc["F"]
     district = [row[0] for row in doc["N"]]
     members = defaultdict(list)
@@ -30,7 +35,9 @@ def stats(path):
 
     internal = defaultdict(int)
     cross = defaultdict(set)
+    incident_files = set()
     for a, b in doc["E"]:
+        incident_files.update((a, b))
         district_a, district_b = district[a], district[b]
         if district_a == district_b:
             internal[district_a] += 1
@@ -40,14 +47,40 @@ def stats(path):
 
     total = len(files)
     mainland = {d for d, values in members.items()
-                if len(values) >= 0.01 * total}
+                if len(values) * 100 >= total}
     small = set(members) - mainland
+    island = {d for d in small if any(i in incident_files for i in members[d])}
+    unconnected = small - island
     zero_edge = {d for d in members if internal[d] == 0}
     stranded = {d for d in small if not (cross[d] & mainland)}
+    return {
+        "district": district,
+        "members": members,
+        "internal": internal,
+        "cross": cross,
+        "incident_files": incident_files,
+        "mainland_ids": mainland,
+        "island_ids": island,
+        "unconnected_ids": unconnected,
+        "zero_edge_district_ids": zero_edge,
+        "stranded_ids": stranded,
+    }
+
+
+def document_stats(doc):
+    classes = classify(doc)
+    members = classes["members"]
+    mainland = classes["mainland_ids"]
+    small = set(members) - mainland
+    zero_edge = classes["zero_edge_district_ids"]
+    stranded = classes["stranded_ids"]
+    total = len(doc["F"])
     return {
         "files": total,
         "districts": len(members),
         "mainland": len(mainland),
+        "islands": len(classes["island_ids"]),
+        "unconnected": len(classes["unconnected_ids"]),
         "mainland_file_share": sum(len(members[d]) for d in mainland) / total,
         "small": len(small),
         "zero_edge_districts": len(zero_edge),
@@ -57,6 +90,11 @@ def stats(path):
         "q": doc["q"],
         "largest_district": max(len(values) for values in members.values()),
     }
+
+
+def stats(path):
+    with open(path) as handle:
+        return document_stats(json.load(handle))
 
 
 def main(paths):
