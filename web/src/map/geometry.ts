@@ -244,6 +244,33 @@ export function stripRows(items: Room[], w: number, h: number): Cell[] {
   return out;
 }
 
+// ---------- file-dot density (issue #48) ----------
+/** Shoelace formula: absolute area of a simple polygon, in world units. A
+ * district's on-screen area is this (summed over its `blob` polygons) times
+ * k² -- see MapRenderer.dotFactor, which is why this lives here rather than
+ * inline in the renderer: the same area-from-a-polygon math the plots layer
+ * would need if it ever wanted a density measure of its own. */
+export function polygonArea(poly: Array<[number, number]>): number {
+  let a = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const [x0, y0] = poly[i];
+    const [x1, y1] = poly[(i + 1) % poly.length];
+    a += x0 * y1 - x1 * y0;
+  }
+  return Math.abs(a) / 2;
+}
+
+/** A district's world-space area: the sum over its (possibly several)
+ * `blob` polygons. Zero for a district with an EMPTY blob -- unconnected
+ * districts, whose polygon geometry.rs drops entirely (see districtClass's
+ * doc comment) -- callers must treat that zero as "no area to budget
+ * against", not "budget everything to nothing"; see MapRenderer.dotFactor. */
+export function districtWorldArea(district: District): number {
+  let a = 0;
+  for (const poly of district.blob) a += polygonArea(poly);
+  return a;
+}
+
 export function tmCentre(doc: MapDocument, d: number): [number, number] {
   const a: [number, number, number, number] = [1e9, 1e9, -1e9, -1e9];
   for (let i = 0; i < doc.N.length; i++) {
