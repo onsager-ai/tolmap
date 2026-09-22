@@ -29,6 +29,15 @@ import {
 } from "./geometry";
 import { computeBlast, type Route } from "./graph";
 
+declare global {
+  interface Window {
+    /** Issue #51: set by web/scripts/perf-bench.mjs via page.addInitScript,
+     * before the app boots. Gates the performance.mark/measure pair in
+     * draw() below -- see its comment for why that can't be unconditional. */
+    __TOLMAP_PERF__?: boolean;
+  }
+}
+
 export type TerrainSelection = {
   kind: "subdistrict" | "parcel";
   district: number;
@@ -104,15 +113,12 @@ export class MapRenderer {
   private tapped = false;
   private animId: number | null = null;
 
-  // Issue #51: transform-during-gesture state. `rootG`/`drawnK`/`drawnTx`/
-  // `drawnTy` are set at the bottom of paint() to exactly what was baked
-  // into the DOM; preview() moves `rootG` relative to that recorded
-  // baseline instead of rebuilding it. `previewRaf` coalesces preview
-  // writes to at most one per animation frame (a pinch or a fast drag can
-  // fire several pointermove events per frame). `settleTimer` is the
-  // ~120-150ms-after-the-last-gesture-event debounce that triggers a real
-  // paint(); `lastDriftRedraw` rate-limits the mid-gesture forced paint()
-  // that driftExceeded() below can also trigger.
+  // Issue #51: transform-during-gesture state -- what preview()/
+  // driftExceeded()/gestureFrame() further down actually read and write;
+  // see those methods for why. rootG/drawnK/drawnTx/drawnTy are the <g>
+  // paint() last drew and the (k, tx, ty) it drew it at. previewRaf/
+  // settleTimer are a gesture's outstanding work; lastDriftRedraw
+  // rate-limits the mid-gesture forced paint().
   private rootG: SVGGElement | null = null;
   private drawnK = 1;
   private drawnTx = 0;
@@ -120,19 +126,31 @@ export class MapRenderer {
   private previewRaf: number | null = null;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastDriftRedraw = 0;
-  // Tuned against web/scripts/perf-bench.mjs on the corpus maps (see the PR
-  // description for the before/after numbers): 150ms is short enough that a
-  // pause mid-drag reads as "the map is live," not "the map is stuck," and
-  // long enough that a 40-step scripted drag (one pointermove roughly every
-  // frame) never fires it between two moves. The drift bounds are the ones
-  // #51 itself specifies -- panned more than a third of the viewport, or
-  // zoomed outside k/k0 in [0.67, 1.5] -- chosen so the culled-at-last-paint
-  // content (issue #49) can never visibly run out before a fresh paint()
-  // replaces it, even on a fast fling.
+  // Tuned against web/scripts/perf-bench.mjs on the corpus maps (numbers in
+  // the PR description). SETTLE_MS=140: short enough that a pause mid-drag
+  // reads as "the map is live," not "the map is stuck," long enough that a
+  // 40-step scripted drag (one pointermove roughly every frame) never fires
+  // it between two moves -- and see pointerDown/endPointer for why it also
+  // has to be short enough that an unrelated LATER tap's own click always
+  // beats a timer re-armed from it.
+  //
+  // DRIFT_PAN_FRACTION/DRIFT_ZOOM_LO/DRIFT_ZOOM_HI are this renderer's own
+  // choice, tuned on the bench -- the issue gave "panned > 1/3 viewport or r
+  // outside [0.67, 1.5]" as an example ("e.g."), not a spec. They're
+  // deliberately asymmetric on zoom: paint() only ever draws what's near the
+  // viewport at paint time (#49's culling), so panning OR zooming OUT
+  // (r < DRIFT_ZOOM_LO) can both reveal genuinely blank map beyond what was
+  // drawn -- that has to stay tight. Zooming IN (r > 1) can't reveal blank
+  // map; it only magnifies a SUBSET of what's already painted, at a dot
+  // density (#48) that goes stale-sparse rather than stale-blank until the
+  // next real paint() catches up -- an acceptable transient, so
+  // DRIFT_ZOOM_HI is set far looser than DRIFT_ZOOM_LO instead of mirroring
+  // it. (Re-benched with DRIFT_ZOOM_HI=4 on dify/n8n/aws-sdk-go-v2: see the
+  // PR description for the zoom numbers.)
   private static readonly SETTLE_MS = 140;
   private static readonly DRIFT_PAN_FRACTION = 1 / 3;
   private static readonly DRIFT_ZOOM_LO = 0.67;
-  private static readonly DRIFT_ZOOM_HI = 1.5;
+  private static readonly DRIFT_ZOOM_HI = 4;
   private static readonly DRIFT_REDRAW_MS = 250;
 
   private readonly TOUCH = matchMedia("(pointer: coarse)").matches;
@@ -423,15 +441,20 @@ export class MapRenderer {
   }
 
   // ---------- draw ----------
-  // Issue #51: performance.mark/measure around every draw(), so a browser
-  // benchmark (web/scripts/perf-bench.mjs) can read draw() cost straight off
-  // the Performance timeline via performance.getEntriesByName("tolmap:draw")
-  // without any dev-only instrumentation flag to remember to flip on. A
-  // mark/measure pair is a handful of microseconds -- cheap enough next to a
-  // draw() that is itself milliseconds on the corpus maps to leave permanently
-  // on, in production too, rather than gating it behind a build flag that
-  // would make "reproduce the numbers in FINDINGS.md" require a special build.
+  // Issue #51: performance.mark/measure around paint(), so
+  // web/scripts/perf-bench.mjs can read draw() cost straight off the
+  // Performance timeline via performance.getEntriesByName("tolmap:draw").
+  // Gated behind window.__TOLMAP_PERF__ (set by the bench via
+  // page.addInitScript, before any app code runs): the User Timing buffer
+  // has no eviction, so leaving this unconditional would leak one
+  // "tolmap:draw" measure per frame for the life of a real session -- a
+  // slow, silent memory leak in every visitor's tab for a number only the
+  // bench ever reads.
   private draw() {
+    if (!window.__TOLMAP_PERF__) {
+      this.paint();
+      return;
+    }
     performance.mark("tolmap:draw:start");
     this.paint();
     performance.mark("tolmap:draw:end");
@@ -1126,16 +1149,19 @@ export class MapRenderer {
   }
 
   // ---------- transform during gestures, redraw on settle (issue #51) ----------
-  // draw()/paint() rebuild the whole SVG; on the corpus maps (10k-30k files)
-  // that is milliseconds per frame, and a drag or pinch calls it on every
-  // pointermove. Instead, a gesture moves the already-drawn <g> with an SVG
-  // `transform` -- a single attribute write the browser's own compositor
-  // handles, not a DOM rebuild -- and only pays for a real paint() once the
-  // gesture settles. This is exactly the standard "transform for the
-  // interactive frame, re-layout on idle" trick map libraries use; the
-  // subtlety here is entirely about not breaking the touch bug fixes above,
-  // which is why every call site below goes through gestureFrame() rather
-  // than calling preview() or draw() directly.
+  // paint() rebuilds the whole SVG, and a drag or pinch calls it on every
+  // pointermove. On the corpus maps that's not a rounding error:
+  // web/scripts/perf-bench.mjs measured draw() itself past a second on dify
+  // (6.3k files) and into the tens of seconds on aws-sdk-go-v2 (26.5k files
+  // -- see the PR description for the full numbers). Instead, a gesture
+  // moves the already-drawn <g> with an SVG `transform` -- a single
+  // attribute write the browser's own compositor handles, not a DOM rebuild
+  // -- and only pays for a real paint() once the gesture settles. This is
+  // the standard "transform for the interactive frame, re-layout on idle"
+  // trick map libraries use; the subtlety here is entirely about not
+  // breaking the touch bug fixes above, which is why every call site below
+  // goes through gestureFrame() rather than calling preview() or draw()
+  // directly.
 
   /** Move `rootG` to reflect the CURRENT (k, tx, ty) relative to what was
    * actually baked into it at (drawnK, drawnTx, drawnTy): a point already
@@ -1154,24 +1180,23 @@ export class MapRenderer {
       const tx = this.tx - this.drawnTx * r;
       const ty = this.ty - this.drawnTy * r;
       this.rootG.setAttribute("transform", `translate(${tx.toFixed(2)} ${ty.toFixed(2)}) scale(${r.toFixed(4)})`);
-      // Strokes and text scale with the group during a preview frame (the
-      // issue's own call: acceptable for something on screen for at most
-      // SETTLE_MS). non-scaling-stroke keeps stroke WIDTH constant in
-      // device space while that's true, which reads as noticeably less
-      // "rubbery" on the thin district/road strokes -- free in the sense
-      // that it costs one class toggle here, not a per-element attribute
-      // (see the no-change/byte-identical DOM requirement on paint() in
-      // CLAUDE.md, which this does not touch) and the CSS rule in
-      // index.css that only applies while this class is present.
+      // Strokes and text scale with the group during a preview frame --
+      // acceptable for something on screen for at most SETTLE_MS.
+      // non-scaling-stroke (index.css, scoped to this class) keeps stroke
+      // WIDTH constant in device space while that's true, which reads as
+      // noticeably less "rubbery" on the thin district/road strokes -- one
+      // class toggle here, not a per-element attribute, so it never touches
+      // what paint() itself puts in the DOM.
       this.svg.classList.add("previewing");
     });
   }
 
   /** True once the live (k, tx, ty) has drifted far enough from what's
-   * actually painted that #49's viewport culling would start showing blank
-   * map at the edges of a long pan, or visibly wrong dot/label density at
-   * the edges of a big zoom change -- both threshold values and the
-   * feasible range are recorded in the SETTLE_MS/DRIFT_* comment above. */
+   * actually painted that a person could notice stale content: blank map at
+   * the edge of a pan or a zoom-out (#49's culling drew only near the
+   * viewport at paint time), or a zoom-in outrunning the dot density (#48)
+   * a fresh paint() would show. See the DRIFT_* fields above for the actual
+   * numbers and why the zoom bound is asymmetric. */
   private driftExceeded(): boolean {
     if (!this.rootG) return true;
     const r = this.k / this.drawnK;
@@ -1243,6 +1268,19 @@ export class MapRenderer {
   }
 
   private pointerDown(e: PointerEvent) {
+    // Issue #51 follow-up: clear a settle timer inherited from a PREVIOUS,
+    // already-finished gesture the instant a new pointer sequence starts.
+    // Touch click dispatch is not guaranteed to land in the same task as
+    // its pointerup, so a stale timer left ticking from before could
+    // otherwise fire in the gap between THIS sequence's own pointerup and
+    // its click -- deleting the click's target, Bug fix #2 again with a
+    // timer as the culprit instead of a synchronous redraw. See endPointer()
+    // for the other half: re-arming a fresh one if a real paint is still
+    // owed once this sequence ends.
+    if (this.settleTimer != null) {
+      clearTimeout(this.settleTimer);
+      this.settleTimer = null;
+    }
     this.pts.set(e.pointerId, this.toSvg(e));
     if (this.pts.size === 2) {
       this.dragging = false;
@@ -1268,10 +1306,7 @@ export class MapRenderer {
       this.tx = m[0] - (this.pinch.m[0] - this.tx) * (nk / this.pinch.k);
       this.ty = m[1] - (this.pinch.m[1] - this.ty) * (nk / this.pinch.k);
       this.k = nk;
-      // Issue #51: a pinch frame previews (transform) rather than repaints;
-      // endPointer() below needs no change to keep Bug fix #2's guarantee
-      // -- the settle timer this schedules never fires synchronously inside
-      // pointerup, only some tens of ms later on a real timer callback.
+      // Issue #51: a pinch frame previews (transform) rather than repaints.
       this.gestureFrame();
       return;
     }
@@ -1309,13 +1344,23 @@ export class MapRenderer {
       // the very SVG element the upcoming click event is about to be
       // dispatched to, so the click's `data-k` walk (below) would find
       // nothing — taps would silently stop selecting anything on touch.
-      // Issue #51's settle timer does NOT reopen this: it was armed by the
-      // last pointermove's gestureFrame() call, so it fires later on its own
-      // setTimeout callback -- never synchronously inside this handler or
-      // between here and the click dispatch, because a timer callback can't
-      // preempt the synchronous pointerup -> click sequence the browser
-      // dispatches in one task. A tap short enough that no pointermove ever
-      // fired (moved stays 0) arms no timer at all, so it redraws nothing.
+      //
+      // A settle timer left armed by THIS gesture's own last pointermove is
+      // safe for the same reason: it fires later, on its own setTimeout
+      // callback, and a timer callback cannot preempt the synchronous
+      // pointerup -> click sequence the browser dispatches for this event.
+      // A timer inherited from a PREVIOUS, unrelated gesture is not safe --
+      // touch click dispatch is not guaranteed to land in that same task,
+      // so a stale one could fire in the gap and delete the click's target.
+      // pointerDown() clears any inherited timer the moment a new sequence
+      // starts, closing that window; if this sequence turns out to be a
+      // genuine tap (nothing moved, so no gestureFrame() ever ran to re-arm
+      // one), re-arm it here instead, with a fresh SETTLE_MS -- comfortably
+      // longer than the gap between this tap's own pointerup and its click,
+      // so it can't race that click either, and the map still ends up
+      // painting for real whatever preview transform (this gesture's own,
+      // or an inherited one) is still outstanding.
+      if (this.rootG?.hasAttribute("transform")) this.scheduleSettle();
       if (this.moved < 6 && this.TOUCH) {
         const now = performance.now();
         if (now - this.lastTap < 300) {

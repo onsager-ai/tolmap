@@ -164,9 +164,8 @@ body {
    moment a real paint() runs), which reads as noticeably less "rubbery" on
    the thin district/road/terrain outlines than letting them scale too.
    Scoped to the class rather than applied unconditionally, so it costs
-   nothing outside a gesture and never touches the byte-identical DOM output
-   paint() itself produces (see the no-change proof referenced in
-   MapRenderer.ts's dotFactor/draw comments). */
+   nothing outside a gesture and never adds a per-element attribute to what
+   paint() itself puts in the DOM. */
 .map-svg.previewing path,
 .map-svg.previewing line,
 .map-svg.previewing rect,

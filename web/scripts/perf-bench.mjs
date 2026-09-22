@@ -149,8 +149,13 @@ const PROFILES = {
  * exposes a helper to snapshot performance "tolmap:draw" measure durations
  * the same way -- both read out via page.evaluate() rather than pushed over
  * the wire per-frame, so instrumentation never perturbs the thing it's
- * timing. */
+ * timing. Also sets window.__TOLMAP_PERF__ = true, the flag MapRenderer's
+ * draw() gates its performance.mark/measure pair behind (see its comment):
+ * the User Timing buffer has no eviction, so a real session leaves it off
+ * by default, and this is the one place -- before any app code runs --
+ * that can turn it on for a bench run specifically. */
 function installRecorder() {
+  window.__TOLMAP_PERF__ = true;
   window.__bench = { frameTimes: [] };
   let last = null;
   function loop(t) {
