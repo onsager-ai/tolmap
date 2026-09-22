@@ -108,6 +108,16 @@ pub fn align_initial_membership(
 }
 
 pub fn blend(data: &mut GraphData) -> Result<()> {
+    blend_mass_normalized(data)?;
+    max_rescale(data)
+}
+
+/// Applies finding 1's per-signal mass normalisation without the final
+/// global-maximum rescale. Kept separate so `dump-blend` can measure the
+/// pre-rescale distribution finding 10 identifies; the shipped [`blend`]
+/// still performs these same operations in the same order and then calls
+/// [`max_rescale`].
+pub fn blend_mass_normalized(data: &mut GraphData) -> Result<()> {
     ensure!(!data.edges.is_empty(), "cannot blend an empty graph");
     let raw_static = data
         .edges
@@ -141,6 +151,10 @@ pub fn blend(data: &mut GraphData) -> Result<()> {
             + SHARE_PROXIMITY / raw_proximity * edge.proximity
             + SHARE_SEMANTIC / raw_semantic * edge.semantic;
     }
+    Ok(())
+}
+
+fn max_rescale(data: &mut GraphData) -> Result<()> {
     let maximum = data
         .edges
         .iter()

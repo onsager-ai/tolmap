@@ -36,6 +36,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "eval" / "corpus.toml"
+FIXTURE_MANIFEST = ROOT / "data" / "fixtures.toml"
 BANDS = ("small", "medium", "large", "ultra")
 
 
@@ -74,13 +75,38 @@ def resolve(entries: list[dict], selector: str) -> list[dict]:
     return matched
 
 
+def load_fixtures(path: Path) -> list[dict]:
+    """Translate data/fixtures.toml into the remote-build matrix shape.
+
+    Several corpus entries use newer commits than the acceptance fixtures.
+    A dedicated selector keeps the acceptance measurement pinned to the
+    actual oracle without changing eval/corpus.toml's independent corpus.
+    """
+    with path.open("rb") as handle:
+        raw = tomllib.load(handle)
+    entries = []
+    for name, fixture in raw.items():
+        url = fixture["url"]
+        slug = url.removeprefix("https://github.com/").removesuffix(".git")
+        entries.append(
+            {
+                "slug": slug,
+                "stem": name,
+                "commit": fixture["commit"],
+                "band": "fixture",
+                "args": ["--pkg", fixture["pkg"], "--lang", fixture["lang"]],
+            }
+        )
+    return entries
+
+
 def to_matrix(entries: list[dict]) -> dict:
     include = []
     for entry in entries:
         include.append(
             {
                 "slug": entry["slug"],
-                "stem": entry["slug"].replace("/", "__"),
+                "stem": entry.get("stem", entry["slug"].replace("/", "__")),
                 "commit": entry["commit"],
                 "band": entry["band"],
                 "args": list(entry.get("args", ["--all-sources"])),
@@ -102,6 +128,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.repos.strip().lower() == "fixtures":
+        matched = load_fixtures(FIXTURE_MANIFEST)
+        print(json.dumps(to_matrix(matched), sort_keys=True))
+        print(
+            f"matched {len(matched)} acceptance fixtures from {FIXTURE_MANIFEST}",
+            file=sys.stderr,
+        )
+        return 0
     entries = load_manifest(args.manifest)
     matched = resolve(entries, args.repos)
     if not matched:

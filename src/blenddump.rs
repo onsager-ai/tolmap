@@ -55,6 +55,26 @@ fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
         "sem": round_to(mass(|e| e.semantic), 10),
     });
 
+    // Finding 10's two unchosen routes both need the distribution on one
+    // side of the max-rescale boundary. Preserve it here as instrumentation:
+    // percentile calibration uses `weight / mass_normalized_max`, while the
+    // pre-rescale route uses `weight` directly. The vector is sorted so the
+    // dump stays deterministic and a consumer can evaluate any percentile
+    // without rebuilding the repository.
+    let mut mass_normalized = data.clone();
+    pipeline::blend_mass_normalized(&mut mass_normalized)?;
+    let mass_normalized_max = mass_normalized
+        .edges
+        .iter()
+        .map(|edge| edge.weight)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut mass_normalized_weights = mass_normalized
+        .edges
+        .iter()
+        .map(|edge| edge.weight)
+        .collect::<Vec<_>>();
+    mass_normalized_weights.sort_by(f64::total_cmp);
+
     pipeline::blend(&mut data)?;
     let blended: Vec<f64> = data.edges.iter().map(|e| e.weight).collect();
     let weight_sum_pre_prune = round_to(blended.iter().sum::<f64>(), 10);
@@ -76,6 +96,8 @@ fn dump_data(mut data: crate::schema::GraphData, out: &Path) -> Result<()> {
         "tolerance": TOLERANCE,
         "candidate_edges": candidate_edges,
         "raw_signal_mass": raw,
+        "mass_normalized_max": mass_normalized_max,
+        "mass_normalized_weights": mass_normalized_weights,
         "n_nodes": data.nodes.len(),
         "n_blended_edges": n_blended_edges,
         "weight_sum_pre_prune": weight_sum_pre_prune,
