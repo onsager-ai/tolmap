@@ -81,6 +81,21 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, rout
   // document (that effect hasn't run yet this commit) -- frameBounds() would
   // fit the wrong document's bounds otherwise. See MapRenderer.fit()'s doc
   // comment for the full story and why this used to work by accident.
+  //
+  // Issue #51: justFittedRef flags that the fit() call below just baked this
+  // exact (doc, geo, layer, sel, selSym, selD, selTerrain, route) into the
+  // DOM, so the state-render effect immediately following it in this SAME
+  // commit (React runs a component's layout effects in declaration order,
+  // and repoKey changing always also changes `doc`, which is in that
+  // effect's own dep array) would otherwise call render() a second time
+  // with a byte-identical state -- a full second paint of exactly what fit()
+  // already drew, on every repo load and every repo switch. Measured as
+  // draw #2 of 5 on load (see the PR description); this is what collapses it
+  // back to one. The flag is scoped to "the very next state-render effect
+  // run", not "every run after a repoKey change": it's cleared the first
+  // time that effect sees it, so a later real state change in the same
+  // render pass this component happens to also pick up still repaints.
+  const justFittedRef = useRef(false);
   const repoKey = doc.repo;
   useLayoutEffect(() => {
     const renderer = rendererRef.current;
@@ -90,12 +105,17 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, rout
     renderer.resize(r.width, r.height);
     const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, selTerrain, route };
     renderer.fit(false, state);
+    justFittedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoKey]);
 
   useLayoutEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
+    if (justFittedRef.current) {
+      justFittedRef.current = false;
+      return;
+    }
     const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, selTerrain, route };
     renderer.render(state);
   }, [doc, geo, layer, sel, selSym, selD, selTerrain, route]);

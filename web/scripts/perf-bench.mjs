@@ -16,6 +16,17 @@
 //
 // Metrics per map x profile:
 //   - firstMapMs: navigation -> first frame with the map <svg> populated
+//   - drawsOnLoad: issue #51 -- performance.getEntriesByName("tolmap:draw")
+//     count from navigation through the 700ms settle wait below (the initial
+//     fit()/auto-select glide's own final paint included). Reads straight off
+//     the same Performance timeline the draw-ms stats do (window.__TOLMAP_PERF__
+//     is set by installRecorder() below, via addInitScript, before any app
+//     code runs, so no draw before the app's own first one is missed). Target
+//     is 1: the redundant fit()+render() double-paint and the desktop
+//     landmark auto-select's own extra paint both used to push this to 3
+//     (5 in dev, under React StrictMode's double-invoked effects -- see the
+//     PR description). --check-single-paint below turns this into a hard
+//     assertion for a fixed map set; every run still reports the number.
 //   - draw ms (p50/p95/max): performance.getEntriesByName("tolmap:draw")
 //     durations, read straight off the Performance timeline (see the
 //     mark/measure pair MapRenderer.draw() leaves always-on)
@@ -66,6 +77,13 @@ const DEFAULT_MAPS = [
 const DEFAULT_BIG_MAP_FILES = 5000;
 const DEFAULT_GESTURE_CAP_MS = 60_000;
 
+// Issue #51: the fixed map set --check-single-paint asserts drawsOnLoad<=1
+// against, matching what the issue asked for specifically (django, dify) --
+// not the full DEFAULT_MAPS list, since n8n and aws-sdk-go-v2 are "ultra"-band
+// maps this machine must not open a browser against (see CLAUDE.md's machine
+// constraint), and flask is too tiny to be worth a dedicated assertion.
+const SINGLE_PAINT_CHECK_MAPS = ["django/django", "langgenius/dify"];
+
 function parseArgs(argv) {
   const args = {
     base: "http://localhost:5174",
@@ -74,6 +92,7 @@ function parseArgs(argv) {
     startServer: false,
     bigMapFiles: DEFAULT_BIG_MAP_FILES,
     gestureCapMs: DEFAULT_GESTURE_CAP_MS,
+    checkSinglePaint: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -84,6 +103,11 @@ function parseArgs(argv) {
     else if (a === "--start-server") args.startServer = true;
     else if (a === "--big-files") args.bigMapFiles = Number(argv[++i]);
     else if (a === "--gesture-cap-ms") args.gestureCapMs = Number(argv[++i]);
+    // Issue #51: opt-in, not on by default -- this script is shared with
+    // other in-flight work on MapRenderer.ts (paint() internals, pins,
+    // badges, hover), and a hard assertion baked into every run here would
+    // fail THEIR runs over something unrelated to what they're touching.
+    else if (a === "--check-single-paint") args.checkSinglePaint = true;
     else throw new Error(`unknown arg: ${a}`);
   }
   if (!args.out) throw new Error("--out <path> is required");
@@ -347,6 +371,12 @@ async function runOneConfig({ browser, base, slug, profile, timeCapMs }) {
   // Let the fit() glide (issue #51's own settle path included) finish and
   // the frame recorder accumulate a quiet baseline before timing gestures.
   await page.waitForTimeout(700);
+  // Issue #51: every tolmap:draw() so far is a paint on load -- nothing
+  // between installRecorder()'s addInitScript (runs before any app code) and
+  // this point is a gesture, so the whole count belongs to load/fit/
+  // auto-select, not to drag/zoom (those are measured separately, starting
+  // from their own markStart() below).
+  const drawsOnLoad = await page.evaluate(() => performance.getEntriesByName("tolmap:draw", "measure").length);
 
   const { width: vw, height: vh } = profile.viewport;
   let pinchMode = "cdp-pinch";
@@ -377,6 +407,7 @@ async function runOneConfig({ browser, base, slug, profile, timeCapMs }) {
 
   return {
     firstMapMs,
+    drawsOnLoad,
     pinchMode: profile.hasTouch ? pinchMode : undefined,
     drag,
     zoom,
@@ -414,6 +445,11 @@ async function bench(args) {
         runs: runCount,
         capped: big,
         firstMapMs: round2(medianRun(runs, (r) => r.firstMapMs).firstMapMs),
+        // Issue #51: drawsOnLoad is a code-path count, not a timing that
+        // should vary run to run (unlike firstMapMs) -- read off the same
+        // median run as everything else below for consistency, not
+        // re-medianed on its own.
+        drawsOnLoad: median.drawsOnLoad,
         pinchMode: median.pinchMode,
         draw: {
           drag: summarize(median.drag.draws),
@@ -433,7 +469,7 @@ async function bench(args) {
         ? ` [1 run, capped at ${(timeCapMs / 1000).toFixed(0)}s: drag ${p.steps.drag.completed}/${p.steps.drag.of} steps, zoom ${p.steps.zoom.completed}/${p.steps.zoom.of} steps]`
         : "";
       console.log(
-        `${slug} / ${profileName}: firstMap ${p.firstMapMs}ms, draw drag p50/p95 ${p.draw.drag.p50}/${p.draw.drag.p95}ms, draw zoom p50/p95 ${p.draw.zoom.p50}/${p.draw.zoom.p95}ms, drag frames>50ms ${p.frames.drag.over50}/${p.frames.drag.n}, zoom frames>50ms ${p.frames.zoom.over50}/${p.frames.zoom.n}${capNote}`,
+        `${slug} / ${profileName}: firstMap ${p.firstMapMs}ms, drawsOnLoad ${p.drawsOnLoad}, draw drag p50/p95 ${p.draw.drag.p50}/${p.draw.drag.p95}ms, draw zoom p50/p95 ${p.draw.zoom.p50}/${p.draw.zoom.p95}ms, drag frames>50ms ${p.frames.drag.over50}/${p.frames.drag.n}, zoom frames>50ms ${p.frames.zoom.over50}/${p.frames.zoom.n}${capNote}`,
       );
     }
   }
@@ -441,16 +477,32 @@ async function bench(args) {
   return results;
 }
 
+// Issue #51: asserts drawsOnLoad<=1 for SINGLE_PAINT_CHECK_MAPS -- opt-in via
+// --check-single-paint (see parseArgs). Returns the failure count so main()
+// can set the process exit code the way check-view-stability.mjs does.
+function checkSinglePaint(results) {
+  let failures = 0;
+  console.log("\nsingle-paint-on-load check:");
+  for (const r of results) {
+    if (!SINGLE_PAINT_CHECK_MAPS.includes(r.map)) continue;
+    const ok = r.drawsOnLoad <= 1;
+    if (!ok) failures++;
+    console.log(`  ${ok ? "ok  " : "FAIL"}  ${r.map} / ${r.profile}: drawsOnLoad=${r.drawsOnLoad} (want <=1)`);
+  }
+  console.log(`${failures === 0 ? "passed" : `${failures} FAILED`}`);
+  return failures;
+}
+
 function toMarkdown(results) {
   const rows = [
-    "| map | profile | runs | first map (ms) | draw drag p50/p95/max (ms) | draw zoom p50/p95/max (ms) | drag frame p50/p95 (ms) | drag frames>50ms | zoom frame p50/p95 (ms) | zoom frames>50ms | gesture steps completed (drag/zoom) |",
-    "|---|---|---|---|---|---|---|---|---|---|---|",
+    "| map | profile | runs | first map (ms) | draws on load | draw drag p50/p95/max (ms) | draw zoom p50/p95/max (ms) | drag frame p50/p95 (ms) | drag frames>50ms | zoom frame p50/p95 (ms) | zoom frames>50ms | gesture steps completed (drag/zoom) |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|",
   ];
   for (const r of results) {
     const runsCell = r.capped ? "1 (capped)" : `${r.runs} (median)`;
     const stepsCell = `${r.steps.drag.completed}/${r.steps.drag.of}${r.steps.drag.capped ? "*" : ""} / ${r.steps.zoom.completed}/${r.steps.zoom.of}${r.steps.zoom.capped ? "*" : ""}`;
     rows.push(
-      `| ${r.map} | ${r.profile} | ${runsCell} | ${r.firstMapMs} | ${r.draw.drag.p50}/${r.draw.drag.p95}/${r.draw.drag.max} | ${r.draw.zoom.p50}/${r.draw.zoom.p95}/${r.draw.zoom.max} | ${r.frames.drag.p50}/${r.frames.drag.p95} | ${r.frames.drag.over50}/${r.frames.drag.n} | ${r.frames.zoom.p50}/${r.frames.zoom.p95} | ${r.frames.zoom.over50}/${r.frames.zoom.n} | ${stepsCell} |`,
+      `| ${r.map} | ${r.profile} | ${runsCell} | ${r.firstMapMs} | ${r.drawsOnLoad} | ${r.draw.drag.p50}/${r.draw.drag.p95}/${r.draw.drag.max} | ${r.draw.zoom.p50}/${r.draw.zoom.p95}/${r.draw.zoom.max} | ${r.frames.drag.p50}/${r.frames.drag.p95} | ${r.frames.drag.over50}/${r.frames.drag.n} | ${r.frames.zoom.p50}/${r.frames.zoom.p95} | ${r.frames.zoom.over50}/${r.frames.zoom.n} | ${stepsCell} |`,
     );
   }
   rows.push("");
@@ -492,6 +544,10 @@ async function main() {
     await writeFile(mdPath, md);
     console.log("\n" + md);
     console.log(`\nwrote ${args.out} and ${mdPath}`);
+    if (args.checkSinglePaint) {
+      const failures = checkSinglePaint(results);
+      if (failures > 0) process.exitCode = 1;
+    }
   } finally {
     if (serverProc) serverProc.kill();
   }
