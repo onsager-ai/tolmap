@@ -28,6 +28,7 @@ import {
   tmCentre,
 } from "./geometry";
 import { computeBlast, type Route } from "./graph";
+import { pinchTransform, type PinchAnchor } from "./pinch";
 
 declare global {
   interface Window {
@@ -108,7 +109,10 @@ export class MapRenderer {
   private ly = 0;
   private moved = 0;
   private pts = new Map<number, [number, number]>();
-  private pinch: { d: number; k: number; m: [number, number] } | null = null;
+  // tx0/ty0 (PinchAnchor) are the pinch's own start tx/ty, captured once in
+  // pointerDown -- see pinch.ts's doc comment for why pointerMove must read
+  // these instead of the live this.tx/this.ty.
+  private pinch: (PinchAnchor & { d: number }) | null = null;
   private lastTap = 0;
   private tapped = false;
   private animId: number | null = null;
@@ -1339,7 +1343,7 @@ export class MapRenderer {
     this.pts.set(e.pointerId, this.toSvg(e));
     if (this.pts.size === 2) {
       this.dragging = false;
-      this.pinch = { d: this.dist(), k: this.k, m: this.mid() };
+      this.pinch = { d: this.dist(), k: this.k, m: this.mid(), tx0: this.tx, ty0: this.ty };
       return;
     }
     // Bug fix #1 (see docs/ARCHITECTURE.md / HANDOFF.md): deliberately NOT
@@ -1358,8 +1362,11 @@ export class MapRenderer {
     if (this.pts.size === 2 && this.pinch) {
       const nk = this.clampK(this.pinch.k * (this.dist() / this.pinch.d));
       const m = this.mid();
-      this.tx = m[0] - (this.pinch.m[0] - this.tx) * (nk / this.pinch.k);
-      this.ty = m[1] - (this.pinch.m[1] - this.ty) * (nk / this.pinch.k);
+      // pinch.ts's pinchTransform, not the reference's live-tx formula --
+      // see pinch.ts's doc comment for why (it compounds frame over frame).
+      const { tx, ty } = pinchTransform(this.pinch, m, nk);
+      this.tx = tx;
+      this.ty = ty;
       this.k = nk;
       // Issue #51: a pinch frame previews (transform) rather than repaints.
       this.gestureFrame();
