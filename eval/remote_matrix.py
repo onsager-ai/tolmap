@@ -8,6 +8,7 @@ matrix, for .github/workflows/remote-build.yml's `setup` job.
     every entry with that band.
   - "fixtures": the nine exact pins from data/fixtures.toml.
   - "stability": scrapy, django and celery 300 commits back, plus httpx 200.
+  - "prune-measurement": those fixtures plus issue #57's twelve-repo sample.
   - a comma-separated list of slugs ("owner/repo,owner/repo"): exactly
     those entries, in manifest order (duplicates collapsed). This is the
     form issue #59's owed comparison uses (msgraph-sdk-go, aws-sdk-go-v2,
@@ -46,6 +47,21 @@ STABILITY_BACK = {
     "celery/celery": 300,
     "encode/httpx": 200,
 }
+PRUNE_SAMPLE = (
+    "microsoftgraph/msgraph-sdk-python",
+    "date-fns/date-fns",
+    "Azure/azure-sdk-for-python",
+    "microsoft/vscode",
+    "n8n-io/n8n",
+    "langgenius/dify",
+    "django/django",
+    # Five additional repositories spanning all four measured size bands.
+    "pydantic/pydantic",
+    "crawlab-team/crawlab",
+    "apache/airflow",
+    "kubernetes/kubernetes",
+    "elastic/kibana",
+)
 
 
 def load_manifest(path: Path) -> list[dict]:
@@ -156,6 +172,16 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(to_matrix(matched), sort_keys=True))
         print(
             f"matched {len(matched)} warm-start repositories from {args.manifest}",
+            file=sys.stderr,
+        )
+        return 0
+    if args.repos.strip().lower() == "prune-measurement":
+        by_slug = {entry["slug"]: entry for entry in entries}
+        matched = load_fixtures(FIXTURE_MANIFEST)
+        matched.extend(dict(by_slug[slug]) for slug in PRUNE_SAMPLE)
+        print(json.dumps(to_matrix(matched), sort_keys=True))
+        print(
+            f"matched {len(matched)} fixture/corpus entries for prune measurement",
             file=sys.stderr,
         )
         return 0
