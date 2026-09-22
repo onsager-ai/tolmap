@@ -28,6 +28,7 @@ import {
   tmCentre,
 } from "./geometry";
 import { computeBlast, type Route } from "./graph";
+import { pinchTransform, type PinchAnchor } from "./pinch";
 
 declare global {
   interface Window {
@@ -108,7 +109,10 @@ export class MapRenderer {
   private ly = 0;
   private moved = 0;
   private pts = new Map<number, [number, number]>();
-  private pinch: { d: number; k: number; m: [number, number] } | null = null;
+  // tx0/ty0 (PinchAnchor) are the pinch's own start tx/ty, captured once in
+  // pointerDown -- see pinch.ts's doc comment for why pointerMove must read
+  // these instead of the live this.tx/this.ty.
+  private pinch: (PinchAnchor & { d: number }) | null = null;
   private lastTap = 0;
   private tapped = false;
   private animId: number | null = null;
@@ -271,11 +275,47 @@ export class MapRenderer {
   /** VW/VH track the canvas element's own box, not the window — the sidebar
    * and mobile drawer both change available width without a window resize
    * firing, and the reference's window-resize listener under-reacted to
-   * exactly that case. */
-  resize(vw: number, vh: number, anim = false) {
-    this.VW = Math.max(360, vw);
-    this.VH = Math.max(300, vh);
-    if (this.state) this.fit(anim);
+   * exactly that case.
+   *
+   * This used to always re-fit (hence the `anim` parameter this method no
+   * longer takes). That was wrong: MapCanvas's ResizeObserver re-subscribed
+   * on every selection/layer/route change, and observe() always delivers one
+   * "initial size" callback on subscribe whether or not the box actually
+   * changed — so tapping a file dot, tapping it away, or switching layers
+   * each re-fit the map back to its opening view. MapCanvas no longer
+   * re-subscribes for that reason, but resize() still has to hold up its own
+   * end: a GENUINE resize (rotation, the phone URL bar showing/hiding, the
+   * sidebar opening) must not discard whatever the viewer was looking at
+   * either. So instead of fitting, this keeps the world point that was under
+   * the viewport centre still under the centre, and keeps k — clamped,
+   * because a smaller viewport can raise fitScale()'s floor out from under
+   * the old k. Fitting stays explicit: MapCanvas's repoKey effect (a new
+   * document has no "current view" worth preserving) and the fit button. */
+  resize(vw: number, vh: number) {
+    const newVW = Math.max(360, vw);
+    const newVH = Math.max(300, vh);
+    if (newVW === this.VW && newVH === this.VH) return;
+    const prevVW = this.VW;
+    const prevVH = this.VH;
+    this.VW = newVW;
+    this.VH = newVH;
+    if (!this.state) return;
+    // Issue #51: a resize can land mid-gesture (the phone URL bar can hide
+    // while a finger is still down, mid-drag). Cancel whatever preview/settle
+    // work is pending against the OLD viewport before repainting at the new
+    // one, the same as fit()'s non-anim path and render() do — otherwise a
+    // leftover settle timer could fire a redundant repaint a moment later, or
+    // a leftover preview transform could still be mid-flight when draw()
+    // below replaces rootG out from under it. draw() then re-establishes
+    // drawnK/drawnTx/drawnTy from the (k, tx, ty) computed here, so nothing
+    // stale is left for a later gestureFrame() to compare against.
+    this.cancelPendingGestureWork();
+    const worldX = (prevVW / 2 - this.tx) / this.k;
+    const worldY = (prevVH / 2 - this.ty) / this.k;
+    this.k = this.clampK(this.k);
+    this.tx = this.VW / 2 - worldX * this.k;
+    this.ty = this.VH / 2 - worldY * this.k;
+    this.draw();
   }
 
   render(state: MapRenderState) {
@@ -313,7 +353,26 @@ export class MapRenderer {
     if (!this.state) return [0, 0, 1, 1] as [number, number, number, number];
     return mainlandBounds(this.state.doc, this.state.geo);
   }
-  fit(anim: boolean) {
+  /** `state` is for MapCanvas's repoKey effect only: on a repo change it has
+   * to fit the NEW document, but frameBounds()/draw() both read `this.state`,
+   * and `this.state` is only otherwise updated by render() -- which paints.
+   * Setting it here, inline with the one paint fit() already does, is what
+   * makes "reset derived indices and fit before the first paint of the new
+   * document" (see that effect's comment) actually true, rather than the
+   * effect's OWN fit() call framing whatever document `this.state` still
+   * held from the PREVIOUS repo (React runs a component's layout effects in
+   * declaration order within a commit, so the later state-render effect
+   * hasn't updated `this.state` yet when this one runs) -- painted over a
+   * beat later by that state-render effect's own render(), which doesn't
+   * refit, leaving the NEW document's geometry drawn at the OLD document's
+   * transform. A prior version of this bug shipped invisibly: the
+   * ResizeObserver effect this fix (fix/keep-view-on-select) stopped
+   * re-subscribing on every prop change used to deliver a spurious extra
+   * resize()-then-fit() shortly after, which re-fit against the by-then-
+   * current `this.state` and papered over it. Every other caller passes no
+   * `state` and gets exactly today's behaviour. */
+  fit(anim: boolean, state?: MapRenderState) {
+    if (state) this.state = state;
     const b = this.frameBounds();
     const pad = 46;
     const s = Math.min((this.VW - 2 * pad) / (b[2] - b[0] || 1), (this.VH - 2 * pad) / (b[3] - b[1] || 1));
@@ -1284,7 +1343,7 @@ export class MapRenderer {
     this.pts.set(e.pointerId, this.toSvg(e));
     if (this.pts.size === 2) {
       this.dragging = false;
-      this.pinch = { d: this.dist(), k: this.k, m: this.mid() };
+      this.pinch = { d: this.dist(), k: this.k, m: this.mid(), tx0: this.tx, ty0: this.ty };
       return;
     }
     // Bug fix #1 (see docs/ARCHITECTURE.md / HANDOFF.md): deliberately NOT
@@ -1303,8 +1362,11 @@ export class MapRenderer {
     if (this.pts.size === 2 && this.pinch) {
       const nk = this.clampK(this.pinch.k * (this.dist() / this.pinch.d));
       const m = this.mid();
-      this.tx = m[0] - (this.pinch.m[0] - this.tx) * (nk / this.pinch.k);
-      this.ty = m[1] - (this.pinch.m[1] - this.ty) * (nk / this.pinch.k);
+      // pinch.ts's pinchTransform, not the reference's live-tx formula --
+      // see pinch.ts's doc comment for why (it compounds frame over frame).
+      const { tx, ty } = pinchTransform(this.pinch, m, nk);
+      this.tx = tx;
+      this.ty = ty;
       this.k = nk;
       // Issue #51: a pinch frame previews (transform) rather than repaints.
       this.gestureFrame();

@@ -10,7 +10,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "bench": "node scripts/perf-bench.mjs"
+    "bench": "node scripts/perf-bench.mjs",
+    "check:view": "node scripts/check-view-stability.mjs"
   },
   "dependencies": {
     "@radix-ui/react-scroll-area": "^1.2.2",
