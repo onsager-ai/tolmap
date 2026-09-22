@@ -8,6 +8,8 @@ matrix, for .github/workflows/remote-build.yml's `setup` job.
     every entry with that band.
   - "fixtures": the nine exact pins from data/fixtures.toml.
   - "stability": scrapy, django and celery 300 commits back, plus httpx 200.
+  - "stability:owner/repo,...": the named entries, 300 commits back unless
+    the repository has an override in STABILITY_BACK (httpx uses 200).
   - "prune-measurement": those fixtures plus issue #57's twelve-repo sample.
   - a comma-separated list of slugs ("owner/repo,owner/repo"): exactly
     those entries, in manifest order (duplicates collapsed). This is the
@@ -47,6 +49,7 @@ STABILITY_BACK = {
     "celery/celery": 300,
     "encode/httpx": 200,
 }
+STABILITY_DEFAULT_BACK = 300
 PRUNE_SAMPLE = (
     "microsoftgraph/msgraph-sdk-python",
     "date-fns/date-fns",
@@ -124,6 +127,39 @@ def load_fixtures(path: Path) -> list[dict]:
     return entries
 
 
+def resolve_stability(entries: list[dict], selector: str) -> list[dict]:
+    """Resolve the built-in or an explicit warm-start repository set."""
+    if selector.strip().lower() == "stability":
+        slugs = list(STABILITY_BACK)
+    else:
+        _, separator, suffix = selector.partition(":")
+        slugs = [part.strip() for part in suffix.split(",") if part.strip()]
+        if not separator or not slugs:
+            raise SystemExit(
+                "stability selector must be 'stability' or "
+                "'stability:owner/repo,...'"
+            )
+
+    by_slug = {entry["slug"]: entry for entry in entries}
+    unknown = [slug for slug in slugs if slug not in by_slug]
+    if unknown:
+        raise SystemExit(
+            f"stability selector named slug(s) not in {DEFAULT_MANIFEST.name}: "
+            f"{', '.join(unknown)}"
+        )
+
+    matched = []
+    seen: set[str] = set()
+    for slug in slugs:
+        if slug in seen:
+            continue
+        seen.add(slug)
+        entry = dict(by_slug[slug])
+        entry["back"] = STABILITY_BACK.get(slug, STABILITY_DEFAULT_BACK)
+        matched.append(entry)
+    return matched
+
+
 def to_matrix(entries: list[dict]) -> dict:
     include = []
     for entry in entries:
@@ -162,13 +198,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     entries = load_manifest(args.manifest)
-    if args.repos.strip().lower() == "stability":
-        by_slug = {entry["slug"]: entry for entry in entries}
-        matched = []
-        for slug, back in STABILITY_BACK.items():
-            entry = dict(by_slug[slug])
-            entry["back"] = back
-            matched.append(entry)
+    if args.repos.strip().lower() == "stability" or args.repos.strip().lower().startswith(
+        "stability:"
+    ):
+        matched = resolve_stability(entries, args.repos)
         print(json.dumps(to_matrix(matched), sort_keys=True))
         print(
             f"matched {len(matched)} warm-start repositories from {args.manifest}",
