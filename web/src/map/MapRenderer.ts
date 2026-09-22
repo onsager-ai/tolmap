@@ -271,11 +271,47 @@ export class MapRenderer {
   /** VW/VH track the canvas element's own box, not the window — the sidebar
    * and mobile drawer both change available width without a window resize
    * firing, and the reference's window-resize listener under-reacted to
-   * exactly that case. */
-  resize(vw: number, vh: number, anim = false) {
-    this.VW = Math.max(360, vw);
-    this.VH = Math.max(300, vh);
-    if (this.state) this.fit(anim);
+   * exactly that case.
+   *
+   * This used to always re-fit (hence the `anim` parameter this method no
+   * longer takes). That was wrong: MapCanvas's ResizeObserver re-subscribed
+   * on every selection/layer/route change, and observe() always delivers one
+   * "initial size" callback on subscribe whether or not the box actually
+   * changed — so tapping a file dot, tapping it away, or switching layers
+   * each re-fit the map back to its opening view. MapCanvas no longer
+   * re-subscribes for that reason, but resize() still has to hold up its own
+   * end: a GENUINE resize (rotation, the phone URL bar showing/hiding, the
+   * sidebar opening) must not discard whatever the viewer was looking at
+   * either. So instead of fitting, this keeps the world point that was under
+   * the viewport centre still under the centre, and keeps k — clamped,
+   * because a smaller viewport can raise fitScale()'s floor out from under
+   * the old k. Fitting stays explicit: MapCanvas's repoKey effect (a new
+   * document has no "current view" worth preserving) and the fit button. */
+  resize(vw: number, vh: number) {
+    const newVW = Math.max(360, vw);
+    const newVH = Math.max(300, vh);
+    if (newVW === this.VW && newVH === this.VH) return;
+    const prevVW = this.VW;
+    const prevVH = this.VH;
+    this.VW = newVW;
+    this.VH = newVH;
+    if (!this.state) return;
+    // Issue #51: a resize can land mid-gesture (the phone URL bar can hide
+    // while a finger is still down, mid-drag). Cancel whatever preview/settle
+    // work is pending against the OLD viewport before repainting at the new
+    // one, the same as fit()'s non-anim path and render() do — otherwise a
+    // leftover settle timer could fire a redundant repaint a moment later, or
+    // a leftover preview transform could still be mid-flight when draw()
+    // below replaces rootG out from under it. draw() then re-establishes
+    // drawnK/drawnTx/drawnTy from the (k, tx, ty) computed here, so nothing
+    // stale is left for a later gestureFrame() to compare against.
+    this.cancelPendingGestureWork();
+    const worldX = (prevVW / 2 - this.tx) / this.k;
+    const worldY = (prevVH / 2 - this.ty) / this.k;
+    this.k = this.clampK(this.k);
+    this.tx = this.VW / 2 - worldX * this.k;
+    this.ty = this.VH / 2 - worldY * this.k;
+    this.draw();
   }
 
   render(state: MapRenderState) {

@@ -80,7 +80,7 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, rout
     if (!renderer || !wrapRef.current) return;
     renderer.loadDocument(doc);
     const r = wrapRef.current.getBoundingClientRect();
-    renderer.resize(r.width, r.height, false);
+    renderer.resize(r.width, r.height);
     renderer.fit(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoKey]);
@@ -92,24 +92,33 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, rout
     renderer.render(state);
   }, [doc, geo, layer, sel, selSym, selD, selTerrain, route]);
 
+  // The wrapper's box, watched once for the component's life. Selection,
+  // layer, geo and route changes must never touch this subscription: the
+  // wrapper's size doesn't depend on any of them, and this effect used to
+  // re-subscribe on every one of those prop changes so it could read fresh
+  // values out of its own closure. That was the bug (see MapRenderer.resize's
+  // comment) — ResizeObserver.observe() always delivers one synchronous
+  // "initial size" callback on subscribe, size unchanged or not, so tapping a
+  // file dot, tapping it away, or switching layers each re-subscribed and
+  // each delivered a same-size callback that snapped the view back to fit.
+  // Reading the current size and comparing against the last one actually
+  // observed (below) is what makes this safe to subscribe once: a real
+  // resize (rotation, the phone URL bar, the sidebar opening) still reaches
+  // resize(), an initial or spurious same-size callback does not.
+  const lastSizeRef = useRef<{ w: number; h: number } | null>(null);
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
     const ro = new ResizeObserver(() => {
       const r = wrap.getBoundingClientRect();
-      rendererRef.current?.resize(r.width, r.height, false);
-      rendererRef.current?.render({ doc, geo, layer, sel, selSym, selD, selTerrain, route });
+      const last = lastSizeRef.current;
+      if (last && last.w === r.width && last.h === r.height) return;
+      lastSizeRef.current = { w: r.width, h: r.height };
+      rendererRef.current?.resize(r.width, r.height);
     });
     ro.observe(wrap);
     return () => ro.disconnect();
-    // Re-observing on every prop change is unnecessary — resize() reads
-    // current props via the closure captured at effect-run time, which is
-    // fine because ResizeObserver only fires on actual size changes, not on
-    // re-render; the render call inside always uses the latest values from
-    // this effect's own closure since it re-subscribes whenever any of them
-    // change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, geo, layer, sel, selSym, selD, selTerrain, route]);
+  }, []);
 
   return (
     <div ref={wrapRef} className="absolute inset-0">
