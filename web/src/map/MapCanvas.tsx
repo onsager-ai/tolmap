@@ -74,6 +74,13 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, rout
 
   // Repo changed: reset derived indices and fit before the first paint of
   // the new document, so the map never flashes the old repo's zoom level.
+  // fit() below is passed this render's state explicitly rather than relying
+  // on the state-render effect further down to have set it first: layout
+  // effects run in the order they're declared, so at this point
+  // rendererRef.current's own `state` field still holds the PREVIOUS repo's
+  // document (that effect hasn't run yet this commit) -- frameBounds() would
+  // fit the wrong document's bounds otherwise. See MapRenderer.fit()'s doc
+  // comment for the full story and why this used to work by accident.
   const repoKey = doc.repo;
   useLayoutEffect(() => {
     const renderer = rendererRef.current;
@@ -81,7 +88,8 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, rout
     renderer.loadDocument(doc);
     const r = wrapRef.current.getBoundingClientRect();
     renderer.resize(r.width, r.height);
-    renderer.fit(false);
+    const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, selTerrain, route };
+    renderer.fit(false, state);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoKey]);
 

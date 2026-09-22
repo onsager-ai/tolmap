@@ -349,7 +349,26 @@ export class MapRenderer {
     if (!this.state) return [0, 0, 1, 1] as [number, number, number, number];
     return mainlandBounds(this.state.doc, this.state.geo);
   }
-  fit(anim: boolean) {
+  /** `state` is for MapCanvas's repoKey effect only: on a repo change it has
+   * to fit the NEW document, but frameBounds()/draw() both read `this.state`,
+   * and `this.state` is only otherwise updated by render() -- which paints.
+   * Setting it here, inline with the one paint fit() already does, is what
+   * makes "reset derived indices and fit before the first paint of the new
+   * document" (see that effect's comment) actually true, rather than the
+   * effect's OWN fit() call framing whatever document `this.state` still
+   * held from the PREVIOUS repo (React runs a component's layout effects in
+   * declaration order within a commit, so the later state-render effect
+   * hasn't updated `this.state` yet when this one runs) -- painted over a
+   * beat later by that state-render effect's own render(), which doesn't
+   * refit, leaving the NEW document's geometry drawn at the OLD document's
+   * transform. A prior version of this bug shipped invisibly: the
+   * ResizeObserver effect this fix (fix/keep-view-on-select) stopped
+   * re-subscribing on every prop change used to deliver a spurious extra
+   * resize()-then-fit() shortly after, which re-fit against the by-then-
+   * current `this.state` and papered over it. Every other caller passes no
+   * `state` and gets exactly today's behaviour. */
+  fit(anim: boolean, state?: MapRenderState) {
+    if (state) this.state = state;
     const b = this.frameBounds();
     const pad = 46;
     const s = Math.min((this.VW - 2 * pad) / (b[2] - b[0] || 1), (this.VH - 2 * pad) / (b[3] - b[1] || 1));
