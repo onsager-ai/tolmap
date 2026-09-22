@@ -2028,10 +2028,35 @@ fn strip_module_prefix<'a>(import: &'a str, module: &str) -> Option<&'a str> {
 }
 
 /// Resolve a TypeScript base only when the target is already in the parsed
-/// file set. The first four probes are the relative resolver's historical
-/// candidates; the final two cover TSX directory entries and workspace
-/// packages whose source entry point is `src/index.ts`.
+/// file set. TypeScript's module-resolution reference, under "File extension
+/// substitution", documents that import paths ending in `.js` resolve to
+/// `.ts` and then `.tsx` sources (including under node16/nodenext):
+/// https://www.typescriptlang.org/docs/handbook/modules/reference.html#file-extension-substitution
+/// An exact parsed JavaScript path still wins here, as required by the graph's
+/// lower-bound rule. `.mjs` -> `.mts` and `.cjs` -> `.cts` are intentionally
+/// absent because source collection does not admit `.mts` or `.cts` yet.
+///
+/// For extensionless bases, the first four probes are the relative resolver's
+/// historical candidates; the final two cover TSX directory entries and
+/// workspace packages whose source entry point is `src/index.ts`.
 fn ts_candidate(base: &str, by_file: &BTreeMap<String, FileId>) -> Option<FileId> {
+    // Test the longer suffixes before `.js`: both `.mjs` and `.cjs` also end
+    // in those three characters, but their TypeScript counterparts are not
+    // collected at this revision.
+    if base.ends_with(".mjs") || base.ends_with(".cjs") {
+        return by_file.get(base).copied();
+    }
+    if let Some(stem) = base.strip_suffix(".jsx") {
+        return [base.to_owned(), format!("{stem}.tsx")]
+            .into_iter()
+            .find_map(|candidate| by_file.get(&candidate).copied());
+    }
+    if let Some(stem) = base.strip_suffix(".js") {
+        return [base.to_owned(), format!("{stem}.ts"), format!("{stem}.tsx")]
+            .into_iter()
+            .find_map(|candidate| by_file.get(&candidate).copied());
+    }
+
     [
         format!("{base}.ts"),
         format!("{base}/index.ts"),
@@ -2597,7 +2622,7 @@ mod tests {
         );
     }
 
-    // -- .tsx collection and resolution (issue #35) --------------------
+    // -- TypeScript collection and resolution ---------------------------
 
     fn write(root: &Path, rel: &str, contents: &str) {
         let path = root.join(rel);
@@ -2629,6 +2654,86 @@ mod tests {
             .collect()
     }
 
+    fn resolve_typescript(import: &str, source_file: &str, files: &[&str]) -> Vec<String> {
+        // Lexical FileIds, as `file_ids` assigns them (#59), mapped back to
+        // paths so the assertions read as the resolution rule they test.
+        let paths = files
+            .iter()
+            .map(|file| (*file).to_owned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let ids = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| (path.clone(), index as FileId))
+            .collect::<BTreeMap<_, _>>();
+        let directories = BTreeMap::new();
+        resolve_multi(
+            LanguageKind::TypeScript,
+            import,
+            source_file,
+            &ModuleIndex::default(),
+            &directories,
+            &ids,
+        )
+        .as_slice()
+        .iter()
+        .map(|id| paths[*id as usize].clone())
+        .collect()
+    }
+
+    // -- TypeScript JavaScript-extension substitution (issue #58) ------
+
+    #[test]
+    fn typescript_js_specifier_resolves_to_ts_source() {
+        assert_eq!(
+            resolve_typescript("./a.js", "main.ts", &["main.ts", "a.ts", "a.tsx"],),
+            vec!["a.ts".to_owned()]
+        );
+    }
+
+    #[test]
+    fn typescript_jsx_specifier_resolves_to_tsx_source() {
+        assert_eq!(
+            resolve_typescript("./c.jsx", "main.ts", &["main.ts", "c.tsx"]),
+            vec!["c.tsx".to_owned()]
+        );
+    }
+
+    #[test]
+    fn typescript_js_index_specifier_resolves_to_ts_index_source() {
+        assert_eq!(
+            resolve_typescript("./dir/index.js", "main.ts", &["main.ts", "dir/index.ts"],),
+            vec!["dir/index.ts".to_owned()]
+        );
+    }
+
+    #[test]
+    fn exact_javascript_file_wins_over_typescript_source_substitution() {
+        assert_eq!(
+            resolve_typescript("../b.js", "src/main.ts", &["src/main.ts", "b.js", "b.ts"],),
+            vec!["b.js".to_owned()]
+        );
+    }
+
+    #[test]
+    fn missing_javascript_specifier_adds_no_edge() {
+        assert!(resolve_typescript("./missing.js", "main.ts", &["main.ts"]).is_empty());
+    }
+
+    #[test]
+    fn extensionless_typescript_resolution_keeps_historical_precedence() {
+        assert_eq!(
+            resolve_typescript(
+                "./a",
+                "main.ts",
+                &["main.ts", "a.ts", "a/index.ts", "a.tsx"],
+            ),
+            vec!["a.ts".to_owned()]
+        );
+    }
+
     #[test]
     fn typescript_paths_alias_adds_one_hand_counted_edge() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2643,6 +2748,25 @@ mod tests {
         assert_eq!(
             resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
             1
+        );
+    }
+
+    #[test]
+    fn typescript_js_specifier_resolves_through_paths_alias() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        );
+        write(dir.path(), "src/main.ts", "import '@/x.js';\n");
+        write(dir.path(), "src/x.ts", "export const x = 1;\n");
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [("src/main.ts".to_owned(), "src/x.ts".to_owned(),)]
+                .into_iter()
+                .collect()
         );
     }
 
