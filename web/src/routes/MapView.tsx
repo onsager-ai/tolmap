@@ -40,7 +40,12 @@ export function MapView() {
   const [route, setRoute] = useState<Route | null>(null);
   const [selTerrain, setSelTerrain] = useState<TerrainSelection | null>(null);
 
-  const adj = useMemo(() => (doc ? buildAdj(doc).adj : new Map()), [doc]);
+  // radj (imported-by) is new here: SelectionPanel's "links" line and
+  // MapRenderer's own selection-links feature both need it, and buildAdj
+  // already computes both from one pass over doc.E -- discarding radj and
+  // having MapRenderer separately rebuild it (it does, for the map surface
+  // itself) would be a second identical scan of doc.E on this side too.
+  const { adj, radj } = useMemo(() => (doc ? buildAdj(doc) : { adj: new Map(), radj: new Map() }), [doc]);
   const { maxCh, maxCx } = useMemo(() => {
     if (!doc) return { maxCh: 1, maxCx: 1 };
     return {
@@ -252,6 +257,8 @@ export function MapView() {
             selSym={selSym}
             selD={selD}
             selTerrain={selTerrain}
+            adj={adj}
+            radj={radj}
             open={panelOpen}
             onToggleOpen={() => setPanelOpen((v) => !v)}
             onSelectFile={(i, opts) => selectFile(i, opts)}

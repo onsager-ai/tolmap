@@ -20,6 +20,14 @@
   --on: #d9e1e3;
   --dim: #8b989e;
   --hot: #c0472f;
+  /* Selection links (readable-overview PR): the "imported-by" direction's
+     colour, paired with --hot for "imports" -- direction is never colour
+     ALONE (a dash pattern carries it too, MapRenderer's selection-links
+     block), but two distinct hues still read faster than one. Picked
+     bright enough to stay legible against both --canvas values above (the
+     light theme's #eaede9 and dark's #0e161a, --hot itself is likewise
+     unchanged between themes) without needing its own dark-mode override. */
+  --cold: #4f8fc4;
   --c0: #2f6f63;
   --c1: #b05a2c;
   --c2: #3a6796;

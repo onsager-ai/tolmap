@@ -407,6 +407,141 @@ async function checkRepoSwitch(browser, base, profile) {
   await context.close();
 }
 
+// readable-overview PR: "when hovering an isolated area of a district, only
+// that area is highlighted, not the whole district" -- a district whose
+// `blob` has several polygons draws one <path> per polygon (plus its label)
+// all sharing data-k="d:N"; the fix highlights every element for that key,
+// not just the one the pointer resolved to. Wants dify per the user's
+// report, but dify's OWN build (every worktree's copy of it checked, none
+// built with tolmap build for this task) happens to have ZERO multi-polygon
+// districts -- every one of its districts is a single contiguous blob, so
+// there is nothing there to exercise this on. django DOES have one
+// (district "sessions", 3 polygons, found by exactly the districts[d].blob
+// .length > 1 scan the task asked for) and is well inside the browser-size
+// limit, so this runs there instead; the fix itself is generic (keyElements
+// is built from every element carrying a data-k, not district-specific), so
+// this is still a real exercise of the code path dify would use too.
+async function checkMultiPolygonHover(browser, base) {
+  const label = "multi-polygon district hover (django, desktop -- dify has none, see comment)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  const districtId = await page.evaluate(async () => {
+    const res = await fetch("/maps/django/django.json");
+    const doc = await res.json();
+    for (const k in doc.districts) {
+      if (doc.districts[k].blob.length > 1) return k;
+    }
+    return null;
+  });
+  if (districtId == null) {
+    report(false, `${label}: no multi-polygon district found in django either`, "fixture data may have changed");
+    await context.close();
+    return;
+  }
+
+  const before = await page.evaluate((d) => {
+    const els = [...document.querySelectorAll(`svg.map-svg [data-k="d:${d}"]`)];
+    return els.length;
+  }, districtId);
+  report(before > 1, `${label}: district d:${districtId} has multiple elements sharing its key`, `found ${before}`);
+
+  const polyCentre = await page.evaluate((d) => {
+    const el = document.querySelector(`svg.map-svg path.hit[data-k="d:${d}"]`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, districtId);
+  if (!polyCentre) {
+    report(false, `${label}: no polygon path found for d:${districtId}`);
+    await context.close();
+    return;
+  }
+  await page.mouse.move(polyCentre.x, polyCentre.y, { steps: 4 });
+  await page.waitForTimeout(150);
+  const after = await page.evaluate((d) => {
+    const els = [...document.querySelectorAll(`svg.map-svg [data-k="d:${d}"]`)];
+    return { total: els.length, hovered: els.filter((e) => e.classList.contains("hovered")).length };
+  }, districtId);
+  report(after.total === before && after.hovered === after.total, `${label}: hovering one polygon highlights every polygon (and the label)`, JSON.stringify(after));
+  await context.close();
+}
+
+// readable-overview PR: selecting a file (no symbol, no route) dims files
+// it has no direct import edge to and keeps its neighbours at full opacity
+// -- the same dim/highlight treatment hovering already had, extended to a
+// persistent selection (tap-select included, so this runs on phone too).
+async function checkSelectionDim(browser, base, profile) {
+  const label = `selection dim/highlight (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  // A file with both in- and out-edges, so the dim/highlight split is
+  // actually exercised in both directions, picked from the map's own data
+  // rather than hardcoded (this build's file indices aren't guaranteed
+  // stable across a corpus refresh).
+  const target = await page.evaluate(async () => {
+    const res = await fetch("/maps/langgenius/dify.json");
+    const doc = await res.json();
+    const outDeg = new Map();
+    const inDeg = new Map();
+    for (const [a, b] of doc.E) {
+      outDeg.set(a, (outDeg.get(a) || 0) + 1);
+      inDeg.set(b, (inDeg.get(b) || 0) + 1);
+    }
+    for (const [i, od] of outDeg) {
+      if (od > 2 && (inDeg.get(i) || 0) > 2) return { i, file: doc.F[i], neighbour: [...outDeg.keys()][0] === i ? null : i };
+    }
+    return null;
+  });
+  if (!target) {
+    report(false, `${label}: no file with in+out edges found`);
+    await context.close();
+    return;
+  }
+
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=d&file=${encodeURIComponent(target.file)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+
+  const result = await page.evaluate((i) => {
+    const circles = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+    const nonSelected = circles.filter((c) => c.getAttribute("data-k") !== `f:${i}`);
+    const dimmed = nonSelected.filter((c) => parseFloat(c.getAttribute("fill-opacity")) <= 0.25);
+    // A neighbour ring (MapRenderer.ring(), var(--hot) or var(--cold) stroke)
+    // marks a file that's connected -- find one and check ITS dot opacity,
+    // which should read as full strength (alwaysDrawn), not dimmed.
+    const rings = [...document.querySelectorAll("svg.map-svg circle[stroke]:not(.hit)")];
+    let neighbourFull = null;
+    for (const ring of rings) {
+      const cx = parseFloat(ring.getAttribute("cx"));
+      const cy = parseFloat(ring.getAttribute("cy"));
+      const dot = circles.find((c) => Math.abs(parseFloat(c.getAttribute("cx")) - cx) < 1 && Math.abs(parseFloat(c.getAttribute("cy")) - cy) < 1);
+      if (dot && dot.getAttribute("data-k") !== `f:${i}`) {
+        neighbourFull = parseFloat(dot.getAttribute("fill-opacity"));
+        break;
+      }
+    }
+    return { totalCircles: circles.length, dimmedCount: dimmed.length, neighbourFull };
+  }, target.i);
+  report(result.dimmedCount > 0, `${label}: at least one non-neighbour dot is dimmed`, JSON.stringify(result));
+  report(result.neighbourFull != null && result.neighbourFull >= 0.8, `${label}: a ringed neighbour's dot stays at full opacity`, JSON.stringify(result));
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const browser = await chromium.launch();
@@ -417,6 +552,10 @@ async function main() {
   }
   for (const profile of PROFILES) {
     await checkRepoSwitch(browser, args.base, profile);
+  }
+  await checkMultiPolygonHover(browser, args.base);
+  for (const profile of PROFILES) {
+    await checkSelectionDim(browser, args.base, profile);
   }
   await browser.close();
 

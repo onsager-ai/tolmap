@@ -32,5 +32,17 @@ export const BUILD_ZOOM = 5.2;
 // above dify/n8n's ceiling (so thinning always engages there at fit zoom).
 export const DOT_DENSITY_FLOOR = 30;
 
+// Cap on how many direct-import lines get DRAWN for a hovered or selected
+// file (in + out, combined) -- shared by MapRenderer's hover preview and
+// persistent selection links, and by SelectionPanel's "links: showing N of
+// M" line, so the three can never disagree about where the cut is. Without
+// one, a hub file's fan-in alone can run into the thousands (issue #57's
+// build log: one file with a fan-in of 26,342) and "lines to every
+// neighbour" stops being a preview and starts being another unreadable-
+// overview problem. This caps DRAWING only -- the dim/highlight set that
+// marks which files are connected is never capped (every neighbour still
+// fades in or gets a ring; see MapRenderer.paint()'s selNeighbours/dim).
+export const LINK_PREVIEW_MAX = 40;
+
 export type Geo = "r" | "p" | "t";
 export type Layer = "d" | "c" | "x";
