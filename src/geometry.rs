@@ -21,6 +21,7 @@ use crate::terrain;
 pub struct BuildFeatures {
     pub parcels: bool,
     pub terrain: bool,
+    pub prune_variant: pipeline::PruneVariant,
 }
 
 /// A district holding at least this share of the repo's files is
@@ -322,6 +323,22 @@ pub fn build(
     resolution: f64,
     features: BuildFeatures,
 ) -> Result<PathBuf> {
+    build_warm(repo, pkg, lang, name, out, resolution, features, None)
+}
+
+/// As [`build`], with an optional prior map to seed finding 4's warm path.
+/// The service normally supplies this from its store; the CLI exposes it for
+/// remote two-commit stability measurement.
+pub fn build_warm(
+    repo: &Path,
+    pkg: &str,
+    lang: &str,
+    name: Option<&str>,
+    out: &Path,
+    resolution: f64,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
+) -> Result<PathBuf> {
     let language = LanguageKind::parse(lang)?;
     let map_name = name.map(str::to_owned).unwrap_or_else(|| {
         repo.file_name()
@@ -331,7 +348,14 @@ pub fn build(
     });
     eprintln!("[1/5] extract   {}/{}  ({lang})", repo.display(), pkg);
     let graph = extract::build(repo, pkg, language)?;
-    build_from_graph(graph, map_name, out, resolution, features)
+    build_from_graph_warm(
+        graph,
+        map_name,
+        out,
+        resolution,
+        features,
+        previous_document,
+    )
 }
 
 /// As [`build`], but unions any number of `(pkg, language)` sources (see
@@ -345,6 +369,19 @@ pub fn build_multi(
     out: &Path,
     resolution: f64,
     features: BuildFeatures,
+) -> Result<PathBuf> {
+    build_multi_warm(repo, sources, name, out, resolution, features, None)
+}
+
+/// Multi-source counterpart of [`build_warm`].
+pub fn build_multi_warm(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    name: Option<&str>,
+    out: &Path,
+    resolution: f64,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
     let map_name = name.map(str::to_owned).unwrap_or_else(|| {
         repo.file_name()
@@ -363,7 +400,14 @@ pub fn build_multi(
         sources.len()
     );
     let graph = extract::build_multi_source(repo, sources)?;
-    build_from_graph(graph, map_name, out, resolution, features)
+    build_from_graph_warm(
+        graph,
+        map_name,
+        out,
+        resolution,
+        features,
+        previous_document,
+    )
 }
 
 /// Runs the pipeline (partition, naming, geometry, parcels) against an
@@ -372,11 +416,9 @@ pub fn build_multi(
 /// parity on a pre-extracted graph (`tolmap dump-graph`'s output) without
 /// cloning the source repository -- see the module doc on `schema::GraphData`.
 ///
-/// Cold-start only (no warm start). Kept as the CLI's entry point rather
-/// than adding an `Option` parameter to it directly so `tolmap build`'s
-/// signature does not grow a job-service concern it cannot supply (the CLI
-/// has no store to read a previous commit's membership from). The job
-/// service calls [`build_from_graph_warm`] instead.
+/// Cold-start only (no warm start). Kept as the simple library entry point;
+/// the service and `tolmap build --previous-map` call
+/// [`build_from_graph_warm`] instead.
 pub fn build_from_graph(
     graph: GraphData,
     map_name: String,
@@ -412,7 +454,13 @@ pub fn build_from_graph_warm(
     let initial = previous_membership
         .as_ref()
         .map(|prev| pipeline::align_initial_membership(&graph, prev));
-    let mut layout = pipeline::run(graph, resolution, &partitioner, initial.as_deref())?;
+    let mut layout = pipeline::run_with_variant(
+        graph,
+        resolution,
+        &partitioner,
+        initial.as_deref(),
+        features.prune_variant,
+    )?;
     // Classification and offshore placement (issue #34) read the partition
     // `pipeline::run` just produced -- they never feed back into it. Doing
     // this before naming/geometry rather than after keeps every downstream

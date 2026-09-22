@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
+use std::str::FromStr;
 
 use anyhow::{ensure, Result};
 
@@ -12,6 +14,79 @@ const SHARE_STATIC: f64 = 0.45;
 const SHARE_COCHANGE: f64 = 0.35;
 const SHARE_PROXIMITY: f64 = 0.08;
 const SHARE_SEMANTIC: f64 = 0.12;
+
+pub const PRUNE_KEEP_PER_NODE: usize = 14;
+pub const ABSOLUTE_FLOOR: f64 = 0.02;
+
+// Calibrated from the nine acceptance fixtures at their data/fixtures.toml
+// pins. See docs/PRUNE_VARIANTS.md for the full empirical derivation and
+// remote run. Type-7 quantiles make this percentile's numerical floor 0.02
+// on celery, the median fixture by the percentile rank of 0.02.
+const PERCENTILE_FLOOR: f64 = 0.000_419_289_047_680_761_6;
+const NODE_RELATIVE_FRACTION: f64 = 0.02;
+// Nearest attainable empirical match to absolute's median below-floor share
+// after moving the comparison before max-rescale (the distributions are
+// discrete, so the target falls between adjacent steps).
+const PRE_RESCALE_FLOOR: f64 = 0.000_077_526_049_820_726_55;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PruneVariant {
+    #[default]
+    Absolute,
+    Percentile,
+    NodeRelative,
+    PreRescale,
+}
+
+impl fmt::Display for PruneVariant {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.write_str(match self {
+            Self::Absolute => "absolute",
+            Self::Percentile => "percentile",
+            Self::NodeRelative => "node-relative",
+            Self::PreRescale => "pre-rescale",
+        })
+    }
+}
+
+impl FromStr for PruneVariant {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "absolute" => Ok(Self::Absolute),
+            "percentile" => Ok(Self::Percentile),
+            "node-relative" => Ok(Self::NodeRelative),
+            "pre-rescale" => Ok(Self::PreRescale),
+            _ => Err(format!(
+                "unknown prune variant {value:?}; expected absolute, percentile, node-relative, or pre-rescale"
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PruneStats {
+    pub variant: PruneVariant,
+    pub floor: f64,
+    pub floor_basis: &'static str,
+    pub candidate_edges: usize,
+    /// Candidate-edge-order mask. Empty on the map-building path, which does
+    /// not need instrumentation; populated by [`apply_prune_variant`].
+    pub below_floor_edges: Vec<bool>,
+    pub below_floor_count: usize,
+    pub weight_sum_pre_prune: f64,
+}
+
+impl PruneStats {
+    pub fn below_floor_share(&self) -> f64 {
+        if self.candidate_edges == 0 {
+            0.0
+        } else {
+            self.below_floor_count as f64 / self.candidate_edges as f64
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct LayoutDistrict {
@@ -48,13 +123,28 @@ pub struct PipelineOutput {
 }
 
 pub fn run<P: Partitioner>(
-    mut data: GraphData,
+    data: GraphData,
     resolution: f64,
     partitioner: &P,
     initial_membership: Option<&[usize]>,
 ) -> Result<PipelineOutput> {
-    blend(&mut data)?;
-    prune(&mut data, 14, 0.02);
+    run_with_variant(
+        data,
+        resolution,
+        partitioner,
+        initial_membership,
+        PruneVariant::Absolute,
+    )
+}
+
+pub fn run_with_variant<P: Partitioner>(
+    mut data: GraphData,
+    resolution: f64,
+    partitioner: &P,
+    initial_membership: Option<&[usize]>,
+    prune_variant: PruneVariant,
+) -> Result<PipelineOutput> {
+    apply_prune_variant_inner(&mut data, prune_variant, false)?;
     let graph = weighted_graph(&data)?;
     let PartitionResult {
         membership,
@@ -108,7 +198,41 @@ pub fn align_initial_membership(
 }
 
 pub fn blend(data: &mut GraphData) -> Result<()> {
+    blend_mass_normalized(data)?;
+    max_rescale(data)
+}
+
+/// Applies finding 1's per-signal mass normalisation without the final
+/// global-maximum rescale. Kept separate so `dump-blend` can measure the
+/// pre-rescale distribution finding 10 identifies; the shipped [`blend`]
+/// still performs these same operations in the same order and then calls
+/// [`max_rescale`].
+pub fn blend_mass_normalized(data: &mut GraphData) -> Result<()> {
     ensure!(!data.edges.is_empty(), "cannot blend an empty graph");
+    let (raw_static, raw_cochange, raw_proximity, raw_semantic) = signal_masses(data);
+    for edge in &mut data.edges {
+        edge.weight =
+            mass_normalized_weight(edge, raw_static, raw_cochange, raw_proximity, raw_semantic);
+    }
+    Ok(())
+}
+
+/// The same pre-rescale weights as [`blend_mass_normalized`], without
+/// cloning or mutating the graph. `dump-blend` uses this on repositories
+/// whose extracted graph is already close to the runner's memory ceiling.
+pub fn mass_normalized_weights(data: &GraphData) -> Result<Vec<f64>> {
+    ensure!(!data.edges.is_empty(), "cannot blend an empty graph");
+    let (raw_static, raw_cochange, raw_proximity, raw_semantic) = signal_masses(data);
+    Ok(data
+        .edges
+        .iter()
+        .map(|edge| {
+            mass_normalized_weight(edge, raw_static, raw_cochange, raw_proximity, raw_semantic)
+        })
+        .collect())
+}
+
+fn signal_masses(data: &GraphData) -> (f64, f64, f64, f64) {
     let raw_static = data
         .edges
         .iter()
@@ -135,12 +259,23 @@ pub fn blend(data: &mut GraphData) -> Result<()> {
     } else {
         raw_semantic
     };
-    for edge in &mut data.edges {
-        edge.weight = SHARE_STATIC / raw_static * edge.static_signal
-            + SHARE_COCHANGE / raw_cochange * edge.cochange
-            + SHARE_PROXIMITY / raw_proximity * edge.proximity
-            + SHARE_SEMANTIC / raw_semantic * edge.semantic;
-    }
+    (raw_static, raw_cochange, raw_proximity, raw_semantic)
+}
+
+fn mass_normalized_weight(
+    edge: &SignalEdge,
+    raw_static: f64,
+    raw_cochange: f64,
+    raw_proximity: f64,
+    raw_semantic: f64,
+) -> f64 {
+    SHARE_STATIC / raw_static * edge.static_signal
+        + SHARE_COCHANGE / raw_cochange * edge.cochange
+        + SHARE_PROXIMITY / raw_proximity * edge.proximity
+        + SHARE_SEMANTIC / raw_semantic * edge.semantic
+}
+
+fn max_rescale(data: &mut GraphData) -> Result<()> {
     let maximum = data
         .edges
         .iter()
@@ -179,6 +314,205 @@ pub fn prune(data: &mut GraphData, keep_per_node: usize, floor: f64) {
     }
     data.edges
         .retain(|edge| keep.contains(&(edge.a.clone(), edge.b.clone())));
+}
+
+/// Applies one complete blend/prune route. `Absolute` is deliberately the
+/// existing two calls verbatim, including comparison strictness and edge
+/// ordering; the default path therefore remains byte-identical.
+pub fn apply_prune_variant(data: &mut GraphData, variant: PruneVariant) -> Result<PruneStats> {
+    apply_prune_variant_inner(data, variant, true)
+}
+
+fn apply_prune_variant_inner(
+    data: &mut GraphData,
+    variant: PruneVariant,
+    collect_floor_edges: bool,
+) -> Result<PruneStats> {
+    match variant {
+        PruneVariant::Absolute => {
+            blend(data)?;
+            let stats = prune_stats(
+                data,
+                variant,
+                ABSOLUTE_FLOOR,
+                "max-rescaled absolute",
+                collect_floor_edges,
+            );
+            prune(data, PRUNE_KEEP_PER_NODE, ABSOLUTE_FLOOR);
+            Ok(stats)
+        }
+        PruneVariant::Percentile => {
+            blend(data)?;
+            let floor = quantile_type7(
+                &data
+                    .edges
+                    .iter()
+                    .map(|edge| edge.weight)
+                    .collect::<Vec<_>>(),
+                PERCENTILE_FLOOR,
+            );
+            let stats = prune_stats(
+                data,
+                variant,
+                floor,
+                "max-rescaled percentile",
+                collect_floor_edges,
+            );
+            prune(data, PRUNE_KEEP_PER_NODE, floor);
+            Ok(stats)
+        }
+        PruneVariant::NodeRelative => {
+            blend(data)?;
+            let strongest = strongest_incident(data);
+            let below_floor = if collect_floor_edges {
+                data.edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.weight < NODE_RELATIVE_FRACTION * strongest[edge.a.as_str()]
+                            && edge.weight < NODE_RELATIVE_FRACTION * strongest[edge.b.as_str()]
+                    })
+                    .count()
+            } else {
+                0
+            };
+            let below_floor_edges = if collect_floor_edges {
+                data.edges
+                    .iter()
+                    .map(|edge| {
+                        edge.weight < NODE_RELATIVE_FRACTION * strongest[edge.a.as_str()]
+                            && edge.weight < NODE_RELATIVE_FRACTION * strongest[edge.b.as_str()]
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let stats = PruneStats {
+                variant,
+                floor: NODE_RELATIVE_FRACTION,
+                floor_basis: "fraction of strongest incident edge",
+                candidate_edges: data.edges.len(),
+                below_floor_edges,
+                below_floor_count: below_floor,
+                weight_sum_pre_prune: if collect_floor_edges {
+                    data.edges.iter().map(|edge| edge.weight).sum()
+                } else {
+                    0.0
+                },
+            };
+            prune_node_relative(
+                data,
+                PRUNE_KEEP_PER_NODE,
+                NODE_RELATIVE_FRACTION,
+                &strongest,
+            );
+            Ok(stats)
+        }
+        PruneVariant::PreRescale => {
+            blend_mass_normalized(data)?;
+            let stats = prune_stats(
+                data,
+                variant,
+                PRE_RESCALE_FLOOR,
+                "mass-normalized pre-rescale absolute",
+                collect_floor_edges,
+            );
+            prune(data, PRUNE_KEEP_PER_NODE, PRE_RESCALE_FLOOR);
+            max_rescale(data)?;
+            Ok(stats)
+        }
+    }
+}
+
+fn prune_stats(
+    data: &GraphData,
+    variant: PruneVariant,
+    floor: f64,
+    floor_basis: &'static str,
+    collect_floor_edges: bool,
+) -> PruneStats {
+    let below_floor_count = if collect_floor_edges {
+        data.edges.iter().filter(|edge| edge.weight < floor).count()
+    } else {
+        0
+    };
+    PruneStats {
+        variant,
+        floor,
+        floor_basis,
+        candidate_edges: data.edges.len(),
+        below_floor_edges: if collect_floor_edges {
+            data.edges.iter().map(|edge| edge.weight < floor).collect()
+        } else {
+            Vec::new()
+        },
+        below_floor_count,
+        weight_sum_pre_prune: if collect_floor_edges {
+            data.edges.iter().map(|edge| edge.weight).sum()
+        } else {
+            0.0
+        },
+    }
+}
+
+fn edge_key(edge: &SignalEdge) -> (String, String) {
+    (edge.a.clone(), edge.b.clone())
+}
+
+fn quantile_type7(values: &[f64], percentile: f64) -> f64 {
+    debug_assert!(!values.is_empty());
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let position = percentile.clamp(0.0, 1.0) * (sorted.len() - 1) as f64;
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    let fraction = position - lower as f64;
+    sorted[lower] + fraction * (sorted[upper] - sorted[lower])
+}
+
+fn strongest_incident(data: &GraphData) -> BTreeMap<String, f64> {
+    let mut strongest = BTreeMap::<String, f64>::new();
+    for edge in &data.edges {
+        for file in [&edge.a, &edge.b] {
+            strongest
+                .entry(file.clone())
+                .and_modify(|weight| *weight = weight.max(edge.weight))
+                .or_insert(edge.weight);
+        }
+    }
+    strongest
+}
+
+fn prune_node_relative(
+    data: &mut GraphData,
+    keep_per_node: usize,
+    fraction: f64,
+    strongest: &BTreeMap<String, f64>,
+) {
+    let mut incident = BTreeMap::<String, Vec<usize>>::new();
+    for (index, edge) in data.edges.iter().enumerate() {
+        incident.entry(edge.a.clone()).or_default().push(index);
+        incident.entry(edge.b.clone()).or_default().push(index);
+    }
+    let mut keep = BTreeSet::<(String, String)>::new();
+    for (file, edges) in &mut incident {
+        edges.sort_by(|left, right| {
+            data.edges[*right]
+                .weight
+                .partial_cmp(&data.edges[*left].weight)
+                .unwrap_or(Ordering::Equal)
+        });
+        let floor = fraction * strongest[file.as_str()];
+        for &index in edges.iter().take(keep_per_node) {
+            let edge = &data.edges[index];
+            if edge.weight >= floor {
+                keep.insert(edge_key(edge));
+            }
+        }
+    }
+    data.edges.retain(|edge| keep.contains(&edge_key(edge)));
 }
 
 fn weighted_graph(data: &GraphData) -> Result<WeightedGraph> {
@@ -1005,6 +1339,47 @@ fn hypot(point: [f64; 2]) -> f64 {
 mod tests {
     use super::*;
 
+    fn dominant_outlier_graph() -> GraphData {
+        let edge = |a: &str, b: &str, static_signal: f64| SignalEdge {
+            a: a.to_owned(),
+            b: b.to_owned(),
+            weight: 0.0,
+            static_signal,
+            cochange: 0.0,
+            proximity: 0.0,
+            semantic: 0.0,
+        };
+        GraphData {
+            repo: "outlier".to_owned(),
+            pkg: ".".to_owned(),
+            lang: "py".to_owned(),
+            sources: Vec::new(),
+            imports: Vec::new(),
+            symbols: BTreeMap::new(),
+            uses: Vec::new(),
+            commits_scanned: 0,
+            nodes: Vec::new(),
+            edges: vec![
+                edge("a", "b", 10.0),
+                edge("b", "c", 10.0),
+                edge("d", "e", 10.0),
+                edge("e", "f", 10.0),
+                edge("x", "y", 1_000.0),
+            ],
+        }
+    }
+
+    fn edge_names(data: &GraphData) -> BTreeSet<(String, String)> {
+        data.edges.iter().map(edge_key).collect()
+    }
+
+    fn local_structure() -> BTreeSet<(String, String)> {
+        [("a", "b"), ("b", "c"), ("d", "e"), ("e", "f")]
+            .into_iter()
+            .map(|(a, b)| (a.to_owned(), b.to_owned()))
+            .collect()
+    }
+
     #[test]
     fn python_rng_matches_cpython_seed_seven() {
         let mut random = PythonRandom::new(7);
@@ -1060,6 +1435,34 @@ mod tests {
         };
         blend(&mut data).unwrap();
         assert_eq!(data.edges[0].weight, 1.0);
+    }
+
+    #[test]
+    fn absolute_variant_loses_structure_below_the_global_outlier_floor() {
+        let mut data = dominant_outlier_graph();
+        apply_prune_variant(&mut data, PruneVariant::Absolute).unwrap();
+        assert_eq!(edge_names(&data), [("x".to_owned(), "y".to_owned())].into());
+    }
+
+    #[test]
+    fn percentile_variant_keeps_the_per_node_structure_around_an_outlier() {
+        let mut data = dominant_outlier_graph();
+        apply_prune_variant(&mut data, PruneVariant::Percentile).unwrap();
+        assert!(local_structure().is_subset(&edge_names(&data)));
+    }
+
+    #[test]
+    fn node_relative_variant_keeps_the_per_node_structure_around_an_outlier() {
+        let mut data = dominant_outlier_graph();
+        apply_prune_variant(&mut data, PruneVariant::NodeRelative).unwrap();
+        assert!(local_structure().is_subset(&edge_names(&data)));
+    }
+
+    #[test]
+    fn pre_rescale_variant_keeps_the_per_node_structure_around_an_outlier() {
+        let mut data = dominant_outlier_graph();
+        apply_prune_variant(&mut data, PruneVariant::PreRescale).unwrap();
+        assert!(local_structure().is_subset(&edge_names(&data)));
     }
 
     #[test]
