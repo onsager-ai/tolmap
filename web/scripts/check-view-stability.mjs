@@ -97,6 +97,8 @@ function boxesClose(a, b, eps = 1) {
  * viewport entirely) on first load and on repo switch. */
 async function districtUnionBox(page) {
   return page.evaluate(() => {
+    const svg = document.querySelector("svg.map-svg");
+    const origin = svg.getBoundingClientRect();
     const els = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
     if (els.length === 0) return null;
     let x0 = Infinity;
@@ -110,20 +112,14 @@ async function districtUnionBox(page) {
       x1 = Math.max(x1, r.x + r.width);
       y1 = Math.max(y1, r.y + r.height);
     }
-    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    return { x: x0 - origin.x, y: y0 - origin.y, w: x1 - x0, h: y1 - y0 };
   });
 }
 
-// fit()'s own padding constant (MapRenderer.ts's fit()); at least one axis
-// of the fitted mainland touches it exactly, the other has equal or more
-// margin (fit() picks the smaller scale of the two axes and centres on the
-// other) -- so "fits inside the pad" is the general, always-true shape of a
-// correctly fitted view, not something specific to one map's aspect ratio.
-const FIT_PAD = 46;
-
 function fitsWithinPad(box, vw, vh, eps = 2) {
+  const [left, top, right, bottom] = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
   if (!box) return false;
-  return box.x >= FIT_PAD - eps && box.y >= FIT_PAD - eps && box.x + box.w <= vw - FIT_PAD + eps && box.y + box.h <= vh - FIT_PAD + eps;
+  return box.x >= left - eps && box.y >= top - eps && box.x + box.w <= right + eps && box.y + box.h <= bottom + eps;
 }
 
 /** A file dot (or, at low zoom / dense districts, a symbol room) reasonably
@@ -964,16 +960,19 @@ async function checkDifyDistrictSummary(browser, base, profile) {
     deviceScaleFactor: profile.deviceScaleFactor ?? 1,
   });
   const page = await context.newPage();
-  await page.goto(`${base}/langgenius/dify?geo=r&layer=d&d=0`, { waitUntil: "domcontentloaded" });
+  const doc = await (await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json());
+  const d = doc.N[doc.F.indexOf("web/app/components/workflow/types.ts")][0];
+  const workflowCount = doc.F.filter((path, i) => doc.N[i][0] === d && path.startsWith("web/app/components/workflow/")).length;
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=d&d=${d}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-selection-panel] h3");
   if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap();
   await page.waitForSelector("[data-district-summary]");
   const panel = page.locator("[data-selection-panel]");
   const text = await panel.innerText();
   report(
-    text.includes("887 files · 106k lines") &&
+    text.includes(`${doc.districts[String(d)].size} files`) &&
       text.includes("mostly web/app/components/workflow/") &&
-      text.includes("folders (5)") &&
+      /folders \(\d+\)/.test(text) &&
       text.includes("key files (6)"),
     `${label}: compact summary and folder count match the fixture`,
     text,
@@ -994,7 +993,7 @@ async function checkDifyDistrictSummary(browser, base, profile) {
   const named = rows.filter((row) => row.path != null);
   const largestNamed = Math.max(...named.map((row) => row.count));
   report(
-    rows[0]?.path === "web/app/components/workflow" && rows[0].count === 755 &&
+    rows[0]?.path === "web/app/components/workflow" && rows[0].count === workflowCount &&
       named.every((row, i) => i === 0 || named[i - 1].count >= row.count) &&
       rows.at(-1)?.path == null && rows.at(-1).count <= largestNamed,
     `${label}: folder rows are ranked, other is last and below the largest folder`,
@@ -1165,6 +1164,111 @@ async function visibleDots(page) {
     Object.fromEntries(elements.map((el) => [el.getAttribute("data-k"), [el.getAttribute("cx"), el.getAttribute("cy")]])));
 }
 
+async function fitFraming(page, doc) {
+  return page.evaluate((map) => {
+    const svg = document.querySelector("svg.map-svg");
+    const { width: vw, height: vh } = svg.getBoundingClientRect();
+    const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+    const b = [Infinity, Infinity, -Infinity, -Infinity];
+    const add = ([x, y]) => { b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y); b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y); };
+    const mainland = (d) => !["island", "unconnected"].includes(map.districts[String(d)].class);
+    map.N.forEach((row) => { if (mainland(row[0])) add([row[1], row[2]]); });
+    for (const [d, district] of Object.entries(map.districts)) {
+      if (mainland(d)) district.blob.forEach((poly) => poly.forEach(add));
+    }
+    const scale = Math.min((rect[2] - rect[0]) / (b[2] - b[0]), (rect[3] - rect[1]) / (b[3] - b[1]));
+    const tx = rect[0] + (rect[2] - rect[0] - (b[2] - b[0]) * scale) / 2 - b[0] * scale;
+    const middle = (rect[1] + rect[3]) / 2;
+    const centreY = vw <= 820 ? Math.max(rect[1] + (b[3] - b[1]) * scale / 2, Math.min(middle, 315)) : middle;
+    const ty = centreY - (b[1] + b[3]) * scale / 2;
+    const d = Object.keys(map.districts).find(mainland);
+    const actual = document.querySelector(`svg.map-svg path.hit[data-k="d:${d}"]`).getAttribute("d").match(/-?\d+(?:\.\d+)?/g).map(Number);
+    const first = map.districts[d].blob[0][0];
+    const sx = first[0] * scale + tx, sy = first[1] * scale + ty;
+    const islandsAtFit = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')]
+      .filter((el) => map.districts[el.getAttribute("data-k").slice(2)].class === "island").length;
+    return { expectedWidth: (b[2] - b[0]) * scale, scale, pointError: Math.hypot(actual[0] - sx, actual[1] - sy), islandsAtFit,
+      viewport: [vw, vh], rect };
+  }, doc);
+}
+
+async function checkFitFraming(browser, base, slug, profile) {
+  const label = `mainland fit / ${slug} / ${profile.name}`;
+  const context = await browser.newContext({ viewport: profile.viewport, isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch, deviceScaleFactor: profile.deviceScaleFactor ?? 1 });
+  const page = await context.newPage();
+  await page.goto(`${base}/${slug}`);
+  await page.waitForSelector("svg.map-svg path.hit");
+  const doc = await page.evaluate(async (name) => (await fetch(`/maps/${name}.json`)).json(), slug);
+  const frame = await fitFraming(page, doc);
+  report(frame.pointError < 2, `${label}: fit projects mainland bounds into the content rectangle`, JSON.stringify(frame));
+  report(frame.islandsAtFit === 0, `${label}: invisible islands cannot set the opening frame`);
+  const box = await districtUnionBox(page);
+  report(fitsWithinPad(box, frame.viewport[0], frame.viewport[1]), `${label}: mainland clears fit inset`, JSON.stringify(box));
+  if (profile.isMobile) {
+    const chip = await page.locator("[data-unconnected-chip]").count()
+      ? await page.locator("[data-unconnected-chip]").boundingBox() : null;
+    const sheet = await page.locator("[data-selection-panel]").boundingBox();
+    const svg = await page.locator("svg.map-svg").boundingBox();
+    report(box.y + box.h + svg.y < Math.min(chip?.y ?? Infinity, sheet?.y ?? Infinity),
+      `${label}: mainland clears chip and bottom sheet`);
+  }
+  if (slug === "langgenius/dify" && Object.values(doc.districts).some((d) => d.class === "island")) {
+    const islandStroke = () => page.locator('svg.map-svg path.hit[data-k^="d:"]').evaluateAll((els, map) =>
+      els.filter((el) => map[el.getAttribute("data-k").slice(2)].class === "island")
+        .map((el) => Number(el.getAttribute("stroke-opacity"))), doc.districts);
+    await page.locator('button[aria-label="Zoom in"]').click();
+    await page.waitForTimeout(600);
+    const inward = await islandStroke();
+    report(inward.length > 0 && inward.some((opacity) => opacity > 0 && opacity < 0.4),
+      `${label}: islands fade in when zooming inward`);
+    await page.locator('button[aria-label="Fit map"]').click();
+    await page.waitForTimeout(650);
+    await page.locator('button[aria-label="Zoom out"]').click();
+    await page.waitForTimeout(600);
+    const outward = await islandStroke();
+    report(outward.length > 0 && outward.every((opacity) => opacity > 0 && opacity <= 0.4),
+      `${label}: islands reappear when zooming outward`);
+  }
+  console.log(`  fit width ${slug} ${profile.name}: ${frame.expectedWidth.toFixed(1)} CSS px`);
+  await context.close();
+}
+
+async function checkFolderWinsFileCollision(browser, base) {
+  const label = "folder wins file collision (dify) / desktop";
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  const probe = doc.F.indexOf("web/app/components/workflow/hooks/use-nodes-interactions.ts");
+  const district = doc.N[probe][0];
+  const members = doc.F.flatMap((path, i) => path.startsWith("web/app/components/workflow/") && doc.N[i][0] === district ? [i] : []);
+  const median = (column) => {
+    const values = members.map((i) => doc.N[i][column]).sort((a, b) => a - b);
+    return (values[(values.length - 1) >> 1] + values[values.length >> 1]) / 2;
+  };
+  // Move one uniquely named, ranked file to the folder's measured median.
+  // This changes only the test response. The control below hides that folder
+  // label without moving the view, proving the file has label budget.
+  doc.N[probe][1] = median(1);
+  doc.N[probe][2] = median(2);
+  await page.route("**/maps/langgenius/dify.json", (route) => route.fulfill({ json: doc }));
+  await page.goto(`${base}/langgenius/dify?d=${district}`);
+  await page.waitForSelector('button[aria-label="Zoom to district"]');
+  await page.locator('button[aria-label="Zoom to district"]').click();
+  await page.waitForTimeout(750);
+  await page.locator('button[aria-label="Zoom in"]').click();
+  await page.waitForTimeout(750);
+  const folder = page.locator('[data-folder-label="web/app/components/workflow"]');
+  const file = page.locator(`[data-file-label="${probe}"]`);
+  report(await folder.count() === 1 && await page.locator(`[data-k="f:${probe}"]`).count() > 0 && await file.count() === 0,
+    `${label}: folder occupies the file's median while its dot remains visible`);
+  await page.locator("[data-district-folders-toggle]").click();
+  await page.locator('[data-district-path="web/app/components/rag-pipeline"]').click();
+  report(await folder.count() === 0 && await file.count() === 1,
+    `${label}: file label returns at the same zoom when the folder label yields`);
+  await context.close();
+}
+
 async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profile) {
   const label = `folder labels and unconnected files / ${profile.name}`;
   console.log(`\n${label}`);
@@ -1176,10 +1280,16 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   await page.goto(`${base}/${slug}`);
   await page.waitForSelector("svg.map-svg path.hit");
   const doc = await page.evaluate(async () => (await fetch("/maps/langgenius/dify.json")).json());
+  const workflowFile = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
+  const workflowDistrict = doc.N[workflowFile][0];
   const unconnected = doc.N.flatMap((row, i) => doc.districts[String(row[0])].class === "unconnected" ? [i] : []);
   report((await page.locator("[data-folder-label]").count()) === 0, `${label}: no folder labels at fit`);
   const chip = page.locator("[data-unconnected-chip]");
   report((await chip.textContent())?.trim() === `${unconnected.length} unconnected files`, `${label}: chip counts files, not districts`);
+  if (doc.coverage) {
+    report(await page.locator('[data-coverage-detail]').count() === 0,
+      `${label}: coverage detail stays off the opening footer`);
+  }
   const noRing = async () => page.locator('svg.map-svg [data-k^="f:"]').evaluateAll((els, indices) =>
     els.every((el) => !indices.includes(Number(el.getAttribute("data-k").slice(2)))), unconnected);
   report(await noRing(), `${label}: no unconnected file dots at fit`);
@@ -1190,6 +1300,9 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   await page.waitForTimeout(500);
   await chip.click();
   report((await page.locator("[data-unconnected-list] details").count()) > 0, `${label}: chip opens grouped folders`);
+  if (doc.coverage) report((await page.locator('[data-coverage-detail]').innerText()).includes("py:") &&
+    (await page.locator('[data-coverage-detail]').innerText()).includes("ts:"),
+    `${label}: coverage detail appears inside the list header`);
   const first = page.locator("[data-unconnected-list] details").first();
   await first.locator("summary").click();
   const file = first.locator("[data-unconnected-file]").first();
@@ -1212,20 +1325,41 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   report(new URL(page.url()).searchParams.get("file") === doc.F[index],
     `${label}: search result opens the unconnected file card`);
 
-  // The largest dify district is workflow & nodes (d:0, 887 files). Its
-  // 755-file workflow breakdown row is the measured label target.
-  await page.goto(`${base}/${slug}?d=0`);
+  // #79's rebuilt map moves workflow from d:0 to d:1; target the actual
+  // district containing its top-ranked types.ts landmark in either map.
+  await page.goto(`${base}/${slug}?d=${workflowDistrict}`);
   await page.waitForSelector('button[aria-label="Zoom to district"]');
   await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
   await page.waitForTimeout(850);
+  // A pin occupies the workflow median in #79's phone map at the district
+  // jump. The label correctly yields there and appears one zoom step later.
+  if (!(await page.locator('[data-folder-label="web/app/components/workflow"]').count())) {
+    await page.locator('button[aria-label="Zoom in"]').click();
+    await page.waitForTimeout(850);
+  }
   const labels = await page.locator("[data-folder-label]").evaluateAll((els) =>
     els.map((el) => [el.getAttribute("data-folder-district"), el.getAttribute("data-folder-label")]));
-  report(labels.some(([district, path]) => district === "0" && path === "web/app/components/workflow"),
-    `${label}: workflow folder label appears near 2×`, JSON.stringify(labels));
+  report(labels.some(([district, path]) => district === String(workflowDistrict) && path === "web/app/components/workflow"),
+    `${label}: workflow folder label appears after zooming in`, JSON.stringify(labels));
   const counts = new Map();
   for (const [district] of labels) counts.set(district, (counts.get(district) ?? 0) + 1);
   report([...counts.values()].every((count) => count <= 4), `${label}: at most four labels per district`);
   const zoomDots = await visibleDots(page);
+  const fileLabels = await page.locator("svg.map-svg [data-file-label]").evaluateAll((els) =>
+    els.map((el) => Number(el.getAttribute("data-file-label"))));
+  const repeated = new Map();
+  for (let i = 0; i < doc.F.length; i++) {
+    const key = `${doc.N[i][0]}:${doc.F[i].split("/").pop()}`;
+    repeated.set(key, (repeated.get(key) ?? 0) + 1);
+  }
+  const shown = new Map();
+  for (const i of fileLabels) {
+    const key = `${doc.N[i][0]}:${doc.F[i].split("/").pop()}`;
+    shown.set(key, (shown.get(key) ?? 0) + 1);
+  }
+  report(repeated.get(`${workflowDistrict}:types.ts`) >= 3 &&
+    [...shown].every(([key, count]) => (repeated.get(key) ?? 0) < 3 || count <= 1),
+  `${label}: repeated basenames show at most one label per district`, JSON.stringify([...shown].filter(([key]) => key.endsWith(":types.ts"))));
 
   for (const layer of ["c", "x", "p"]) {
     if (profile.isMobile) await page.locator('button[aria-label="Cycle layer"]').click();
@@ -1239,7 +1373,29 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
         `${label}: package legend leaves room for the unconnected chip`);
     }
   }
+  if (profile.isMobile) await page.locator('button[aria-label="Cycle layer"]').click();
+  else await page.locator('[aria-label="Layer"] button', { hasText: "district" }).click();
   const workflowLabel = page.locator('[data-folder-label="web/app/components/workflow"]');
+  if (await workflowLabel.count()) {
+    for (const theme of ["light", "dark"]) {
+      const ratio = await page.evaluate(({ theme, district }) => {
+        document.documentElement.dataset.theme = theme;
+        const label = document.querySelector('[data-folder-label="web/app/components/workflow"]');
+        const shape = document.querySelector(`svg.map-svg path.hit[data-k="d:${district}"]`);
+        const root = getComputedStyle(document.documentElement);
+        const rgb = (value) => { const match = value.match(/#[0-9a-f]{6}|\d+/gi); const hex = match[0].startsWith("#") ? match[0].slice(1) : null;
+          return hex ? [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16)) : match.slice(0, 3).map(Number); };
+        const blend = (a, b, opacity) => a.map((v, i) => v * (1 - opacity) + b[i] * opacity);
+        const districtFill = blend(rgb(root.getPropertyValue("--canvas").trim()), rgb(getComputedStyle(shape).fill), Number(shape.getAttribute("fill-opacity")));
+        const textFill = blend(districtFill, rgb(root.getPropertyValue("--ink").trim()), Number(label.getAttribute("fill-opacity")));
+        const lum = (color) => color.map((x) => x / 255).map((x) => x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4)
+          .reduce((sum, x, i) => sum + x * [0.2126, 0.7152, 0.0722][i], 0);
+        const a = lum(districtFill), b = lum(textFill);
+        return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+      }, { theme, district: workflowDistrict });
+      report(ratio >= 3, `${label}: folder contrast >= 3:1 in ${theme}`, ratio.toFixed(2));
+    }
+  }
   if (!profile.hasTouch && (await workflowLabel.count())) {
     await workflowLabel.hover({ force: true });
     report((await page.locator("[data-folder-highlight]").count()) > 0 && !new URL(page.url()).searchParams.has("dir"),
@@ -1256,7 +1412,7 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   if (beforeBase) {
     const prior = await browser.newContext(options);
     const oldPage = await prior.newPage();
-    await oldPage.goto(`${beforeBase}/${slug}?d=0`);
+    await oldPage.goto(`${beforeBase}/${slug}?d=${workflowDistrict}`);
     await oldPage.waitForSelector('button[aria-label="Zoom to district"]');
     await oldPage.locator('button[aria-label="Zoom to district"]').click({ force: true });
     await oldPage.waitForTimeout(850);
@@ -1273,6 +1429,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const browser = await chromium.launch();
   if (args.featureOnly) {
+    for (const slug of MAPS) for (const profile of PROFILES) await checkFitFraming(browser, args.base, slug, profile);
+    await checkFolderWinsFileCollision(browser, args.base);
     for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
     await browser.close();
     console.log(`\n${checks - failures}/${checks} checks passed`);
@@ -1281,9 +1439,11 @@ async function main() {
   }
   for (const slug of MAPS) {
     for (const profile of PROFILES) {
+      await checkFitFraming(browser, args.base, slug, profile);
       await runOne({ browser, base: args.base, slug, profile });
     }
   }
+  await checkFolderWinsFileCollision(browser, args.base);
   for (const profile of PROFILES) {
     await checkRepoSwitch(browser, args.base, profile);
   }

@@ -74,7 +74,12 @@ export function SelectionPanel({
       >
         <div className="overflow-hidden">
           {showUnconnected ? (
-            <><h3 className="font-sans text-[13px] font-semibold">Unconnected files</h3><p className="text-[10px] text-[var(--dim)]">{packageLayout.unconnectedFiles.length} files without detected links</p></>
+            <><h3 className="font-sans text-[13px] font-semibold">Unconnected files</h3>
+              {doc.coverage && <p className="text-[10px] text-[var(--dim)]" data-coverage-detail>
+                Repo coverage (no detected edge): {Object.entries(doc.coverage.by_language).map(([lang, row]) =>
+                  `${lang}: ${row.zero_edge_files.toLocaleString("en-US")}/${row.total_files.toLocaleString("en-US")}`).join(" · ")}
+              </p>}
+            </>
           ) : selD == null && sel == null ? (
             <FolderHead layout={packageLayout} activeDirectory={activeDirectory} />
           ) : selD != null ? (

@@ -17,6 +17,8 @@ import {
   districtClass,
   districtColor,
   districtWorldArea,
+  fitCentreY,
+  fitViewport,
   mainlandBounds,
   px as pxOf,
   ramp,
@@ -103,6 +105,9 @@ export class MapRenderer {
   private drawableDistrictIds: string[] = [];
   private labelDistrictIds: string[] = [];
   private drawableRoads: MapDocument["roads"] = [];
+  private fileLabelOrder: number[] = [];
+  private fileBasenames: string[] = [];
+  private repeatedBasenames = new Set<string>();
 
   // Issue #51 perf follow-up: cache of mainlandBounds()/worldBounds() and
   // the two scales derived from them (see geometry.ts's scaleToFit), keyed
@@ -329,6 +334,15 @@ export class MapRenderer {
     this.districtOrder.clear();
     this.districtArea.clear();
     this.fileRank.clear();
+    this.fileBasenames = doc.F.map((path) => path.split("/").pop()!);
+    this.fileLabelOrder = [...doc.N.keys()].sort((a, b) =>
+      (FI(doc, b) + LOC(doc, b) / 50) - (FI(doc, a) + LOC(doc, a) / 50) || a - b);
+    const basenameCounts = new Map<string, number>();
+    for (let i = 0; i < doc.N.length; i++) {
+      const key = `${D_(doc, i)}\0${this.fileBasenames[i]}`;
+      basenameCounts.set(key, (basenameCounts.get(key) ?? 0) + 1);
+    }
+    this.repeatedBasenames = new Set([...basenameCounts].filter(([, count]) => count >= 3).map(([key]) => key));
     this.unconnectedFile = new Uint8Array(doc.N.length);
     this.drawableDistrictIds = Object.keys(doc.districts)
       .filter((d) => districtClass(doc.districts[d]) !== "unconnected");
@@ -635,10 +649,10 @@ export class MapRenderer {
   fit(anim: boolean, state?: MapRenderState) {
     if (state) this.state = state;
     const b = this.frameBounds();
-    const pad = 46;
-    const s = Math.min((this.VW - 2 * pad) / (b[2] - b[0] || 1), (this.VH - 2 * pad) / (b[3] - b[1] || 1));
-    const nx = pad + ((this.VW - 2 * pad) - (b[2] - b[0]) * s) / 2 - b[0] * s;
-    const ny = pad + ((this.VH - 2 * pad) - (b[3] - b[1]) * s) / 2 - b[1] * s;
+    const [left, , right] = fitViewport(this.VW, this.VH);
+    const s = this.fitScale();
+    const nx = left + ((right - left) - (b[2] - b[0]) * s) / 2 - b[0] * s;
+    const ny = fitCentreY(this.VW, this.VH, (b[3] - b[1]) * s) - ((b[1] + b[3]) / 2) * s;
     if (anim) this.glide(s, nx, ny);
     else {
       this.cancelPendingGestureWork();
@@ -1275,14 +1289,13 @@ export class MapRenderer {
     if (this.HOVER && this.hoverKey) this.reapplyHover();
   }
 
-  // Label budget: districts first, then files by importance, skipping
-  // collisions.
+  // Label budget: districts, folders, then files by importance.
   private drawLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, pinBoxes: number[][]) {
     const { doc, geo } = this.state!;
     const placed: number[][] = [];
     const hits = (x: number, y: number, w: number, h: number) =>
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
-    const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number) => {
+    const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number, fi?: number) => {
       const w = txt.length * size * 0.62;
       const h = size * 1.25;
       if (hits(x - w / 2, y - h, w, h)) return false;
@@ -1306,6 +1319,7 @@ export class MapRenderer {
         t.setAttribute("pointer-events", "all");
         t.setAttribute("data-k", "d:" + dk);
       }
+      if (fi != null) t.setAttribute("data-file-label", String(fi));
       t.textContent = txt;
       g.appendChild(t);
       return true;
@@ -1382,7 +1396,7 @@ export class MapRenderer {
       if (this.state!.activeDirectory && this.state!.activeDirectory !== label.path) continue;
       if (label.worldSide * this.k < Math.min(this.VW, this.VH) * 0.25) continue;
       const x = this.X(label.x), y = this.Y(label.y);
-      const size = narrow ? 9 : 10;
+      const size = narrow ? 11 : 12;
       const h = size * 1.25;
       // Try two path segments for context, then the final segment when a
       // nearby district name leaves too little horizontal room.
@@ -1395,7 +1409,8 @@ export class MapRenderer {
       const w = tail.length * size * 0.62;
       placed.push([x - w / 2, y - h, w, h]);
       const t = el("text", { x: x.toFixed(1), y: y.toFixed(1), "font-size": size,
-        "text-anchor": "middle", fill: "var(--ink)", "fill-opacity": 0.36,
+        "text-anchor": "middle", fill: "var(--ink)", "fill-opacity": 0.95,
+        "font-weight": 500,
         "font-family": "IBM Plex Mono, monospace", "pointer-events": "all",
         "data-k": `dir:${label.path}`, "data-folder-label": label.path,
         "data-folder-district": label.district });
@@ -1406,9 +1421,9 @@ export class MapRenderer {
     if (geo === "p" && zf > BUILD_ZOOM) return; // plots label themselves
     const budget = Math.round(Math.min(narrow ? 18 : 60, Math.max(0, (zf - 1.5) * (narrow ? 10 : 26))));
     if (budget > 0) {
-      const order = [...doc.N.keys()].sort((a, b) => (FI(doc, b) + LOC(doc, b) / 50) - (FI(doc, a) + LOC(doc, a) / 50));
+      const shownRepeated = new Set<string>();
       let n = 0;
-      for (const i of order) {
+      for (const i of this.fileLabelOrder) {
         if (n >= budget) break;
         // Issue #48: never label a file whose dot the density budget hid --
         // a floating name with nothing under it reads as a bug, not a
@@ -1416,11 +1431,17 @@ export class MapRenderer {
         // so this check only ever applies to "r"/"p".
         if (this.unconnectedFile[i]) continue;
         if (geo !== "t" && !alwaysDrawn.has(i) && this.dotFactor(i) <= 0) continue;
+        const basename = this.fileBasenames[i];
+        const repeatKey = `${D_(doc, i)}\0${basename}`;
+        if (this.repeatedBasenames.has(repeatKey) && shownRepeated.has(repeatKey)) continue;
         const p = this.px(i);
         const x = this.X(p[0]);
         const y = this.Y(p[1]);
         if (x < 10 || x > this.VW - 10 || y < 14 || y > this.VH - 6) continue;
-        if (put(x, y - 9, doc.F[i].split("/").pop()!, 10, 0.82)) n++;
+        if (put(x, y - 9, basename, 10, 0.82, undefined, undefined, i)) {
+          n++;
+          if (this.repeatedBasenames.has(repeatKey)) shownRepeated.add(repeatKey);
+        }
       }
     }
   }

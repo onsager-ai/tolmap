@@ -41,11 +41,6 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
           pan, search a file <i className="not-italic">or a symbol</i> to fly. The map stops at the file; a file's
           classes and functions are listed in its directory. Switch geometry to <i className="not-italic">plots</i> for
           the cadastral view.
-          {doc.coverage && (
-            <span className="block">
-              {doc.coverage.zero_edge_files.toLocaleString("en-US")} of {doc.coverage.total_files.toLocaleString("en-US")} files have no detected relationship
-            </span>
-          )}
         </>
       ) : (
         <>

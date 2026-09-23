@@ -135,9 +135,23 @@ export function mainlandBounds(doc: MapDocument, geo: Geo): [number, number, num
 // caching the final number would have to be invalidated on VW/VH anyway --
 // so this is the one place both the uncached callers below and
 // MapRenderer's cached ones turn a bounds box back into a scale.
-const FIT_PAD = 46;
+/** Screen space available to the default fit. The old 46px inset consumed
+ * almost a quarter of a 390px phone. The phone's bottom inset also moves the
+ * map above the chip and collapsed sheet; it does not shrink its width. */
+export function fitViewport(vw: number, vh: number): [number, number, number, number] {
+  return vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+}
+/** Tall phones have spare vertical room after width sets the scale. Bring
+ * that slack above the bottom sheet rather than leaving the map low on the
+ * screen. The minimum keeps shorter viewports centred in their safe rect. */
+export function fitCentreY(vw: number, vh: number, fittedHeight: number): number {
+  const [, top, , bottom] = fitViewport(vw, vh);
+  const middle = (top + bottom) / 2;
+  return vw <= 820 ? Math.max(top + fittedHeight / 2, Math.min(middle, 315)) : middle;
+}
 export function scaleToFit(b: [number, number, number, number], vw: number, vh: number): number {
-  return Math.min((vw - 2 * FIT_PAD) / (b[2] - b[0] || 1), (vh - 2 * FIT_PAD) / (b[3] - b[1] || 1));
+  const [left, top, right, bottom] = fitViewport(vw, vh);
+  return Math.min((right - left) / (b[2] - b[0] || 1), (bottom - top) / (b[3] - b[1] || 1));
 }
 
 export function fitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): number {
