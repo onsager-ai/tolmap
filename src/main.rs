@@ -60,6 +60,12 @@ enum Command {
         /// builds remain cold when omitted.
         #[arg(long)]
         previous_map: Option<PathBuf>,
+        /// District namer. Model calls require an environment key and budget.
+        #[arg(long, default_value_t = tolmap::naming::NamerKind::Idf)]
+        namer: tolmap::naming::NamerKind,
+        /// OpenRouter model id used when --namer model is selected.
+        #[arg(long)]
+        namer_model: Option<String>,
         /// A pre-extracted graph (from `dump-graph`) to run the pipeline on
         /// instead of parsing `repo`. `pkg`/`lang`/`--all-sources` are
         /// ignored with this (the graph already carries its source(s)), and
@@ -323,8 +329,13 @@ fn main() -> Result<()> {
             no_parcels,
             prune_variant,
             previous_map,
+            namer,
+            namer_model,
             graph,
         } => {
+            let namer_model = namer_model
+                .or_else(|| std::env::var("TOLMAP_NAMER_MODEL").ok())
+                .unwrap_or_else(|| tolmap::naming::DEFAULT_MODEL.to_owned());
             let previous_document: Option<tolmap::schema::MapDocument> = previous_map
                 .as_ref()
                 .map(|path| {
@@ -351,6 +362,8 @@ fn main() -> Result<()> {
                             tolmap::geometry::BuildFeatures {
                                 parcels: !no_parcels,
                                 prune_variant,
+                                namer,
+                                namer_model,
                             },
                             previous_document.as_ref(),
                         )
@@ -371,6 +384,8 @@ fn main() -> Result<()> {
                             tolmap::geometry::BuildFeatures {
                                 parcels: !no_parcels,
                                 prune_variant,
+                                namer,
+                                namer_model,
                             },
                             previous_document.as_ref(),
                         )
@@ -395,6 +410,8 @@ fn main() -> Result<()> {
                         tolmap::geometry::BuildFeatures {
                             parcels: !no_parcels,
                             prune_variant,
+                            namer,
+                            namer_model,
                         },
                         previous_document.as_ref(),
                     )
