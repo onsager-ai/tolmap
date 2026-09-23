@@ -39,6 +39,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from footprint_metrics import score as footprint_score
+
 
 def time_fields(path: Path) -> tuple[float | None, int | None]:
     """Parse `/usr/bin/time -v` output for wall-clock seconds and peak RSS
@@ -141,6 +143,7 @@ def sha256_and_stats(json_path: Path, fixture_stem: str | None = None) -> dict:
         "landmarks": None,
         "placement": None,
         "modularity_delta": None,
+        "footprint_metrics": None,
     }
     if not json_path.is_file():
         return empty
@@ -162,6 +165,8 @@ def sha256_and_stats(json_path: Path, fixture_stem: str | None = None) -> dict:
                 else 0.0
             )
             stats["landmarks"] = len(doc.get("L", []))
+            if doc.get("P") is not None:
+                stats["footprint_metrics"] = footprint_score(doc)
             if fixture_stem:
                 reference = fixture_reference(fixture_stem)
                 if reference is not None:
@@ -222,6 +227,7 @@ def main() -> int:
         "landmarks": primary_stats["landmarks"],
         "placement": primary_stats["placement"],
         "modularity_delta": primary_stats["modularity_delta"],
+        "footprint_metrics": primary_stats["footprint_metrics"],
         "stability_back": int(env("BACK")) if env("BACK").strip() else None,
         "stability_retention": None,
         "compare_status": None,

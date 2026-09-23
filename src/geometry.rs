@@ -468,7 +468,11 @@ pub fn build_from_graph_warm(
     relocate_offshore(&mut layout.districts, &classes);
     // This second partition only reads the kept graph. The top-level
     // membership, modularity and district layout are already fixed.
-    let neighbourhood_partition = neighbourhoods::partition(&layout, &partitioner)?;
+    let neighbourhood_partition = if features.parcels {
+        Some(neighbourhoods::partition(&layout, &partitioner)?)
+    } else {
+        None
+    };
     eprintln!("[3/5] name     districts");
     // Same convention `cli.py::build` uses: the cache lives next to the map
     // it names, `<out>/<name>.names.json`, so a rerun into the same --out
@@ -519,14 +523,17 @@ pub fn build_from_graph_warm(
     let mut document = compact(map_name, layout, geometry, names, &classes);
     if features.parcels {
         eprintln!("[5/5] geometry weighted-voronoi plots");
-        let output = parcels::build_parcels(&document, &neighbourhood_partition);
+        let partition = neighbourhood_partition
+            .as_ref()
+            .expect("partitioned with parcels enabled");
+        let output = parcels::build_parcels(&document, partition);
         document.parcels = Some(output.parcels);
         document.footprint_centroids = Some(output.centroids);
-        document.file_neighbourhoods = Some(neighbourhood_partition.file_ids);
+        document.file_neighbourhoods = Some(partition.file_ids.clone());
         document.neighbourhoods = Some(output.neighbourhoods);
         if let Some(correlation) = parcels::area_correlation(&document) {
             eprintln!(
-                "        parcels={}/{}  area~loc r={correlation:.3}",
+                "        parcels={}/{}  area~weight r={correlation:.3}",
                 document.parcels.as_ref().map_or(0, BTreeMap::len),
                 document.files.len()
             );

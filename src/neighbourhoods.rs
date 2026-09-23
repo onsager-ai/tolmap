@@ -63,13 +63,21 @@ fn split<P: Partitioner>(
     if members.len() <= SINGLE_LIMIT || depth >= 12 {
         return Ok(vec![members.to_vec()]);
     }
-    let local = members.iter().enumerate().map(|(i, &n)| (n, i)).collect::<BTreeMap<_, _>>();
+    let local = members
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| (n, i))
+        .collect::<BTreeMap<_, _>>();
     let mut edges = Vec::new();
     for &a in members {
         for &(b, weight) in &adjacency[a] {
             if a < b {
                 if let Some(&local_b) = local.get(&b) {
-                    edges.push(WeightedEdge { a: local[&a], b: local_b, weight });
+                    edges.push(WeightedEdge {
+                        a: local[&a],
+                        b: local_b,
+                        weight,
+                    });
                 }
             }
         }
@@ -77,7 +85,10 @@ fn split<P: Partitioner>(
     if edges.is_empty() {
         return Ok(members.chunks(TARGET).map(|chunk| chunk.to_vec()).collect());
     }
-    let graph = WeightedGraph { node_count: members.len(), edges };
+    let graph = WeightedGraph {
+        node_count: members.len(),
+        edges,
+    };
     // Larger districts need more communities in the first pass. If Leiden
     // returns one, increase resolution a bounded number of times before
     // declaring the component indivisible.
@@ -90,39 +101,61 @@ fn split<P: Partitioner>(
             by_id.entry(community).or_default().push(file);
         }
         parts = by_id.into_values().collect();
-        if parts.len() > 1 { break; }
+        if parts.len() > 1 {
+            break;
+        }
     }
-    if parts.len() <= 1 { return Ok(vec![members.to_vec()]); }
+    if parts.len() <= 1 {
+        return Ok(vec![members.to_vec()]);
+    }
     let mut output = Vec::new();
     for part in parts {
-        if part.len() == members.len() { output.push(part); }
-        else { output.extend(split(&part, adjacency, partitioner, depth + 1)?); }
+        if part.len() == members.len() {
+            output.push(part);
+        } else {
+            output.extend(split(&part, adjacency, partitioner, depth + 1)?);
+        }
     }
     Ok(output)
 }
 
 fn fold_small(groups: &mut Vec<Vec<usize>>, adjacency: &[Vec<(usize, f64)>]) {
     loop {
-        let Some(source) = groups.iter().enumerate()
+        let Some(source) = groups
+            .iter()
+            .enumerate()
             .filter(|(_, group)| group.len() < 3)
             .min_by_key(|(_, group)| (group.len(), group[0]))
-            .map(|(index, _)| index) else { break; };
-        if groups.len() == 1 { break; }
+            .map(|(index, _)| index)
+        else {
+            break;
+        };
+        if groups.len() == 1 {
+            break;
+        }
         let mut owner = BTreeMap::new();
         for (index, group) in groups.iter().enumerate() {
-            for &file in group { owner.insert(file, index); }
+            for &file in group {
+                owner.insert(file, index);
+            }
         }
         let mut weights = vec![0.0; groups.len()];
         for &file in &groups[source] {
             for &(neighbour, weight) in &adjacency[file] {
                 if let Some(&target) = owner.get(&neighbour) {
-                    if target != source { weights[target] += weight; }
+                    if target != source {
+                        weights[target] += weight;
+                    }
                 }
             }
         }
-        let target = (0..groups.len()).filter(|&i| i != source)
-            .max_by(|&a, &b| weights[a].total_cmp(&weights[b])
-                .then_with(|| groups[b][0].cmp(&groups[a][0])))
+        let target = (0..groups.len())
+            .filter(|&i| i != source)
+            .max_by(|&a, &b| {
+                weights[a]
+                    .total_cmp(&weights[b])
+                    .then_with(|| groups[b][0].cmp(&groups[a][0]))
+            })
             .expect("at least two groups");
         let moved = groups.remove(source);
         let target = if target > source { target - 1 } else { target };
@@ -138,16 +171,20 @@ fn dominant_parent(members: &[usize], layout: &PipelineOutput) -> String {
         let parent = path.rsplit_once('/').map_or(".", |(parent, _)| parent);
         *counts.entry(parent.to_owned()).or_default() += 1;
     }
-    counts.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
-        .map(|(parent, _)| parent).unwrap_or_else(|| ".".to_owned())
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .map(|(parent, _)| parent)
+        .unwrap_or_else(|| ".".to_owned())
 }
 
 fn unique_suffix(parents: &[String], index: usize) -> String {
     let parts = parents[index].split('/').collect::<Vec<_>>();
     for length in 1..=parts.len() {
         let suffix = parts[parts.len() - length..].join("/");
-        if parents.iter().enumerate().all(|(other, parent)| other == index ||
-            !parent.ends_with(&format!("/{suffix}")) && parent != &suffix) {
+        if parents.iter().enumerate().all(|(other, parent)| {
+            other == index || !parent.ends_with(&format!("/{suffix}")) && parent != &suffix
+        }) {
             return suffix;
         }
     }
