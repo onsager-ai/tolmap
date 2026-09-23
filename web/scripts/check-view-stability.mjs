@@ -2825,9 +2825,21 @@ function pickBigFileTarget(symbols) {
   return { file, count };
 }
 
-// The class (kind 0) with the most members in the bundled district, plus one
-// of its members -- the pair checkClassExpandsAtShortSide and
-// checkCardTapSelectsSymbolAndBreadcrumb need to exercise expansion.
+// The class (kind 0) with the most CODE LINES (row[6]) among classes with at
+// least one member, plus its biggest member -- the pair
+// checkClassExpandsAtShortSide and checkCardTapSelectsSymbolAndBreadcrumb
+// need a class whose card actually has room to grow past 110px within the
+// zoom range Playwright's clampK caps at (fitScale()*40).
+//
+// CI review finding (issue #82 C2): the first version of this picker ranked
+// by MEMBER COUNT, which found a district-0 class with 61 members that never
+// reached 110px even at max zoom -- many members can still be a small class
+// by AREA if most of them are one-line stubs (property overrides, trivial
+// getters), which is common in data-model-style classes. A card's allocated
+// area follows "mass" (own code lines + descendants' code lines -- see
+// src/symbol_cards.rs's own `mass()`), which code_lines (a span-inclusive
+// count, so it already sums a class's own lines and every descendant's)
+// tracks far more directly than a raw member count does.
 function pickExpandableClass(symbols) {
   const si = symbols.symbol_indices;
   const childCount = new Map();
@@ -2837,25 +2849,36 @@ function pickExpandableClass(symbols) {
   let classGlobal = null;
   let classLocal = -1;
   let memberCount = -1;
+  let bestCodeLines = -1;
   symbols.symbols.forEach((row, local) => {
     if (row[2] !== 0) return;
     const global = si[local];
     const n = childCount.get(global) ?? 0;
-    if (n > memberCount) {
+    if (n === 0) return;
+    const codeLines = row[6];
+    if (codeLines > bestCodeLines) {
+      bestCodeLines = codeLines;
       memberCount = n;
       classGlobal = global;
       classLocal = local;
     }
   });
   if (classGlobal == null) return null;
+  // The biggest member by code_lines, not just the first found -- the same
+  // "give the test the best shot at a visible result" reasoning as the class
+  // pick itself.
   let childGlobal = null;
   let childName = null;
+  let childCodeLines = -1;
   symbols.symbols.forEach((row, local) => {
-    if (childGlobal != null || row[5] !== classGlobal) return;
-    childGlobal = si[local];
-    childName = row[1];
+    if (row[5] !== classGlobal) return;
+    if (row[6] > childCodeLines) {
+      childCodeLines = row[6];
+      childGlobal = si[local];
+      childName = row[1];
+    }
   });
-  return { classGlobal, file: symbols.symbols[classLocal][0], className: symbols.symbols[classLocal][1], memberCount, childGlobal, childName };
+  return { classGlobal, file: symbols.symbols[classLocal][0], className: symbols.symbols[classLocal][1], memberCount, codeLines: bestCodeLines, childGlobal, childName };
 }
 
 // The symbol with the largest combined in+out edge weight in the bundled
@@ -2943,14 +2966,22 @@ async function checkClassExpandsAtShortSide(browser, base) {
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
+  const classKey = `hs:${target.classGlobal}`;
   const childKey = `hs:${target.childGlobal}`;
   const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
-  report(initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${target.className} member=${target.childName}`);
+  report(initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${target.className} (${target.codeLines} code lines, ${target.memberCount} members) member=${target.childName}`);
   let expanded = false;
+  let lastBox = null;
   for (let i = 0; i < 8 && !expanded; i++) {
     await zoomIn(page, 600, 400);
     expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
+    lastBox = await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox().catch(() => null);
   }
+  // Diagnostic, printed regardless of pass/fail: the class card's own
+  // on-screen box after the LAST zoom step, so a failure here says exactly
+  // how far short of 110px it fell (or that the class card itself never
+  // rendered at all -- boundingBox null).
+  console.log(`  (info) class card box at final zoom: ${lastBox ? `${Math.round(lastBox.width)}x${Math.round(lastBox.height)}px (short side ${Math.round(Math.min(lastBox.width, lastBox.height))}px, want >=110)` : "not found"}`);
   report(expanded, `${label}: zooming in reveals the member's own card`, `class=${target.className} member=${target.childName} childKey=${childKey}`);
   await context.close();
 }

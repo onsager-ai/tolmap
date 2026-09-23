@@ -1231,11 +1231,25 @@ export class MapRenderer {
     // file sitting in an otherwise-tiny district, for instance. Collected
     // into `filesNeedingCards` below for the dedicated symbol-card pass
     // after this loop (paint order: cards sit on top of every footprint).
+    //
+    // CI review finding (issue #82 C2): a few genuinely huge files (dify has
+    // some) cross the raw 40px-of-footprint-AREA gate even at the fit-zoom
+    // overview -- 31 of 6347 on desktop, measured. Finding 27's whole reason
+    // for gating on-screen size at all was "the silhouette survives at the
+    // overview," and drawing ANY card before the reader has done anything
+    // more than open the map contradicts that, whatever the file's raw size.
+    // Fixed by ALSO requiring `zf0 > 1` (zoomed in past the opening fit) for
+    // a file that reached the gate by size alone -- the selected file is
+    // still always eligible regardless of zoom (spec: "or the selected
+    // file"), so a `?file=` deep link or a click still shows cards
+    // immediately, at whatever zoom that lands on.
     const symbolGateFiles = FOOTPRINTS
       ? (() => {
           const set = new Set<number>();
           for (const [i, area] of this.fileFootprintArea) {
-            if (fileCrossesSymbolGate(area, this.k, i === sel)) set.add(i);
+            const selected = i === sel;
+            if (!selected && zf0 <= 1) continue;
+            if (fileCrossesSymbolGate(area, this.k, selected)) set.add(i);
           }
           if (sel != null && this.fileFootprintArea.has(sel)) set.add(sel);
           return set;
