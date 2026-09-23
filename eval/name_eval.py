@@ -79,7 +79,8 @@ def build(binary: Path, clone: Path, args: list[str], stem: str,
     out.mkdir(parents=True, exist_ok=True)
     ledger_path = Path(os.environ["TOLMAP_NAMER_LEDGER"])
     before = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
-    command = [str(binary), "build", str(clone), *args, "--name", stem,
+    command = ["prlimit", f"--as={os.environ.get('BUILD_MEM_BYTES', '15032385536')}",
+               "--", str(binary), "build", str(clone), *args, "--name", stem,
                "--out", str(out), "--namer", namer]
     if previous:
         command += ["--previous-map", str(previous)]
