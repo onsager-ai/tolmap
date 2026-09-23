@@ -43,6 +43,8 @@ export function symbolsOf(doc: MapDocument, i: number) {
   return doc.S?.[String(i)] ?? [];
 }
 
+/** Extent of drawable files and polygons. Unconnected files have no map
+ * placement, so they cannot set the zoom-out floor. */
 export function worldBounds(doc: MapDocument, geo: Geo): [number, number, number, number] {
   const a: [number, number, number, number] = [1e9, 1e9, -1e9, -1e9];
   const put = (x: number, y: number) => {
@@ -52,34 +54,35 @@ export function worldBounds(doc: MapDocument, geo: Geo): [number, number, number
     a[3] = Math.max(a[3], y);
   };
   for (let i = 0; i < doc.N.length; i++) {
+    if (districtClass(doc.districts[String(D_(doc, i))]) === "unconnected") continue;
     const p = px(doc, geo, i);
     put(p[0], p[1]);
   }
   if (geo === "r") {
     for (const d in doc.districts) {
+      if (districtClass(doc.districts[d]) === "unconnected") continue;
       for (const poly of doc.districts[d].blob) {
         for (const q of poly) put(q[0], q[1]);
       }
     }
   } else {
     for (let i = 0; i < doc.N.length; i++) {
+      if (districtClass(doc.districts[String(D_(doc, i))]) === "unconnected") continue;
       const r = RECT(doc, i);
       put(r[0] + r[2], r[1] + r[3]);
     }
   }
-  return a;
+  return a[2] < a[0] ? [0, 0, 1, 1] : a;
 }
 
 /** Same as `worldBounds`, but scoped to mainland districts only (issue #34).
  * This is the box the default view and the "fit" control frame -- islands
- * and unconnected districts sit on rings well outside it
- * (`geometry.rs::relocate_offshore`), and framing the full extent by
+ * sit on a ring well outside it (`geometry.rs::relocate_offshore`), and framing the full extent by
  * default would open a repository like n8n on a mostly-empty frame with the
  * actual 28-district map squeezed into a corner of it (measured: mainland
  * is 27.2% of n8n's full extent, 31.6% of dify's). The full extent stays
  * reachable by zooming out -- see `MapRenderer`'s `clampK`, which floors on
- * `fullFitScale`, not this -- offshore districts are meant to be reachable,
- * not foregrounded.
+ * `fullFitScale`, not this -- islands remain reachable by zooming out.
  *
  * When every district is mainland (every pre-#34 fixture: a missing `class`
  * defaults there, see `districtClass`), every `continue` below is a no-op
@@ -141,8 +144,8 @@ export function fitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): nu
   return scaleToFit(mainlandBounds(doc, geo), vw, vh);
 }
 
-/** Like `fitScale`, but against the FULL extent (mainland + islands +
- * unconnected). `MapRenderer` uses this only as the floor for how far a
+/** Like `fitScale`, but against the drawable extent (mainland + islands).
+ * `MapRenderer` uses this only as the floor for how far a
  * viewer can zoom OUT -- never as the default framing, which is
  * `fitScale`/`mainlandBounds` (see that function's doc comment for why). */
 export function fullFitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): number {

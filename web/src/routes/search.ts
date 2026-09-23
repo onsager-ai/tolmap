@@ -32,7 +32,9 @@ const LAYERS: Layer[] = ["d", "c", "x", "p"];
 export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const geo = GEOS.includes(search.geo as Geo) ? (search.geo as Geo) : "r";
   const layer = LAYERS.includes(search.layer as Layer) ? (search.layer as Layer) : "d";
-  const file = typeof search.file === "string" && search.file.length > 0 ? search.file : undefined;
+  // Accept older ?sel=<path> links as an alias; the UI writes ?file=.
+  const selectedPath = search.file ?? search.sel;
+  const file = typeof selectedPath === "string" && selectedPath.length > 0 ? selectedPath : undefined;
   const dirRaw = typeof search.dir === "string" ? search.dir.trim().replace(/^\/+|\/+$/g, "") : "";
   const dir = !file && dirRaw ? dirRaw : undefined;
   const symRaw = Number(search.sym);

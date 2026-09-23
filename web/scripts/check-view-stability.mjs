@@ -40,9 +40,11 @@
 import { chromium } from "playwright";
 
 function parseArgs(argv) {
-  const args = { base: "http://127.0.0.1:5176" };
+  const args = { base: "http://127.0.0.1:5176", beforeBase: null, featureOnly: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--base") args.base = argv[++i];
+    else if (argv[i] === "--before-base") args.beforeBase = argv[++i];
+    else if (argv[i] === "--feature-only") args.featureOnly = true;
     else throw new Error(`unknown arg: ${argv[i]}`);
   }
   return args;
@@ -493,10 +495,14 @@ async function checkMultiPolygonHover(browser, base) {
   report(before > 1, `${label}: district d:${districtId} has multiple elements sharing its key`, `found ${before}`);
 
   const polyCentre = await page.evaluate((d) => {
-    const el = document.querySelector(`svg.map-svg path.hit[data-k="d:${d}"]`);
-    if (!el) return null;
-    const r = el.getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    for (const el of document.querySelectorAll(`svg.map-svg path.hit[data-k="d:${d}"]`)) {
+      const r = el.getBoundingClientRect();
+      for (let yi = 1; yi < 8; yi++) for (let xi = 1; xi < 8; xi++) {
+        const x = r.x + r.width * xi / 8, y = r.y + r.height * yi / 8;
+        if (document.elementFromPoint(x, y)?.getAttribute("data-k") === `d:${d}`) return { x, y };
+      }
+    }
+    return null;
   }, districtId);
   if (!polyCentre) {
     report(false, `${label}: no polygon path found for d:${districtId}`);
@@ -1078,8 +1084,8 @@ async function checkViewerCards(browser, base, profile) {
     `${label}: districts are named and landmarks are listed`,
   );
 
-  const districtTarget = await page.evaluate(() => {
-    const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
+  const districtTarget = await page.evaluate((touch) => {
+    const paths = [...document.querySelectorAll(touch ? 'svg.map-svg text.hit[data-k^="d:"]' : 'svg.map-svg path.hit[data-k^="d:"]')];
     for (const path of paths) {
       const rect = path.getBoundingClientRect();
       for (let yi = 1; yi < 6; yi++) {
@@ -1094,7 +1100,7 @@ async function checkViewerCards(browser, base, profile) {
       }
     }
     return null;
-  });
+  }, profile.hasTouch);
   if (districtTarget) {
     await tap(page, profile, districtTarget.x, districtTarget.y);
     const districtId = districtTarget.key.split(":")[1];
@@ -1154,9 +1160,125 @@ async function checkViewerCards(browser, base, profile) {
   await context.close();
 }
 
+async function visibleDots(page) {
+  return page.locator('svg.map-svg circle.hit[data-k^="f:"]').evaluateAll((elements) =>
+    Object.fromEntries(elements.map((el) => [el.getAttribute("data-k"), [el.getAttribute("cx"), el.getAttribute("cy")]])));
+}
+
+async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profile) {
+  const label = `folder labels and unconnected files / ${profile.name}`;
+  console.log(`\n${label}`);
+  const options = { viewport: profile.viewport, isMobile: profile.isMobile, hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1 };
+  const context = await browser.newContext(options);
+  const page = await context.newPage();
+  const slug = "langgenius/dify";
+  await page.goto(`${base}/${slug}`);
+  await page.waitForSelector("svg.map-svg path.hit");
+  const doc = await page.evaluate(async () => (await fetch("/maps/langgenius/dify.json")).json());
+  const unconnected = doc.N.flatMap((row, i) => doc.districts[String(row[0])].class === "unconnected" ? [i] : []);
+  report((await page.locator("[data-folder-label]").count()) === 0, `${label}: no folder labels at fit`);
+  const chip = page.locator("[data-unconnected-chip]");
+  report((await chip.textContent())?.trim() === `${unconnected.length} unconnected files`, `${label}: chip counts files, not districts`);
+  const noRing = async () => page.locator('svg.map-svg [data-k^="f:"]').evaluateAll((els, indices) =>
+    els.every((el) => !indices.includes(Number(el.getAttribute("data-k").slice(2)))), unconnected);
+  report(await noRing(), `${label}: no unconnected file dots at fit`);
+  for (let i = 0; i < 3; i++) await page.locator('button[aria-label="Zoom out"]').click();
+  await page.waitForTimeout(500);
+  report(await noRing(), `${label}: no ring dots at full extent`);
+  await page.locator('button[aria-label="Fit map"]').click();
+  await page.waitForTimeout(500);
+  await chip.click();
+  report((await page.locator("[data-unconnected-list] details").count()) > 0, `${label}: chip opens grouped folders`);
+  const first = page.locator("[data-unconnected-list] details").first();
+  await first.locator("summary").click();
+  const file = first.locator("[data-unconnected-file]").first();
+  const index = Number(await file.getAttribute("data-unconnected-file"));
+  const beforePick = await stableBox(page);
+  await file.click();
+  report(new URL(page.url()).searchParams.get("file") === doc.F[index] &&
+    (await page.locator("[data-selection-panel]").innerText()).includes("not connected to anything, so it isn't placed on the map"),
+  `${label}: listed file opens its card with the off-map note`);
+  report(boxesClose(beforePick, await stableBox(page)), `${label}: listed file leaves the map view in place`);
+  await page.goto(`${base}/${slug}?sel=${encodeURIComponent(doc.F[index])}`);
+  await page.waitForSelector("svg.map-svg path.hit");
+  if (profile.hasTouch) await page.locator("[data-selection-panel] > div").first().click();
+  report((await page.locator("[data-selection-panel]").innerText()).includes("not connected to anything, so it isn't placed on the map"),
+    `${label}: ?sel= unconnected file deep link opens its card`);
+  await page.goto(`${base}/${slug}`);
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.locator('input[aria-label="Search files"]').fill(doc.F[index]);
+  await page.locator('input[aria-label="Search files"]').press("Enter");
+  report(new URL(page.url()).searchParams.get("file") === doc.F[index],
+    `${label}: search result opens the unconnected file card`);
+
+  // The largest dify district is workflow & nodes (d:0, 887 files). Its
+  // 755-file workflow breakdown row is the measured label target.
+  await page.goto(`${base}/${slug}?d=0`);
+  await page.waitForSelector('button[aria-label="Zoom to district"]');
+  await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
+  await page.waitForTimeout(850);
+  const labels = await page.locator("[data-folder-label]").evaluateAll((els) =>
+    els.map((el) => [el.getAttribute("data-folder-district"), el.getAttribute("data-folder-label")]));
+  report(labels.some(([district, path]) => district === "0" && path === "web/app/components/workflow"),
+    `${label}: workflow folder label appears near 2×`, JSON.stringify(labels));
+  const counts = new Map();
+  for (const [district] of labels) counts.set(district, (counts.get(district) ?? 0) + 1);
+  report([...counts.values()].every((count) => count <= 4), `${label}: at most four labels per district`);
+  const zoomDots = await visibleDots(page);
+
+  for (const layer of ["c", "x", "p"]) {
+    if (profile.isMobile) await page.locator('button[aria-label="Cycle layer"]').click();
+    else await page.locator('[aria-label="Layer"] button', { hasText: layer === "c" ? "churn" : layer === "x" ? "complexity" : "package" }).click();
+    report((await page.locator('[data-folder-label="web/app/components/workflow"]').count()) > 0,
+      `${label}: workflow folder label remains on ${layer} layer`);
+    if (layer === "p" && !profile.isMobile) {
+      const legend = await page.locator("[data-package-legend]").boundingBox();
+      const footerChip = await chip.boundingBox();
+      report(!!legend && !!footerChip && footerChip.x >= legend.x + legend.width,
+        `${label}: package legend leaves room for the unconnected chip`);
+    }
+  }
+  const workflowLabel = page.locator('[data-folder-label="web/app/components/workflow"]');
+  if (!profile.hasTouch && (await workflowLabel.count())) {
+    await workflowLabel.hover({ force: true });
+    report((await page.locator("[data-folder-highlight]").count()) > 0 && !new URL(page.url()).searchParams.has("dir"),
+      `${label}: hovering previews folder highlight without selecting it`);
+  }
+  if (await workflowLabel.count()) {
+    await workflowLabel.click({ force: true });
+    report(new URL(page.url()).searchParams.get("dir") === "web/app/components/workflow" &&
+      (await page.locator("[data-folder-label]").evaluateAll((els) =>
+        els.every((el) => el.getAttribute("data-folder-label") === "web/app/components/workflow"))),
+      `${label}: tapping applies folder highlight and shows only its label`);
+  }
+
+  if (beforeBase) {
+    const prior = await browser.newContext(options);
+    const oldPage = await prior.newPage();
+    await oldPage.goto(`${beforeBase}/${slug}?d=0`);
+    await oldPage.waitForSelector('button[aria-label="Zoom to district"]');
+    await oldPage.locator('button[aria-label="Zoom to district"]').click({ force: true });
+    await oldPage.waitForTimeout(850);
+    const oldDots = await visibleDots(oldPage);
+    const common = Object.keys(zoomDots).filter((key) => oldDots[key]);
+    report(common.length > 100 && common.every((key) => JSON.stringify(zoomDots[key]) === JSON.stringify(oldDots[key])),
+      `${label}: existing dot cx/cy match origin/main at the same map and zoom`, `${common.length} shared dots`);
+    await prior.close();
+  }
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const browser = await chromium.launch();
+  if (args.featureOnly) {
+    for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
+    await browser.close();
+    console.log(`\n${checks - failures}/${checks} checks passed`);
+    if (failures) process.exit(1);
+    return;
+  }
   for (const slug of MAPS) {
     for (const profile of PROFILES) {
       await runOne({ browser, base: args.base, slug, profile });
@@ -1181,6 +1303,9 @@ async function main() {
   }
   for (const profile of PROFILES) {
     await checkViewerCards(browser, args.base, profile);
+  }
+  for (const profile of PROFILES) {
+    await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
   }
   await browser.close();
 

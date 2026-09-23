@@ -33,12 +33,8 @@ function DistrictRow({ doc, d, onFlyDistrict }: { doc: MapDocument; d: string; o
   );
 }
 
-/** Islands/unconnected section: a single-line, tappable header ("52
- * islands") that expands into the full list on click. Collapsed by
- * default — dify puts 117 districts through this path at cb04469 (n8n put
- * 337 before finding 15's resolver fix), and a rail
- * that dumps all of them flat would be worse than the 365-district list
- * this feature exists to replace. A real `<button>`, not a div with an
+/** Island section: a single-line, tappable header that expands into the
+ * full list on click. A real `<button>`, not a div with an
  * onClick like the district/landmark rows below it: this element's whole
  * job is the toggle itself (no secondary click target competing for the
  * same tap the way a row's "select" and "fly to" affordances share one),
@@ -84,25 +80,16 @@ function CollapsibleSection({
  * as a translateY transition driven by the `open` prop instead of a class
  * toggled directly on the DOM node.
  *
- * Districts split into up to three sections by class (issue #34): mainland
- * districts under "Districts" as before, and islands/unconnected each
- * collapsed behind their own count — see `CollapsibleSection`. A pre-#34
- * document (no `class` anywhere) has every district read as mainland
- * (`districtClass`'s default), so `islandIds`/`unconnectedIds` are both
- * empty and this collapses to exactly the flat list that shipped before. */
+ * Districts split into mainland and islands. Unconnected files now live in
+ * the footer list, with no district row to fly to. */
 export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onFlyDistrict }: Props) {
   const narrow = useIsNarrow();
-  const byClass = (cls: "mainland" | "island" | "unconnected") =>
+  const byClass = (cls: "mainland" | "island") =>
     Object.keys(doc.districts)
       .filter((d) => districtClass(doc.districts[d]) === cls)
       .sort((a, b) => doc.districts[b].size - doc.districts[a].size);
   const mainlandIds = byClass("mainland");
   const islandIds = byClass("island");
-  // Named "Unfiled", not "Districts" or "Towns": these are files the map
-  // couldn't place anywhere meaningful (no import edge to the rest of the
-  // repo), and the name has to say that rather than read as a place — spec
-  // requirement, and the same honesty SelectionPanel's note line applies.
-  const unconnectedIds = byClass("unconnected");
 
   const body = (
     <>
@@ -136,7 +123,6 @@ export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onFlyDistrict
         ))}
       </div>
       <CollapsibleSection label="islands" ids={islandIds} doc={doc} onFlyDistrict={onFlyDistrict} />
-      <CollapsibleSection label="unfiled" ids={unconnectedIds} doc={doc} onFlyDistrict={onFlyDistrict} />
     </>
   );
 

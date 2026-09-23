@@ -1,5 +1,5 @@
 import type { MapDocument } from "@/types";
-import { D_, districtClass } from "./geometry";
+import { D_, districtClass, districtWorldArea } from "./geometry";
 
 export const PACKAGE_GROUP_LIMIT = 10;
 export const PACKAGE_OTHER_COLOR = "var(--dim)";
@@ -36,6 +36,16 @@ export interface DistrictPathRow {
   other: boolean;
 }
 
+export interface FolderLabel {
+  district: number;
+  path: string;
+  x: number;
+  y: number;
+  worldSide: number;
+  longText: string;
+  shortText: string;
+}
+
 export interface PackageLayout {
   autoDepth: number;
   minDepth: number;
@@ -46,6 +56,9 @@ export interface PackageLayout {
   filesByDirectory: ReadonlyMap<string, ReadonlySet<number>>;
   islandOnlyDirectories: ReadonlySet<string>;
   districtPaths: ReadonlyMap<number, readonly DistrictPathRow[]>;
+  folderLabels: readonly FolderLabel[];
+  unconnectedFiles: readonly number[];
+  unconnectedGroups: readonly { path: string; files: readonly number[] }[];
 }
 
 interface MutableDirectoryNode {
@@ -319,6 +332,36 @@ export function buildPackageLayout(doc: MapDocument): PackageLayout {
   }
   const districtPaths = new Map<number, readonly DistrictPathRow[]>();
   for (const [district, indices] of membersByDistrict) districtPaths.set(district, districtBreakdown(indices, fileParts));
+  const folderLabels: FolderLabel[] = [];
+  for (const [district, rows] of districtPaths) {
+    if (districtClass(doc.districts[String(district)]) !== "mainland") continue;
+    const districtSize = membersByDistrict.get(district)!.length;
+    const worldSide = Math.sqrt(districtWorldArea(doc.districts[String(district)]));
+    for (const row of rows.filter((entry) => !entry.other && entry.count / districtSize >= 0.08).slice(0, 4)) {
+      const members = membersByDistrict.get(district)!.filter((i) =>
+        row.path === "." || doc.F[i].startsWith(`${row.path}/`));
+      if (!members.length) continue;
+      const xs = members.map((i) => doc.N[i][1]).sort((a, b) => a - b);
+      const ys = members.map((i) => doc.N[i][2]).sort((a, b) => a - b);
+      const median = (values: readonly number[]) => (values[(values.length - 1) >> 1] + values[values.length >> 1]) / 2;
+      const parts = row.path!.split("/");
+      folderLabels.push({ district, path: row.path!, x: median(xs), y: median(ys),
+        worldSide,
+        longText: parts.slice(-2).join("/").toLowerCase() + "/",
+        shortText: parts.at(-1)!.toLowerCase() + "/" });
+    }
+  }
+  const unconnectedFiles = doc.N.flatMap((row, i) =>
+    districtClass(doc.districts[String(row[0])]) === "unconnected" ? [i] : []);
+  const groups = new Map<string, number[]>();
+  for (const i of unconnectedFiles) {
+    const path = doc.F[i].split("/").slice(0, -1).join("/") || ".";
+    const files = groups.get(path) ?? [];
+    files.push(i);
+    groups.set(path, files);
+  }
+  const unconnectedGroups = [...groups].sort((a, b) => b[1].length - a[1].length || compareText(a[0], b[0]))
+    .map(([path, files]) => ({ path, files }));
 
   return {
     autoDepth,
@@ -330,6 +373,9 @@ export function buildPackageLayout(doc: MapDocument): PackageLayout {
     filesByDirectory,
     islandOnlyDirectories,
     districtPaths,
+    folderLabels,
+    unconnectedFiles,
+    unconnectedGroups,
   };
 }
 

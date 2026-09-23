@@ -3,7 +3,7 @@ import type { MapDocument } from "@/types";
 import { MapRenderer, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
 import type { Geo, Layer } from "./constants";
 import type { Route } from "./graph";
-import type { PackageGrouping } from "./packageLayout";
+import type { FolderLabel, PackageGrouping } from "./packageLayout";
 
 export interface MapCanvasHandle {
   fit(anim?: boolean): void;
@@ -24,6 +24,8 @@ interface MapCanvasProps {
   packageGrouping: PackageGrouping;
   folderFiles: ReadonlySet<number> | null;
   folderOnlyIslands: boolean;
+  folderLabels: readonly FolderLabel[];
+  activeDirectory?: string;
   callbacks: MapRendererCallbacks;
   handleRef?: React.Ref<MapCanvasHandle>;
 }
@@ -45,6 +47,8 @@ export function MapCanvas({
   packageGrouping,
   folderFiles,
   folderOnlyIslands,
+  folderLabels,
+  activeDirectory,
   callbacks,
   handleRef,
 }: MapCanvasProps) {
@@ -64,6 +68,8 @@ export function MapCanvas({
       onSelectFile: (i) => callbacksRef.current.onSelectFile(i),
       onSelectSymbol: (i, s) => callbacksRef.current.onSelectSymbol(i, s),
       onClearSelection: () => callbacksRef.current.onClearSelection(),
+      onSelectDirectory: (path) => callbacksRef.current.onSelectDirectory(path),
+      onPreviewDirectory: (path) => callbacksRef.current.onPreviewDirectory(path),
       onDragStart: () => callbacksRef.current.onDragStart?.(),
     };
     const renderer = new MapRenderer(svgRef.current, stableCallbacks);
@@ -128,6 +134,8 @@ export function MapCanvas({
       packageGrouping,
       folderFiles,
       folderOnlyIslands,
+      folderLabels,
+      activeDirectory,
     };
     renderer.fit(false, state);
     justFittedRef.current = true;
@@ -152,9 +160,11 @@ export function MapCanvas({
       packageGrouping,
       folderFiles,
       folderOnlyIslands,
+      folderLabels,
+      activeDirectory,
     };
     renderer.render(state);
-  }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, folderFiles, folderOnlyIslands]);
+  }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, folderFiles, folderOnlyIslands, folderLabels, activeDirectory]);
 
   // The wrapper's box, watched once for the component's life. Selection,
   // layer, geo and route changes must never touch this subscription: the

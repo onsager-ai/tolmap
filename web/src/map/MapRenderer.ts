@@ -28,7 +28,7 @@ import {
   worldBounds,
 } from "./geometry";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
-import type { PackageGrouping } from "./packageLayout";
+import type { FolderLabel, PackageGrouping } from "./packageLayout";
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
 
@@ -62,6 +62,8 @@ export interface MapRenderState {
   packageGrouping: PackageGrouping;
   folderFiles: ReadonlySet<number> | null;
   folderOnlyIslands: boolean;
+  folderLabels: readonly FolderLabel[];
+  activeDirectory?: string;
 }
 
 export interface MapRendererCallbacks {
@@ -69,6 +71,8 @@ export interface MapRendererCallbacks {
   onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
   onClearSelection(): void;
+  onSelectDirectory(path: string): void;
+  onPreviewDirectory(path?: string): void;
   /** Fired once a drag has actually moved the map, so React can dismiss
    * transient chrome (the mobile drawer, a suggestion list) the way a real
    * map app does. */
@@ -93,6 +97,12 @@ export class MapRenderer {
   private districtOrder = new Map<number, number[]>();
   private districtArea = new Map<number, number>();
   private fileRank = new Map<number, number>();
+  // Classify once with the other document indices. The dot loop reads one
+  // byte per file instead of resolving a district and class every paint.
+  private unconnectedFile = new Uint8Array(0);
+  private drawableDistrictIds: string[] = [];
+  private labelDistrictIds: string[] = [];
+  private drawableRoads: MapDocument["roads"] = [];
 
   // Issue #51 perf follow-up: cache of mainlandBounds()/worldBounds() and
   // the two scales derived from them (see geometry.ts's scaleToFit), keyed
@@ -319,10 +329,19 @@ export class MapRenderer {
     this.districtOrder.clear();
     this.districtArea.clear();
     this.fileRank.clear();
+    this.unconnectedFile = new Uint8Array(doc.N.length);
+    this.drawableDistrictIds = Object.keys(doc.districts)
+      .filter((d) => districtClass(doc.districts[d]) !== "unconnected");
+    this.labelDistrictIds = [...this.drawableDistrictIds].sort((a, b) =>
+      Number(districtClass(doc.districts[a]) === "island") - Number(districtClass(doc.districts[b]) === "island"));
+    this.drawableRoads = doc.roads.filter(([a, b]) =>
+      districtClass(doc.districts[String(a)]) !== "unconnected" &&
+      districtClass(doc.districts[String(b)]) !== "unconnected");
     const isLandmark = new Set(doc.L.map(([i]) => i));
     const byDistrict = new Map<number, number[]>();
     for (let i = 0; i < doc.N.length; i++) {
       const d = D_(doc, i);
+      this.unconnectedFile[i] = districtClass(doc.districts[String(d)]) === "unconnected" ? 1 : 0;
       if (!byDistrict.has(d)) byDistrict.set(d, []);
       byDistrict.get(d)!.push(i);
     }
@@ -354,14 +373,9 @@ export class MapRenderer {
     const { doc } = this.state!;
     const d = D_(doc, i);
     const district = doc.districts[String(d)];
-    // Unconnected districts carry no polygon at all -- geometry.rs empties
-    // their `blob` (districtClass's doc comment) -- so there is no area to
-    // budget against. They are already the map's most de-emphasised places
-    // (no polygon, no road, no label: drawLabels skips them outright), and
-    // a file's dot is its ONLY trace on the map; thinning it would erase
-    // the file rather than declutter a place, so the simplest defensible
-    // rule is to never budget these districts at all.
-    if (districtClass(district) === "unconnected" || district.size <= 0) return 1;
+    // Unconnected files are omitted before this function is called. A
+    // size-zero legacy district still gets its ordinary fast path.
+    if (district.size <= 0) return 1;
     const area = this.districtArea.get(d) ?? 0;
     const edge = (area * this.k * this.k) / DOT_DENSITY_FLOOR;
     // Fast path: once the budget covers every file in the district there is
@@ -409,7 +423,7 @@ export class MapRenderer {
   /** Issue #63 (revised after review): an island's fade multiplier for THIS
    * zoom -- a V shape in zf0, zero only exactly at fit, rising continuously
    * on BOTH sides. `floorZf` is `fullScale()/fitScale()`, the zf0 at which
-   * the whole offshore ring (mainland + islands + unconnected) is just
+   * the whole drawable offshore extent (mainland + islands) is just
    * framed -- the same number `clampK`'s own floor is built from (its
    * `Math.min(fitScale()*0.5, fullScale())` guarantees the reachable floor
    * is never ABOVE this zf0, so opacity is already saturated at 1 by the
@@ -586,9 +600,8 @@ export class MapRenderer {
    * (mainland + offshore rings) -- never the default framing. Without this,
    * `clampK`'s `fitScale()*0.5` floor would be a fraction of a view that
    * itself excludes the offshore rings (see `frameBounds`), so scrolling or
-   * pinching out could never reach far enough to see an island or
-   * unconnected district at all (issue #34, requirement 2: offshore is
-   * reachable, not clamped away). */
+   * pinching out could never reach far enough to see an island at all.
+   * Unconnected files now live in the footer list. */
   private fullScale(): number {
     if (!this.state) return 1;
     return this.bounds().full;
@@ -700,7 +713,7 @@ export class MapRenderer {
     // unreachable today (every id `compact()` emits already carries >=1
     // file, mainland or not, per geometry.rs), guarded anyway: `district.c`
     // is always a valid, finite coordinate either way -- mainland's own
-    // centroid, or an island/unconnected's ring position
+    // centroid, or an island's ring position
     // (geometry.rs::relocate_offshore) -- so it's a correct fallback for a
     // literal NaN too, if that invariant is ever violated from elsewhere.
     if (!Number.isFinite(c[0]) || !Number.isFinite(c[1])) c = district.c;
@@ -710,10 +723,9 @@ export class MapRenderer {
   }
   private clampK(v: number) {
     // The lower bound is whichever scale is smaller, so a viewer can always
-    // zoom out far enough to see the full extent -- islands, unconnected,
-    // everything -- even though the default view only frames mainland.
-    // Requirement 2 (issue #34): offshore districts are reachable by
-    // zooming out, not clamped away. On a pre-#34 fixture (no `class`
+    // zoom out far enough to see all drawable districts, including islands,
+    // even though the default view only frames mainland. Unconnected files
+    // are listed off-map. On a pre-#34 fixture (no `class`
     // anywhere) mainland IS the full extent, so fullScale() === fitScale()
     // and this is exactly today's `fitScale() * 0.5` floor.
     const lo = Math.min(this.fitScale() * 0.5, this.fullScale());
@@ -825,7 +837,8 @@ export class MapRenderer {
     // does; the separately RANKED, CAPPED subset (getSelLinks(), further
     // down) only decides which lines get drawn and never narrows this set.
     const blast = computeBlast(doc, sel, selSym);
-    const selNeighbours = !route && !blast && sel != null ? { out: this.outAdj.get(sel) ?? [], in: this.inAdj.get(sel) ?? [] } : null;
+    const selNeighbours = !route && !blast && sel != null && !this.unconnectedFile[sel]
+      ? { out: this.outAdj.get(sel) ?? [], in: this.inAdj.get(sel) ?? [] } : null;
     const dim: ReadonlySet<number> | null = folderFiles
       ? folderFiles
       : route
@@ -865,7 +878,7 @@ export class MapRenderer {
       for (const i of dim) islandExceptionDistricts.add(D_(doc, i));
 
     if (geo !== "t") {
-      doc.roads.forEach(([a, b, w]) => {
+      this.drawableRoads.forEach(([a, b, w]) => {
         const p = doc.districts[String(a)].c;
         const q = doc.districts[String(b)].c;
         g.appendChild(
@@ -881,15 +894,12 @@ export class MapRenderer {
           }),
         );
       });
-      for (const d in doc.districts) {
+      for (const d of this.drawableDistrictIds) {
         const on = selD === +d;
         // Islands are real places but not the map's subject (issue #34): a
         // thinner, fainter outline is the de-emphasis mechanism here,
         // rather than a second colour scheme (districtColor stays the only
-        // source of hue, per spec). Unconnected districts never draw
-        // anything in this loop regardless -- the Rust side already
-        // emptied their `blob` (geometry.rs), so `.forEach` below is a
-        // no-op for them and they need no explicit case.
+        // source of hue, per spec). Unconnected districts were skipped above.
         const faint = districtClass(doc.districts[d]) === "island";
         const districtFaded = dimDistricts != null && !dimDistricts.has(+d);
         // Issue #63: an island not yet islandFadeVisible() this frame draws
@@ -944,6 +954,7 @@ export class MapRenderer {
     if (sel != null) alwaysDrawn.add(sel);
     if (dim) for (const i of dim) alwaysDrawn.add(i);
     for (let i = 0; i < doc.N.length; i++) {
+      if (this.unconnectedFile[i]) continue;
       if (CELL && doc.P![String(i)]) {
         const p = this.px(i);
         const cx = this.X(p[0]);
@@ -1178,6 +1189,7 @@ export class MapRenderer {
     // districts loop) is the same k/fitScale() ratio this needs -- no
     // reason for a second identical computation.
     const pinScreenOf = (i: number): [number, number] | null => {
+      if (this.unconnectedFile[i]) return null;
       // Issue #63: reuses the SAME "return null = culled" contract
       // selectPins already defines for an off-screen candidate (see its own
       // doc comment) -- an invisible island's landmark pin is excluded from
@@ -1192,7 +1204,7 @@ export class MapRenderer {
       return [cx, cy];
     };
     const pins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel);
-    this.drawLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts);
+    this.drawLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, pins.map(({ cx, cy }) => [cx - 10, cy - 32, 20, 32]));
 
     pins.forEach(({ row: [i, why, detail, rank], cx, cy }) => {
       const pFade = this.islandFadeForDistrict(D_(doc, i), zf0, islandFadeFloorZf, islandExceptionDistricts);
@@ -1228,7 +1240,7 @@ export class MapRenderer {
       g.appendChild(gg);
     });
 
-    if (sel != null) this.ring(g, sel, "var(--hot)", fs);
+    if (sel != null && !this.unconnectedFile[sel]) this.ring(g, sel, "var(--hot)", fs);
 
     // key -> every element carrying it, rebuilt fresh this paint (one
     // querySelectorAll over exactly what was just drawn, one loop -- see
@@ -1265,9 +1277,9 @@ export class MapRenderer {
 
   // Label budget: districts first, then files by importance, skipping
   // collisions.
-  private drawLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>) {
+  private drawLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, pinBoxes: number[][]) {
     const { doc, geo } = this.state!;
-    const placed: [number, number, number, number][] = [];
+    const placed: number[][] = [];
     const hits = (x: number, y: number, w: number, h: number) =>
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
     const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number) => {
@@ -1308,19 +1320,10 @@ export class MapRenderer {
     // measured on a 60-island synthetic stress fixture to overlap well
     // before they'd stop colliding on screen) this is what keeps the
     // result a sparse, legible scatter of names instead of a solid
-    // unreadable band of overlapping text. Unconnected districts are
-    // skipped outright: the Rust side gave them no polygon because they
-    // aren't places (geometry.rs), so labelling them here would strand a
-    // name and a "N files" line out on the unconnected ring where nothing
-    // is drawn to attach it to.
-    const ids = Object.keys(doc.districts).sort((a, b) => {
-      const pa = districtClass(doc.districts[a]) === "island" ? 1 : 0;
-      const pb = districtClass(doc.districts[b]) === "island" ? 1 : 0;
-      return pa - pb;
-    });
-    for (const d of ids) {
+    // unreadable band of overlapping text. Unconnected districts have no
+    // polygon and are listed in the footer panel instead.
+    for (const d of this.labelDistrictIds) {
       const cls = districtClass(doc.districts[d]);
-      if (cls === "unconnected") continue;
       const isIsland = cls === "island";
       // Issue #63: the SAME fade the polygon and its file dots use (see
       // islandFadeForDistrict) -- a label/badge is the district's own
@@ -1341,7 +1344,11 @@ export class MapRenderer {
       // files" subtitle -- with up to hundreds of them on a real repo, a
       // second line per label would be its own kind of clutter even after
       // the priority sort above thins the count that gets placed at all.
-      const labelPlaced = put(x, y, doc.names[d], isIsland ? size * 0.75 : size, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
+      // Dominant folders have a median close to the district centre. Give
+      // the district name its own line above that centre once zoomed in;
+      // the dots and the folder's measured median stay exactly where they are.
+      const labelY = !isIsland && zf > 1 ? y - 32 : y;
+      const labelPlaced = put(x, labelY, doc.names[d], isIsland ? size * 0.75 : size, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
       // Issue's scope item 2: a "+N files" badge once #49's budget is
       // actually hiding members of this district AND the name label itself
       // found room -- a floating count with no name above it would read
@@ -1359,10 +1366,41 @@ export class MapRenderer {
       // if there's no room, the same trade every label on this map makes.
       const hidden = labelPlaced ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
       if (hidden > 0) {
-        put(x, y + (isIsland ? 10 : 13), `+${hidden} files`, isIsland ? 8.5 : 9.5, (isIsland ? 0.55 : 0.7) * iFade, 600, +d);
+        put(x, labelY + (isIsland ? 10 : 13), `+${hidden} files`, isIsland ? 8.5 : 9.5, (isIsland ? 0.55 : 0.7) * iFade, 600, +d);
       } else if (zf < 1.8 && !narrow && !isIsland) {
-        put(x, y + 13, doc.districts[d].size + " files", 9.5, 0.45);
+        put(x, labelY + 13, doc.districts[d].size + " files", 9.5, 0.45);
       }
+    }
+    // District names keep their established placement priority. Only folder
+    // labels need to yield to pin footprints as well as existing text.
+    placed.push(...pinBoxes);
+    // A folder earns a label only after its district spans one quarter of
+    // the viewport's shorter side. World side, text and medians were all
+    // computed once for the document; this pass only projects candidates.
+    // zf > 1 keeps the fitted overview uncluttered.
+    if (zf > 1) for (const label of this.state!.folderLabels) {
+      if (this.state!.activeDirectory && this.state!.activeDirectory !== label.path) continue;
+      if (label.worldSide * this.k < Math.min(this.VW, this.VH) * 0.25) continue;
+      const x = this.X(label.x), y = this.Y(label.y);
+      const size = narrow ? 9 : 10;
+      const h = size * 1.25;
+      // Try two path segments for context, then the final segment when a
+      // nearby district name leaves too little horizontal room.
+      const tail = [label.longText, label.shortText]
+        .find((candidate) => {
+          const width = candidate.length * size * 0.62;
+          return x >= width / 2 && x <= this.VW - width / 2 && y >= h && y <= this.VH && !hits(x - width / 2, y - h, width, h);
+        });
+      if (!tail) continue;
+      const w = tail.length * size * 0.62;
+      placed.push([x - w / 2, y - h, w, h]);
+      const t = el("text", { x: x.toFixed(1), y: y.toFixed(1), "font-size": size,
+        "text-anchor": "middle", fill: "var(--ink)", "fill-opacity": 0.36,
+        "font-family": "IBM Plex Mono, monospace", "pointer-events": "all",
+        "data-k": `dir:${label.path}`, "data-folder-label": label.path,
+        "data-folder-district": label.district });
+      t.textContent = tail;
+      g.appendChild(t);
     }
     // file labels appear as you zoom in — the budget grows with scale
     if (geo === "p" && zf > BUILD_ZOOM) return; // plots label themselves
@@ -1376,6 +1414,7 @@ export class MapRenderer {
         // a floating name with nothing under it reads as a bug, not a
         // place. Treemap ("t") dots are left ungated (see the draw() loop),
         // so this check only ever applies to "r"/"p".
+        if (this.unconnectedFile[i]) continue;
         if (geo !== "t" && !alwaysDrawn.has(i) && this.dotFactor(i) <= 0) continue;
         const p = this.px(i);
         const x = this.X(p[0]);
@@ -1739,6 +1778,8 @@ export class MapRenderer {
   }
 
   private setHover(key: string | null) {
+    if (this.hoverKey?.startsWith("dir:") || key?.startsWith("dir:"))
+      this.callbacks.onPreviewDirectory(key?.startsWith("dir:") ? key.slice(4) : undefined);
     for (const e of this.hoverEls) e.classList.remove("hovered");
     if (this.hoverImportTimer != null) {
       clearTimeout(this.hoverImportTimer);
@@ -1791,6 +1832,7 @@ export class MapRenderer {
   }
 
   private clearHover() {
+    if (this.hoverKey?.startsWith("dir:")) this.callbacks.onPreviewDirectory(undefined);
     for (const e of this.hoverEls) e.classList.remove("hovered");
     this.hoverEls = [];
     this.hoverKey = null;
@@ -1820,6 +1862,7 @@ export class MapRenderer {
       if (!district) return null;
       return { lines: [doc.names[d] ?? `district ${d}`, `${district.size} files`] };
     }
+    if (parts[0] === "dir") return { lines: [key.slice(4) + "/", "folder highlight"] };
     if (parts[0] === "f") {
       const i = +parts[1];
       if (!doc.F[i]) return null;
@@ -2097,5 +2140,6 @@ export class MapRenderer {
     if (parts[0] === "d") this.callbacks.onSelectDistrict(+parts[1]);
     else if (parts[0] === "f") this.callbacks.onSelectFile(+parts[1]);
     else if (parts[0] === "s") this.callbacks.onSelectSymbol(+parts[1], +parts[2]);
+    else if (parts[0] === "dir") this.callbacks.onSelectDirectory(kk.slice(4));
   }
 }
