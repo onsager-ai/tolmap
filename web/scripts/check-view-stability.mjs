@@ -3029,33 +3029,50 @@ async function tryExpandClass(page, base, mapDoc, candidate) {
   const path = mapDoc.F[candidate.file];
   const trueDistrict = mapDoc.N[candidate.file][0];
   const hasFootprint = !!mapDoc.P?.[String(candidate.file)];
-  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("svg.map-svg path.hit");
-  await page.waitForTimeout(900);
-  // Diagnostic only: is the file's OWN footprint drawn at all (a "hs:" card
-  // can only ever exist inside one)? Read via .hit[data-k="f:<i>"], the same
-  // selector footprint()/batchFootprint() tag every file's polygon with,
-  // batched or not.
-  const footprintDrawn = (await page.locator(`svg.map-svg .hit[data-k="f:${candidate.file}"]`).count()) > 0;
-  const classKey = `hs:${candidate.classGlobal}`;
-  const childKey = `hs:${candidate.childGlobal}`;
-  const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
-  let expanded = false;
-  for (let i = 0; i < 8 && !expanded; i++) {
-    await zoomIn(page, 600, 400);
-    expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
+  const consoleErrors = [];
+  const onConsole = (msg) => {
+    if (msg.type() === "error") consoleErrors.push(msg.text());
+  };
+  const onPageError = (err) => consoleErrors.push(`pageerror: ${err.message}`);
+  page.on("console", onConsole);
+  page.on("pageerror", onPageError);
+  try {
+    await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("svg.map-svg path.hit");
+    await page.waitForTimeout(900);
+    // Diagnostic only: is the file's OWN footprint drawn at all (a "hs:" card
+    // can only ever exist inside one)? Read via .hit[data-k="f:<i>"], the same
+    // selector footprint()/batchFootprint() tag every file's polygon with,
+    // batched or not. `anyCardForFile` distinguishes "nothing about this
+    // file's cards works at all" (every top-level symbol in it, module
+    // region included) from "just this one class" -- a whole-file failure
+    // points at an exception during drawSymbolCardsPass for that file, not
+    // something specific to one symbol's ring data.
+    const footprintDrawn = (await page.locator(`svg.map-svg .hit[data-k="f:${candidate.file}"]`).count()) > 0;
+    const anyCardForFile = (await page.locator(`svg.map-svg [data-k^="hs:"]`).count()) > 0;
+    const classKey = `hs:${candidate.classGlobal}`;
+    const childKey = `hs:${candidate.childGlobal}`;
+    const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
+    let expanded = false;
+    for (let i = 0; i < 8 && !expanded; i++) {
+      await zoomIn(page, 600, 400);
+      expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
+    }
+    const classCount = await page.locator(`svg.map-svg [data-k="${classKey}"]`).count();
+    const classBox = classCount > 0 ? await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null) : null;
+    const context = `(mapDoc district=${trueDistrict}, doc.P present=${hasFootprint}, footprint drawn=${footprintDrawn}, any hs: card for this file=${anyCardForFile}, console errors=${consoleErrors.length ? JSON.stringify(consoleErrors.slice(0, 3)) : "none"})`;
+    const diagnostic = expanded
+      ? `expanded ${context}`
+      : classCount === 0
+        ? `class card never rendered at all ${context}`
+        : classBox
+          ? `class card ${Math.round(classBox.width)}x${Math.round(classBox.height)}px (short side ${Math.round(Math.min(classBox.width, classBox.height))}px, want >=110) but member never appeared ${context}`
+          : `class card rendered but bounding box unavailable ${context}`;
+    return { expanded, initiallyCollapsed, classBox, diagnostic, path };
+  } finally {
+    page.off("console", onConsole);
+    page.off("pageerror", onPageError);
   }
-  const classCount = await page.locator(`svg.map-svg [data-k="${classKey}"]`).count();
-  const classBox = classCount > 0 ? await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null) : null;
-  const context = `(mapDoc district=${trueDistrict}, doc.P present=${hasFootprint}, footprint drawn=${footprintDrawn})`;
-  const diagnostic = expanded
-    ? `expanded ${context}`
-    : classCount === 0
-      ? `class card never rendered at all ${context}`
-      : classBox
-        ? `class card ${Math.round(classBox.width)}x${Math.round(classBox.height)}px (short side ${Math.round(Math.min(classBox.width, classBox.height))}px, want >=110) but member never appeared ${context}`
-        : `class card rendered but bounding box unavailable ${context}`;
-  return { expanded, initiallyCollapsed, classBox, diagnostic, path };
 }
 
 // 9(d): tapping a card selects the symbol and sets every level at once
