@@ -1342,6 +1342,153 @@ fn resolve_python(
     result
 }
 
+/// Diagnostic for files left with no edge after pruning. This reparses only
+/// those files; the known-file set comes from the graph that was actually
+/// built, so a syntactic import never counts as a relationship by itself.
+pub fn coverage_diagnostics(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    candidate: &BTreeSet<String>,
+    static_files: &BTreeSet<String>,
+    after: &GraphData,
+) -> Result<serde_json::Value> {
+    use serde_json::json;
+    let mut kept = BTreeSet::new();
+    for edge in &after.edges {
+        kept.insert(edge.a.as_str());
+        kept.insert(edge.b.as_str());
+    }
+    let modules = sources
+        .iter()
+        .any(|(_, lang)| *lang != LanguageKind::Python)
+        .then(|| module_index(repo))
+        .transpose()?;
+    let mut rows = Vec::new();
+    let mut causes = BTreeMap::<String, BTreeMap<String, usize>>::new();
+    for (pkg, lang) in sources {
+        let source_nodes = after
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.lang == lang.as_str()
+                    && (pkg == "."
+                        || node
+                            .file
+                            .starts_with(&format!("{}/", pkg.trim_end_matches('/'))))
+            })
+            .collect::<Vec<_>>();
+        let by_file = source_nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.file.clone(), i as FileId))
+            .collect::<BTreeMap<_, _>>();
+        let known = source_nodes
+            .iter()
+            .map(|node| module_name(&node.file, pkg))
+            .collect::<BTreeSet<_>>();
+        let mut by_directory = BTreeMap::<String, Vec<FileId>>::new();
+        for (file, id) in &by_file {
+            by_directory
+                .entry(directory_name(file).to_owned())
+                .or_default()
+                .push(*id);
+        }
+        let mut parser = Parser::new();
+        for node in source_nodes {
+            if kept.contains(node.file.as_str()) {
+                continue;
+            }
+            let bytes = fs::read(repo.join(&node.file))?;
+            parser.set_language(&grammar_for_file(*lang, &node.file))?;
+            let Some(tree) = parser.parse(&bytes, None) else {
+                continue;
+            };
+            let root = tree.root_node();
+            let mut imports = Vec::new();
+            match lang {
+                LanguageKind::Python => {
+                    let current = module_name(&node.file, pkg);
+                    let is_pkg = node.file.ends_with("/__init__.py");
+                    for spec in python_imports(root, &bytes) {
+                        let head = python_head(&spec, &current, is_pkg);
+                        let targets = resolve_python(&spec, &current, &known, is_pkg);
+                        let relative_error = spec.level > 0
+                            && spec.level > current.split('.').count() - usize::from(!is_pkg);
+                        let reason = if relative_error {
+                            "relative_level_error"
+                        } else if targets.is_empty() {
+                            "no_candidate_in_parsed_set"
+                        } else if targets.iter().all(|target| target == &current) {
+                            "self_only"
+                        } else {
+                            "resolved"
+                        };
+                        let display = if spec.from {
+                            format!(
+                                "from {}{} import {}",
+                                ".".repeat(spec.level),
+                                spec.module,
+                                spec.names
+                                    .iter()
+                                    .map(|(name, _)| name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        } else {
+                            format!(
+                                "import {}",
+                                spec.names
+                                    .iter()
+                                    .map(|(name, _)| name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        };
+                        imports.push(json!({"specifier": display, "head": head, "reason": reason, "targets": targets}));
+                    }
+                }
+                LanguageKind::Go | LanguageKind::TypeScript => {
+                    let specs = if *lang == LanguageKind::Go {
+                        go_imports(root, &bytes)
+                    } else {
+                        typescript_imports(root, &bytes)
+                    };
+                    for spec in specs {
+                        let targets = resolve_multi(
+                            *lang,
+                            &spec,
+                            &node.file,
+                            modules.as_ref().expect("module index"),
+                            &by_directory,
+                            &by_file,
+                        );
+                        imports.push(json!({"specifier": spec, "reason": if targets.as_slice().is_empty() { "no_candidate_in_parsed_set" } else { "resolved" }, "target_count": targets.as_slice().len()}));
+                    }
+                }
+            }
+            let cause = if candidate.contains(node.file.as_str()) {
+                "candidate_pruned"
+            } else if static_files.contains(node.file.as_str()) {
+                "static_below_candidate_threshold"
+            } else if imports.is_empty() {
+                "no_static_imports"
+            } else if imports.iter().any(|item| item["reason"] == "resolved") {
+                "resolved_without_kept_edge"
+            } else {
+                "no_resolved_import"
+            };
+            *causes
+                .entry(lang.as_str().to_owned())
+                .or_default()
+                .entry(cause.to_owned())
+                .or_default() += 1;
+            rows.push(json!({"file": node.file, "lang": lang.as_str(), "cause": cause, "imports": imports}));
+        }
+    }
+    rows.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
+    Ok(json!({"by_language": causes, "zero_edge_files": rows}))
+}
+
 /// Every `object.attribute` pair in the file whose `object` is a bare
 /// identifier -- e.g. `mod.thing()` yields `("mod", "thing")` -- with no
 /// filtering against imports at all. This is the raw half of what used to be
