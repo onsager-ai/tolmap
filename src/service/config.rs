@@ -91,13 +91,22 @@ pub struct Limits {
     ///
     /// Env: `TOLMAP_MAX_HISTORY_COMMITS`.
     pub max_history_commits: usize,
-    /// Wall-clock budget for one job (clone + detect + index), enforced
-    /// with `tokio::time::timeout` around the whole job so a stuck job
-    /// fails as `index_failed` with a clear timeout message instead of
-    /// hanging a worker forever.
+    /// Wall-clock budget from the start of clone + detect + index, excluding
+    /// queue time. A timeout reports `index_failed`; the blocking thread
+    /// still holds its worker slot until it really exits.
     ///
     /// Env: `TOLMAP_MAX_JOB_SECONDS`.
     pub max_job_seconds: u64,
+    /// Maximum number of blocking index bodies running at once. One fits
+    /// the production 1 GB machine; raising this needs a memory measurement.
+    /// Env: `TOLMAP_MAX_CONCURRENT_JOBS`.
+    pub max_concurrent_jobs: usize,
+    /// Pending jobs only, excluding running jobs. Sixteen keeps admission
+    /// bounded on the 1 GB machine; with one worker and a 900 s job budget,
+    /// the last accepted job could wait up to four hours. More pending
+    /// requests would promise an even less useful wait without adding CPU.
+    /// Env: `TOLMAP_MAX_QUEUED_JOBS`.
+    pub max_queued_jobs: usize,
     /// Requests per window, per source IP, across all endpoints under
     /// `/api/`. A generous default -- this is a floor against accidental
     /// hammering (a retry loop, a misconfigured client), not a product
@@ -124,6 +133,8 @@ impl Default for Limits {
             max_clone_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB
             max_history_commits: 200_000, // see field doc comment -- was 20_000, rejected django
             max_job_seconds: 900,         // 15 minutes
+            max_concurrent_jobs: 1,
+            max_queued_jobs: 16,
             rate_limit_per_ip: 30,
             rate_limit_window_seconds: 60,
             rate_limit_per_repo: 3,
@@ -149,6 +160,12 @@ impl Limits {
                 default.max_history_commits,
             ),
             max_job_seconds: env_var_or("TOLMAP_MAX_JOB_SECONDS", default.max_job_seconds),
+            max_concurrent_jobs: env_var_or(
+                "TOLMAP_MAX_CONCURRENT_JOBS",
+                default.max_concurrent_jobs,
+            )
+            .max(1),
+            max_queued_jobs: env_var_or("TOLMAP_MAX_QUEUED_JOBS", default.max_queued_jobs),
             rate_limit_per_ip: env_var_or("TOLMAP_RATE_LIMIT_PER_IP", default.rate_limit_per_ip),
             rate_limit_window_seconds: env_var_or(
                 "TOLMAP_RATE_LIMIT_WINDOW_SECONDS",
@@ -316,6 +333,8 @@ mod tests {
             "TOLMAP_MAX_CLONE_BYTES",
             "TOLMAP_MAX_HISTORY_COMMITS",
             "TOLMAP_MAX_JOB_SECONDS",
+            "TOLMAP_MAX_CONCURRENT_JOBS",
+            "TOLMAP_MAX_QUEUED_JOBS",
             "TOLMAP_RATE_LIMIT_PER_IP",
             "TOLMAP_RATE_LIMIT_WINDOW_SECONDS",
             "TOLMAP_RATE_LIMIT_PER_REPO",
@@ -331,24 +350,34 @@ mod tests {
         assert_eq!(from_env.max_files, defaults.max_files);
         assert_eq!(from_env.max_clone_bytes, defaults.max_clone_bytes);
         assert_eq!(from_env.max_history_commits, defaults.max_history_commits);
+        assert_eq!(from_env.max_concurrent_jobs, 1);
+        assert_eq!(from_env.max_queued_jobs, 16);
         assert_eq!(from_env.rate_limit_per_repo, defaults.rate_limit_per_repo);
 
         // Set: the environment value wins, without a rebuild.
         env::set_var("TOLMAP_MAX_FILES", "10");
         env::set_var("TOLMAP_MAX_CLONE_BYTES", "1024");
         env::set_var("TOLMAP_RATE_LIMIT_PER_IP", "5");
+        env::set_var("TOLMAP_MAX_CONCURRENT_JOBS", "2");
+        env::set_var("TOLMAP_MAX_QUEUED_JOBS", "4");
         let overridden = Limits::from_env();
         assert_eq!(overridden.max_files, 10);
         assert_eq!(overridden.max_clone_bytes, 1024);
         assert_eq!(overridden.rate_limit_per_ip, 5);
+        assert_eq!(overridden.max_concurrent_jobs, 2);
+        assert_eq!(overridden.max_queued_jobs, 4);
         // A field with no override still reads its default.
         assert_eq!(overridden.max_history_commits, defaults.max_history_commits);
 
         // Garbage: falls back to the default instead of panicking the
         // service on startup or silently coercing to 0.
         env::set_var("TOLMAP_MAX_FILES", "not-a-number");
+        env::set_var("TOLMAP_MAX_CONCURRENT_JOBS", "0");
+        env::set_var("TOLMAP_MAX_QUEUED_JOBS", "bad");
         let garbage = Limits::from_env();
         assert_eq!(garbage.max_files, defaults.max_files);
+        assert_eq!(garbage.max_concurrent_jobs, 1);
+        assert_eq!(garbage.max_queued_jobs, defaults.max_queued_jobs);
 
         for key in keys {
             env::remove_var(key);

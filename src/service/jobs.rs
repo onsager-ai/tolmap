@@ -11,7 +11,7 @@
 //! on an async worker thread would stall every other request this process
 //! is serving.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -49,6 +49,8 @@ pub struct JobSnapshot {
     pub commit: Option<String>,
     pub status: JobStatus,
     pub stage: String,
+    /// One-based FIFO position while waiting; null once a worker starts.
+    pub queue_position: Option<usize>,
     pub started_at: String,
     pub finished_at: Option<String>,
     /// Human-readable failure text, or null. Flat, not an object: this is
@@ -71,89 +73,206 @@ impl JobSnapshot {
     }
 }
 
-pub type JobRegistry = Mutex<HashMap<Uuid, watch::Sender<JobSnapshot>>>;
+type JobKey = (String, String);
+type JobRunner = Arc<dyn Fn(Arc<AppState>, RepoRef, watch::Sender<JobSnapshot>) + Send + Sync>;
+
+struct PendingJob {
+    id: Uuid,
+    key: JobKey,
+    repo_ref: RepoRef,
+    tx: watch::Sender<JobSnapshot>,
+    runner: JobRunner,
+}
+
+#[derive(Default)]
+struct RegistryInner {
+    jobs: HashMap<Uuid, watch::Sender<JobSnapshot>>,
+    active: HashMap<JobKey, Uuid>,
+    queue: VecDeque<PendingJob>,
+    running: usize,
+}
+
+pub struct JobRegistry(Mutex<RegistryInner>);
+
+impl JobRegistry {
+    pub fn subscribe(&self, id: Uuid) -> Option<watch::Receiver<JobSnapshot>> {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .jobs
+            .get(&id)
+            .map(watch::Sender::subscribe)
+    }
+}
 
 pub fn new_registry() -> JobRegistry {
-    Mutex::new(HashMap::new())
+    JobRegistry(Mutex::new(RegistryInner::default()))
 }
 
 /// Queues a job and returns its id immediately; the work happens on a
 /// spawned task. `state.jobs` keeps the sending half so `GET
 /// /api/jobs/{id}` and the SSE endpoint can each get their own receiver via
 /// `.subscribe()`.
-pub fn spawn_job(state: Arc<AppState>, repo_ref: RepoRef) -> Uuid {
+pub fn spawn_job(
+    state: Arc<AppState>,
+    repo_ref: RepoRef,
+    commit: String,
+) -> Result<Uuid, ApiError> {
+    enqueue_job(state, repo_ref, commit, Arc::new(run_blocking))
+}
+
+fn enqueue_job(
+    state: Arc<AppState>,
+    repo_ref: RepoRef,
+    commit: String,
+    runner: JobRunner,
+) -> Result<Uuid, ApiError> {
+    let key = (repo_ref.slug.clone(), commit.clone());
+    let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+    if let Some(id) = registry.active.get(&key) {
+        return Ok(*id);
+    }
+    let max_running = state.config.limits.max_concurrent_jobs.max(1);
+    if registry.running >= max_running
+        && registry.queue.len() >= state.config.limits.max_queued_jobs
+    {
+        return Err(ApiError::busy(
+            "the index queue is full; please try again later",
+        ));
+    }
     let job_id = Uuid::new_v4();
     let snapshot = JobSnapshot {
         job_id,
         slug: repo_ref.slug.clone(),
-        commit: None,
+        commit: Some(commit),
         status: JobStatus::Queued,
         stage: "queued".to_owned(),
+        queue_position: None,
         started_at: now_rfc3339(),
         finished_at: None,
         error: None,
         error_code: None,
     };
     let (tx, _rx) = watch::channel(snapshot);
-    state
-        .jobs
-        .lock()
-        .expect("job registry mutex poisoned")
-        .insert(job_id, tx.clone());
+    registry.jobs.insert(job_id, tx.clone());
+    registry.active.insert(key.clone(), job_id);
+    let job = PendingJob {
+        id: job_id,
+        key,
+        repo_ref,
+        tx,
+        runner,
+    };
+    if registry.running < max_running {
+        registry.running += 1;
+        tokio::spawn(worker_loop(state.clone(), job));
+    } else {
+        job.tx
+            .send_modify(|snapshot| snapshot.queue_position = Some(registry.queue.len() + 1));
+        registry.queue.push_back(job);
+    }
+    Ok(job_id)
+}
 
-    tokio::spawn(async move {
+async fn worker_loop(state: Arc<AppState>, first: PendingJob) {
+    let mut job = first;
+    loop {
+        let PendingJob {
+            id,
+            key,
+            repo_ref,
+            tx,
+            runner,
+        } = job;
+        tx.send_modify(|snapshot| {
+            snapshot.queue_position = None;
+            snapshot.started_at = now_rfc3339();
+        });
         let max_seconds = state.config.limits.max_job_seconds;
         let blocking_state = state.clone();
         let blocking_tx = tx.clone();
-        let handle = tokio::task::spawn_blocking(move || {
-            run_blocking(blocking_state, repo_ref, blocking_tx)
-        });
-        match tokio::time::timeout(Duration::from_secs(max_seconds), handle).await {
-            Ok(Ok(())) => {} // run_blocking always leaves the snapshot in a terminal state itself.
-            Ok(Err(join_error)) => finish_failed(
+        let mut handle =
+            tokio::task::spawn_blocking(move || runner(blocking_state, repo_ref, blocking_tx));
+        tokio::select! {
+            result = &mut handle => {
+                if let Err(join_error) = result {
+                    finish_failed(&tx, ErrorBody {
+                        error: "internal_error".to_owned(),
+                        message: format!("job task panicked: {join_error}"),
+                    });
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(max_seconds)) => {
+                finish_failed(&tx, ErrorBody {
+                    error: "index_failed".to_owned(),
+                    message: format!("job exceeded the {max_seconds}s wall-time limit"),
+                });
+                // spawn_blocking cannot be cancelled. Keep this worker slot
+                // occupied until its thread actually exits, or a timed-out
+                // build could run beside the next queued build on a 1 GB VM.
+                {
+                    let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+                    if registry.active.get(&key) == Some(&id) { registry.active.remove(&key); }
+                }
+                let _ = handle.await;
+            }
+        }
+        // The runner normally sets a terminal snapshot itself. A panic or
+        // an unexpected return must never leave an accepted job in flight.
+        if !is_terminal(&tx.borrow()) {
+            finish_failed(
                 &tx,
                 ErrorBody {
                     error: "internal_error".to_owned(),
-                    message: format!("job task panicked: {join_error}"),
+                    message: "job exited without a terminal state".to_owned(),
                 },
-            ),
-            Err(_) => {
-                // NOTE (reported as a known limitation): this marks the job
-                // failed for anyone watching it, but does not and cannot
-                // kill the still-running blocking thread underneath it --
-                // spawn_blocking tasks are not cancellable. The thread
-                // finishes (or hangs) on its own; its eventual result is
-                // discarded since nothing still holds its JoinHandle. In
-                // practice the pre-checks in `clone.rs` (file count, clone
-                // size, history depth) are what keep this from being the
-                // common case rather than this timeout.
-                finish_failed(
-                    &tx,
-                    ErrorBody {
-                        error: "index_failed".to_owned(),
-                        message: format!("job exceeded the {max_seconds}s wall-time limit"),
-                    },
-                );
-            }
+            );
         }
-    });
+        let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+        if registry.active.get(&key) == Some(&id) {
+            registry.active.remove(&key);
+        }
+        if let Some(next) = registry.queue.pop_front() {
+            for (index, waiting) in registry.queue.iter().enumerate() {
+                waiting
+                    .tx
+                    .send_modify(|snapshot| snapshot.queue_position = Some(index + 1));
+            }
+            job = next;
+        } else {
+            registry.running -= 1;
+            break;
+        }
+    }
+}
 
-    job_id
+fn is_terminal(snapshot: &JobSnapshot) -> bool {
+    matches!(snapshot.status, JobStatus::Done | JobStatus::Failed)
 }
 
 fn advance(tx: &watch::Sender<JobSnapshot>, status: JobStatus, stage: &str) {
     tx.send_modify(|snapshot| {
+        if is_terminal(snapshot) {
+            return;
+        }
         snapshot.status = status;
         snapshot.stage = stage.to_owned();
     });
 }
 
 fn set_commit(tx: &watch::Sender<JobSnapshot>, commit: &str) {
-    tx.send_modify(|snapshot| snapshot.commit = Some(commit.to_owned()));
+    tx.send_modify(|snapshot| {
+        if !is_terminal(snapshot) {
+            snapshot.commit = Some(commit.to_owned());
+        }
+    });
 }
 
 fn finish_done(tx: &watch::Sender<JobSnapshot>) {
     tx.send_modify(|snapshot| {
+        if is_terminal(snapshot) {
+            return;
+        }
         snapshot.status = JobStatus::Done;
         snapshot.stage = "done".to_owned();
         snapshot.finished_at = Some(now_rfc3339());
@@ -164,6 +283,9 @@ fn finish_done(tx: &watch::Sender<JobSnapshot>) {
 
 fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
     tx.send_modify(|snapshot| {
+        if is_terminal(snapshot) {
+            return;
+        }
         snapshot.status = JobStatus::Failed;
         snapshot.stage = "failed".to_owned();
         snapshot.finished_at = Some(now_rfc3339());
@@ -402,4 +524,162 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     }
 
     finish_done(&tx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    use axum::body::to_bytes;
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    use crate::geometry::TerrainMode;
+    use crate::pipeline::PruneVariant;
+    use crate::service::clone::RepoSource;
+    use crate::service::config::{Limits, ServeConfig};
+    use crate::service::ratelimit::RateLimiter;
+    use crate::service::store::Store;
+
+    fn state(limits: Limits) -> (tempfile::TempDir, Arc<AppState>) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ServeConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            db_path: dir.path().join("store.sqlite3"),
+            cache_dir: dir.path().join("cache"),
+            static_dir: None,
+            terrain: TerrainMode::Off,
+            prune_variant: PruneVariant::NodeRelative,
+            limits,
+            retain_commits_per_repo: 20,
+        };
+        let state = Arc::new(AppState {
+            store: Store::open(&config.db_path).unwrap(),
+            config,
+            jobs: new_registry(),
+            rate_limiter: RateLimiter::new(),
+        });
+        (dir, state)
+    }
+
+    fn repo(name: &str) -> RepoRef {
+        RepoRef {
+            slug: format!("test/{name}"),
+            owner: "test".to_owned(),
+            repo: name.to_owned(),
+            source: RepoSource::Remote("unused".to_owned()),
+        }
+    }
+
+    async fn until(mut check: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !check() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("condition did not become true");
+    }
+
+    fn snapshot(state: &AppState, id: Uuid) -> JobSnapshot {
+        state.jobs.subscribe(id).unwrap().borrow().clone()
+    }
+
+    #[tokio::test]
+    async fn bounded_fifo_deduplicates_and_updates_positions() {
+        let limits = Limits {
+            max_concurrent_jobs: 1,
+            max_queued_jobs: 2,
+            ..Limits::default()
+        };
+        let (_dir, state) = state(limits);
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let runner: JobRunner = Arc::new({
+            let release_rx = release_rx.clone();
+            let started = started.clone();
+            move |_, repo, tx| {
+                started.lock().unwrap().push(repo.slug);
+                release_rx.lock().unwrap().recv().unwrap();
+                finish_done(&tx);
+            }
+        });
+
+        let first =
+            enqueue_job(state.clone(), repo("one"), "a".to_owned(), runner.clone()).unwrap();
+        until(|| started.lock().unwrap().len() == 1).await;
+        let second =
+            enqueue_job(state.clone(), repo("two"), "b".to_owned(), runner.clone()).unwrap();
+        let third =
+            enqueue_job(state.clone(), repo("three"), "c".to_owned(), runner.clone()).unwrap();
+        assert_eq!(snapshot(&state, second).queue_position, Some(1));
+        assert_eq!(snapshot(&state, third).queue_position, Some(2));
+        assert_eq!(snapshot(&state, second).stage, "queued");
+        assert_eq!(
+            enqueue_job(state.clone(), repo("two"), "b".to_owned(), runner.clone()).unwrap(),
+            second
+        );
+
+        let busy =
+            enqueue_job(state.clone(), repo("four"), "d".to_owned(), runner.clone()).unwrap_err();
+        let response = busy.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "30");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"],
+            "busy"
+        );
+
+        release_tx.send(()).unwrap();
+        until(|| started.lock().unwrap().len() == 2).await;
+        assert_eq!(snapshot(&state, first).status, JobStatus::Done);
+        assert_eq!(snapshot(&state, second).queue_position, None);
+        assert_eq!(snapshot(&state, third).queue_position, Some(1));
+        release_tx.send(()).unwrap();
+        until(|| started.lock().unwrap().len() == 3).await;
+        assert_eq!(snapshot(&state, third).queue_position, None);
+        release_tx.send(()).unwrap();
+        until(|| snapshot(&state, third).status == JobStatus::Done).await;
+        assert_ne!(
+            enqueue_job(state.clone(), repo("two"), "b".to_owned(), runner.clone()).unwrap(),
+            second
+        );
+        release_tx.send(()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn timeout_keeps_worker_slot_until_blocking_body_exits() {
+        let limits = Limits {
+            max_concurrent_jobs: 1,
+            max_queued_jobs: 1,
+            max_job_seconds: 1,
+            ..Limits::default()
+        };
+        let (_dir, state) = state(limits);
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let runner: JobRunner = Arc::new({
+            let release_rx = release_rx.clone();
+            let started = started.clone();
+            move |_, repo, tx| {
+                started.lock().unwrap().push(repo.slug);
+                release_rx.lock().unwrap().recv().unwrap();
+                finish_done(&tx);
+            }
+        });
+        let first =
+            enqueue_job(state.clone(), repo("one"), "a".to_owned(), runner.clone()).unwrap();
+        let second = enqueue_job(state.clone(), repo("two"), "b".to_owned(), runner).unwrap();
+        until(|| snapshot(&state, first).status == JobStatus::Failed).await;
+        assert_eq!(started.lock().unwrap().len(), 1);
+        assert_eq!(snapshot(&state, second).queue_position, Some(1));
+        release_tx.send(()).unwrap();
+        until(|| started.lock().unwrap().len() == 2).await;
+        assert_eq!(snapshot(&state, first).status, JobStatus::Failed);
+        release_tx.send(()).unwrap();
+    }
 }

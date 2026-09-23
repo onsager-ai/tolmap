@@ -18,6 +18,7 @@ export interface JobStatus {
   commit: string | null;
   status: JobStage;
   stage: string;
+  queue_position: number | null;
   started_at: string;
   finished_at: string | null;
   /** Human-readable failure text. Flat, not an object — it is rendered

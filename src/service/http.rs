@@ -154,7 +154,7 @@ async fn post_index(
             .into_response());
     }
 
-    let job_id = jobs::spawn_job(state.clone(), repo_ref.clone());
+    let job_id = jobs::spawn_job(state.clone(), repo_ref.clone(), head)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(QueuedResponse {
@@ -173,11 +173,11 @@ async fn get_job(
     AxPath(job_id): AxPath<Uuid>,
 ) -> Result<Json<JobSnapshot>, ApiError> {
     let snapshot = {
-        let jobs = state.jobs.lock().expect("job registry mutex poisoned");
-        let tx = jobs
-            .get(&job_id)
+        let rx = state
+            .jobs
+            .subscribe(job_id)
             .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?;
-        let current = tx.borrow().clone();
+        let current = rx.borrow().clone();
         current
     };
     Ok(Json(snapshot))
@@ -189,13 +189,10 @@ async fn get_job_events(
     State(state): State<Arc<AppState>>,
     AxPath(job_id): AxPath<Uuid>,
 ) -> Result<Sse<ReceiverStream<Result<Event, Infallible>>>, ApiError> {
-    let mut rx = {
-        let jobs = state.jobs.lock().expect("job registry mutex poisoned");
-        let tx = jobs
-            .get(&job_id)
-            .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?;
-        tx.subscribe()
-    };
+    let mut rx = state
+        .jobs
+        .subscribe(job_id)
+        .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?;
 
     // A relay task, not the watch::Receiver wrapped directly: this is what
     // lets the stream emit the *current* value immediately on connect and

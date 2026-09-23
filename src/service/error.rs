@@ -2,7 +2,7 @@
 //! non-2xx HTTP response, and every failed job's `error` field, is
 //! `{"error": "<machine code>", "message": "<human text>"}`.
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
@@ -57,6 +57,10 @@ impl ApiError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message)
     }
 
+    pub fn busy(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, "busy", message)
+    }
+
     pub fn detection_failed(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -93,7 +97,14 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(self.body)).into_response()
+        let busy = self.status == StatusCode::SERVICE_UNAVAILABLE && self.body.error == "busy";
+        let mut response = (self.status, Json(self.body)).into_response();
+        if busy {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+        }
+        response
     }
 }
 
