@@ -278,6 +278,7 @@ def score(document):
         if rho is not None:
             neighbourhood_rhos.append(rho)
     areas, code_lines = [], []
+    area_by_district = defaultdict(list)
     missing = 0
     code = document.get('C')
     for i in range(len(files)):
@@ -287,7 +288,12 @@ def score(document):
             missing += 1
         else:
             areas.append(polygon_area)
-            code_lines.append(code[i] if code and i < len(code) else nodes[i][3])
+            weight = code[i] if code and i < len(code) else nodes[i][3]
+            code_lines.append(weight)
+            area_by_district[nodes[i][0]].append((polygon_area, weight))
+    district_area_r = [pearson([area for area, _ in rows], [weight for _, weight in rows])
+                       for rows in area_by_district.values()]
+    district_area_r = [value for value in district_area_r if value is not None]
     connected = [components(entry['blob']) == 1 for entry in neighbourhoods.values()]
     compactness = []
     for entry in neighbourhoods.values():
@@ -307,6 +313,11 @@ def score(document):
         'overlap': overlap,
         'neighbourhood_connectivity': statistics.mean(connected) if connected else None,
         'area_code_lines_r': pearson(areas, code_lines),
+        # D2 says areas are comparable only within a district; keep the
+        # prototype's global statistic above and expose the meaningful local
+        # comparison separately instead of silently redefining its metric.
+        'area_code_lines_r_within_district_median': median(district_area_r),
+        'area_code_lines_eligible_districts': len(district_area_r),
         'files_without_footprint': missing,
         'compactness': median(compactness),
         'neighbourhood_count': len(neighbourhoods),
