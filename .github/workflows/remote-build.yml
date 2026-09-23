@@ -531,11 +531,13 @@ jobs:
           cp -f primary.log artifact/primary.log 2>/dev/null || true
           cp -f primary.time.txt artifact/primary.time.txt 2>/dev/null || true
           cp -f "out-primary/${STEM}.json" "artifact/${STEM}.json" 2>/dev/null || true
+          cp -f "out-primary/${STEM}.symbols.json" "artifact/${STEM}.symbols.json" 2>/dev/null || true
           cp -f previous.log artifact/previous.log 2>/dev/null || true
           cp -f "out-previous/${STEM}.json" "artifact/${STEM}.previous.json" 2>/dev/null || true
           cp -f compare.log artifact/compare.log 2>/dev/null || true
           cp -f compare.time.txt artifact/compare.time.txt 2>/dev/null || true
           cp -f "out-compare/${STEM}.json" "artifact/${STEM}.compare.json" 2>/dev/null || true
+          cp -f "out-compare/${STEM}.symbols.json" "artifact/${STEM}.compare.symbols.json" 2>/dev/null || true
 
       - name: Upload result artifact
         if: always()
