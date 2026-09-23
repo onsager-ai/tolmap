@@ -238,15 +238,19 @@ function districtBreakdown(indices: readonly number[], fileParts: readonly (read
     if (!accepted) break;
   }
 
-  const shown: DistrictPathRow[] = rows.map((row) => ({
-    path: row.path,
-    count: row.members.length,
-    share: Math.round((row.members.length / indices.length) * 1000) / 10,
-    other: false,
-  }));
+  const shown: DistrictPathRow[] = rows
+    .map((row) => ({
+      path: row.path,
+      count: row.members.length,
+      share: Math.round((row.members.length / indices.length) * 1000) / 10,
+      other: false,
+    }))
+    .sort((a, b) => b.count - a.count || compareText(a.path ?? "", b.path ?? ""));
+  // "other" is a remainder, not a folder: it always goes last, even when it
+  // ties or outranks a small named row.
   if (otherCount > 0)
     shown.push({ path: null, count: otherCount, share: Math.round((otherCount / indices.length) * 1000) / 10, other: true });
-  return shown.sort((a, b) => b.count - a.count || compareText(a.path ?? "", b.path ?? ""));
+  return shown;
 }
 
 /** All package/directory derivation for one document. MapView memoises this

@@ -985,12 +985,13 @@ async function checkDifyDistrictSummary(browser, base, profile) {
       count: Number(element.textContent?.match(/\((\d+) files?\)/)?.[1]),
     })),
   );
-  const largestNamed = Math.max(...rows.filter((row) => row.path != null).map((row) => row.count));
+  const named = rows.filter((row) => row.path != null);
+  const largestNamed = Math.max(...named.map((row) => row.count));
   report(
     rows[0]?.path === "web/app/components/workflow" && rows[0].count === 755 &&
-      rows.every((row, i) => i === 0 || rows[i - 1].count >= row.count) &&
-      rows.some((row) => row.path == null && row.count <= largestNamed),
-    `${label}: fixture rows are ranked and other stays below the largest folder`,
+      named.every((row, i) => i === 0 || named[i - 1].count >= row.count) &&
+      rows.at(-1)?.path == null && rows.at(-1).count <= largestNamed,
+    `${label}: folder rows are ranked, other is last and below the largest folder`,
     JSON.stringify(rows),
   );
   await context.close();
