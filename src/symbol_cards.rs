@@ -700,6 +700,23 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn output_quantization_keeps_tiny_cards_and_removes_redundant_points() {
+        let mut contours = vec![vec![
+            [1.0, 1.0],
+            [1.0 + 5e-11, 1.0],
+            [1.0 + 1e-10, 1.0],
+            [1.0 + 1e-10, 1.0],
+            [1.0 + 1e-10, 1.0 + 1e-10],
+            [1.0, 1.0 + 1e-10],
+        ]];
+        quantize_rings(&mut contours).unwrap();
+        assert_eq!(contours[0].len(), 4);
+        assert_ne!(contours[0][0], contours[0][1]);
+        let mut collapsed = rectangle([1.0, 1.0, 1.0 + 1e-12, 1.0 + 1e-12]);
+        assert!(quantize_rings(&mut collapsed).is_err());
+    }
+
     fn square_canvas(grid: usize) -> (Canvas, Vec<bool>) {
         (
             Canvas {

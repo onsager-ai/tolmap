@@ -57,6 +57,9 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
             largest_id = int(district)
             largest_gzip = gzip_size
     coverage = document["coverage"]
+    assert static_districts == len(map_doc["districts"]), (
+        static_districts, len(map_doc["districts"])
+    )
     total = coverage["calls_total"]
     geometry = document.get("symbol_rings", [])
     with_ring = sum(ring is not None for ring in geometry)
@@ -150,10 +153,15 @@ def contains(point, rings):
 
 def audit_rings(document):
     rings = document.get("symbol_rings", [])
-    duplicate = collapsed = outside = oversized = 0
+    duplicate = collinear = collapsed = outside = oversized = 0
     for ring in iter_contours(document):
         duplicate += any(a == b for a, b in zip(ring, ring[1:] + ring[:1]))
         collapsed += len(ring) < 3 or integer_area(ring) == 0
+        points = [(round(x * 10**11), round(y * 10**11)) for x, y in ring]
+        for a, b, c in zip(points[-1:] + points[:-1], points, points[1:] + points[:1]):
+            ab = (b[0] - a[0], b[1] - a[1])
+            bc = (c[0] - b[0], c[1] - b[1])
+            collinear += ab[0] * bc[1] == ab[1] * bc[0] and ab[0] * bc[0] + ab[1] * bc[1] > 0
     for i, row in enumerate(document["symbols"]):
         parent = row[5]
         if parent < 0 or row[0] != document["symbols"][parent][0]:
@@ -166,10 +174,11 @@ def audit_rings(document):
         center = [sum(p[axis] for p in exterior) / len(exterior) for axis in (0, 1)]
         outside += not contains(center, ancestor)
         oversized += sum(integer_area(r) for r in child) > sum(integer_area(r) for r in ancestor)
-    assert duplicate == 0 and collapsed == 0 and outside == 0 and oversized == 0, (
-        duplicate, collapsed, outside, oversized)
+    assert duplicate == 0 and collinear == 0 and collapsed == 0 and outside == 0 and oversized == 0, (
+        duplicate, collinear, collapsed, outside, oversized)
     return {
         "duplicate_consecutive_points": duplicate,
+        "collinear_points": collinear,
         "collapsed_rings": collapsed,
         "child_centroid_outside_parent": outside,
         "child_area_larger_than_parent": oversized,
