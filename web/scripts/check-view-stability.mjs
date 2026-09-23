@@ -3148,10 +3148,22 @@ async function checkClassExpandsAtShortSide(browser, base) {
   const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
   console.log(`  (info) multiplier=${multiplier.toFixed(2)} routeHit=${routeHit} classBoxAtFit=${classBoxAtFit ? `${Math.round(classBoxAtFit.width)}x${Math.round(classBoxAtFit.height)}` : "MISSING"} consoleErrors=${consoleErrors.length ? JSON.stringify(consoleErrors.slice(0, 5)) : "none"}`);
   report(initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${className} member=${childName}`);
+  // CI review finding: zoom toward the class's OWN current on-screen centre,
+  // not a fixed viewport point -- panTo() is a no-op when its target is
+  // already inside the fit-framed view (issue #82 A1: "selecting never
+  // moves the map"), which it always is on a fresh load, so the selected
+  // file is NOT guaranteed to sit at the viewport centre. Zooming toward an
+  // unrelated fixed point drifts the target away from it as k grows
+  // (wheel() keeps the world point under THAT screen coordinate fixed, not
+  // the file), eventually pushing it off-screen and out of
+  // filesNeedingCards' viewport cull -- exactly what "renders at fit,
+  // vanishes after zooming in" looks like, and was the actual explanation
+  // for every earlier "class card never rendered" result in this
+  // investigation, not a data or rendering bug.
   let expanded = false;
   let classBox = classBoxAtFit;
-  for (let i = 0; i < 8 && !expanded; i++) {
-    await zoomIn(page, 600, 400);
+  for (let i = 0; i < 8 && !expanded && classBox; i++) {
+    await zoomIn(page, classBox.x + classBox.width / 2, classBox.y + classBox.height / 2);
     expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
     classBox = await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   }
@@ -3176,16 +3188,22 @@ async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
   }
   const path = mapDoc.F[bigFile.file];
   const multiplier = await pickSyntheticMultiplier(page, base, path, bigFile.file);
-  const { json, childGlobal, className, childName } = buildSyntheticClassResponse(mapDoc, bigFile.file, multiplier);
+  const { json, classGlobal, childGlobal, className, childName } = buildSyntheticClassResponse(mapDoc, bigFile.file, multiplier);
   await page.route("**/maps/langgenius/dify.symbols/0.json", (route) => route.fulfill({ json }));
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
+  const classKey = `hs:${classGlobal}`;
   const childKey = `hs:${childGlobal}`;
+  // CI review finding: zoom toward the class's OWN current on-screen centre
+  // (not a fixed viewport point) -- see checkClassExpandsAtShortSide's own
+  // comment for why a fixed zoom centre drifts the target off-screen.
+  let classBox = await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   let box = null;
-  for (let i = 0; i < 8 && !box; i++) {
-    await zoomIn(page, 600, 400);
+  for (let i = 0; i < 8 && !box && classBox; i++) {
+    await zoomIn(page, classBox.x + classBox.width / 2, classBox.y + classBox.height / 2);
     box = await page.locator(`svg.map-svg [data-k="${childKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
+    classBox = await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   }
   if (!box) {
     report(false, `${label}: setup`, "member card never appeared after zooming in");
