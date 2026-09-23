@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 import json
-import heapq
 import math
 from pathlib import Path
 import random
@@ -74,6 +73,13 @@ def median(values):
     return statistics.median(values) if values else None
 
 
+def percentile(values, fraction):
+    position = fraction * (len(values) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+
 def level(groups, points, edges):
     keys = sorted(groups)
     centers = {}
@@ -84,7 +90,7 @@ def level(groups, points, edges):
         sizes[key] = len(members)
         centers[key] = [statistics.mean(points[i][axis] for i in members) for axis in (0, 1)]
         distances = sorted(math.dist(points[i], centers[key]) for i in members)
-        radii[key] = distances[min(len(distances) - 1, int(0.92 * (len(distances) - 1)))]
+        radii[key] = percentile(distances, 0.92)
     owner = {i: key for key, members in groups.items() for i in members}
     weights = Counter()
     for (a, b), weight in edges.items():
@@ -106,59 +112,136 @@ def level(groups, points, edges):
             sum(gap(a, b) < 0 for a, b in pairs))
 
 
-def grid_multiple(groups, points, edges):
-    """Six-nearest proxy for the prototype's Delaunay edge enrichment.
+def delaunay_edges(members, points):
+    """Bowyer-Watson with a triangle walk and cavity flood, using stdlib only.
 
-    SciPy is unavailable by contract. The proxy is kept out of the gate and
-    named in the result so it is never mistaken for the prototype's exact
-    Delaunay statistic. Its sampling and tie breaks are deterministic.
+    A full scan of all triangles for each inserted point is quadratic at
+    12k files. Adjacent triangles around each new point form one cavity, so
+    edge adjacency limits the work to that cavity after a local walk.
     """
+    if len(members) < 3:
+        return set()
+    xs = [points[i][0] for i in members]
+    ys = [points[i][1] for i in members]
+    lo = min(xs), min(ys)
+    scale = max(max(xs) - lo[0], max(ys) - lo[1], 1e-9)
+    coordinates = [(-10.0, -10.0), (11.0, -10.0), (0.5, 11.0)]
+    order = sorted(members, key=lambda i: (points[i][0], points[i][1], i))
+    for i in order:
+        # Distinct, deterministic perturbations resolve duplicate displayed
+        # centroids and cocircular ties without depending on Qhull's options.
+        delta = ((i * 73856093) % 1009 + 1) * 1e-12
+        delta_y = ((i * 19349663) % 1013 + 1) * 1e-12
+        coordinates.append(((points[i][0] - lo[0]) / scale + delta,
+                            (points[i][1] - lo[1]) / scale + delta_y))
+    triangles = {}
+    edge_to_triangles = defaultdict(set)
+    incident = defaultdict(set)
+    next_id = 0
+
+    def triangle_edges(a, b, c):
+        return tuple(tuple(sorted(edge)) for edge in ((a, b), (b, c), (c, a)))
+
+    def orient(a, b, c):
+        ax, ay = coordinates[a]
+        bx, by = coordinates[b]
+        cx, cy = coordinates[c]
+        return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+    def add(a, b, c):
+        nonlocal next_id
+        if orient(a, b, c) < 0:
+            b, c = c, b
+        ax, ay = coordinates[a]
+        bx, by = coordinates[b]
+        cx, cy = coordinates[c]
+        denominator = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+        if abs(denominator) < 1e-18:
+            return
+        aa, bb, cc = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
+        ux = (aa * (by - cy) + bb * (cy - ay) + cc * (ay - by)) / denominator
+        uy = (aa * (cx - bx) + bb * (ax - cx) + cc * (bx - ax)) / denominator
+        radius2 = (ax - ux) ** 2 + (ay - uy) ** 2
+        key = next_id
+        next_id += 1
+        triangles[key] = (a, b, c, ux, uy, radius2)
+        for vertex in (a, b, c):
+            incident[vertex].add(key)
+        for edge in triangle_edges(a, b, c):
+            edge_to_triangles[edge].add(key)
+
+    add(0, 1, 2)
+    previous = 0
+    for current in range(3, len(coordinates)):
+        x, y = coordinates[current]
+        start = min(incident[previous]) if incident[previous] else min(triangles)
+        chosen = None
+        visited = set()
+        while start not in visited:
+            visited.add(start)
+            a, b, c, *_ = triangles[start]
+            outside = [edge for edge in ((a, b), (b, c), (c, a))
+                       if orient(edge[0], edge[1], current) < -1e-12]
+            if not outside:
+                chosen = start
+                break
+            neighbours = edge_to_triangles[tuple(sorted(outside[0]))] - {start}
+            if not neighbours:
+                break
+            start = min(neighbours)
+        if chosen is None:
+            chosen = next((key for key, (a, b, c, *_) in triangles.items()
+                           if min(orient(a, b, current), orient(b, c, current),
+                                  orient(c, a, current)) >= -1e-12), None)
+        if chosen is None:
+            raise ValueError('could not locate a point in Delaunay supertriangle')
+        bad = set()
+        pending = [chosen]
+        while pending:
+            key = pending.pop()
+            if key in bad:
+                continue
+            a, b, c, ux, uy, radius2 = triangles[key]
+            if (x - ux) ** 2 + (y - uy) ** 2 > radius2 * (1 + 1e-10):
+                continue
+            bad.add(key)
+            for edge in triangle_edges(a, b, c):
+                pending.extend(edge_to_triangles[edge] - bad)
+        if not bad:
+            bad.add(chosen)
+        boundary = Counter(edge for key in bad
+                           for edge in triangle_edges(*triangles[key][:3]))
+        for key in sorted(bad):
+            a, b, c, *_ = triangles.pop(key)
+            for vertex in (a, b, c):
+                incident[vertex].remove(key)
+            for edge in triangle_edges(a, b, c):
+                edge_to_triangles[edge].remove(key)
+                if not edge_to_triangles[edge]:
+                    del edge_to_triangles[edge]
+        for a, b in sorted(edge for edge, count in boundary.items() if count == 1):
+            add(a, b, current)
+        previous = current
+    return {tuple(sorted((order[a - 3], order[b - 3])))
+            for a, b, c, *_ in triangles.values()
+            for a, b in triangle_edges(a, b, c) if a >= 3 and b >= 3}
+
+
+def grid_multiple(groups, points, edges):
     near = set()
-    by_distance = {}
+    eligible = []
     for members in groups.values():
         if len(members) < 4:
             continue
-        def tree(indices, axis=0):
-            if not indices:
-                return None
-            indices.sort(key=lambda i: (points[i][axis], points[i][1 - axis], i))
-            mid = len(indices) // 2
-            return indices[mid], axis, tree(indices[:mid], 1 - axis), tree(indices[mid + 1:], 1 - axis)
-
-        root = tree(list(members))
-
-        def nearest(node, query, heap):
-            if node is None:
-                return
-            index, axis, left, right = node
-            delta = points[query][axis] - points[index][axis]
-            first, second = (left, right) if delta <= 0 else (right, left)
-            nearest(first, query, heap)
-            if index != query:
-                d2 = sum((points[query][a] - points[index][a]) ** 2 for a in (0, 1))
-                candidate = (-d2, -index)
-                if len(heap) < 6:
-                    heapq.heappush(heap, candidate)
-                elif candidate > heap[0]:
-                    heapq.heapreplace(heap, candidate)
-            if len(heap) < 6 or delta * delta <= -heap[0][0]:
-                nearest(second, query, heap)
-
-        for i in members:
-            heap = []
-            nearest(root, i, heap)
-            for _, neg_j in heap:
-                j = -neg_j
-                near.add(tuple(sorted((i, j))))
-        by_distance[tuple(members)] = members
-    if not near or not by_distance:
+        near.update(delaunay_edges(members, points))
+        eligible.append(members)
+    if not near or not eligible:
         return None
     rng = random.Random(3)
-    groups_list = list(by_distance.values())
     random_pairs = set()
     attempts = 0
     while len(random_pairs) < len(near) and attempts < len(near) * 30:
-        group = rng.choice(groups_list)
+        group = rng.choice(eligible)
         random_pairs.add(tuple(sorted(rng.sample(group, 2))))
         attempts += 1
     if not random_pairs:
@@ -231,7 +314,7 @@ def score(document):
                                'median': median(sizes), 'max': sizes[-1] if sizes else None},
         'file_count': len(files),
         'code_lines_source': 'code_lines' if code else 'loc_fallback',
-        'grid_multiple_method': 'six_nearest_proxy',
+        'grid_multiple_method': 'delaunay_bowyer_watson',
     }
 
 
