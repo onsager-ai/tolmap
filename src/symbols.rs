@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use tree_sitter::{Node, Parser};
 
 use crate::extract::{self, LanguageKind};
@@ -27,6 +27,7 @@ struct Span {
     name: String,
     kind: usize,
     start: usize,
+    credit_start: usize,
     end: usize,
     begin_byte: usize,
     credit_begin_byte: usize,
@@ -93,7 +94,7 @@ fn kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
         },
         LanguageKind::Go => match node.kind() {
             "function_declaration" => Some(FUNCTION),
-            "method_declaration" => Some(METHOD),
+            "method_declaration" | "method_elem" => Some(METHOD),
             "type_spec" => Some(match node.child_by_field_name("type").map(|n| n.kind()) {
                 Some("struct_type") => CLASS,
                 Some("interface_type") => INTERFACE,
@@ -104,7 +105,7 @@ fn kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
         LanguageKind::TypeScript => match node.kind() {
             "class_declaration" | "class" => Some(CLASS),
             "function_declaration" => Some(FUNCTION),
-            "method_definition" => Some(METHOD),
+            "method_definition" | "method_signature" => Some(METHOD),
             "interface_declaration" => Some(INTERFACE),
             "type_alias_declaration" => Some(TYPE),
             "variable_declarator" => {
@@ -166,6 +167,12 @@ fn collect_spans(
                 name: n,
                 kind: k,
                 start: node.start_position().row + 1,
+                credit_start: node
+                    .parent()
+                    .filter(|p| p.kind() == "decorated_definition")
+                    .map_or(node.start_position().row + 1, |p| {
+                        p.start_position().row + 1
+                    }),
                 end: node.end_position().row + 1,
                 begin_byte: node.start_byte(),
                 credit_begin_byte: node
@@ -192,40 +199,39 @@ fn receiver_type(node: Node<'_>, bytes: &[u8]) -> Option<String> {
         .find_map(|child| receiver_type(child, bytes))
 }
 
-fn attach_go_methods(root: Node<'_>, bytes: &[u8], spans: &mut [Span], offset: usize) {
-    let types = spans
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.kind == CLASS || s.kind == INTERFACE || s.kind == TYPE)
-        .map(|(i, s)| (s.name.clone(), i))
-        .collect::<BTreeMap<_, _>>();
+fn collect_go_receivers(
+    root: Node<'_>,
+    bytes: &[u8],
+    spans: &[Span],
+    offset: usize,
+    out: &mut Vec<(usize, String)>,
+) {
     fn visit(
         node: Node<'_>,
         bytes: &[u8],
-        spans: &mut [Span],
-        types: &BTreeMap<String, usize>,
+        spans: &[Span],
         offset: usize,
+        out: &mut Vec<(usize, String)>,
     ) {
         if node.kind() == "method_declaration" {
             if let Some(type_name) = node
                 .child_by_field_name("receiver")
                 .and_then(|n| receiver_type(n, bytes))
             {
-                if let Some(&parent) = types.get(&type_name) {
-                    if let Some(method) = spans
-                        .iter_mut()
-                        .find(|s| s.begin_byte == node.start_byte() && s.kind == METHOD)
-                    {
-                        method.parent = (offset + parent) as isize;
-                    }
+                if let Some((i, _)) = spans
+                    .iter()
+                    .enumerate()
+                    .find(|(_, s)| s.begin_byte == node.start_byte() && s.kind == METHOD)
+                {
+                    out.push((offset + i, type_name));
                 }
             }
         }
         for child in children(node) {
-            visit(child, bytes, spans, types, offset);
+            visit(child, bytes, spans, offset, out);
         }
     }
-    visit(root, bytes, spans, &types, offset);
+    visit(root, bytes, spans, offset, out);
 }
 
 fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
@@ -259,6 +265,17 @@ fn owner_at(spans: &[Span], offset: usize, byte: usize) -> Option<usize> {
 }
 
 fn expression_chains(node: Node<'_>, bytes: &[u8], out: &mut Vec<Vec<String>>) {
+    if matches!(node.kind(), "call" | "call_expression") {
+        // The call walker credits the callee once. Its arguments can still
+        // contain references, but repeating the callee here would inflate
+        // an edge count beyond the number of lexical sites.
+        for child in children(node) {
+            if node.child_by_field_name("function").map(|n| n.id()) != Some(child.id()) {
+                expression_chains(child, bytes, out);
+            }
+        }
+        return;
+    }
     if let Some(parts) = chain(node, bytes) {
         out.push(parts);
     } else {
@@ -279,6 +296,31 @@ fn parameter_bindings(node: Node<'_>, bytes: &[u8], out: &mut BTreeSet<String>) 
     for child in children(node) {
         parameter_bindings(child, bytes, out);
     }
+}
+
+fn covered_by_reference_wrapper(node: Node<'_>) -> bool {
+    let mut parent = node.parent();
+    while let Some(p) = parent {
+        if matches!(
+            p.kind(),
+            "decorator"
+                | "superclasses"
+                | "type"
+                | "type_annotation"
+                | "extends_clause"
+                | "implements_clause"
+        ) {
+            return true;
+        }
+        if matches!(
+            p.kind(),
+            "class_definition" | "function_definition" | "method_definition" | "method_declaration"
+        ) {
+            break;
+        }
+        parent = p.parent();
+    }
+    false
 }
 
 fn collect_candidates(
@@ -317,15 +359,17 @@ fn collect_candidates(
                 call: true,
                 dynamic: resolved.is_none(),
             });
-        } else if matches!(
-            node.kind(),
-            "decorator"
-                | "superclasses"
-                | "type"
-                | "type_annotation"
-                | "extends_clause"
-                | "implements_clause"
-        ) {
+        } else if !covered_by_reference_wrapper(node)
+            && matches!(
+                node.kind(),
+                "decorator"
+                    | "superclasses"
+                    | "type"
+                    | "type_annotation"
+                    | "extends_clause"
+                    | "implements_clause"
+            )
+        {
             let mut chains = Vec::new();
             expression_chains(node, bytes, &mut chains);
             for parts in chains {
@@ -717,6 +761,7 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
             })
         });
     let mut spans = Vec::new();
+    let mut go_receivers = Vec::new();
     let mut infos = Vec::new();
     let mut module_code_lines = BTreeMap::new();
     for (fi, entry) in nodes.iter().enumerate() {
@@ -743,14 +788,14 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
         let first = spans.len();
         collect_spans(root, &bytes, lang, fi, first, &mut spans);
         if lang == LanguageKind::Go {
-            attach_go_methods(root, &bytes, &mut spans[first..], first);
+            collect_go_receivers(root, &bytes, &spans[first..], first, &mut go_receivers);
         }
         let flags = extract::code_line_flags(root, &bytes, lang);
         for span in &mut spans[first..] {
             span.code_lines = flags
                 .iter()
                 .enumerate()
-                .filter(|(row, flag)| **flag && *row >= span.start - 1 && *row < span.end)
+                .filter(|(row, flag)| **flag && *row >= span.credit_start - 1 && *row < span.end)
                 .count();
         }
         let outside = flags
@@ -760,7 +805,7 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
                 **flag
                     && !spans[first..]
                         .iter()
-                        .any(|s| s.parent == -1 && *row >= s.start - 1 && *row < s.end)
+                        .any(|s| s.parent == -1 && *row >= s.credit_start - 1 && *row < s.end)
             })
             .count();
         module_code_lines.insert(fi, outside);
@@ -794,6 +839,29 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
             candidates,
             shadowed,
         });
+    }
+    let mut go_types: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (i, span) in spans.iter().enumerate() {
+        if nodes[span.file].lang == "go" && matches!(span.kind, CLASS | INTERFACE | TYPE) {
+            let directory = nodes[span.file]
+                .file
+                .rsplit_once('/')
+                .map_or("", |v| v.0)
+                .to_owned();
+            go_types
+                .entry((directory, span.name.clone()))
+                .or_default()
+                .push(i);
+        }
+    }
+    for (method, type_name) in go_receivers {
+        let file = spans[method].file;
+        let directory = nodes[file].file.rsplit_once('/').map_or("", |v| v.0);
+        if let Some(ids) = go_types.get(&(directory.to_owned(), type_name)) {
+            if ids.len() == 1 {
+                spans[method].parent = ids[0] as isize;
+            }
+        }
     }
     let mut tops = vec![BTreeMap::new(); nodes.len()];
     let mut members: BTreeMap<usize, BTreeMap<String, usize>> = BTreeMap::new();
@@ -903,6 +971,16 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
 }
 
 pub fn write_sibling(repo: &Path, nodes: &[SourceNode], map_path: &Path) -> Result<()> {
+    let map: MapDocument = serde_json::from_slice(&fs::read(map_path)?)?;
+    ensure!(
+        map.files.len() == nodes.len()
+            && map
+                .files
+                .iter()
+                .zip(nodes)
+                .all(|(file, node)| file == &node.file),
+        "symbol source file order differs from map F order"
+    );
     let document = build(repo, nodes)?;
     let output = map_path.with_extension("symbols.json");
     let temporary = map_path.with_extension("symbols.json.tmp");
@@ -1049,6 +1127,13 @@ mod tests {
         assert!(!edge(&doc, inner, outer));
         assert!(edge(&doc, id(&doc, 2, "typed"), target));
         assert!(edge(&doc, id(&doc, 2, "decorated"), target));
+        assert_eq!(
+            doc.edges
+                .iter()
+                .find(|e| e[0] == id(&doc, 2, "typed") && e[1] == target)
+                .unwrap()[2],
+            2
+        );
         assert!(doc.coverage.calls_resolved > 0);
     }
 
@@ -1096,10 +1181,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("p")).unwrap();
         std::fs::write(dir.path().join("go.mod"), "module example.com/repo\n").unwrap();
-        std::fs::write(dir.path().join("p/one.go"), "package p\nfunc Target() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("p/one.go"),
+            "package p\ntype Thing struct{}\nfunc Target() {}\n",
+        )
+        .unwrap();
         std::fs::write(
             dir.path().join("p/two.go"),
-            "package p\nfunc Local() { Target() }\n",
+            "package p\nfunc (t *Thing) Work() {}\nfunc Local() { Target() }\n",
         )
         .unwrap();
         std::fs::write(
@@ -1125,6 +1214,10 @@ mod tests {
             source("use.ts", "use.ts", "ts"),
         ];
         let doc = build(dir.path(), &nodes).unwrap();
+        assert_eq!(
+            doc.symbols[id(&doc, 1, "Work")].0 .5,
+            id(&doc, 0, "Thing") as isize
+        );
         assert!(edge(&doc, id(&doc, 1, "Local"), id(&doc, 0, "Target")));
         assert!(edge(&doc, id(&doc, 2, "Caller"), id(&doc, 0, "Target")));
         assert!(edge(&doc, id(&doc, 4, "use"), id(&doc, 3, "run")));

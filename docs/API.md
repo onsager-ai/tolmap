@@ -99,8 +99,8 @@ included from both sides, with both endpoint rows and their global indices
 so a client can place the far endpoint without fetching another district.
 `module_code_lines` maps file index to code lines outside top-level symbols.
 The full sibling `<name>.symbols.json` also has `files`, `symbols`, `edges`,
-`module_code_lines` and `coverage` (`calls_total`, `calls_resolved`, and
-`unresolved` counts by reason). Coverage lives there to keep the initial map
+`module_code_lines` and `coverage` (`calls_total` inside symbols,
+`calls_resolved`, and `unresolved` counts by reason). Coverage lives there to keep the initial map
 document small. The same sibling is copied to `/maps/<owner>/<repo>.symbols.json`
 when a static map includes one.
 
