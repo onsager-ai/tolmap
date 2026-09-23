@@ -326,9 +326,13 @@ async fn get_symbols(
     let map: crate::schema::MapDocument = super::store::read_map_document(&row.map_path)
         .map_err(|e| ApiError::internal(e.to_string()))?;
     let path = row.map_path.with_extension("symbols.json");
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|e| ApiError::internal(format!("read {}: {e}", path.display())))?;
+    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ApiError::not_found(format!("{slug} has no symbols document at this commit"))
+        } else {
+            ApiError::internal(format!("read {}: {e}", path.display()))
+        }
+    })?;
     let symbols: crate::schema::SymbolsDocument = serde_json::from_slice(&bytes)
         .map_err(|e| ApiError::internal(format!("parse {}: {e}", path.display())))?;
     let district = symbols.district(&map, query.district).ok_or_else(|| {

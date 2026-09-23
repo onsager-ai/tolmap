@@ -87,7 +87,8 @@ everywhere else in this API.
 
 Returns the symbols for one district of the latest indexed commit, or the
 specified commit. `district` is required and is the numeric district id in
-the map's `N` rows. Unknown maps, commits and districts return 404. The
+the map's `N` rows. Unknown maps, commits, districts and older commits
+without a symbols sibling return 404. The
 response contains `district`, its `files` (indices into the map's `F`),
 `symbol_indices`, `symbols`, `edges`, and `module_code_lines`. Each symbol row
 is `[file, name, kind, start_line, end_line, parent, code_lines]`; `parent`
@@ -102,7 +103,6 @@ The full sibling `<name>.symbols.json` also has `files`, `symbols`, `edges`,
 `unresolved` counts by reason). Coverage lives there to keep the initial map
 document small. The same sibling is copied to `/maps/<owner>/<repo>.symbols.json`
 when a static map includes one.
-
 
 ### `POST /api/index`
 

@@ -35,11 +35,11 @@ struct Span {
     parent: isize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum Binding {
     Module(usize),
     From(usize, String),
-    Prefix(String),
+    Prefix(String, String),
     Package(String),
     External,
 }
@@ -364,7 +364,20 @@ fn imports_python(
     modules: &BTreeMap<String, usize>,
 ) -> BTreeMap<String, Binding> {
     let mut result = BTreeMap::new();
-    for imp in extract::python_imports(root, bytes) {
+    let mut ambiguous = BTreeSet::new();
+    // A function-local import must not create a file-wide binding. Direct
+    // module imports are certain; conditional imports need control-flow
+    // analysis and are left unresolved here.
+    for imp in children(root)
+        .into_iter()
+        .filter(|n| {
+            matches!(
+                n.kind(),
+                "import_statement" | "import_from_statement" | "future_import_statement"
+            )
+        })
+        .flat_map(|n| extract::python_imports(n, bytes))
+    {
         let head = extract::python_head(&imp, module, is_pkg);
         for (n, alias) in &imp.names {
             if n == "*" {
@@ -396,10 +409,23 @@ fn imports_python(
                     .copied()
                     .map(Binding::Module)
                     .unwrap_or(Binding::External)
+            } else if !n.contains('.') && modules.contains_key(n) {
+                Binding::Module(modules[n])
             } else {
-                Binding::Prefix(n.split('.').next().unwrap_or(n).to_owned())
+                Binding::Prefix(n.split('.').next().unwrap_or(n).to_owned(), n.clone())
             };
-            result.insert(local, binding);
+            if !ambiguous.contains(&local) {
+                match result.get(&local) {
+                    Some(existing) if existing != &binding => {
+                        result.remove(&local);
+                        ambiguous.insert(local);
+                    }
+                    Some(_) => {}
+                    None => {
+                        result.insert(local, binding);
+                    }
+                }
+            }
         }
     }
     result
@@ -552,7 +578,9 @@ fn lookup(
     match infos[file].imports.get(name)? {
         Binding::Module(fi) => Some(BindingOrSymbol::Module(*fi)),
         Binding::From(fi, target) => lookup(*fi, target, infos, tops, packages, depth + 1),
-        Binding::Prefix(prefix) => Some(BindingOrSymbol::Prefix(prefix.clone())),
+        Binding::Prefix(prefix, target) => {
+            Some(BindingOrSymbol::Prefix(prefix.clone(), target.clone()))
+        }
         Binding::Package(directory) => Some(BindingOrSymbol::Package(directory.clone())),
         Binding::External => Some(BindingOrSymbol::External),
     }
@@ -561,7 +589,7 @@ fn lookup(
 enum BindingOrSymbol {
     Symbol(usize),
     Module(usize),
-    Prefix(String),
+    Prefix(String, String),
     Package(String),
     External,
 }
@@ -636,12 +664,15 @@ fn resolve(
                     return Err("unresolved_attribute");
                 }
             }
-            BindingOrSymbol::Prefix(prefix) => {
+            BindingOrSymbol::Prefix(prefix, target) => {
                 let path = format!("{prefix}.{part}");
-                if let Some(&fi) = modules.get(&path) {
+                if path == target {
+                    let &fi = modules.get(&path).ok_or("external")?;
                     BindingOrSymbol::Module(fi)
+                } else if target.starts_with(&format!("{path}.")) {
+                    BindingOrSymbol::Prefix(path, target)
                 } else {
-                    return Err("external");
+                    return Err("unresolved_attribute");
                 }
             }
             BindingOrSymbol::External => return Err("external"),
@@ -650,16 +681,26 @@ fn resolve(
     match value {
         BindingOrSymbol::Symbol(i) => Ok(i),
         BindingOrSymbol::Module(_) | BindingOrSymbol::Package(_) => Err("module_only"),
-        BindingOrSymbol::Prefix(_) | BindingOrSymbol::External => Err("external"),
+        BindingOrSymbol::Prefix(_, _) | BindingOrSymbol::External => Err("external"),
     }
 }
 
 pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
     let mut modules = BTreeMap::new();
+    let mut ambiguous_modules = BTreeSet::new();
     let mut packages: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (fi, node) in nodes.iter().enumerate() {
-        modules.insert(node.module.clone(), fi);
-        modules.insert(node.file.clone(), fi);
+        for key in [&node.module, &node.file] {
+            if ambiguous_modules.contains(key.as_str()) {
+                continue;
+            }
+            if let Some(previous) = modules.insert((*key).clone(), fi) {
+                if previous != fi {
+                    modules.remove(key.as_str());
+                    ambiguous_modules.insert((*key).clone());
+                }
+            }
+        }
         if node.lang == "go" {
             let directory = node.file.rsplit_once('/').map_or("", |v| v.0).to_owned();
             packages.entry(directory).or_default().push(fi);
@@ -756,14 +797,27 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
     }
     let mut tops = vec![BTreeMap::new(); nodes.len()];
     let mut members: BTreeMap<usize, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut declarations: BTreeMap<(usize, isize, String), Vec<usize>> = BTreeMap::new();
     for (i, span) in spans.iter().enumerate() {
-        if span.parent < 0 {
-            tops[span.file].insert(span.name.clone(), i);
+        declarations
+            .entry((span.file, span.parent, span.name.clone()))
+            .or_default()
+            .push(i);
+    }
+    // Multiple declarations with the same lexical name may be guarded by
+    // branches or overwritten later. Without execution order, neither is
+    // a certain target, so they remain in the hierarchy but resolve no edge.
+    for ((file, parent, name), ids) in declarations {
+        if ids.len() != 1 {
+            continue;
+        }
+        if parent < 0 {
+            tops[file].insert(name, ids[0]);
         } else {
             members
-                .entry(span.parent as usize)
+                .entry(parent as usize)
                 .or_default()
-                .insert(span.name.clone(), i);
+                .insert(name, ids[0]);
         }
     }
     let mut edges = BTreeMap::<(usize, usize), usize>::new();
