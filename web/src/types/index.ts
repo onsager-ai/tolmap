@@ -5,6 +5,7 @@
 export type { MapDocument } from "@bindings/MapDocument";
 export type { District } from "@bindings/District";
 export type { DistrictClass } from "@bindings/DistrictClass";
+export type { Neighbourhood } from "@bindings/Neighbourhood";
 export type { NodeRow } from "@bindings/NodeRow";
 export type { LandmarkRow } from "@bindings/LandmarkRow";
 export type { RoadRow } from "@bindings/RoadRow";

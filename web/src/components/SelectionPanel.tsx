@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { MapDocument, SymbolRow } from "@/types";
 import { CH, CODE_LINES, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
+import { neighbourhoodOf } from "@/map/neighbourhoods";
 import { KCOL, KIND, LINK_PREVIEW_MAX } from "@/map/constants";
 import { computeBlast, type AdjMap } from "@/map/graph";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
@@ -573,6 +574,17 @@ function FileBody({
         <Row label="district">
           <b>{doc.names[String(D_(doc, i))]}</b>
         </Row>
+        {/* B4 (nested footprints, issue #82 scope item 8): "the file card
+            shows the file's neighbourhood label." Absent for a document with
+            no neighbourhood data at all (pre-#85 maps) -- neighbourhoodOf
+            returns null there and the row is simply omitted, the same
+            pattern the "near" row above already uses for a repo with no
+            roads. */}
+        {neighbourhoodOf(doc, i) && (
+          <Row label="neighbourhood">
+            <b>{neighbourhoodOf(doc, i)!.label}</b>
+          </Row>
+        )}
         <Row label="file lines">
           <b>{LOC(doc, i)} lines · {CODE_LINES(doc, i)} code</b>
         </Row>
