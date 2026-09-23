@@ -3124,17 +3124,26 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
   await context.close();
 }
 
-// 9(h): the phone hub-ring declutter (MapRenderer.declutterHubCandidates) --
-// bounded well below the undecluttered ~100-ring measurement the spec cites
-// for dify at fit zoom on a phone. 90 is chosen as a conservative ceiling:
-// the top 12 are always eligible regardless of overlap/cap, so the bound has
-// to stay comfortably above 12, and the overlap+per-district-area rules only
-// ever REMOVE rings relative to the undecluttered count, never add -- so
-// anything meaningfully under the ~100 baseline demonstrates the declutter
-// is doing real work. Tighten this once a real CI run reports the actual
-// post-declutter count (logged unconditionally below, pass or fail).
+// 9(h): the phone hub-ring declutter (MapRenderer.declutterHubCandidates).
+// Two checks, not one, because a single guessed count threshold is a weak
+// regression test on a machine that can't run the browser to calibrate it:
+//
+//   1. A STRUCTURAL invariant, true by construction of the algorithm
+//      regardless of the exact final count: rank every drawn ring by fan-in
+//      (the map's own FI, `N[i][6]` -- the same order computeHubs already
+//      ranks by) and assert no two drawn rings overlap UNLESS both are in
+//      the top 12 (which are always eligible and may legitimately overlap
+//      each other). This is exactly declutterHubCandidates' own contract,
+//      checked from the rendered output rather than re-deriving it.
+//   2. A numeric ceiling, deliberately conservative since this machine
+//      cannot run the browser to measure the real number: the spec's own
+//      "about 100" undecluttered figure for dify/phone/fit means ANY
+//      reduction demonstrates the declutter is doing real work, so the
+//      bound is 100 (strictly fewer than the cited undecluttered count),
+//      not a tighter guess. The actual count is logged unconditionally
+//      (pass or fail) so this can be tightened from a real CI run.
 async function checkPhoneHubRingDeclutter(browser, base) {
-  const label = "phone hub-ring count is decluttered at fit zoom (dify)";
+  const label = "phone hub-ring declutter (dify)";
   console.log(`\n${label}`);
   const phone = PROFILES.find((p) => p.name === "phone");
   const context = await browser.newContext({
@@ -3144,13 +3153,34 @@ async function checkPhoneHubRingDeclutter(browser, base) {
     deviceScaleFactor: phone.deviceScaleFactor ?? 1,
   });
   const page = await context.newPage();
+  const mapDoc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
-  const ringCount = await page.locator("svg.map-svg circle[data-hub-ring]").count();
-  const HUB_RING_BOUND = 90;
-  console.log(`  (info) phone hub rings at fit zoom: ${ringCount}`);
-  report(ringCount > 0 && ringCount < HUB_RING_BOUND, `${label}: ring count is under ${HUB_RING_BOUND}`, `count=${ringCount}`);
+  const rings = await page.evaluate(() =>
+    [...document.querySelectorAll("svg.map-svg circle[data-hub-ring]")].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { file: Number(el.getAttribute("data-hub-ring")), cx: r.x + r.width / 2, cy: r.y + r.height / 2, r: r.width / 2 };
+    }),
+  );
+  console.log(`  (info) phone hub rings at fit zoom: ${rings.length}`);
+  const HUB_RING_BOUND = 100;
+  report(rings.length > 0 && rings.length < HUB_RING_BOUND, `${label}: ring count (${rings.length}) is under the undecluttered baseline (${HUB_RING_BOUND})`, `count=${rings.length}`);
+
+  const ranked = [...rings].sort((a, b) => mapDoc.N[b.file][6] - mapDoc.N[a.file][6] || a.file - b.file);
+  const TOP_ALWAYS_ELIGIBLE = 12;
+  let violation = null;
+  for (let i = 0; i < ranked.length && !violation; i++) {
+    for (let j = i + 1; j < ranked.length; j++) {
+      if (i < TOP_ALWAYS_ELIGIBLE && j < TOP_ALWAYS_ELIGIBLE) continue; // both always-eligible: overlap is allowed
+      const dist = Math.hypot(ranked[i].cx - ranked[j].cx, ranked[i].cy - ranked[j].cy);
+      if (dist < ranked[i].r + ranked[j].r - 0.5) { // 0.5px slack for sub-pixel rounding
+        violation = { a: ranked[i].file, b: ranked[j].file, dist, sumR: ranked[i].r + ranked[j].r };
+        break;
+      }
+    }
+  }
+  report(!violation, `${label}: no two drawn rings overlap outside the always-eligible top ${TOP_ALWAYS_ELIGIBLE}`, violation ? JSON.stringify(violation) : "");
   await context.close();
 }
 
