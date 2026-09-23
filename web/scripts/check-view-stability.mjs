@@ -859,6 +859,8 @@ async function checkPackageLayout(browser, base, profile) {
 // Review regression for district refinement. A single docker file makes the
 // district-wide common prefix empty; the 886-file workflow branch still has
 // to refine past web/ and its single-child chain before reaching five rows.
+// A wide workflow fan-out must instead keep its parent: showing only nodes/
+// would hide about half of the district in `other`.
 // Intercepting one small synthetic map keeps this an end-to-end check of the
 // actual memoised TypeScript derivation and district-card rendering without
 // adding a second implementation of the algorithm to this script.
@@ -866,31 +868,37 @@ async function checkDistrictRefinement(browser, base) {
   const label = "district path iterative refinement / synthetic";
   console.log(`\n${label}`);
   const seed = await (await fetch(`${base}/maps/django/django.json`)).json();
-  const paths = Array.from(
+  const balancedPaths = Array.from(
     { length: 886 },
     (_, i) => `web/app/components/workflow/${["a", "b", "c"][i % 3]}/file-${i}.ts`,
   ).concat("web/types/index.ts", "docker/compose.yml");
-  const doc = {
-    ...seed,
-    repo: "synthetic/refinement",
-    names: { 0: "workflow" },
-    districts: { 0: { ...seed.districts["0"], size: paths.length } },
-    F: paths,
-    N: paths.map((_, i) => {
-      const row = [...seed.N[i % seed.N.length]];
-      row[0] = 0;
-      return row;
-    }),
-    E: [],
-    L: [],
-    S: {},
-    U: {},
-    roads: [],
-  };
+  const widePaths = Array.from({ length: 434 }, (_, i) => `web/app/components/workflow/nodes/file-${i}.ts`);
+  for (let child = 0; child < 20; child++) {
+    for (let i = 0; i < (child < 10 ? 23 : 22); i++) {
+      widePaths.push(`web/app/components/workflow/sub${String(child).padStart(2, "0")}/file-${i}.ts`);
+    }
+  }
+  widePaths.push("web/app/(commonLayout)/index.ts", "web/app/(humanInputLayout)/form/[token]/index.ts", "docker/compose.yml");
   const context = await browser.newContext({ viewport: { width: 1000, height: 700 } });
   const page = await context.newPage();
-  await page.route("**/maps/synthetic/refinement.json", (route) => route.fulfill({ json: doc }));
-  await page.goto(`${base}/synthetic/refinement?geo=r&layer=d&d=0`, { waitUntil: "domcontentloaded" });
+  let paths = balancedPaths;
+  await page.route("**/maps/synthetic/refinement.json", (route) => route.fulfill({
+    json: {
+      ...seed,
+      repo: "synthetic/refinement",
+      names: { 0: "workflow" },
+      districts: { 0: { ...seed.districts["0"], size: paths.length } },
+      F: paths,
+      N: paths.map((_, i) => {
+        const row = [...seed.N[i % seed.N.length]];
+        row[0] = 0;
+        return row;
+      }),
+      E: [], L: [], S: {}, U: {}, roads: [],
+    },
+  }));
+  const open = () => page.goto(`${base}/synthetic/refinement?geo=r&layer=d&d=0`, { waitUntil: "domcontentloaded" });
+  await open();
   await page.waitForSelector("[data-district-path-breakdown]");
   report((await page.locator("[data-district-path]").count()) === 0, `${label}: breakdown is collapsed by default`);
   report(!(await page.locator("[data-district-summary]").innerText()).includes("mostly"), `${label}: no mostly line below 40%`);
@@ -911,6 +919,31 @@ async function checkDistrictRefinement(browser, base) {
     rows.filter((row) => /\(1 file\)/.test(row.text)).length === 2 && rows.every((row) => !/\(1 files\)/.test(row.text)),
     `${label}: singular file counts use “file”`,
     JSON.stringify(rows),
+  );
+
+  paths = widePaths;
+  await open();
+  await page.waitForSelector("[data-district-path-breakdown]");
+  report(
+    (await page.locator("[data-district-summary]").innerText()).includes("mostly web/app/components/workflow/"),
+    `${label}: wide workflow fan-out keeps the parent as mostly`,
+  );
+  await page.locator("[data-district-folders-toggle]").click();
+  const wideRows = await page.locator("[data-district-path-breakdown] > :not([data-district-folders-toggle])").evaluateAll((elements) =>
+    elements.map((element) => ({
+      path: element.getAttribute("data-district-path"),
+      count: Number(element.textContent?.match(/\((\d+) files?\)/)?.[1]),
+      text: element.textContent ?? "",
+    })),
+  );
+  const largestNamed = Math.max(...wideRows.filter((row) => row.path != null).map((row) => row.count));
+  const other = wideRows.find((row) => row.path == null);
+  report(
+    wideRows[0]?.path === "web/app/components/workflow" && wideRows[0].count === 884 &&
+      wideRows.every((row, i) => i === 0 || wideRows[i - 1].count >= row.count) &&
+      (!other || other.count <= largestNamed),
+    `${label}: wide split preserves the 884-file parent and ranks all rows`,
+    JSON.stringify(wideRows),
   );
   await context.close();
 }
@@ -933,8 +966,8 @@ async function checkDifyDistrictSummary(browser, base, profile) {
   const text = await panel.innerText();
   report(
     text.includes("887 files · 106k lines") &&
-      text.includes("mostly web/app/components/workflow/nodes/") &&
-      text.includes("folders (4)") &&
+      text.includes("mostly web/app/components/workflow/") &&
+      text.includes("folders (5)") &&
       text.includes("key files (6)"),
     `${label}: compact summary and folder count match the fixture`,
     text,
@@ -944,6 +977,21 @@ async function checkDifyDistrictSummary(browser, base, profile) {
       !text.includes("landmarks") &&
       (await panel.getByRole("button", { name: "Zoom to district" }).count()) === 1,
     `${label}: two tappable neighbours and header zoom replace the old rows`,
+  );
+  await panel.locator("[data-district-folders-toggle]").click();
+  const rows = await panel.locator("[data-district-path-breakdown] > :not([data-district-folders-toggle])").evaluateAll((elements) =>
+    elements.map((element) => ({
+      path: element.getAttribute("data-district-path"),
+      count: Number(element.textContent?.match(/\((\d+) files?\)/)?.[1]),
+    })),
+  );
+  const largestNamed = Math.max(...rows.filter((row) => row.path != null).map((row) => row.count));
+  report(
+    rows[0]?.path === "web/app/components/workflow" && rows[0].count === 755 &&
+      rows.every((row, i) => i === 0 || rows[i - 1].count >= row.count) &&
+      rows.some((row) => row.path == null && row.count <= largestNamed),
+    `${label}: fixture rows are ranked and other stays below the largest folder`,
+    JSON.stringify(rows),
   );
   await context.close();
 }

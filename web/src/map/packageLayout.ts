@@ -5,6 +5,7 @@ export const PACKAGE_GROUP_LIMIT = 10;
 export const PACKAGE_OTHER_COLOR = "var(--dim)";
 const DISTRICT_PATH_LIMIT = 5;
 const DISTRICT_REFINE_MIN_SHARE = 0.15;
+const DISTRICT_SPLIT_MIN_COVERAGE = 0.8;
 
 export interface PackageGroup {
   path: string | null;
@@ -168,12 +169,10 @@ function splitBreakdownBucket(
 }
 
 /** Begin with the branches at a district's common directory root, extending
- * each through its own single-child chain. Then repeatedly refine the
- * largest splittable row until there are five useful paths or the candidate
- * is already below 15% of the district. If a wide fan-out would exceed five,
- * only children still above that usefulness floor remain named; smaller
- * siblings move to `other`, which lets a dominant single-child spine keep
- * refining instead of getting stuck at `web/`. Rows remain disjoint. */
+ * each through its own single-child chain. Refine large rows only when the
+ * five visible rows still represent most of the split parent. Otherwise a
+ * wide folder looks like one dominant child while its siblings disappear
+ * into `other`. Rows remain disjoint and ranked by file count. */
 function districtBreakdown(indices: readonly number[], fileParts: readonly (readonly string[])[]): readonly DistrictPathRow[] {
   if (indices.length === 0) return [];
   const paths = indices.map((index) => fileParts[index]);
@@ -206,26 +205,37 @@ function districtBreakdown(indices: readonly number[], fileParts: readonly (read
   if (rows.length > DISTRICT_PATH_LIMIT) {
     otherCount += rows.slice(DISTRICT_PATH_LIMIT).reduce((sum, row) => sum + row.members.length, 0);
     rows = rows.slice(0, DISTRICT_PATH_LIMIT);
-  } else {
-    while (rows.length < DISTRICT_PATH_LIMIT) {
-      const candidates = rows
-        .map((row) => ({ row, split: splitBreakdownBucket(row, fileParts) }))
-        .filter((candidate): candidate is { row: BreakdownBucket; split: NonNullable<typeof candidate.split> } => candidate.split != null)
-        .sort((a, b) => b.row.members.length - a.row.members.length || compareText(a.row.path, b.row.path));
-      const candidate = candidates[0];
-      if (!candidate || candidate.row.members.length / indices.length < DISTRICT_REFINE_MIN_SHARE) break;
-      let children = candidate.split.children;
-      if (rows.length - 1 + children.length > DISTRICT_PATH_LIMIT) {
-        const largeChildren = children.filter((child) => child.members.length / indices.length >= DISTRICT_REFINE_MIN_SHARE);
-        if (largeChildren.length === 0 || rows.length - 1 + largeChildren.length > DISTRICT_PATH_LIMIT) break;
-        const large = new Set(largeChildren);
-        otherCount += children.filter((child) => !large.has(child)).reduce((sum, child) => sum + child.members.length, 0);
-        children = largeChildren;
-      }
-      rows = rows.filter((row) => row !== candidate.row).concat(children);
-      otherCount += candidate.split.directCount;
-      rankRows();
+  }
+  if (otherCount > (rows[0]?.members.length ?? 0)) {
+    // Even the first partition can be wider than the card. Keep its common
+    // parent in that case, including the repository root if necessary.
+    rows = [breakdownBucket(indices, fileParts)];
+    otherCount = 0;
+  }
+
+  while (true) {
+    const candidates = rows
+      .map((row) => ({ row, split: splitBreakdownBucket(row, fileParts) }))
+      .filter((candidate): candidate is { row: BreakdownBucket; split: NonNullable<typeof candidate.split> } => candidate.split != null)
+      .sort((a, b) => b.row.members.length - a.row.members.length || compareText(a.row.path, b.row.path));
+    let accepted = false;
+    for (const { row, split } of candidates) {
+      if (row.members.length / indices.length < DISTRICT_REFINE_MIN_SHARE) break;
+      const ranked = rows.filter((existing) => existing !== row).concat(split.children)
+        .sort((a, b) => b.members.length - a.members.length || compareText(a.path, b.path));
+      const shown = ranked.slice(0, DISTRICT_PATH_LIMIT);
+      const visibleChildren = new Set(shown);
+      const covered = split.children.reduce((sum, child) => sum + (visibleChildren.has(child) ? child.members.length : 0), 0);
+      if (covered / row.members.length < DISTRICT_SPLIT_MIN_COVERAGE) continue;
+      const nextOther = otherCount + split.directCount +
+        ranked.slice(DISTRICT_PATH_LIMIT).reduce((sum, hidden) => sum + hidden.members.length, 0);
+      if (nextOther > shown[0].members.length) continue;
+      rows = shown;
+      otherCount = nextOther;
+      accepted = true;
+      break;
     }
+    if (!accepted) break;
   }
 
   const shown: DistrictPathRow[] = rows.map((row) => ({
@@ -236,7 +246,7 @@ function districtBreakdown(indices: readonly number[], fileParts: readonly (read
   }));
   if (otherCount > 0)
     shown.push({ path: null, count: otherCount, share: Math.round((otherCount / indices.length) * 1000) / 10, other: true });
-  return shown;
+  return shown.sort((a, b) => b.count - a.count || compareText(a.path ?? "", b.path ?? ""));
 }
 
 /** All package/directory derivation for one document. MapView memoises this
