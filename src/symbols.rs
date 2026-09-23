@@ -29,6 +29,7 @@ struct Span {
     start: usize,
     end: usize,
     begin_byte: usize,
+    credit_begin_byte: usize,
     end_byte: usize,
     code_lines: usize,
     parent: isize,
@@ -50,7 +51,6 @@ struct Candidate {
 }
 
 struct FileInfo {
-    module: String,
     imports: BTreeMap<String, Binding>,
     candidates: Vec<Candidate>,
     shadowed: BTreeMap<usize, BTreeSet<String>>,
@@ -65,7 +65,8 @@ fn name(node: Node<'_>, bytes: &[u8]) -> Option<String> {
         .map(|n| text(n, bytes).to_owned())
         .or_else(|| {
             let mut cursor = node.walk();
-            node.named_children(&mut cursor)
+            let result = node
+                .named_children(&mut cursor)
                 .find(|n| {
                     matches!(
                         n.kind(),
@@ -75,7 +76,8 @@ fn name(node: Node<'_>, bytes: &[u8]) -> Option<String> {
                             | "property_identifier"
                     )
                 })
-                .map(|n| text(n, bytes).to_owned())
+                .map(|n| text(n, bytes).to_owned());
+            result
         })
 }
 
@@ -132,20 +134,17 @@ fn collect_spans(
     bytes: &[u8],
     lang: LanguageKind,
     file: usize,
+    first: usize,
     spans: &mut Vec<Span>,
 ) {
     if let Some(mut k) = kind(node, lang) {
         if let Some(n) = name(node, bytes) {
-            let parent = spans
+            let parent = spans[first..]
                 .iter()
                 .enumerate()
                 .rev()
-                .find(|(_, s)| {
-                    s.file == file
-                        && s.begin_byte <= node.start_byte()
-                        && node.end_byte() <= s.end_byte
-                })
-                .map(|(i, _)| i as isize)
+                .find(|(_, s)| s.begin_byte <= node.start_byte() && node.end_byte() <= s.end_byte)
+                .map(|(i, _)| (first + i) as isize)
                 .unwrap_or(-1);
             if k == FUNCTION && parent >= 0 {
                 k = if spans[parent as usize].kind == CLASS {
@@ -161,6 +160,10 @@ fn collect_spans(
                 start: node.start_position().row + 1,
                 end: node.end_position().row + 1,
                 begin_byte: node.start_byte(),
+                credit_begin_byte: node
+                    .parent()
+                    .filter(|p| p.kind() == "decorated_definition")
+                    .map_or(node.start_byte(), |p| p.start_byte()),
                 end_byte: node.end_byte(),
                 code_lines: 0,
                 parent,
@@ -168,8 +171,53 @@ fn collect_spans(
         }
     }
     for child in children(node) {
-        collect_spans(child, bytes, lang, file, spans);
+        collect_spans(child, bytes, lang, file, first, spans);
     }
+}
+
+fn receiver_type(node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    if node.kind() == "type_identifier" {
+        return Some(text(node, bytes).to_owned());
+    }
+    children(node)
+        .into_iter()
+        .find_map(|child| receiver_type(child, bytes))
+}
+
+fn attach_go_methods(root: Node<'_>, bytes: &[u8], spans: &mut [Span], offset: usize) {
+    let types = spans
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.kind == CLASS || s.kind == INTERFACE || s.kind == TYPE)
+        .map(|(i, s)| (s.name.clone(), i))
+        .collect::<BTreeMap<_, _>>();
+    fn visit(
+        node: Node<'_>,
+        bytes: &[u8],
+        spans: &mut [Span],
+        types: &BTreeMap<String, usize>,
+        offset: usize,
+    ) {
+        if node.kind() == "method_declaration" {
+            if let Some(type_name) = node
+                .child_by_field_name("receiver")
+                .and_then(|n| receiver_type(n, bytes))
+            {
+                if let Some(&parent) = types.get(&type_name) {
+                    if let Some(method) = spans
+                        .iter_mut()
+                        .find(|s| s.begin_byte == node.start_byte() && s.kind == METHOD)
+                    {
+                        method.parent = (offset + parent) as isize;
+                    }
+                }
+            }
+        }
+        for child in children(node) {
+            visit(child, bytes, spans, types, offset);
+        }
+    }
+    visit(root, bytes, spans, &types, offset);
 }
 
 // TODO(feat/code-lines): reuse its shared code-line counter when that PR lands.
@@ -188,7 +236,7 @@ fn code_line_flags(root: Node<'_>, bytes: &[u8], lang: LanguageKind) -> Vec<bool
                 && !s.starts_with('*')
         })
         .collect::<Vec<_>>();
-    fn exclude(node: Node<'_>, flags: &mut [bool], lang: LanguageKind) {
+    fn exclude(node: Node<'_>, lines: &[&[u8]], flags: &mut [bool], lang: LanguageKind) {
         let docstring = lang == LanguageKind::Python
             && node.kind() == "expression_statement"
             && node
@@ -204,9 +252,7 @@ fn code_line_flags(root: Node<'_>, bytes: &[u8], lang: LanguageKind) -> Vec<bool
         if node.kind() == "comment" || docstring {
             for row in node.start_position().row..=node.end_position().row {
                 if let Some(flag) = flags.get_mut(row) {
-                    let line = String::from_utf8_lossy(
-                        bytes.split(|b| *b == b'\n').nth(row).unwrap_or(&[]),
-                    );
+                    let line = String::from_utf8_lossy(lines.get(row).copied().unwrap_or(&[]));
                     if docstring
                         || line.trim_start().starts_with('#')
                         || line.trim_start().starts_with("//")
@@ -219,10 +265,10 @@ fn code_line_flags(root: Node<'_>, bytes: &[u8], lang: LanguageKind) -> Vec<bool
             }
         }
         for child in children(node) {
-            exclude(child, flags, lang);
+            exclude(child, lines, flags, lang);
         }
     }
-    exclude(root, &mut flags, lang);
+    exclude(root, &lines, &mut flags, lang);
     flags
 }
 
@@ -245,34 +291,50 @@ fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
     }
 }
 
-fn owner_at(spans: &[Span], file: usize, byte: usize) -> Option<usize> {
+fn owner_at(spans: &[Span], offset: usize, byte: usize) -> Option<usize> {
     spans
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.file == file && s.begin_byte <= byte && byte < s.end_byte)
+        .filter(|(_, s)| s.credit_begin_byte <= byte && byte < s.end_byte)
         .min_by_key(|(_, s)| s.end_byte - s.begin_byte)
-        .map(|(i, _)| i)
+        .map(|(i, _)| offset + i)
+}
+
+fn expression_chains(node: Node<'_>, bytes: &[u8], out: &mut Vec<Vec<String>>) {
+    if let Some(parts) = chain(node, bytes) {
+        out.push(parts);
+    } else {
+        for child in children(node) {
+            expression_chains(child, bytes, out);
+        }
+    }
+}
+
+fn parameter_bindings(node: Node<'_>, bytes: &[u8], out: &mut BTreeSet<String>) {
+    if matches!(node.kind(), "type" | "type_annotation" | "default_value") {
+        return;
+    }
+    if node.kind() == "identifier" {
+        out.insert(text(node, bytes).to_owned());
+        return;
+    }
+    for child in children(node) {
+        parameter_bindings(child, bytes, out);
+    }
 }
 
 fn collect_candidates(
     node: Node<'_>,
     bytes: &[u8],
-    file: usize,
+    offset: usize,
     spans: &[Span],
     out: &mut Vec<Candidate>,
     shadowed: &mut BTreeMap<usize, BTreeSet<String>>,
 ) {
-    let owner = owner_at(spans, file, node.start_byte());
+    let owner = owner_at(spans, offset, node.start_byte());
     if let Some(owner) = owner {
         if matches!(node.kind(), "parameters" | "formal_parameters") {
-            for child in children(node) {
-                if child.kind() == "identifier" {
-                    shadowed
-                        .entry(owner)
-                        .or_default()
-                        .insert(text(child, bytes).to_owned());
-                }
-            }
+            parameter_bindings(node, bytes, shadowed.entry(owner).or_default());
         }
         let call = matches!(node.kind(), "call" | "call_expression");
         if call {
@@ -295,8 +357,21 @@ fn collect_candidates(
                 | "extends_clause"
                 | "implements_clause"
         ) {
-            for child in children(node) {
-                if let Some(parts) = chain(child, bytes) {
+            let mut chains = Vec::new();
+            expression_chains(node, bytes, &mut chains);
+            for parts in chains {
+                out.push(Candidate {
+                    owner,
+                    chain: parts,
+                    call: false,
+                    dynamic: false,
+                });
+            }
+        } else if node.kind() == "class_definition" {
+            if let Some(bases) = node.child_by_field_name("superclasses") {
+                let mut chains = Vec::new();
+                expression_chains(bases, bytes, &mut chains);
+                for parts in chains {
                     out.push(Candidate {
                         owner,
                         chain: parts,
@@ -308,7 +383,7 @@ fn collect_candidates(
         }
     }
     for child in children(node) {
-        collect_candidates(child, bytes, file, spans, out, shadowed);
+        collect_candidates(child, bytes, offset, spans, out, shadowed);
     }
 }
 
@@ -346,8 +421,12 @@ fn imports_python(
                 } else {
                     Binding::External
                 }
-            } else if let Some(&fi) = modules.get(n) {
-                Binding::Module(fi)
+            } else if alias.is_some() {
+                modules
+                    .get(n)
+                    .copied()
+                    .map(Binding::Module)
+                    .unwrap_or(Binding::External)
             } else {
                 Binding::Prefix(n.split('.').next().unwrap_or(n).to_owned())
             };
@@ -537,13 +616,16 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
         }
         let root = tree.root_node();
         let first = spans.len();
-        collect_spans(root, &bytes, lang, fi, &mut spans);
+        collect_spans(root, &bytes, lang, fi, first, &mut spans);
+        if lang == LanguageKind::Go {
+            attach_go_methods(root, &bytes, &mut spans[first..], first);
+        }
         let flags = code_line_flags(root, &bytes, lang);
         for span in &mut spans[first..] {
             span.code_lines = flags
                 .iter()
                 .enumerate()
-                .filter(|(row, flag)| **flag && *row + 1 >= span.start && *row + 1 <= span.end)
+                .filter(|(row, flag)| **flag && *row >= span.start - 1 && *row < span.end)
                 .count();
         }
         let outside = flags
@@ -553,7 +635,7 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
                 **flag
                     && !spans[first..]
                         .iter()
-                        .any(|s| s.parent == -1 && *row + 1 >= s.start && *row + 1 <= s.end)
+                        .any(|s| s.parent == -1 && *row >= s.start - 1 && *row < s.end)
             })
             .count();
         module_code_lines.insert(fi, outside);
@@ -570,9 +652,15 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
         };
         let mut candidates = Vec::new();
         let mut shadowed = BTreeMap::new();
-        collect_candidates(root, &bytes, fi, &spans, &mut candidates, &mut shadowed);
+        collect_candidates(
+            root,
+            &bytes,
+            first,
+            &spans[first..],
+            &mut candidates,
+            &mut shadowed,
+        );
         infos.push(FileInfo {
-            module: entry.module.clone(),
             imports,
             candidates,
             shadowed,
@@ -727,5 +815,129 @@ impl SymbolsDocument {
             edges,
             module_code_lines,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(file: &str, module: &str, lang: &str) -> SourceNode {
+        SourceNode {
+            file: file.to_owned(),
+            module: module.to_owned(),
+            lang: lang.to_owned(),
+            loc: 0,
+            complexity: 0,
+            churn: 0,
+            fanin: 0.0,
+        }
+    }
+
+    fn fixture(files: &[(&str, &str, &str)]) -> (tempfile::TempDir, Vec<SourceNode>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = Vec::new();
+        for (file, module, contents) in files {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+            nodes.push(source(file, module, "py"));
+        }
+        (dir, nodes)
+    }
+
+    fn id(doc: &SymbolsDocument, file: usize, name: &str) -> usize {
+        doc.symbols
+            .iter()
+            .position(|s| s.0 .0 == file && s.0 .1 == name)
+            .unwrap()
+    }
+
+    fn edge(doc: &SymbolsDocument, from: usize, to: usize) -> bool {
+        doc.edges.iter().any(|e| e[0] == from && e[1] == to)
+    }
+
+    #[test]
+    fn complete_hierarchy_keeps_dunders_and_more_than_sixty() {
+        let mut body = "class Outer:\n    def __init__(self):\n        def inner():\n            pass\n    class Nested:\n        def work(self):\n            pass\n".to_owned();
+        for n in 0..65 {
+            body.push_str(&format!("\ndef f{n}():\n    pass\n"));
+        }
+        let (dir, nodes) = fixture(&[("mod.py", "mod", &body)]);
+        let doc = build(dir.path(), &nodes).unwrap();
+        assert!(doc.symbols.len() > 60);
+        let outer = id(&doc, 0, "Outer");
+        let init = id(&doc, 0, "__init__");
+        let inner = id(&doc, 0, "inner");
+        let nested = id(&doc, 0, "Nested");
+        let work = id(&doc, 0, "work");
+        assert_eq!(doc.symbols[init].0 .5, outer as isize);
+        assert_eq!(doc.symbols[init].0 .2, METHOD);
+        assert_eq!(doc.symbols[inner].0 .5, init as isize);
+        assert_eq!(doc.symbols[inner].0 .2, NESTED_FUNCTION);
+        assert_eq!(doc.symbols[nested].0 .5, outer as isize);
+        assert_eq!(doc.symbols[work].0 .5, nested as isize);
+        assert_eq!(doc.symbols[work].0 .2, METHOD);
+        assert_eq!(doc.symbols[outer].0 .3, 1);
+    }
+
+    #[test]
+    fn resolves_import_reexport_module_class_self_and_excludes_ancestors() {
+        let (dir, nodes) = fixture(&[
+            ("pkg/__init__.py", "pkg", "from .core import Target\n"),
+            ("pkg/core.py", "pkg.core", "class Target:\n    def method(self):\n        pass\n"),
+            ("caller.py", "caller", "from pkg import Target\nimport pkg.core as core\n\nclass Caller(Target):\n    def method(self):\n        self.helper()\n        Target.method()\n        core.Target.method()\n        Target()\n    def helper(self):\n        pass\n\ndef outer():\n    def inner():\n        outer()\n    inner()\n\ndef typed(x: Target) -> Target:\n    return x\n"),
+        ]);
+        let doc = build(dir.path(), &nodes).unwrap();
+        let target = id(&doc, 1, "Target");
+        let target_method = id(&doc, 1, "method");
+        let caller = id(&doc, 2, "Caller");
+        let method = id(&doc, 2, "method");
+        let helper = id(&doc, 2, "helper");
+        let outer = id(&doc, 2, "outer");
+        let inner = id(&doc, 2, "inner");
+        assert!(edge(&doc, caller, target));
+        assert!(edge(&doc, method, target_method));
+        assert!(edge(&doc, method, helper));
+        assert!(edge(&doc, method, target));
+        assert!(edge(&doc, outer, inner));
+        assert!(!edge(&doc, inner, outer));
+        assert!(edge(&doc, id(&doc, 2, "typed"), target));
+        assert!(doc.coverage.calls_resolved > 0);
+    }
+
+    #[test]
+    fn module_lines_and_unknown_calls_are_lower_bounds() {
+        let (dir, nodes) = fixture(&[("m.py", "m", "# comment\nVALUE = 1\n\ndef known():\n    \"\"\"doc\"\"\"\n    missing()\n    (factory())()\n")]);
+        let doc = build(dir.path(), &nodes).unwrap();
+        assert_eq!(doc.module_code_lines[&0], 1);
+        assert!(doc.coverage.calls_total >= 3);
+        assert_eq!(doc.coverage.calls_resolved, 0);
+        assert!(!doc.coverage.unresolved.is_empty());
+        assert_eq!(doc.symbols[id(&doc, 0, "known")].0 .6, 3);
+    }
+
+    #[test]
+    fn go_and_typescript_have_untruncated_hierarchies() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.go"),
+            "package p\ntype Thing struct{}\nfunc (t *Thing) Work() {}\nfunc Free() {}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("a.ts"), "class Box { method() { function nested() {} } }\ninterface Shape {}\ntype Name = string;\nconst f = () => 1;\n").unwrap();
+        let nodes = vec![source("a.go", "a.go", "go"), source("a.ts", "a.ts", "ts")];
+        let doc = build(dir.path(), &nodes).unwrap();
+        assert_eq!(doc.symbols[id(&doc, 0, "Thing")].0 .2, CLASS);
+        assert_eq!(doc.symbols[id(&doc, 0, "Work")].0 .2, METHOD);
+        assert_eq!(
+            doc.symbols[id(&doc, 1, "method")].0 .5,
+            id(&doc, 1, "Box") as isize
+        );
+        assert_eq!(
+            doc.symbols[id(&doc, 1, "nested")].0 .5,
+            id(&doc, 1, "method") as isize
+        );
+        assert_eq!(doc.symbols[id(&doc, 1, "Shape")].0 .2, INTERFACE);
     }
 }
