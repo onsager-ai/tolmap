@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { MapDocument, SymbolRow } from "@/types";
-import { CH, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
+import { CH, CX_, D_, FI, LOC, districtColor, symbolsOf } from "@/map/geometry";
 import { KCOL, KIND, LINK_PREVIEW_MAX } from "@/map/constants";
 import { computeBlast, type AdjMap } from "@/map/graph";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
@@ -25,6 +25,7 @@ interface Props {
   onToggleOpen(): void;
   onSelectFile(i: number, opts?: { fly?: boolean }): void;
   onSelectSymbol(i: number, s: number): void;
+  onSelectDistrict(d: number): void;
   onZoomDistrict(d: number): void;
   onRouteFrom(i: number): void;
   onRouteTo(i: number): void;
@@ -50,12 +51,15 @@ export function SelectionPanel({
   onToggleOpen,
   onSelectFile,
   onSelectSymbol,
+  onSelectDistrict,
   onZoomDistrict,
   onRouteFrom,
   onRouteTo,
   onSelectDirectory,
 }: Props) {
   const narrow = useIsNarrow();
+  const [foldersExpanded, setFoldersExpanded] = useState(false);
+  const [filesExpanded, setFilesExpanded] = useState(false);
 
   const isOpen = narrow ? open : true;
 
@@ -75,7 +79,7 @@ export function SelectionPanel({
           ) : selTerrain != null ? (
             <TerrainHead doc={doc} selection={selTerrain} />
           ) : selD != null ? (
-            <DistrictHead doc={doc} d={selD} />
+            <DistrictHead doc={doc} d={selD} onZoomDistrict={onZoomDistrict} />
           ) : (
             <FileHead doc={doc} i={sel!} selSym={selSym} />
           )}
@@ -100,8 +104,12 @@ export function SelectionPanel({
               d={selD}
               paths={packageLayout.districtPaths.get(selD) ?? []}
               onSelectFile={onSelectFile}
-              onZoomDistrict={onZoomDistrict}
+              onSelectDistrict={onSelectDistrict}
               onSelectDirectory={onSelectDirectory}
+              foldersExpanded={foldersExpanded}
+              filesExpanded={filesExpanded}
+              onToggleFolders={() => setFoldersExpanded((value) => !value)}
+              onToggleFiles={() => setFilesExpanded((value) => !value)}
             />
           ) : (
             <FileBody
@@ -178,6 +186,7 @@ function FolderBody({
               <FolderPickRow
                 key={directory.path}
                 directory={directory}
+                totalFiles={layout.filesByDirectory.get(".")?.size ?? 0}
                 active={directory.path === activeDirectory}
                 onPick={pick}
               />
@@ -190,6 +199,7 @@ function FolderBody({
             <FolderTreeRow
               key={`${directory.path}:${activeDirectory ?? ""}`}
               directory={directory}
+              totalFiles={layout.filesByDirectory.get(".")?.size ?? 0}
               depth={0}
               activeDirectory={activeDirectory}
               onPick={pick}
@@ -203,10 +213,12 @@ function FolderBody({
 
 function FolderPickRow({
   directory,
+  totalFiles,
   active,
   onPick,
 }: {
   directory: DirectoryNode;
+  totalFiles: number;
   active: boolean;
   onPick(path: string): void;
 }) {
@@ -215,21 +227,25 @@ function FolderPickRow({
       type="button"
       data-folder-path={directory.path}
       onClick={() => onPick(directory.path)}
-      className={`grid w-full grid-cols-[1fr_auto] gap-2 border-t border-[var(--rule)] px-1 py-1 text-left text-[10px] first:border-t-0 ${active ? "text-[var(--hot)]" : "text-[var(--on)]"}`}
+      aria-pressed={active}
+      className={`grid w-full grid-cols-[1fr_auto_auto] gap-2 border-t border-[var(--rule)] px-1 py-1 text-left text-[10px] first:border-t-0 ${active ? "text-[var(--hot)]" : "text-[var(--on)]"}`}
     >
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">{formatDirectory(directory.path)}</span>
-      <span className="text-[var(--dim)]">{directory.count}</span>
+      <span className="text-[var(--dim)]">{repositoryShare(directory.count, totalFiles)}</span>
+      <span className="text-[var(--dim)]">{directory.count.toLocaleString("en-US")}</span>
     </button>
   );
 }
 
 function FolderTreeRow({
   directory,
+  totalFiles,
   depth,
   activeDirectory,
   onPick,
 }: {
   directory: DirectoryNode;
+  totalFiles: number;
   depth: number;
   activeDirectory?: string;
   onPick(path: string): void;
@@ -238,7 +254,7 @@ function FolderTreeRow({
   const [expanded, setExpanded] = useState(containsActive);
   return (
     <div>
-      <div className="grid grid-cols-[18px_1fr_auto] items-center border-t border-[var(--rule)] first:border-t-0">
+      <div className="grid grid-cols-[18px_1fr_auto_auto] items-center gap-x-1.5 border-t border-[var(--rule)] first:border-t-0">
         {directory.children.length > 0 ? (
           <button
             type="button"
@@ -254,19 +270,22 @@ function FolderTreeRow({
         <button
           type="button"
           data-folder-path={directory.path}
+          aria-pressed={activeDirectory === directory.path}
           onClick={() => onPick(directory.path)}
           className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap py-1 text-left text-[10px] ${activeDirectory === directory.path ? "text-[var(--hot)]" : "text-[var(--on)]"}`}
           style={{ paddingLeft: `${depth * 7}px` }}
         >
           {directory.name}/
         </button>
-        <span className="pr-1 text-[9.5px] text-[var(--dim)]">{directory.count}</span>
+        <span className="text-[9.5px] text-[var(--dim)]">{repositoryShare(directory.count, totalFiles)}</span>
+        <span className="pr-1 text-[9.5px] text-[var(--dim)]">{directory.count.toLocaleString("en-US")}</span>
       </div>
       {expanded &&
         directory.children.map((child) => (
           <FolderTreeRow
             key={`${child.path}:${activeDirectory ?? ""}`}
             directory={child}
+            totalFiles={totalFiles}
             depth={depth + 1}
             activeDirectory={activeDirectory}
             onPick={onPick}
@@ -336,29 +355,39 @@ function TerrainBody({
   );
 }
 
-function DistrictHead({ doc, d }: { doc: MapDocument; d: number }) {
+function repositoryShare(count: number, total: number): string {
+  const share = total > 0 ? (count / total) * 100 : 0;
+  return `${share < 10 ? share.toFixed(1) : Math.round(share)}%`;
+}
+
+function compactCount(count: number): string {
+  if (count < 1000) return String(count);
+  const unit = count >= 1_000_000 ? 1_000_000 : 1000;
+  const value = count / unit;
+  const digits = value < 10 ? Math.floor(value * 10) / 10 : Math.floor(value);
+  return `${digits}${unit === 1000 ? "k" : "m"}`;
+}
+
+function DistrictHead({ doc, d, onZoomDistrict }: { doc: MapDocument; d: number; onZoomDistrict: Props["onZoomDistrict"] }) {
   const files = [...doc.N.keys()].filter((i) => D_(doc, i) === d);
   const lines = files.reduce((a, i) => a + LOC(doc, i), 0);
-  const cls = districtClass(doc.districts[d]);
   return (
     <>
-      <h3 className="truncate font-sans text-[13px] font-semibold">{doc.names[d]}</h3>
+      <div className="flex items-center gap-1">
+        <h3 className="min-w-0 flex-1 truncate font-sans text-[13px] font-semibold">{doc.names[d]}</h3>
+        <button
+          type="button"
+          aria-label="Zoom to district"
+          title="Zoom to district"
+          onClick={(event) => { event.stopPropagation(); onZoomDistrict(d); }}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[15px] text-[var(--dim)] hover:text-[var(--on)]"
+        >
+          ⤢
+        </button>
+      </div>
       <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">
-        {files.length} files · {lines.toLocaleString()} lines
+        {compactCount(files.length)} files · {compactCount(lines)} lines
       </p>
-      {/* Say what the class MEANS, not the jargon word for it (spec): an
-       * island is below the 1% mainland floor but still tied into the repo
-       * by an import (it is drawn, offshore — not absent from the map);
-       * unconnected has no such tie to anything else at all. Styled like
-       * FileBody's own one-line callout (BlastLine below) — the panel's
-       * existing idiom for "one fact worth calling out", not a new one. */}
-      {cls !== "mainland" && (
-        <p className="mt-1.5 border-l-2 border-[var(--hot)] py-0.5 pl-2 text-[10px] leading-snug text-[var(--dim)]">
-          {cls === "island"
-            ? "island — under 1% of the repo's files, still tied in by an import"
-            : "unfiled — no import edge to anything else in the repo"}
-        </p>
-      )}
     </>
   );
 }
@@ -368,15 +397,23 @@ function DistrictBody({
   d,
   paths,
   onSelectFile,
-  onZoomDistrict,
+  onSelectDistrict,
   onSelectDirectory,
+  foldersExpanded,
+  filesExpanded,
+  onToggleFolders,
+  onToggleFiles,
 }: {
   doc: MapDocument;
   d: number;
   paths: readonly DistrictPathRow[];
   onSelectFile: Props["onSelectFile"];
-  onZoomDistrict: Props["onZoomDistrict"];
+  onSelectDistrict: Props["onSelectDistrict"];
   onSelectDirectory: Props["onSelectDirectory"];
+  foldersExpanded: boolean;
+  filesExpanded: boolean;
+  onToggleFolders(): void;
+  onToggleFiles(): void;
 }) {
   const files = [...doc.N.keys()].filter((i) => D_(doc, i) === d);
   const top = files
@@ -391,25 +428,35 @@ function DistrictBody({
   const nb = doc.roads
     .filter((r) => r[0] === d || r[1] === d)
     .sort((a, b) => b[2] - a[2])
-    .slice(0, 3)
-    .map((r) => doc.names[String(r[0] === d ? r[1] : r[0])]);
-  const lm = doc.L.filter((l) => D_(doc, l[0]) === d);
+    .slice(0, 2)
+    .map((r) => ({ id: r[0] === d ? r[1] : r[0], name: doc.names[String(r[0] === d ? r[1] : r[0])] }));
+  const largest = paths.find((path) => !path.other);
   return (
-    <div className="space-y-0.5">
-      {nb.length > 0 && (
-        <Row label="connects to">
-          <b>{nb.join(", ")}</b>
-        </Row>
+    <div className="mt-1.5 space-y-1 text-[10px]" data-district-summary>
+      {largest && largest.share >= 40 && (
+        <p className="truncate text-[var(--dim)]" title={`mostly ${formatDirectory(largest.path!)}`}>
+          mostly <span className="text-[var(--on)]">{formatDirectory(largest.path!)}</span>
+        </p>
       )}
-      {lm.length > 0 && (
-        <Row label="landmarks">
-          <b>{lm.length}</b>
-        </Row>
+      {nb.length > 0 && (
+        <p className="truncate text-[var(--dim)]">
+          near{" "}
+          {nb.map((neighbour, index) => (
+            <span key={neighbour.id}>
+              {index > 0 ? ", " : ""}
+              <button type="button" data-neighbour-district={neighbour.id} className="text-[var(--on)] hover:text-[var(--hot)]" onClick={() => onSelectDistrict(neighbour.id)}>
+                {neighbour.name}
+              </button>
+            </span>
+          ))}
+        </p>
       )}
       {paths.length > 0 && (
-        <div className="mt-2" data-district-path-breakdown>
-          <p className="mb-0.5 font-sans text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--dim)]">paths</p>
-          {paths.map((path, index) =>
+        <div data-district-path-breakdown>
+          <button type="button" data-district-folders-toggle aria-expanded={foldersExpanded} onClick={onToggleFolders} className="w-full text-left text-[var(--on)]">
+            <span className="text-[var(--dim)]">{foldersExpanded ? "⌄" : "›"}</span> folders ({paths.filter((path) => !path.other).length})
+          </button>
+          {foldersExpanded && paths.map((path, index) =>
             path.other ? (
               <div
                 key="other"
@@ -436,23 +483,22 @@ function DistrictBody({
           )}
         </div>
       )}
-      <div className="mb-0.5 mt-2 max-h-[148px] overflow-y-auto">
-        {top.map((i) => (
+      <div>
+        <button type="button" data-district-files-toggle aria-expanded={filesExpanded} onClick={onToggleFiles} className="w-full text-left text-[var(--on)]">
+          <span className="text-[var(--dim)]">{filesExpanded ? "⌄" : "›"}</span> key files ({top.length})
+        </button>
+        {filesExpanded && top.map((i) => (
           <button
             key={i}
+            data-district-key-file={i}
             onClick={() => onSelectFile(i)}
             className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-[10.5px] text-[var(--on)] hover:text-white"
           >
             <i className="h-2 w-2 rounded-sm" style={{ background: districtColor(d) }} />
             <span className="overflow-hidden text-ellipsis whitespace-nowrap">{doc.F[i].split("/").slice(1).join("/")}</span>
-            <span className="text-[9.5px] text-[var(--dim)]">{LOC(doc, i)}</span>
+            <span className="text-[9.5px] text-[var(--dim)]">{LOC(doc, i)} lines</span>
           </button>
         ))}
-      </div>
-      <div className="mt-2">
-        <Button size="sm" variant="outline" className="w-full" onClick={() => onZoomDistrict(d)}>
-          zoom to district
-        </Button>
       </div>
     </div>
   );

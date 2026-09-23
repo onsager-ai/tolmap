@@ -229,6 +229,7 @@ export function MapView() {
             onToggleOpen={() => setPanelOpen((v) => !v)}
             onSelectFile={(i, opts) => selectFile(i, opts)}
             onSelectSymbol={(i, s) => selectFile(i, { fly: false, symbol: s })}
+            onSelectDistrict={selectDistrict}
             onZoomDistrict={(d) => canvasRef.current?.zoomDistrict(d)}
             onRouteFrom={(i) => setRouteFrom(i)}
             onRouteTo={(i) => {

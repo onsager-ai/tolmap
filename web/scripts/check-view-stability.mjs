@@ -430,7 +430,12 @@ async function checkRepoSwitch(browser, base, profile) {
   // A plain CSS locator, not getByLabel: the map SVG's own long aria-label
   // ("Pannable, zoomable map...") confused Playwright's fuzzy accessible-name
   // matching into treating getByLabel("Repository") as ambiguous.
-  await page.locator('select[aria-label="Repository"]').selectOption("langgenius/dify");
+  const available = await page.locator('select[aria-label="Repository"] option').evaluateAll((options) =>
+    options.map((option) => option.value),
+  );
+  await page.locator('select[aria-label="Repository"]').selectOption(
+    available.includes("langgenius/dify") ? "langgenius/dify" : "prometheus/prometheus",
+  );
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(1000);
   const after = await stableBox(page);
@@ -713,9 +718,46 @@ async function checkPackageLayout(browser, base, profile) {
     const box = await header.boundingBox();
     if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
   }
+  const treeRow = page.locator('[data-folder-browser] button[data-folder-path]').first();
+  const rootPath = await treeRow.getAttribute("data-folder-path");
+  const rootCount = await page.evaluate(async (path) => {
+    const doc = await (await fetch("/maps/django/django.json")).json();
+    return { total: doc.F.length, count: doc.F.filter((file) => file.startsWith(`${path}/`)).length };
+  }, rootPath);
+  const shareLabel = (count, total) => {
+    const percent = (count / total) * 100;
+    return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
+  };
+  report(
+    (await treeRow.locator("xpath=..").innerText()).includes(shareLabel(rootCount.count, rootCount.total)),
+    `${label}: folder tree row shows its share of repository files`,
+  );
+  const rootExpand = page.getByRole("button", { name: `Expand ${rootPath}` });
+  if (await rootExpand.count()) {
+    await rootExpand.click();
+    const child = page.locator('[data-folder-browser] button[data-folder-path]').nth(1);
+    const childPath = await child.getAttribute("data-folder-path");
+    const childCount = await page.evaluate(async (path) => {
+      const doc = await (await fetch("/maps/django/django.json")).json();
+      return doc.F.filter((file) => file.startsWith(`${path}/`)).length;
+    }, childPath);
+    report(
+      (await child.locator("xpath=..").innerText()).includes(shareLabel(childCount, rootCount.total)),
+      `${label}: child folder share uses repository total`,
+    );
+  }
   const beforeFolder = await stableBox(page);
   const input = page.locator('input[aria-label="Filter folder paths"]');
   await input.fill(target.dir);
+  const filteredRow = page.locator(`[data-folder-browser] button[data-folder-path="${target.dir}"]`);
+  const filteredCount = await page.evaluate(async (path) => {
+    const doc = await (await fetch("/maps/django/django.json")).json();
+    return doc.F.filter((file) => file.startsWith(`${path}/`)).length;
+  }, target.dir);
+  report(
+    (await filteredRow.innerText()).includes(shareLabel(filteredCount, rootCount.total)),
+    `${label}: folder filter result shows repository share`,
+  );
   await input.press("Enter");
   await page.waitForFunction((dir) => new URL(location.href).searchParams.get("dir") === dir, target.dir);
   await page.waitForTimeout(250);
@@ -760,11 +802,48 @@ async function checkPackageLayout(browser, base, profile) {
     const box = await header.boundingBox();
     if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
   }
+  const panel = page.locator("[data-selection-panel]");
+  const folderToggle = panel.locator("[data-district-folders-toggle]");
+  const fileToggle = panel.locator("[data-district-files-toggle]");
+  report(
+    (await folderToggle.getAttribute("aria-expanded")) === "false" &&
+      (await fileToggle.getAttribute("aria-expanded")) === "false" &&
+      (await panel.locator("[data-district-path]").count()) === 0,
+    `${label}: district folders and key files start collapsed`,
+  );
+  if (profile.isMobile) {
+    const height = await panel.evaluate((element) => element.getBoundingClientRect().height);
+    report(height <= 844 * 0.22, `${label}: collapsed phone district card fits 22% of viewport`, `height=${height}`);
+  }
+  const beforeZoom = await stableBox(page);
+  await panel.getByRole("button", { name: "Zoom to district" }).click();
+  await page.waitForTimeout(650);
+  report(!boxesClose(beforeZoom, await stableBox(page)), `${label}: district zoom icon changes map view`);
+  await fileToggle.click();
+  const fileRows = panel.locator("[data-district-key-file]");
+  report(
+    (await fileRows.count()) > 0 && (await fileRows.first().innerText()).includes("lines"),
+    `${label}: expanded key files label line counts`,
+  );
+  await fileToggle.click();
+  await folderToggle.click();
   const pathRows = page.locator("[data-district-path]");
   const rowCount = await pathRows.count();
-  report(rowCount > 0, `${label}: district card shows its path breakdown`, `rows=${rowCount}`);
-  if (rowCount > 0) {
-    const first = pathRows.first();
+  report(rowCount > 0 && (await folderToggle.getAttribute("aria-expanded")) === "true", `${label}: expanded folders show path breakdown`, `rows=${rowCount}`);
+  const neighbours = panel.locator("[data-neighbour-district]");
+  if (await neighbours.count()) {
+    const neighbourId = await neighbours.first().getAttribute("data-neighbour-district");
+    await neighbours.first().click();
+    report(
+      new URL(page.url()).searchParams.get("d") === neighbourId && (await folderToggle.getAttribute("aria-expanded")) === "true",
+      `${label}: neighbour tap selects district and preserves folder expansion`,
+    );
+  } else {
+    report(false, `${label}: selected district has a tappable neighbour`);
+  }
+  const selectedPathRows = page.locator("[data-district-path]");
+  if (await selectedPathRows.count()) {
+    const first = selectedPathRows.first();
     const path = await first.getAttribute("data-district-path");
     const box = await first.boundingBox();
     if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
@@ -813,6 +892,9 @@ async function checkDistrictRefinement(browser, base) {
   await page.route("**/maps/synthetic/refinement.json", (route) => route.fulfill({ json: doc }));
   await page.goto(`${base}/synthetic/refinement?geo=r&layer=d&d=0`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-district-path-breakdown]");
+  report((await page.locator("[data-district-path]").count()) === 0, `${label}: breakdown is collapsed by default`);
+  report(!(await page.locator("[data-district-summary]").innerText()).includes("mostly"), `${label}: no mostly line below 40%`);
+  await page.locator("[data-district-folders-toggle]").click();
   const rows = await page.locator("[data-district-path]").evaluateAll((elements) =>
     elements.map((element) => ({ path: element.getAttribute("data-district-path"), text: element.textContent ?? "" })),
   );
@@ -829,6 +911,39 @@ async function checkDistrictRefinement(browser, base) {
     rows.filter((row) => /\(1 file\)/.test(row.text)).length === 2 && rows.every((row) => !/\(1 files\)/.test(row.text)),
     `${label}: singular file counts use “file”`,
     JSON.stringify(rows),
+  );
+  await context.close();
+}
+
+async function checkDifyDistrictSummary(browser, base, profile) {
+  const label = `workflow district summary (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=d&d=0`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-selection-panel] h3");
+  if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap();
+  await page.waitForSelector("[data-district-summary]");
+  const panel = page.locator("[data-selection-panel]");
+  const text = await panel.innerText();
+  report(
+    text.includes("887 files · 106k lines") &&
+      text.includes("mostly web/app/components/workflow/nodes/") &&
+      text.includes("folders (4)") &&
+      text.includes("key files (6)"),
+    `${label}: compact summary and folder count match the fixture`,
+    text,
+  );
+  report(
+    (await panel.locator("[data-neighbour-district]").count()) === 2 &&
+      !text.includes("landmarks") &&
+      (await panel.getByRole("button", { name: "Zoom to district" }).count()) === 1,
+    `${label}: two tappable neighbours and header zoom replace the old rows`,
   );
   await context.close();
 }
@@ -1009,6 +1124,9 @@ async function main() {
     await checkPackageLayout(browser, args.base, profile);
   }
   await checkDistrictRefinement(browser, args.base);
+  for (const profile of PROFILES) {
+    await checkDifyDistrictSummary(browser, args.base, profile);
+  }
   for (const profile of PROFILES) {
     await checkFolderIslandFade(browser, args.base, profile);
   }
