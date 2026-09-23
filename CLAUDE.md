@@ -11,7 +11,8 @@ The findings document records what was tried and falsified by measurement; sever
 - **Determinism.** `SEED = 7` everywhere. Same repo at same commit must produce a byte-identical map. Reproducibility is the product, not a nicety. This was a requirement the reference did not meet until finding 9 — a seeded stage is not a deterministic one if a set of strings is iterated anywhere upstream of it.
 - **Normalise on mass, not per edge** when blending signals (finding 1).
 - **Never rename a district without the previous name in hand** (finding 4 and `naming.py`). Name drift is worse than a mediocre name.
-- **The map stops at the file.** Symbols are the unit of the query, not of the map. This was tried the other way twice.
+- **Symbols appear only when there is room for them** (owner decision D1, finding 27, 2026-09-23; this replaces "the map stops at the file"). The overview shows district outlines and roads only. A file draws its symbols once it is ≥ 40 px on screen, and a class expands its members once its short side is ≥ 110 px. The two earlier attempts failed because symbols tiled the overview and erased the district silhouette. Any change that puts symbol detail on screen below those gates brings that failure back.
+- **Terms follow `docs/GLOSSARY.md`.** Code objects keep their code names (file, class, method). Map words (district, neighbourhood, road, hub, tunnel) are only for structure tolmap computes.
 - **Numbers must be a lower bound.** The reference graph under-reports; never make it guess upward to look better.
 
 ## Checkout and worktrees
