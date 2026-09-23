@@ -252,8 +252,78 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
             ensure!(cards.rings[i].is_some(), "missing card for symbol {i}");
         }
     }
-    document.symbol_rings = Some(cards.rings);
-    document.module_rings = Some(cards.modules);
-    document.header_rings = Some(cards.headers);
+    let Cards {
+        rings,
+        modules,
+        headers,
+        ..
+    } = cards;
+    document.symbol_rings = Some(rings);
+    document.module_rings = Some(modules);
+    document.header_rings = Some(headers);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parcels::point_in_polygon;
+
+    fn square_canvas(grid: usize) -> (Canvas, Vec<bool>) {
+        (
+            Canvas {
+                grid,
+                low: [0.0, 0.0],
+                step: 1.0 / (grid - 1) as f64,
+            },
+            vec![true; grid * grid],
+        )
+    }
+
+    #[test]
+    fn one_and_two_hundred_symbols_keep_a_connected_nonoverlapping_region() {
+        for count in [1, 200] {
+            let (canvas, mask) = square_canvas(100);
+            let regions = allocate(&mask, &canvas, &vec![1.0; count]);
+            let mut claimed = vec![false; mask.len()];
+            for region in &regions {
+                assert!(region.contains(&true));
+                let outline = ring(region, &canvas).expect("every owner has an outline");
+                assert!(polygon_area(&outline) > 0.0);
+                for (i, &yes) in region.iter().enumerate() {
+                    if yes {
+                        assert!(!claimed[i], "sibling masks overlap");
+                        claimed[i] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn child_card_centroid_and_area_stay_inside_parent() {
+        let (canvas, mask) = square_canvas(80);
+        let parent = ring(&inset(&mask, &canvas, 0), &canvas).unwrap();
+        let body = inset(&mask, &canvas, 0);
+        for child in allocate(&body, &canvas, &[1.0, 3.0, 2.0]) {
+            let child = ring(&inset(&child, &canvas, 1), &canvas).unwrap();
+            let center = [
+                child.iter().map(|p| p[0]).sum::<f64>() / child.len() as f64,
+                child.iter().map(|p| p[1]).sum::<f64>() / child.len() as f64,
+            ];
+            assert!(point_in_polygon(center, &parent));
+            assert!(polygon_area(&child) < polygon_area(&parent));
+        }
+    }
+
+    #[test]
+    fn card_areas_follow_unequal_code_lines() {
+        let (canvas, mask) = square_canvas(80);
+        let regions = allocate(&mask, &canvas, &[1.0, 2.0, 4.0]);
+        let areas = regions
+            .iter()
+            .map(|region| region.iter().filter(|&&yes| yes).count())
+            .collect::<Vec<_>>();
+        assert!(areas[0] < areas[1] && areas[1] < areas[2], "{areas:?}");
+    }
 }

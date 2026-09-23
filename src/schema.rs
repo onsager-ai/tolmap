@@ -116,7 +116,7 @@ pub struct SymbolCoverage {
     pub unresolved: BTreeMap<String, usize>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 pub struct SymbolsDocument {
     pub files: Vec<usize>,
@@ -135,7 +135,7 @@ pub struct SymbolsDocument {
     pub header_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 pub struct DistrictSymbols {
     pub district: usize,
