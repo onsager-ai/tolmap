@@ -21,6 +21,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use crate::naming::{NamerKind, DEFAULT_MODEL};
 use crate::pipeline::PruneVariant;
 
 #[derive(Clone, Debug)]
@@ -231,6 +232,9 @@ pub struct ServeConfig {
     /// Env: `TOLMAP_PRUNE_VARIANT` (`absolute`, `percentile`,
     /// `node-relative`, or `pre-rescale`).
     pub prune_variant: PruneVariant,
+    /// `TOLMAP_NAMER` defaults to IDF; hosting does not enable model naming.
+    pub namer: NamerKind,
+    pub namer_model: String,
     pub limits: Limits,
     /// Store retention policy (issue #23 gap 2): the number of most-recently-
     /// indexed commits kept per repository slug; older `(slug, commit_sha)`
@@ -277,6 +281,9 @@ impl ServeConfig {
         // this -- see the `static_dir` field's doc comment.
         let static_dir = env::var("TOLMAP_STATIC_DIR").ok().map(PathBuf::from);
         let prune_variant = env_var_or("TOLMAP_PRUNE_VARIANT", PruneVariant::default());
+        let namer = env_var_or("TOLMAP_NAMER", NamerKind::Idf);
+        let namer_model =
+            env::var("TOLMAP_NAMER_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the
         // unbounded growth issue #23 gap 2 reported -- see store::prune.
@@ -287,6 +294,8 @@ impl ServeConfig {
             cache_dir,
             static_dir,
             prune_variant,
+            namer,
+            namer_model,
             limits: Limits::from_env(),
             retain_commits_per_repo,
         }

@@ -417,6 +417,28 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     // build -- naming.rs's cache is keyed by a fingerprint of district
     // membership, not by commit, so this is what makes it actually pay off
     // across re-indexes rather than starting cold every time.
+    let names_path = work_dir.join(format!("{}.names.json", repo_ref.repo));
+    let persisted_names = match state.store.load_names(&repo_ref.slug) {
+        Ok(cache) => cache,
+        Err(err) => {
+            return finish_failed(
+                &tx,
+                ErrorBody {
+                    error: "internal_error".to_owned(),
+                    message: err.to_string(),
+                },
+            )
+        }
+    };
+    if let Err(err) = crate::naming::save_cache(&names_path, &persisted_names) {
+        return finish_failed(
+            &tx,
+            ErrorBody {
+                error: "internal_error".to_owned(),
+                message: err.to_string(),
+            },
+        );
+    }
     let built_path = match geometry::build_from_graph_warm(
         graph,
         repo_ref.repo.clone(),
@@ -425,6 +447,8 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         geometry::BuildFeatures {
             parcels: WITH_PARCELS,
             prune_variant: state.config.prune_variant,
+            namer: state.config.namer,
+            namer_model: state.config.namer_model.clone(),
         },
         previous_document.as_ref(),
     ) {
@@ -439,6 +463,19 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
             )
         }
     };
+
+    if let Err(err) = state
+        .store
+        .save_names(&repo_ref.slug, &crate::naming::load_cache(&names_path))
+    {
+        return finish_failed(
+            &tx,
+            ErrorBody {
+                error: "internal_error".to_owned(),
+                message: err.to_string(),
+            },
+        );
+    }
 
     let document = match store::read_map_document(&built_path) {
         Ok(document) => document,
@@ -549,6 +586,8 @@ mod tests {
             cache_dir: dir.path().join("cache"),
             static_dir: None,
             prune_variant: PruneVariant::NodeRelative,
+            namer: crate::naming::NamerKind::Idf,
+            namer_model: crate::naming::DEFAULT_MODEL.to_owned(),
             limits,
             retain_commits_per_repo: 20,
         };

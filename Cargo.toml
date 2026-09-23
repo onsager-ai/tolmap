@@ -53,6 +53,10 @@ tokio-stream = "=0.1.19"
 # this is what promotes static-file serving into a real one. "fs" is the
 # only feature needed -- no compression, tracing or CORS middleware here.
 tower-http = { version = "=0.7.1", features = ["fs"] }
+# Issue #62: one blocking HTTPS call per map in the already-blocking build.
+# ureq keeps the client small, rustls avoids a system TLS dependency, and
+# serde_json (already above) owns both the request and untrusted response.
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
 
 [build-dependencies]
 cc = "=1.4.7"
@@ -76,4 +80,3 @@ path = "src/main.rs"
 [[bin]]
 name = "generate-types"
 path = "src/bin/generate_types.rs"
-

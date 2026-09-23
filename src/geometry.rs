@@ -14,10 +14,12 @@ use crate::schema::{
     CoverageLanguage, CoverageReport, District, DistrictClass, FileId, GraphData, LandmarkRow,
     MapDocument, NodeRow, SymbolRow,
 };
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BuildFeatures {
     pub parcels: bool,
     pub prune_variant: pipeline::PruneVariant,
+    pub namer: naming::NamerKind,
+    pub namer_model: String,
 }
 
 /// A district holding at least this share of the repo's files is
@@ -477,8 +479,16 @@ pub fn build_from_graph_warm(
         .iter()
         .map(|node| node.file.clone())
         .collect::<Vec<_>>();
-    let (names, names_cache) =
-        naming::name_districts(&files, &layout.membership, Some(&names_cache_path));
+    let (names, names_cache) = naming::name_districts_with(
+        &files,
+        &layout.membership,
+        &layout.weighted.nodes,
+        &classes,
+        previous_document,
+        &names_cache_path,
+        features.namer,
+        &features.namer_model,
+    );
     naming::save_cache(&names_cache_path, &names_cache)
         .with_context(|| format!("write district names cache {}", names_cache_path.display()))?;
     for (district, district_name) in &names {

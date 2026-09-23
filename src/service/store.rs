@@ -26,6 +26,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
+use crate::naming::{CacheEntry, NameCache};
 use crate::schema::MapDocument;
 
 #[derive(Clone, Debug)]
@@ -47,7 +48,8 @@ pub struct MapRow {
 // per CLAUDE.md's "migrate forward" convention -- there is one migration
 // today, but the mechanism is the point: a second one appends to this slice
 // rather than editing the first.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
     CREATE TABLE maps (
         slug        TEXT NOT NULL,
         owner       TEXT NOT NULL,
@@ -63,13 +65,48 @@ const MIGRATIONS: &[&str] = &[r#"
         PRIMARY KEY (slug, commit_sha)
     );
     CREATE INDEX maps_slug_indexed_at ON maps(slug, indexed_at DESC);
-"#];
+"#,
+    r#"
+    CREATE TABLE district_names (
+        slug TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        entry_json TEXT NOT NULL,
+        PRIMARY KEY (slug, fingerprint)
+    );
+"#,
+];
 
 pub struct Store {
     conn: Mutex<Connection>,
 }
 
 impl Store {
+    /// Durable derivation cache, independent of the disposable work directory.
+    pub fn load_names(&self, slug: &str) -> Result<NameCache> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        let mut statement = conn.prepare("SELECT fingerprint, entry_json FROM district_names WHERE slug = ?1 ORDER BY fingerprint")?;
+        let rows = statement.query_map([slug], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut cache = NameCache::new();
+        for row in rows {
+            let (fingerprint, json) = row?;
+            cache.insert(fingerprint, serde_json::from_str::<CacheEntry>(&json)?);
+        }
+        Ok(cache)
+    }
+
+    pub fn save_names(&self, slug: &str, cache: &NameCache) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
+        let tx = conn.transaction()?;
+        for (fingerprint, entry) in cache {
+            tx.execute("INSERT OR REPLACE INTO district_names (slug, fingerprint, entry_json) VALUES (?1, ?2, ?3)",
+                params![slug, fingerprint, serde_json::to_string(entry)?])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
