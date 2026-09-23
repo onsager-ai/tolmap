@@ -29,6 +29,7 @@ import {
   worldBounds,
 } from "./geometry";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
+import type { PackageGrouping } from "./packageLayout";
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { PIN_CAPITAL_HIDE_ZF, PIN_ESTABLISH_AREA, selectPins } from "./pins";
 
@@ -66,6 +67,8 @@ export interface MapRenderState {
   selD: number | null;
   selTerrain: TerrainSelection | null;
   route: Route | null;
+  packageGrouping: PackageGrouping;
+  folderFiles: ReadonlySet<number> | null;
 }
 
 export interface MapRendererCallbacks {
@@ -744,10 +747,11 @@ export class MapRenderer {
     return v * this.k;
   }
   private tint(i: number): string {
-    const { doc, layer } = this.state!;
+    const { doc, layer, packageGrouping } = this.state!;
     if (layer === "d") return districtColor(D_(doc, i));
     if (layer === "c") return ramp(Math.min(1, CH(doc, i) / (this.maxCh || 1)));
-    return ramp(Math.min(1, CX_(doc, i) / (this.maxCx || 1)));
+    if (layer === "x") return ramp(Math.min(1, CX_(doc, i) / (this.maxCx || 1)));
+    return packageGrouping.fileColors[i];
   }
   private narrow() {
     return window.innerWidth <= 820;
@@ -786,7 +790,7 @@ export class MapRenderer {
     svg.classList.remove("previewing");
     this.rootG = null;
     if (!state) return;
-    const { doc, geo, layer, sel, selSym, selD, route } = state;
+    const { doc, geo, layer, sel, selSym, selD, route, folderFiles } = state;
     const g = el("g", {});
     svg.appendChild(g);
     // Issue #51: remember exactly what this paint() drew at, so a later
@@ -831,13 +835,15 @@ export class MapRenderer {
     // down) only decides which lines get drawn and never narrows this set.
     const blast = computeBlast(doc, sel, selSym);
     const selNeighbours = !route && !blast && sel != null ? { out: this.outAdj.get(sel) ?? [], in: this.inAdj.get(sel) ?? [] } : null;
-    const dim = route
-      ? new Set(route.path)
-      : blast
-        ? new Set([...blast.set, sel!])
-        : selNeighbours
-          ? new Set([sel!, ...selNeighbours.out, ...selNeighbours.in])
-          : null;
+    const dim: ReadonlySet<number> | null = folderFiles
+      ? folderFiles
+      : route
+        ? new Set(route.path)
+        : blast
+          ? new Set([...blast.set, sel!])
+          : selNeighbours
+            ? new Set([sel!, ...selNeighbours.out, ...selNeighbours.in])
+            : null;
     // Districts touched by the plain-selection dim set, for fading the
     // ones that aren't (route/blast's district rendering is intentionally
     // untouched -- "keep precedence exactly as today"). Uses the same
@@ -1607,7 +1613,7 @@ export class MapRenderer {
   // cell, solved so that AREA tracks line count. Rooms are laid inside it and
   // clipped to its boundary, so a file's classes divide exactly the land the
   // file owns.
-  private plot(g: SVGGElement, defs: SVGDefsElement, i: number, dim: Set<number> | null, roomsOn: boolean) {
+  private plot(g: SVGGElement, defs: SVGDefsElement, i: number, dim: ReadonlySet<number> | null, roomsOn: boolean) {
     const { doc, sel, selSym, layer } = this.state!;
     const poly = doc.P![String(i)];
     const faded = !!(dim && !dim.has(i));

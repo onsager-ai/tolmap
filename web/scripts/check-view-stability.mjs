@@ -11,7 +11,8 @@
 // This drives a real Vite dev server (own port, never 5173 -- that belongs
 // to another worktree's live session) with Playwright, on both a map small
 // enough to eyeball (django/django) and one with a denser, more irregular
-// mainland silhouette (n8n-io/n8n), at a desktop size and a touch phone
+// mainland silhouette still below the local browser ceiling
+// (langgenius/dify), at a desktop size and a touch phone
 // size, and asserts the view is byte-for-byte the same SVG geometry after
 // each of: tapping a file dot, tapping empty map, and switching the layer.
 // It also resizes the browser viewport and checks the view shifts by
@@ -47,7 +48,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const MAPS = ["django/django", "n8n-io/n8n"];
+const MAPS = ["django/django", "langgenius/dify"];
 const PROFILES = [
   { name: "desktop", viewport: { width: 1200, height: 800 }, isMobile: false, hasTouch: false },
   { name: "phone", viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
@@ -429,7 +430,7 @@ async function checkRepoSwitch(browser, base, profile) {
   // A plain CSS locator, not getByLabel: the map SVG's own long aria-label
   // ("Pannable, zoomable map...") confused Playwright's fuzzy accessible-name
   // matching into treating getByLabel("Repository") as ambiguous.
-  await page.locator('select[aria-label="Repository"]').selectOption("n8n-io/n8n");
+  await page.locator('select[aria-label="Repository"]').selectOption("langgenius/dify");
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(1000);
   const after = await stableBox(page);
@@ -581,6 +582,245 @@ async function checkSelectionDim(browser, base, profile) {
   await context.close();
 }
 
+// Issue #74: all path-derived UI and the folder dim route, exercised through
+// the real URL and controls at both supported interaction profiles. Django is
+// deliberately used here: every dot is above #49's density floor at fit, so
+// exact 0.2 opacity means the directory dim set and cannot collide with a
+// density-fade value the way it can on the medium fixture.
+async function checkPackageLayout(browser, base, profile) {
+  const label = `package layout overlays (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django?geo=r&layer=p`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForSelector("[data-package-legend]");
+  await page.waitForTimeout(700);
+
+  const legend = await page.locator("[data-package-legend]").evaluate((element) => ({
+    rows: element.querySelectorAll("[style*='background']").length,
+    depth: element.querySelector("[data-package-depth]")?.textContent ?? "",
+    visible: element.getBoundingClientRect().width > 0,
+  }));
+  report(legend.visible && legend.rows >= 3, `${label}: layer p renders a package legend`, JSON.stringify(legend));
+  report(new URL(page.url()).searchParams.get("depth") == null, `${label}: automatic depth is omitted from the URL`);
+
+  const plus = page.locator('button[aria-label="Increase package depth"]');
+  if (await plus.isEnabled()) {
+    const beforeDepth = await stableBox(page);
+    await plus.click();
+    await page.waitForTimeout(250);
+    report(new URL(page.url()).searchParams.has("depth"), `${label}: an overridden package depth is in the URL`);
+    report(boxesClose(beforeDepth, await stableBox(page)), `${label}: changing package depth does not re-fit the view`);
+  } else {
+    report(false, `${label}: package depth has an available override`);
+  }
+
+  const target = await page.evaluate(async () => {
+    const response = await fetch("/maps/django/django.json");
+    const doc = await response.json();
+    const counts = new Map();
+    for (let i = 0; i < doc.F.length; i++) {
+      const parts = doc.F[i].split("/").slice(0, -1);
+      for (let depth = 1; depth <= parts.length; depth++) {
+        const path = parts.slice(0, depth).join("/");
+        const row = counts.get(path) || { path, files: [] };
+        row.files.push(i);
+        counts.set(path, row);
+      }
+    }
+    const folder = [...counts.values()]
+      .filter((row) => row.files.length >= 3 && row.files.length <= doc.F.length / 2)
+      .sort((a, b) => b.files.length - a.files.length || a.path.localeCompare(b.path))[0];
+    const district = Object.keys(doc.districts)
+      .map(Number)
+      .sort((a, b) => doc.districts[String(b)].size - doc.districts[String(a)].size)[0];
+    return { dir: folder?.path ?? null, district };
+  });
+  if (!target.dir) {
+    report(false, `${label}: fixture has a usable directory`);
+    await context.close();
+    return;
+  }
+
+  if (profile.isMobile) {
+    const header = page.locator("[data-selection-panel] > div").first();
+    const box = await header.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+  }
+  const beforeFolder = await stableBox(page);
+  const input = page.locator('input[aria-label="Filter folder paths"]');
+  await input.fill(target.dir);
+  await input.press("Enter");
+  await page.waitForFunction((dir) => new URL(location.href).searchParams.get("dir") === dir, target.dir);
+  await page.waitForTimeout(250);
+  report(boxesClose(beforeFolder, await stableBox(page)), `${label}: picking a folder does not re-fit the view`);
+
+  const dim = await page.evaluate((dir) => {
+    const circles = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+    let insideFull = 0;
+    let outsideDim = 0;
+    for (const circle of circles) {
+      const index = Number(circle.getAttribute("data-k").slice(2));
+      const title = circle.querySelector("title")?.textContent?.split("\n")[0] ?? "";
+      const inside = title.startsWith(`${dir}/`);
+      const opacity = circle.getAttribute("fill-opacity");
+      if (inside && opacity !== "0.2") insideFull++;
+      if (!inside && opacity === "0.2") outsideDim++;
+      if (!Number.isInteger(index)) return { insideFull: 0, outsideDim: 0 };
+    }
+    return { insideFull, outsideDim };
+  }, target.dir);
+  report(dim.insideFull > 0 && dim.outsideDim > 0, `${label}: ?dir= keeps folder files bright and dims files outside`, JSON.stringify(dim));
+
+  const empty = await findEmptyPoint(page, profile.viewport.width, profile.viewport.height);
+  if (empty) {
+    await tap(page, profile, empty[0], empty[1]);
+    report(!new URL(page.url()).searchParams.has("dir"), `${label}: an empty-map tap clears the folder highlight`);
+  } else {
+    report(false, `${label}: an empty-map tap clears the folder highlight`, "no empty map point found");
+  }
+
+  await page.goto(`${base}/django/django?geo=r&layer=d&d=${target.district}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(600);
+  if (profile.isMobile) {
+    const header = page.locator("[data-selection-panel] > div").first();
+    const box = await header.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+  }
+  const pathRows = page.locator("[data-district-path]");
+  const rowCount = await pathRows.count();
+  report(rowCount > 0, `${label}: district card shows its path breakdown`, `rows=${rowCount}`);
+  if (rowCount > 0) {
+    const first = pathRows.first();
+    const path = await first.getAttribute("data-district-path");
+    const box = await first.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+    report(
+      !!path && new URL(page.url()).searchParams.get("dir") === path,
+      `${label}: tapping a district path applies the folder highlight`,
+      `expected=${path} url=${page.url()}`,
+    );
+  }
+  await context.close();
+}
+
+// CLAUDE.md's standing viewer contract: the navigation lists remain
+// populated, and the three tap paths that open detail (district polygon,
+// file dot, symbol row) work on both a mouse viewport and a coarse-pointer
+// phone. Kept here beside #74's additions because the always-present empty
+// Folders panel changes the chrome around those same taps.
+async function checkViewerCards(browser, base, profile) {
+  const label = `viewer cards and directory lists (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  const fixture = await page.evaluate(async () => {
+    const response = await fetch("/maps/django/django.json");
+    const doc = await response.json();
+    return {
+      doc,
+      firstDistrictName: doc.names[Object.keys(doc.districts)[0]],
+      firstLandmarkPath: doc.F[doc.L[0][0]],
+    };
+  });
+  const sidebarText = await page.locator("aside").first().textContent();
+  report(
+    sidebarText?.includes(fixture.firstDistrictName) && sidebarText?.includes(fixture.firstLandmarkPath.split("/").pop()),
+    `${label}: districts are named and landmarks are listed`,
+  );
+
+  const districtTarget = await page.evaluate(() => {
+    const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
+    for (const path of paths) {
+      const rect = path.getBoundingClientRect();
+      for (let yi = 1; yi < 6; yi++) {
+        for (let xi = 1; xi < 6; xi++) {
+          const x = rect.left + (rect.width * xi) / 6;
+          const y = rect.top + (rect.height * yi) / 6;
+          const hit = document.elementFromPoint(x, y)?.closest?.('[data-k^="d:"]');
+          if (hit?.getAttribute("data-k") === path.getAttribute("data-k")) {
+            return { x, y, key: path.getAttribute("data-k") };
+          }
+        }
+      }
+    }
+    return null;
+  });
+  if (districtTarget) {
+    await tap(page, profile, districtTarget.x, districtTarget.y);
+    const districtId = districtTarget.key.split(":")[1];
+    report(
+      new URL(page.url()).searchParams.get("d") === districtId && (await page.locator("[data-selection-panel] h3").count()) > 0,
+      `${label}: tapping a district produces its card`,
+    );
+  } else {
+    report(false, `${label}: tapping a district produces its card`, "no unobstructed district point found");
+  }
+
+  if (profile.isMobile && districtTarget) {
+    const header = page.locator("[data-selection-panel] > div").first();
+    const box = await header.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+  }
+  const fileTarget = await page.evaluate((doc) => {
+    const circles = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+    for (const circle of circles) {
+      const index = Number(circle.getAttribute("data-k").slice(2));
+      if (!doc.S?.[String(index)]?.length) continue;
+      const rect = circle.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const hitKey = document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k");
+      if (hitKey !== `f:${index}`) continue;
+      if (x > innerWidth * 0.22 && x < innerWidth * 0.78 && y > innerHeight * 0.18 && y < innerHeight * 0.72) {
+        return { x, y, index, file: doc.F[index] };
+      }
+    }
+    return null;
+  }, fixture.doc);
+  if (fileTarget) {
+    await tap(page, profile, fileTarget.x, fileTarget.y);
+    report(
+      new URL(page.url()).searchParams.get("file") === fileTarget.file && (await page.locator("[data-selection-panel]").count()) === 1,
+      `${label}: tapping a file produces its card`,
+      `expected=${fileTarget.file} url=${page.url()}`,
+    );
+    const symbol = page.locator("button[data-symbol-row]").first();
+    if ((await symbol.count()) > 0) {
+      const key = await symbol.getAttribute("data-symbol-row");
+      if (profile.hasTouch) await symbol.tap();
+      else await symbol.click();
+      await page.waitForTimeout(400);
+      report(
+        !!key && new URL(page.url()).searchParams.get("sym") === key.split(":")[1],
+        `${label}: tapping a symbol produces its card`,
+      );
+    } else {
+      report(false, `${label}: tapping a symbol produces its card`, "selected file has no visible symbol row");
+    }
+  } else {
+    report(false, `${label}: tapping a file produces its card`, "no on-screen file with symbols found");
+    report(false, `${label}: tapping a symbol produces its card`, "no file card to tap from");
+  }
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const browser = await chromium.launch();
@@ -595,6 +835,12 @@ async function main() {
   await checkMultiPolygonHover(browser, args.base);
   for (const profile of PROFILES) {
     await checkSelectionDim(browser, args.base, profile);
+  }
+  for (const profile of PROFILES) {
+    await checkPackageLayout(browser, args.base, profile);
+  }
+  for (const profile of PROFILES) {
+    await checkViewerCards(browser, args.base, profile);
   }
   await browser.close();
 

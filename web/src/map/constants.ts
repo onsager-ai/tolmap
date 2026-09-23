@@ -45,7 +45,7 @@ export const DOT_DENSITY_FLOOR = 30;
 export const LINK_PREVIEW_MAX = 40;
 
 export type Geo = "r" | "p" | "t";
-export type Layer = "d" | "c" | "x";
+export type Layer = "d" | "c" | "x" | "p";
 
 // GEO_LABEL/GEO_ORDER used to drive GeoLayerControls.tsx's geometry toggle
 // (regions/plots/treemap). Hidden from the UI on 2026-09-22 by owner
