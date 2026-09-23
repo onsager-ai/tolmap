@@ -1143,3 +1143,24 @@ What carries over, per D1–D3: nested footprints (district › neighbourhood �
 Consequence of D4: the product will not match the prototype's screenshots one-to-one. District placement, outlines, islands and the unconnected list stay as findings 17, 24 and 26 left them. The ported parts are what is drawn inside and between the outlines.
 
 Two further owner choices, made the same day through AskUserQuestion (transcript line 163): phones keep the full-screen map shell, where one finger pans (the prototype's scrolling-page layout is not adopted). Hub rings (files with fan-in ≥ 30) replace hub pins. Entry, bridge and hazard stay as smaller ranked pins, capital pins are dropped because district names are always shown, and all five landmark kinds stay in the sidebar.
+
+## 28. Code-line weights change footprint area, and the current solver can lose more cells
+
+Owner decision D2 (finding 27, 2026-09-23) makes file footprint area follow **code lines**, excluding blank lines, comment-only lines and Python module/class/function docstrings. This supersedes `docs/PIPELINE.md`'s old statement that parcels track line count. The prototype's dify measurement was 76.8% code in 370,771 lines; that was a different source selection from this product's `--all-sources` dify build, so the percentages are not directly comparable.
+
+[Actions comparison run 35874556711](https://github.com/onsager-ai/tolmap/actions/runs/35874556711) built each pinned repository with this branch and `compare_ref=main` on standard runners. The table reports summed `N[*][3]` total lines, summed new `C` code lines, and **median per-district Pearson r** between shoelace polygon area and file code lines / total lines. Each r uses only files with a `P` polygon in that district; a district needs at least three such files and nonzero variance. For the main polygons, the code-line r uses this branch's `C` aligned by the identical `F` order. All eligible districts, including their individual r values and sample counts, are in [the per-district CSV](measurements/code-lines-district-correlations.csv). An empty r there means the district did not meet the Pearson conditions.
+
+| repo | total lines | code lines (share) | eligible districts | branch r code / loc | main r code / loc | missing P branch / main | wall s branch / main |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| django/django | 150,765 | 103,970 (69.0%) | 12 | 0.956 / 0.941 | 0.940 / 0.959 | 48 / 63 | 3.28 / 3.15 |
+| encode/httpx | 8,850 | 5,773 (65.2%) | 4 | 0.742 / 0.742 | 0.802 / 0.740 | 1 / 1 | 0.28 / 0.27 |
+| langgenius/dify | 907,285 | 763,138 (84.1%) | 32 | 0.894 / 0.880 | 0.900 / 0.884 | 505 / 470 | 24.54 / 23.77 |
+| pallets/flask | 9,537 | 4,281 (44.9%) | 4 | 0.921 / 0.895 | 0.874 / 0.899 | 0 / 0 | 0.41 / 0.40 |
+| prometheus/prometheus | 201,894 | 156,902 (77.7%) | 10 | 0.978 / 0.975 | 0.973 / 0.979 | 42 / 22 | 3.37 / 3.22 |
+| vuejs/core | 57,564 | 46,465 (80.7%) | 8 | 0.981 / 0.973 | 0.976 / 0.984 | 5 / 2 | 1.06 / 1.00 |
+
+The branch median r for code lines exceeds its loc r in five of six repositories (httpx is essentially tied), but it does not exceed main's code-line r in every repository. This is not an optimizer guarantee: district boundaries, point locations and a finite raster constrain parcel areas. Dify has 78 districts but only 32 meet the correlation conditions; 43 have no `P` polygon at all, primarily the unconnected districts. Its eligible per-district branch code-line r spans **−0.536 to 1.000**, so the median does not imply every district fits well.
+
+The count of files without `P` **did change**, contrary to the initial expectation that only area would move. The existing power diagram can assign no cell to a file when targets change; dify gains 35 missing footprints, prometheus gains 20, vue gains 3, while django loses 15. These are measured counts, not fixed by this PR. The separate nested-footprints work for #82 has the explicit zero-missing-footprint target; the present PR keeps the parcels change to one weight helper to avoid competing with that rewrite.
+
+After removing only `C` and `P` from both JSON documents and comparing their compact JSON bytes, **all six branch maps are identical to main** on every remaining key. That includes `F`, `N`, `E`, `L`, `S`, `U`, district membership and geometry, and coverage. The code-line count is additive; this PR does not move files or alter the graph.
