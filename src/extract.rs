@@ -446,15 +446,20 @@ fn is_docstring(node: Node<'_>) -> bool {
     let Some(parent) = node.parent() else {
         return false;
     };
+    // Comments are named tree-sitter children, but Python does not count
+    // them as statements before a docstring.
+    let first_statement = (0..parent.named_child_count())
+        .filter_map(|index| parent.named_child(index))
+        .find(|child| child.kind() != "comment");
     match parent.kind() {
-        "module" => parent.named_child(0) == Some(node),
+        "module" => first_statement == Some(node),
         "block" => {
             let Some(owner) = parent.parent() else {
                 return false;
             };
             matches!(owner.kind(), "class_definition" | "function_definition")
                 && owner.child_by_field_name("body") == Some(parent)
-                && parent.named_child(0) == Some(node)
+                && first_statement == Some(node)
         }
         _ => false,
     }
@@ -3630,7 +3635,7 @@ mod tests {
 
     #[test]
     fn python_docstrings_and_multiline_code() {
-        let source = "\"\"\"module\ntext\"\"\"\nclass C:\n    \"class\" \"doc\"\n    def f(self):\n        \"\"\"function\n        doc\"\"\"\n        value = \"\"\"code\n        still code\"\"\"\n        return value\n";
+        let source = "# preface\n\"\"\"module\ntext\"\"\nclass C:\n    # preface\n    \"class\" \"doc\"\n    def f(self):\n        # preface\n        \"\"\"function\n        doc\"\"\"\n        value = \"\"\"code\n        still code\"\"\"\n        return value\n";
         assert_eq!(code_lines_of(source, LanguageKind::Python), 5);
     }
 
