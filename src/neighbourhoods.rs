@@ -60,8 +60,11 @@ fn split<P: Partitioner>(
     partitioner: &P,
     depth: usize,
 ) -> Result<Vec<Vec<usize>>> {
-    if members.len() <= SINGLE_LIMIT || depth >= 12 {
+    if members.len() <= SINGLE_LIMIT {
         return Ok(vec![members.to_vec()]);
+    }
+    if depth >= 12 {
+        return Ok(path_chunks(members));
     }
     let local = members
         .iter()
@@ -83,7 +86,7 @@ fn split<P: Partitioner>(
         }
     }
     if edges.is_empty() {
-        return Ok(members.chunks(TARGET).map(|chunk| chunk.to_vec()).collect());
+        return Ok(path_chunks(members));
     }
     let graph = WeightedGraph {
         node_count: members.len(),
@@ -107,7 +110,7 @@ fn split<P: Partitioner>(
         }
     }
     if parts.len() <= 1 {
-        return Ok(vec![members.to_vec()]);
+        return Ok(path_chunks(members));
     }
     let mut output = Vec::new();
     for part in parts {
@@ -118,6 +121,14 @@ fn split<P: Partitioner>(
         }
     }
     Ok(output)
+}
+
+fn path_chunks(members: &[usize]) -> Vec<Vec<usize>> {
+    // A connected induced component can remain indivisible at all three
+    // tested resolutions (or peel one singleton at each recursive pass).
+    // The global file order is lexical path order, so contiguous chunks
+    // preserve a useful directory fallback and cap the geometry workload.
+    members.chunks(TARGET).map(|chunk| chunk.to_vec()).collect()
 }
 
 fn fold_small(groups: &mut Vec<Vec<usize>>, adjacency: &[Vec<(usize, f64)>]) {
