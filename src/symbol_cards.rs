@@ -55,7 +55,7 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
     let maximum = rings.iter().map(Vec::len).max()?;
     let mut limit = CARD_CONTOUR_POINTS;
     loop {
-        let output = rings
+        let mut output = rings
             .iter()
             .filter_map(|points| {
                 let stride = points.len().div_ceil(limit).max(1);
@@ -74,6 +74,16 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
             .collect::<Rings>();
         if output.is_empty() {
             return None;
+        }
+        // A sparse sample of a thin diagonal can have apparent floating
+        // area but become collinear at export precision. Keep more of the
+        // raster contour before falling back to a reserved rectangle.
+        if quantize_rings(&mut output).is_err() {
+            if limit >= maximum {
+                return None;
+            }
+            limit = (limit * 2).min(maximum);
+            continue;
         }
         if !covers_unowned_pixel(&mask, canvas, &output) || limit >= maximum {
             return Some(output);
