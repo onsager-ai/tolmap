@@ -25,6 +25,7 @@ export const D_ = (doc: MapDocument, i: number) => doc.N[i][0];
 export const PX = (doc: MapDocument, i: number) => doc.N[i][1];
 export const PY = (doc: MapDocument, i: number) => doc.N[i][2];
 export const LOC = (doc: MapDocument, i: number) => doc.N[i][3];
+export const CODE_LINES = (doc: MapDocument, i: number) => doc.C?.[i] ?? LOC(doc, i);
 export const CX_ = (doc: MapDocument, i: number) => doc.N[i][4];
 export const CH = (doc: MapDocument, i: number) => doc.N[i][5];
 export const FI = (doc: MapDocument, i: number) => doc.N[i][6];

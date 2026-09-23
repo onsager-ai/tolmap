@@ -114,6 +114,8 @@ pub struct MapDocument {
     pub files: Vec<String>,
     #[serde(rename = "N")]
     pub nodes: Vec<NodeRow>,
+    #[serde(rename = "C", default, skip_serializing_if = "Option::is_none")]
+    pub code_lines: Option<Vec<usize>>,
     #[serde(rename = "E")]
     pub edges: Vec<[usize; 2]>,
     #[serde(rename = "L")]
@@ -142,6 +144,8 @@ pub struct MapDocument {
 pub struct SourceNode {
     pub file: String,
     pub loc: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_lines: Option<usize>,
     pub complexity: usize,
     pub churn: usize,
     pub fanin: f64,
@@ -360,6 +364,7 @@ mod tests {
         // Serde ignores unknown fields unless deny_unknown_fields is set.
         // Stored maps may still carry this removed optional block.
         let document: MapDocument = serde_json::from_value(value).unwrap();
+        assert!(document.code_lines.is_none());
         assert!(serde_json::to_value(document)
             .unwrap()
             .get("terrain")
@@ -382,6 +387,7 @@ mod tests {
                 .map(|file| SourceNode {
                     file: file.to_owned(),
                     loc: 1,
+                    code_lines: None,
                     complexity: 0,
                     churn: 0,
                     fanin: 0.0,
