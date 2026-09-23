@@ -16,14 +16,17 @@ interface Props {
   open: boolean;
   onToggleOpen(): void;
   onPickLandmark(fileIndex: number): void;
-  onFlyDistrict(d: number): void;
+  /** Issue #82 A1: renamed from onFlyDistrict now that a row SELECTS the
+   * district (mainland and island alike) and pans to it only if it's off
+   * screen, instead of always zooming in -- see MapView.tsx's wiring. */
+  onSelectDistrict(d: number): void;
 }
 
 /** One district row, shared by every section below. */
-function DistrictRow({ doc, d, onFlyDistrict }: { doc: MapDocument; d: string; onFlyDistrict(d: number): void }) {
+function DistrictRow({ doc, d, onSelectDistrict }: { doc: MapDocument; d: string; onSelectDistrict(d: number): void }) {
   return (
     <div
-      onClick={() => onFlyDistrict(+d)}
+      onClick={() => onSelectDistrict(+d)}
       className="flex cursor-pointer items-center gap-1.5 px-3 py-1 text-[10.5px] hover:bg-[var(--chrome2)]"
     >
       <i className="block h-2.5 w-2.5 flex-none rounded-sm" style={{ background: districtColor(+d) }} />
@@ -35,21 +38,19 @@ function DistrictRow({ doc, d, onFlyDistrict }: { doc: MapDocument; d: string; o
 
 /** Island section: a single-line, tappable header that expands into the
  * full list on click. A real `<button>`, not a div with an
- * onClick like the district/landmark rows below it: this element's whole
- * job is the toggle itself (no secondary click target competing for the
- * same tap the way a row's "select" and "fly to" affordances share one),
- * so it gets the element that is a toggle by default — focusable, and
- * reachable by touch or keyboard without any of it being hand-rolled. */
+ * onClick like the district/landmark rows below it, so it gets the element
+ * that is a toggle by default — focusable, and reachable by touch or
+ * keyboard without any of it being hand-rolled. */
 function CollapsibleSection({
   label,
   ids,
   doc,
-  onFlyDistrict,
+  onSelectDistrict,
 }: {
   label: string;
   ids: string[];
   doc: MapDocument;
-  onFlyDistrict(d: number): void;
+  onSelectDistrict(d: number): void;
 }) {
   const [open, setOpen] = useState(false);
   if (ids.length === 0) return null; // a section with zero members renders nothing, not an empty header
@@ -66,7 +67,7 @@ function CollapsibleSection({
       {open && (
         <div>
           {ids.map((d) => (
-            <DistrictRow key={d} doc={doc} d={d} onFlyDistrict={onFlyDistrict} />
+            <DistrictRow key={d} doc={doc} d={d} onSelectDistrict={onSelectDistrict} />
           ))}
         </div>
       )}
@@ -81,8 +82,8 @@ function CollapsibleSection({
  * toggled directly on the DOM node.
  *
  * Districts split into mainland and islands. Unconnected files now live in
- * the footer list, with no district row to fly to. */
-export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onFlyDistrict }: Props) {
+ * the footer list, with no district row to select from here. */
+export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onSelectDistrict }: Props) {
   const narrow = useIsNarrow();
   const byClass = (cls: "mainland" | "island") =>
     Object.keys(doc.districts)
@@ -119,10 +120,10 @@ export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onFlyDistrict
       </h2>
       <div>
         {mainlandIds.map((d) => (
-          <DistrictRow key={d} doc={doc} d={d} onFlyDistrict={onFlyDistrict} />
+          <DistrictRow key={d} doc={doc} d={d} onSelectDistrict={onSelectDistrict} />
         ))}
       </div>
-      <CollapsibleSection label="islands" ids={islandIds} doc={doc} onFlyDistrict={onFlyDistrict} />
+      <CollapsibleSection label="islands" ids={islandIds} doc={doc} onSelectDistrict={onSelectDistrict} />
     </>
   );
 

@@ -219,6 +219,24 @@ export class MapRenderer {
   private static readonly ISLAND_FADE_VISIBLE_EPS = 0.05;
   private static readonly ISLAND_STROKE_MIN_BASE = 0.22;
 
+  // Issue #82 A1 ("drag vs. click"): pointerMove used 5px (Manhattan, i.e.
+  // |dx|+|dy|) to decide a gesture was still a tap, and click() used a
+  // DIFFERENT 6px Manhattan bound to decide whether to swallow the
+  // synthetic click a real drag generates on release -- two unnamed
+  // literals close enough that nobody had noticed they disagreed. One named
+  // constant, used by both, closes that gap for good. 4px, Euclidean
+  // (Math.hypot of the per-move deltas, summed over the gesture -- not the
+  // old Math.abs+Math.abs Manhattan sum, and not straight-line displacement
+  // from pointerdown either: summing keeps the "once you've moved this
+  // much, it's a drag for the rest of the gesture" stickiness the old code
+  // had, which straight-line displacement would lose if a drag ever
+  // doubled back near its start). Small enough that an intentional tap
+  // (real touch input always jitters a pixel or two) is never swallowed;
+  // large enough that a real drag can't end close enough to its start to
+  // sneak under the bar and select whatever the pointer happens to be over
+  // when it lifts.
+  private static readonly DRAG_THRESHOLD_PX = 4;
+
   private readonly TOUCH = matchMedia("(pointer: coarse)").matches;
   private readonly onPointerDown = (e: PointerEvent) => this.pointerDown(e);
   private readonly onPointerMove = (e: PointerEvent) => this.pointerMove(e);
@@ -703,18 +721,53 @@ export class MapRenderer {
     };
     this.animId = requestAnimationFrame(step);
   }
-  flyTo(i: number, zoomTo?: number) {
+  /** Issue #82 A1 ("selecting never moves the map"): the pan-only
+   * counterpart to the old flyTo/flyToDetail, which used to zoom in on
+   * every sidebar pick, search result and deep link. Keeps k fixed always;
+   * translates only far enough to bring `(wx, wy)` back inside the safe
+   * content rect (fitViewport -- the same rect fit() itself frames into),
+   * and does NOTHING at all if the point is already there. That "already
+   * visible -> no-op" case is what makes it safe to call unconditionally
+   * from every selection path, including a plain map tap (the tapped
+   * target is by definition already on screen) -- there is no separate
+   * "fly" flag to thread through callers any more. `anim=false` is for the
+   * very first paint of a fresh deep link (MapCanvas's repoKey effect),
+   * where fit() itself does not animate either; every user-triggered call
+   * (sidebar, search, breadcrumb) keeps the default glide. */
+  private panToPoint(wx: number, wy: number, anim = true) {
+    if (!this.state) return;
+    const [left, top, right, bottom] = fitViewport(this.VW, this.VH);
+    const x = this.X(wx);
+    const y = this.Y(wy);
+    if (x >= left && x <= right && y >= top && y <= bottom) return;
+    const nx = this.VW / 2 - wx * this.k;
+    const ny = this.VH / 2 - wy * this.k;
+    if (anim) this.glide(this.k, nx, ny);
+    else {
+      this.cancelPendingGestureWork();
+      this.tx = nx;
+      this.ty = ny;
+      this.draw();
+    }
+  }
+  /** Pan-only selection of a file (or, since the map stops at the file, a
+   * symbol within one -- there is no deeper "room zoom" any more, see
+   * #82 A1 scope item 1: "Symbol search gets the same treatment"). */
+  panTo(i: number, anim = true) {
     if (!this.state) return;
     const p = this.px(i);
-    const nk = zoomTo || Math.max(this.k, this.fitScale() * 3.2);
-    this.glide(nk, this.VW / 2 - p[0] * nk, this.VH / 2 - p[1] * nk);
+    this.panToPoint(p[0], p[1], anim);
   }
-  /** Fly all the way into room level, for a search hit on a symbol — the
-   * reference does this as a special case (`fitScale()*Math.max(8,
-   * BUILD_ZOOM+3)`) so picking a class or function from search lands you
-   * looking at its room, not just its file's plot. */
-  flyToDetail(i: number) {
-    this.flyTo(i, this.fitScale() * Math.max(8, BUILD_ZOOM + 3));
+  /** Pan-only selection of a district, for the sidebar row and a `?d=` deep
+   * link -- zoomDistrict() below is kept for the one thing that's still
+   * allowed to zoom, the explicit ⤢ button. */
+  panToDistrict(d: number, anim = true) {
+    if (!this.state) return;
+    const district = this.state.doc.districts[d];
+    if (!district) return;
+    let c = this.state.geo !== "t" ? district.c : tmCentre(this.state.doc, d);
+    if (!Number.isFinite(c[0]) || !Number.isFinite(c[1])) c = district.c;
+    this.panToPoint(c[0], c[1], anim);
   }
   zoomDistrict(d: number) {
     if (!this.state) return;
@@ -905,6 +958,14 @@ export class MapRenderer {
             "stroke-width": (0.5 + 3 * w).toFixed(1),
             "stroke-linecap": "round",
             "stroke-opacity": 0.5,
+            // Issue #82 A1 scope item 6: a road's stroke is painted and
+            // visible, so it's hit-testable by default even with no
+            // data-k -- a tap that happened to land exactly on one fell
+            // through the data-k walk to "nothing" and stepped back the
+            // selection instead of doing nothing. Roads aren't themselves
+            // selectable; let the tap pass through to whatever district
+            // polygon is underneath.
+            "pointer-events": "none",
           }),
         );
       });
@@ -961,8 +1022,8 @@ export class MapRenderer {
     // name, is exactly "the set to keep at full strength" whenever it's
     // non-null (see its use below); folding it in here means this list
     // can't drift from what the existing dim/undim opacity logic already
-    // treats as important, including a search/flyTo landing on `sel` --
-    // flyTo/flyToDetail don't need their own zoom-reveals-target logic
+    // treats as important, including a search/panTo landing on `sel` --
+    // panTo/panToDistrict don't need their own zoom-reveals-target logic
     // because the file they land on is always in this set.
     const alwaysDrawn = new Set<number>(doc.L.map(([i]) => i));
     if (sel != null) alwaysDrawn.add(sel);
@@ -1145,6 +1206,11 @@ export class MapRenderer {
           "stroke-linejoin": "round",
           "stroke-linecap": "round",
           "stroke-opacity": 0.92,
+          // Issue #82 A1 scope item 6: a painted stroke is hit-testable by
+          // default even with no data-k -- a tap landing on the line itself
+          // (not a stop) fell through to nothing and stepped back the
+          // selection.
+          "pointer-events": "none",
         }),
       );
       pts.forEach((q, n) =>
@@ -1156,6 +1222,13 @@ export class MapRenderer {
             fill: "var(--hot)",
             stroke: "var(--canvas)",
             "stroke-width": 1.6,
+            // Issue #82 A1 scope item 6: route stops had no data-k at all
+            // (filled, so hit-testable by default), same bug as the polyline
+            // above but the opposite fix -- a stop IS a real file, so route
+            // it to that file's selection instead of swallowing the tap.
+            class: "hit",
+            "pointer-events": "all",
+            "data-k": "f:" + route.path[n],
           }),
         ),
       );
@@ -1314,11 +1387,24 @@ export class MapRenderer {
         "stroke-linejoin": "round",
       });
       if (weight) t.setAttribute("font-weight", String(weight));
+      // Issue #82 A1 scope item 6: a label text glyph is painted, so it's
+      // hit-testable by default -- without an explicit data-k, a tap that
+      // landed on a district subtitle or a file's basename label fell
+      // through to nothing and stepped back the selection instead of
+      // selecting the thing the label names. `dk` (a district id) and `fi`
+      // (a file index) are mutually exclusive across every call site below.
       if (dk != null) {
         t.setAttribute("class", "hit");
         t.setAttribute("pointer-events", "all");
         t.setAttribute("data-k", "d:" + dk);
+      } else if (fi != null) {
+        t.setAttribute("class", "hit");
+        t.setAttribute("pointer-events", "all");
+        t.setAttribute("data-k", "f:" + fi);
       }
+      // data-file-label is a SEPARATE marker kept for web/scripts/check-view-
+      // stability.mjs, which looks file labels up by file index regardless
+      // of the data-k scheme; not to be confused with data-k itself.
       if (fi != null) t.setAttribute("data-file-label", String(fi));
       t.textContent = txt;
       g.appendChild(t);
@@ -1381,8 +1467,12 @@ export class MapRenderer {
       const hidden = labelPlaced ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
       if (hidden > 0) {
         put(x, labelY + (isIsland ? 10 : 13), `+${hidden} files`, isIsland ? 8.5 : 9.5, (isIsland ? 0.55 : 0.7) * iFade, 600, +d);
+        // Issue #82 A1 scope item 6: the "+N files" badge above already
+        // passed `+d` as `dk`; the plain "N files" subtitle below (shown
+        // instead, once nothing is hidden) had not, and so had no data-k at
+        // all -- the exact bug this issue's scope item 6 calls out.
       } else if (zf < 1.8 && !narrow && !isIsland) {
-        put(x, labelY + 13, doc.districts[d].size + " files", 9.5, 0.45);
+        put(x, labelY + 13, doc.districts[d].size + " files", 9.5, 0.45, undefined, +d);
       }
     }
     // District names keep their established placement priority. Only folder
@@ -1478,6 +1568,13 @@ export class MapRenderer {
           fill: "none",
           stroke: color,
           "stroke-width": 2.3,
+          // Issue #82 A1 scope item 6 ("the selection ring"): fill:none
+          // doesn't stop the STROKE from being hit-tested by default -- a
+          // tap that landed on the ring itself (drawn on top of, and wider
+          // than, the dot/room it surrounds) fell through to nothing and
+          // stepped back the selection instead of re-selecting what it
+          // already outlines.
+          "pointer-events": "none",
         }),
       );
     } else {
@@ -1492,6 +1589,7 @@ export class MapRenderer {
           fill: "none",
           stroke: color,
           "stroke-width": 2.3,
+          "pointer-events": "none",
         }),
       );
     }
@@ -1540,7 +1638,9 @@ export class MapRenderer {
     );
 
     if (!showRooms) {
-      if (sel === i) g.appendChild(el("path", { d, fill: "none", stroke: "var(--hot)", "stroke-width": 2.2 }));
+      // Issue #82 A1 scope item 6: same selection-ring hit-testing bug as
+      // ring() above, for the plot geometry's own outline.
+      if (sel === i) g.appendChild(el("path", { d, fill: "none", stroke: "var(--hot)", "stroke-width": 2.2, "pointer-events": "none" }));
       return;
     }
 
@@ -2064,8 +2164,8 @@ export class MapRenderer {
     }
     if (!this.dragging) return;
     const [x, y] = this.toSvg(e);
-    this.moved += Math.abs(x - this.lx) + Math.abs(y - this.ly);
-    if (this.moved < 5) {
+    this.moved += Math.hypot(x - this.lx, y - this.ly);
+    if (this.moved < MapRenderer.DRAG_THRESHOLD_PX) {
       this.lx = x;
       this.ly = y;
       return; // below this it is still a tap
@@ -2113,7 +2213,7 @@ export class MapRenderer {
       // painting for real whatever preview transform (this gesture's own,
       // or an inherited one) is still outstanding.
       if (this.rootG?.hasAttribute("transform")) this.scheduleSettle();
-      if (this.moved < 6 && this.TOUCH) {
+      if (this.moved < MapRenderer.DRAG_THRESHOLD_PX && this.TOUCH) {
         const now = performance.now();
         if (now - this.lastTap < 300) {
           this.zoomBy(2);
@@ -2124,6 +2224,19 @@ export class MapRenderer {
     }
   }
 
+  // Issue #82 A1 scope item 7 (trackpad, noted rather than changed): a
+  // native two-finger trackpad pinch is synthesized by the browser as a
+  // wheel event with ctrlKey=true (there is no separate "pinch" DOM event on
+  // the web platform), so it already zooms via this exact path with no
+  // special-casing needed. A plain two-finger trackpad SCROLL (no ctrlKey)
+  // also lands here and also zooms, which is what the spec asks NOT to
+  // change unless trivial: distinguishing "scroll to pan" from "scroll to
+  // zoom" isn't a `deltaMode`/`ctrlKey` one-liner (Chrome, Firefox and
+  // Safari don't agree on deltaMode for a trackpad, and a mouse wheel with
+  // no ctrlKey is expected to zoom too -- see this method's own history),
+  // and reworking that boundary risks the exact class of bug this PR exists
+  // to fix elsewhere. Left as-is; e.ctrlKey is not read at all here because
+  // both cases already take the same branch.
   private wheel(e: WheelEvent) {
     e.preventDefault();
     const [x, y] = this.toSvg(e);
@@ -2145,7 +2258,7 @@ export class MapRenderer {
   // both, because the browser resolves the click target itself and we just
   // read it back off whatever element (or its ancestor) is still there.
   private click(e: MouseEvent) {
-    if (this.moved >= 6) return; // that was a drag
+    if (this.moved >= MapRenderer.DRAG_THRESHOLD_PX) return; // that was a drag
     if (this.tapped) {
       this.tapped = false;
       return; // that was a double-tap zoom
@@ -2154,6 +2267,14 @@ export class MapRenderer {
     while (t && t !== this.svg && !t.getAttribute?.("data-k")) t = t.parentNode as Element | null;
     const kk = t && t !== this.svg ? t.getAttribute?.("data-k") : null;
     if (!kk) {
+      // Issue #82 A1 scope item 2: an empty tap no longer clears the whole
+      // selection in one step. The renderer has no notion of "levels" --
+      // that's URL/React state (MapView's sel/selSym/selD) -- so this
+      // callback's NAME stays onClearSelection (its call sites, and its
+      // meaning to every OTHER caller of this class, are unchanged); only
+      // MapView's own handler now steps back one level (symbol -> file ->
+      // district -> nothing) instead of jumping straight to nothing. See
+      // MapView.tsx's stepBackSelection for the actual sequencing.
       this.callbacks.onClearSelection();
       return;
     }

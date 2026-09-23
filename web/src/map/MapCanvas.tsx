@@ -7,8 +7,14 @@ import type { FolderLabel, PackageGrouping } from "./packageLayout";
 
 export interface MapCanvasHandle {
   fit(anim?: boolean): void;
-  flyTo(i: number, zoomTo?: number): void;
-  flyToDetail(i: number): void;
+  /** Pan-only selection (issue #82 A1): never changes k, and does nothing at
+   * all if `i` is already on screen. Replaces the old flyTo/flyToDetail,
+   * which used to zoom in on every sidebar pick, search result and deep
+   * link -- see MapRenderer.panTo's own doc comment. */
+  panTo(i: number, anim?: boolean): void;
+  panToDistrict(d: number, anim?: boolean): void;
+  /** Still a real zoom -- the one thing selecting is still allowed to do,
+   * because it's the user explicitly asking via the ⤢ button. */
   zoomDistrict(d: number): void;
   zoomBy(f: number): void;
 }
@@ -84,8 +90,8 @@ export function MapCanvas({
     handleRef,
     () => ({
       fit: (anim = true) => rendererRef.current?.fit(anim),
-      flyTo: (i, zoomTo) => rendererRef.current?.flyTo(i, zoomTo),
-      flyToDetail: (i) => rendererRef.current?.flyToDetail(i),
+      panTo: (i, anim = true) => rendererRef.current?.panTo(i, anim),
+      panToDistrict: (d, anim = true) => rendererRef.current?.panToDistrict(d, anim),
       zoomDistrict: (d) => rendererRef.current?.zoomDistrict(d),
       zoomBy: (f) => rendererRef.current?.zoomBy(f),
     }),
@@ -138,6 +144,17 @@ export function MapCanvas({
       activeDirectory,
     };
     renderer.fit(false, state);
+    // Issue #82 A1: a `?file=`/`?d=` deep link must land with its target
+    // panned into view (never zoomed -- "selecting never moves the map"
+    // applies to a fresh load exactly as much as a later click), but fit()
+    // above already frames every mainland file, so this is a no-op except
+    // for a deep link into an ISLAND district (outside mainlandBounds, see
+    // MapRenderer.fit's own doc comment) or one otherwise placed outside the
+    // opening frame. `anim=false` to match fit()'s own instant (non-glide)
+    // first paint -- animating a pan immediately after an instant fit would
+    // read as two separate view changes instead of one settled opening view.
+    if (sel != null) renderer.panTo(sel, false);
+    else if (selD != null) renderer.panToDistrict(selD, false);
     justFittedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoKey]);
