@@ -76,12 +76,20 @@ fn covers_unowned_pixel(mask: &[bool], canvas: &Canvas, rings: &Rings) -> bool {
             if mask[y * canvas.grid + x] {
                 continue;
             }
-            let point = [
+            let center = [
                 canvas.low[0] + x as f64 * canvas.step,
                 canvas.low[1] + y as f64 * canvas.step,
             ];
-            if point_in_rings(point, rings) {
-                return true;
+            // A long diagonal shortcut can cross several neighbouring
+            // pixels without containing any of their centres. Quarter-cell
+            // probes keep that overlap below the raster tolerance.
+            for dy in [-0.25, 0.0, 0.25] {
+                for dx in [-0.25, 0.0, 0.25] {
+                    let point = [center[0] + dx * canvas.step, center[1] + dy * canvas.step];
+                    if point_in_rings(point, rings) {
+                        return true;
+                    }
+                }
             }
         }
     }
@@ -787,10 +795,16 @@ mod tests {
                         canvas.low[0] + (pixel % canvas.grid) as f64 * canvas.step,
                         canvas.low[1] + (pixel / canvas.grid) as f64 * canvas.step,
                     ];
-                    assert!(
-                        !point_in_rings(center, &outline),
-                        "owner {owner} covers {pixel}"
-                    );
+                    for dy in [-0.25, 0.0, 0.25] {
+                        for dx in [-0.25, 0.0, 0.25] {
+                            let sample =
+                                [center[0] + dx * canvas.step, center[1] + dy * canvas.step];
+                            assert!(
+                                !point_in_rings(sample, &outline),
+                                "owner {owner} covers {pixel}"
+                            );
+                        }
+                    }
                 }
             }
         }
