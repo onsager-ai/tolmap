@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { MapDocument, SymbolRow } from "@/types";
-import { CH, CX_, D_, FI, LOC, districtColor, symbolsOf } from "@/map/geometry";
+import { CH, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
 import { KCOL, KIND, LINK_PREVIEW_MAX } from "@/map/constants";
 import { computeBlast, type AdjMap } from "@/map/graph";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
@@ -19,6 +19,7 @@ interface Props {
   radj: AdjMap;
   packageLayout: PackageLayout;
   activeDirectory?: string;
+  showUnconnected: boolean;
   open: boolean;
   onToggleOpen(): void;
   onSelectFile(i: number, opts?: { fly?: boolean }): void;
@@ -44,6 +45,7 @@ export function SelectionPanel({
   radj,
   packageLayout,
   activeDirectory,
+  showUnconnected,
   open,
   onToggleOpen,
   onSelectFile,
@@ -55,6 +57,7 @@ export function SelectionPanel({
   onSelectDirectory,
 }: Props) {
   const narrow = useIsNarrow();
+  const unconnectedTotal = packageLayout.unconnectedFiles.length;
   const [foldersExpanded, setFoldersExpanded] = useState(false);
   const [filesExpanded, setFilesExpanded] = useState(false);
 
@@ -71,7 +74,18 @@ export function SelectionPanel({
         className={narrow ? "grid cursor-pointer grid-cols-[1fr_auto] items-center gap-2.5 px-3.5 py-2.5" : ""}
       >
         <div className="overflow-hidden">
-          {selD == null && sel == null ? (
+          {showUnconnected ? (
+            <><h3 className="font-sans text-[13px] font-semibold">Unconnected files</h3>
+              {doc.coverage && <p className="text-[10px] text-[var(--dim)]" data-coverage-detail>
+                {/* Two different counts: the list is files in unconnected
+                    districts (not placed on the map); coverage counts every
+                    file with no kept edge, including ones merge_tiny placed
+                    into a district by folder (#46). Say which is which. */}
+                {unconnectedTotal.toLocaleString("en-US")} not placed on the map. {doc.coverage.zero_edge_files.toLocaleString("en-US")} files have no detected link in all ({Object.entries(doc.coverage.by_language).map(([lang, row]) =>
+                  `${lang}: ${row.zero_edge_files.toLocaleString("en-US")}/${row.total_files.toLocaleString("en-US")}`).join(" · ")}); the rest sit in districts by folder.
+              </p>}
+            </>
+          ) : selD == null && sel == null ? (
             <FolderHead layout={packageLayout} activeDirectory={activeDirectory} />
           ) : selD != null ? (
             <DistrictHead doc={doc} d={selD} onZoomDistrict={onZoomDistrict} />
@@ -85,7 +99,9 @@ export function SelectionPanel({
       </div>
       {(!narrow || isOpen) && (
         <div className={narrow ? "max-h-[44vh] overflow-y-auto px-3.5 pb-3" : ""}>
-          {selD == null && sel == null ? (
+          {showUnconnected ? (
+            <UnconnectedList layout={packageLayout} doc={doc} onSelectFile={onSelectFile} />
+          ) : selD == null && sel == null ? (
             <FolderBody
               layout={packageLayout}
               activeDirectory={activeDirectory}
@@ -120,6 +136,17 @@ export function SelectionPanel({
       )}
     </Card>
   );
+}
+
+function UnconnectedList({ layout, doc, onSelectFile }: { layout: PackageLayout; doc: MapDocument; onSelectFile: Props["onSelectFile"] }) {
+  return <div className="mt-2 max-h-[44vh] overflow-y-auto" data-unconnected-list>
+    {layout.unconnectedGroups.map((group) => <details key={group.path} className="border-t border-[var(--rule)] py-1">
+      <summary className="cursor-pointer break-all text-[10px] text-[var(--on)]">{formatDirectory(group.path)} <span className="text-[var(--dim)]">({group.files.length})</span></summary>
+      {group.files.map((i) => <button type="button" key={i} data-unconnected-file={i}
+        className="block w-full break-all py-1 pl-2 text-left text-[10px] text-[var(--dim)] hover:text-[var(--on)]"
+        onClick={() => onSelectFile(i, { fly: false })}>{doc.F[i].split("/").pop()}</button>)}
+    </details>)}
+  </div>;
 }
 
 function FolderHead({ layout, activeDirectory }: { layout: PackageLayout; activeDirectory?: string }) {
@@ -483,6 +510,8 @@ function FileBody({
   const linkTotal = blast ? 0 : (adj.get(i)?.length ?? 0) + (radj.get(i)?.length ?? 0);
   return (
     <div>
+      {districtClass(doc.districts[String(D_(doc, i))]) === "unconnected" &&
+        <p className="my-2 text-[10px] text-[var(--dim)]">not connected to anything, so it isn't placed on the map</p>}
       <p className="break-all text-[10px] text-[var(--dim)]">
         {doc.F[i]}
         {sm ? `:${sm[2]}` : ""}

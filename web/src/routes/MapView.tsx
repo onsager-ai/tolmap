@@ -34,6 +34,8 @@ export function MapView() {
   const [sideOpen, setSideOpen] = useState(false);
   const [routeFrom, setRouteFrom] = useState<number | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
+  const [unconnectedRepo, setUnconnectedRepo] = useState<string | null>(null);
+  const [previewDirectory, setPreviewDirectory] = useState<{ repo: string; path: string } | null>(null);
   const packageLayout = useMemo(() => (doc ? buildPackageLayout(doc) : null), [doc]);
 
   // radj (imported-by) is new here: SelectionPanel's "links" line and
@@ -70,36 +72,42 @@ export function MapView() {
   function updateSearch(patch: Partial<typeof search>) {
     navigate({
       to: ".",
-      search: (prev: Record<string, unknown>) => ({ ...prev, ...patch }),
+      search: (prev: Record<string, unknown>) => ({ ...prev, sel: undefined, ...patch }),
       replace: true,
     });
   }
 
   function selectFile(i: number, opts: { fly?: boolean; symbol?: number } = {}) {
     if (!doc) return;
+    setUnconnectedRepo(null);
     updateSearch({ file: doc.F[i], sym: opts.symbol, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
-    if (opts.fly !== false) canvasRef.current?.flyTo(i);
+    if (opts.fly !== false && districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.flyTo(i);
   }
   function selectSymbolDetail(i: number, s: number) {
     if (!doc) return;
+    setUnconnectedRepo(null);
     updateSearch({ file: doc.F[i], sym: s, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
-    canvasRef.current?.flyToDetail(i);
+    if (districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.flyToDetail(i);
   }
   function selectDistrict(d: number) {
+    setUnconnectedRepo(null);
     updateSearch({ file: undefined, sym: undefined, d, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
   }
   function clearSelection() {
+    setUnconnectedRepo(null);
     updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined });
     setPanelOpen(false);
   }
 
   function selectDirectory(path?: string) {
+    setUnconnectedRepo(null);
+    setPreviewDirectory(null);
     setRoute(null);
     setRouteFrom(null);
     updateSearch({ file: undefined, sym: undefined, d: undefined, dir: path });
@@ -113,6 +121,8 @@ export function MapView() {
     onSelectSymbol: (i, s) => selectFile(i, { fly: false, symbol: s }),
     onSelectDistrict: (d) => selectDistrict(d),
     onClearSelection: () => clearSelection(),
+    onSelectDirectory: (path) => selectDirectory(path),
+    onPreviewDirectory: (path) => setPreviewDirectory(path && doc ? { repo: doc.repo, path } : null),
   };
 
   if (isLoading) {
@@ -137,8 +147,10 @@ export function MapView() {
   );
   const packageGrouping = packageLayout.groupings.get(packageDepth)!;
   const activeDirectory = search.dir && packageLayout.filesByDirectory.has(search.dir) ? search.dir : undefined;
-  const folderFiles = activeDirectory ? (packageLayout.filesByDirectory.get(activeDirectory) ?? null) : null;
-  const folderOnlyIslands = activeDirectory ? packageLayout.islandOnlyDirectories.has(activeDirectory) : false;
+  const previewPath = previewDirectory?.repo === doc.repo ? previewDirectory.path : undefined;
+  const highlightedPath = previewPath ?? activeDirectory;
+  const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
+  const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
   return (
     <div className="flex h-full flex-col">
@@ -160,8 +172,7 @@ export function MapView() {
           }}
           onFlyDistrict={(d) => {
             setSideOpen(false);
-            // Issue #63: a non-mainland row (island or unfiled) also
-            // SELECTS the district, not just flies to it -- selecting is
+            // Issue #63: an island row also SELECTS the district -- selecting is
             // what exempts an island from the fade (MapRenderer's
             // islandExceptionDistricts reads `selD`) and is also what opens
             // its card (selectDistrict's own setPanelOpen), matching #63's
@@ -170,7 +181,7 @@ export function MapView() {
             // fly-only behaviour: mainland is never faded, and changing its
             // established "fly to look, don't select" affordance is out of
             // this issue's scope.
-            if (doc && districtClass(doc.districts[String(d)]) !== "mainland") selectDistrict(d);
+            if (doc && districtClass(doc.districts[String(d)]) === "island") selectDistrict(d);
             canvasRef.current?.zoomDistrict(d);
           }}
         />
@@ -186,6 +197,8 @@ export function MapView() {
             packageGrouping={packageGrouping}
             folderFiles={folderFiles}
             folderOnlyIslands={folderOnlyIslands}
+            folderLabels={packageLayout.folderLabels}
+            activeDirectory={activeDirectory}
             callbacks={rendererCallbacks}
             handleRef={canvasRef}
           />
@@ -205,6 +218,7 @@ export function MapView() {
             radj={radj}
             packageLayout={packageLayout}
             activeDirectory={activeDirectory}
+            showUnconnected={unconnectedRepo === doc.repo && sel == null && selD == null}
             open={panelOpen}
             onToggleOpen={() => setPanelOpen((v) => !v)}
             onSelectFile={(i, opts) => selectFile(i, opts)}
@@ -221,7 +235,7 @@ export function MapView() {
             }}
             onSelectDirectory={selectDirectory}
           />
-          {search.layer === "p" ? (
+          {search.layer === "p" && (
             <PackageLegend
               grouping={packageGrouping}
               auto={search.depth == null}
@@ -229,9 +243,11 @@ export function MapView() {
               maxDepth={packageLayout.maxDepth}
               onDepth={(depth) => updateSearch({ depth: depth === packageLayout.autoDepth ? undefined : depth })}
             />
-          ) : (
-            <FooterStats doc={doc} layer={search.layer} maxCh={maxCh} maxCx={maxCx} />
           )}
+          <FooterStats doc={doc} layer={search.layer} maxCh={maxCh} maxCx={maxCx}
+            unconnectedCount={packageLayout.unconnectedFiles.length}
+            mobileHidden={panelOpen}
+            onOpenUnconnected={() => { updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined }); setUnconnectedRepo(doc.repo); setPanelOpen(true); setSideOpen(false); }} />
           <RouteBox
             doc={doc}
             routeFrom={routeFrom}
