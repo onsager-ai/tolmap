@@ -2486,15 +2486,27 @@ async function checkSmallFootprintHitCircle(browser, base, profile) {
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
-  const candidateKeys = await page.evaluate((hubIdx) => {
+  const candidates = await page.evaluate((hubIdx) => {
     const els = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"][fill="transparent"]')];
-    return els.map((el) => el.getAttribute("data-k")).filter((k) => !hubIdx.includes(Number(k.slice(2))));
+    return els
+      .map((el) => ({ key: el.getAttribute("data-k"), r: parseFloat(el.getAttribute("r")) }))
+      .filter((c) => !hubIdx.includes(Number(c.key.slice(2))));
   }, [...hubIndices]);
-  if (candidateKeys.length === 0) {
+  if (candidates.length === 0) {
     report(false, `${label}: at least one small-footprint hit circle on screen`, "none found");
     await context.close();
     return;
   }
+  // Largest radius first: `smallFootprintHitRadii` caps a circle's radius at
+  // half the distance to its nearest OTHER visible centroid (map/
+  // footprints.ts), so a small radius means two hit circles sit close
+  // together -- exactly the case where a real touch device's own tap-
+  // adjustment heuristic (Chromium included: `page.touchscreen.tap` is not
+  // pixel-precise the way a mouse click is, unlike `isPointClickable`'s
+  // `elementFromPoint`, which IS) can land the tap on the neighbour instead.
+  // A well-isolated (near-8px) circle is both the common case and the one a
+  // real tap can't be ambiguous about.
+  const candidateKeys = candidates.sort((a, b) => b.r - a.r).map((c) => c.key);
   let chosenKey = null;
   let point = null;
   for (const key of candidateKeys) {
