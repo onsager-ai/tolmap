@@ -139,6 +139,27 @@ fn point_in_rings(point: [f64; 2], rings: &Rings) -> bool {
         == 1
 }
 
+fn boundary_distance2(point: [f64; 2], rings: &Rings) -> f64 {
+    rings
+        .iter()
+        .flat_map(|ring| ring.iter().zip(ring.iter().cycle().skip(1)))
+        .map(|(a, b)| {
+            let dx = b[0] - a[0];
+            let dy = b[1] - a[1];
+            let length2 = dx * dx + dy * dy;
+            let t = if length2 > 0.0 {
+                ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length2
+            } else {
+                0.0
+            }
+            .clamp(0.0, 1.0);
+            let ex = point[0] - (a[0] + t * dx);
+            let ey = point[1] - (a[1] + t * dy);
+            ex * ex + ey * ey
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
 fn signed_area(ring: &Ring) -> f64 {
     ring.iter()
         .zip(ring.iter().cycle().skip(1))
@@ -239,12 +260,17 @@ fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Rings) -> Option<[f64; 4
                 canvas.low[0] + (i % canvas.grid) as f64 * canvas.step,
                 canvas.low[1] + (i / canvas.grid) as f64 * canvas.step,
             ];
-            point_in_rings(center, parent).then_some((i, center))
+            point_in_rings(center, parent).then(|| (i, center, boundary_distance2(center, parent)))
         })
         .min_by(|a, b| {
+            // The arithmetic centroid can sit on a concave card's edge.
+            // A rectangle reserved there passed pre-rounding containment
+            // but crossed the parent after 11-decimal export on dify.
             let da = (a.1[0] - target[0]).powi(2) + (a.1[1] - target[1]).powi(2);
             let db = (b.1[0] - target[0]).powi(2) + (b.1[1] - target[1]).powi(2);
-            da.total_cmp(&db).then_with(|| a.0.cmp(&b.0))
+            b.2.total_cmp(&a.2)
+                .then_with(|| da.total_cmp(&db))
+                .then_with(|| a.0.cmp(&b.0))
         })?;
     mask[selected.0] = false;
     let mut half = canvas.step * 0.2;
@@ -291,25 +317,7 @@ fn valid_ring(ring: Option<&Rings>, parent: &Rings) -> bool {
             bounds
         });
     let epsilon = (high[0] - low[0]).max(high[1] - low[1]) * 1e-9;
-    let near_edge = parent.iter().any(|boundary| {
-        boundary
-            .iter()
-            .zip(boundary.iter().cycle().skip(1))
-            .any(|(a, b)| {
-                let dx = b[0] - a[0];
-                let dy = b[1] - a[1];
-                let length2 = dx * dx + dy * dy;
-                let t = if length2 > 0.0 {
-                    ((centroid[0] - a[0]) * dx + (centroid[1] - a[1]) * dy) / length2
-                } else {
-                    0.0
-                }
-                .clamp(0.0, 1.0);
-                let ex = centroid[0] - (a[0] + t * dx);
-                let ey = centroid[1] - (a[1] + t * dy);
-                ex * ex + ey * ey <= epsilon * epsilon
-            })
-    });
+    let near_edge = boundary_distance2(centroid, parent) <= epsilon * epsilon;
     point_in_rings(centroid, parent) && !near_edge && rings_area(ring) <= rings_area(parent)
 }
 
