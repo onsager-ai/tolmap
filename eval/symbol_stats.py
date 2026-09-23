@@ -58,9 +58,9 @@ def measure(map_file: Path, symbols_file: Path) -> dict:
     before = {key: value for key, value in document.items() if key not in ("symbol_rings", "module_rings", "header_rings")}
     delta = dict(document)
     if geometry:
-        delta["symbol_rings"] = [encode(ring) if ring else None for ring in geometry]
-        delta["module_rings"] = {key: encode(ring) for key, ring in document["module_rings"].items()}
-        delta["header_rings"] = {key: encode(ring) for key, ring in document["header_rings"].items()}
+        delta["symbol_rings"] = [[encode(ring) for ring in rings] if rings else None for rings in geometry]
+        delta["module_rings"] = {key: [encode(ring) for ring in rings] for key, rings in document["module_rings"].items()}
+        delta["header_rings"] = {key: [encode(ring) for ring in rings] for key, rings in document["header_rings"].items()}
     return {
         "symbols": len(symbols),
         "by_kind": by_kind,
@@ -86,8 +86,11 @@ def compact_bytes(value):
     return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
 
 
-def area(ring):
-    return abs(sum(a[0] * b[1] - a[1] * b[0] for a, b in zip(ring, ring[1:] + ring[:1]))) / 2
+def area(rings):
+    return abs(sum(
+        sum(a[0] * b[1] - a[1] * b[0] for a, b in zip(ring, ring[1:] + ring[:1]))
+        for ring in rings
+    )) / 2
 
 
 def pearson(pairs):

@@ -9,6 +9,7 @@ use crate::parcels::{point_in_polygon, polygon_area, rasterize, solve};
 use crate::schema::{MapDocument, SymbolsDocument};
 
 type Ring = Vec<[f64; 2]>;
+type Rings = Vec<Ring>;
 // The prototype used roughly 9–12 vertices per card. A larger contour made
 // dify's separate symbol document far heavier without adding visible detail.
 const CARD_CONTOUR_POINTS: usize = 12;
@@ -19,26 +20,52 @@ struct Canvas {
     step: f64,
 }
 
-fn ring(mask: &[bool], canvas: &Canvas) -> Option<Ring> {
+fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
     let mut rings = marching_squares(mask, canvas.grid);
     rings.sort_by(|a, b| {
         polygon_area(b)
             .total_cmp(&polygon_area(a))
             .then_with(|| a.len().cmp(&b.len()))
     });
-    let points = rings.into_iter().next()?;
-    let stride = points.len().div_ceil(CARD_CONTOUR_POINTS).max(1);
-    let polygon = points
+    let output = rings
         .into_iter()
-        .step_by(stride)
-        .map(|p| {
-            [
-                ((canvas.low[0] + p[0] * canvas.step) * 1e9).round() / 1e9,
-                ((canvas.low[1] + p[1] * canvas.step) * 1e9).round() / 1e9,
-            ]
+        .filter_map(|points| {
+            let stride = points.len().div_ceil(CARD_CONTOUR_POINTS).max(1);
+            let polygon = points
+                .into_iter()
+                .step_by(stride)
+                .map(|p| {
+                    [
+                        ((canvas.low[0] + p[0] * canvas.step) * 1e9).round() / 1e9,
+                        ((canvas.low[1] + p[1] * canvas.step) * 1e9).round() / 1e9,
+                    ]
+                })
+                .collect::<Ring>();
+            (polygon.len() >= 3 && polygon_area(&polygon) > 0.0).then_some(polygon)
         })
-        .collect::<Ring>();
-    (polygon.len() >= 3 && polygon_area(&polygon) > 0.0).then_some(polygon)
+        .collect::<Rings>();
+    (!output.is_empty()).then_some(output)
+}
+
+fn point_in_rings(point: [f64; 2], rings: &Rings) -> bool {
+    rings
+        .iter()
+        .filter(|ring| point_in_polygon(point, ring))
+        .count()
+        % 2
+        == 1
+}
+
+fn signed_area(ring: &Ring) -> f64 {
+    ring.iter()
+        .zip(ring.iter().cycle().skip(1))
+        .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
+        .sum::<f64>()
+        * 0.5
+}
+
+fn rings_area(rings: &Rings) -> f64 {
+    rings.iter().map(signed_area).sum::<f64>().abs()
 }
 
 fn inset(mask: &[bool], canvas: &Canvas, depth: usize, minimum_pixels: usize) -> Vec<bool> {
@@ -114,10 +141,11 @@ fn allocate(mask: &[bool], canvas: &Canvas, weights: &[f64]) -> Vec<Vec<bool>> {
         .collect()
 }
 
-fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Ring) -> Option<[f64; 4]> {
+fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Rings) -> Option<[f64; 4]> {
+    let outer = parent.first()?;
     let target = [
-        parent.iter().map(|p| p[0]).sum::<f64>() / parent.len() as f64,
-        parent.iter().map(|p| p[1]).sum::<f64>() / parent.len() as f64,
+        outer.iter().map(|p| p[0]).sum::<f64>() / outer.len() as f64,
+        outer.iter().map(|p| p[1]).sum::<f64>() / outer.len() as f64,
     ];
     let selected = mask
         .iter()
@@ -128,7 +156,7 @@ fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Ring) -> Option<[f64; 4]
                 canvas.low[0] + (i % canvas.grid) as f64 * canvas.step,
                 canvas.low[1] + (i / canvas.grid) as f64 * canvas.step,
             ];
-            point_in_polygon(center, parent).then_some((i, center))
+            point_in_rings(center, parent).then_some((i, center))
         })
         .min_by(|a, b| {
             let da = (a.1[0] - target[0]).powi(2) + (a.1[1] - target[1]).powi(2);
@@ -144,7 +172,7 @@ fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Ring) -> Option<[f64; 4]
             [selected.1[0] + half, selected.1[1] + half],
             [selected.1[0] - half, selected.1[1] + half],
         ];
-        if corners.iter().all(|&point| point_in_polygon(point, parent)) {
+        if corners.iter().all(|&point| point_in_rings(point, parent)) {
             break;
         }
         half *= 0.5;
@@ -157,18 +185,22 @@ fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Ring) -> Option<[f64; 4]
     ])
 }
 
-fn valid_ring(ring: Option<&Ring>, parent: &Ring) -> bool {
+fn valid_ring(ring: Option<&Rings>, parent: &Rings) -> bool {
     let Some(ring) = ring else { return false };
+    let Some(outer) = ring.first() else {
+        return false;
+    };
     let centroid = [
-        ring.iter().map(|p| p[0]).sum::<f64>() / ring.len() as f64,
-        ring.iter().map(|p| p[1]).sum::<f64>() / ring.len() as f64,
+        outer.iter().map(|p| p[0]).sum::<f64>() / outer.len() as f64,
+        outer.iter().map(|p| p[1]).sum::<f64>() / outer.len() as f64,
     ];
-    let low = parent.iter().fold([f64::INFINITY; 2], |mut bounds, point| {
+    let points = parent.iter().flatten().collect::<Vec<_>>();
+    let low = points.iter().fold([f64::INFINITY; 2], |mut bounds, point| {
         bounds[0] = bounds[0].min(point[0]);
         bounds[1] = bounds[1].min(point[1]);
         bounds
     });
-    let high = parent
+    let high = points
         .iter()
         .fold([f64::NEG_INFINITY; 2], |mut bounds, point| {
             bounds[0] = bounds[0].max(point[0]);
@@ -176,41 +208,43 @@ fn valid_ring(ring: Option<&Ring>, parent: &Ring) -> bool {
             bounds
         });
     let epsilon = (high[0] - low[0]).max(high[1] - low[1]) * 1e-9;
-    let near_edge = parent
-        .iter()
-        .zip(parent.iter().cycle().skip(1))
-        .any(|(a, b)| {
-            let dx = b[0] - a[0];
-            let dy = b[1] - a[1];
-            let length2 = dx * dx + dy * dy;
-            let t = if length2 > 0.0 {
-                ((centroid[0] - a[0]) * dx + (centroid[1] - a[1]) * dy) / length2
-            } else {
-                0.0
-            }
-            .clamp(0.0, 1.0);
-            let ex = centroid[0] - (a[0] + t * dx);
-            let ey = centroid[1] - (a[1] + t * dy);
-            ex * ex + ey * ey <= epsilon * epsilon
-        });
-    point_in_polygon(centroid, parent) && !near_edge && polygon_area(ring) <= polygon_area(parent)
+    let near_edge = parent.iter().any(|boundary| {
+        boundary
+            .iter()
+            .zip(boundary.iter().cycle().skip(1))
+            .any(|(a, b)| {
+                let dx = b[0] - a[0];
+                let dy = b[1] - a[1];
+                let length2 = dx * dx + dy * dy;
+                let t = if length2 > 0.0 {
+                    ((centroid[0] - a[0]) * dx + (centroid[1] - a[1]) * dy) / length2
+                } else {
+                    0.0
+                }
+                .clamp(0.0, 1.0);
+                let ex = centroid[0] - (a[0] + t * dx);
+                let ey = centroid[1] - (a[1] + t * dy);
+                ex * ex + ey * ey <= epsilon * epsilon
+            })
+    });
+    point_in_rings(centroid, parent) && !near_edge && rings_area(ring) <= rings_area(parent)
 }
 
-fn rectangle(rect: [f64; 4]) -> Ring {
-    vec![
+fn rectangle(rect: [f64; 4]) -> Rings {
+    vec![vec![
         [rect[0], rect[1]],
         [rect[2], rect[1]],
         [rect[2], rect[3]],
         [rect[0], rect[3]],
-    ]
+    ]]
 }
 
 struct Cards<'a> {
     document: &'a SymbolsDocument,
     children: Vec<Vec<usize>>,
-    rings: Vec<Option<Ring>>,
-    headers: BTreeMap<usize, Ring>,
-    modules: BTreeMap<usize, Ring>,
+    rings: Vec<Option<Rings>>,
+    headers: BTreeMap<usize, Rings>,
+    modules: BTreeMap<usize, Rings>,
 }
 
 fn local_parent(document: &SymbolsDocument, symbol: usize) -> Option<usize> {
@@ -399,6 +433,7 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
         let Some(polygon) = parcels.get(&file.to_string()) else {
             continue;
         };
+        let file_outline = vec![polygon.clone()];
         let top = symbols
             .iter()
             .copied()
@@ -449,7 +484,7 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
                 >= symbols.len() * 12 + usize::from(has_module)
                 || (grid == 1024 && mask.contains(&true))
             {
-                let reserve_rect = reserve(&mut mask, &canvas, polygon);
+                let reserve_rect = reserve(&mut mask, &canvas, &file_outline);
                 let regions = allocate(&mask, &canvas, &weights);
                 let mut offset = 0;
                 if has_module {
@@ -464,13 +499,13 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
                     }
                 }
                 let mut missing = Vec::new();
-                if has_module && !valid_ring(cards.modules.get(&file), polygon) {
+                if has_module && !valid_ring(cards.modules.get(&file), &file_outline) {
                     missing.push(None);
                 }
                 missing.extend(
                     top.iter()
                         .copied()
-                        .filter(|&i| !valid_ring(cards.rings[i].as_ref(), polygon))
+                        .filter(|&i| !valid_ring(cards.rings[i].as_ref(), &file_outline))
                         .map(Some),
                 );
                 if let Some(rect) = reserve_rect {
@@ -487,8 +522,9 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
                 }
             }
             let complete = symbols.iter().all(|&i| {
-                document.symbols[i].0 .6 == 0 || valid_ring(cards.rings[i].as_ref(), polygon)
-            }) && (!has_module || valid_ring(cards.modules.get(&file), polygon));
+                document.symbols[i].0 .6 == 0 || valid_ring(cards.rings[i].as_ref(), &file_outline)
+            }) && (!has_module
+                || valid_ring(cards.modules.get(&file), &file_outline));
             if complete {
                 break;
             }
@@ -519,7 +555,6 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parcels::point_in_polygon;
 
     fn square_canvas(grid: usize) -> (Canvas, Vec<bool>) {
         (
@@ -541,7 +576,7 @@ mod tests {
             for region in &regions {
                 assert!(region.contains(&true));
                 let outline = ring(region, &canvas).expect("every owner has an outline");
-                assert!(polygon_area(&outline) > 0.0);
+                assert!(rings_area(&outline) > 0.0);
                 for (i, &yes) in region.iter().enumerate() {
                     if yes {
                         assert!(!claimed[i], "sibling masks overlap");
@@ -559,12 +594,13 @@ mod tests {
         let body = inset(&mask, &canvas, 0, 1);
         for child in allocate(&body, &canvas, &[1.0, 3.0, 2.0]) {
             let child = ring(&inset(&child, &canvas, 1, 1), &canvas).unwrap();
+            let outer = &child[0];
             let center = [
-                child.iter().map(|p| p[0]).sum::<f64>() / child.len() as f64,
-                child.iter().map(|p| p[1]).sum::<f64>() / child.len() as f64,
+                outer.iter().map(|p| p[0]).sum::<f64>() / outer.len() as f64,
+                outer.iter().map(|p| p[1]).sum::<f64>() / outer.len() as f64,
             ];
-            assert!(point_in_polygon(center, &parent));
-            assert!(polygon_area(&child) < polygon_area(&parent));
+            assert!(point_in_rings(center, &parent));
+            assert!(rings_area(&child) < rings_area(&parent));
         }
     }
 
@@ -641,9 +677,9 @@ mod tests {
         let mut previous_right = f64::NEG_INFINITY;
         for child in cards.rings.iter().skip(1) {
             let child = child.as_ref().unwrap();
-            assert!(point_in_polygon(child[0], parent));
-            assert!(child[0][0] > previous_right);
-            previous_right = child[1][0];
+            assert!(point_in_rings(child[0][0], parent));
+            assert!(child[0][0][0] > previous_right);
+            previous_right = child[0][1][0];
         }
     }
 
@@ -669,5 +705,20 @@ mod tests {
         assert!(!valid_ring(Some(&touching), &parent));
         let interior = rectangle([0.7, 0.4, 0.9, 0.6]);
         assert!(valid_ring(Some(&interior), &parent));
+    }
+
+    #[test]
+    fn exported_hole_excludes_an_enclosed_sibling() {
+        let (canvas, mut mask) = square_canvas(24);
+        for y in 8..16 {
+            for x in 8..16 {
+                mask[y * canvas.grid + x] = false;
+            }
+        }
+        let outline = ring(&mask, &canvas).unwrap();
+        assert_eq!(outline.len(), 2);
+        assert!(point_in_rings([0.1, 0.1], &outline));
+        assert!(!point_in_rings([0.5, 0.5], &outline));
+        assert!(rings_area(&outline) < polygon_area(&outline[0]));
     }
 }

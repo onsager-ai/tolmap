@@ -126,13 +126,14 @@ pub struct SymbolsDocument {
     /// Per-file code lines outside every top-level symbol.
     pub module_code_lines: BTreeMap<usize, usize>,
     pub coverage: SymbolCoverage,
-    /// Index aligned with symbols. A missing entry denotes an old document.
+    /// Index aligned with symbols. Each card has exterior and hole rings;
+    /// even-odd fill preserves disjoint ownership when one card surrounds another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub symbol_rings: Option<Vec<Option<Vec<[f64; 2]>>>>,
+    pub symbol_rings: Option<Vec<Option<Vec<Vec<[f64; 2]>>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub module_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
+    pub module_rings: Option<BTreeMap<usize, Vec<Vec<[f64; 2]>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub header_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
+    pub header_rings: Option<BTreeMap<usize, Vec<Vec<[f64; 2]>>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
@@ -146,11 +147,11 @@ pub struct DistrictSymbols {
     pub edges: Vec<[usize; 3]>,
     pub module_code_lines: BTreeMap<usize, usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub symbol_rings: Option<Vec<Option<Vec<[f64; 2]>>>>,
+    pub symbol_rings: Option<Vec<Option<Vec<Vec<[f64; 2]>>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub module_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
+    pub module_rings: Option<BTreeMap<usize, Vec<Vec<[f64; 2]>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub header_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
+    pub header_rings: Option<BTreeMap<usize, Vec<Vec<[f64; 2]>>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
