@@ -1,0 +1,66 @@
+# Browser checks for the viewer, on GitHub's runners.
+#
+# Why here and not locally: headless Chromium renders in software, and on
+# 2026-09-23 a single check:view run drove the maintainer's laptop to
+# 95-99 °C (its cooling is broken; it has powered off under load twice).
+# CLAUDE.md's viewer check -- districts named, landmarks listed, tapping a
+# district, a file and a symbol each produce a card, on a phone and a
+# desktop -- is exercised by check-view-stability.mjs, so it runs here, and
+# screenshots are uploaded for review instead of taken on the laptop.
+name: Viewer check
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "bindings/**"
+      - ".github/workflows/viewer-check.yml"
+  workflow_dispatch:
+
+jobs:
+  view:
+    name: check:view + screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.21.0"
+      - run: corepack enable && corepack prepare pnpm@9.15.9 --activate
+      - run: pnpm install --frozen-lockfile
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+      - run: pnpm exec playwright install --with-deps chromium
+      # collect-maps writes the committed data/ fixtures into public/maps;
+      # the two maps check:view pins by hash are then unpacked over it.
+      - name: Maps
+        run: |
+          node scripts/collect-maps.mjs
+          for f in check-fixtures/*.json.gz; do
+            slug=$(basename "$f" .json.gz)
+            mkdir -p "public/maps/${slug%%__*}"
+            gunzip -c "$f" > "public/maps/${slug%%__*}/${slug##*__}.json"
+          done
+      - name: Start Vite
+        run: |
+          nohup pnpm exec vite --port 5176 --strictPort > vite.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:5176/ >/dev/null && exit 0; sleep 1; done
+          cat vite.log; exit 1
+      - name: check:view
+        run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176
+      - name: Screenshots
+        if: always()
+        run: node scripts/screenshots.mjs --base http://127.0.0.1:5176 --out shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: viewer-shots
+          path: web/shots/
+          if-no-files-found: warn
