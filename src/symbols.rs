@@ -40,6 +40,7 @@ enum Binding {
     Module(usize),
     From(usize, String),
     Prefix(String),
+    Package(String),
     External,
 }
 
@@ -51,6 +52,8 @@ struct Candidate {
 }
 
 struct FileInfo {
+    lang: LanguageKind,
+    directory: String,
     imports: BTreeMap<String, Binding>,
     candidates: Vec<Candidate>,
     shadowed: BTreeMap<usize, BTreeSet<String>>,
@@ -113,6 +116,11 @@ fn kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
                 } else if node
                     .parent()
                     .is_some_and(|n| n.kind() == "lexical_declaration")
+                    && node
+                        .end_position()
+                        .row
+                        .saturating_sub(node.start_position().row)
+                        >= 2
                 {
                     Some(CONST)
                 } else {
@@ -274,7 +282,9 @@ fn code_line_flags(root: Node<'_>, bytes: &[u8], lang: LanguageKind) -> Vec<bool
 
 fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
     match node.kind() {
-        "identifier" | "type_identifier" => Some(vec![text(node, bytes).to_owned()]),
+        "identifier" | "type_identifier" | "package_identifier" | "this" => {
+            Some(vec![text(node, bytes).to_owned()])
+        }
         "attribute" | "member_expression" | "selector_expression" => {
             let base = node
                 .child_by_field_name("object")
@@ -335,6 +345,17 @@ fn collect_candidates(
     if let Some(owner) = owner {
         if matches!(node.kind(), "parameters" | "formal_parameters") {
             parameter_bindings(node, bytes, shadowed.entry(owner).or_default());
+        }
+        if matches!(
+            node.kind(),
+            "assignment" | "augmented_assignment" | "variable_declarator" | "short_var_declaration"
+        ) {
+            if let Some(left) = node
+                .child_by_field_name("left")
+                .or_else(|| node.child_by_field_name("name"))
+            {
+                parameter_bindings(left, bytes, shadowed.entry(owner).or_default());
+            }
         }
         let call = matches!(node.kind(), "call" | "call_expression");
         if call {
@@ -447,8 +468,8 @@ fn imports_multi(
         if node.kind() != "import_statement" {
             continue;
         }
-        let raw = text(node, bytes);
-        if let Some(path) = raw.split(['\'', '"']).nth(1) {
+        if let Some(source) = node.child_by_field_name("source") {
+            let path = text(source, bytes).trim_matches(['\'', '"']);
             let dir = file.rsplit_once('/').map_or("", |v| v.0);
             let joined = format!("{dir}/{path}");
             let mut pieces = Vec::new();
@@ -471,10 +492,37 @@ fn imports_multi(
             .into_iter()
             .find_map(|p| modules.get(&p).copied());
             if let Some(target) = target {
-                let before = raw.split("from").next().unwrap_or("");
-                for token in before.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
-                    if !token.is_empty() && !matches!(token, "import" | "type" | "as") {
-                        result.insert(token.to_owned(), Binding::From(target, token.to_owned()));
+                for clause in children(node)
+                    .into_iter()
+                    .filter(|n| n.kind() == "import_clause")
+                {
+                    for item in children(clause) {
+                        match item.kind() {
+                            "named_imports" => {
+                                for spec in children(item) {
+                                    if spec.kind() == "import_specifier" {
+                                        if let Some(original) = spec.child_by_field_name("name") {
+                                            let imported = text(original, bytes).to_owned();
+                                            let local = spec
+                                                .child_by_field_name("alias")
+                                                .map_or(imported.clone(), |n| {
+                                                    text(n, bytes).to_owned()
+                                                });
+                                            result.insert(local, Binding::From(target, imported));
+                                        }
+                                    }
+                                }
+                            }
+                            "namespace_import" => {
+                                if let Some(alias) = children(item).first() {
+                                    result.insert(
+                                        text(*alias, bytes).to_owned(),
+                                        Binding::Module(target),
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -483,11 +531,57 @@ fn imports_multi(
     result
 }
 
+fn imports_go(
+    root: Node<'_>,
+    bytes: &[u8],
+    module: Option<&str>,
+    packages: &BTreeMap<String, Vec<usize>>,
+) -> BTreeMap<String, Binding> {
+    let mut result = BTreeMap::new();
+    let Some(module) = module else {
+        return result;
+    };
+    fn visit(
+        node: Node<'_>,
+        bytes: &[u8],
+        module: &str,
+        packages: &BTreeMap<String, Vec<usize>>,
+        result: &mut BTreeMap<String, Binding>,
+    ) {
+        if node.kind() == "import_spec" {
+            if let Some(path_node) = node.child_by_field_name("path") {
+                let path = text(path_node, bytes).trim_matches(['\'', '"', '`']);
+                let directory = if path == module {
+                    Some("")
+                } else {
+                    path.strip_prefix(module)
+                        .and_then(|rest| rest.strip_prefix('/'))
+                };
+                if let Some(directory) = directory.filter(|dir| packages.contains_key(*dir)) {
+                    let alias = node
+                        .child_by_field_name("name")
+                        .map(|n| text(n, bytes).to_owned())
+                        .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_owned());
+                    if alias != "_" && alias != "." {
+                        result.insert(alias, Binding::Package(directory.to_owned()));
+                    }
+                }
+            }
+        }
+        for child in children(node) {
+            visit(child, bytes, module, packages, result);
+        }
+    }
+    visit(root, bytes, module, packages, &mut result);
+    result
+}
+
 fn lookup(
     file: usize,
     name: &str,
     infos: &[FileInfo],
     tops: &[BTreeMap<String, usize>],
+    packages: &BTreeMap<String, Vec<usize>>,
     depth: usize,
 ) -> Option<BindingOrSymbol> {
     if depth > 4 {
@@ -496,10 +590,22 @@ fn lookup(
     if let Some(&symbol) = tops[file].get(name) {
         return Some(BindingOrSymbol::Symbol(symbol));
     }
+    if infos[file].lang == LanguageKind::Go {
+        let hits = packages
+            .get(&infos[file].directory)
+            .into_iter()
+            .flatten()
+            .filter_map(|&fi| tops[fi].get(name).copied())
+            .collect::<Vec<_>>();
+        if hits.len() == 1 {
+            return Some(BindingOrSymbol::Symbol(hits[0]));
+        }
+    }
     match infos[file].imports.get(name)? {
         Binding::Module(fi) => Some(BindingOrSymbol::Module(*fi)),
-        Binding::From(fi, target) => lookup(*fi, target, infos, tops, depth + 1),
+        Binding::From(fi, target) => lookup(*fi, target, infos, tops, packages, depth + 1),
         Binding::Prefix(prefix) => Some(BindingOrSymbol::Prefix(prefix.clone())),
+        Binding::Package(directory) => Some(BindingOrSymbol::Package(directory.clone())),
         Binding::External => Some(BindingOrSymbol::External),
     }
 }
@@ -508,6 +614,7 @@ enum BindingOrSymbol {
     Symbol(usize),
     Module(usize),
     Prefix(String),
+    Package(String),
     External,
 }
 
@@ -517,6 +624,7 @@ fn resolve(
     infos: &[FileInfo],
     tops: &[BTreeMap<String, usize>],
     modules: &BTreeMap<String, usize>,
+    packages: &BTreeMap<String, Vec<usize>>,
     members: &BTreeMap<usize, BTreeMap<String, usize>>,
 ) -> Result<usize, &'static str> {
     let source = &spans[candidate.owner];
@@ -525,7 +633,7 @@ fn resolve(
         return Err("dynamic");
     }
     let head = parts[0].as_str();
-    if (head == "self" || head == "cls") && parts.len() >= 2 {
+    if (head == "self" || head == "cls" || head == "this") && parts.len() >= 2 {
         let mut p = Some(candidate.owner);
         while let Some(i) = p {
             if spans[i].kind == CLASS {
@@ -555,7 +663,7 @@ fn resolve(
         p = (spans[i].parent >= 0).then_some(spans[i].parent as usize);
     }
     let mut value = value
-        .or_else(|| lookup(source.file, head, infos, tops, 0))
+        .or_else(|| lookup(source.file, head, infos, tops, packages, 0))
         .ok_or("local_or_builtin")?;
     for part in parts.iter().skip(1) {
         value = match value {
@@ -565,7 +673,20 @@ fn resolve(
                 .map(BindingOrSymbol::Symbol)
                 .ok_or("unresolved_attribute")?,
             BindingOrSymbol::Module(fi) => {
-                lookup(fi, part, infos, tops, 0).ok_or("unresolved_attribute")?
+                lookup(fi, part, infos, tops, packages, 0).ok_or("unresolved_attribute")?
+            }
+            BindingOrSymbol::Package(directory) => {
+                let hits = packages
+                    .get(&directory)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|&fi| tops[fi].get(part).copied())
+                    .collect::<Vec<_>>();
+                if hits.len() == 1 {
+                    BindingOrSymbol::Symbol(hits[0])
+                } else {
+                    return Err("unresolved_attribute");
+                }
             }
             BindingOrSymbol::Prefix(prefix) => {
                 let path = format!("{prefix}.{part}");
@@ -580,17 +701,32 @@ fn resolve(
     }
     match value {
         BindingOrSymbol::Symbol(i) => Ok(i),
-        BindingOrSymbol::Module(_) => Err("module_only"),
+        BindingOrSymbol::Module(_) | BindingOrSymbol::Package(_) => Err("module_only"),
         BindingOrSymbol::Prefix(_) | BindingOrSymbol::External => Err("external"),
     }
 }
 
 pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
     let mut modules = BTreeMap::new();
+    let mut packages: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (fi, node) in nodes.iter().enumerate() {
         modules.insert(node.module.clone(), fi);
         modules.insert(node.file.clone(), fi);
+        if node.lang == "go" {
+            let directory = node.file.rsplit_once('/').map_or("", |v| v.0).to_owned();
+            packages.entry(directory).or_default().push(fi);
+        }
     }
+    let go_module = fs::read_to_string(repo.join("go.mod"))
+        .ok()
+        .and_then(|contents| {
+            contents.lines().find_map(|line| {
+                line.trim()
+                    .strip_prefix("module ")
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .map(str::to_owned)
+            })
+        });
     let mut spans = Vec::new();
     let mut infos = Vec::new();
     let mut module_code_lines = BTreeMap::new();
@@ -647,6 +783,8 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
                 entry.file.ends_with("__init__.py"),
                 &modules,
             )
+        } else if lang == LanguageKind::Go {
+            imports_go(root, &bytes, go_module.as_deref(), &packages)
         } else {
             imports_multi(root, &bytes, &entry.file, &modules)
         };
@@ -661,6 +799,8 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
             &mut shadowed,
         );
         infos.push(FileInfo {
+            lang,
+            directory: entry.file.rsplit_once('/').map_or("", |v| v.0).to_owned(),
             imports,
             candidates,
             shadowed,
@@ -685,7 +825,9 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
             if candidate.call {
                 coverage.calls_total += 1;
             }
-            match resolve(candidate, &spans, &infos, &tops, &modules, &members) {
+            match resolve(
+                candidate, &spans, &infos, &tops, &modules, &packages, &members,
+            ) {
                 Ok(target) => {
                     if candidate.call {
                         coverage.calls_resolved += 1;
@@ -886,7 +1028,7 @@ mod tests {
         let (dir, nodes) = fixture(&[
             ("pkg/__init__.py", "pkg", "from .core import Target\n"),
             ("pkg/core.py", "pkg.core", "class Target:\n    def method(self):\n        pass\n"),
-            ("caller.py", "caller", "from pkg import Target\nimport pkg.core as core\n\nclass Caller(Target):\n    def method(self):\n        self.helper()\n        Target.method()\n        core.Target.method()\n        Target()\n    def helper(self):\n        pass\n\ndef outer():\n    def inner():\n        outer()\n    inner()\n\ndef typed(x: Target) -> Target:\n    return x\n"),
+            ("caller.py", "caller", "from pkg import Target\nimport pkg.core as core\n\nclass Caller(Target):\n    def method(self):\n        self.helper()\n        Target.method()\n        core.Target.method()\n        Target()\n    def helper(self):\n        pass\n\ndef outer():\n    def inner():\n        outer()\n    inner()\n\ndef typed(x: Target) -> Target:\n    return x\n\n@Target\ndef decorated():\n    pass\n"),
         ]);
         let doc = build(dir.path(), &nodes).unwrap();
         let target = id(&doc, 1, "Target");
@@ -903,6 +1045,7 @@ mod tests {
         assert!(edge(&doc, outer, inner));
         assert!(!edge(&doc, inner, outer));
         assert!(edge(&doc, id(&doc, 2, "typed"), target));
+        assert!(edge(&doc, id(&doc, 2, "decorated"), target));
         assert!(doc.coverage.calls_resolved > 0);
     }
 
@@ -931,6 +1074,10 @@ mod tests {
         assert_eq!(doc.symbols[id(&doc, 0, "Thing")].0 .2, CLASS);
         assert_eq!(doc.symbols[id(&doc, 0, "Work")].0 .2, METHOD);
         assert_eq!(
+            doc.symbols[id(&doc, 0, "Work")].0 .5,
+            id(&doc, 0, "Thing") as isize
+        );
+        assert_eq!(
             doc.symbols[id(&doc, 1, "method")].0 .5,
             id(&doc, 1, "Box") as isize
         );
@@ -939,5 +1086,44 @@ mod tests {
             id(&doc, 1, "method") as isize
         );
         assert_eq!(doc.symbols[id(&doc, 1, "Shape")].0 .2, INTERFACE);
+    }
+
+    #[test]
+    fn resolves_go_package_and_typescript_import_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("p")).unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/repo\n").unwrap();
+        std::fs::write(dir.path().join("p/one.go"), "package p\nfunc Target() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("p/two.go"),
+            "package p\nfunc Local() { Target() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("main.go"),
+            "package main\nimport \"example.com/repo/p\"\nfunc Caller() { p.Target() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("thing.ts"),
+            "export class Thing { run() {} }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("use.ts"),
+            "import { Thing as Alias } from './thing';\nfunction use() { Alias.run(); }\n",
+        )
+        .unwrap();
+        let nodes = vec![
+            source("p/one.go", "p/one.go", "go"),
+            source("p/two.go", "p/two.go", "go"),
+            source("main.go", "main.go", "go"),
+            source("thing.ts", "thing.ts", "ts"),
+            source("use.ts", "use.ts", "ts"),
+        ];
+        let doc = build(dir.path(), &nodes).unwrap();
+        assert!(edge(&doc, id(&doc, 1, "Local"), id(&doc, 0, "Target")));
+        assert!(edge(&doc, id(&doc, 2, "Caller"), id(&doc, 0, "Target")));
+        assert!(edge(&doc, id(&doc, 4, "use"), id(&doc, 3, "run")));
     }
 }
