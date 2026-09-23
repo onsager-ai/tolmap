@@ -2843,29 +2843,44 @@ function pickBigFileTarget(symbols) {
   return { file, count };
 }
 
-// Every class (kind 0) with at least one member, ranked by CODE LINES
-// (row[6], descending) -- the pair checkClassExpandsAtShortSide and
-// checkCardTapSelectsSymbolAndBreadcrumb need one whose card actually has
-// room to grow past 110px within the zoom range Playwright's clampK caps at
-// (fitScale()*40), AND whose card actually rendered at all (CI review
-// finding: the single top candidate, "Migration", never rendered a card for
-// ITSELF at all across two different runs and two different rankings --
-// member count, then code_lines -- which points at something specific to
-// that one symbol's data rather than a systematic zoom-budget problem; see
-// checkClassExpandsAtShortSide's own comment for why the fix is "try several
-// candidates," not "trust the top one").
+// Every class (kind 0) with at least one member, sampled STRATIFIED across
+// the full CODE-LINES (row[6]) distribution -- the pair
+// checkClassExpandsAtShortSide and checkCardTapSelectsSymbolAndBreadcrumb
+// need one whose card actually has room to grow past 110px within the zoom
+// range Playwright's clampK caps at (fitScale()*40), AND whose card
+// actually rendered at all.
 //
-// Ranking by code_lines rather than member count: the first version of this
-// picker ranked by MEMBER COUNT, which found a district-0 class with 61
-// members that never reached 110px even at max zoom -- many members can
-// still be a small class by AREA if most of them are one-line stubs
-// (property overrides, trivial getters), common in data-model-style
-// classes. A card's allocated area follows "mass" (own code lines +
-// descendants' code lines -- see src/symbol_cards.rs's own `mass()`), which
-// code_lines (a span-inclusive count, so it already sums a class's own
-// lines and every descendant's) tracks far more directly than a raw member
-// count does.
-function pickExpandableClasses(symbols, limit = 6) {
+// CI review finding (issue #82 C2): the top 6 candidates by code_lines --
+// six DIFFERENT classes, six different files, all confirmed genuine
+// district-0 members with a drawn footprint and no console/page error --
+// ALL showed "class card never rendered at all", while OTHER cards for
+// those same files rendered fine (checked directly: "any hs: card for this
+// file"). Every top candidate was large: 900-1700+ code lines, 21-61
+// members. That pattern -- consistently the biggest classes, never a
+// smaller one -- is the signature of a SIZE-dependent gap somewhere between
+// the full symbols document (where src/symbols.rs's own attach() has a
+// hard build-time invariant, `ensure!(cards.rings[i].is_some())`, for every
+// eligible symbol) and this per-district slice, not a general "classes
+// never get cards" bug (plenty of smaller top-level items already render
+// fine in other C2 checks) and not a test-target-selection bug (already
+// ruled out foreign symbols and unbundled districts). Diagnosing that gap
+// further needs the Rust build this machine cannot run (CLAUDE.md: no
+// cargo) -- out of scope for this viewer PR. Sampling stratified across
+// the WHOLE size distribution (not just the top) is the fix on this side:
+// it still prefers big classes first (more likely to clear 110px) but
+// keeps trying smaller ones instead of exhausting a run of six all drawn
+// from the exact size bracket the gap seems to live in.
+//
+// Ranking by code_lines rather than member count: an earlier version of
+// this picker ranked by MEMBER COUNT, which found a class with 61 members
+// that never reached 110px even at max zoom -- many members can still be a
+// small class by AREA if most of them are one-line stubs (property
+// overrides, trivial getters), common in data-model-style classes. A
+// card's allocated area follows "mass" (own code lines + descendants' code
+// lines -- see src/symbol_cards.rs's own `mass()`), which code_lines (a
+// span-inclusive count, so it already sums a class's own lines and every
+// descendant's) tracks far more directly than a raw member count does.
+function pickExpandableClasses(symbols, limit = 10) {
   const members = memberFileSet(symbols);
   const si = symbols.symbol_indices;
   const childCount = new Map();
@@ -2882,7 +2897,19 @@ function pickExpandableClasses(symbols, limit = 6) {
     candidates.push({ classGlobal: global, classLocal: local, memberCount, codeLines: row[6] });
   });
   candidates.sort((a, b) => b.codeLines - a.codeLines);
-  return candidates.slice(0, limit).map((c) => {
+  // Stratified sample: the top 3 by size, then spread the rest across
+  // percentiles of what's left (90th down to 5th) so a size-dependent gap
+  // shows up as a pattern across the (info) lines instead of exhausting the
+  // whole budget inside one size bracket.
+  const picked = candidates.slice(0, Math.min(3, limit));
+  const rest = candidates.slice(picked.length);
+  const fractions = [0.9, 0.75, 0.6, 0.45, 0.3, 0.15, 0.05];
+  for (const f of fractions) {
+    if (picked.length >= limit || rest.length === 0) break;
+    const idx = Math.min(rest.length - 1, Math.floor(f * rest.length));
+    picked.push(rest[idx]);
+  }
+  return picked.slice(0, limit).map((c) => {
     // The biggest member by code_lines, not just the first found -- the same
     // "give the test the best shot at a visible result" reasoning as the
     // class ranking itself.
