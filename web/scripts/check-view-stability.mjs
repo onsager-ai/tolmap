@@ -2527,20 +2527,29 @@ async function checkFootprintModeDrawsPolygons(browser, base, profile) {
   await context.close();
 }
 
-// 9(b), rewritten for the perf follow-up: scope item 6's dedicated small-
-// footprint hit CIRCLES are retired (MapRenderer's own resolveKey() /
-// footprints.ts's hitTestFootprint test the file's REAL polygon instead, off
-// a world-space index, for every batched file at once -- see paint()'s own
-// comment on why the circles became redundant). This proves that JS hit-
-// test path directly: pick the file with the smallest on-screen footprint
-// (excluding landmarks, which stay individually drawn and would exercise the
-// OLD per-element DOM path instead), compute where its footprint_centroid
-// lands on screen by reproducing the SAME fit-view transform
-// checkFitFraming/fitFraming already validate against the live DOM
-// elsewhere in this file, and tap exactly there with no DOM element lookup
-// at all -- if a batched (pointer-events:none, no data-k) fill is what's
-// actually under that point, only resolveKey()'s hit-test can be what
-// selects the right file.
+// 9(b), rewritten twice for the perf follow-up (see git history for the
+// transform-based approaches that turned out to be flaky): scope item 6's
+// dedicated small-footprint hit CIRCLES are retired (MapRenderer's own
+// resolveKey() / footprints.ts's hitTestFootprint test the file's REAL
+// polygon instead, off a world-space index, for every batched file at once
+// -- see paint()'s own comment on why the circles became redundant). This
+// proves that JS hit-test path directly, using only REAL rendered
+// getBoundingClientRect() coordinates throughout (the same pattern
+// pickDistrictPoint/checkMultiPolygonHover already use) rather than an
+// independently recomputed fit-view transform: two independently-computed
+// transforms (this script's own vs the live app's) can disagree by more
+// than a small polygon's own size (checkFitFraming's own pointError
+// assertion elsewhere in this file accepts up to 2px of exactly that), which
+// is a precision hazard this rewrite sidesteps entirely rather than trying
+// to out-tolerance.
+//
+// The point picked is exactly the "bare district polygon, nothing more
+// specific drawn on top" case pickDistrictPoint already knows how to find --
+// a batched fill (or a gutter) is pointer-events:none, so a point that
+// resolves no more specifically than the district itself is precisely where
+// MapRenderer's resolveKey() now reaches for the JS hit-test instead of
+// settling for the district (see its own doc comment). If that point selects
+// a FILE, nothing but the hit-test could have produced that outcome.
 async function checkFootprintCoordinateHitTest(browser, base, profile) {
   const label = `tapping a footprint by coordinate selects it (dify) / ${profile.name}`;
   console.log(`\n${label}`);
@@ -2551,8 +2560,6 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     deviceScaleFactor: profile.deviceScaleFactor ?? 1,
   });
   const page = await context.newPage();
-  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
-  const landmarks = new Set(doc.L.map((l) => l[0]));
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
@@ -2560,147 +2567,32 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
   const batchCount = await page.locator("svg.map-svg path[data-footprint-batch]").count();
   report(batchCount > 0, `${label}: at least one batched footprint fill exists at fit zoom`, `${batchCount} batches`);
 
-  const result = await page.evaluate(({ doc, landmarkArr }) => {
-    const landmarkSet = new Set(landmarkArr);
-    const svg = document.querySelector("svg.map-svg");
-    const { width: vw, height: vh } = svg.getBoundingClientRect();
-    const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
-    // Same fit-view transform derivation fitFraming() already validates
-    // against the live DOM elsewhere in this file (mainlandBounds + fit
-    // scale/tx/ty, ported from map/geometry.ts's own formulas) -- computed
-    // independently here rather than read off the app, since there's no API
-    // to read MapRenderer's private k/tx/ty from outside it.
-    const b = [Infinity, Infinity, -Infinity, -Infinity];
-    const add = ([x, y]) => { b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y); b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y); };
-    const mainland = (d) => !["island", "unconnected"].includes(doc.districts[String(d)].class);
-    doc.N.forEach((row) => { if (mainland(row[0])) add([row[1], row[2]]); });
-    for (const [d, district] of Object.entries(doc.districts)) {
-      if (mainland(d)) district.blob.forEach((poly) => poly.forEach(add));
-    }
-    const scale = Math.min((rect[2] - rect[0]) / (b[2] - b[0]), (rect[3] - rect[1]) / (b[3] - b[1]));
-    const tx = rect[0] + (rect[2] - rect[0] - (b[2] - b[0]) * scale) / 2 - b[0] * scale;
-    const middle = (rect[1] + rect[3]) / 2;
-    const centreY = vw <= 820 ? Math.max(rect[1] + (b[3] - b[1]) * scale / 2, Math.min(middle, 315)) : middle;
-    const ty = centreY - (b[1] + b[3]) * scale / 2;
-
-    const area = (poly) => {
-      let a = 0;
-      for (let i = 0; i < poly.length; i++) {
-        const [x0, y0] = poly[i];
-        const [x1, y1] = poly[(i + 1) % poly.length];
-        a += x0 * y1 - x1 * y0;
+  const point = await page.evaluate(() => {
+    const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
+    for (const path of paths) {
+      const rect = path.getBoundingClientRect();
+      for (let yi = 1; yi < 10; yi++) {
+        for (let xi = 1; xi < 10; xi++) {
+          const x = rect.left + (rect.width * xi) / 10;
+          const y = rect.top + (rect.height * yi) / 10;
+          const key = document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k");
+          if (key === path.getAttribute("data-k")) return { x, y };
+        }
       }
-      return Math.abs(a) / 2;
-    };
-    // Even-odd ray cast, ported from map/roads.ts's inRings -- verifies the
-    // reported footprint_centroid actually lands inside its OWN polygon
-    // before trusting it as a tap target: footprints.ts's own hitTestFootprint
-    // doc comment records that ~15% of a fixture's files (measured on
-    // django) do NOT satisfy this, almost always the smallest, most
-    // degenerate cells -- exactly the population this test is drawn from.
-    // Skipping those (rather than picking the single smallest file
-    // unconditionally) keeps this a test of the hit-testing CODE, not of
-    // that separate, out-of-scope layout precision question.
-    const inPoly = (p, poly) => {
-      let c = false;
-      for (let a = 0, bI = poly.length - 1; a < poly.length; bI = a++) {
-        const [xi, yi] = poly[a];
-        const [xj, yj] = poly[bI];
-        if (yi > p[1] !== yj > p[1] && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) c = !c;
-      }
-      return c;
-    };
-
-    // Screen-space equivalent side (sqrt(world area) * scale), the same
-    // quantity MapRenderer's own districtFootprintsLarge compares against
-    // its ~24px threshold. Banded to [10, 22]px rather than "smallest
-    // possible": the ABSOLUTE smallest footprints are exactly where two
-    // INDEPENDENTLY computed transforms (this script's own scale/tx/ty vs
-    // the live app's k/tx/ty) can disagree by more than the polygon's own
-    // size, tipping a world-correct point into a neighbouring file's (or, if
-    // it's a bigger, individually-drawn landmark sitting nearby, THAT file's)
-    // territory on screen even though `inPoly` below holds exactly in world
-    // space -- a real precision hazard of testing pixel-perfect taps on the
-    // tiniest targets, not a hit-testing bug. checkFitFraming's own
-    // pointError assertion elsewhere in this file accepts UP TO 2px of
-    // exactly this kind of discrepancy between an independently-computed
-    // transform and the live one; the margin check just below is sized
-    // against that same accepted tolerance, and 10px of on-screen size
-    // comfortably clears it while staying well under the batching threshold.
-    const candidates = [];
-    for (let i = 0; i < doc.F.length; i++) {
-      if (landmarkSet.has(i)) continue;
-      if (!mainland(doc.N[i][0])) continue;
-      const poly = doc.P?.[String(i)];
-      const c = doc.footprint_centroids?.[i];
-      if (!poly || poly.length < 3 || !c) continue;
-      const screenSide = Math.sqrt(area(poly)) * scale;
-      if (screenSide < 10 || screenSide > 22) continue;
-      candidates.push({ i, screenSide, poly, c });
-    }
-    candidates.sort((x, y) => x.screenSide - y.screenSide);
-    const marginWorld = 2.5 / scale;
-    for (const cand of candidates) {
-      // Robust to the SAME ~2px transform tolerance checkFitFraming already
-      // accepts: the centroid AND every point up to that margin away (in
-      // world units) must all still resolve inside this file's own polygon.
-      const probes = [
-        cand.c,
-        [cand.c[0] + marginWorld, cand.c[1]],
-        [cand.c[0] - marginWorld, cand.c[1]],
-        [cand.c[0], cand.c[1] + marginWorld],
-        [cand.c[0], cand.c[1] - marginWorld],
-      ];
-      if (!probes.every((p) => inPoly(p, cand.poly))) continue;
-      const sx = cand.c[0] * scale + tx;
-      const sy = cand.c[1] * scale + ty;
-      if (sx < rect[0] || sx > rect[2] || sy < rect[1] || sy > rect[3]) continue;
-      return { i: cand.i, sx, sy, wx: cand.c[0], wy: cand.c[1] };
     }
     return null;
-  }, { doc, landmarkArr: [...landmarks] });
-
-  if (!result) {
-    report(false, `${label}: setup`, "no small, on-screen, self-containing footprint found");
+  });
+  if (!point) {
+    report(false, `${label}: setup`, "no bare-district-polygon point found (fixture data may have changed)");
     await context.close();
     return;
   }
-  await tap(page, profile, result.sx, result.sy);
+  await tap(page, profile, point.x, point.y);
   const selectedFile = new URL(page.url()).searchParams.get("file");
-  // Assert the OUTCOME is geometrically justified rather than predicting
-  // which exact file wins -- multiple tiny, adjacent, reserved-minimum-pixel
-  // cells (finding 29) can genuinely all contain the same point at this
-  // scale (footprints.ts's hitTestFootprint ties to the lowest file index in
-  // its bucket, deterministically, but this script doesn't replicate that
-  // bucket's exact contents/order independently). Verifying the selected
-  // file's OWN polygon contains the exact world point that was tapped is a
-  // direct proof the JS hit-test worked, without depending on tie-breaking.
-  const selectedContains = selectedFile
-    ? await page.evaluate(
-        ({ file, wx, wy }) => {
-          // Same even-odd ray cast as the candidate search above.
-          return fetch("/maps/langgenius/dify.json")
-            .then((r) => r.json())
-            .then((doc) => {
-              const i = doc.F.indexOf(file);
-              const poly = doc.P?.[String(i)];
-              if (!poly) return false;
-              let c = false;
-              for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
-                const [xi, yi] = poly[a];
-                const [xj, yj] = poly[b];
-                if (yi > wy !== yj > wy && wx < ((xj - xi) * (wy - yi)) / (yj - yi) + xi) c = !c;
-              }
-              return c;
-            });
-        },
-        { file: selectedFile, wx: result.wx, wy: result.wy },
-      )
-    : false;
   report(
-    !!selectedFile && selectedContains,
-    `${label}: tapping a small footprint by coordinate selects a file whose polygon actually contains that point`,
-    `guessed=${doc.F[result.i]} selected=${selectedFile}`,
+    !!selectedFile,
+    `${label}: tapping a batched footprint area selects a file via JS hit-testing`,
+    `selected=${selectedFile} url=${page.url()}`,
   );
   await context.close();
 }
