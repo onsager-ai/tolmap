@@ -532,12 +532,29 @@ jobs:
           cp -f primary.time.txt artifact/primary.time.txt 2>/dev/null || true
           cp -f "out-primary/${STEM}.json" "artifact/${STEM}.json" 2>/dev/null || true
           cp -f "out-primary/${STEM}.symbols.json" "artifact/${STEM}.symbols.json" 2>/dev/null || true
+          if [ -d "out-primary/${STEM}.symbols" ]; then
+            cp -a "out-primary/${STEM}.symbols" "artifact/${STEM}.symbols"
+          fi
           cp -f previous.log artifact/previous.log 2>/dev/null || true
           cp -f "out-previous/${STEM}.json" "artifact/${STEM}.previous.json" 2>/dev/null || true
           cp -f compare.log artifact/compare.log 2>/dev/null || true
           cp -f compare.time.txt artifact/compare.time.txt 2>/dev/null || true
           cp -f "out-compare/${STEM}.json" "artifact/${STEM}.compare.json" 2>/dev/null || true
           cp -f "out-compare/${STEM}.symbols.json" "artifact/${STEM}.compare.symbols.json" 2>/dev/null || true
+
+      - name: Measure symbol card geometry
+        if: always() && inputs.command == 'build'
+        env:
+          STEM: ${{ matrix.stem }}
+        run: |
+          if [ -f "artifact/${STEM}.json" ] && [ -f "artifact/${STEM}.symbols.json" ]; then
+            compare=()
+            if [ -f "artifact/${STEM}.compare.symbols.json" ]; then
+              compare=(--compare-symbols "artifact/${STEM}.compare.symbols.json")
+            fi
+            python3 eval/symbol_stats.py "artifact/${STEM}.json" "artifact/${STEM}.symbols.json" "${compare[@]}" > artifact/symbol_stats.json
+            cat artifact/symbol_stats.json
+          fi
 
       - name: Upload result artifact
         if: always()

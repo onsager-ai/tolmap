@@ -262,7 +262,12 @@ fn bounds(points: &[[f64; 2]]) -> ([f64; 2], f64) {
     ([low[0] - padding, low[1] - padding], span + 2.0 * padding)
 }
 
-fn rasterize(rings: &[Vec<[f64; 2]>], low: [f64; 2], span: f64, grid: usize) -> Vec<bool> {
+pub(crate) fn rasterize(
+    rings: &[Vec<[f64; 2]>],
+    low: [f64; 2],
+    span: f64,
+    grid: usize,
+) -> Vec<bool> {
     let mut mask = vec![false; grid * grid];
     if rings.is_empty() {
         mask.fill(true);
@@ -300,7 +305,7 @@ fn rasterize(rings: &[Vec<[f64; 2]>], low: [f64; 2], span: f64, grid: usize) -> 
     mask
 }
 
-fn largest_component(mask: Vec<bool>, grid: usize) -> Vec<bool> {
+pub(crate) fn largest_component(mask: Vec<bool>, grid: usize) -> Vec<bool> {
     let mut seen = vec![false; mask.len()];
     let mut largest = Vec::new();
     for start in 0..mask.len() {
@@ -372,7 +377,7 @@ impl Ord for Front {
     }
 }
 
-fn solve(
+pub(crate) fn solve(
     mask: &[bool],
     grid: usize,
     low: [f64; 2],

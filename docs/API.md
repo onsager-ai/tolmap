@@ -98,11 +98,23 @@ An edge is `[source, target, occurrences]`. An edge crossing districts is
 included from both sides, with both endpoint rows and their global indices
 so a client can place the far endpoint without fetching another district.
 `module_code_lines` maps file index to code lines outside top-level symbols.
+`symbol_rings`, `module_rings`, and `header_rings` are optional card geometry.
+Each contour is a flat integer list `[x₀, y₀, Δx₁, Δy₁, …]` in units of
+10⁻¹¹ world coordinates. Accumulate the deltas, then divide by 10¹¹ to draw
+it. A card's first contour is its exterior; later contours are holes under
+even-odd fill. The same encoding appears in static district files.
 The full sibling `<name>.symbols.json` also has `files`, `symbols`, `edges`,
 `module_code_lines` and `coverage` (`calls_total` inside symbols,
 `calls_resolved`, and `unresolved` counts by reason). Coverage lives there to keep the initial map
 document small. The same sibling is copied to `/maps/<owner>/<repo>.symbols.json`
 when a static map includes one.
+`tolmap build` also writes `<name>.symbols/<district>.json` for every district.
+Each file has the same JSON object returned by this endpoint for that district,
+including any symbols at the far ends of crossing edges. Static map collection
+copies this directory to `/maps/<owner>/<repo>.symbols/`, so a static client can
+fetch one district at `/maps/<owner>/<repo>.symbols/<district>.json`. The full
+symbols sibling remains available for the service and determinism checks.
+The API currently sends these JSON responses without gzip compression.
 
 ### `POST /api/index`
 

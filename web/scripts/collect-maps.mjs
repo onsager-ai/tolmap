@@ -6,7 +6,7 @@
 // web/public/maps/ is generated and gitignored — this script is the only
 // thing that writes to it.
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,6 +126,12 @@ async function collectMap(indexBySlug, slug, file) {
     await writeFile(path.join(destDir, `${repo}.symbols.json`), await readFile(symbolsFile));
   } else {
     await rm(path.join(destDir, `${repo}.symbols.json`), { force: true });
+  }
+  const symbolsDir = file.replace(/\.json$/, ".symbols");
+  const destSymbolsDir = path.join(destDir, `${repo}.symbols`);
+  await rm(destSymbolsDir, { recursive: true, force: true });
+  if (existsSync(symbolsDir)) {
+    await cp(symbolsDir, destSymbolsDir, { recursive: true });
   }
   indexBySlug.set(slug, {
     slug,

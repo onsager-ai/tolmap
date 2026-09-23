@@ -254,6 +254,9 @@ jobs:
           python3 eval/footprint_metrics.py islands-out/synthetic_islands.json --gate \
             --out islands-out/synthetic_islands.footprint-metrics.json
 
+      - name: Audit symbol cards and static district files
+        run: python3 eval/symbol_stats.py islands-out/synthetic_islands.json islands-out/synthetic_islands.symbols.json
+
   # Cheap, no toolchain: prod (fly.toml) and staging
   # (deploy/railway.staging.env) must describe the same set of TOLMAP_*
   # knobs, or staging stops being evidence about prod. See the script's
@@ -278,6 +281,7 @@ jobs:
       - run: corepack enable && corepack prepare pnpm@9.15.9 --activate
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: node scripts/check-collect-symbols.mjs
       - run: pnpm build
 
   deploy-env-parity:

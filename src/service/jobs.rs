@@ -543,6 +543,27 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
             },
         );
     }
+    let final_symbols_dir = final_path.with_extension("symbols");
+    if final_symbols_dir.exists() {
+        if let Err(err) = std::fs::remove_dir_all(&final_symbols_dir) {
+            return finish_failed(
+                &tx,
+                ErrorBody {
+                    error: "internal_error".to_owned(),
+                    message: err.to_string(),
+                },
+            );
+        }
+    }
+    if let Err(err) = std::fs::rename(built_path.with_extension("symbols"), &final_symbols_dir) {
+        return finish_failed(
+            &tx,
+            ErrorBody {
+                error: "internal_error".to_owned(),
+                message: err.to_string(),
+            },
+        );
+    }
 
     let row = MapRow {
         slug: repo_ref.slug.clone(),

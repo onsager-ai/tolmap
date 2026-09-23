@@ -269,6 +269,15 @@ impl Store {
                     );
                 }
             }
+            let district_path = Path::new(map_path).with_extension("symbols");
+            if let Err(err) = std::fs::remove_dir_all(&district_path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!(
+                        "prune: could not remove symbols directory {}: {err}",
+                        district_path.display()
+                    );
+                }
+            }
         }
         Ok(stale.len())
     }

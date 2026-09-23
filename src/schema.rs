@@ -116,7 +116,7 @@ pub struct SymbolCoverage {
     pub unresolved: BTreeMap<String, usize>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 pub struct SymbolsDocument {
     pub files: Vec<usize>,
@@ -126,9 +126,18 @@ pub struct SymbolsDocument {
     /// Per-file code lines outside every top-level symbol.
     pub module_code_lines: BTreeMap<usize, usize>,
     pub coverage: SymbolCoverage,
+    /// Index aligned with symbols. Each ring is a flat x,y pair stream:
+    /// absolute first point, then deltas, all in 1e-11 world units. Exterior
+    /// and hole rings use even-odd fill when a card surrounds a sibling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_rings: Option<Vec<Option<Vec<Vec<i64>>>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 pub struct DistrictSymbols {
     pub district: usize,
@@ -138,6 +147,12 @@ pub struct DistrictSymbols {
     pub symbols: Vec<HierSymbolRow>,
     pub edges: Vec<[usize; 3]>,
     pub module_code_lines: BTreeMap<usize, usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_rings: Option<Vec<Option<Vec<Vec<i64>>>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
