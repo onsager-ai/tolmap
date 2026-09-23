@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use crate::blobs;
 use crate::extract::{self, round_to, LanguageKind};
 use crate::naming;
+use crate::neighbourhoods;
 use crate::parcels;
 use crate::partition::LeidenFfi;
 use crate::pipeline::{self, LayoutDistrict};
@@ -471,6 +472,13 @@ pub fn build_from_graph_warm(
     // not a normal one followed by a patch-up.
     let classes = classify_districts(&layout.membership, &layout.weighted.imports);
     relocate_offshore(&mut layout.districts, &classes);
+    // This second partition only reads the kept graph. The top-level
+    // membership, modularity and district layout are already fixed.
+    let neighbourhood_partition = if features.parcels {
+        Some(neighbourhoods::partition(&layout, &partitioner)?)
+    } else {
+        None
+    };
     eprintln!("[3/5] name     districts");
     // Same convention `cli.py::build` uses: the cache lives next to the map
     // it names, `<out>/<name>.names.json`, so a rerun into the same --out
@@ -521,10 +529,17 @@ pub fn build_from_graph_warm(
     let mut document = compact(map_name, layout, geometry, names, &classes);
     if features.parcels {
         eprintln!("[5/5] geometry weighted-voronoi plots");
-        document.parcels = Some(parcels::build_parcels(&document));
+        let partition = neighbourhood_partition
+            .as_ref()
+            .expect("partitioned with parcels enabled");
+        let output = parcels::build_parcels(&document, partition);
+        document.parcels = Some(output.parcels);
+        document.footprint_centroids = Some(output.centroids);
+        document.file_neighbourhoods = Some(partition.file_ids.clone());
+        document.neighbourhoods = Some(output.neighbourhoods);
         if let Some(correlation) = parcels::area_correlation(&document) {
             eprintln!(
-                "        parcels={}/{}  area~loc r={correlation:.3}",
+                "        parcels={}/{}  area~weight r={correlation:.3}",
                 document.parcels.as_ref().map_or(0, BTreeMap::len),
                 document.files.len()
             );
@@ -709,6 +724,9 @@ fn compact(
         lang: layout.weighted.lang,
         coverage: Some(coverage),
         parcels: None,
+        footprint_centroids: None,
+        file_neighbourhoods: None,
+        neighbourhoods: None,
     }
 }
 

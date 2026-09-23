@@ -2,7 +2,8 @@
 import type { CoverageReport } from "./CoverageReport";
 import type { District } from "./District";
 import type { LandmarkRow } from "./LandmarkRow";
+import type { Neighbourhood } from "./Neighbourhood";
 import type { NodeRow } from "./NodeRow";
 import type { RoadRow } from "./RoadRow";
 import type { SymbolRow } from "./SymbolRow";
-export type MapDocument = { repo: string, q: number, names: { [key in string]: string }, districts: { [key in string]: District }, F: Array<string>, N: Array<NodeRow>, C?: Array<number> | null, E: Array<[number, number]>, L: Array<LandmarkRow>, S: { [key in string]: Array<SymbolRow> }, U: { [key in string]: Array<number> }, roads: Array<RoadRow>, lang: string, coverage?: CoverageReport | null, P: { [key in string]: Array<[number, number]> } | null, };
+export type MapDocument = { repo: string, q: number, names: { [key in string]: string }, districts: { [key in string]: District }, F: Array<string>, N: Array<NodeRow>, C?: Array<number> | null, E: Array<[number, number]>, L: Array<LandmarkRow>, S: { [key in string]: Array<SymbolRow> }, U: { [key in string]: Array<number> }, roads: Array<RoadRow>, lang: string, coverage?: CoverageReport | null, P: { [key in string]: Array<[number, number]> } | null, footprint_centroids?: Array<[number, number]> | null, file_neighbourhoods?: Array<string> | null, neighbourhoods?: { [key in string]: Neighbourhood } | null, };

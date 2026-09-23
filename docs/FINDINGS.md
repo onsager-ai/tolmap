@@ -1165,6 +1165,40 @@ The count of files without `P` **did change**, contrary to the initial expectati
 
 After removing only `C` and `P` from both JSON documents and comparing their compact JSON bytes, **all six branch maps are identical to main** on every remaining key. That includes `F`, `N`, `E`, `L`, `S`, `U`, district membership and geometry, and coverage. The code-line count is additive; this PR does not move files or alter the graph.
 
+## 29. Nested footprints cover every measured file without moving the district map
+
+Owner decisions D2–D4 (finding 27, issue #82) require file footprints within neighbourhoods, no parcel grid, and unchanged district membership and layout. This implementation runs seeded Leiden on each district's induced kept weighted graph, recursively splits large groups toward about 30 files, then folds groups smaller than three into their most attached neighbour. An indivisible group gets deterministic path chunks. Single-file districts remain single-file neighbourhoods. Labels use the most common member parent directory and its shortest suffix unique within the district, with sorted tie breaks. None of these operations changes the district partition.
+
+Nested raster power diagrams allocate each district blob first to neighbourhoods by summed code-line weight, then each neighbourhood to files by individual code-line weight. Both tiers use a capped power difference and centroid relaxation. The neighbourhood allocation grows connected regions from seeds; the file allocation reserves one pixel for every file before solving, because an unconstrained power diagram previously swallowed sites and left files with no cell (findings 27–28). Displayed polygon centroids are emitted separately as `footprint_centroids`: `N` coordinates remain layout inputs for warm starts and retain the existing map position. The optional, index-aligned `file_neighbourhoods` and `neighbourhoods` fields carry membership, labels and polygon rings; `P` keeps its existing shape. Polygon rasterization uses even-odd rings so district holes are respected. An empty district mask receives a local fallback region, so no district is skipped. Code lines come from `C`, with LOC as the old-document fallback.
+
+[Paired Actions builds with footprints](https://github.com/onsager-ai/tolmap/actions/runs/35879951742) and [without footprints](https://github.com/onsager-ai/tolmap/actions/runs/35879969118) used the same implementation commit `58815a547f2452e6b7541c79bd1ec50698f67270`, each repository's pinned `eval/corpus.toml` commit, `--all-sources`, and standard runners. Wall time includes the entire build, so the difference is an upper bound on added geometry cost, not an isolated geometry timer. RSS is the build's peak KiB. Small negative wall-time differences are runner noise. All six jobs on each run succeeded.
+
+| repository | files | districts | neighbourhoods | wall s on / off | peak RSS KiB on / off | size min / p10 / median / p90 / max | size bins 1–2 / 3–10 / 11–40 / 41+ |
+|---|---:|---:|---:|---:|---:|---|---|
+| django/django | 851 | 12 | 63 | 1.89 / 2.19 | 44,624 / 44,604 | 4 / 6 / 13 / 20.8 / 39 | 0 / 22 / 41 / 0 |
+| langgenius/dify | 6,347 | 78 | 512 | 20.08 / 12.33 | 198,980 / 198,864 | 1 / 3 / 11 / 26 / 40 | 26 / 227 / 259 / 0 |
+| vuejs/core | 239 | 8 | 15 | 0.64 / 0.84 | 31,568 / 31,088 | 5 / 8.4 / 12 / 29.8 / 37 | 0 / 6 / 9 / 0 |
+| prometheus/prometheus | 631 | 11 | 48 | 3.06 / 2.36 | 43,372 / 43,312 | 1 / 3 / 13 / 25.3 / 36 | 1 / 21 / 26 / 0 |
+| n8n-io/n8n | 11,991 | 80 | 1,041 | 35.58 / 30.15 | 256,220 / 254,808 | 1 / 3 / 9 / 25 / 42 | 7 / 604 / 429 / 1 |
+| aws/aws-sdk-go-v2 | 26,520 | 280 | 1,625 | 200.11 / 150.34 | 1,043,428 / 1,043,324 | 1 / 3 / 13 / 33 / 42 | 1 / 613 / 997 / 14 |
+
+The two largest builds remain below the proposed 2× wall-time concern: n8n is 1.18× and AWS is 1.33× its own `--no-parcels` build. Dify is 1.63×. The AWS result is a 49.77-second increment in a 200.11-second full build, with 104 KiB higher peak RSS. The result artifacts contain each map, log and measurement JSON; the combined results are attached to both runs.
+
+The port of the prototype's ten metrics reads the product JSON and uses each **displayed footprint centroid** for every positional metric. `overlap` counts district pairs whose centroid-and-radius envelopes overlap; `grid multiple` compares the import edge share of within-district Delaunay neighbours to sampled pairs. The two hard targets alone are gated in CI. Other values diagnose the unchanged layout and geometry without changing the acceptance criteria. `r` is the prototype's global footprint-area/code-line Pearson correlation; the extra per-district median is reported because D2 says areas are comparable only within a district.
+
+| repository | district strongest=nearest | district ρ | neighbourhood strongest=nearest | neighbourhood ρ | grid multiple | overlap | connected | global area/code r | missing P | compactness | within-district median r |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| django/django | .083 | −.190 | .155 | −.254 | 2.525 | 7 | 100% | .503 | 0 | .759 | .793 |
+| langgenius/dify | .000 | −.282 | .115 | −.184 | 5.914 | 29 | 100% | .427 | 0 | .785 | .965 |
+| vuejs/core | .250 | −.308 | .375 | .039 | 2.035 | 1 | 100% | .731 | 0 | .590 | .960 |
+| prometheus/prometheus | .200 | −.435 | .243 | −.352 | 2.046 | 5 | 100% | .697 | 0 | .736 | .903 |
+| n8n-io/n8n | .113 | −.241 | .167 | −.291 | 3.333 | 59 | 100% | .322 | 0 | .785 | .916 |
+| aws/aws-sdk-go-v2 | .004 | −.059 | .194 | −.115 | 1.073 | 399 | 100% | .449 | 0 | .785 | .890 |
+
+Thus the measured lower bound is **46,579 file footprints out of 46,579 files**, and **3,304 connected neighbourhoods out of 3,304**, across six distinct repositories. These are six measured maps, not a universal proof for every source tree. Neighbourhoods of one or two files in the size table occur where a district has too few members to fold into another group. On the paired django and prometheus maps, every common JSON key, including `F`, `N`, `E`, `L`, `S`, `U`, `districts`, and `q`, is identical between on and off. The only on-only keys are `P`, `file_neighbourhoods`, `neighbourhoods`, and `footprint_centroids`. The [CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35880498909) builds the synthetic polyglot map three times with footprints and compares hashes for determinism; it also checks parity on offline flask/httpx maps and gates zero missing footprints plus at least 95% connected neighbourhoods on those and the synthetic maps. The frozen `data/*.json` reference maps were not overwritten with Rust geometry; that supersedes finding 27's initial re-recording expectation for this PR.
+
+The viewer's demo maps are Rust Actions builds. The branch's [django map artifact](https://github.com/onsager-ai/tolmap/actions/runs/35879951742/artifacts/10759254666) and [dify map artifact](https://github.com/onsager-ai/tolmap/actions/runs/35879951742/artifacts/10758864894) provide the two maps for the follow-up viewer work; they are gitignored and not committed. `web/scripts/check-view-stability.mjs` still pins the earlier django and dify maps and must be regenerated from these branch builds when the viewer begins drawing neighbourhood gutters, three alternating shades and file footprints. Symbols and changes to the district partition or layout remain outside this PR.
+
 ## 30. Hierarchical symbols are a separate document, and resolved calls remain a lower bound
 
 Finding 29 is reserved for the concurrent nested-footprints PR #85. This PR adds no symbol geometry or viewer drawing. The map's oracle-constrained `S` and `U` take their old path unchanged; complete symbols and their reference edges live in a sibling JSON document. Each district response includes its own symbols and both endpoints of every touching edge, retaining global indices. Symbol and module code-line counts reuse the exact line mask introduced by finding 28.

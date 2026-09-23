@@ -186,7 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           ./target/release/tolmap build "$PWD/module-resolution-fixture" \
-            --pkg . --lang ts --name module_resolution --out ci-out --no-parcels
+            --pkg . --lang ts --name module_resolution --out ci-out
 
       # docs/FINDINGS.md finding 13, step 2 of the polyglot work: materialise
       # the synthetic fixture fresh (pure local git + Python, no network),
@@ -206,7 +206,7 @@ jobs:
           for i in 1 2 3; do
             mkdir -p "polyglot-det-$i"
             ./target/release/tolmap build "$PWD/polyglot-fixture" --all-sources \
-              --name synthetic_polyglot --out "polyglot-det-$i" --no-parcels >/dev/null
+              --name synthetic_polyglot --out "polyglot-det-$i" >/dev/null
             hash=$(sha256sum "polyglot-det-$i/synthetic_polyglot.json" "polyglot-det-$i/synthetic_polyglot.symbols.json" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1)
             echo "run $i: $hash"
             hashes="$hashes $hash"
@@ -239,8 +239,20 @@ jobs:
         run: |
           set -euo pipefail
           ./target/release/tolmap build "$PWD/islands-fixture" --pkg . --lang py \
-            --name synthetic_islands --out islands-out --no-parcels >/dev/null
+            --name synthetic_islands --out islands-out >/dev/null
           python3 eval/check_islands_fixture.py islands-out/synthetic_islands.json
+
+      - name: Footprint hard targets on offline and synthetic maps
+        run: |
+          set -euo pipefail
+          for name in flask httpx synthetic_polyglot module_resolution; do
+            echo "footprint metrics: $name"
+            python3 eval/footprint_metrics.py "ci-out/${name}.json" --gate \
+              --out "ci-out/${name}.footprint-metrics.json"
+          done
+          echo "footprint metrics: synthetic_islands"
+          python3 eval/footprint_metrics.py islands-out/synthetic_islands.json --gate \
+            --out islands-out/synthetic_islands.footprint-metrics.json
 
   # Cheap, no toolchain: prod (fly.toml) and staging
   # (deploy/railway.staging.env) must describe the same set of TOLMAP_*
