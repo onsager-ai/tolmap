@@ -9,6 +9,14 @@ import type { Geo, Layer } from "@/map/constants";
 export interface MapSearch {
   file?: string;
   sym?: number;
+  /** Issue #82 C2: a GLOBAL hierarchical-symbol index into the district
+   * symbols sibling document (docs/API.md's `DistrictSymbols.symbols`,
+   * resolved via its index-aligned `symbol_indices`) -- a different index
+   * space from `sym`, which indexes the map document's own parity-
+   * constrained `S` list and stays exactly as it was for search. `hsym`
+   * requires `file` (a symbol makes no sense without the file selection it
+   * refines), same as `sym` does. */
+  hsym?: number;
   d?: number;
   dir?: string;
   depth?: number;
@@ -39,11 +47,13 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const dir = !file && dirRaw ? dirRaw : undefined;
   const symRaw = Number(search.sym);
   const sym = file && Number.isInteger(symRaw) && symRaw >= 0 ? symRaw : undefined;
+  const hsymRaw = Number(search.hsym);
+  const hsym = file && Number.isInteger(hsymRaw) && hsymRaw >= 0 ? hsymRaw : undefined;
   const dRaw = Number(search.d);
   const d = !file && !dir && Number.isInteger(dRaw) && dRaw >= 0 ? dRaw : undefined;
   const depthRaw = Number(search.depth);
   const depth = Number.isInteger(depthRaw) && depthRaw > 0 ? depthRaw : undefined;
-  return { file, sym, d, dir, depth, geo, layer };
+  return { file, sym, hsym, d, dir, depth, geo, layer };
 }
 
 /** Search state for the /new progress route (see routes/IndexJobView.tsx).

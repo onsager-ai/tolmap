@@ -5,7 +5,7 @@
 // file, a symbol, or empty space) flows out through the callbacks passed to
 // the constructor. React owns selection/geo/layer state and the URL; this
 // class only draws and reports gestures.
-import type { MapDocument, Neighbourhood } from "@/types";
+import type { DistrictSymbols, MapDocument, Neighbourhood } from "@/types";
 import {
   BUILD_ZOOM,
   DOT_DENSITY_FLOOR,
@@ -54,6 +54,28 @@ import { pinchTransform, type PinchAnchor } from "./pinch";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
 import { buildRoadGeom, buildRoadPlan, districtRadius, type RoadPlan } from "./roads";
 import { aggregateCrossDistrictFlows, aggregateIntraDistrictFlows, selectCrossDistrictPairs, selectStreetPairs, type CrossFlow, type StreetFlow } from "./streets";
+import {
+  ancestorsOf,
+  cardFillRatio,
+  computeFileFootprintAreas,
+  decodeDistrictSymbols,
+  fileCrossesSymbolGate,
+  isBoldKind,
+  isClassExpanded,
+  isDashedKind,
+  KIND_NAMES,
+  MODULE_FILL_RATIO,
+  referenceLineWidth,
+  ringBounds,
+  ringCentroid,
+  rollReferences,
+  rowKind,
+  rowName,
+  symbolLabel,
+  topN,
+  type DecodedDistrictSymbols,
+  type WorldContours,
+} from "./symbolCards";
 
 declare global {
   interface Window {
@@ -87,15 +109,40 @@ export interface MapRenderState {
   folderOnlyIslands: boolean;
   folderLabels: readonly FolderLabel[];
   activeDirectory?: string;
+  /** Issue #82 C2: every district's symbols document React currently has in
+   * hand (TanStack Query cache, fetched lazily -- see data/queries.ts's
+   * useDistrictSymbolsMap). A district not yet fetched (or a document with
+   * no symbols sibling at all) is simply absent here; the renderer requests
+   * a missing one via `onNeedSymbols` and degrades silently until it
+   * arrives (scope item 1's "must degrade silently"). */
+  districtSymbols: ReadonlyMap<number, DistrictSymbols>;
+  /** A GLOBAL hierarchical-symbol index (docs/API.md's `symbol_indices`
+   * space) -- MapSearch's new `hsym` param, distinct from `selSym` (the
+   * map's own parity-constrained `S` list, untouched by this feature). */
+  selHSym: number | null;
 }
 
 export interface MapRendererCallbacks {
   onSelectDistrict(d: number): void;
   onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
+  /** Issue #82 C2 scope item 3: a tap on a symbol CARD selects the symbol
+   * directly, setting every level (repo/district/file/symbol) at once --
+   * unlike a plain file tap, which the two-step rule below can resolve to a
+   * district selection instead. `global` is the symbol's GLOBAL index into
+   * its `DistrictSymbols.symbol_indices` space. */
+  onSelectHierSymbol(global: number): void;
   onClearSelection(): void;
   onSelectDirectory(path: string): void;
   onPreviewDirectory(path?: string): void;
+  /** Issue #82 C2 scope item 1: a file just crossed the symbol gate (or is
+   * newly selected) and its district's symbols aren't loaded yet. MapView
+   * debounces these into its `wantedDistricts` state, which flows back down
+   * as `MapRenderState.districtSymbols` once the fetch resolves. Calling
+   * this repeatedly for the same district is cheap and expected (idempotent
+   * Set add on the caller's side) -- the renderer has no notion of "already
+   * asked" beyond a per-document dedupe against redundant same-paint calls. */
+  onNeedSymbols(district: number): void;
   /** Fired once a drag has actually moved the map, so React can dismiss
    * transient chrome (the mobile drawer, a suggestion list) the way a real
    * map app does. */
@@ -164,6 +211,38 @@ export class MapRenderer {
   // other cache above and in loadDocument() below.
   private districtMedianArea: Map<number, number> = new Map();
   private footprintIndex: FootprintIndex | null = null;
+
+  // Issue #82 C2 (symbol cards): per-file world-space footprint area, like
+  // districtMedianArea above but per FILE rather than per district's
+  // median -- the 40px symbol gate (symbolCards.ts's fileCrossesSymbolGate)
+  // needs one file's own area, not its district's typical one. Computed once
+  // per document in loadDocument(); `symDecoded` caches decodeDistrictSymbols
+  // by the `DistrictSymbols` object's own identity (stable per successful
+  // fetch -- React/TanStack Query never mutates a cached response in place),
+  // so a district already decoded this session is never re-walked. `symAsked`
+  // is this document's own dedupe against calling `onNeedSymbols` for a
+  // district already requested (the CALLER also dedupes via a Set, but that
+  // doesn't stop this renderer from asking again every paint otherwise).
+  private fileFootprintArea: Map<number, number> = new Map();
+  private symDecoded = new Map<DistrictSymbols, DecodedDistrictSymbols>();
+  private symAsked = new Set<number>();
+  // Rebuilt every paint by drawSymbolCardsPass: every symbol that actually
+  // got a card drawn this frame (VIS, in the prototype's own terms) plus
+  // its screen-space anchor -- rollReferences' "roll up to what's on
+  // screen" needs the former, the hover/selection reference-line redraw
+  // (renderSymbolRefs, called WITHOUT a full repaint -- see setHover) needs
+  // the latter to draw a line without re-walking the whole document.
+  private symVisible = new Set<number>();
+  private symScreenAnchor = new Map<number, [number, number]>();
+  private symDecodedByDistrict = new Map<number, DecodedDistrictSymbols>();
+  private symLocalByGlobal = new Map<number, { decoded: DecodedDistrictSymbols; local: number }>();
+  // Persistent groups this paint() (re)creates so hover can redraw just the
+  // reference lines / fade just the roads without a full repaint -- the SAME
+  // technique index.css's ".hovered" class toggle already uses for
+  // everything else hoverable (MapRenderer's own doc comment, "desktop
+  // hover" section, further down).
+  private gSymRefs: SVGGElement | null = null;
+  private gRoadsFade: SVGGElement | null = null;
 
   // Issue #51 perf follow-up: cache of mainlandBounds()/worldBounds() and
   // the two scales derived from them (see geometry.ts's scaleToFit), keyed
@@ -444,6 +523,20 @@ export class MapRenderer {
     this.streetCache = null;
     this.districtMedianArea = this.hasFootprints ? districtMedianFootprintArea(doc) : new Map();
     this.footprintIndex = this.hasFootprints ? buildFootprintIndex(doc) : null;
+    // Issue #82 C2: a new document invalidates every symbol-card cache --
+    // decoded documents, the "already asked" dedupe, and the per-file area
+    // the 40px gate reads. Symbols themselves are NOT part of MapDocument
+    // (finding 30: a separate sibling, fetched lazily) so there's nothing to
+    // read out of `doc` here beyond the footprint areas.
+    this.fileFootprintArea = this.hasFootprints ? computeFileFootprintAreas(doc) : new Map();
+    this.symDecoded = new Map();
+    this.symAsked = new Set();
+    this.symVisible = new Set();
+    this.symScreenAnchor = new Map();
+    this.symDecodedByDistrict = new Map();
+    this.symLocalByGlobal = new Map();
+    this.gSymRefs = null;
+    this.gRoadsFade = null;
     const isLandmark = new Set(doc.L.map(([i]) => i));
     const byDistrict = new Map<number, number[]>();
     for (let i = 0; i < doc.N.length; i++) {
@@ -1074,13 +1167,24 @@ export class MapRenderer {
       // A3 (import roads, issue #82): drawn after every district polygon so
       // a ribbon crossing a district's fill is on top of it -- see
       // drawRoads's own doc comment for the full z-order argument.
-      this.drawRoads(g);
+      // Issue #82 C2 scope item 4 ("Fade roads while these lines are
+      // showing"): wrapped in its own <g> so the reference-line hover/
+      // selection redraw (renderSymbolRefs, below) can toggle ONE group's
+      // opacity without touching drawRoads' own per-path fill-opacity
+      // values or repainting anything -- the prototype's own
+      // `gR.style.opacity=...` technique.
+      const gRoads = el("g", {});
+      g.appendChild(gRoads);
+      this.gRoadsFade = gRoads;
+      this.drawRoads(gRoads);
       // B4 (streets, issue #82 scope item 4): only inside a FOCUSED district
       // -- `selD` is exactly "focused" here (the same flag the district loop
       // above uses for its own `on` highlight), never every district at
       // once, which is what keeps this from being a second, redundant road
       // layer on top of drawRoads() at the overview.
       if (selD != null) this.drawStreets(g, selD);
+    } else {
+      this.gRoadsFade = null;
     }
 
     const CELL = geo === "p" && doc.P && zf0 > PARCEL_ZOOM;
@@ -1118,6 +1222,26 @@ export class MapRenderer {
     const alwaysDrawn = new Set<number>(doc.L.map(([i]) => i));
     if (sel != null) alwaysDrawn.add(sel);
     if (dim) for (const i of dim) alwaysDrawn.add(i);
+    // Issue #82 C2 scope item 2 (D1): every file eligible for symbol cards
+    // this paint -- its own on-screen footprint is >= 40px, or it's the
+    // current selection (symbolCards.ts's fileCrossesSymbolGate). Computed
+    // once here (not per file inside districtFootprintsLarge's own O(1)
+    // lookup) because a gated file must draw INDIVIDUALLY even in a district
+    // whose TYPICAL file is still small enough to batch -- a large landmark
+    // file sitting in an otherwise-tiny district, for instance. Collected
+    // into `filesNeedingCards` below for the dedicated symbol-card pass
+    // after this loop (paint order: cards sit on top of every footprint).
+    const symbolGateFiles = FOOTPRINTS
+      ? (() => {
+          const set = new Set<number>();
+          for (const [i, area] of this.fileFootprintArea) {
+            if (fileCrossesSymbolGate(area, this.k, i === sel)) set.add(i);
+          }
+          if (sel != null && this.fileFootprintArea.has(sel)) set.add(sel);
+          return set;
+        })()
+      : null;
+    const filesNeedingCards: number[] = [];
     for (let i = 0; i < doc.N.length; i++) {
       if (this.unconnectedFile[i]) continue;
       if (CELL && doc.P![String(i)]) {
@@ -1137,12 +1261,27 @@ export class MapRenderer {
         // (district, shade) -- BATCH_LAYER guards this on the "d" layer
         // only: churn/complexity/package colour every file individually
         // (this.tint(i) is per-file, sometimes per-file-unique), which a
-        // shared (district, shade) fill can't represent.
+        // shared (district, shade) fill can't represent. A symbol-gated file
+        // ALSO forces an individual element, whatever BATCH_LAYER/
+        // districtFootprintsLarge say -- it needs a real polygon in the DOM
+        // for the card pass to draw on top of and hit-test against.
         const d = D_(doc, i);
-        if (BATCH_LAYER && !alwaysDrawn.has(i) && !this.districtFootprintsLarge(d)) {
+        const inSymbolGate = !!symbolGateFiles?.has(i);
+        if (BATCH_LAYER && !alwaysDrawn.has(i) && !this.districtFootprintsLarge(d) && !inSymbolGate) {
           this.batchFootprint(footprintBatches, i, d, zf0, islandFadeFloorZf, islandExceptionDistricts);
         } else {
           this.footprint(g, i, dim, zf0, islandFadeFloorZf, islandExceptionDistricts, folderFiles);
+          // Viewport cull for the card pass, independent of footprint()'s own
+          // polygon-bbox cull (which returns void, not a drew/culled flag):
+          // a generous anchor-based margin is enough here since a culled
+          // file's footprint wasn't drawn at all, so there's nothing for a
+          // card to sit on top of regardless.
+          if (inSymbolGate) {
+            const p = this.anchor(i);
+            const cx = this.X(p[0]);
+            const cy = this.Y(p[1]);
+            if (cx > -100 && cx < this.VW + 100 && cy > -100 && cy < this.VH + 100) filesNeedingCards.push(i);
+          }
         }
         continue;
       }
@@ -1280,6 +1419,17 @@ export class MapRenderer {
     if (FOOTPRINTS) {
       this.flushFootprintBatches(g, footprintBatches, dim, zf0, islandFadeFloorZf, islandExceptionDistricts);
       this.drawNeighbourhoodGutters(g, zf0, islandFadeFloorZf, islandExceptionDistricts, selD);
+      // Issue #82 C2: symbol cards, drawn on top of every footprint/gutter
+      // above. Populates symVisible/symScreenAnchor/symDecodedByDistrict for
+      // the reference-line pass at the very end of paint() (below) and for a
+      // later hover-only redraw (renderSymbolRefs, called without a full
+      // repaint -- see setHover's "hs:" branch).
+      this.drawSymbolCardsPass(g, filesNeedingCards, state.selHSym);
+    } else {
+      this.symVisible = new Set();
+      this.symScreenAnchor = new Map();
+      this.symDecodedByDistrict = new Map();
+      this.symLocalByGlobal = new Map();
     }
 
     // blast radius: a thread from every file that names this symbol
@@ -1494,6 +1644,14 @@ export class MapRenderer {
     // fresh local one (see placeDistrictLabels's own call above for why).
     this.placeContentLabels(g, placed, alwaysDrawn, zf0, hubCandidates);
 
+    // Issue #82 C2 scope item 4: reference lines for the selected symbol (if
+    // any), topmost so they read over labels/pins/hub rings -- a fresh,
+    // persistent group every paint(), repopulated here for the initial
+    // draw and later in place (no full repaint) by setHover/hoverSymbol.
+    this.gSymRefs = el("g", {});
+    g.appendChild(this.gSymRefs);
+    this.renderSymbolRefs(state.selHSym);
+
     // key -> every element carrying it, rebuilt fresh this paint (one
     // querySelectorAll over exactly what was just drawn, one loop -- see
     // keyElements' own field comment for why this is a map lookup per
@@ -1664,11 +1822,64 @@ export class MapRenderer {
    * not exist before this PR and folder labels did, so folder labels keep
    * the priority they already had rather than losing it to a brand-new
    * label kind). */
+  /** Issue #82 C2 scope item 6: on a dense repo (dify) at fit zoom on a
+   * phone, hub rings pack edge to edge -- ~100 of them, per the spec's own
+   * measurement. Declutters deterministically, over the candidates in their
+   * ALREADY fan-in-descending rank (computeHubs, issue #82 A4): the top 12
+   * by fan-in are always eligible (spec), so they can never be hidden by a
+   * bigger neighbour or a district cap; every candidate after that is
+   * dropped if its on-screen circle overlaps one already kept -- since
+   * rank order and ring radius both track fan-in (hubRingRadius is
+   * monotonic in it), every circle already kept at this point has a radius
+   * >= this candidate's, so a plain overlap test IS "overlaps a
+   * larger-or-equal ring" without a separate size comparison. Districts are
+   * additionally capped by their own on-screen area: `sqrt(area)/50` more
+   * rings per district beyond a floor of 3, so a huge on-screen district
+   * doesn't lose ALL its rings to overlap with one one giant hub, while a
+   * small one doesn't get crowded past what its own screen space can
+   * legibly hold -- chosen because it scales with the same "on-screen
+   * footprint size" quantity every other density gate in this file already
+   * keys off (districtFootprintsLarge, the #48 dot budget), not an
+   * independent constant. */
+  private declutterHubCandidates<T extends { hub: { i: number }; cx: number; cy: number; r: number }>(
+    candidates: readonly T[],
+  ): T[] {
+    const { doc } = this.state!;
+    const TOP_ALWAYS_ELIGIBLE = 12;
+    const kept: T[] = [];
+    const districtCount = new Map<number, number>();
+    const districtCap = new Map<number, number>();
+    const capFor = (d: number): number => {
+      let cap = districtCap.get(d);
+      if (cap == null) {
+        const areaPx = (this.districtArea.get(d) ?? 0) * this.k * this.k;
+        cap = Math.max(3, Math.floor(Math.sqrt(Math.max(areaPx, 0)) / 50));
+        districtCap.set(d, cap);
+      }
+      return cap;
+    };
+    for (let idx = 0; idx < candidates.length; idx++) {
+      const c = candidates[idx];
+      const always = idx < TOP_ALWAYS_ELIGIBLE;
+      if (!always) {
+        const overlapsLarger = kept.some((k) => Math.hypot(k.cx - c.cx, k.cy - c.cy) < k.r + c.r);
+        if (overlapsLarger) continue;
+        const d = D_(doc, c.hub.i);
+        const used = districtCount.get(d) ?? 0;
+        if (used >= capFor(d)) continue;
+      }
+      kept.push(c);
+      const d = D_(doc, c.hub.i);
+      districtCount.set(d, (districtCount.get(d) ?? 0) + 1);
+    }
+    return kept;
+  }
+
   private drawHubRings(g: SVGGElement): Array<{ hub: { i: number; fi: number; name: string }; cx: number; cy: number; r: number }> {
     const { doc } = this.state!;
     const { hubs, maxFi } = this.hubSet;
     const narrow = this.narrow();
-    const candidates: Array<{ hub: (typeof hubs)[number]; cx: number; cy: number; r: number }> = [];
+    const rawCandidates: Array<{ hub: (typeof hubs)[number]; cx: number; cy: number; r: number }> = [];
     for (const hub of hubs) {
       if (this.unconnectedFile[hub.i]) continue;
       const p = this.anchor(hub.i);
@@ -1676,6 +1887,10 @@ export class MapRenderer {
       const cy = this.Y(p[1]);
       const r = hubRingRadius(hub.fi, maxFi, narrow);
       if (cx < -r - 20 || cx > this.VW + r + 20 || cy < -r - 20 || cy > this.VH + r + 20) continue;
+      rawCandidates.push({ hub, cx, cy, r });
+    }
+    const candidates = this.declutterHubCandidates(rawCandidates);
+    for (const { hub, cx, cy, r } of candidates) {
       g.appendChild(
         el("circle", {
           cx: cx.toFixed(1),
@@ -1709,7 +1924,6 @@ export class MapRenderer {
       title.textContent = `${doc.F[hub.i]}\nhub · fan-in ${hub.fi}`;
       hit.appendChild(title);
       g.appendChild(hit);
-      candidates.push({ hub, cx, cy, r });
     }
     return candidates;
   }
@@ -2343,6 +2557,311 @@ export class MapRenderer {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Issue #82 C2: symbol cards inside file footprints, rolled-up reference
+  // lines, outline tree support. Ported from the owner's prototype
+  // (arch20.body.html's drawSyms/symOn/expanded/rolled, ~lines 247-315) --
+  // see symbolCards.ts's own top comment for what changed for this
+  // product's richer server-side geometry (header_rings/module_rings that
+  // the prototype never had).
+  // ---------------------------------------------------------------------
+
+  /** Decode every district React currently has symbols for (cheap: it's
+   * just walking already-fetched, already-parsed JSON into lookup maps --
+   * see symbolCards.ts's decodeDistrictSymbols), and request any district a
+   * gated file needs but doesn't have yet. Populates symDecodedByDistrict/
+   * symLocalByGlobal for the WHOLE loaded set, not just districts touched by
+   * `filesNeedingCards` this frame -- a selHSym or a reference-line far
+   * endpoint can point at a symbol whose OWN file isn't currently gated. */
+  private refreshDecodedSymbols(districtSymbols: ReadonlyMap<number, DistrictSymbols>, neededDistricts: ReadonlySet<number>): void {
+    this.symDecodedByDistrict = new Map();
+    this.symLocalByGlobal = new Map();
+    for (const [d, raw] of districtSymbols) {
+      let decoded = this.symDecoded.get(raw);
+      if (!decoded) {
+        decoded = decodeDistrictSymbols(raw);
+        this.symDecoded.set(raw, decoded);
+      }
+      this.symDecodedByDistrict.set(d, decoded);
+      for (let local = 0; local < raw.symbols.length; local++) {
+        this.symLocalByGlobal.set(raw.symbol_indices[local], { decoded, local });
+      }
+    }
+    for (const d of neededDistricts) {
+      if (districtSymbols.has(d) || this.symAsked.has(d)) continue;
+      this.symAsked.add(d);
+      this.callbacks.onNeedSymbols(d);
+    }
+  }
+
+  /** The symbol-card layer for every file `filesNeedingCards` collected this
+   * paint: module-level-code region, top-level symbol cards (recursing into
+   * an expanded class's members), the file-name tab, and every label --
+   * file tabs and symbol labels share ONE greedy collision list (spec item
+   * 2), ordered outer-first then by area, exactly like the prototype's own
+   * `cand.sort((a,b)=>a.depth-b.depth||b.a-a.a)`. `selHSym` only affects
+   * WHICH class ancestry counts as "expanded because the selection is
+   * inside it" (isClassExpanded) -- the reference lines themselves are
+   * drawn later, by renderSymbolRefs, once every card's screen anchor is
+   * known. */
+  private drawSymbolCardsPass(g: SVGGElement, filesNeedingCards: readonly number[], selHSym: number | null): void {
+    const { doc } = this.state!;
+    const needed = new Set(filesNeedingCards.map((i) => D_(doc, i)));
+    this.refreshDecodedSymbols(this.state!.districtSymbols, needed);
+    this.symVisible = new Set();
+    this.symScreenAnchor = new Map();
+    if (filesNeedingCards.length === 0) return;
+
+    const selAncestryGlobal = new Set<number>();
+    if (selHSym != null) {
+      const entry = this.symLocalByGlobal.get(selHSym);
+      if (entry) {
+        selAncestryGlobal.add(selHSym);
+        for (const a of ancestorsOf(entry.decoded, entry.local)) selAncestryGlobal.add(entry.decoded.raw.symbol_indices[a]);
+      }
+    }
+
+    const gCards = el("g", {});
+    g.appendChild(gCards);
+    const gLabels = el("g", {});
+    // Greedy label collision list, shared by file tabs and symbol labels
+    // (spec item 2) -- kept LOCAL to this pass (not the district-label
+    // `placed` array from earlier in paint()): the prototype keeps its own
+    // symbol-label pass (`gSL`) independent of its district/lobe label
+    // passes too, each with its own budget.
+    const placed: Array<[number, number, number, number]> = [];
+    const hits = (b: [number, number, number, number]) => placed.some((r) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3]));
+    type LabelCandidate = { depth: number; area: number; x: number; y: number; text: string; bold: boolean; anchorTop: boolean };
+    const labelCandidates: LabelCandidate[] = [];
+    const tabCandidates: Array<{ cx: number; y0: number; widthPx: number; name: string }> = [];
+
+    const toScreenRing = (ring: readonly (readonly [number, number])[]): string =>
+      ring.map(([x, y], n) => (n ? "L" : "M") + this.X(x).toFixed(1) + " " + this.Y(y).toFixed(1)).join("") + "Z";
+
+    const drawContourFill = (contours: WorldContours, attrs: Record<string, string | number>): SVGPathElement => {
+      const d = contours.map(toScreenRing).join(" ");
+      return el("path", { d, "fill-rule": "evenodd", ...attrs });
+    };
+
+    for (const i of filesNeedingCards) {
+      const d = D_(doc, i);
+      const decoded = this.symDecodedByDistrict.get(d);
+      if (!decoded) continue; // requested above; degrades silently until it arrives
+      const fileColor = this.tint(i);
+      const moduleContours = decoded.moduleRings.get(i);
+      if (moduleContours) {
+        gCards.appendChild(
+          drawContourFill(moduleContours, {
+            fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - MODULE_FILL_RATIO) * 100)}%, ${fileColor} ${Math.round(MODULE_FILL_RATIO * 100)}%)`,
+            stroke: "var(--dim)",
+            "stroke-width": 0.8,
+            "stroke-dasharray": "4 3",
+            "pointer-events": "none",
+          }),
+        );
+      }
+      const topLocals = decoded.topByFile.get(i) ?? [];
+      // File tab candidate, from the file's own outline (its `P` polygon,
+      // already on screen -- footprint() drew it moments ago). Position:
+      // centred on the top edge, same as the prototype's `tabs.push(...)`.
+      const poly = doc.P![String(i)];
+      if (poly) {
+        let x0 = Infinity, x1 = -Infinity, yTop = Infinity;
+        for (const [wx, wy] of poly) {
+          const sx = this.X(wx);
+          const sy = this.Y(wy);
+          if (sx < x0) x0 = sx;
+          if (sx > x1) x1 = sx;
+          if (sy < yTop) yTop = sy;
+        }
+        tabCandidates.push({ cx: (x0 + x1) / 2, y0: yTop, widthPx: x1 - x0, name: doc.F[i].split("/").pop()! });
+      }
+      const draw = (local: number, depth: number) => {
+        const rings = decoded.cardRings[local];
+        if (!rings || rings.length === 0) return;
+        const global = decoded.raw.symbol_indices[local];
+        const row = decoded.raw.symbols[local];
+        const kind = rowKind(row);
+        this.symVisible.add(global);
+        const exterior = rings[0];
+        const centroid = ringCentroid(exterior);
+        this.symScreenAnchor.set(global, [this.X(centroid[0]), this.Y(centroid[1])]);
+        const [bx0, by0, bx1, by1] = ringBounds(exterior);
+        const sx0 = this.X(bx0), sx1 = this.X(bx1), sy0 = this.Y(by0), sy1 = this.Y(by1);
+        const widthPx = Math.abs(sx1 - sx0);
+        const heightPx = Math.abs(sy1 - sy0);
+        const children = decoded.children[local];
+        const isSelfOrAncestorOfSelection = selAncestryGlobal.has(global);
+        const expanded = isClassExpanded(children.length > 0, Math.min(widthPx, heightPx), isSelfOrAncestorOfSelection);
+        const ratio = cardFillRatio(depth);
+        gCards.appendChild(
+          drawContourFill(rings, {
+            fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - ratio) * 100)}%, ${fileColor} ${Math.round(ratio * 100)}%)`,
+            stroke: "var(--ink)",
+            "stroke-width": kind === 0 ? 1.1 : 0.7,
+            "stroke-opacity": 0.45,
+            ...(isDashedKind(kind) ? { "stroke-dasharray": "3 2" } : {}),
+            class: "hit",
+            "pointer-events": "all",
+            "data-k": "hs:" + global,
+            "data-sym": global,
+          }),
+        );
+        if (this.state!.selHSym === global) {
+          gCards.appendChild(el("path", { d: rings.map(toScreenRing).join(" "), "fill-rule": "evenodd", fill: "none", stroke: "var(--hot)", "stroke-width": 1.8, "pointer-events": "none" }));
+        }
+        if (expanded && children.length) {
+          const header = decoded.headerRings.get(local);
+          if (header) {
+            gCards.appendChild(
+              drawContourFill(header, {
+                fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - Math.min(1, ratio + 0.15)) * 100)}%, ${fileColor} ${Math.round(Math.min(1, ratio + 0.15) * 100)}%)`,
+                "pointer-events": "none",
+              }),
+            );
+          }
+        }
+        const memberCount = children.length;
+        const label = symbolLabel(row, memberCount, !expanded && memberCount > 0);
+        labelCandidates.push({
+          depth,
+          area: widthPx * heightPx,
+          x: (sx0 + sx1) / 2,
+          y: expanded ? Math.min(sy0, sy1) + 12 : (this.Y(centroid[1])),
+          text: label,
+          bold: isBoldKind(kind),
+          anchorTop: expanded,
+        });
+        if (expanded) for (const c of children) draw(c, depth + 1);
+      };
+      for (const local of topLocals) draw(local, 0);
+      // File outline, re-drawn ON TOP of every card (spec: "the file outline
+      // is the strongest") -- the prototype's own `fout` re-stroke, needed
+      // because the cards above just painted fills (and, for an expanded
+      // class, a header band) that would otherwise sit visually on top of
+      // footprint()'s own thin 0.7px stroke.
+      if (poly) {
+        gCards.appendChild(el("path", { d: toScreenRing(poly), fill: "none", stroke: "var(--ink)", "stroke-width": 1.6, "stroke-opacity": 0.55, "pointer-events": "none" }));
+      }
+    }
+
+    // Labels: file tabs first (by width, widest first -- prototype), then
+    // symbol labels ordered depth-ascending then area-descending, all
+    // sharing `placed`/`hits` above.
+    tabCandidates.sort((a, b) => b.widthPx - a.widthPx);
+    for (const t of tabCandidates) {
+      const fs = 10.5;
+      const tw = t.name.length * fs * 0.62;
+      const minWidth = Math.max(70, Math.min(tw, 90));
+      if (t.widthPx < minWidth) continue;
+      const box: [number, number, number, number] = [t.cx - tw / 2 - 5, t.y0 - fs - 6, tw + 10, fs + 8];
+      if (hits(box)) continue;
+      placed.push(box);
+      gLabels.appendChild(el("rect", { x: box[0], y: box[1], width: box[2], height: box[3], rx: 3, fill: "var(--chrome)", "fill-opacity": 0.92, stroke: "var(--dim)", "stroke-width": 0.6 }));
+      const text = el("text", { x: t.cx, y: t.y0 - 3, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace", fill: "var(--on)" });
+      text.textContent = t.name;
+      gLabels.appendChild(text);
+    }
+    labelCandidates.sort((a, b) => a.depth - b.depth || b.area - a.area);
+    for (const c of labelCandidates) {
+      const fs = c.bold ? 11.5 : Math.min(11, Math.max(8.5, Math.sqrt(Math.max(c.area, 1)) / 7));
+      const tw = c.text.length * fs * 0.62;
+      if (Math.sqrt(Math.max(c.area, 1)) < tw - 6) continue; // spec: "a label must fit inside its box"
+      const box: [number, number, number, number] = [c.x - tw / 2 - 2, c.y - fs * 0.85, tw + 4, fs * 1.3];
+      if (hits(box)) continue;
+      placed.push(box);
+      const text = el("text", {
+        x: c.x,
+        y: c.y,
+        "text-anchor": "middle",
+        "font-size": fs,
+        "font-family": "IBM Plex Mono, monospace",
+        "font-weight": c.bold ? 700 : 500,
+        fill: "var(--ink)",
+        "paint-order": "stroke",
+        stroke: "var(--canvas)",
+        // Issue #82 C2 pitfall (prototype note in the handoff): set stroke
+        // width through `style`, not the plain attribute -- a CSS
+        // stroke-width rule would override the attribute here, and this
+        // text has no class of its own for one to target, but being
+        // explicit through style keeps that true regardless.
+      });
+      text.style.strokeWidth = "2.6px";
+      text.textContent = c.text;
+      gLabels.appendChild(text);
+    }
+    g.appendChild(gLabels);
+  }
+
+  /** Reference lines for the active symbol (hover, if any, else the current
+   * selection -- prototype's `i=hovSym!=null?hovSym:selSym`), redrawn into
+   * the persistent `gSymRefs` group WITHOUT a full repaint (called from
+   * setHover/clearHover and once at the end of every real paint()). Also
+   * fades the roads group while active, per spec item 4. */
+  private renderSymbolRefs(selHSym: number | null): void {
+    if (!this.gSymRefs) return;
+    this.gSymRefs.replaceChildren();
+    const hoverGlobal = this.hoverKey?.startsWith("hs:") ? Number(this.hoverKey.slice(3)) : null;
+    const active = hoverGlobal ?? selHSym;
+    const entry = active != null ? this.symLocalByGlobal.get(active) : undefined;
+    if (this.gRoadsFade) this.gRoadsFade.style.opacity = entry ? "0.12" : "";
+    if (!entry) return;
+    const { decoded, local } = entry;
+    const { out, in: inn } = rollReferences(decoded, local, this.symVisible);
+    const meScreen = this.symScreenAnchor.get(active!) ?? (() => {
+      const p = fileXY(this.state!.doc, this.state!.geo, decoded.raw.symbols[local][0]);
+      return [this.X(p[0]), this.Y(p[1])] as [number, number];
+    })();
+    const anchorFor = (key: string): [number, number] | null => {
+      const idNum = Number(key.slice(2));
+      if (key.startsWith("s:")) {
+        const a = this.symScreenAnchor.get(idNum);
+        if (a) return a;
+        const e2 = this.symLocalByGlobal.get(idNum);
+        if (!e2) return null;
+        const p = fileXY(this.state!.doc, this.state!.geo, decoded.raw.symbols[e2.local][0]);
+        return [this.X(p[0]), this.Y(p[1])];
+      }
+      const p = fileXY(this.state!.doc, this.state!.geo, idNum);
+      return [this.X(p[0]), this.Y(p[1])];
+    };
+    const line = (key: string, count: number, isOut: boolean) => {
+      const b = anchorFor(key);
+      if (!b) return;
+      const w = referenceLineWidth(count);
+      this.gSymRefs!.appendChild(
+        el("path", {
+          d: `M${meScreen[0].toFixed(1)} ${meScreen[1].toFixed(1)} L${b[0].toFixed(1)} ${b[1].toFixed(1)}`,
+          fill: "none",
+          stroke: isOut ? "var(--hot)" : "var(--cold)",
+          "stroke-width": w,
+          "stroke-dasharray": isOut ? "none" : "5 3",
+          "pointer-events": "none",
+        }),
+      );
+      this.gSymRefs!.appendChild(
+        el("circle", { cx: b[0].toFixed(1), cy: b[1].toFixed(1), r: key.startsWith("f:") ? 3.4 : 2.6, fill: isOut ? "var(--hot)" : "var(--cold)", "pointer-events": "none" }),
+      );
+    };
+    for (const [key, count] of topN(out, 120)) line(key, count, true);
+    for (const [key, count] of topN(inn, 120)) line(key, count, false);
+    this.gSymRefs.appendChild(el("circle", { cx: meScreen[0].toFixed(1), cy: meScreen[1].toFixed(1), r: 3.6, fill: "var(--ink)", stroke: "var(--canvas)", "stroke-width": 1.4, "pointer-events": "none" }));
+  }
+
+  /** Public: SelectionPanel's outline tree hovers a row -> highlight its
+   * card on the map (spec item 5) without a full repaint, reusing the SAME
+   * hover mechanism a pointer over the SVG itself uses. `null` clears it,
+   * but only if THIS is what's currently hovered (a pointer that has since
+   * moved onto the map itself owns hover now, and must not be clobbered by
+   * a stale onMouseLeave from the sidebar row it left). */
+  hoverSymbol(global: number | null): void {
+    if (global == null) {
+      if (this.hoverKey?.startsWith("hs:")) this.setHover(null);
+      return;
+    }
+    this.setHover("hs:" + global);
+  }
+
   /** A5: folder labels, then file labels -- the tail of the pre-A5
    * drawLabels(), unchanged except that `placed` is now shared with (and
    * arrives already containing boxes from) placeDistrictLabels/selectPins/
@@ -2852,8 +3371,17 @@ export class MapRenderer {
       this.hoverImportTimer = null;
     }
     this.clearImportPreview();
+    const previousKey = this.hoverKey;
     this.hoverKey = key;
     this.hoverEls = key ? (this.keyElements.get(key) ?? []) : [];
+    // Issue #82 C2: hovering a symbol card (or leaving one) redraws just the
+    // reference-line group -- no full repaint, see renderSymbolRefs' own
+    // doc comment. Gated on either key actually being a symbol so a plain
+    // file/road/district hover never pays for the (cheap, but non-zero)
+    // rollReferences walk.
+    if (previousKey?.startsWith("hs:") || key?.startsWith("hs:")) {
+      this.renderSymbolRefs(this.state?.selHSym ?? null);
+    }
     // A3 (road hover, issue #82): "the outlines of both districts it
     // connects are highlighted" -- reuses the SAME .hovered class toggle
     // every other hoverable shape already gets (index.css's
@@ -2934,6 +3462,7 @@ export class MapRenderer {
 
   private clearHover() {
     if (this.hoverKey?.startsWith("dir:")) this.callbacks.onPreviewDirectory(undefined);
+    const wasSymbol = this.hoverKey?.startsWith("hs:");
     for (const e of this.hoverEls) e.classList.remove("hovered");
     this.hoverEls = [];
     this.hoverKey = null;
@@ -2943,6 +3472,7 @@ export class MapRenderer {
     }
     this.clearImportPreview();
     this.hideCard();
+    if (wasSymbol) this.renderSymbolRefs(this.state?.selHSym ?? null);
   }
 
   private clearImportPreview() {
@@ -3032,6 +3562,30 @@ export class MapRenderer {
       const sm = symbolsOf(doc, i)[s];
       if (!sm) return null;
       return { lines: [sm[0], KIND[sm[1]] ?? "symbol", `lines ${sm[2]}-${sm[3]}`] };
+    }
+    // Issue #82 C2: a symbol card. `global` is the DistrictSymbols'
+    // "symbol_indices" space (docs/API.md), not the "s:" branch's file-local
+    // parity-constrained `S` index just above -- two different index spaces
+    // sharing the map's data-k convention by an unrelated prefix ("hs" vs
+    // "s") for exactly that reason.
+    if (parts[0] === "hs") {
+      const global = +parts[1];
+      const entry = this.symLocalByGlobal.get(global);
+      if (!entry) return null;
+      const { decoded, local } = entry;
+      const row = decoded.raw.symbols[local];
+      const memberCount = decoded.children[local].length;
+      const { out, in: inn } = rollReferences(decoded, local, this.symVisible);
+      const outTotal = [...out.values()].reduce((a, b) => a + b, 0);
+      const inTotal = [...inn.values()].reduce((a, b) => a + b, 0);
+      return {
+        lines: [
+          rowName(row),
+          `${KIND_NAMES[rowKind(row)] ?? "symbol"}${memberCount ? ` · ${memberCount} members` : ""}`,
+          `lines ${row[3]}-${row[4]}`,
+          `refs out ${outTotal} (${out.size} places) · in ${inTotal} (${inn.size} places)`,
+        ],
+      };
     }
     return null;
   }
@@ -3378,8 +3932,42 @@ export class MapRenderer {
     }
     this.hideCard();
     if (parts[0] === "d") this.callbacks.onSelectDistrict(+parts[1]);
-    else if (parts[0] === "f") this.callbacks.onSelectFile(+parts[1]);
+    else if (parts[0] === "f") this.selectFileTwoStep(+parts[1]);
     else if (parts[0] === "s") this.callbacks.onSelectSymbol(+parts[1], +parts[2]);
+    // Issue #82 C2 scope item 3: a symbol card always selects the symbol
+    // directly, "setting all levels" -- it never goes through the two-step
+    // district-first rule below, which only applies to a plain file tap.
+    else if (parts[0] === "hs") this.callbacks.onSelectHierSymbol(+parts[1]);
     else if (parts[0] === "dir") this.callbacks.onSelectDirectory(kk.slice(4));
+  }
+
+  /** Issue #82 C2 scope item 3 (two-step tap, footprints tiling whole
+   * districts): "A tap on a file in a district that is NOT the currently
+   * selected district selects that district. A tap on a file inside the
+   * selected district selects the file." Only in footprint mode -- a plain
+   * dot is a small, precise target with no "you're already standing inside
+   * this district's territory" implication the way a footprint tiling the
+   * whole district has, so a dot-mode document keeps the old one-tap-selects
+   * behaviour unchanged (checkLegacyMapWithoutFootprints and every other
+   * dot-mode fixture are unaffected). "Currently selected district" is the
+   * URL's explicit `d`, or the currently selected FILE's own district when
+   * no bare district is selected -- so a second tap on a file already inside
+   * the selected file's own district (not just a bare `?d=`) still resolves
+   * to a direct file selection, one tap. Updated call sites, and why: see
+   * check-view-stability.mjs's checkFileLabelTapSelects, checkViewerCards,
+   * checkHubRingTap and checkFootprintCoordinateHitTest -- each used to
+   * assert a single tap on a fresh page selected a file directly; each now
+   * performs the district tap first (or asserts it) before the file tap. */
+  private selectFileTwoStep(i: number): void {
+    const state = this.state;
+    if (state && this.hasFootprints) {
+      const d = D_(state.doc, i);
+      const currentD = state.selD ?? (state.sel != null ? D_(state.doc, state.sel) : null);
+      if (currentD !== d) {
+        this.callbacks.onSelectDistrict(d);
+        return;
+      }
+    }
+    this.callbacks.onSelectFile(i);
   }
 }

@@ -1,9 +1,17 @@
 import { useMemo, useState, type ReactNode } from "react";
-import type { MapDocument, SymbolRow } from "@/types";
+import type { DistrictSymbols, MapDocument, SymbolRow } from "@/types";
 import { CH, CODE_LINES, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
 import { neighbourhoodOf } from "@/map/neighbourhoods";
 import { KCOL, KIND, LINK_PREVIEW_MAX } from "@/map/constants";
 import { computeBlast, type AdjMap } from "@/map/graph";
+import {
+  decodeDistrictSymbols,
+  externalReferences,
+  fileOutline,
+  isBoldKind,
+  symbolLabel,
+  type OutlineRow,
+} from "@/map/symbolCards";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,6 +25,14 @@ interface Props {
   sel: number | null;
   selSym: number | null;
   selD: number | null;
+  /** Issue #82 C2: the GLOBAL hierarchical-symbol index (search.ts's `hsym`)
+   * and the selected file's district symbols document (undecoded -- this
+   * component and Breadcrumb each decode their own copy for their own
+   * purpose). `symbolsDoc` is `undefined` while unfetched or for a map with
+   * no symbols sibling at all -- every reader below degrades to what it
+   * showed before this feature. */
+  selHSym?: number | null;
+  symbolsDoc?: DistrictSymbols;
   adj: AdjMap;
   radj: AdjMap;
   packageLayout: PackageLayout;
@@ -26,6 +42,12 @@ interface Props {
   onToggleOpen(): void;
   onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
+  /** A card tap or an outline-tree row click -- selects the symbol and pans
+   * if needed (MapView's selectHierSymbol). */
+  onSelectHierSymbol(global: number): void;
+  /** Outline row hover -> highlight the card on the map (spec item 5);
+   * `null` on mouse-leave. */
+  onHoverHierSymbol?(global: number | null): void;
   onSelectDistrict(d: number): void;
   onZoomDistrict(d: number): void;
   onRouteFrom(i: number): void;
@@ -51,6 +73,8 @@ export function SelectionPanel({
   sel,
   selSym,
   selD,
+  selHSym,
+  symbolsDoc,
   adj,
   radj,
   packageLayout,
@@ -60,6 +84,8 @@ export function SelectionPanel({
   onToggleOpen,
   onSelectFile,
   onSelectSymbol,
+  onSelectHierSymbol,
+  onHoverHierSymbol,
   onSelectDistrict,
   onZoomDistrict,
   onRouteFrom,
@@ -92,9 +118,12 @@ export function SelectionPanel({
               sel={sel}
               selSym={selSym}
               selD={selD}
+              selHSym={selHSym}
+              symbolsDoc={symbolsDoc}
               onSelectRepo={onBreadcrumbRepo}
               onSelectDistrict={onSelectDistrict}
               onSelectFile={onBreadcrumbFile}
+              onSelectHierSymbol={onSelectHierSymbol}
             />
           )}
           {showUnconnected ? (
@@ -148,9 +177,13 @@ export function SelectionPanel({
               doc={doc}
               i={sel!}
               selSym={selSym}
+              selHSym={selHSym}
+              symbolsDoc={symbolsDoc}
               adj={adj}
               radj={radj}
               onSelectSymbol={onSelectSymbol}
+              onSelectHierSymbol={onSelectHierSymbol}
+              onHoverHierSymbol={onHoverHierSymbol}
               onRouteFrom={onRouteFrom}
               onRouteTo={onRouteTo}
             />
@@ -517,18 +550,26 @@ function FileBody({
   doc,
   i,
   selSym,
+  selHSym,
+  symbolsDoc,
   adj,
   radj,
   onSelectSymbol,
+  onSelectHierSymbol,
+  onHoverHierSymbol,
   onRouteFrom,
   onRouteTo,
 }: {
   doc: MapDocument;
   i: number;
   selSym: number | null;
+  selHSym?: number | null;
+  symbolsDoc?: DistrictSymbols;
   adj: AdjMap;
   radj: AdjMap;
   onSelectSymbol: Props["onSelectSymbol"];
+  onSelectHierSymbol: Props["onSelectHierSymbol"];
+  onHoverHierSymbol: Props["onHoverHierSymbol"];
   onRouteFrom: Props["onRouteFrom"];
   onRouteTo: Props["onRouteTo"];
 }) {
@@ -601,6 +642,14 @@ function FileBody({
         </p>
       )}
       <SymbolDirectory doc={doc} i={i} sy={sy} cur={selSym} onSelectSymbol={onSelectSymbol} />
+      <HierOutline
+        doc={doc}
+        i={i}
+        symbolsDoc={symbolsDoc}
+        selHSym={selHSym ?? null}
+        onSelectHierSymbol={onSelectHierSymbol}
+        onHoverHierSymbol={onHoverHierSymbol}
+      />
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
         <Row label="commits">
           <b>{CH(doc, i)}</b>
@@ -713,5 +762,94 @@ function SymbolDirectory({
         <div className="pt-0.5 text-[9.5px] text-[var(--dim)]">+{rows.length - shown.length} more symbols</div>
       )}
     </>
+  );
+}
+
+// Issue #82 C2 scope item 5: the file's hierarchical outline (source order,
+// nested -- classes contain their methods, unlike SymbolDirectory above's
+// flat bar-chart list of the map's older, non-nested `S`), external
+// references grouped by top-level class/function, and finding 30's
+// under-count note. Renders nothing at all for a document with no symbols
+// sibling, or no symbol data for THIS file specifically -- degrades
+// silently, same as the map (spec item 1).
+function HierOutline({
+  doc,
+  i,
+  symbolsDoc,
+  selHSym,
+  onSelectHierSymbol,
+  onHoverHierSymbol,
+}: {
+  doc: MapDocument;
+  i: number;
+  symbolsDoc?: DistrictSymbols;
+  selHSym: number | null;
+  onSelectHierSymbol: Props["onSelectHierSymbol"];
+  onHoverHierSymbol: Props["onHoverHierSymbol"];
+}) {
+  const decoded = useMemo(() => (symbolsDoc ? decodeDistrictSymbols(symbolsDoc) : null), [symbolsDoc]);
+  const outline = useMemo(() => (decoded ? fileOutline(decoded, i) : []), [decoded, i]);
+  const external = useMemo(() => (decoded ? externalReferences(decoded, doc, i) : []), [decoded, doc, i]);
+  if (!decoded || (outline.length === 0 && external.length === 0)) return null;
+
+  const row = (r: OutlineRow, depth: number) => (
+    <div key={r.global}>
+      <button
+        type="button"
+        data-outline-row={r.global}
+        onMouseEnter={() => onHoverHierSymbol?.(r.global)}
+        onMouseLeave={() => onHoverHierSymbol?.(null)}
+        onClick={() => onSelectHierSymbol(r.global)}
+        style={{ paddingLeft: 6 + depth * 12 }}
+        className={`grid w-full grid-cols-[1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-[10.5px] first:border-t-0 ${selHSym === r.global ? "text-[var(--hot)]" : "text-[var(--on)]"}`}
+      >
+        <span className={`overflow-hidden text-ellipsis whitespace-nowrap ${isBoldKind(r.row[2]) ? "font-semibold" : ""}`}>
+          {symbolLabel(r.row, r.children.length, false)}
+        </span>
+        <span className="text-[9.5px] text-[var(--dim)]" title="incoming references">
+          {r.refsIn > 0 ? `← ${r.refsIn}` : ""}
+        </span>
+      </button>
+      {r.children.map((c) => row(c, depth + 1))}
+    </div>
+  );
+
+  return (
+    <div className="mt-2 border-t border-[var(--rule)] pt-1.5">
+      <div className="mb-0.5 text-[9.5px] uppercase tracking-wide text-[var(--dim)]">outline</div>
+      {outline.length > 0 ? (
+        <div className="mb-1.5 max-h-[180px] overflow-y-auto" data-outline-tree>
+          {outline.map((r) => row(r, 0))}
+        </div>
+      ) : (
+        <p className="mb-1.5 text-[9.5px] text-[var(--dim)]">no top-level symbols</p>
+      )}
+      {external.length > 0 && (
+        <>
+          <div className="mb-0.5 text-[9.5px] uppercase tracking-wide text-[var(--dim)]">external references</div>
+          <div className="mb-1.5 max-h-[140px] overflow-y-auto">
+            {external.map((group) => (
+              <div key={group.from.global} className="border-t border-[var(--rule)] py-1 text-[10px] first:border-t-0">
+                <div className="font-semibold text-[var(--on)]">{symbolLabel(group.from.row, group.from.children.length, false)}</div>
+                {group.targets.slice(0, 8).map((t) => (
+                  <div key={t.key} className="flex justify-between gap-2 text-[9.5px] text-[var(--dim)]">
+                    <span className="overflow-hidden text-ellipsis whitespace-nowrap">{t.label}</span>
+                    <span>{t.count}</span>
+                  </div>
+                ))}
+                {group.targets.length > 8 && (
+                  <div className="text-[9.5px] text-[var(--dim)]">+{group.targets.length - 8} more</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {/* finding 30: resolution is a lower bound -- said here, plainly, once
+          per file card that has any symbol data at all, not buried in docs. */}
+      <p className="text-[9px] leading-snug text-[var(--dim)]">
+        Method references are under-counted: calls through instances and inherited methods aren&apos;t resolved.
+      </p>
+    </div>
   );
 }
