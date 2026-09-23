@@ -124,7 +124,7 @@ pub struct MapDocument {
     pub uses: BTreeMap<String, Vec<usize>>,
     pub roads: Vec<RoadRow>,
     pub lang: String,
-    /// Kept-edge coverage; absent in maps built before issue #40.
+    // Kept-edge coverage; absent in maps built before issue #40.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<CoverageReport>,
     #[serde(rename = "P", skip_serializing_if = "Option::is_none")]
