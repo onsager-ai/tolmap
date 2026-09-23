@@ -71,3 +71,29 @@ fn main() -> Result<()> {
         .with_context(|| format!("remove temporary directory {}", temporary.display()))?;
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_in_bindings_match_the_rust_schema() {
+        let temporary = tempfile::TempDir::new().expect("temporary binding directory");
+        export_to(temporary.path()).expect("generate TypeScript bindings");
+        let expected = typescript_files(temporary.path()).expect("read generated bindings");
+        let committed = typescript_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("bindings"))
+            .expect("read committed bindings");
+        assert_eq!(
+            expected.keys().collect::<Vec<_>>(),
+            committed.keys().collect::<Vec<_>>()
+        );
+        for (path, expected_bytes) in expected {
+            assert_eq!(
+                String::from_utf8(expected_bytes).unwrap(),
+                String::from_utf8(committed[&path].clone()).unwrap(),
+                "binding {} differs from the Rust schema",
+                path.display()
+            );
+        }
+    }
+}
