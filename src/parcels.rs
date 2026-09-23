@@ -305,7 +305,7 @@ pub(crate) fn rasterize(
     mask
 }
 
-fn largest_component(mask: Vec<bool>, grid: usize) -> Vec<bool> {
+pub(crate) fn largest_component(mask: Vec<bool>, grid: usize) -> Vec<bool> {
     let mut seen = vec![false; mask.len()];
     let mut largest = Vec::new();
     for start in 0..mask.len() {

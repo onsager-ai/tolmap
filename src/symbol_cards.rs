@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::{ensure, Result};
 
 use crate::blobs::marching_squares;
-use crate::parcels::{point_in_polygon, polygon_area, rasterize, solve};
+use crate::parcels::{largest_component, point_in_polygon, polygon_area, rasterize, solve};
 use crate::schema::{MapDocument, SymbolsDocument};
 
 type Ring = Vec<[f64; 2]>;
@@ -21,7 +21,8 @@ struct Canvas {
 }
 
 fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
-    let mut rings = marching_squares(mask, canvas.grid);
+    let mask = largest_component(mask.to_vec(), canvas.grid);
+    let mut rings = marching_squares(&mask, canvas.grid);
     rings.sort_by(|a, b| {
         polygon_area(b)
             .total_cmp(&polygon_area(a))
@@ -50,7 +51,7 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
         if output.is_empty() {
             return None;
         }
-        if !covers_unowned_pixel(mask, canvas, &output) || limit >= maximum {
+        if !covers_unowned_pixel(&mask, canvas, &output) || limit >= maximum {
             return Some(output);
         }
         limit = (limit * 2).min(maximum);
@@ -352,7 +353,10 @@ impl Cards<'_> {
 
     fn place(&mut self, symbol: usize, mask: &[bool], canvas: &Canvas, depth: usize) {
         let children = self.children[symbol].clone();
-        let display = inset(mask, canvas, depth, children.len() * 2 + 1);
+        let display = largest_component(
+            inset(mask, canvas, depth, children.len() * 2 + 1),
+            canvas.grid,
+        );
         self.rings[symbol] = ring(&display, canvas);
         if self.rings[symbol].is_none() {
             if let Some(pixel) = display.iter().position(|&yes| yes) {
@@ -617,6 +621,15 @@ mod tests {
                 assert!(region.contains(&true));
                 let outline = ring(region, &canvas).expect("every owner has an outline");
                 assert!(rings_area(&outline) > 0.0);
+                let orientation = signed_area(&outline[0]).signum();
+                assert_eq!(
+                    outline
+                        .iter()
+                        .filter(|ring| signed_area(ring).signum() == orientation)
+                        .count(),
+                    1,
+                    "one card must have one exterior ring"
+                );
                 for (i, &yes) in region.iter().enumerate() {
                     if yes {
                         assert!(!claimed[i], "sibling masks overlap");
