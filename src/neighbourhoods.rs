@@ -173,6 +173,14 @@ fn fold_small(groups: &mut Vec<Vec<usize>>, adjacency: &[Vec<(usize, f64)>]) {
         let target = if target > source { target - 1 } else { target };
         groups[target].extend(moved);
         groups[target].sort_unstable();
+        if groups[target].len() > SINGLE_LIMIT + 2 {
+            // Folding hundreds of weakly attached singletons into the same
+            // strongest neighbour produced 124- to 545-file regions on the
+            // first large-repo run. Keep the merge decision, then divide
+            // its lexical path run back into tractable neighbourhoods.
+            let split = path_chunks(&groups.remove(target));
+            groups.extend(split);
+        }
     }
 }
 
@@ -201,4 +209,19 @@ fn unique_suffix(parents: &[String], index: usize) -> String {
         }
     }
     format!("{} #{}", parents[index], index + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folding_does_not_make_one_huge_neighbourhood() {
+        let adjacency = vec![Vec::new(); 70];
+        let mut groups = vec![(0..40).collect::<Vec<_>>()];
+        groups.extend((40..70).map(|file| vec![file]));
+        fold_small(&mut groups, &adjacency);
+        assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), 70);
+        assert!(groups.iter().all(|group| group.len() <= SINGLE_LIMIT + 2));
+    }
 }

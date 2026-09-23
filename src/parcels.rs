@@ -84,7 +84,7 @@ pub fn build_parcels(document: &MapDocument, partition: &Partition) -> Footprint
                     .sum()
             })
             .collect::<Vec<_>>();
-        let owners = solve(&mask, grid, low, span, &sites, &targets);
+        let owners = solve(&mask, grid, low, span, &sites, &targets, 1);
         for (group_index, (id, files, label)) in groups.into_iter().enumerate() {
             let region = owners
                 .iter()
@@ -144,6 +144,7 @@ pub fn build_parcels(document: &MapDocument, partition: &Partition) -> Footprint
                 local_span,
                 &file_sites,
                 &file_targets,
+                4,
             );
             for (local, &file) in files.iter().enumerate() {
                 let owned = file_owners
@@ -236,7 +237,10 @@ fn rasterize(rings: &[Vec<[f64; 2]>], low: [f64; 2], span: f64, grid: usize) -> 
             for x in x0..=x1 {
                 let point = cell_point(y * grid + x, grid, low, span);
                 if point_in_polygon(point, ring) {
-                    mask[y * grid + x] = true;
+                    // Rings alternate exterior and hole, as emitted by
+                    // marching_squares. Unioning them filled holes and let
+                    // file cells claim area outside their neighbourhood.
+                    mask[y * grid + x] = !mask[y * grid + x];
                 }
             }
         }
@@ -323,6 +327,7 @@ fn solve(
     span: f64,
     initial: &[[f64; 2]],
     targets: &[f64],
+    minimum_cells: usize,
 ) -> Vec<usize> {
     let cells = mask
         .iter()
@@ -355,10 +360,27 @@ fn solve(
         seeds.push(seed);
     }
     let total_weight = targets.iter().sum::<f64>().max(1.0);
-    let target_area = targets
+    let minimum_cells = minimum_cells.min(cells.len() / count);
+    let allocatable = cells.len() - minimum_cells * count;
+    let raw = targets
         .iter()
-        .map(|&weight| (weight / total_weight * cells.len() as f64).max(1.0))
+        .map(|&weight| weight / total_weight * allocatable as f64)
         .collect::<Vec<_>>();
+    let mut quotas = raw
+        .iter()
+        .map(|value| minimum_cells + value.floor() as usize)
+        .collect::<Vec<_>>();
+    let remaining = cells.len() - quotas.iter().sum::<usize>();
+    let mut remainders = (0..count).collect::<Vec<_>>();
+    remainders.sort_by(|&a, &b| {
+        (raw[b] - raw[b].floor())
+            .total_cmp(&(raw[a] - raw[a].floor()))
+            .then_with(|| a.cmp(&b))
+    });
+    for &owner in remainders.iter().take(remaining) {
+        quotas[owner] += 1;
+    }
+    let target_area = quotas.iter().map(|&quota| quota as f64).collect::<Vec<_>>();
     let mut weights = vec![0.0; count];
     let step = span * span / count as f64 * 0.24;
     for iteration in 0..ITERATIONS {
@@ -406,12 +428,41 @@ fn solve(
     // one connected region on each connected component of the district mask.
     let mut owners = vec![usize::MAX; mask.len()];
     let mut heap = BinaryHeap::new();
+    let mut counts = vec![1_usize; count];
     for (owner, &seed) in seeds.iter().enumerate() {
         owners[seed] = owner;
         push_front(
             seed, owner, &owners, mask, grid, low, span, &sites, &weights, &mut heap,
         );
     }
+    let mut deferred = BinaryHeap::new();
+    while let Some(front) = heap.pop() {
+        if owners[front.cell] != usize::MAX {
+            continue;
+        }
+        if counts[front.owner] >= quotas[front.owner] {
+            deferred.push(front);
+            continue;
+        }
+        owners[front.cell] = front.owner;
+        counts[front.owner] += 1;
+        push_front(
+            front.cell,
+            front.owner,
+            &owners,
+            mask,
+            grid,
+            low,
+            span,
+            &sites,
+            &weights,
+            &mut heap,
+        );
+    }
+    // Exact target quotas may be geometrically unreachable behind another
+    // owner's connected frontier. Fill the remaining pixels from deferred
+    // boundary candidates, preserving connectivity and a total partition.
+    heap = deferred;
     while let Some(front) = heap.pop() {
         if owners[front.cell] != usize::MAX {
             continue;
@@ -650,7 +701,7 @@ mod tests {
     fn reserved_seeds_keep_coincident_sites_present() {
         let grid = 20;
         let mask = vec![true; grid * grid];
-        let owners = solve(&mask, grid, [0.0, 0.0], 1.0, &[[0.5, 0.5]; 8], &[1.0; 8]);
+        let owners = solve(&mask, grid, [0.0, 0.0], 1.0, &[[0.5, 0.5]; 8], &[1.0; 8], 4);
         for owner in 0..8 {
             assert!(owners.contains(&owner));
         }
@@ -666,5 +717,37 @@ mod tests {
         let body = largest_component(mask, grid);
         assert_eq!(body.iter().filter(|&&inside| inside).count(), 4);
         assert!(!body[24]);
+    }
+
+    #[test]
+    fn rasterized_nested_ring_preserves_hole() {
+        let outer = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let hole = vec![[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]];
+        let mask = rasterize(&[outer, hole], [0.0, 0.0], 1.0, 21);
+        assert!(mask[5 * 21 + 5]);
+        assert!(!mask[10 * 21 + 10]);
+    }
+
+    #[test]
+    fn connected_growth_tracks_unequal_area_targets() {
+        let grid = 32;
+        let mask = vec![true; grid * grid];
+        let sites = [[0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]];
+        let owners = solve(
+            &mask,
+            grid,
+            [0.0, 0.0],
+            1.0,
+            &sites,
+            &[1.0, 2.0, 3.0, 4.0],
+            4,
+        );
+        let counts = (0..4)
+            .map(|owner| owners.iter().filter(|&&value| value == owner).count())
+            .collect::<Vec<_>>();
+        assert!(
+            counts[0] < counts[1] && counts[1] < counts[2] && counts[2] < counts[3],
+            "{counts:?}"
+        );
     }
 }
