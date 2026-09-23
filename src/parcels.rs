@@ -17,7 +17,9 @@ pub struct Footprints {
 }
 
 pub fn footprint_weight(document: &MapDocument, index: usize) -> usize {
-    document.code_lines.as_ref()
+    document
+        .code_lines
+        .as_ref()
         .and_then(|lines| lines.get(index).copied())
         .unwrap_or_else(|| document.nodes[index].loc())
         .max(1)
