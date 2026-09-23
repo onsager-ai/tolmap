@@ -3635,7 +3635,7 @@ mod tests {
 
     #[test]
     fn python_docstrings_and_multiline_code() {
-        let source = "# preface\n\"\"\"module\ntext\"\"\nclass C:\n    # preface\n    \"class\" \"doc\"\n    def f(self):\n        # preface\n        \"\"\"function\n        doc\"\"\"\n        value = \"\"\"code\n        still code\"\"\"\n        return value\n";
+        let source = "# preface\n\"\"\"module\ntext\"\"\"\nclass C:\n    # preface\n    \"class\" \"doc\"\n    def f(self):\n        # preface\n        \"\"\"function\n        doc\"\"\"\n        value = \"\"\"code\n        still code\"\"\"\n        return value\n";
         assert_eq!(code_lines_of(source, LanguageKind::Python), 5);
     }
 
