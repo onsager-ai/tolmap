@@ -313,7 +313,8 @@ fn rectangle(rect: [f64; 4]) -> Rings {
 }
 
 fn quantize_rings(rings: &mut Rings) -> Result<()> {
-    for ring in rings {
+    let mut output = Rings::with_capacity(rings.len());
+    for (ring_index, ring) in rings.iter().enumerate() {
         let mut points = Vec::<[i128; 2]>::with_capacity(ring.len());
         for point in ring.iter() {
             let rounded = [
@@ -355,20 +356,28 @@ fn quantize_rings(rings: &mut Rings) -> Result<()> {
             .zip(points.iter().cycle().skip(1))
             .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
             .sum::<i128>();
-        ensure!(
-            points.len() >= 3 && doubled_area != 0,
-            "card ring collapsed at 11 decimals"
+        if points.len() < 3 || doubled_area == 0 {
+            // A vanishing hole carries no fill area after rounding; retaining
+            // it would emit an invalid contour. Exteriors must remain valid.
+            ensure!(
+                ring_index > 0,
+                "card exterior collapsed at 11 decimals: {ring:?}"
+            );
+            continue;
+        }
+        output.push(
+            points
+                .into_iter()
+                .map(|p| {
+                    [
+                        p[0] as f64 / CARD_COORDINATE_SCALE,
+                        p[1] as f64 / CARD_COORDINATE_SCALE,
+                    ]
+                })
+                .collect(),
         );
-        *ring = points
-            .into_iter()
-            .map(|p| {
-                [
-                    p[0] as f64 / CARD_COORDINATE_SCALE,
-                    p[1] as f64 / CARD_COORDINATE_SCALE,
-                ]
-            })
-            .collect();
     }
+    *rings = output;
     Ok(())
 }
 
