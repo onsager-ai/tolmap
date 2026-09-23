@@ -6,6 +6,7 @@ import { computeBlast, type AdjMap } from "@/map/graph";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import type { DirectoryNode, DistrictPathRow, PackageLayout } from "@/map/packageLayout";
 import { formatDirectory } from "@/map/packageLayout";
 import { Input } from "@/components/ui/input";
@@ -22,13 +23,21 @@ interface Props {
   showUnconnected: boolean;
   open: boolean;
   onToggleOpen(): void;
-  onSelectFile(i: number, opts?: { fly?: boolean }): void;
+  onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
   onSelectDistrict(d: number): void;
   onZoomDistrict(d: number): void;
   onRouteFrom(i: number): void;
   onRouteTo(i: number): void;
   onSelectDirectory(path?: string): void;
+  /** Breadcrumb-only (issue #82 A1 scope item 3): jump straight to "nothing
+   * selected", and drop the symbol while keeping the same file, respectively
+   * -- both guaranteed not to move the view, unlike onSelectFile/
+   * onSelectDistrict above whose OTHER callers (sidebar, search) may pan.
+   * The district segment reuses onSelectDistrict directly, since that one's
+   * already pan-free for every caller in this file. */
+  onBreadcrumbRepo(): void;
+  onBreadcrumbFile(i: number): void;
 }
 
 /** District, file and symbol cards — one component, three bodies, because
@@ -55,6 +64,8 @@ export function SelectionPanel({
   onRouteFrom,
   onRouteTo,
   onSelectDirectory,
+  onBreadcrumbRepo,
+  onBreadcrumbFile,
 }: Props) {
   const narrow = useIsNarrow();
   const unconnectedTotal = packageLayout.unconnectedFiles.length;
@@ -74,6 +85,17 @@ export function SelectionPanel({
         className={narrow ? "grid cursor-pointer grid-cols-[1fr_auto] items-center gap-2.5 px-3.5 py-2.5" : ""}
       >
         <div className="overflow-hidden">
+          {!showUnconnected && (
+            <Breadcrumb
+              doc={doc}
+              sel={sel}
+              selSym={selSym}
+              selD={selD}
+              onSelectRepo={onBreadcrumbRepo}
+              onSelectDistrict={onSelectDistrict}
+              onSelectFile={onBreadcrumbFile}
+            />
+          )}
           {showUnconnected ? (
             <><h3 className="font-sans text-[13px] font-semibold">Unconnected files</h3>
               {doc.coverage && <p className="text-[10px] text-[var(--dim)]" data-coverage-detail>
@@ -90,7 +112,7 @@ export function SelectionPanel({
           ) : selD != null ? (
             <DistrictHead doc={doc} d={selD} onZoomDistrict={onZoomDistrict} />
           ) : (
-            <FileHead doc={doc} i={sel!} selSym={selSym} />
+            <FileHead doc={doc} i={sel!} selSym={selSym} adj={adj} radj={radj} />
           )}
         </div>
         {narrow && (
@@ -144,7 +166,7 @@ function UnconnectedList({ layout, doc, onSelectFile }: { layout: PackageLayout;
       <summary className="cursor-pointer break-all text-[10px] text-[var(--on)]">{formatDirectory(group.path)} <span className="text-[var(--dim)]">({group.files.length})</span></summary>
       {group.files.map((i) => <button type="button" key={i} data-unconnected-file={i}
         className="block w-full break-all py-1 pl-2 text-left text-[10px] text-[var(--dim)] hover:text-[var(--on)]"
-        onClick={() => onSelectFile(i, { fly: false })}>{doc.F[i].split("/").pop()}</button>)}
+        onClick={() => onSelectFile(i)}>{doc.F[i].split("/").pop()}</button>)}
     </details>)}
   </div>;
 }
@@ -464,15 +486,27 @@ function DistrictBody({
   );
 }
 
-function FileHead({ doc, i, selSym }: { doc: MapDocument; i: number; selSym: number | null }) {
+// Issue #82 A1 scope item 5: the subtitle here is also what the phone's
+// collapsed sheet shows (SelectionPanel renders this same header whether or
+// not the body below it is expanded) -- checking it against the fullscreen
+// summary bar's own spec ("e.g. for a file: 'imported by N files · imports
+// M'") is what caught that it used to show the district name instead, which
+// isn't a one-line SUMMARY of the file so much as a second name. Reusing the
+// exact line SelectionSummaryBar.tsx shows means the phone sheet and the
+// fullscreen bar can't drift apart the way two independent implementations
+// would.
+function FileHead({ doc, i, selSym, adj, radj }: { doc: MapDocument; i: number; selSym: number | null; adj: AdjMap; radj: AdjMap }) {
   const sy = symbolsOf(doc, i);
   const sm = selSym != null ? sy[selSym] : null;
+  const outDeg = adj.get(i)?.length ?? 0;
+  const inDeg = radj.get(i)?.length ?? 0;
   return (
     <>
       <h3 className="truncate font-sans text-[13px] font-semibold">{sm ? sm[0] : doc.F[i].split("/").pop()}</h3>
       <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">
-        {sm ? `${doc.F[i].split("/").pop()}:${sm[2]} · ` : ""}
-        {doc.names[String(D_(doc, i))]}
+        {sm
+          ? `${doc.F[i].split("/").pop()}:${sm[2]} · ${KIND[sm[1]]}`
+          : `imported by ${inDeg} file${inDeg === 1 ? "" : "s"} · imports ${outDeg}`}
       </p>
     </>
   );

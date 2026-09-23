@@ -1,15 +1,16 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useCatalogue, useMapDocument } from "@/data/queries";
 import { MapCanvas, type MapCanvasHandle } from "@/map/MapCanvas";
 import type { MapRendererCallbacks } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
-import { districtClass } from "@/map/geometry";
+import { D_, districtClass } from "@/map/geometry";
 import type { SearchHit } from "@/map/search";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
 import { SearchBox } from "@/components/SearchBox";
 import { SelectionPanel } from "@/components/SelectionPanel";
+import { SelectionSummaryBar } from "@/components/SelectionSummaryBar";
 import { RouteBox } from "@/components/RouteBox";
 import { FooterStats } from "@/components/FooterStats";
 import { ZoomControls } from "@/components/ZoomControls";
@@ -30,6 +31,7 @@ export function MapView() {
   const { data: doc, isLoading, isError, error } = useMapDocument(owner, repo);
 
   const canvasRef = useRef<MapCanvasHandle>(null);
+  const mapAreaRef = useRef<HTMLDivElement>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
   const [routeFrom, setRouteFrom] = useState<number | null>(null);
@@ -37,6 +39,70 @@ export function MapView() {
   const [unconnectedRepo, setUnconnectedRepo] = useState<string | null>(null);
   const [previewDirectory, setPreviewDirectory] = useState<{ repo: string; path: string } | null>(null);
   const packageLayout = useMemo(() => (doc ? buildPackageLayout(doc) : null), [doc]);
+
+  // Issue #82 A1 scope item 5 (fullscreen). Fullscreened element is the map
+  // AREA (below), not the whole page: TopBar and Sidebar are its siblings,
+  // so the Fullscreen API path hides them simply by not being part of what
+  // the browser paints while fullscreen is active -- no separate
+  // show/hide logic needed for that path. The CSS fallback (no element
+  // Fullscreen API -- iOS Safari) instead covers them with `fixed inset-0`,
+  // the same technique the prototype's own `.mapbox.fs` used (arch20 -- see
+  // its setFS/reAspect); either way `isFullscreen` is the one source of
+  // truth the JSX below reads, so React chrome and the CSS class agree.
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    function onFsChange() {
+      setIsFullscreen(!!document.fullscreenElement && document.fullscreenElement === mapAreaRef.current);
+    }
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  async function exitFullscreen() {
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        /* already exiting, or the browser refused -- state is set below either way */
+      }
+    }
+    setIsFullscreen(false);
+  }
+  async function enterFullscreen() {
+    const el = mapAreaRef.current;
+    if (el?.requestFullscreen) {
+      try {
+        await el.requestFullscreen();
+        return; // onFsChange (above) flips isFullscreen once the browser confirms
+      } catch {
+        // iPhone Safari has no element Fullscreen API at all (requestFullscreen
+        // is undefined there, so this branch is never reached on it) -- this
+        // catch is for a DESKTOP browser that has the API but refuses the
+        // call (e.g. not called from a direct user gesture). Either way, fall
+        // through to the CSS-only mode rather than doing nothing.
+      }
+    }
+    setIsFullscreen(true);
+  }
+  function toggleFullscreen() {
+    if (isFullscreen) void exitFullscreen();
+    else void enterFullscreen();
+  }
+  // Esc: the native path already exits via the browser and fires
+  // fullscreenchange (handled above); this covers the CSS fallback, where
+  // there is no native fullscreen state for Esc to exit on its own.
+  // exitFullscreen()'s own guard makes calling it redundantly (native path,
+  // already exiting) harmless.
+  useEffect(() => {
+    if (!isFullscreen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") void exitFullscreen();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFullscreen]);
 
   // radj (imported-by) is new here: SelectionPanel's "links" line and
   // MapRenderer's own selection-links feature both need it, and buildAdj
@@ -77,32 +143,87 @@ export function MapView() {
     });
   }
 
-  function selectFile(i: number, opts: { fly?: boolean; symbol?: number } = {}) {
+  // Issue #82 A1 scope item 1 ("selecting never moves the map"): there is no
+  // more `fly` option. Every selection path -- a map tap, a sidebar pick, a
+  // search result, a deep link, a breadcrumb segment -- goes through
+  // panTo/panToDistrict now (MapRenderer's own pan-only methods), which are
+  // no-ops when the target is already on screen. A map tap's target is
+  // always already on screen by construction, so calling panTo
+  // unconditionally here is exactly equivalent to the old "fly: false" for
+  // that case, and correctly brings an off-screen sidebar/search/deep-link
+  // target into view (at the CURRENT zoom) for the others -- one function,
+  // no flag to thread through every caller.
+  function selectFile(i: number, opts: { symbol?: number } = {}) {
     if (!doc) return;
     setUnconnectedRepo(null);
     updateSearch({ file: doc.F[i], sym: opts.symbol, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
-    if (opts.fly !== false && districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.flyTo(i);
+    if (districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.panTo(i);
   }
-  function selectSymbolDetail(i: number, s: number) {
-    if (!doc) return;
-    setUnconnectedRepo(null);
-    updateSearch({ file: doc.F[i], sym: s, d: undefined, dir: undefined });
-    setPanelOpen(true);
-    setSideOpen(false);
-    if (districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.flyToDetail(i);
-  }
+  // selectDistrict deliberately never pans on its own: it's reused by the
+  // map's own district-polygon tap (already on screen), by SelectionPanel's
+  // internal "near" neighbour and breadcrumb links (selecting a level that
+  // was already reachable from the current card, so there's nothing new to
+  // bring into view), and by the breadcrumb's own district segment, all of
+  // which the spec requires to move the view NOT AT ALL, not "pan if
+  // needed." The sidebar's district row is the one caller that DOES need
+  // panning (its target can be genuinely off screen) -- see the dedicated
+  // wrapper passed to <Sidebar> below, which calls this and then pans.
   function selectDistrict(d: number) {
     setUnconnectedRepo(null);
     updateSearch({ file: undefined, sym: undefined, d, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
   }
-  function clearSelection() {
+  // Jumps straight to "nothing selected" -- the breadcrumb's own repo
+  // segment, and an explicit clear. Distinct from stepBackSelection below,
+  // which is one level at a time.
+  function clearAll() {
     setUnconnectedRepo(null);
     updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined });
     setPanelOpen(false);
+  }
+  // Issue #82 A1 scope item 2: an empty map tap used to clear the whole
+  // selection in one step; now it steps back exactly one level --
+  // symbol -> its file -> the file's district -> nothing -- matching the
+  // prototype's own click handler (arch20.body.html's plain
+  // `svg.addEventListener("click", ...)"`, not the file-hit one). A
+  // directory highlight and the unconnected-files view aren't part of that
+  // repo/district/file/symbol hierarchy, but each still reduces to "select
+  // one level up" the same way: dropped in one tap, panel closed on the
+  // step that reaches "nothing." An unconnected file's own "district" isn't
+  // a place shown anywhere else in the UI (Sidebar never lists it, see
+  // districtClass's "unconnected" branch), so stepping back from one skips
+  // the district level entirely rather than landing on a card nothing else
+  // can reach.
+  function stepBackSelection() {
+    if (!doc) return;
+    if (selSym != null) {
+      updateSearch({ sym: undefined });
+      return;
+    }
+    if (sel != null) {
+      const d = D_(doc, sel);
+      if (districtClass(doc.districts[String(d)]) === "unconnected") clearAll();
+      else updateSearch({ file: undefined, sym: undefined, d, dir: undefined });
+      return;
+    }
+    if (selD != null) {
+      clearAll();
+      return;
+    }
+    if (search.dir) {
+      updateSearch({ dir: undefined });
+      setPanelOpen(false);
+      return;
+    }
+    if (unconnectedRepo) {
+      setUnconnectedRepo(null);
+      setPanelOpen(false);
+      return;
+    }
+    // Already at "nothing": matches the prototype's own `else return;`.
   }
 
   function selectDirectory(path?: string) {
@@ -116,11 +237,10 @@ export function MapView() {
   }
 
   const rendererCallbacks: MapRendererCallbacks = {
-    // Taps directly on the map never fly — the file is already in view.
-    onSelectFile: (i) => selectFile(i, { fly: false }),
-    onSelectSymbol: (i, s) => selectFile(i, { fly: false, symbol: s }),
+    onSelectFile: (i) => selectFile(i),
+    onSelectSymbol: (i, s) => selectFile(i, { symbol: s }),
     onSelectDistrict: (d) => selectDistrict(d),
-    onClearSelection: () => clearSelection(),
+    onClearSelection: () => stepBackSelection(),
     onSelectDirectory: (path) => selectDirectory(path),
     onPreviewDirectory: (path) => setPreviewDirectory(path && doc ? { repo: doc.repo, path } : null),
   };
@@ -154,38 +274,47 @@ export function MapView() {
 
   return (
     <div className="flex h-full flex-col">
-      <TopBar
-        catalogue={catalogue}
-        owner={owner}
-        repo={repo}
-        layer={search.layer}
-        onLayer={(l) => updateSearch({ layer: l })}
-      />
-      <div className="relative flex min-h-0 flex-1">
-        <Sidebar
-          doc={doc}
-          open={sideOpen}
-          onToggleOpen={() => setSideOpen((v) => !v)}
-          onPickLandmark={(i) => {
-            setSideOpen(false);
-            selectFile(i, { fly: true });
-          }}
-          onFlyDistrict={(d) => {
-            setSideOpen(false);
-            // Issue #63: an island row also SELECTS the district -- selecting is
-            // what exempts an island from the fade (MapRenderer's
-            // islandExceptionDistricts reads `selD`) and is also what opens
-            // its card (selectDistrict's own setPanelOpen), matching #63's
-            // own check ("select an island from the drawer list, and it's
-            // visible and its card opens"). A mainland row keeps today's
-            // fly-only behaviour: mainland is never faded, and changing its
-            // established "fly to look, don't select" affordance is out of
-            // this issue's scope.
-            if (doc && districtClass(doc.districts[String(d)]) === "island") selectDistrict(d);
-            canvasRef.current?.zoomDistrict(d);
-          }}
+      {!isFullscreen && (
+        <TopBar
+          catalogue={catalogue}
+          owner={owner}
+          repo={repo}
+          layer={search.layer}
+          onLayer={(l) => updateSearch({ layer: l })}
         />
-        <div className="relative min-w-0 flex-1 bg-[var(--canvas)]">
+      )}
+      <div className="relative flex min-h-0 flex-1">
+        {!isFullscreen && (
+          <Sidebar
+            doc={doc}
+            open={sideOpen}
+            onToggleOpen={() => setSideOpen((v) => !v)}
+            onPickLandmark={(i) => {
+              setSideOpen(false);
+              selectFile(i);
+            }}
+            onSelectDistrict={(d) => {
+              setSideOpen(false);
+              // Issue #82 A1: a sidebar row now SELECTS the district (both
+              // mainland and island rows alike -- the old mainland-only
+              // "fly, don't select" affordance from issue #63 is gone, since
+              // this issue's own spec explicitly lists "the sidebar
+              // (district rows...)" as a place selecting must never zoom)
+              // and pans to it if it's off screen, instead of always
+              // zooming in. selectDistrict() itself stays pan-free (it's
+              // shared with map taps and the breadcrumb, which must never
+              // move the view at all); this wrapper is the one place that
+              // adds the pan, because a sidebar target genuinely can be off
+              // screen.
+              selectDistrict(d);
+              canvasRef.current?.panToDistrict(d);
+            }}
+          />
+        )}
+        <div
+          ref={mapAreaRef}
+          className={`relative min-w-0 flex-1 bg-[var(--canvas)]${isFullscreen ? " fixed inset-0 z-50" : ""}`}
+        >
           <MapCanvas
             doc={doc}
             geo={search.geo}
@@ -204,38 +333,52 @@ export function MapView() {
           />
           <SearchBox
             doc={doc}
-            onPick={(hit: SearchHit) => {
-              if (hit.s != null) selectSymbolDetail(hit.i, hit.s);
-              else selectFile(hit.i, { fly: true });
-            }}
+            onPick={(hit: SearchHit) => selectFile(hit.i, hit.s != null ? { symbol: hit.s } : {})}
           />
-          <SelectionPanel
-            doc={doc}
-            sel={sel}
-            selSym={selSym}
-            selD={selD}
-            adj={adj}
-            radj={radj}
-            packageLayout={packageLayout}
-            activeDirectory={activeDirectory}
-            showUnconnected={unconnectedRepo === doc.repo && sel == null && selD == null}
-            open={panelOpen}
-            onToggleOpen={() => setPanelOpen((v) => !v)}
-            onSelectFile={(i, opts) => selectFile(i, opts)}
-            onSelectSymbol={(i, s) => selectFile(i, { fly: false, symbol: s })}
-            onSelectDistrict={selectDistrict}
-            onZoomDistrict={(d) => canvasRef.current?.zoomDistrict(d)}
-            onRouteFrom={(i) => setRouteFrom(i)}
-            onRouteTo={(i) => {
-              if (routeFrom == null) {
-                setRouteFrom(i);
-                return;
-              }
-              setRoute(findRoute(doc, adj, routeFrom, i));
-            }}
-            onSelectDirectory={selectDirectory}
-          />
-          {search.layer === "p" && (
+          {isFullscreen ? (
+            <SelectionSummaryBar
+              doc={doc}
+              sel={sel}
+              selSym={selSym}
+              selD={selD}
+              adj={adj}
+              radj={radj}
+              onDetails={() => {
+                void exitFullscreen();
+                setPanelOpen(true);
+              }}
+            />
+          ) : (
+            <SelectionPanel
+              doc={doc}
+              sel={sel}
+              selSym={selSym}
+              selD={selD}
+              adj={adj}
+              radj={radj}
+              packageLayout={packageLayout}
+              activeDirectory={activeDirectory}
+              showUnconnected={unconnectedRepo === doc.repo && sel == null && selD == null}
+              open={panelOpen}
+              onToggleOpen={() => setPanelOpen((v) => !v)}
+              onSelectFile={(i) => selectFile(i)}
+              onSelectSymbol={(i, s) => selectFile(i, { symbol: s })}
+              onSelectDistrict={selectDistrict}
+              onZoomDistrict={(d) => canvasRef.current?.zoomDistrict(d)}
+              onRouteFrom={(i) => setRouteFrom(i)}
+              onRouteTo={(i) => {
+                if (routeFrom == null) {
+                  setRouteFrom(i);
+                  return;
+                }
+                setRoute(findRoute(doc, adj, routeFrom, i));
+              }}
+              onSelectDirectory={selectDirectory}
+              onBreadcrumbRepo={clearAll}
+              onBreadcrumbFile={(i) => updateSearch({ file: doc.F[i], sym: undefined, d: undefined, dir: undefined })}
+            />
+          )}
+          {!isFullscreen && search.layer === "p" && (
             <PackageLegend
               grouping={packageGrouping}
               auto={search.depth == null}
@@ -244,10 +387,12 @@ export function MapView() {
               onDepth={(depth) => updateSearch({ depth: depth === packageLayout.autoDepth ? undefined : depth })}
             />
           )}
-          <FooterStats doc={doc} layer={search.layer} maxCh={maxCh} maxCx={maxCx}
-            unconnectedCount={packageLayout.unconnectedFiles.length}
-            mobileHidden={panelOpen}
-            onOpenUnconnected={() => { updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined }); setUnconnectedRepo(doc.repo); setPanelOpen(true); setSideOpen(false); }} />
+          {!isFullscreen && (
+            <FooterStats doc={doc} layer={search.layer} maxCh={maxCh} maxCx={maxCx}
+              unconnectedCount={packageLayout.unconnectedFiles.length}
+              mobileHidden={panelOpen}
+              onOpenUnconnected={() => { updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined }); setUnconnectedRepo(doc.repo); setPanelOpen(true); setSideOpen(false); }} />
+          )}
           <RouteBox
             doc={doc}
             routeFrom={routeFrom}
@@ -261,6 +406,8 @@ export function MapView() {
             onZoomIn={() => canvasRef.current?.zoomBy(1.6)}
             onZoomOut={() => canvasRef.current?.zoomBy(1 / 1.6)}
             onFit={() => canvasRef.current?.fit(true)}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={toggleFullscreen}
           />
         </div>
       </div>

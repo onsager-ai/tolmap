@@ -233,7 +233,18 @@ async function readDot(page, dataK) {
   return page.evaluate((k) => {
     const el = document.querySelector(`[data-k="${CSS.escape(k)}"]`);
     if (!el) return null;
-    return { cx: parseFloat(el.getAttribute("cx") ?? el.getAttribute("x")), cy: parseFloat(el.getAttribute("cy") ?? el.getAttribute("y")) };
+    // `r` is included so a caller can tell k apart from a pure pan: this
+    // circle's radius is a monotonic function of k alone for a fixed file
+    // (MapRenderer.paint()'s `r = ... * Math.sqrt(this.k / fitScale())`,
+    // and fitScale() is constant for a fixed document/viewport) -- a pan
+    // moves cx/cy but never touches r, so an unchanged r is direct evidence
+    // k didn't move, independent of the cx/cy comparison already used for
+    // "did the view move at all."
+    return {
+      cx: parseFloat(el.getAttribute("cx") ?? el.getAttribute("x")),
+      cy: parseFloat(el.getAttribute("cy") ?? el.getAttribute("y")),
+      r: el.hasAttribute("r") ? parseFloat(el.getAttribute("r")) : null,
+    };
   }, dataK);
 }
 
@@ -285,6 +296,70 @@ async function findEmptyPointWithZoomOut(page, vw, vh, maxAttempts = 3) {
     await page.waitForTimeout(300);
   }
   return null;
+}
+
+/** A point that resolves (via elementFromPoint) to a district polygon
+ * itself -- large by construction, unlike a file dot (see
+ * checkDragThresholdNoSelect's own comment for why that distinction
+ * matters there). Same unobstructed-point algorithm checkViewerCards uses
+ * for its own district tap, factored out since a second check needs it. */
+async function pickDistrictPoint(page, hasTouch) {
+  return page.evaluate((touch) => {
+    const paths = [...document.querySelectorAll(touch ? 'svg.map-svg text.hit[data-k^="d:"]' : 'svg.map-svg path.hit[data-k^="d:"]')];
+    for (const path of paths) {
+      const rect = path.getBoundingClientRect();
+      for (let yi = 1; yi < 6; yi++) {
+        for (let xi = 1; xi < 6; xi++) {
+          const x = rect.left + (rect.width * xi) / 6;
+          const y = rect.top + (rect.height * yi) / 6;
+          const hit = document.elementFromPoint(x, y)?.closest?.('[data-k^="d:"]');
+          if (hit?.getAttribute("data-k") === path.getAttribute("data-k")) {
+            return { x, y, key: path.getAttribute("data-k") };
+          }
+        }
+      }
+    }
+    return null;
+  }, hasTouch);
+}
+
+/** Two on-screen file dots, at least `minDist` CSS px apart, for measuring k
+ * directly (CI review finding on the fullscreen check, see
+ * checkFullscreenPreservesView's own comment): the on-screen distance
+ * between two fixed world points is exactly `worldDistance * k`, independent
+ * of tx/ty (pan) AND of fitScale() -- unlike a single dot's own radius
+ * (`Math.sqrt(this.k / this.fitScale())` in MapRenderer.paint()), which
+ * moves whenever fitScale() does, and fitScale() DOES change across a
+ * fullscreen transition (removing/adding chrome changes the available
+ * fitting box) even when k itself does not. `minDist` keeps the distance
+ * comparison meaningful against the renderer's own `toFixed(1)` rounding on
+ * cx/cy -- too close together and that rounding alone could swing the
+ * measured distance by a percent or more. */
+async function pickTwoOnScreenDots(page, vw, vh, minDist = 80) {
+  return page.evaluate(
+    ({ vw, vh, minDist }) => {
+      const els = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+      const candidates = [];
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const cx = r.x + r.width / 2;
+        const cy = r.y + r.height / 2;
+        if (cx > vw * 0.15 && cx < vw * 0.85 && cy > vh * 0.15 && cy < vh * 0.85) {
+          candidates.push({ dataK: el.getAttribute("data-k"), cx, cy });
+        }
+        if (candidates.length >= 40) break;
+      }
+      for (let a = 0; a < candidates.length; a++) {
+        for (let b = a + 1; b < candidates.length; b++) {
+          const d = Math.hypot(candidates[a].cx - candidates[b].cx, candidates[a].cy - candidates[b].cy);
+          if (d >= minDist) return [candidates[a].dataK, candidates[b].dataK];
+        }
+      }
+      return null;
+    },
+    { vw, vh, minDist },
+  );
 }
 
 async function tap(page, profile, x, y) {
@@ -1471,6 +1546,492 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   await context.close();
 }
 
+// ---------------------------------------------------------------------------
+// Issue #82 A1 ("selecting never moves the map"; step-back; breadcrumb;
+// fullscreen; drag-vs-click threshold; hit-area data-k fixes). No existing
+// check above asserted the OLD fly-on-select behaviour (a sidebar pick or a
+// search result changing k) -- runOne()'s own "tap a file dot" step only
+// ever exercised a MAP-originated selection, which never flew before this
+// PR either, and nothing else in this file drove Sidebar or SearchBox and
+// then compared the view. So there was nothing here to correct for the new
+// pan-only behaviour; these are all new checks instead.
+// ---------------------------------------------------------------------------
+
+/** Issue #82 A1 scope item 2: an empty map tap steps back one level at a
+ * time -- symbol -> its file -> the file's district -> nothing -- instead
+ * of clearing everything in one step. Drives it from a `?file=&sym=` deep
+ * link on a file/symbol known to be in a normal (non-unconnected) district,
+ * so the district level is actually reachable. */
+async function checkEmptyTapStepBack(browser, base) {
+  const label = "empty tap steps back one level at a time (django)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const doc = await (await fetch(`${base}/maps/django/django.json`)).json();
+  let fileIndex = null;
+  let districtId = null;
+  for (let i = 0; i < doc.F.length; i++) {
+    const syms = doc.S?.[String(i)];
+    if (!syms || syms.length === 0) continue;
+    const d = doc.N[i][0];
+    if (doc.districts[String(d)].class === "unconnected") continue;
+    fileIndex = i;
+    districtId = d;
+    break;
+  }
+  if (fileIndex == null) {
+    report(false, `${label}: setup`, "no file with a symbol in a normal district found");
+    await context.close();
+    return;
+  }
+  await page.goto(`${base}/django/django?geo=r&layer=d&file=${encodeURIComponent(doc.F[fileIndex])}&sym=0`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  const step = async (assertFn, stepLabel) => {
+    const pt = await findEmptyPointWithZoomOut(page, 1200, 800);
+    if (!pt) {
+      report(false, `${label}: ${stepLabel}`, "no empty point found even after zooming out");
+      return;
+    }
+    const before = await stableBox(page);
+    await tap(page, PROFILES[0], pt[0], pt[1]);
+    await page.waitForTimeout(300);
+    const url = new URL(page.url());
+    assertFn(url, stepLabel);
+    report(boxesClose(before, await stableBox(page)), `${label}: ${stepLabel} (view unchanged)`);
+  };
+
+  await step((url, stepLabel) => report(
+    url.searchParams.get("file") === doc.F[fileIndex] && !url.searchParams.has("sym"),
+    `${label}: ${stepLabel}`,
+    url.toString(),
+  ), "symbol -> file (drops the symbol, keeps the file)");
+
+  await step((url, stepLabel) => report(
+    !url.searchParams.has("file") && url.searchParams.get("d") === String(districtId),
+    `${label}: ${stepLabel}`,
+    url.toString(),
+  ), "file -> district (its own district)");
+
+  await step((url, stepLabel) => report(
+    !url.searchParams.has("file") && !url.searchParams.has("d"),
+    `${label}: ${stepLabel}`,
+    url.toString(),
+  ), "district -> nothing");
+
+  // One more empty tap once nothing is selected: no-op, not an error --
+  // matches the prototype's own `else return;` (arch20.body.html).
+  const finalPt = await findEmptyPointWithZoomOut(page, 1200, 800);
+  if (finalPt) {
+    const beforeUrl = page.url();
+    await tap(page, PROFILES[0], finalPt[0], finalPt[1]);
+    await page.waitForTimeout(300);
+    report(page.url() === beforeUrl, `${label}: an empty tap with nothing selected is a no-op`);
+  }
+  await context.close();
+}
+
+/** Issue #82 A1 scope item 3: breadcrumb segments select their level
+ * without moving the view. Same deep link setup as the step-back check
+ * above (a file+symbol in a normal district), clicking from the deepest
+ * segment (file, since the symbol itself renders as plain text, not a
+ * button -- see Breadcrumb.tsx) back up through district to repo. */
+async function checkBreadcrumbNoMove(browser, base, profile) {
+  const label = `breadcrumb selects without moving the view (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const doc = await (await fetch(`${base}/maps/django/django.json`)).json();
+  let fileIndex = null;
+  let districtId = null;
+  for (let i = 0; i < doc.F.length; i++) {
+    const syms = doc.S?.[String(i)];
+    if (!syms || syms.length === 0) continue;
+    const d = doc.N[i][0];
+    if (doc.districts[String(d)].class === "unconnected") continue;
+    fileIndex = i;
+    districtId = d;
+    break;
+  }
+  if (fileIndex == null) {
+    report(false, `${label}: setup`, "no file with a symbol in a normal district found");
+    await context.close();
+    return;
+  }
+  await page.goto(`${base}/django/django?geo=r&layer=d&file=${encodeURIComponent(doc.F[fileIndex])}&sym=0`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-breadcrumb]");
+  await page.waitForTimeout(600);
+  if (profile.isMobile) {
+    const header = page.locator("[data-selection-panel] > div").first();
+    const box = await header.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+    await page.waitForTimeout(300);
+  }
+
+  const buttons = page.locator("[data-breadcrumb] button");
+  report((await buttons.count()) === 3, `${label}: repo/district/file are all clickable with a symbol selected`, `count=${await buttons.count()}`);
+
+  let before = await stableBox(page);
+  await buttons.nth(2).click(); // file segment: drops the symbol
+  await page.waitForTimeout(300);
+  let url = new URL(page.url());
+  report(url.searchParams.get("file") === doc.F[fileIndex] && !url.searchParams.has("sym"),
+    `${label}: file segment drops the symbol, keeps the file`, url.toString());
+  report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after the file segment`);
+
+  before = await stableBox(page);
+  await buttons.nth(1).click(); // district segment
+  await page.waitForTimeout(300);
+  url = new URL(page.url());
+  report(!url.searchParams.has("file") && url.searchParams.get("d") === String(districtId),
+    `${label}: district segment selects the district`, url.toString());
+  report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after the district segment`);
+
+  before = await stableBox(page);
+  await buttons.nth(0).click(); // repo segment
+  await page.waitForTimeout(300);
+  url = new URL(page.url());
+  report(!url.searchParams.has("file") && !url.searchParams.has("d"),
+    `${label}: repo segment clears the selection`, url.toString());
+  report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after the repo segment`);
+  await context.close();
+}
+
+/** Issue #82 A1 scope item 5: entering and leaving fullscreen keeps k and
+ * the centre world point, changing only the aspect -- the same contract
+ * MapRenderer.resize() already gives a plain viewport resize (see runOne's
+ * own "resize preserves centre" step, whose centre-point formula this
+ * reuses almost verbatim). Whether the browser actually grants the native
+ * Fullscreen API or MapView falls back to its CSS-only mode is not asserted
+ * either way -- both paths go through the exact same resize(), never fit()
+ * (see MapView.tsx's isFullscreen wiring), so the invariant holds
+ * regardless of which one engaged.
+ *
+ * CI review finding: this used to compare a single dot's own radius before
+ * and after, on the theory that radius is a pure function of k for a fixed
+ * file. It isn't -- MapRenderer.paint() computes it as
+ * `... * Math.sqrt(this.k / this.fitScale())`, and fitScale() itself
+ * changes across this exact transition (removing/adding chrome changes the
+ * available fitting box), so the radius moves even when k does not. Fixed
+ * by comparing the on-screen DISTANCE between two fixed dots instead
+ * (pickTwoOnScreenDots) -- distance = worldDistance * k is independent of
+ * both tx/ty and fitScale(), so it isolates k cleanly. */
+async function checkFullscreenPreservesView(browser, base, profile) {
+  const label = `fullscreen keeps k and the centre point (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  // Zoom in one notch first, off the exact fit-scale view: clampK's floor
+  // is fitScale()*0.5, and fitScale() itself moves across this transition
+  // (see above) -- starting EXACTLY at fit, where k already sits right at
+  // that floor, risks resize()'s existing, correct, and unrelated re-clamp
+  // bumping k by a hair as the floor moves under it, a false failure of
+  // THIS check rather than a bug in the fullscreen feature. One notch of
+  // headroom above fit is enough that the floor can't reach k in a normal
+  // chrome size change.
+  await zoomIn(page, profile.viewport.width / 2, profile.viewport.height / 2);
+
+  const keys = await pickTwoOnScreenDots(page, profile.viewport.width, profile.viewport.height);
+  if (!keys) {
+    report(false, `${label}: setup`, "could not find two on-screen dots far enough apart");
+    await context.close();
+    return;
+  }
+  const [keyA, keyB] = keys;
+  const vbBefore = await readViewBox(page);
+  const beforeA = await readDot(page, keyA);
+  const beforeB = await readDot(page, keyB);
+  const distBefore = beforeA && beforeB ? Math.hypot(beforeA.cx - beforeB.cx, beforeA.cy - beforeB.cy) : null;
+
+  await page.locator('button[aria-label="Enter fullscreen"]').click();
+  await page.waitForTimeout(500);
+  const vbAfter = await readViewBox(page);
+  const afterA = await readDot(page, keyA);
+  const afterB = await readDot(page, keyB);
+  const distAfter = afterA && afterB ? Math.hypot(afterA.cx - afterB.cx, afterA.cy - afterB.cy) : null;
+
+  if (!beforeA || !afterA) {
+    report(false, `${label}: entering fullscreen`, "reference dot A missing after entering fullscreen");
+  } else {
+    // Same formula as runOne's "resize preserves centre" step: resize()
+    // keeps the world point under the OLD viewport centre under the NEW
+    // one, which is exactly a shift of half the viewBox delta. Dot A is an
+    // arbitrary fixed world point for this purpose; either would do.
+    const expectDx = (vbAfter.w - vbBefore.w) / 2;
+    const expectDy = (vbAfter.h - vbBefore.h) / 2;
+    const actualDx = afterA.cx - beforeA.cx;
+    const actualDy = afterA.cy - beforeA.cy;
+    const centreOk = Math.abs(actualDx - expectDx) <= 1.5 && Math.abs(actualDy - expectDy) <= 1.5;
+    report(centreOk, `${label}: entering fullscreen keeps the centre world point`,
+      centreOk ? undefined : `expected shift (${expectDx.toFixed(1)}, ${expectDy.toFixed(1)}), got (${actualDx.toFixed(1)}, ${actualDy.toFixed(1)})`);
+  }
+  if (distBefore == null || distAfter == null) {
+    report(false, `${label}: entering fullscreen keeps k`, "one of the two reference dots went missing");
+  } else {
+    const kOk = Math.abs(distBefore - distAfter) <= 1.5;
+    report(kOk, `${label}: entering fullscreen keeps k (screen distance between two fixed dots unchanged)`,
+      kOk ? undefined : `distance before=${distBefore.toFixed(2)}px after=${distAfter.toFixed(2)}px`);
+  }
+  report(await page.locator('button[aria-label="Exit fullscreen"]').count() === 1,
+    `${label}: the zoom controls now show an exit-fullscreen button`);
+
+  await page.locator('button[aria-label="Exit fullscreen"]').click();
+  await page.waitForTimeout(500);
+  const vbFinal = await readViewBox(page);
+  const finalA = await readDot(page, keyA);
+  const finalB = await readDot(page, keyB);
+  const distFinal = finalA && finalB ? Math.hypot(finalA.cx - finalB.cx, finalA.cy - finalB.cy) : null;
+  if (finalA && distFinal != null) {
+    const backOk = Math.abs(finalA.cx - beforeA.cx) <= 1.5 && Math.abs(finalA.cy - beforeA.cy) <= 1.5 &&
+      Math.abs(vbFinal.w - vbBefore.w) <= 1.5 && Math.abs(vbFinal.h - vbBefore.h) <= 1.5;
+    report(backOk, `${label}: exiting fullscreen returns to the original view`,
+      backOk ? undefined : JSON.stringify({ vbBefore, vbFinal, beforeA, finalA }));
+    const kBackOk = distBefore != null && Math.abs(distBefore - distFinal) <= 1.5;
+    report(kBackOk, `${label}: exiting fullscreen restores k`,
+      kBackOk ? undefined : `distance before=${distBefore?.toFixed(2)}px final=${distFinal.toFixed(2)}px`);
+  } else {
+    report(false, `${label}: exiting fullscreen`, "a reference dot went missing after exiting fullscreen");
+  }
+  await context.close();
+}
+
+/** Issue #82 A1 scope item 6: a file basename label carries `data-k`, so a
+ * tap on the LABEL ITSELF (not the dot it names) selects that file instead
+ * of falling through to nothing. */
+async function checkFileLabelTapSelects(browser, base) {
+  const label = "tapping a file label selects that file (django)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  await zoomIn(page, 600, 400); // file labels only appear once zf > 1.5 (drawLabels)
+
+  const target = await page.evaluate(() => {
+    const els = [...document.querySelectorAll("svg.map-svg text[data-file-label]")];
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2, index: Number(el.getAttribute("data-file-label")) };
+    }
+    return null;
+  });
+  if (!target) {
+    report(false, `${label}: setup`, "no file label found after zooming in");
+    await context.close();
+    return;
+  }
+  const doc = await (await fetch(`${base}/maps/django/django.json`)).json();
+  await page.mouse.click(target.x, target.y);
+  await page.waitForTimeout(300);
+  report(new URL(page.url()).searchParams.get("file") === doc.F[target.index],
+    `${label}: tapping the label selects the file it names`,
+    `expected=${doc.F[target.index]} url=${page.url()}`);
+  await context.close();
+}
+
+/** Issue #82 A1 scope item 4: a single named 4px (Euclidean) threshold for
+ * both "still a tap" and "swallow the click" -- a drag that crosses it never
+ * selects whatever was under the pointer when it lifted, and a sub-threshold
+ * jitter (real touch/mouse input always has some) still counts as a tap. */
+async function checkDragThresholdNoSelect(browser, base) {
+  const label = "drag vs. click threshold (django) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  // A district polygon, not a file dot: on desktop a dot's hit area is only
+  // its own painted (LOC-scaled, sometimes just a couple of screen pixels)
+  // radius -- no touch padding, unlike the circle's stroke-width:TOUCH?16:0
+  // -- so a several-pixel drag can exit a SMALL dot's geometry by simple
+  // accident, passing this check even if the THRESHOLD logic under test
+  // were wrong. A district polygon spans hundreds of pixels, so a 2px or
+  // 6px move is guaranteed to land inside it either way; what differs is
+  // purely whether pointerMove/click's shared threshold swallows the click,
+  // which is the one thing actually being tested here.
+  const dragPoint = await pickDistrictPoint(page, false);
+  if (!dragPoint) {
+    report(false, `${label}: setup`, "no unobstructed district point found for the drag case");
+  } else {
+    await page.mouse.move(dragPoint.x, dragPoint.y);
+    await page.mouse.down();
+    await page.mouse.move(dragPoint.x + 6, dragPoint.y + 6, { steps: 4 }); // >= DRAG_THRESHOLD_PX
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    report(!new URL(page.url()).searchParams.has("d"),
+      `${label}: a 6px drag starting on a district does not select it`, page.url());
+  }
+
+  const tapPoint = await pickDistrictPoint(page, false);
+  if (!tapPoint) {
+    report(false, `${label}: setup`, "no unobstructed district point found for the jitter case");
+  } else {
+    await page.mouse.move(tapPoint.x, tapPoint.y);
+    await page.mouse.down();
+    await page.mouse.move(tapPoint.x + 2, tapPoint.y + 1, { steps: 2 }); // < DRAG_THRESHOLD_PX
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    report(new URL(page.url()).searchParams.get("d") === tapPoint.key.split(":")[1],
+      `${label}: a 2px jitter still counts as a tap`, `expected d=${tapPoint.key.split(":")[1]} url=${page.url()}`);
+  }
+  await context.close();
+}
+
+/** Issue #82 A1 scope item 1: a search pick for a file that's currently off
+ * screen pans it into view without changing k. Zooms in on the viewport's
+ * own centre first so plenty of the mainland ends up off screen, then picks
+ * an off-screen file by data-k geometry (not by ID -- has to be genuinely
+ * outside the safe content rect right now) AND a "companion" dot near it in
+ * LOCAL (SVG) space, and checks the companion's own cx/cy shift (proves a
+ * pan happened) and radius (proves k didn't, see readDot's own comment)
+ * rather than trying to read the target's own geometry (which is exactly
+ * what the pan is establishing, not a fixed reference to measure against).
+ *
+ * CI review finding #1: searching by bare basename picked
+ * "django/conf/locale/<lang>/formats.py" as the off-screen target on one
+ * run, then landed on "django/utils/formats.py" instead -- not an app bug.
+ * django ships 86 files literally named `formats.py` (one per locale
+ * directory), and map/search.ts's own ranking (an intentional, unrelated
+ * design: "exact match wins over a substring match") ties ALL of them at
+ * its best bucket for an exact-basename query, breaking the tie by import
+ * fan-in -- so searching a NON-unique basename is inherently ambiguous
+ * about which file Enter selects, independent of anything this PR touches.
+ * Fixed by only ever choosing an off-screen TARGET whose basename is unique
+ * across the whole document, so the search has exactly one right answer.
+ *
+ * CI review finding #2: the first fix still used an arbitrary CENTRAL dot
+ * (pickTarget(), picked from the OLD view before the pan) as the fixed
+ * reference point, and it went missing after the pan -- not because
+ * nothing moved, but because it moved OFF screen. panTo() recentres the
+ * target exactly (MapRenderer.panToPoint), which can be a large jump when
+ * the target starts far from the viewport centre, and a dot that was
+ * comfortably central in the OLD view is not guaranteed to survive an
+ * arbitrarily large recentring translation even given paint()'s generous
+ * cull margin. Fixed by picking the reference NEAR THE TARGET instead (a
+ * "companion" dot within a small LOCAL-space radius of it): a pure
+ * translation preserves relative positions, so anything close to the target
+ * before the pan is equally close to it after -- and after, the target is
+ * centred by definition, so its companion is guaranteed to still be on (or
+ * very near) screen too. */
+async function checkSearchPanOffscreen(browser, base) {
+  const label = "search pick for an off-screen file pans without changing k (django)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  // Zoom in centred on the viewport's own centre (not a corner): shrinks the
+  // visible extent enough that plenty of files near the EDGES of the old
+  // view end up genuinely off screen, which is what makes finding an
+  // off-screen target below possible at all.
+  await zoomIn(page, 600, 400);
+
+  const doc = await (await fetch(`${base}/maps/django/django.json`)).json();
+  const basenameCounts = new Map();
+  for (const f of doc.F) {
+    const base = f.split("/").pop();
+    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+  }
+  const uniqueBasenames = [...basenameCounts.entries()].filter(([, count]) => count === 1).map(([b]) => b);
+
+  // cx/cy are read from the `cx`/`cy` ATTRIBUTES the renderer wrote
+  // (`this.X(p[0]).toFixed(1)` et al), never getBoundingClientRect() -- that
+  // is SVG-LOCAL space, exactly what fitViewport()'s rect and panTo()'s own
+  // bounds check use (see MapRenderer.resize()/paint(): VW/VH come from the
+  // wrap div's own box, and this.X()/this.Y() never add a page offset). The
+  // <svg> element itself does not start at page (0,0) on desktop -- Sidebar
+  // (250px) sits to its left, TopBar above it -- so a page-relative
+  // getBoundingClientRect() cx/cy would be shifted from local space by
+  // exactly that offset and misclassify things.
+  const picked = await page.evaluate(
+    ({ files, uniqueBasenames, companionRadius }) => {
+      const svg = document.querySelector("svg.map-svg");
+      const vw = svg.clientWidth;
+      const vh = svg.clientHeight;
+      const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+      const dots = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')]
+        .map((el) => ({ el, key: el.getAttribute("data-k"), cx: parseFloat(el.getAttribute("cx")), cy: parseFloat(el.getAttribute("cy")) }))
+        .filter((d) => !Number.isNaN(d.cx) && !Number.isNaN(d.cy));
+      for (let i = 0; i < files.length; i++) {
+        if (!uniqueBasenames.includes(files[i].split("/").pop())) continue;
+        const key = `f:${i}`;
+        const target = dots.find((d) => d.key === key);
+        if (!target) continue; // not drawn near the viewport at all -- also off screen, but nothing to measure against the rect
+        const offScreen = target.cx < rect[0] || target.cx > rect[2] || target.cy < rect[1] || target.cy > rect[3];
+        if (!offScreen) continue;
+        const companion = dots.find((d) => d.key !== key && Math.hypot(d.cx - target.cx, d.cy - target.cy) <= companionRadius);
+        if (!companion) continue;
+        return { index: i, file: files[i], companionKey: companion.key };
+      }
+      return null;
+    },
+    { files: doc.F, uniqueBasenames, companionRadius: 60 },
+  );
+  if (!picked) {
+    report(false, `${label}: setup`, "no off-screen file with a unique basename and a nearby companion dot found");
+    await context.close();
+    return;
+  }
+
+  const before = await readDot(page, picked.companionKey);
+  await page.locator('input[aria-label="Search files"]').fill(picked.file.split("/").pop());
+  await page.waitForTimeout(150);
+  await page.locator('input[aria-label="Search files"]').press("Enter");
+  await page.waitForTimeout(650); // glide()/settle
+  const after = await readDot(page, picked.companionKey);
+
+  report(new URL(page.url()).searchParams.get("file") === picked.file,
+    `${label}: search selected the off-screen target`, page.url());
+
+  // The positive complement to "the companion survived and didn't scale":
+  // the TARGET itself -- off screen before -- is now actually inside the
+  // safe content rect. Same rect formula, same attribute-based cx/cy as the
+  // candidate search above (never getBoundingClientRect(), see this
+  // function's own doc comment for why that matters).
+  const targetInView = await page.evaluate((index) => {
+    const svg = document.querySelector("svg.map-svg");
+    const vw = svg.clientWidth;
+    const vh = svg.clientHeight;
+    const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+    const el = document.querySelector(`[data-k="f:${index}"]`);
+    if (!el) return false;
+    const cx = parseFloat(el.getAttribute("cx"));
+    const cy = parseFloat(el.getAttribute("cy"));
+    if (Number.isNaN(cx) || Number.isNaN(cy)) return false;
+    return cx >= rect[0] && cx <= rect[2] && cy >= rect[1] && cy <= rect[3];
+  }, picked.index);
+  report(targetInView, `${label}: the off-screen target is now inside the viewport`);
+
+  if (!before || !after) {
+    report(false, `${label}: companion dot present before and after`, JSON.stringify({ before, after }));
+  } else {
+    const moved = Math.hypot(after.cx - before.cx, after.cy - before.cy) > 5;
+    const sameRadius = before.r != null && after.r != null && Math.abs(before.r - after.r) <= 0.05;
+    report(moved, `${label}: the view actually panned`, JSON.stringify({ before, after }));
+    report(sameRadius, `${label}: k unchanged (companion dot radius identical)`, JSON.stringify({ before, after }));
+  }
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   await preflight(args.base);
@@ -1498,6 +2059,13 @@ async function main() {
     for (const profile of PROFILES) await checkFolderIslandFade(browser, args.base, profile);
     for (const profile of PROFILES) await checkViewerCards(browser, args.base, profile);
     for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
+    // Issue #82 A1
+    await checkEmptyTapStepBack(browser, args.base);
+    for (const profile of PROFILES) await checkBreadcrumbNoMove(browser, args.base, profile);
+    for (const profile of PROFILES) await checkFullscreenPreservesView(browser, args.base, profile);
+    await checkFileLabelTapSelects(browser, args.base);
+    await checkDragThresholdNoSelect(browser, args.base);
+    await checkSearchPanOffscreen(browser, args.base);
   } finally {
     await browser.close();
   }
