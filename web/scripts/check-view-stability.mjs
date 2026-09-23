@@ -2825,60 +2825,68 @@ function pickBigFileTarget(symbols) {
   return { file, count };
 }
 
-// The class (kind 0) with the most CODE LINES (row[6]) among classes with at
-// least one member, plus its biggest member -- the pair
-// checkClassExpandsAtShortSide and checkCardTapSelectsSymbolAndBreadcrumb
-// need a class whose card actually has room to grow past 110px within the
-// zoom range Playwright's clampK caps at (fitScale()*40).
+// Every class (kind 0) with at least one member, ranked by CODE LINES
+// (row[6], descending) -- the pair checkClassExpandsAtShortSide and
+// checkCardTapSelectsSymbolAndBreadcrumb need one whose card actually has
+// room to grow past 110px within the zoom range Playwright's clampK caps at
+// (fitScale()*40), AND whose card actually rendered at all (CI review
+// finding: the single top candidate, "Migration", never rendered a card for
+// ITSELF at all across two different runs and two different rankings --
+// member count, then code_lines -- which points at something specific to
+// that one symbol's data rather than a systematic zoom-budget problem; see
+// checkClassExpandsAtShortSide's own comment for why the fix is "try several
+// candidates," not "trust the top one").
 //
-// CI review finding (issue #82 C2): the first version of this picker ranked
-// by MEMBER COUNT, which found a district-0 class with 61 members that never
-// reached 110px even at max zoom -- many members can still be a small class
-// by AREA if most of them are one-line stubs (property overrides, trivial
-// getters), which is common in data-model-style classes. A card's allocated
-// area follows "mass" (own code lines + descendants' code lines -- see
-// src/symbol_cards.rs's own `mass()`), which code_lines (a span-inclusive
-// count, so it already sums a class's own lines and every descendant's)
-// tracks far more directly than a raw member count does.
-function pickExpandableClass(symbols) {
+// Ranking by code_lines rather than member count: the first version of this
+// picker ranked by MEMBER COUNT, which found a district-0 class with 61
+// members that never reached 110px even at max zoom -- many members can
+// still be a small class by AREA if most of them are one-line stubs
+// (property overrides, trivial getters), common in data-model-style
+// classes. A card's allocated area follows "mass" (own code lines +
+// descendants' code lines -- see src/symbol_cards.rs's own `mass()`), which
+// code_lines (a span-inclusive count, so it already sums a class's own
+// lines and every descendant's) tracks far more directly than a raw member
+// count does.
+function pickExpandableClasses(symbols, limit = 6) {
   const si = symbols.symbol_indices;
   const childCount = new Map();
   symbols.symbols.forEach((row) => {
     if (row[5] >= 0) childCount.set(row[5], (childCount.get(row[5]) ?? 0) + 1);
   });
-  let classGlobal = null;
-  let classLocal = -1;
-  let memberCount = -1;
-  let bestCodeLines = -1;
+  const candidates = [];
   symbols.symbols.forEach((row, local) => {
     if (row[2] !== 0) return;
     const global = si[local];
-    const n = childCount.get(global) ?? 0;
-    if (n === 0) return;
-    const codeLines = row[6];
-    if (codeLines > bestCodeLines) {
-      bestCodeLines = codeLines;
-      memberCount = n;
-      classGlobal = global;
-      classLocal = local;
-    }
+    const memberCount = childCount.get(global) ?? 0;
+    if (memberCount === 0) return;
+    candidates.push({ classGlobal: global, classLocal: local, memberCount, codeLines: row[6] });
   });
-  if (classGlobal == null) return null;
-  // The biggest member by code_lines, not just the first found -- the same
-  // "give the test the best shot at a visible result" reasoning as the class
-  // pick itself.
-  let childGlobal = null;
-  let childName = null;
-  let childCodeLines = -1;
-  symbols.symbols.forEach((row, local) => {
-    if (row[5] !== classGlobal) return;
-    if (row[6] > childCodeLines) {
-      childCodeLines = row[6];
-      childGlobal = si[local];
-      childName = row[1];
-    }
+  candidates.sort((a, b) => b.codeLines - a.codeLines);
+  return candidates.slice(0, limit).map((c) => {
+    // The biggest member by code_lines, not just the first found -- the same
+    // "give the test the best shot at a visible result" reasoning as the
+    // class ranking itself.
+    let childGlobal = null;
+    let childName = null;
+    let childCodeLines = -1;
+    symbols.symbols.forEach((row, local) => {
+      if (row[5] !== c.classGlobal) return;
+      if (row[6] > childCodeLines) {
+        childCodeLines = row[6];
+        childGlobal = si[local];
+        childName = row[1];
+      }
+    });
+    return {
+      classGlobal: c.classGlobal,
+      file: symbols.symbols[c.classLocal][0],
+      className: symbols.symbols[c.classLocal][1],
+      memberCount: c.memberCount,
+      codeLines: c.codeLines,
+      childGlobal,
+      childName,
+    };
   });
-  return { classGlobal, file: symbols.symbols[classLocal][0], className: symbols.symbols[classLocal][1], memberCount, codeLines: bestCodeLines, childGlobal, childName };
 }
 
 // The symbol with the largest combined in+out edge weight in the bundled
@@ -2956,34 +2964,61 @@ async function checkClassExpandsAtShortSide(browser, base) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
   const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
-  const target = pickExpandableClass(symbols);
-  if (!target || target.memberCount === 0) {
+  const candidates = pickExpandableClasses(symbols);
+  if (candidates.length === 0) {
     report(false, `${label}: setup`, "no class with members found in the bundled district");
     await context.close();
     return;
   }
-  const path = mapDoc.F[target.file];
+  let target = null;
+  for (const candidate of candidates) {
+    const result = await tryExpandClass(page, base, mapDoc, candidate);
+    console.log(`  (info) ${candidate.className} (${candidate.codeLines} code lines, ${candidate.memberCount} members): ${result.diagnostic}`);
+    if (candidate === candidates[0]) {
+      report(result.initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${candidate.className} member=${candidate.childName}`);
+    }
+    if (result.expanded) {
+      target = candidate;
+      break;
+    }
+  }
+  report(!!target, `${label}: zooming in reveals the member's own card`, target
+    ? `class=${target.className} member=${target.childName}`
+    : `tried ${candidates.length} candidates, none reached 110px -- see the (info) lines above`);
+  await context.close();
+}
+
+// Navigates to `candidate`'s file, zooms toward its centre up to 8 times,
+// and reports whether its member ever got its own card. Shared by
+// checkClassExpandsAtShortSide and checkCardTapSelectsSymbolAndBreadcrumb --
+// CI review finding: both used to call `.boundingBox()` on a possibly-empty
+// locator with no explicit timeout, and Playwright's default 30s
+// actionability wait on every miss turned an 8-iteration loop into minutes;
+// `.count()` (no auto-wait) drives the loop, and `.boundingBox()` is only
+// ever called once real content is already known to be there.
+async function tryExpandClass(page, base, mapDoc, candidate) {
+  const path = mapDoc.F[candidate.file];
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
-  const classKey = `hs:${target.classGlobal}`;
-  const childKey = `hs:${target.childGlobal}`;
+  const classKey = `hs:${candidate.classGlobal}`;
+  const childKey = `hs:${candidate.childGlobal}`;
   const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
-  report(initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${target.className} (${target.codeLines} code lines, ${target.memberCount} members) member=${target.childName}`);
   let expanded = false;
-  let lastBox = null;
   for (let i = 0; i < 8 && !expanded; i++) {
     await zoomIn(page, 600, 400);
     expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
-    lastBox = await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox().catch(() => null);
   }
-  // Diagnostic, printed regardless of pass/fail: the class card's own
-  // on-screen box after the LAST zoom step, so a failure here says exactly
-  // how far short of 110px it fell (or that the class card itself never
-  // rendered at all -- boundingBox null).
-  console.log(`  (info) class card box at final zoom: ${lastBox ? `${Math.round(lastBox.width)}x${Math.round(lastBox.height)}px (short side ${Math.round(Math.min(lastBox.width, lastBox.height))}px, want >=110)` : "not found"}`);
-  report(expanded, `${label}: zooming in reveals the member's own card`, `class=${target.className} member=${target.childName} childKey=${childKey}`);
-  await context.close();
+  const classCount = await page.locator(`svg.map-svg [data-k="${classKey}"]`).count();
+  const classBox = classCount > 0 ? await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null) : null;
+  const diagnostic = expanded
+    ? "expanded"
+    : classCount === 0
+      ? "class card never rendered at all"
+      : classBox
+        ? `class card ${Math.round(classBox.width)}x${Math.round(classBox.height)}px (short side ${Math.round(Math.min(classBox.width, classBox.height))}px, want >=110) but member never appeared`
+        : "class card rendered but bounding box unavailable";
+  return { expanded, initiallyCollapsed, classBox, diagnostic, path };
 }
 
 // 9(d): tapping a card selects the symbol and sets every level at once
@@ -2994,24 +3029,31 @@ async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
   const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
-  const target = pickExpandableClass(symbols);
-  if (!target || target.childGlobal == null) {
+  const candidates = pickExpandableClasses(symbols);
+  if (candidates.length === 0) {
     report(false, `${label}: setup`, "no class with members found in the bundled district");
     await context.close();
     return;
   }
-  const path = mapDoc.F[target.file];
-  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("svg.map-svg path.hit");
-  await page.waitForTimeout(900);
-  const childKey = `hs:${target.childGlobal}`;
-  let box = null;
-  for (let i = 0; i < 8 && !box; i++) {
-    await zoomIn(page, 600, 400);
-    box = await page.locator(`svg.map-svg [data-k="${childKey}"]`).first().boundingBox().catch(() => null);
+  let target = null;
+  let path = null;
+  for (const candidate of candidates) {
+    const result = await tryExpandClass(page, base, mapDoc, candidate);
+    if (result.expanded) {
+      target = candidate;
+      path = result.path;
+      break;
+    }
   }
+  if (!target) {
+    report(false, `${label}: setup`, `member card never appeared after zooming in (tried ${candidates.length} candidates)`);
+    await context.close();
+    return;
+  }
+  const childKey = `hs:${target.childGlobal}`;
+  const box = await page.locator(`svg.map-svg [data-k="${childKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   if (!box) {
-    report(false, `${label}: setup`, "member card never appeared after zooming in");
+    report(false, `${label}: setup`, "member card disappeared before it could be tapped");
     await context.close();
     return;
   }
@@ -3105,7 +3147,12 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
   const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
-  const target = pickExpandableClass(symbols);
+  // This check sets `hsym` directly via the URL and reads the decoded
+  // parent/ancestor chain back -- it never needs the card to have visually
+  // EXPANDED on screen (unlike checkClassExpandsAtShortSide), so any
+  // structurally valid class/member pair works; no need to try multiple
+  // candidates here.
+  const [target] = pickExpandableClasses(symbols, 1);
   if (!target || target.childGlobal == null) {
     report(false, `${label}: setup`, "no class with members found in the bundled district");
     await context.close();
