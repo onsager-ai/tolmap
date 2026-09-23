@@ -45,11 +45,11 @@ Pan, zoom, search files *and* symbols, route between two files along the import 
 
 ---
 
-## Why it stops at the file
+## Symbols appear only when there is room for them
 
-Google Maps draws building footprints and stops. Below that, addressing is textual and you switch representation entirely. Two attempts at drawing symbols on the map — as towers, then as rooms inside Voronoi plots — were built, measured and reverted. The failure was not rendering: there is nothing at that level for spatial memory to hold, and tiling a district with 200 cells erases the silhouette that made the district memorable.
+Google Maps draws building footprints and stops. Below that, addressing is textual and you switch representation entirely. Two attempts at drawing symbols on the map — as towers, then as rooms inside Voronoi plots — were built, measured and reverted. They failed because symbols were drawn at every zoom, and tiling a district with 200 cells erases the silhouette that made the district memorable.
 
-Symbols earn their place as the unit of the **query**, not of the map: search by symbol, and blast radius by symbol. The cadastral plot view survives as an opt-in layer.
+The redesign (owner decision D1, `docs/FINDINGS.md` finding 27) keeps the silhouette by gating symbols on screen size. The overview shows district outlines and roads. A file draws its classes and functions once its footprint is at least 40 px on screen, and a class expands its methods once its short side reaches 110 px. Symbols remain the unit of the **query** too: search by symbol, and blast radius by symbol.
 
 ---
 

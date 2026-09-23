@@ -246,6 +246,28 @@ jobs:
   # (deploy/railway.staging.env) must describe the same set of TOLMAP_*
   # knobs, or staging stops being evidence about prod. See the script's
   # docstring; it compares key sets, never values.
+  web:
+    # The viewer had no CI at all: tsc ran only inside the Docker image at
+    # deploy time. The redesign (#82) rewrites most of MapRenderer.ts, so type
+    # errors and lint regressions must fail the push, not the deploy. This
+    # runs the same `pnpm build` the Dockerfile's web-builder stage runs
+    # (collect-maps falls back to the committed data/ fixtures), plus oxlint.
+    name: web build and lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.21.0"
+      # Same pin as the Dockerfile: the lockfile is pnpm 9's format.
+      - run: corepack enable && corepack prepare pnpm@9.15.9 --activate
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+
   deploy-env-parity:
     name: deploy env parity (prod vs staging)
     runs-on: ubuntu-latest
