@@ -1944,6 +1944,21 @@ async function checkSearchPanOffscreen(browser, base) {
     const base = f.split("/").pop();
     basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
   }
+  // CI review finding: this used getBoundingClientRect() (PAGE coordinates)
+  // for cx/cy, compared against fitViewport()'s rect -- which is in SVG-
+  // LOCAL units (0..VW, 0..VH; see MapRenderer.resize()/paint(), where VW/VH
+  // come from the wrap div's own box, and this.X()/this.Y() bake tx/ty and k
+  // in but never a page offset). The SVG element itself does not start at
+  // page (0,0) on desktop -- Sidebar (250px) sits to its left and TopBar
+  // above it -- so a page-relative cx/cy is shifted from local space by
+  // exactly that offset, and comparing the two directly misclassified a
+  // genuinely ON-screen dot (in local space, which is what panTo() itself
+  // checks) as off screen. Fixed by reading the `cx`/`cy` ATTRIBUTES the
+  // renderer actually wrote (`this.X(p[0]).toFixed(1)` et al) instead of a
+  // derived bounding rect -- exactly the coordinate space panTo()'s own
+  // bounds check runs in, so there is no origin to get wrong. (readDot()
+  // elsewhere in this file already reads attributes for the same reason;
+  // this is the one spot that had reintroduced getBoundingClientRect().)
   const offscreen = await page.evaluate(
     ({ files, refKey, uniqueBasenames }) => {
       const svg = document.querySelector("svg.map-svg");
@@ -1955,9 +1970,9 @@ async function checkSearchPanOffscreen(browser, base) {
         if (!uniqueBasenames.includes(files[i].split("/").pop())) continue;
         const el = document.querySelector(`[data-k="f:${i}"]`);
         if (!el) continue; // not drawn near the viewport at all -- also off screen, but nothing to measure against the rect
-        const r = el.getBoundingClientRect();
-        const cx = r.x + r.width / 2;
-        const cy = r.y + r.height / 2;
+        const cx = parseFloat(el.getAttribute("cx"));
+        const cy = parseFloat(el.getAttribute("cy"));
+        if (Number.isNaN(cx) || Number.isNaN(cy)) continue;
         if (cx < rect[0] || cx > rect[2] || cy < rect[1] || cy > rect[3]) return { index: i, file: files[i] };
       }
       return null;
