@@ -47,7 +47,7 @@ pub fn build_parcels(document: &MapDocument) -> BTreeMap<String, Vec<[f64; 2]>> 
         }
         let targets = members
             .iter()
-            .map(|&index| document.nodes[index].loc().max(1) as f64)
+            .map(|&index| footprint_weight(document, index))
             .collect::<Vec<_>>();
         let owners = power_cells(&points, &targets, &mask, low, span, grid);
         for (local, polygon) in cell_polygons(&owners, &mask, members.len(), low, span, grid) {
@@ -55,6 +55,15 @@ pub fn build_parcels(document: &MapDocument) -> BTreeMap<String, Vec<[f64; 2]>> 
         }
     }
     parcels
+}
+
+fn footprint_weight(document: &MapDocument, index: usize) -> f64 {
+    document
+        .code_lines
+        .as_ref()
+        .and_then(|lines| lines.get(index).copied())
+        .unwrap_or_else(|| document.nodes[index].loc())
+        .max(1) as f64
 }
 
 fn district_mask(blob: &[Vec<[f64; 2]>], low: [f64; 2], span: f64, grid: usize) -> Vec<bool> {
@@ -243,7 +252,7 @@ pub fn area_correlation(document: &MapDocument) -> Option<f64> {
     let wanted = parcels
         .keys()
         .filter_map(|key| key.parse::<usize>().ok())
-        .map(|index| document.nodes[index].loc() as f64)
+        .map(|index| footprint_weight(document, index))
         .collect::<Vec<_>>();
     pearson(&got, &wanted)
 }
