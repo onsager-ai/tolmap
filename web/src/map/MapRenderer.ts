@@ -30,9 +30,11 @@ import {
   worldBounds,
 } from "./geometry";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
+import { computeHubs, hubRingRadius, type HubSet } from "./hubs";
 import type { FolderLabel, PackageGrouping } from "./packageLayout";
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
+import { buildRoadGeom, buildRoadPlan, type RoadPlan } from "./roads";
 
 declare global {
   interface Window {
@@ -104,10 +106,21 @@ export class MapRenderer {
   private unconnectedFile = new Uint8Array(0);
   private drawableDistrictIds: string[] = [];
   private labelDistrictIds: string[] = [];
-  private drawableRoads: MapDocument["roads"] = [];
   private fileLabelOrder: number[] = [];
   private fileBasenames: string[] = [];
   private repeatedBasenames = new Set<string>();
+  // A3 (import roads, issue #82): which district pairs get a road and their
+  // world-space mouth radii, selected/precomputed once per document
+  // (loadDocument) -- see roads.ts's buildRoadPlan for why (same
+  // "per-document work never repeats per paint()" rule districtOrder/
+  // districtArea/fileRank above already follow). roadMaxTotal is the
+  // denominator for the width formula (1.5 + 6*sqrt(flow/max)) -- computed
+  // once here rather than per road per paint.
+  private roadPlan: RoadPlan[] = [];
+  private roadMaxTotal = 1;
+  // A4 (hubs, issue #82): every file with fan-in >= HUB_FANIN_THRESHOLD,
+  // ranked and named once per document -- see hubs.ts's computeHubs.
+  private hubSet: HubSet = { hubs: [], maxFi: 1 };
 
   // Issue #51 perf follow-up: cache of mainlandBounds()/worldBounds() and
   // the two scales derived from them (see geometry.ts's scaleToFit), keyed
@@ -364,11 +377,19 @@ export class MapRenderer {
     this.unconnectedFile = new Uint8Array(doc.N.length);
     this.drawableDistrictIds = Object.keys(doc.districts)
       .filter((d) => districtClass(doc.districts[d]) !== "unconnected");
+    // A5 (district labels always on, issue #82): mainland still claims the
+    // shared label budget before any island (unchanged from before this
+    // PR), but WITHIN each group districts are now visited size-descending,
+    // ties by id ascending -- so when two district names would collide, the
+    // SMALLER one is always the one left unplaced (put()'s hits() check
+    // rejects whichever comes second), never whichever happened to sort
+    // first in doc.districts' own (arbitrary, id-order) key iteration.
     this.labelDistrictIds = [...this.drawableDistrictIds].sort((a, b) =>
-      Number(districtClass(doc.districts[a]) === "island") - Number(districtClass(doc.districts[b]) === "island"));
-    this.drawableRoads = doc.roads.filter(([a, b]) =>
-      districtClass(doc.districts[String(a)]) !== "unconnected" &&
-      districtClass(doc.districts[String(b)]) !== "unconnected");
+      Number(districtClass(doc.districts[a]) === "island") - Number(districtClass(doc.districts[b]) === "island") ||
+      doc.districts[b].size - doc.districts[a].size || +a - +b);
+    this.roadPlan = buildRoadPlan(doc);
+    this.roadMaxTotal = Math.max(1, ...this.roadPlan.map((r) => r.total));
+    this.hubSet = computeHubs(doc);
     const isLandmark = new Set(doc.L.map(([i]) => i));
     const byDistrict = new Map<number, number[]>();
     for (let i = 0; i < doc.N.length; i++) {
@@ -818,7 +839,7 @@ export class MapRenderer {
   }
   private tint(i: number): string {
     const { doc, layer, packageGrouping } = this.state!;
-    if (layer === "d") return districtColor(D_(doc, i));
+    if (layer === "d") return districtColor(doc, D_(doc, i));
     if (layer === "c") return ramp(Math.min(1, CH(doc, i) / (this.maxCh || 1)));
     if (layer === "x") return ramp(Math.min(1, CX_(doc, i) / (this.maxCx || 1)));
     return packageGrouping.fileColors[i];
@@ -945,30 +966,6 @@ export class MapRenderer {
       for (const i of dim) islandExceptionDistricts.add(D_(doc, i));
 
     if (geo !== "t") {
-      this.drawableRoads.forEach(([a, b, w]) => {
-        const p = doc.districts[String(a)].c;
-        const q = doc.districts[String(b)].c;
-        g.appendChild(
-          el("line", {
-            x1: this.X(p[0]),
-            y1: this.Y(p[1]),
-            x2: this.X(q[0]),
-            y2: this.Y(q[1]),
-            stroke: "var(--coast)",
-            "stroke-width": (0.5 + 3 * w).toFixed(1),
-            "stroke-linecap": "round",
-            "stroke-opacity": 0.5,
-            // Issue #82 A1 scope item 6: a road's stroke is painted and
-            // visible, so it's hit-testable by default even with no
-            // data-k -- a tap that happened to land exactly on one fell
-            // through the data-k walk to "nothing" and stepped back the
-            // selection instead of doing nothing. Roads aren't themselves
-            // selectable; let the tap pass through to whatever district
-            // polygon is underneath.
-            "pointer-events": "none",
-          }),
-        );
-      });
       for (const d of this.drawableDistrictIds) {
         const on = selD === +d;
         // Islands are real places but not the map's subject (issue #34): a
@@ -994,9 +991,9 @@ export class MapRenderer {
         doc.districts[d].blob.forEach((poly) => {
           const path = el("path", {
             d: "M" + poly.map((q) => this.X(q[0]).toFixed(1) + " " + this.Y(q[1]).toFixed(1)).join("L") + "Z",
-            fill: districtColor(+d),
+            fill: districtColor(doc, +d),
             "fill-opacity": (layer === "d" ? (on ? 0.3 : districtFaded ? 0.035 : faint ? 0.07 : 0.14) : on ? 0.16 : districtFaded ? 0.02 : faint ? 0.03 : 0.06) * iFade,
-            stroke: on ? "var(--hot)" : districtColor(+d),
+            stroke: on ? "var(--hot)" : districtColor(doc, +d),
             "stroke-width": on ? 2.6 : faint ? 0.9 : 1.5,
             "stroke-opacity": (on ? 1 : districtFaded ? 0.22 : faint ? 0.4 : 0.7) * iFade,
             "stroke-linejoin": "round",
@@ -1010,6 +1007,10 @@ export class MapRenderer {
           g.appendChild(path);
         });
       }
+      // A3 (import roads, issue #82): drawn after every district polygon so
+      // a ribbon crossing a district's fill is on top of it -- see
+      // drawRoads's own doc comment for the full z-order argument.
+      this.drawRoads(g);
     }
 
     const CELL = geo === "p" && doc.P && zf0 > PARCEL_ZOOM;
@@ -1268,6 +1269,19 @@ export class MapRenderer {
       for (const { j, dir } of shown) this.ring(g, j, dir === "out" ? "var(--hot)" : "var(--cold)", fs);
     }
 
+    // A5 (district labels always on, issue #82): district names are placed
+    // FIRST, into a `placed` box list every other kind of label/pin below
+    // now shares and extends -- pins, hub labels, folder labels and file
+    // labels all skip a spot a district name already claimed. Previously
+    // pins were selected (selectPins) and district names placed (drawLabels)
+    // as two independent passes that never saw each other's boxes, so a pin
+    // could still land visually on top of a district name neither pass's
+    // own collision logic flagged as a conflict -- "today pins are pushed
+    // before district names are checked against them" (spec). One shared,
+    // growing `placed` array threaded through every step below is the fix.
+    const placed: Array<[number, number, number, number]> = [];
+    this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed);
+
     // Ranked-pin selection (readable-overview PR, scope item 1; see pins.ts's
     // top comment for issue #57, the msgraph-sdk-python case this fixes):
     // global landmarks always draw, a capital only once its district is
@@ -1290,8 +1304,8 @@ export class MapRenderer {
       if (cx < -30 || cx > this.VW + 30 || cy < -30 || cy > this.VH + 30) return null;
       return [cx, cy];
     };
-    const pins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel);
-    this.drawLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, pins.map(({ cx, cy }) => [cx - 10, cy - 32, 20, 32]));
+    const pins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel, placed);
+    for (const { cx, cy } of pins) placed.push([cx - 10, cy - 32, 20, 32]);
 
     pins.forEach(({ row: [i, why, detail, rank], cx, cy }) => {
       const pFade = this.islandFadeForDistrict(D_(doc, i), zf0, islandFadeFloorZf, islandExceptionDistricts);
@@ -1329,6 +1343,20 @@ export class MapRenderer {
 
     if (sel != null && !this.unconnectedFile[sel]) this.ring(g, sel, "var(--hot)", fs);
 
+    // A4 (hubs, issue #82): rings drawn after roads and the file-dot loop
+    // (both earlier in this method) and after pins -- so a hub ring's hit
+    // target sits above a road passing under it (spec) and above its own
+    // file dot. Hub LABEL text is placed later (see placeContentLabels),
+    // after folder labels -- folder labels existed before this PR and hubs
+    // did not, so a folder label's established placement priority isn't
+    // demoted by a brand-new label kind sharing the same collision budget.
+    const hubCandidates = this.drawHubRings(g);
+
+    // A5: folder labels, then hub labels, then file labels -- the tail of
+    // the old drawLabels(), now reusing the SAME `placed` list rather than a
+    // fresh local one (see placeDistrictLabels's own call above for why).
+    this.placeContentLabels(g, placed, alwaysDrawn, zf0, hubCandidates);
+
     // key -> every element carrying it, rebuilt fresh this paint (one
     // querySelectorAll over exactly what was just drawn, one loop -- see
     // keyElements' own field comment for why this is a map lookup per
@@ -1362,13 +1390,25 @@ export class MapRenderer {
     if (this.HOVER && this.hoverKey) this.reapplyHover();
   }
 
-  // Label budget: districts, folders, then files by importance.
-  private drawLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, pinBoxes: number[][]) {
+  /** A5 (district labels always on, issue #82): every drawn mainland
+   * district's name label is placed FIRST, into `placed` (shared with, and
+   * mutated for, every subsequent pass -- pins, hub labels, folder labels,
+   * file labels, in that order -- see paint()'s own comment on why this
+   * ordering matters). `labelDistrictIds` is already sorted mainland-before-
+   * island then size-descending (loadDocument), so within either group a
+   * same-size collision always resolves the same way and, across the whole
+   * list, the SMALLER of two colliding district names is always the one
+   * `put()` rejects -- "the smaller district's name is hidden first" (spec).
+   * Otherwise unchanged from the pre-A5 drawLabels: same +N-files badge,
+   * same island fade/priority, same font-size floor (the existing
+   * `Math.min(.., 10 + zf)` / `Math.min(.., 12 + zf)` formulas never drop
+   * below ~10.5px even at this renderer's loosest zoom-out floor, clampK's
+   * `fitScale()*0.5`, i.e. zf=0.5). */
+  private placeDistrictLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, placed: Array<[number, number, number, number]>) {
     const { doc, geo } = this.state!;
-    const placed: number[][] = [];
     const hits = (x: number, y: number, w: number, h: number) =>
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
-    const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number, fi?: number) => {
+    const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number) => {
       const w = txt.length * size * 0.62;
       const h = size * 1.25;
       if (hits(x - w / 2, y - h, w, h)) return false;
@@ -1389,23 +1429,16 @@ export class MapRenderer {
       if (weight) t.setAttribute("font-weight", String(weight));
       // Issue #82 A1 scope item 6: a label text glyph is painted, so it's
       // hit-testable by default -- without an explicit data-k, a tap that
-      // landed on a district subtitle or a file's basename label fell
-      // through to nothing and stepped back the selection instead of
-      // selecting the thing the label names. `dk` (a district id) and `fi`
-      // (a file index) are mutually exclusive across every call site below.
+      // landed on a district subtitle fell through to nothing and stepped
+      // back the selection instead of selecting the district it names.
+      // (placeDistrictLabels only ever labels districts -- no `fi`/file-index
+      // case here; that half of A1's fix lives in placeContentLabels's own
+      // `put()`, the one that actually draws file labels.)
       if (dk != null) {
         t.setAttribute("class", "hit");
         t.setAttribute("pointer-events", "all");
         t.setAttribute("data-k", "d:" + dk);
-      } else if (fi != null) {
-        t.setAttribute("class", "hit");
-        t.setAttribute("pointer-events", "all");
-        t.setAttribute("data-k", "f:" + fi);
       }
-      // data-file-label is a SEPARATE marker kept for web/scripts/check-view-
-      // stability.mjs, which looks file labels up by file index regardless
-      // of the data-k scheme; not to be confused with data-k itself.
-      if (fi != null) t.setAttribute("data-file-label", String(fi));
       t.textContent = txt;
       g.appendChild(t);
       return true;
@@ -1475,9 +1508,279 @@ export class MapRenderer {
         put(x, labelY + 13, doc.districts[d].size + " files", 9.5, 0.45, undefined, +d);
       }
     }
-    // District names keep their established placement priority. Only folder
-    // labels need to yield to pin footprints as well as existing text.
-    placed.push(...pinBoxes);
+  }
+
+  /** A4 (hubs, issue #82): every visible hub's ring + centre dot, plus its
+   * (screen-space) label anchor for `placeHubLabels` to place later --
+   * rings are never gated by the label collision budget ("the ring is
+   * tappable", spec; the number of RINGS is not what the spec caps, only
+   * labels). Drawn from paint() after roads and the per-file dot loop, so a
+   * ring's hit target -- a plain `data-k="f:i"`, the SAME key the file's own
+   * dot uses, so tapping either selects the same file -- sits above both
+   * (spec: "its hit target sits ABOVE roads"). Returns the on-screen
+   * candidates rather than placing labels itself: label placement runs
+   * LATER, after folder labels (see paint()'s own comment on relative
+   * priority among pins/hub labels/folder labels/file labels -- hubs did
+   * not exist before this PR and folder labels did, so folder labels keep
+   * the priority they already had rather than losing it to a brand-new
+   * label kind). */
+  private drawHubRings(g: SVGGElement): Array<{ hub: { i: number; fi: number; name: string }; cx: number; cy: number; r: number }> {
+    const { doc } = this.state!;
+    const { hubs, maxFi } = this.hubSet;
+    const narrow = this.narrow();
+    const candidates: Array<{ hub: (typeof hubs)[number]; cx: number; cy: number; r: number }> = [];
+    for (const hub of hubs) {
+      if (this.unconnectedFile[hub.i]) continue;
+      const p = this.px(hub.i);
+      const cx = this.X(p[0]);
+      const cy = this.Y(p[1]);
+      const r = hubRingRadius(hub.fi, maxFi, narrow);
+      if (cx < -r - 20 || cx > this.VW + r + 20 || cy < -r - 20 || cy > this.VH + r + 20) continue;
+      g.appendChild(
+        el("circle", {
+          cx: cx.toFixed(1),
+          cy: cy.toFixed(1),
+          r: r.toFixed(2),
+          fill: "none",
+          stroke: "var(--ink)",
+          // Explicit, in px: an unset stroke-width defaults to 1 USER unit,
+          // which is a WORLD unit at this point in the render (before any
+          // zoom transform) on some paths in the prototype -- "an unset
+          // stroke-width on a circle bit the prototype" (spec). Every
+          // attribute here is already a screen-space px value (this.X/Y,
+          // hubRingRadius), so this one has to be too.
+          "stroke-width": 1.6,
+          "pointer-events": "none",
+        }),
+      );
+      g.appendChild(
+        el("circle", { cx: cx.toFixed(1), cy: cy.toFixed(1), r: 1.6, fill: "var(--ink)", "pointer-events": "none" }),
+      );
+      const hit = el("circle", {
+        cx: cx.toFixed(1),
+        cy: cy.toFixed(1),
+        r: (r + (this.TOUCH ? 11 : 5)).toFixed(1),
+        fill: "transparent",
+        class: "hit",
+        "pointer-events": "all",
+        "data-k": "f:" + hub.i,
+      });
+      const title = el("title", {});
+      title.textContent = `${doc.F[hub.i]}\nhub · fan-in ${hub.fi}`;
+      hit.appendChild(title);
+      g.appendChild(hit);
+      candidates.push({ hub, cx, cy, r });
+    }
+    return candidates;
+  }
+
+  /** The text half of A4's hubs: "name · FI" for as many hub-ring candidates
+   * as this zoom's budget and the shared `placed` collision list allow.
+   * Split out of drawHubRings (see its own comment) so the CALLER controls
+   * where hub labels sit in the shared placement priority -- paint() calls
+   * this from inside placeContentLabels, after folder labels and before
+   * file labels. */
+  private placeHubLabels(g: SVGGElement, zf0: number, candidates: Array<{ hub: { i: number; fi: number; name: string }; cx: number; cy: number; r: number }>, placed: Array<[number, number, number, number]>) {
+    if (candidates.length === 0) return;
+    const narrow = this.narrow();
+    const hits = (x: number, y: number, w: number, h: number) =>
+      placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
+    // "The number of hub labels is capped by zoom" (spec) -- growing in from
+    // nothing at a zoomed-out overview (where a name per hub would be
+    // illegible clutter on top of the district names this PR just made
+    // unconditional) to a generous cap once zoomed in enough that few hubs
+    // are on screen at once anyway. Tuned by eye against the corpus
+    // fixtures, not derived from a measurement -- see the PR description;
+    // the shared collision list is what actually keeps this legible
+    // regardless of the exact numbers.
+    const labelBudget = zf0 < 1.3 ? 0 : zf0 < 2.2 ? 8 : Math.min(candidates.length, narrow ? 20 : 40);
+    let labelled = 0;
+    for (const { hub, cx, cy, r } of candidates) {
+      if (labelled >= labelBudget) break;
+      const text = `${hub.name} · ${hub.fi}`;
+      const size = 10.5;
+      const w = text.length * size * 0.62;
+      const h = size * 1.25;
+      const lx = cx + r + 4;
+      const ly = cy + 3.5;
+      if (lx + w > this.VW - 4 || ly > this.VH - 4 || hits(lx, ly - h, w, h)) continue;
+      placed.push([lx, ly - h, w, h]);
+      const t = el("text", {
+        x: lx.toFixed(1),
+        y: ly.toFixed(1),
+        "font-size": size,
+        "font-family": "IBM Plex Mono, monospace",
+        "font-weight": 700,
+        fill: "var(--ink)",
+        "paint-order": "stroke",
+        stroke: "var(--canvas)",
+        "stroke-width": 3,
+        "stroke-linejoin": "round",
+        "pointer-events": "none",
+      });
+      t.textContent = text;
+      g.appendChild(t);
+      labelled++;
+    }
+  }
+
+  /** A3 (import roads, issue #82): district-to-district import ribbons, from
+   * `this.roadPlan` (which pairs get a road, and their world-space mouth
+   * radii, are both picked once per document -- loadDocument) against the
+   * CURRENT (k, tx, ty). Unlike `roadPlan` itself, the on-screen geometry
+   * (exit points, the bezier, the ribbon's screen-space offsets) is
+   * recomputed every real paint(), the same as every other shape in this
+   * file. Called from paint() right after the district polygons and before
+   * the per-file dot loop, so a ribbon is visually on top of the district
+   * fill it crosses (and captures the tap -- "do not let the tap fall
+   * through to the district underneath") while a file dot or hub ring drawn
+   * later still wins over it. */
+  private drawRoads(g: SVGGElement) {
+    const { doc } = this.state!;
+    const toScreen = (p: [number, number]): [number, number] => [this.X(p[0]), this.Y(p[1])];
+    for (const plan of this.roadPlan) {
+      const districtA = doc.districts[String(plan.a)];
+      const districtB = doc.districts[String(plan.b)];
+      if (!districtA || !districtB) continue;
+      // Dominant direction: the ribbon's single chevron (or the first of two)
+      // always points the way most imports actually flow.
+      const forward = plan.ab >= plan.ba;
+      const sourceDistrict = forward ? districtA : districtB;
+      const targetDistrict = forward ? districtB : districtA;
+      const raWorld = forward ? plan.raWorld : plan.rbWorld;
+      const rbWorld = forward ? plan.rbWorld : plan.raWorld;
+      const major = Math.max(plan.ab, plan.ba);
+      const minor = Math.min(plan.ab, plan.ba);
+      // "When minor/major >= 0.35, draw two chevrons ... pointing opposite
+      // ways" (spec) -- a near-balanced pair of directed counts reads as
+      // effectively bidirectional traffic.
+      const both = major > 0 && minor / major >= 0.35;
+      const widthPx = 1.5 + 6 * Math.sqrt(plan.total / this.roadMaxTotal);
+      const geom = buildRoadGeom({
+        a: sourceDistrict.c,
+        b: targetDistrict.c,
+        ringsA: sourceDistrict.blob,
+        ringsB: targetDistrict.blob,
+        raWorld,
+        rbWorld,
+        widthPx,
+        bothDirections: both,
+        k: this.k,
+        toScreen,
+      });
+      const key = `r:${plan.a}:${plan.b}`;
+      g.appendChild(
+        el("path", {
+          d: "M" + geom.polygon.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L") + "Z",
+          fill: "var(--ink)",
+          "fill-opacity": 0.34,
+          "pointer-events": "none",
+          // Carries the SAME data-k as the invisible hit path below (the
+          // multi-polygon-district pattern this file already uses -- see
+          // paint()'s district loop, one path per polygon, same data-k) so
+          // hovering the road's hit path also brightens the VISIBLE ribbon
+          // (index.css's ".hovered" filter toggles every element sharing a
+          // key, not just the one the pointer resolved to) -- without this,
+          // "the ribbon brightens" on hover would only affect the
+          // transparent hit stroke, never anything a person can see.
+          "data-k": key,
+        }),
+      );
+      for (const chev of geom.chevrons) {
+        g.appendChild(
+          el("path", {
+            d: `M${chev.back1[0].toFixed(1)} ${chev.back1[1].toFixed(1)}L${chev.tip[0].toFixed(1)} ${chev.tip[1].toFixed(1)}L${chev.back2[0].toFixed(1)} ${chev.back2[1].toFixed(1)}`,
+            fill: "none",
+            stroke: "var(--canvas)",
+            "stroke-width": Math.max(widthPx * 0.28, 2.4).toFixed(2),
+            "stroke-linecap": "round",
+            "stroke-linejoin": "round",
+            "pointer-events": "none",
+          }),
+        );
+      }
+      // Transparent hit path: >= 10-12px wide regardless of the ribbon's
+      // own (possibly much thinner) visible width, so a low-flow road stays
+      // comfortably tappable on touch (spec) -- the sole pointer target for
+      // the road (the visible ribbon fill above is pointer-events:none), so
+      // hover/click both key off this element.
+      const hit = el("path", {
+        d: geom.hitD,
+        fill: "none",
+        stroke: "transparent",
+        "stroke-width": Math.max(widthPx * 1.2, 12).toFixed(1),
+        "stroke-linecap": "round",
+        class: "hit",
+        "pointer-events": "all",
+        "data-k": key,
+      });
+      const nameA = doc.names[String(plan.a)] ?? `district ${plan.a}`;
+      const nameB = doc.names[String(plan.b)] ?? `district ${plan.b}`;
+      const title = el("title", {});
+      title.textContent = `${nameA} → ${nameB}: ${plan.ab} imports\n${nameB} → ${nameA}: ${plan.ba} imports`;
+      hit.appendChild(title);
+      g.appendChild(hit);
+    }
+  }
+
+  /** A5: folder labels, then file labels -- the tail of the pre-A5
+   * drawLabels(), unchanged except that `placed` is now shared with (and
+   * arrives already containing boxes from) placeDistrictLabels/selectPins/
+   * drawHubRings rather than a fresh array seeded only with pin boxes. */
+  private placeContentLabels(
+    g: SVGGElement,
+    placed: Array<[number, number, number, number]>,
+    alwaysDrawn: Set<number>,
+    zf0: number,
+    hubCandidates: Array<{ hub: { i: number; fi: number; name: string }; cx: number; cy: number; r: number }>,
+  ) {
+    const { doc, geo } = this.state!;
+    const hits = (x: number, y: number, w: number, h: number) =>
+      placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
+    const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number, fi?: number) => {
+      const w = txt.length * size * 0.62;
+      const h = size * 1.25;
+      if (hits(x - w / 2, y - h, w, h)) return false;
+      placed.push([x - w / 2, y - h, w, h]);
+      const t = el("text", {
+        x: x.toFixed(1),
+        y: y.toFixed(1),
+        "font-size": size,
+        "text-anchor": "middle",
+        fill: "var(--ink)",
+        "fill-opacity": op,
+        "font-family": "IBM Plex Mono, monospace",
+        "paint-order": "stroke",
+        stroke: "var(--canvas)",
+        "stroke-width": 3.2,
+        "stroke-linejoin": "round",
+      });
+      if (weight) t.setAttribute("font-weight", String(weight));
+      // Issue #82 A1 scope item 6: a label text glyph is painted, so it's
+      // hit-testable by default -- without an explicit data-k, a tap that
+      // landed on a district subtitle or a file's basename label fell
+      // through to nothing and stepped back the selection instead of
+      // selecting the thing the label names. `dk` (a district id) and `fi`
+      // (a file index) are mutually exclusive across every call site below.
+      if (dk != null) {
+        t.setAttribute("class", "hit");
+        t.setAttribute("pointer-events", "all");
+        t.setAttribute("data-k", "d:" + dk);
+      } else if (fi != null) {
+        t.setAttribute("class", "hit");
+        t.setAttribute("pointer-events", "all");
+        t.setAttribute("data-k", "f:" + fi);
+      }
+      // data-file-label is a SEPARATE marker kept for web/scripts/check-view-
+      // stability.mjs, which looks file labels up by file index regardless
+      // of the data-k scheme; not to be confused with data-k itself.
+      if (fi != null) t.setAttribute("data-file-label", String(fi));
+      t.textContent = txt;
+      g.appendChild(t);
+      return true;
+    };
+    const narrow = this.narrow();
+    const zf = this.k / this.fitScale();
     // A folder earns a label only after its district spans one quarter of
     // the viewport's shorter side. World side, text and medians were all
     // computed once for the document; this pass only projects candidates.
@@ -1507,6 +1810,11 @@ export class MapRenderer {
       t.textContent = tail;
       g.appendChild(t);
     }
+    // A4: hub labels come after folder labels (which predate this PR -- see
+    // paint()'s own comment) and before file labels, sharing the same
+    // `placed` list so neither collides with a district name, a pin, or a
+    // folder label above it.
+    this.placeHubLabels(g, zf0, hubCandidates, placed);
     // file labels appear as you zoom in — the budget grows with scale
     if (geo === "p" && zf > BUILD_ZOOM) return; // plots label themselves
     const budget = Math.round(Math.min(narrow ? 18 : 60, Math.max(0, (zf - 1.5) * (narrow ? 10 : 26))));
@@ -1618,7 +1926,7 @@ export class MapRenderer {
       if (Y_ > y1) y1 = Y_;
     }
     d += "Z";
-    const dcol = districtColor(D_(doc, i));
+    const dcol = districtColor(doc, D_(doc, i));
     const sy = symbolsOf(doc, i);
     const showRooms = roomsOn && sy.length > 0 && x1 - x0 > 26 && y1 - y0 > 20;
 
@@ -1909,6 +2217,16 @@ export class MapRenderer {
     this.clearImportPreview();
     this.hoverKey = key;
     this.hoverEls = key ? (this.keyElements.get(key) ?? []) : [];
+    // A3 (road hover, issue #82): "the outlines of both districts it
+    // connects are highlighted" -- reuses the SAME .hovered class toggle
+    // every other hoverable shape already gets (index.css's
+    // `filter: brightness(1.3) drop-shadow(...)`), just applied to two more
+    // elements (each district's own `d:N` path(s)) in addition to the
+    // road's own hit path, rather than a second highlight mechanism.
+    if (key?.startsWith("r:")) {
+      const [, a, b] = key.split(":");
+      this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`d:${a}`) ?? []), ...(this.keyElements.get(`d:${b}`) ?? [])];
+    }
     for (const e of this.hoverEls) e.classList.add("hovered");
     if (!key) {
       this.hideCard();
@@ -1941,6 +2259,10 @@ export class MapRenderer {
   private reapplyHover() {
     if (!this.hoverKey) return;
     this.hoverEls = this.keyElements.get(this.hoverKey) ?? [];
+    if (this.hoverKey.startsWith("r:")) {
+      const [, a, b] = this.hoverKey.split(":");
+      this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`d:${a}`) ?? []), ...(this.keyElements.get(`d:${b}`) ?? [])];
+    }
     for (const e of this.hoverEls) e.classList.add("hovered");
     this.hoverImportG = null;
     if (this.hoverImportTimer != null) clearTimeout(this.hoverImportTimer);
@@ -1984,6 +2306,20 @@ export class MapRenderer {
       return { lines: [doc.names[d] ?? `district ${d}`, `${district.size} files`] };
     }
     if (parts[0] === "dir") return { lines: [key.slice(4) + "/", "folder highlight"] };
+    if (parts[0] === "r") {
+      // A3 (road hover/tap card, issue #82): "A -> B: n imports · B -> A: m
+      // imports" -- read straight off this.roadPlan (built once per
+      // document, loadDocument) rather than re-aggregating doc.E, so this
+      // can never disagree with the ribbon's own width/chevron-direction
+      // math (drawRoads), which reads the exact same plan entries.
+      const a = +parts[1];
+      const b = +parts[2];
+      const plan = this.roadPlan.find((p) => p.a === a && p.b === b);
+      if (!plan) return null;
+      const nameA = doc.names[String(a)] ?? `district ${a}`;
+      const nameB = doc.names[String(b)] ?? `district ${b}`;
+      return { lines: [`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`] };
+    }
     if (parts[0] === "f") {
       const i = +parts[1];
       if (!doc.F[i]) return null;
@@ -2275,10 +2611,34 @@ export class MapRenderer {
       // MapView's own handler now steps back one level (symbol -> file ->
       // district -> nothing) instead of jumping straight to nothing. See
       // MapView.tsx's stepBackSelection for the actual sequencing.
+      //
+      // A3 (issue #82): also dismisses a lingering road tap-card -- see the
+      // `parts[0] === "r"` branch below, and the `this.hideCard()` right
+      // before it, for the other half of "any other tap dismisses it."
+      this.hideCard();
       this.callbacks.onClearSelection();
       return;
     }
     const parts = kk.split(":");
+    // A3 (road tap, issue #82): "show the same explanation, but do NOT
+    // change or clear the selection, and do not let the tap fall through to
+    // the district underneath." The road's hit path sits above the district
+    // polygon in paint order (drawRoads is called right after the district
+    // loop, before the file-dot loop), so the browser's own hit-test already
+    // resolves `t` to the road, never the district beneath it -- this
+    // branch only has to avoid calling any of the onSelect*/onClearSelection
+    // callbacks, which every other branch below does. Runs on desktop too
+    // (harmless there: hovering already shows the same card via setHover),
+    // not just touch, so there's one code path instead of a device check.
+    if (parts[0] === "r") {
+      const content = this.hoverContent(kk);
+      if (content) {
+        this.showCard(content);
+        this.positionCard(e.clientX, e.clientY);
+      }
+      return;
+    }
+    this.hideCard();
     if (parts[0] === "d") this.callbacks.onSelectDistrict(+parts[1]);
     else if (parts[0] === "f") this.callbacks.onSelectFile(+parts[1]);
     else if (parts[0] === "s") this.callbacks.onSelectSymbol(+parts[1], +parts[2]);

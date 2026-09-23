@@ -476,7 +476,7 @@ function DistrictBody({
             onClick={() => onSelectFile(i)}
             className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-[10.5px] text-[var(--on)] hover:text-white"
           >
-            <i className="h-2 w-2 rounded-sm" style={{ background: districtColor(d) }} />
+            <i className="h-2 w-2 rounded-sm" style={{ background: districtColor(doc, d) }} />
             <span className="overflow-hidden text-ellipsis whitespace-nowrap">{doc.F[i].split("/").slice(1).join("/")}</span>
             <span className="text-[9.5px] text-[var(--dim)]">{LOC(doc, i)} lines</span>
           </button>

@@ -293,6 +293,16 @@ export function MapView() {
               setSideOpen(false);
               selectFile(i);
             }}
+            onPickHub={(i) => {
+              setSideOpen(false);
+              // A4 (hubs, issue #82): "tapping a row selects the file (no view
+              // change)". Post-A1, selectFile() itself is now pan-only for
+              // EVERY caller (search, landmarks, hubs alike) -- the old
+              // per-caller `fly`/no-fly distinction this comment used to
+              // describe was A1's own unification target, so this is just
+              // the same call onPickLandmark makes above.
+              selectFile(i);
+            }}
             onSelectDistrict={(d) => {
               setSideOpen(false);
               // Issue #82 A1: a sidebar row now SELECTS the district (both

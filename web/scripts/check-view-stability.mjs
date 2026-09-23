@@ -2032,6 +2032,266 @@ async function checkSearchPanOffscreen(browser, base) {
   await context.close();
 }
 
+// A2 (district colour, issue #82): screen-space proxy for "no two adjacent
+// districts share a hue" -- the authoritative check is
+// scripts/check-district-colours.ts (pure, world-space adjacency, run
+// against the exact function -- map/colour.ts's assignDistrictHues -- the
+// app itself calls); this is a real-DOM sanity check on top of it.
+//
+// FIRST VERSION of this check compared each district's whole-shape
+// AXIS-ALIGNED BOUNDING BOX, which is a bad proxy for an elongated or
+// diagonal blob: two real districts on dify (d:6 "dify-agent & dify_agent"
+// and d:12 "agent-v2 & features") have bounding boxes that touch corner-to-
+// corner (bboxA's [x0,y1] === bboxB's [x1,y0] exactly) while their actual
+// polygons sit about 64px apart on screen at desktop fit zoom -- confirmed
+// by measuring the true world-space point/segment distance (0.249 world
+// units against colour.ts's own 0.186-unit threshold for this map) and
+// multiplying by fitScale's k (~258). That is not a neighbour pair, and
+// check-district-colours.ts agrees (0 collisions on every fixture); the bbox
+// heuristic was simply wrong for shapes whose bounding box is much bigger
+// than the shape itself. Fixed by comparing the districts' own RENDERED
+// OUTLINE POINTS (parsed straight from each path's `d` attribute -- the
+// exact geometry paint() drew, not a rectangle around it), grid-bucketed the
+// same way map/colour.ts's own near() is (a district can have hundreds of
+// points; all-pairs would be too slow), at a tight on-screen threshold
+// (3px) that means what "touching" should mean here -- not a coincidental
+// bounding-box overlap.
+async function checkDistrictHueAdjacency(browser, base) {
+  const label = "no two adjacent districts share a hue (dify, desktop)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  const result = await page.evaluate(() => {
+    const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
+    const byDistrict = new Map();
+    for (const p of paths) {
+      const key = p.getAttribute("data-k");
+      const fill = p.getAttribute("fill");
+      // paint() builds `d` as "M<x> <y>L<x> <y>L...Z" (MapRenderer.ts's
+      // district-polygon block) -- strip the command letters, split on
+      // whitespace, pair consecutive numbers back into [x, y] points.
+      const raw = (p.getAttribute("d") || "").replace(/[MLZ]/g, " ");
+      const nums = raw.trim().split(/\s+/).filter(Boolean).map(Number);
+      const points = [];
+      for (let i = 0; i + 1 < nums.length; i += 2) points.push([nums[i], nums[i + 1]]);
+      if (!byDistrict.has(key)) byDistrict.set(key, { fill, points: [] });
+      byDistrict.get(key).points.push(...points);
+    }
+    const entries = [...byDistrict.entries()];
+    const THRESHOLD_PX = 3;
+    const near = (ptsA, ptsB, threshold) => {
+      const grid = new Map();
+      for (const p of ptsA) {
+        const cell = `${Math.floor(p[0] / threshold)},${Math.floor(p[1] / threshold)}`;
+        if (!grid.has(cell)) grid.set(cell, []);
+        grid.get(cell).push(p);
+      }
+      const t2 = threshold * threshold;
+      for (const p of ptsB) {
+        const cx = Math.floor(p[0] / threshold);
+        const cy = Math.floor(p[1] / threshold);
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            const bucket = grid.get(`${cx + dx},${cy + dy}`);
+            if (!bucket) continue;
+            for (const q of bucket) {
+              const ddx = p[0] - q[0];
+              const ddy = p[1] - q[1];
+              if (ddx * ddx + ddy * ddy < t2) return true;
+            }
+          }
+        }
+      }
+      return false;
+    };
+    const collisions = [];
+    for (let i = 0; i < entries.length; i++) {
+      for (let j = i + 1; j < entries.length; j++) {
+        const [keyA, infoA] = entries[i];
+        const [keyB, infoB] = entries[j];
+        if (infoA.fill !== infoB.fill) continue;
+        if (near(infoA.points, infoB.points, THRESHOLD_PX)) collisions.push([keyA, keyB]);
+      }
+    }
+    return { districts: entries.length, collisions };
+  });
+  report(result.collisions.length === 0, `${label}: no two screen-adjacent districts render the same fill`, JSON.stringify(result));
+  await context.close();
+}
+
+// A road's hit path is a quadratic bezier, often bowed and diagonal -- its
+// AXIS-ALIGNED BOUNDING BOX centre is frequently not anywhere near the curve
+// itself (the same class of bug the district-hue check above had). Find a
+// point that is actually ON the path with the SVG platform API built for
+// exactly this (getPointAtLength), then map it from the path's own local
+// user space to viewport CSS pixels with getScreenCTM -- the same
+// coordinate space page.mouse.click/page.touchscreen.tap expect.
+async function pointOnPathMidpoint(locator) {
+  return locator.evaluate((el) => {
+    const len = el.getTotalLength();
+    const pt = el.getPointAtLength(len / 2);
+    const screenPt = pt.matrixTransform(el.getScreenCTM());
+    return { x: screenPt.x, y: screenPt.y };
+  });
+}
+
+// On-screen coordinates aren't enough on the PHONE profile specifically: the
+// bottom drawer's peek strip, the zoom controls, the search box and the
+// unconnected-files chip are all real DOM elements stacked on TOP of the
+// map SVG, and a road/hub near the phone's edges can sit right under one of
+// them. The desktop profile (fixed left rail, no floating bottom chrome)
+// rarely has this problem, which is exactly the split CI saw: both new taps
+// passed on desktop and failed on phone. `document.elementFromPoint` is the
+// browser's own answer to "what would actually receive a tap here" --
+// verifying with it (the same technique checkMultiPolygonHover's
+// `polyCentre` already uses in this file for the same reason) catches this
+// class of bug that a pure coordinate/geometry check cannot.
+async function isPointClickable(page, x, y, expectedDataK) {
+  return page.evaluate(
+    ({ x, y, expectedDataK }) => {
+      const el = document.elementFromPoint(x, y);
+      if (!el) return false;
+      const withKey = el.closest("[data-k]");
+      return !!withKey && withKey.getAttribute("data-k") === expectedDataK;
+    },
+    { x, y, expectedDataK },
+  );
+}
+
+// A3 (road tap, issue #82): a touch tap on a road shows its import-count
+// explanation but must NOT change or clear the current selection, and must
+// NOT fall through to the district underneath (the road's hit path is drawn
+// after every district polygon -- MapRenderer.drawRoads -- so the browser's
+// own hit-test already resolves the tap to the road, never the district;
+// this asserts the OBSERVABLE consequence of that ordering, not the ordering
+// itself). langgenius/dify's corpus has enough cross-district import edges
+// that at least one road always draws (the top-12-by-flow selection alone
+// guarantees it once there are >=12 cross-district pairs, which dify's
+// 6347-file / dozens-of-districts graph clears easily). Roads only connect
+// MAINLAND districts (see roads.ts's aggregateDistrictFlows), so at fit zoom
+// -- which frames exactly the mainland extent -- a road's own midpoint
+// should normally be on screen; this still tries every road in DOM order
+// rather than assuming the first one is, since a bowed bezier's midpoint can
+// stray slightly outside the frame even when both its endpoints are inside.
+async function checkRoadTap(browser, base, profile) {
+  const label = `road tap keeps selection (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  const baseline = doc.F[doc.L[0][0]]; // a landmark file: guaranteed connected/on-map
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(baseline)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  const roads = await page.locator('svg.map-svg path.hit[data-k^="r:"]').all();
+  if (roads.length === 0) {
+    report(false, `${label}: at least one road is drawn`, "no road hit path found");
+    await context.close();
+    return;
+  }
+  const { width: vw, height: vh } = profile.viewport;
+  let point = null;
+  for (const road of roads) {
+    const p = await pointOnPathMidpoint(road);
+    if (p.x < 0 || p.x > vw || p.y < 0 || p.y > vh) continue;
+    const dataK = await road.getAttribute("data-k");
+    if (await isPointClickable(page, p.x, p.y, dataK)) {
+      point = p;
+      break;
+    }
+  }
+  if (!point) {
+    report(false, `${label}: at least one road's midpoint is on screen and not covered by chrome`, `checked ${roads.length} roads`);
+    await context.close();
+    return;
+  }
+  await tap(page, profile, point.x, point.y);
+  report(
+    new URL(page.url()).searchParams.get("file") === baseline,
+    `${label}: tapping a road does not change or clear the current selection`,
+  );
+  const cardVisible = await page
+    .locator(".tolmap-hover-card")
+    .isVisible()
+    .catch(() => false);
+  const cardText = cardVisible ? await page.locator(".tolmap-hover-card").innerText() : "";
+  report(cardVisible && /import/i.test(cardText), `${label}: tapping a road shows its import-count explanation`, cardText);
+  await context.close();
+}
+
+// A4 (hub ring tap, issue #82): a hub's hit circle is `fill="transparent"`
+// (its visible ring/dot are separate, non-interactive elements --
+// MapRenderer.drawHubRings) with `data-k="f:i"`, which is what distinguishes
+// it from the SAME file's own dot (always a real tint fill, never
+// "transparent") when both carry the same data-k. Tapping it must select
+// that file, same as tapping the dot would.
+async function checkHubRingTap(browser, base, profile) {
+  const label = `hub ring tap selects its file (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  // Every hub hit circle on screen, not just the first: on the phone
+  // profile the first one found can sit under the bottom drawer's peek
+  // strip, the zoom controls or the search box -- real chrome stacked on
+  // top of the map SVG (see isPointClickable's own comment). The same
+  // data-k also matches the file's own dot (circle.hit[data-k=...], a real
+  // tint fill, never "transparent") -- disambiguate by fill, or Playwright's
+  // strict mode throws on the 2-element match ("locator(...) resolved to 2
+  // elements", found in CI) if a single-match locator is used instead.
+  const hubKeys = await page.evaluate(() => {
+    const els = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+    return els.filter((el) => el.getAttribute("fill") === "transparent").map((el) => el.getAttribute("data-k"));
+  });
+  if (hubKeys.length === 0) {
+    report(false, `${label}: at least one hub ring is on screen at fit zoom`, "no hub hit circle found");
+    await context.close();
+    return;
+  }
+  let chosenKey = null;
+  let point = null;
+  for (const key of hubKeys) {
+    const box = await page.locator(`svg.map-svg circle.hit[data-k="${key}"][fill="transparent"]`).boundingBox();
+    if (!box) continue;
+    const candidate = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    if (await isPointClickable(page, candidate.x, candidate.y, key)) {
+      chosenKey = key;
+      point = candidate;
+      break;
+    }
+  }
+  if (!point) {
+    report(false, `${label}: at least one hub ring is tappable (not covered by chrome)`, `checked ${hubKeys.length} rings`);
+    await context.close();
+    return;
+  }
+  const fileIndex = Number(chosenKey.slice(2));
+  const expected = doc.F[fileIndex];
+  await tap(page, profile, point.x, point.y);
+  report(
+    new URL(page.url()).searchParams.get("file") === expected,
+    `${label}: tapping the ring selects the hub's file`,
+    `expected=${expected}`,
+  );
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   await preflight(args.base);
@@ -2066,6 +2326,10 @@ async function main() {
     await checkFileLabelTapSelects(browser, args.base);
     await checkDragThresholdNoSelect(browser, args.base);
     await checkSearchPanOffscreen(browser, args.base);
+    // issue #82 (district hues, import roads, hub rings, always-on district names)
+    await checkDistrictHueAdjacency(browser, args.base);
+    for (const profile of PROFILES) await checkRoadTap(browser, args.base, profile);
+    for (const profile of PROFILES) await checkHubRingTap(browser, args.base, profile);
   } finally {
     await browser.close();
   }
