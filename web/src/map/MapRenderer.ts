@@ -5,8 +5,21 @@
 // file, a symbol, or empty space) flows out through the callbacks passed to
 // the constructor. React owns selection/geo/layer state and the URL; this
 // class only draws and reports gestures.
-import type { MapDocument } from "@/types";
-import { BUILD_ZOOM, DOT_DENSITY_FLOOR, KCOL, KIND, LINK_PREVIEW_MAX, PARCEL_ZOOM, type Geo, type Layer } from "./constants";
+import type { MapDocument, Neighbourhood } from "@/types";
+import {
+  BUILD_ZOOM,
+  DOT_DENSITY_FLOOR,
+  KCOL,
+  KIND,
+  LINK_PREVIEW_MAX,
+  NEIGHBOURHOOD_LABEL_MIN_EXTENT_PX,
+  NEIGHBOURHOOD_LABEL_MIN_FILES,
+  NEIGHBOURHOOD_LABEL_MIN_FILES_FOCUSED,
+  PARCEL_ZOOM,
+  type Geo,
+  type Layer,
+} from "./constants";
+import { blobBox } from "./colour";
 import {
   CH,
   CX_,
@@ -17,9 +30,12 @@ import {
   districtClass,
   districtColor,
   districtWorldArea,
+  fileXY,
   fitCentreY,
   fitViewport,
   mainlandBounds,
+  neighbourhoodShadeColor,
+  polygonArea,
   px as pxOf,
   ramp,
   rooms,
@@ -29,12 +45,15 @@ import {
   tmCentre,
   worldBounds,
 } from "./geometry";
+import { bboxArea, smallFootprintHitRadii, SMALL_FOOTPRINT_HIT_CAP_PX, type ScreenPoint } from "./footprints";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
 import { computeHubs, hubRingRadius, type HubSet } from "./hubs";
+import { assignNeighbourhoodShades, neighbourhoodCentroids } from "./neighbourhoods";
 import type { FolderLabel, PackageGrouping } from "./packageLayout";
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
-import { buildRoadGeom, buildRoadPlan, type RoadPlan } from "./roads";
+import { buildRoadGeom, buildRoadPlan, districtRadius, type RoadPlan } from "./roads";
+import { aggregateCrossDistrictFlows, aggregateIntraDistrictFlows, selectCrossDistrictPairs, selectStreetPairs, type CrossFlow, type StreetFlow } from "./streets";
 
 declare global {
   interface Window {
@@ -121,6 +140,23 @@ export class MapRenderer {
   // A4 (hubs, issue #82): every file with fan-in >= HUB_FANIN_THRESHOLD,
   // ranked and named once per document -- see hubs.ts's computeHubs.
   private hubSet: HubSet = { hubs: [], maxFi: 1 };
+
+  // B4 (nested footprints, issue #82): footprint mode is the default view
+  // whenever the document carries `P` (scope item 1) -- computed once per
+  // document, not per paint, the same as every other loadDocument() cache
+  // above. neighbourhoodShade/neighbourhoodCentroid are like districtOrder/
+  // districtArea one level up: pure per-document derivations (map/
+  // neighbourhoods.ts) that would be wasted work to recompute on every
+  // pinch-zoom frame. streetCache is different in kind -- it's keyed by
+  // WHICH district is currently focused (selD), not by the document alone,
+  // so it's invalidated both here (a new document) and lazily in
+  // getStreetPlan() (a different district focused) rather than eagerly for
+  // every district up front, since most documents' districts are never
+  // focused in a given session.
+  private hasFootprints = false;
+  private neighbourhoodShade: Map<string, number> = new Map();
+  private neighbourhoodCentroid: Map<string, [number, number]> = new Map();
+  private streetCache: { d: number; intra: StreetFlow[]; cross: CrossFlow[] } | null = null;
 
   // Issue #51 perf follow-up: cache of mainlandBounds()/worldBounds() and
   // the two scales derived from them (see geometry.ts's scaleToFit), keyed
@@ -390,6 +426,15 @@ export class MapRenderer {
     this.roadPlan = buildRoadPlan(doc);
     this.roadMaxTotal = Math.max(1, ...this.roadPlan.map((r) => r.total));
     this.hubSet = computeHubs(doc);
+    // B4: footprint mode, and its neighbourhood shade/centroid caches --
+    // see this class's own field comment above for why streetCache is NOT
+    // reset to a fresh value here (it's invalidated lazily, by district id,
+    // in getStreetPlan()) while these two are eager like every other
+    // per-document cache in this method.
+    this.hasFootprints = !!doc.P;
+    this.neighbourhoodShade = doc.neighbourhoods ? assignNeighbourhoodShades(doc) : new Map();
+    this.neighbourhoodCentroid = doc.neighbourhoods ? neighbourhoodCentroids(doc) : new Map();
+    this.streetCache = null;
     const isLandmark = new Set(doc.L.map(([i]) => i));
     const byDistrict = new Map<number, number[]>();
     for (let i = 0; i < doc.N.length; i++) {
@@ -776,7 +821,7 @@ export class MapRenderer {
    * #82 A1 scope item 1: "Symbol search gets the same treatment"). */
   panTo(i: number, anim = true) {
     if (!this.state) return;
-    const p = this.px(i);
+    const p = this.anchor(i);
     this.panToPoint(p[0], p[1], anim);
   }
   /** Pan-only selection of a district, for the sidebar row and a `?d=` deep
@@ -827,6 +872,16 @@ export class MapRenderer {
   private px(i: number): [number, number] {
     if (!this.state) return [0, 0];
     return pxOf(this.state.doc, this.state.geo, i);
+  }
+  /** B4 scope item 3: the one accessor every DRAWING anchor uses --
+   * file import lines, hover previews, selection links, blast-radius lines,
+   * route lines, hub rings, file labels, pins and panTo all call this
+   * instead of `px()` directly, so none of them can quietly keep reading
+   * `N`'s layout site once a document carries `footprint_centroids`. See
+   * geometry.ts's `fileXY` for the actual fallback rule. */
+  private anchor(i: number): [number, number] {
+    if (!this.state) return [0, 0];
+    return fileXY(this.state.doc, this.state.geo, i);
   }
   private X(v: number) {
     return v * this.k + this.tx;
@@ -1011,10 +1066,31 @@ export class MapRenderer {
       // a ribbon crossing a district's fill is on top of it -- see
       // drawRoads's own doc comment for the full z-order argument.
       this.drawRoads(g);
+      // B4 (streets, issue #82 scope item 4): only inside a FOCUSED district
+      // -- `selD` is exactly "focused" here (the same flag the district loop
+      // above uses for its own `on` highlight), never every district at
+      // once, which is what keeps this from being a second, redundant road
+      // layer on top of drawRoads() at the overview.
+      if (selD != null) this.drawStreets(g, selD);
     }
 
     const CELL = geo === "p" && doc.P && zf0 > PARCEL_ZOOM;
     const ROOMS = geo === "p" && zf0 > BUILD_ZOOM;
+    // B4 (nested footprints, issue #82): footprint mode is the DEFAULT view
+    // whenever the document carries `P` (scope item 1) -- unlike CELL above
+    // (the older, still-reachable-by-deep-link "plots" geo mode gated behind
+    // PARCEL_ZOOM), this has no zoom gate and no geo requirement beyond "not
+    // treemap": a file with a footprint draws it at every zoom, the same as
+    // a dot did before this PR. CELL is checked first in the loop below (a
+    // document could reach geo==="p" AND carry footprints at the same time
+    // on an old deep link; CELL's own explicit `geo==="p"` requirement means
+    // the two conditions are mutually exclusive on any REACHABLE geo value
+    // today, since footprint mode's own `geo !== "t"` covers "r" and "p"
+    // both -- CELL keeps first-match priority defensively, not because a
+    // real conflict is expected).
+    const FOOTPRINTS = this.hasFootprints && geo !== "t";
+    const footprintPts = new Map<number, ScreenPoint>();
+    const footprintSmall: number[] = [];
     const defs = CELL ? el("defs", {}) : null;
     if (defs) g.appendChild(defs);
     // Issue #48: files that must never be thinned or culled, whatever their
@@ -1039,7 +1115,15 @@ export class MapRenderer {
         this.plot(g, defs!, i, dim, ROOMS);
         continue;
       }
-      const p = this.px(i);
+      if (FOOTPRINTS && doc.P![String(i)]) {
+        const drawn = this.footprint(g, i, dim, zf0, islandFadeFloorZf, islandExceptionDistricts, folderFiles);
+        if (drawn) {
+          footprintPts.set(i, { i, x: drawn.cx, y: drawn.cy });
+          if (drawn.small) footprintSmall.push(i);
+        }
+        continue;
+      }
+      const p = this.anchor(i);
       let node: SVGElement;
       if (geo !== "t") {
         // Density budget (issue #48): below the floor, don't create the
@@ -1156,13 +1240,42 @@ export class MapRenderer {
       g.appendChild(node);
     }
 
+    // B4 (nested footprints, issue #82 scope items 2, 6): neighbourhood
+    // gutters, then the extra small-footprint hit circles -- both AFTER the
+    // footprint fill loop (so a gutter's surface-coloured stroke paints over
+    // the edge of the footprints it separates, which is what makes it read
+    // as a gap rather than a boundary line) and AFTER drawRoads/drawStreets
+    // (already true: those ran earlier in this method, before the per-file
+    // loop), satisfying scope item 6's "draw these ABOVE roads" for free.
+    if (FOOTPRINTS) {
+      this.drawNeighbourhoodGutters(g, zf0, islandFadeFloorZf, islandExceptionDistricts, selD);
+      if (footprintSmall.length > 0) {
+        const radii = smallFootprintHitRadii([...footprintPts.values()]);
+        for (const i of footprintSmall) {
+          const pt = footprintPts.get(i)!;
+          const r = radii.get(i) ?? SMALL_FOOTPRINT_HIT_CAP_PX;
+          g.appendChild(
+            el("circle", {
+              cx: pt.x.toFixed(1),
+              cy: pt.y.toFixed(1),
+              r: r.toFixed(1),
+              fill: "transparent",
+              class: "hit",
+              "pointer-events": "all",
+              "data-k": "f:" + i,
+            }),
+          );
+        }
+      }
+    }
+
     // blast radius: a thread from every file that names this symbol
     if (blast && sel != null) {
-      const o = this.px(sel);
+      const o = this.anchor(sel);
       const ox = this.X(o[0]);
       const oy = this.Y(o[1]);
       blast.files.forEach((j) => {
-        const q = this.px(j);
+        const q = this.anchor(j);
         g.appendChild(
           el("line", {
             x1: this.X(q[0]).toFixed(1),
@@ -1177,7 +1290,7 @@ export class MapRenderer {
         );
       });
       blast.files.forEach((j) => {
-        const q = this.px(j);
+        const q = this.anchor(j);
         g.appendChild(
           el("circle", {
             cx: this.X(q[0]).toFixed(1),
@@ -1195,7 +1308,7 @@ export class MapRenderer {
 
     if (route) {
       const pts = route.path.map((i) => {
-        const p = this.px(i);
+        const p = this.anchor(i);
         return [this.X(p[0]), this.Y(p[1])];
       });
       g.appendChild(
@@ -1247,11 +1360,11 @@ export class MapRenderer {
     // imports `sel`.
     if (selNeighbours && sel != null) {
       const { shown } = this.getSelLinks(sel);
-      const o = this.px(sel);
+      const o = this.anchor(sel);
       const ox = this.X(o[0]);
       const oy = this.Y(o[1]);
       for (const { j, dir } of shown) {
-        const p = this.px(j);
+        const p = this.anchor(j);
         g.appendChild(
           el("line", {
             x1: ox.toFixed(1),
@@ -1281,6 +1394,11 @@ export class MapRenderer {
     // growing `placed` array threaded through every step below is the fix.
     const placed: Array<[number, number, number, number]> = [];
     this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed);
+    // B4 scope item 5: neighbourhood labels go through the SAME shared
+    // collision list, right after district names -- "labels go through the
+    // shared collision list below district names" (spec), so a district's
+    // own name always wins a collision against one of its neighbourhoods'.
+    if (FOOTPRINTS) this.placeNeighbourhoodLabels(g, placed, selD);
 
     // Ranked-pin selection (readable-overview PR, scope item 1; see pins.ts's
     // top comment for issue #57, the msgraph-sdk-python case this fixes):
@@ -1298,7 +1416,7 @@ export class MapRenderer {
       // can't take a placement slot a visible pin might have wanted.
       const dIsland = this.islandFadeForDistrict(D_(doc, i), zf0, islandFadeFloorZf, islandExceptionDistricts);
       if (!this.islandFadeVisible(dIsland)) return null;
-      const p = this.px(i);
+      const p = this.anchor(i);
       const cx = this.X(p[0]);
       const cy = this.Y(p[1]);
       if (cx < -30 || cx > this.VW + 30 || cy < -30 || cy > this.VH + 30) return null;
@@ -1497,7 +1615,10 @@ export class MapRenderer {
       // budget as every other label here, so it's deterministic and can
       // never overlap a previously placed label -- it simply doesn't render
       // if there's no room, the same trade every label on this map makes.
-      const hidden = labelPlaced ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
+      // B4 scope item 1: "+N files" badges are a #48 dot-thinning artefact --
+      // footprint mode never thins (every file always draws its own
+      // footprint), so there is never a hidden count to report there.
+      const hidden = labelPlaced && !this.hasFootprints ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
       if (hidden > 0) {
         put(x, labelY + (isIsland ? 10 : 13), `+${hidden} files`, isIsland ? 8.5 : 9.5, (isIsland ? 0.55 : 0.7) * iFade, 600, +d);
         // Issue #82 A1 scope item 6: the "+N files" badge above already
@@ -1531,7 +1652,7 @@ export class MapRenderer {
     const candidates: Array<{ hub: (typeof hubs)[number]; cx: number; cy: number; r: number }> = [];
     for (const hub of hubs) {
       if (this.unconnectedFile[hub.i]) continue;
-      const p = this.px(hub.i);
+      const p = this.anchor(hub.i);
       const cx = this.X(p[0]);
       const cy = this.Y(p[1]);
       const r = hubRingRadius(hub.fi, maxFi, narrow);
@@ -1723,6 +1844,366 @@ export class MapRenderer {
     }
   }
 
+  /** B4 (streets, issue #82 scope item 4): which neighbourhood pairs (inside
+   * `d`) and which neighbourhood-to-other-district pairs get a street,
+   * cached by `d` alone -- a district stays focused across many paints (a
+   * hover, a pinch, a resize), and re-aggregating doc.E over the whole
+   * district's edges on every one of those would repeat exactly the "per-
+   * document work never repeats per paint" mistake roadPlan/hubSet/
+   * districtOrder above exist to avoid, just keyed by "currently focused
+   * district" instead of "document" -- so it's invalidated by district id
+   * here rather than eagerly for every district in loadDocument(), since
+   * most districts in a large map are never focused in one session. */
+  private getStreetPlan(d: number): { d: number; intra: StreetFlow[]; cross: CrossFlow[] } {
+    if (this.streetCache?.d === d) return this.streetCache;
+    const { doc } = this.state!;
+    const intra = selectStreetPairs(aggregateIntraDistrictFlows(doc, d));
+    const cross = selectCrossDistrictPairs(aggregateCrossDistrictFlows(doc, d));
+    const result = { d, intra, cross };
+    this.streetCache = result;
+    return result;
+  }
+
+  /** B4 scope item 4: streets inside a focused district -- neighbourhood <->
+   * neighbourhood (solid ribbon, chevron(s), exactly roads.ts's own geometry
+   * at a thinner width) and neighbourhood <-> other-mainland-district
+   * (dashed, fainter, no ribbon fill -- see this method's own inline comment
+   * for why a filled ribbon doesn't suit "dashed"). Both keyed as `data-k`
+   * so hover/tap reuse drawRoads' own "r:" pattern one prefix over ("st:"),
+   * including the two-neighbours-highlight/tap-card behaviour (setHover/
+   * hoverContent/click all branch on it below). */
+  private drawStreets(g: SVGGElement, focusedDistrict: number) {
+    const { doc } = this.state!;
+    if (!doc.neighbourhoods || !doc.file_neighbourhoods) return;
+    const plan = this.getStreetPlan(focusedDistrict);
+    const toScreen = (p: [number, number]): [number, number] => [this.X(p[0]), this.Y(p[1])];
+    const neighArea = (n: Neighbourhood) => n.blob.reduce((a, poly) => a + polygonArea(poly), 0);
+
+    const intraMax = Math.max(1, ...plan.intra.map((f) => f.total));
+    for (const f of plan.intra) {
+      const na = doc.neighbourhoods[f.a];
+      const nb = doc.neighbourhoods[f.b];
+      const ca = this.neighbourhoodCentroid.get(f.a);
+      const cb = this.neighbourhoodCentroid.get(f.b);
+      if (!na || !nb || !ca || !cb) continue;
+      const forward = f.ab >= f.ba;
+      const sourceN = forward ? na : nb;
+      const targetN = forward ? nb : na;
+      const sourceC = forward ? ca : cb;
+      const targetC = forward ? cb : ca;
+      const major = Math.max(f.ab, f.ba);
+      const minor = Math.min(f.ab, f.ba);
+      const both = major > 0 && minor / major >= 0.35;
+      // Thinner than drawRoads' own 1.5 + 6*sqrt(...) (spec: "thinner
+      // widths") -- a street is a smaller-scale road inside a district
+      // that's already the size of the whole map a moment ago.
+      const widthPx = 0.9 + 3 * Math.sqrt(f.total / intraMax);
+      const geom = buildRoadGeom({
+        a: sourceC,
+        b: targetC,
+        ringsA: sourceN.blob,
+        ringsB: targetN.blob,
+        raWorld: districtRadius(neighArea(sourceN)),
+        rbWorld: districtRadius(neighArea(targetN)),
+        widthPx,
+        bothDirections: both,
+        k: this.k,
+        toScreen,
+      });
+      const key = `st:n:${f.a}:${f.b}`;
+      g.appendChild(
+        el("path", {
+          d: "M" + geom.polygon.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L") + "Z",
+          fill: "var(--ink)",
+          "fill-opacity": 0.26,
+          "pointer-events": "none",
+          "data-k": key,
+        }),
+      );
+      for (const chev of geom.chevrons) {
+        g.appendChild(
+          el("path", {
+            d: `M${chev.back1[0].toFixed(1)} ${chev.back1[1].toFixed(1)}L${chev.tip[0].toFixed(1)} ${chev.tip[1].toFixed(1)}L${chev.back2[0].toFixed(1)} ${chev.back2[1].toFixed(1)}`,
+            fill: "none",
+            stroke: "var(--canvas)",
+            "stroke-width": Math.max(widthPx * 0.3, 2).toFixed(2),
+            "stroke-linecap": "round",
+            "stroke-linejoin": "round",
+            "pointer-events": "none",
+          }),
+        );
+      }
+      const hit = el("path", {
+        d: geom.hitD,
+        fill: "none",
+        stroke: "transparent",
+        "stroke-width": Math.max(widthPx * 1.3, 10).toFixed(1),
+        "stroke-linecap": "round",
+        class: "hit",
+        "pointer-events": "all",
+        "data-k": key,
+      });
+      const title = el("title", {});
+      title.textContent = `${na.label} → ${nb.label}: ${f.ab} imports\n${nb.label} → ${na.label}: ${f.ba} imports`;
+      hit.appendChild(title);
+      g.appendChild(hit);
+    }
+
+    const crossMax = Math.max(1, ...plan.cross.map((f) => f.total));
+    for (const f of plan.cross) {
+      const n = doc.neighbourhoods[f.n];
+      const otherDistrict = doc.districts[String(f.d)];
+      const nc = this.neighbourhoodCentroid.get(f.n);
+      if (!n || !otherDistrict || !nc) continue;
+      const geom = buildRoadGeom({
+        a: nc,
+        b: otherDistrict.c,
+        ringsA: n.blob,
+        ringsB: otherDistrict.blob,
+        raWorld: districtRadius(neighArea(n)),
+        rbWorld: districtRadius(districtWorldArea(otherDistrict)),
+        widthPx: 0.8 + 2 * Math.sqrt(f.total / crossMax),
+        bothDirections: false,
+        k: this.k,
+        toScreen,
+      });
+      const key = `st:c:${f.n}:${f.d}`;
+      // Dashed and fainter (spec), and drawn as a STROKE along the same
+      // quadratic-bezier centreline drawRoads/the intra-street ribbon above
+      // use for their hit path (`geom.hitD`) rather than the filled ribbon
+      // polygon -- a dash pattern on a filled shape isn't "a dashed line", it
+      // just perforates the fill, which doesn't read as the lighter-weight,
+      // secondary connection this is meant to be.
+      g.appendChild(
+        el("path", {
+          d: geom.hitD,
+          fill: "none",
+          stroke: "var(--ink)",
+          "stroke-width": 1.1,
+          "stroke-opacity": 0.32,
+          "stroke-dasharray": "5 4",
+          "pointer-events": "none",
+        }),
+      );
+      const hit = el("path", {
+        d: geom.hitD,
+        fill: "none",
+        stroke: "transparent",
+        "stroke-width": 12,
+        class: "hit",
+        "pointer-events": "all",
+        "data-k": key,
+      });
+      const title = el("title", {});
+      const districtName = doc.names[String(f.d)] ?? `district ${f.d}`;
+      title.textContent = `${n.label} → ${districtName}: ${f.out} imports\n${districtName} → ${n.label}: ${f.in} imports`;
+      hit.appendChild(title);
+      g.appendChild(hit);
+    }
+  }
+
+  /** B4 scope item 1: a file's footprint -- its own `P` polygon, filled with
+   * its neighbourhood's shade of its district's hue (map/neighbourhoods.ts,
+   * map/geometry.ts's neighbourhoodShadeColor), stroked in a thin surface
+   * colour so adjoining footprints read as tiles rather than one solid
+   * fill. Returns the on-screen anchor point (for the small-hit-circle grid
+   * hash, built by the caller over every footprint this paint draws) and
+   * whether this footprint is small enough to need one, or `null` if it was
+   * culled (off-screen) or hidden (a still-fading island) -- the same
+   * "return null = not drawn, not eligible for anything downstream" contract
+   * pins.ts's `screenOf` already uses. */
+  private footprint(
+    g: SVGGElement,
+    i: number,
+    dim: ReadonlySet<number> | null,
+    zf0: number,
+    islandFadeFloorZf: number,
+    islandExceptionDistricts: Set<number>,
+    folderFiles: ReadonlySet<number> | null,
+  ): { cx: number; cy: number; small: boolean } | null {
+    const { doc, sel, layer } = this.state!;
+    const poly = doc.P![String(i)];
+    const d = D_(doc, i);
+    const dIsland = this.islandFadeForDistrict(d, zf0, islandFadeFloorZf, islandExceptionDistricts);
+    if (!this.islandFadeVisible(dIsland)) return null;
+    let dAttr = "M";
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (let n = 0; n < poly.length; n++) {
+      const X_ = this.X(poly[n][0]);
+      const Y_ = this.Y(poly[n][1]);
+      dAttr += (n ? "L" : "") + X_.toFixed(1) + " " + Y_.toFixed(1);
+      if (X_ < x0) x0 = X_;
+      if (X_ > x1) x1 = X_;
+      if (Y_ < y0) y0 = Y_;
+      if (Y_ > y1) y1 = Y_;
+    }
+    dAttr += "Z";
+    const margin = 20;
+    if (x1 < -margin || x0 > this.VW + margin || y1 < -margin || y0 > this.VH + margin) return null;
+    const faded = !!(dim && !dim.has(i));
+    const neigh = doc.file_neighbourhoods?.[i];
+    const shade = neigh != null ? this.neighbourhoodShade.get(neigh) ?? null : null;
+    const fillColor = layer === "d" ? neighbourhoodShadeColor(doc, d, shade) : this.tint(i);
+    // Same 0.2 (dimmed) / 0.85 (full strength) convention the dot loop's own
+    // `baseOpacity` uses (a few blocks above, in the non-footprint branch) --
+    // deliberately, not independently tuned: check-view-stability.mjs reads
+    // an exact "0.2" fill-opacity as its "this file is dim" signal in
+    // several checks (dimmed-on-selection, folder dim, package-layout dim),
+    // and this file has no separate "is footprint mode" case for that
+    // reasoning to live in -- reusing the identical constants is what keeps
+    // those checks meaningful unchanged rather than needing a second,
+    // footprint-specific dim signal.
+    const baseOpacity = faded ? 0.2 : 0.85;
+    const anchorWorld = this.anchor(i);
+    const acx = this.X(anchorWorld[0]);
+    const acy = this.Y(anchorWorld[1]);
+    const path = el("path", {
+      // data-cx/data-cy (screen space, the same anchor `panTo`/rings/labels
+      // use): a rounded, cheap-to-read surrogate for "this file's on-screen
+      // position" that a geometry-stability check can read straight off the
+      // attribute instead of reparsing `d`'s point list -- the polygon's own
+      // circle-mode equivalent (cx/cy) doesn't exist on a `path`.
+      "data-cx": acx.toFixed(1),
+      "data-cy": acy.toFixed(1),
+      d: dAttr,
+      fill: fillColor,
+      "fill-opacity": dIsland === 1 ? baseOpacity : Math.round(baseOpacity * dIsland * 1000) / 1000,
+      stroke: "var(--canvas)",
+      "stroke-width": 0.7,
+      "stroke-opacity": faded ? 0.35 : 0.85,
+      "stroke-linejoin": "round",
+      class: "hit",
+      "pointer-events": "all",
+      "data-k": "f:" + i,
+    });
+    const t = el("title", {});
+    t.textContent = `${doc.F[i]}\n${LOC(doc, i)} loc · churn ${CH(doc, i)} · cplx ${CX_(doc, i)}`;
+    path.appendChild(t);
+    g.appendChild(path);
+    if (sel === i) {
+      g.appendChild(el("path", { d: dAttr, fill: "none", stroke: "var(--hot)", "stroke-width": 2.2, "pointer-events": "none" }));
+    }
+    // Same folder-highlight outline the dot/rect path draws (issue: folder
+    // dimming matches #61's selection opacity) -- a separate pointer-free
+    // element so the footprint's own hit area is untouched.
+    if (folderFiles?.has(i)) {
+      g.appendChild(el("path", { d: dAttr, fill: "none", stroke: "var(--ink)", "stroke-width": 1.4, "pointer-events": "none", "data-folder-highlight": i }));
+    }
+    const small = bboxArea(x0, y0, x1, y1) < Math.PI * SMALL_FOOTPRINT_HIT_CAP_PX * SMALL_FOOTPRINT_HIT_CAP_PX;
+    return { cx: acx, cy: acy, small };
+  }
+
+  /** B4 scope item 2: each neighbourhood's blob stroked as a white (surface-
+   * colour) gutter under a thin ink outline -- no fill of its own, no grid
+   * (finding 24's removed terrain). Batched into ONE path per district for
+   * every district except the currently FOCUSED one (issue #82 A3-style
+   * z-order/perf precedent: districts, not neighbourhoods, are the usual
+   * element count on this map) -- the focused district's own neighbourhoods
+   * are drawn as SEPARATE elements instead, each carrying `data-k="n:<id>"`,
+   * because streets (drawStreets) need to highlight exactly the two
+   * neighbourhoods a hovered/tapped street connects, and a batched multi-
+   * neighbourhood path has no way to expose one neighbourhood's outline on
+   * its own (the SAME reason a multi-polygon district gets one path PER
+   * polygon under a shared data-k rather than one path for all of them). */
+  private drawNeighbourhoodGutters(g: SVGGElement, zf0: number, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, focusedDistrict: number | null) {
+    const { doc } = this.state!;
+    if (!doc.neighbourhoods) return;
+    const byDistrict = new Map<number, string[]>();
+    for (const [id, n] of Object.entries(doc.neighbourhoods)) {
+      if (!byDistrict.has(n.d)) byDistrict.set(n.d, []);
+      byDistrict.get(n.d)!.push(id);
+    }
+    const seg = (poly: Array<[number, number]>) => "M" + poly.map((q) => this.X(q[0]).toFixed(1) + " " + this.Y(q[1]).toFixed(1)).join("L") + "Z";
+    for (const [d, ids] of byDistrict) {
+      const district = doc.districts[String(d)];
+      if (!district || districtClass(district) === "unconnected") continue;
+      const faint = districtClass(district) === "island";
+      const iFade = faint ? this.islandFadeForDistrict(d, zf0, islandFadeFloorZf, islandExceptionDistricts) : 1;
+      if (faint && !this.islandFadeVisible(iFade)) continue;
+      if (d === focusedDistrict) {
+        for (const id of ids) {
+          const n = doc.neighbourhoods![id];
+          let segD = "";
+          for (const poly of n.blob) if (poly.length >= 3) segD += seg(poly);
+          if (!segD) continue;
+          g.appendChild(el("path", { d: segD, fill: "none", stroke: "var(--canvas)", "stroke-width": 3.2, "stroke-opacity": 0.9 * iFade, "stroke-linejoin": "round", "pointer-events": "none" }));
+          g.appendChild(el("path", { d: segD, fill: "none", stroke: "var(--ink)", "stroke-width": 0.7, "stroke-opacity": 0.35 * iFade, "stroke-linejoin": "round", "pointer-events": "none", "data-k": "n:" + id }));
+        }
+      } else {
+        let gutterD = "";
+        for (const id of ids) {
+          const n = doc.neighbourhoods![id];
+          for (const poly of n.blob) if (poly.length >= 3) gutterD += seg(poly);
+        }
+        if (!gutterD) continue;
+        g.appendChild(el("path", { d: gutterD, fill: "none", stroke: "var(--canvas)", "stroke-width": 3.2, "stroke-opacity": 0.9 * iFade, "stroke-linejoin": "round", "pointer-events": "none" }));
+        g.appendChild(el("path", { d: gutterD, fill: "none", stroke: "var(--ink)", "stroke-width": 0.7, "stroke-opacity": 0.3 * iFade, "stroke-linejoin": "round", "pointer-events": "none" }));
+      }
+    }
+  }
+
+  /** B4 scope item 5: neighbourhood labels, from `neighbourhoods[id].label`.
+   * With no district focused: >= 4 files AND on-screen short-side blob
+   * extent >= 120px AND its anchor on screen (spec). Inside a focused
+   * district: only THAT district's own neighbourhoods, >= 6 files, no extent
+   * gate -- being focused already means zoomed in enough to read them.
+   * Shares `placed` with every other label kind (called right after district
+   * names in paint()). */
+  private placeNeighbourhoodLabels(g: SVGGElement, placed: Array<[number, number, number, number]>, selD: number | null) {
+    const { doc } = this.state!;
+    if (!doc.neighbourhoods) return;
+    const narrow = this.narrow();
+    const hits = (x: number, y: number, w: number, h: number) =>
+      placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
+    const put = (x: number, y: number, txt: string, size: number, dk: string) => {
+      const w = txt.length * size * 0.62;
+      const h = size * 1.25;
+      if (hits(x - w / 2, y - h, w, h)) return;
+      placed.push([x - w / 2, y - h, w, h]);
+      const t = el("text", {
+        x: x.toFixed(1),
+        y: y.toFixed(1),
+        "font-size": size,
+        "text-anchor": "middle",
+        fill: "var(--ink)",
+        "fill-opacity": 0.85,
+        "font-family": "IBM Plex Mono, monospace",
+        "paint-order": "stroke",
+        stroke: "var(--canvas)",
+        "stroke-width": 3,
+        "stroke-linejoin": "round",
+        class: "hit",
+        "pointer-events": "all",
+        "data-k": "n:" + dk,
+        "data-neighbourhood-label": dk,
+      });
+      t.textContent = txt;
+      g.appendChild(t);
+    };
+    // Determinism (CLAUDE.md): size-descending, ties by id ascending -- the
+    // same rule every other label-priority sort in this file uses.
+    const ids = Object.keys(doc.neighbourhoods).sort((a, b) =>
+      doc.neighbourhoods![b].size - doc.neighbourhoods![a].size || (a < b ? -1 : a > b ? 1 : 0));
+    for (const id of ids) {
+      const n = doc.neighbourhoods[id];
+      if (selD != null) {
+        if (n.d !== selD) continue;
+        if (n.size < NEIGHBOURHOOD_LABEL_MIN_FILES_FOCUSED) continue;
+      } else {
+        if (n.size < NEIGHBOURHOOD_LABEL_MIN_FILES) continue;
+        const [bx0, by0, bx1, by1] = blobBox(n.blob);
+        const shortSidePx = Math.min(bx1 - bx0, by1 - by0) * this.k;
+        if (shortSidePx < NEIGHBOURHOOD_LABEL_MIN_EXTENT_PX) continue;
+      }
+      const c = this.neighbourhoodCentroid.get(id);
+      if (!c) continue;
+      const x = this.X(c[0]);
+      const y = this.Y(c[1]);
+      if (x < 0 || x > this.VW || y < 0 || y > this.VH) continue;
+      put(x, y, n.label, narrow ? 10 : 11, id);
+    }
+  }
+
   /** A5: folder labels, then file labels -- the tail of the pre-A5
    * drawLabels(), unchanged except that `placed` is now shared with (and
    * arrives already containing boxes from) placeDistrictLabels/selectPins/
@@ -1828,11 +2309,15 @@ export class MapRenderer {
         // place. Treemap ("t") dots are left ungated (see the draw() loop),
         // so this check only ever applies to "r"/"p".
         if (this.unconnectedFile[i]) continue;
-        if (geo !== "t" && !alwaysDrawn.has(i) && this.dotFactor(i) <= 0) continue;
+        // B4 scope item 1: footprint mode never thins, so every file is
+        // "drawn" for this gate's purposes -- checking dotFactor() here
+        // would apply the OLD dot budget's arithmetic to a file whose
+        // footprint is actually on screen, hiding labels for no reason.
+        if (!this.hasFootprints && geo !== "t" && !alwaysDrawn.has(i) && this.dotFactor(i) <= 0) continue;
         const basename = this.fileBasenames[i];
         const repeatKey = `${D_(doc, i)}\0${basename}`;
         if (this.repeatedBasenames.has(repeatKey) && shownRepeated.has(repeatKey)) continue;
-        const p = this.px(i);
+        const p = this.anchor(i);
         const x = this.X(p[0]);
         const y = this.Y(p[1]);
         if (x < 10 || x > this.VW - 10 || y < 14 || y > this.VH - 6) continue;
@@ -1866,7 +2351,7 @@ export class MapRenderer {
    * re-call fitScale() once per ring. */
   private ring(g: SVGGElement, i: number, color = "var(--hot)", fs = this.fitScale()) {
     const { doc, geo } = this.state!;
-    const p = this.px(i);
+    const p = this.anchor(i);
     if (geo !== "t") {
       g.appendChild(
         el("circle", {
@@ -2227,6 +2712,21 @@ export class MapRenderer {
       const [, a, b] = key.split(":");
       this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`d:${a}`) ?? []), ...(this.keyElements.get(`d:${b}`) ?? [])];
     }
+    // B4 scope item 4: "hovering or tapping a street highlights its two
+    // neighbourhoods" -- the SAME pattern the road hover above uses for its
+    // two districts, one level down. "st:n:" is neighbourhood<->
+    // neighbourhood (both ends are "n:<id>" gutter outlines, drawStreets'
+    // sibling drawNeighbourhoodGutters only gives the FOCUSED district's own
+    // neighbourhoods that key, which is always true here since a street only
+    // ever draws inside a focused district); "st:c:" is neighbourhood<->
+    // other-district (one "n:<id>", one "d:<id>").
+    if (key?.startsWith("st:n:")) {
+      const [, , a, b] = key.split(":");
+      this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`n:${a}`) ?? []), ...(this.keyElements.get(`n:${b}`) ?? [])];
+    } else if (key?.startsWith("st:c:")) {
+      const [, , n, d] = key.split(":");
+      this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`n:${n}`) ?? []), ...(this.keyElements.get(`d:${d}`) ?? [])];
+    }
     for (const e of this.hoverEls) e.classList.add("hovered");
     if (!key) {
       this.hideCard();
@@ -2262,6 +2762,12 @@ export class MapRenderer {
     if (this.hoverKey.startsWith("r:")) {
       const [, a, b] = this.hoverKey.split(":");
       this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`d:${a}`) ?? []), ...(this.keyElements.get(`d:${b}`) ?? [])];
+    } else if (this.hoverKey.startsWith("st:n:")) {
+      const [, , a, b] = this.hoverKey.split(":");
+      this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`n:${a}`) ?? []), ...(this.keyElements.get(`n:${b}`) ?? [])];
+    } else if (this.hoverKey.startsWith("st:c:")) {
+      const [, , n, d] = this.hoverKey.split(":");
+      this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`n:${n}`) ?? []), ...(this.keyElements.get(`d:${d}`) ?? [])];
     }
     for (const e of this.hoverEls) e.classList.add("hovered");
     this.hoverImportG = null;
@@ -2320,6 +2826,33 @@ export class MapRenderer {
       const nameB = doc.names[String(b)] ?? `district ${b}`;
       return { lines: [`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`] };
     }
+    // B4 scope item 4: streets. Read straight off the currently-cached
+    // street plan (getStreetPlan) rather than re-aggregating doc.E, for the
+    // same reason the "r" branch above reads roadPlan -- can't disagree with
+    // what drawStreets actually drew.
+    if (parts[0] === "st" && parts[1] === "n") {
+      const a = parts[2];
+      const b = parts[3];
+      const plan = this.streetCache?.intra.find((p) => (p.a === a && p.b === b) || (p.a === b && p.b === a));
+      if (!plan) return null;
+      const nameA = doc.neighbourhoods?.[a]?.label ?? a;
+      const nameB = doc.neighbourhoods?.[b]?.label ?? b;
+      return { lines: [`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`] };
+    }
+    if (parts[0] === "st" && parts[1] === "c") {
+      const n = parts[2];
+      const d = +parts[3];
+      const plan = this.streetCache?.cross.find((p) => p.n === n && p.d === d);
+      if (!plan) return null;
+      const nameN = doc.neighbourhoods?.[n]?.label ?? n;
+      const nameD = doc.names[String(d)] ?? `district ${d}`;
+      return { lines: [`${nameN} ↔ ${nameD}`, `${nameN} → ${nameD}: ${plan.out} imports · ${nameD} → ${nameN}: ${plan.in} imports`] };
+    }
+    if (parts[0] === "n") {
+      const n = doc.neighbourhoods?.[parts[1]];
+      if (!n) return null;
+      return { lines: [n.label, `${n.size} files`] };
+    }
     if (parts[0] === "f") {
       const i = +parts[1];
       if (!doc.F[i]) return null;
@@ -2367,11 +2900,11 @@ export class MapRenderer {
     const { shown } = rankedNeighbours(this.state!.doc, this.outAdj, this.inAdj, i, LINK_PREVIEW_MAX);
     if (shown.length === 0) return;
     const g = el("g", { class: "hover-imports", "pointer-events": "none" });
-    const o = this.px(i);
+    const o = this.anchor(i);
     const ox = this.X(o[0]);
     const oy = this.Y(o[1]);
     for (const { j, dir } of shown) {
-      const p = this.px(j);
+      const p = this.anchor(j);
       g.appendChild(
         el("line", {
           x1: ox.toFixed(1),
@@ -2630,7 +3163,13 @@ export class MapRenderer {
     // callbacks, which every other branch below does. Runs on desktop too
     // (harmless there: hovering already shows the same card via setHover),
     // not just touch, so there's one code path instead of a device check.
-    if (parts[0] === "r") {
+    // B4 scope item 4: "tapping a street ... shows the explanation without
+    // clearing the selection" -- same as a road tap ("r", just above) and a
+    // neighbourhood label tap ("n"), which the map has no independent
+    // selection state for (a neighbourhood is not one of MapView's URL-
+    // addressable selection kinds -- district/file/symbol only), so both
+    // behave like a road tap: show the card, touch nothing else.
+    if (parts[0] === "r" || parts[0] === "st" || parts[0] === "n") {
       const content = this.hoverContent(kk);
       if (content) {
         this.showCard(content);

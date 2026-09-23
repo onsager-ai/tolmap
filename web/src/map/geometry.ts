@@ -41,6 +41,26 @@ export function px(doc: MapDocument, geo: Geo, i: number): [number, number] {
   return [r[0] + r[2] / 2, r[1] + r[3] / 2];
 }
 
+/** B4 (nested footprints, issue #82): the point every DRAWING anchor uses --
+ * import lines, hover previews, selection links, blast-radius lines, route
+ * lines, hub rings, file labels, pins and search/pan targets. `N`'s own x,y
+ * (what `px` reads) stays a LAYOUT input -- the warm-start anchor for the
+ * next build, per finding 29 -- and is no longer where any of those things
+ * are drawn once the document carries `footprint_centroids`: that array is
+ * index-aligned with F/N and holds the DISPLAYED footprint's own centroid,
+ * which can sit measurably away from `N`'s site (finding 27's prototype
+ * measurement: only 17% of its power-diagram sites fell inside their own
+ * cell). Falls back to `px` for a document with no `footprint_centroids` at
+ * all (every fixture before #85) and, for treemap, to `px`'s own rect-centre
+ * rule -- a treemap tile has no footprint centroid of its own to prefer. */
+export function fileXY(doc: MapDocument, geo: Geo, i: number): [number, number] {
+  if (geo !== "t") {
+    const c = doc.footprint_centroids?.[i];
+    if (c) return c;
+  }
+  return px(doc, geo, i);
+}
+
 export function symbolsOf(doc: MapDocument, i: number) {
   return doc.S?.[String(i)] ?? [];
 }
@@ -194,7 +214,7 @@ let cssCache: CSSStyleDeclaration | null = null;
 // reference (the same one-instance-per-document assumption MapRenderer's own
 // per-document caches make) so repainting every file's dot doesn't re-run
 // the adjacency scan per call.
-let hueCache: { doc: MapDocument; mixed: Map<number, string> } | null = null;
+let hueCache: { doc: MapDocument; mixed: Map<number, string>; assigned: Map<number, number> } | null = null;
 const HUE_VARS = ["--H0", "--H1", "--H2", "--H3", "--H4", "--H5"];
 // "the fill is the hue mixed toward the surface colour ... about 40% for
 // now" (issue #82 A2) -- the neighbourhood 3-shade scheme (the prototype's
@@ -202,8 +222,8 @@ const HUE_VARS = ["--H0", "--H1", "--H2", "--H3", "--H4", "--H5"];
 // whole scope here.
 const DISTRICT_HUE_MIX = 0.4;
 
-function districtHueMap(doc: MapDocument): Map<number, string> {
-  if (hueCache?.doc === doc) return hueCache.mixed;
+function districtHueCache(doc: MapDocument): { mixed: Map<number, string>; assigned: Map<number, number> } {
+  if (hueCache?.doc === doc) return hueCache;
   if (!cssCache) cssCache = getComputedStyle(document.documentElement);
   const hues = HUE_VARS.map((v) => hx(cssCache!.getPropertyValue(v).trim()));
   const surface = hx(cssCache.getPropertyValue("--canvas").trim());
@@ -213,8 +233,8 @@ function districtHueMap(doc: MapDocument): Map<number, string> {
     const rgb = mix(surface, hues[h] ?? hues[0], DISTRICT_HUE_MIX);
     mixed.set(d, `rgb(${rgb.join(",")})`);
   }
-  hueCache = { doc, mixed };
-  return mixed;
+  hueCache = { doc, mixed, assigned };
+  return hueCache;
 }
 
 // Note: colour.ts imports `districtClass` from this file, so this is a
@@ -230,8 +250,35 @@ function districtHueMap(doc: MapDocument): Map<number, string> {
  * current document doesn't actually have (shouldn't happen; defensive only,
  * matching the old function's total-for-any-integer contract). */
 export function districtColor(doc: MapDocument, d: number): string {
-  const mixed = districtHueMap(doc);
+  const { mixed } = districtHueCache(doc);
   return mixed.get(d) ?? mixed.get(0) ?? "#888";
+}
+
+// B4 (nested footprints, issue #82, owner decision D3): the three
+// "alternating shades" a neighbourhood's footprints are filled with -- the
+// exact ratios DISTRICT_HUE_MIX's own comment already named as the plan
+// ("the prototype's lobe tints at .30/.40/.50"). Deliberately close together
+// (a 20-point spread) so the three shades read as one district's texture,
+// never as three different districts -- distinguishing ADJACENT
+// neighbourhoods (map/neighbourhoods.ts's greedy colouring) is the only job
+// this does; it is not a second hue system.
+const NEIGHBOURHOOD_SHADE_MIX = [0.3, 0.4, 0.5];
+
+/** A file's footprint fill: its district's hue, mixed at the strength its
+ * neighbourhood's shade index picked (map/neighbourhoods.ts). `shade` is
+ * `null` for a document with no neighbourhood data at all (pre-#85 maps),
+ * which falls back to DISTRICT_HUE_MIX's plain district colour -- identical
+ * to `districtColor` for every document this can't apply to. */
+export function neighbourhoodShadeColor(doc: MapDocument, d: number, shade: number | null): string {
+  if (shade == null) return districtColor(doc, d);
+  const { assigned } = districtHueCache(doc);
+  if (!cssCache) cssCache = getComputedStyle(document.documentElement);
+  const hues = HUE_VARS.map((v) => hx(cssCache!.getPropertyValue(v).trim()));
+  const surface = hx(cssCache!.getPropertyValue("--canvas").trim());
+  const hueIdx = assigned.get(d) ?? 0;
+  const ratio = NEIGHBOURHOOD_SHADE_MIX[shade] ?? NEIGHBOURHOOD_SHADE_MIX[0];
+  const rgb = mix(surface, hues[hueIdx] ?? hues[0], ratio);
+  return `rgb(${rgb.join(",")})`;
 }
 
 // ---------- rooms / treemap ----------

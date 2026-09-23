@@ -49,6 +49,54 @@ try {
       await context.close();
     }
   }
+
+  // B4 (nested footprints, issue #82 scope item 10): three extra dify frames
+  // per profile -- a focused district (to show streets), a file selected
+  // (import lines), and a zoom deep enough for neighbourhood labels. Only
+  // for dify: it's the one fixture in `slugs` with enough districts and
+  // neighbourhoods for these to be worth a dedicated look.
+  const DIFY_SLUG = "langgenius/dify";
+  if (slugs.includes(DIFY_SLUG)) {
+    const doc = await (await fetch(`${base}/maps/${DIFY_SLUG}.json`)).json();
+    const workflowFile = doc.F.findIndex((p) => p === "web/app/components/workflow/types.ts");
+    const workflowDistrict = doc.N[workflowFile][0];
+    const stem = `${out}/${DIFY_SLUG.replace("/", "__")}`;
+
+    for (const profile of PROFILES) {
+      const context = await browser.newContext(profile);
+      const page = await context.newPage();
+
+      // A district focused: streets draw inside it (scope item 4).
+      await page.goto(`${base}/${DIFY_SLUG}?d=${workflowDistrict}`, { waitUntil: "domcontentloaded" });
+      await page.locator('button[aria-label="Zoom to district"]').waitFor({ timeout: 30_000 });
+      await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
+      await page.waitForTimeout(900);
+      await page.screenshot({ path: `${stem}-${profile.name}-district-focused.png` });
+      console.log(`${stem}-${profile.name}-district-focused.png`);
+
+      // A file selected: persistent import lines anchor on its footprint
+      // (scope item 3).
+      await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[workflowFile])}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(700);
+      if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+      await page.screenshot({ path: `${stem}-${profile.name}-file-selected.png` });
+      console.log(`${stem}-${profile.name}-file-selected.png`);
+
+      // A zoom deep enough for neighbourhood labels (scope item 5): focused
+      // district, one more zoom step past "Zoom to district" itself.
+      await page.goto(`${base}/${DIFY_SLUG}?d=${workflowDistrict}`, { waitUntil: "domcontentloaded" });
+      await page.locator('button[aria-label="Zoom to district"]').waitFor({ timeout: 30_000 });
+      await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
+      await page.waitForTimeout(900);
+      await page.locator('button[aria-label="Zoom in"]').click();
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: `${stem}-${profile.name}-neighbourhood-labels.png` });
+      console.log(`${stem}-${profile.name}-neighbourhood-labels.png`);
+
+      await context.close();
+    }
+  }
 } finally {
   await browser.close();
 }

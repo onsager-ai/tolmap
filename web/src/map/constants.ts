@@ -44,6 +44,15 @@ export const DOT_DENSITY_FLOOR = 30;
 // fades in or gets a ring; see MapRenderer.paint()'s selNeighbours/dim).
 export const LINK_PREVIEW_MAX = 40;
 
+// B4 (nested footprints, issue #82, scope item 5): neighbourhood labels.
+// With no district focused, a neighbourhood needs at least this many files
+// AND this many on-screen px of short-side blob extent to earn a label
+// (spec). Inside a focused district the file floor is looser -- there's
+// nothing else competing for the label budget at that zoom.
+export const NEIGHBOURHOOD_LABEL_MIN_FILES = 4;
+export const NEIGHBOURHOOD_LABEL_MIN_FILES_FOCUSED = 6;
+export const NEIGHBOURHOOD_LABEL_MIN_EXTENT_PX = 120;
+
 export type Geo = "r" | "p" | "t";
 export type Layer = "d" | "c" | "x" | "p";
 

@@ -38,8 +38,10 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
           {islandCount > 0 ? ` · ${islandCount} islands` : ""}
           {" · modularity "}
           <b className="font-medium text-[var(--on)]">{doc.q}</b> · {doc.E.length} import edges. Scroll to zoom, drag to
-          pan, search a file <i className="not-italic">or a symbol</i> to jump to it without changing the zoom. The map
-          stops at the file; a file's classes and functions are listed in its directory.
+          pan, search a file <i className="not-italic">or a symbol</i> to jump to it without changing the zoom.{" "}
+          {doc.P
+            ? "Footprint area is proportional to code lines and comparable only within one district."
+            : "A file's classes and functions are listed in its card."}
         </>
       ) : (
         <>

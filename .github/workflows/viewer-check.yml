@@ -66,3 +66,19 @@ jobs:
           name: viewer-shots
           path: web/shots/
           if-no-files-found: warn
+      # B4 (nested footprints, issue #82 scope item 7): dify is the one
+      # fixture large enough (6,347 footprints) for footprint-mode paint cost
+      # to be worth measuring in CI -- perf-bench.mjs is Playwright-based, so
+      # this is the only place it can run (see CLAUDE.md's no-browser-locally
+      # rule). `--runs 3` on desktop; dify's file count clears perf-bench's
+      # own big-map threshold (5000), so it automatically drops to one run
+      # with a capped gesture budget there -- reported plainly either way.
+      - name: Perf bench (dify)
+        if: always()
+        run: node scripts/perf-bench.mjs --base http://127.0.0.1:5176 --maps langgenius/dify --runs 3 --out perf/dify.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-bench
+          path: web/perf/
+          if-no-files-found: warn

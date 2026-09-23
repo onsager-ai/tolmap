@@ -13,6 +13,7 @@ import { districtClass } from "./geometry";
 export const HUE_COUNT = 6;
 
 type Point = [number, number];
+type Blob = Point[][];
 
 /** Adjacency threshold, in world units (the same units `district.blob`
  * coordinates are already in -- no `k` scaling here, this runs once per
@@ -50,9 +51,14 @@ function blobBounds(districts: Record<string, District>, ids: string[]): [number
   return [x0, y0, x1, y1];
 }
 
-function districtBox(district: District): [number, number, number, number] {
+/** Bounding box of any blob (a district's or a neighbourhood's -- both are
+ * `Point[][]`, possibly several disjoint rings). Exported so
+ * neighbourhoods.ts's own adjacency check reuses the exact box/grid/near
+ * machinery below instead of a second copy at the smaller (neighbourhood)
+ * scale. */
+export function blobBox(blob: Blob): [number, number, number, number] {
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-  for (const poly of district.blob) {
+  for (const poly of blob) {
     for (const [x, y] of poly) {
       if (x < x0) x0 = x;
       if (y < y0) y0 = y;
@@ -62,7 +68,6 @@ function districtBox(district: District): [number, number, number, number] {
   }
   return [x0, y0, x1, y1];
 }
-
 /** A uniform grid over `pts` (cell size = `threshold`), so `near()` below
  * never does an O(points_a * points_b) double loop -- dify alone has a
  * district with 984 outline points, and an all-pairs check across 78
@@ -83,18 +88,21 @@ function buildGrid(pts: Point[], cell: number): Map<string, Point[]> {
   return grid;
 }
 
-function flatten(district: District): Point[] {
+function flatten(blob: Blob): Point[] {
   const out: Point[] = [];
-  for (const poly of district.blob) for (const p of poly) out.push(p);
+  for (const poly of blob) for (const p of poly) out.push(p);
   return out;
 }
 
 /** True once any point of `a`'s outline comes within `threshold` of any
  * point of `b`'s outline. Grid-accelerated (see buildGrid); bbox-rejected
- * first so two districts nowhere near each other never even build a grid. */
-function near(a: District, b: District, threshold: number): boolean {
-  const boxA = districtBox(a);
-  const boxB = districtBox(b);
+ * first so two blobs nowhere near each other never even build a grid.
+ * Exported (as `nearBlobs`) so neighbourhoods.ts's smaller-scale adjacency
+ * check is the SAME algorithm, not a second implementation -- only the
+ * threshold and which blobs get compared differ at that scope. */
+export function nearBlobs(a: Blob, b: Blob, threshold: number): boolean {
+  const boxA = blobBox(a);
+  const boxB = blobBox(b);
   if (boxA[2] + threshold < boxB[0] || boxB[2] + threshold < boxA[0]) return false;
   if (boxA[3] + threshold < boxB[1] || boxB[3] + threshold < boxA[1]) return false;
   const ptsA = flatten(a);
@@ -119,6 +127,9 @@ function near(a: District, b: District, threshold: number): boolean {
     }
   }
   return false;
+}
+function near(a: District, b: District, threshold: number): boolean {
+  return nearBlobs(a.blob, b.blob, threshold);
 }
 
 export interface DistrictAdjacency {
