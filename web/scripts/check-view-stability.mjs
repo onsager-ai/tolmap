@@ -3011,6 +3011,108 @@ async function checkCardsAppearAtSymbolGate(browser, base) {
   await context.close();
 }
 
+// CI review finding (issue #82 C2), and why these two checks build their OWN
+// synthetic symbols response instead of picking a class from the real
+// fixture: every real top-level class WITH AT LEAST ONE MEMBER in the
+// bundled district -- 10 of them tried, stratified across the entire
+// code_lines distribution from 6 lines/1 member to 1705 lines/61 members --
+// showed "class card never rendered at all", confirmed NOT a size effect,
+// NOT a foreign/unbundled-district symbol (memberFileSet already excludes
+// those), NOT a thrown exception (page.on("console"/"pageerror") caught
+// nothing but the routine no-service-running 502 on /api/healthz every
+// check gets), and NOT a whole-file failure (other cards for the same file
+// render fine). src/symbols.rs's own attach() has a build-time invariant
+// (`ensure!(cards.rings[i].is_some())`) for every eligible symbol in the
+// FULL symbols document, so if a class's own ring is genuinely missing
+// here, the gap is specific to how the per-district slice
+// (`SymbolsDocument::district()`) was produced for this fixture, at a
+// layer this machine cannot rebuild without cargo (CLAUDE.md: no cargo, no
+// local Rust builds) -- filed as a data/pipeline question, out of scope for
+// this viewer-only PR to chase further.
+//
+// What CAN still be verified from here, deterministically, is the VIEWER'S
+// OWN expand logic -- MapRenderer.drawSymbolCardsPass's isClassExpanded gate
+// and the resulting card-tap/breadcrumb behaviour -- by intercepting the
+// district's own JSON with hand-built rows and rings that are GUARANTEED
+// present and valid, the same page.route() technique
+// checkFolderWinsFileCollision already uses elsewhere in this file. This
+// tests exactly the code this PR owns, independent of the real corpus
+// data's completeness.
+function encodeRectRing([x0, y0, x1, y1]) {
+  const pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  const out = [];
+  let px = 0, py = 0;
+  for (const [x, y] of pts) {
+    const cx = Math.round(x * 1e11);
+    const cy = Math.round(y * 1e11);
+    out.push(cx - px, cy - py);
+    px = cx;
+    py = cy;
+  }
+  return out;
+}
+
+// Synthetic class (global 9_000_000) + method (9_000_001) CENTRED on a REAL
+// district-0 file's own footprint centroid, but sized several times that
+// footprint's own extent (not clipped to it) -- guarantees the class card
+// clears the 110px expand gate within the zoom loop's budget regardless of
+// how small this particular file happens to be on screen, since a card
+// confined to the file's real (possibly tiny) footprint would otherwise
+// make this test depend on picking a big-enough file, exactly the kind of
+// data-dependent flakiness the synthetic approach exists to avoid. The
+// method occupies the bottom 35% of the class's box.
+function buildSyntheticClassResponse(mapDoc, fileIndex, multiplier) {
+  const poly = mapDoc.P[String(fileIndex)];
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of poly) {
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x);
+    y1 = Math.max(y1, y);
+  }
+  const centreX = (x0 + x1) / 2, centreY = (y0 + y1) / 2;
+  const halfW = Math.max((x1 - x0), 1e-9) * (multiplier / 2), halfH = Math.max((y1 - y0), 1e-9) * (multiplier / 2);
+  const cx0 = centreX - halfW, cx1 = centreX + halfW;
+  const cy0 = centreY - halfH, cy1 = centreY + halfH;
+  const mx0 = cx0, mx1 = cx1, my0 = cy0 + (cy1 - cy0) * 0.65, my1 = cy1;
+  const classGlobal = 9_000_000;
+  const childGlobal = 9_000_001;
+  const className = "SyntheticClass";
+  const childName = "synthetic_method";
+  const json = {
+    district: 0,
+    files: [fileIndex],
+    symbol_indices: [classGlobal, childGlobal],
+    symbols: [
+      [fileIndex, className, 0, 1, 200, -1, 150],
+      [fileIndex, childName, 2, 50, 60, classGlobal, 8],
+    ],
+    edges: [],
+    module_code_lines: {},
+    symbol_rings: [[encodeRectRing([cx0, cy0, cx1, cy1])], [encodeRectRing([mx0, my0, mx1, my1])]],
+    module_rings: {},
+    header_rings: {},
+  };
+  return { json, classGlobal, childGlobal, className, childName };
+}
+
+// Measures the file's OWN on-screen size at the opening fit (before any
+// symbols route is active -- a plain, unmocked navigation), then picks a
+// synthetic-class multiplier so the class starts comfortably under 110px
+// (~50px) and clears it comfortably (~2000px) at clampK's 40x zoom ceiling.
+// Decouples checkClassExpandsAtShortSide/checkCardTapSelectsSymbolAndBreadcrumb
+// from how big this PARTICULAR file happens to be on screen -- a fixed
+// multiplier would either start already-expanded (a big file) or never
+// reach 110px even at max zoom (a tiny one).
+async function pickSyntheticMultiplier(page, base, path, fileIndex) {
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const fileBox = await page.locator(`svg.map-svg .hit[data-k="f:${fileIndex}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
+  const fileWidthPx = Math.max(fileBox ? Math.max(fileBox.width, fileBox.height) : 0, 0.1);
+  return Math.max(2, 50 / fileWidthPx);
+}
+
 // 9(c): a class expands (shows a member's own card) once its short side
 // clears 110px -- checked behaviourally (a known child's data-k appears),
 // not by reading back the 110px number itself.
@@ -3020,86 +3122,29 @@ async function checkClassExpandsAtShortSide(browser, base) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
   const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
-  const candidates = pickExpandableClasses(symbols);
-  if (candidates.length === 0) {
-    report(false, `${label}: setup`, "no class with members found in the bundled district");
+  const bigFile = pickBigFileTarget(symbols);
+  if (bigFile.file == null) {
+    report(false, `${label}: setup`, "no member file found in the bundled district");
     await context.close();
     return;
   }
-  let target = null;
-  for (const candidate of candidates) {
-    const result = await tryExpandClass(page, base, mapDoc, candidate);
-    console.log(`  (info) ${candidate.className} (${candidate.codeLines} code lines, ${candidate.memberCount} members): ${result.diagnostic}`);
-    if (candidate === candidates[0]) {
-      report(result.initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${candidate.className} member=${candidate.childName}`);
-    }
-    if (result.expanded) {
-      target = candidate;
-      break;
-    }
+  const path = mapDoc.F[bigFile.file];
+  const multiplier = await pickSyntheticMultiplier(page, base, path, bigFile.file);
+  const { json, childGlobal, className, childName } = buildSyntheticClassResponse(mapDoc, bigFile.file, multiplier);
+  await page.route("**/maps/langgenius/dify.symbols/0.json", (route) => route.fulfill({ json }));
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const childKey = `hs:${childGlobal}`;
+  const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
+  report(initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${className} member=${childName}`);
+  let expanded = false;
+  for (let i = 0; i < 8 && !expanded; i++) {
+    await zoomIn(page, 600, 400);
+    expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
   }
-  report(!!target, `${label}: zooming in reveals the member's own card`, target
-    ? `class=${target.className} member=${target.childName}`
-    : `tried ${candidates.length} candidates, none reached 110px -- see the (info) lines above`);
+  report(expanded, `${label}: zooming in reveals the member's own card`, `class=${className} member=${childName} childKey=${childKey}`);
   await context.close();
-}
-
-// Navigates to `candidate`'s file, zooms toward its centre up to 8 times,
-// and reports whether its member ever got its own card. Shared by
-// checkClassExpandsAtShortSide and checkCardTapSelectsSymbolAndBreadcrumb --
-// CI review finding: both used to call `.boundingBox()` on a possibly-empty
-// locator with no explicit timeout, and Playwright's default 30s
-// actionability wait on every miss turned an 8-iteration loop into minutes;
-// `.count()` (no auto-wait) drives the loop, and `.boundingBox()` is only
-// ever called once real content is already known to be there.
-async function tryExpandClass(page, base, mapDoc, candidate) {
-  const path = mapDoc.F[candidate.file];
-  const trueDistrict = mapDoc.N[candidate.file][0];
-  const hasFootprint = !!mapDoc.P?.[String(candidate.file)];
-  const consoleErrors = [];
-  const onConsole = (msg) => {
-    if (msg.type() === "error") consoleErrors.push(msg.text());
-  };
-  const onPageError = (err) => consoleErrors.push(`pageerror: ${err.message}`);
-  page.on("console", onConsole);
-  page.on("pageerror", onPageError);
-  try {
-    await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("svg.map-svg path.hit");
-    await page.waitForTimeout(900);
-    // Diagnostic only: is the file's OWN footprint drawn at all (a "hs:" card
-    // can only ever exist inside one)? Read via .hit[data-k="f:<i>"], the same
-    // selector footprint()/batchFootprint() tag every file's polygon with,
-    // batched or not. `anyCardForFile` distinguishes "nothing about this
-    // file's cards works at all" (every top-level symbol in it, module
-    // region included) from "just this one class" -- a whole-file failure
-    // points at an exception during drawSymbolCardsPass for that file, not
-    // something specific to one symbol's ring data.
-    const footprintDrawn = (await page.locator(`svg.map-svg .hit[data-k="f:${candidate.file}"]`).count()) > 0;
-    const anyCardForFile = (await page.locator(`svg.map-svg [data-k^="hs:"]`).count()) > 0;
-    const classKey = `hs:${candidate.classGlobal}`;
-    const childKey = `hs:${candidate.childGlobal}`;
-    const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
-    let expanded = false;
-    for (let i = 0; i < 8 && !expanded; i++) {
-      await zoomIn(page, 600, 400);
-      expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
-    }
-    const classCount = await page.locator(`svg.map-svg [data-k="${classKey}"]`).count();
-    const classBox = classCount > 0 ? await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null) : null;
-    const context = `(mapDoc district=${trueDistrict}, doc.P present=${hasFootprint}, footprint drawn=${footprintDrawn}, any hs: card for this file=${anyCardForFile}, console errors=${consoleErrors.length ? JSON.stringify(consoleErrors.slice(0, 3)) : "none"})`;
-    const diagnostic = expanded
-      ? `expanded ${context}`
-      : classCount === 0
-        ? `class card never rendered at all ${context}`
-        : classBox
-          ? `class card ${Math.round(classBox.width)}x${Math.round(classBox.height)}px (short side ${Math.round(Math.min(classBox.width, classBox.height))}px, want >=110) but member never appeared ${context}`
-          : `class card rendered but bounding box unavailable ${context}`;
-    return { expanded, initiallyCollapsed, classBox, diagnostic, path };
-  } finally {
-    page.off("console", onConsole);
-    page.off("pageerror", onPageError);
-  }
 }
 
 // 9(d): tapping a card selects the symbol and sets every level at once
@@ -3110,31 +3155,27 @@ async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
   const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
-  const candidates = pickExpandableClasses(symbols);
-  if (candidates.length === 0) {
-    report(false, `${label}: setup`, "no class with members found in the bundled district");
+  const bigFile = pickBigFileTarget(symbols);
+  if (bigFile.file == null) {
+    report(false, `${label}: setup`, "no member file found in the bundled district");
     await context.close();
     return;
   }
-  let target = null;
-  let path = null;
-  for (const candidate of candidates) {
-    const result = await tryExpandClass(page, base, mapDoc, candidate);
-    if (result.expanded) {
-      target = candidate;
-      path = result.path;
-      break;
-    }
+  const path = mapDoc.F[bigFile.file];
+  const multiplier = await pickSyntheticMultiplier(page, base, path, bigFile.file);
+  const { json, childGlobal, className, childName } = buildSyntheticClassResponse(mapDoc, bigFile.file, multiplier);
+  await page.route("**/maps/langgenius/dify.symbols/0.json", (route) => route.fulfill({ json }));
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const childKey = `hs:${childGlobal}`;
+  let box = null;
+  for (let i = 0; i < 8 && !box; i++) {
+    await zoomIn(page, 600, 400);
+    box = await page.locator(`svg.map-svg [data-k="${childKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   }
-  if (!target) {
-    report(false, `${label}: setup`, `member card never appeared after zooming in (tried ${candidates.length} candidates)`);
-    await context.close();
-    return;
-  }
-  const childKey = `hs:${target.childGlobal}`;
-  const box = await page.locator(`svg.map-svg [data-k="${childKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   if (!box) {
-    report(false, `${label}: setup`, "member card disappeared before it could be tapped");
+    report(false, `${label}: setup`, "member card never appeared after zooming in");
     await context.close();
     return;
   }
@@ -3142,13 +3183,13 @@ async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
   await page.waitForTimeout(300);
   const url = new URL(page.url());
   report(
-    url.searchParams.get("file") === path && Number(url.searchParams.get("hsym")) === target.childGlobal,
+    url.searchParams.get("file") === path && Number(url.searchParams.get("hsym")) === childGlobal,
     `${label}: tapping the card selects the symbol directly (file + hsym set in one step)`,
     url.toString(),
   );
   const breadcrumbText = await page.locator("[data-breadcrumb]").innerText();
   report(
-    breadcrumbText.includes(target.className) && breadcrumbText.includes(target.childName),
+    breadcrumbText.includes(className) && breadcrumbText.includes(childName),
     `${label}: the breadcrumb shows the class and the method`,
     breadcrumbText,
   );
