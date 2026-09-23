@@ -44,7 +44,10 @@ export function SubmitRepoForm() {
       }
     } catch (err) {
       if (err instanceof ApiRequestError) {
-        setSubmitError({ message: err.message, tooLarge: err.tooLarge });
+        setSubmitError({
+          message: err.code === "busy" ? "The index queue is full. Please try again shortly." : err.message,
+          tooLarge: err.tooLarge,
+        });
       } else {
         setSubmitError({ message: err instanceof Error ? err.message : String(err), tooLarge: false });
       }

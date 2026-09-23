@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useJobProgress } from "@/api/useJobProgress";
-import { postIndexJob, type JobStage } from "@/api/client";
+import { postIndexJob, ApiRequestError, type JobStage } from "@/api/client";
 import { Button } from "@/components/ui/button";
 
 const STEPS: { stage: JobStage; label: string }[] = [
@@ -67,7 +67,9 @@ export function IndexJobView() {
         await navigate({ to: "/new", search: { job: res.job_id, slug: res.slug }, replace: true });
       }
     } catch (err) {
-      setRetryError(err instanceof Error ? err.message : String(err));
+      setRetryError(err instanceof ApiRequestError && err.code === "busy"
+        ? "The index queue is full. Please try again shortly."
+        : err instanceof Error ? err.message : String(err));
     } finally {
       setRetrying(false);
     }
@@ -144,7 +146,7 @@ export function IndexJobView() {
   return (
     <Centered>
       <h1 className="font-sans text-lg font-semibold text-[var(--on)]">{slug}</h1>
-      <p className="text-sm text-[var(--dim)]">{job.stage}</p>
+      <p className="text-sm text-[var(--dim)]">{job.queue_position != null ? `queued (#${job.queue_position})` : job.stage}</p>
 
       <ol className="flex w-full max-w-sm flex-col gap-1.5">
         {STEPS.slice(0, -1).map((s, i) => {
