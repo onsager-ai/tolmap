@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::{ensure, Result};
 
 use crate::blobs::marching_squares;
-use crate::parcels::{polygon_area, rasterize, solve};
+use crate::parcels::{point_in_polygon, polygon_area, rasterize, solve};
 use crate::schema::{MapDocument, SymbolsDocument};
 
 type Ring = Vec<[f64; 2]>;
@@ -111,6 +111,46 @@ fn allocate(mask: &[bool], canvas: &Canvas, weights: &[f64]) -> Vec<Vec<bool>> {
         .collect()
 }
 
+fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Ring) -> Option<[f64; 4]> {
+    let target = [
+        parent.iter().map(|p| p[0]).sum::<f64>() / parent.len() as f64,
+        parent.iter().map(|p| p[1]).sum::<f64>() / parent.len() as f64,
+    ];
+    let selected = mask
+        .iter()
+        .enumerate()
+        .filter(|(_, yes)| **yes)
+        .filter_map(|(i, _)| {
+            let center = [
+                canvas.low[0] + (i % canvas.grid) as f64 * canvas.step,
+                canvas.low[1] + (i / canvas.grid) as f64 * canvas.step,
+            ];
+            point_in_polygon(center, parent).then_some((i, center))
+        })
+        .min_by(|a, b| {
+            let da = (a.1[0] - target[0]).powi(2) + (a.1[1] - target[1]).powi(2);
+            let db = (b.1[0] - target[0]).powi(2) + (b.1[1] - target[1]).powi(2);
+            da.total_cmp(&db).then_with(|| a.0.cmp(&b.0))
+        })?;
+    mask[selected.0] = false;
+    let half = canvas.step * 0.2;
+    Some([
+        selected.1[0] - half,
+        selected.1[1] - half,
+        selected.1[0] + half,
+        selected.1[1] + half,
+    ])
+}
+
+fn rectangle(rect: [f64; 4]) -> Ring {
+    vec![
+        [rect[0], rect[1]],
+        [rect[2], rect[1]],
+        [rect[2], rect[3]],
+        [rect[0], rect[3]],
+    ]
+}
+
 struct Cards<'a> {
     document: &'a SymbolsDocument,
     children: Vec<Vec<usize>>,
@@ -142,10 +182,62 @@ impl Cards<'_> {
                 .sum::<usize>()
     }
 
+    fn fallback(&mut self, symbol: usize, rect: [f64; 4]) {
+        self.rings[symbol] = Some(rectangle(rect));
+        let children = self.children[symbol].clone();
+        if children.is_empty() {
+            return;
+        }
+        let height = rect[3] - rect[1];
+        let own = self.own_lines(symbol).max(1) as f64;
+        let share = (own / self.mass(symbol) as f64).clamp(0.12, 0.4);
+        let header_y = rect[3] - height * share;
+        self.headers
+            .insert(symbol, rectangle([rect[0], header_y, rect[2], rect[3]]));
+        let sum = children
+            .iter()
+            .map(|&child| self.mass(child) as f64)
+            .sum::<f64>();
+        let mut x = rect[0];
+        for child in children {
+            let width = (rect[2] - rect[0]) * self.mass(child) as f64 / sum;
+            let gap = width * 0.02;
+            self.fallback(
+                child,
+                [
+                    x + gap,
+                    rect[1] + height * 0.02,
+                    x + width - gap,
+                    header_y - height * 0.02,
+                ],
+            );
+            x += width;
+        }
+    }
+
     fn place(&mut self, symbol: usize, mask: &[bool], canvas: &Canvas, depth: usize) {
         let children = self.children[symbol].clone();
         let display = inset(mask, canvas, depth, children.len() * 2 + 1);
         self.rings[symbol] = ring(&display, canvas);
+        if self.rings[symbol].is_none() {
+            if let Some(pixel) = display.iter().position(|&yes| yes) {
+                let center = [
+                    canvas.low[0] + (pixel % canvas.grid) as f64 * canvas.step,
+                    canvas.low[1] + (pixel / canvas.grid) as f64 * canvas.step,
+                ];
+                let half = canvas.step * 0.2;
+                self.fallback(
+                    symbol,
+                    [
+                        center[0] - half,
+                        center[1] - half,
+                        center[0] + half,
+                        center[1] + half,
+                    ],
+                );
+            }
+            return;
+        }
         if children.is_empty() {
             return;
         }
@@ -170,13 +262,50 @@ impl Cards<'_> {
         if let Some(outline) = ring(&header, canvas) {
             self.headers.insert(symbol, outline);
         }
+        let reserve_rect = self.rings[symbol]
+            .as_ref()
+            .and_then(|parent| reserve(&mut body, canvas, parent));
+        if !self.headers.contains_key(&symbol) {
+            if let Some(rect) = reserve_rect {
+                self.headers.insert(
+                    symbol,
+                    rectangle([
+                        rect[0],
+                        rect[1] + (rect[3] - rect[1]) * 0.8,
+                        rect[2],
+                        rect[3],
+                    ]),
+                );
+            }
+        }
         let weights = children
             .iter()
             .map(|&child| self.mass(child) as f64)
             .collect::<Vec<_>>();
         let regions = allocate(&body, canvas, &weights);
+        let missing = children
+            .iter()
+            .zip(regions.iter())
+            .filter_map(|(&child, region)| (!region.contains(&true)).then_some(child))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            if let Some(rect) = reserve_rect {
+                let step = (rect[2] - rect[0]) / missing.len() as f64;
+                let top = if header_count == 0 {
+                    rect[1] + (rect[3] - rect[1]) * 0.78
+                } else {
+                    rect[3]
+                };
+                for (slot, child) in missing.iter().enumerate() {
+                    let x = rect[0] + slot as f64 * step;
+                    self.fallback(*child, [x + step * 0.02, rect[1], x + step * 0.98, top]);
+                }
+            }
+        }
         for (&child, region) in children.iter().zip(regions) {
-            self.place(child, &region, canvas, depth + 1);
+            if region.contains(&true) {
+                self.place(child, &region, canvas, depth + 1);
+            }
         }
     }
 }
@@ -239,7 +368,7 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
         .chain(top.iter().map(|&i| cards.mass(i) as f64))
         .collect::<Vec<_>>();
         loop {
-            let mask = rasterize(std::slice::from_ref(polygon), low, span, grid);
+            let mut mask = rasterize(std::slice::from_ref(polygon), low, span, grid);
             let canvas = Canvas {
                 grid,
                 low,
@@ -252,7 +381,9 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
             cards.modules.remove(&file);
             if mask.iter().filter(|&&yes| yes).count()
                 >= symbols.len() * 12 + usize::from(has_module)
+                || (grid == 1024 && mask.contains(&true))
             {
+                let reserve_rect = reserve(&mut mask, &canvas, polygon);
                 let regions = allocate(&mask, &canvas, &weights);
                 let mut offset = 0;
                 if has_module {
@@ -262,7 +393,31 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
                     offset = 1;
                 }
                 for (&symbol, region) in top.iter().zip(regions.iter().skip(offset)) {
-                    cards.place(symbol, region, &canvas, 0);
+                    if region.contains(&true) {
+                        cards.place(symbol, region, &canvas, 0);
+                    }
+                }
+                let mut missing = Vec::new();
+                if has_module && !cards.modules.contains_key(&file) {
+                    missing.push(None);
+                }
+                missing.extend(
+                    top.iter()
+                        .copied()
+                        .filter(|&i| cards.rings[i].is_none())
+                        .map(Some),
+                );
+                if let Some(rect) = reserve_rect {
+                    let step = (rect[2] - rect[0]) / missing.len().max(1) as f64;
+                    for (slot, entry) in missing.into_iter().enumerate() {
+                        let x = rect[0] + slot as f64 * step;
+                        let sub = [x + step * 0.02, rect[1], x + step * 0.98, rect[3]];
+                        if let Some(symbol) = entry {
+                            cards.fallback(symbol, sub);
+                        } else {
+                            cards.modules.insert(file, rectangle(sub));
+                        }
+                    }
                 }
             }
             let complete = symbols
@@ -377,5 +532,53 @@ mod tests {
             document: &document,
         };
         assert_eq!(cards.mass(0), 8);
+    }
+
+    #[test]
+    fn one_pixel_parent_still_gives_two_hundred_children_distinct_rings() {
+        use crate::schema::{HierSymbolRow, SymbolCoverage};
+        let mut symbols = vec![HierSymbolRow((0, "Parent".into(), 0, 1, 201, -1, 201))];
+        for i in 0..200 {
+            symbols.push(HierSymbolRow((
+                0,
+                format!("child{i}"),
+                2,
+                i + 2,
+                i + 2,
+                0,
+                1,
+            )));
+        }
+        let document = SymbolsDocument {
+            files: vec![0],
+            symbols,
+            edges: Vec::new(),
+            module_code_lines: BTreeMap::new(),
+            coverage: SymbolCoverage::default(),
+            symbol_rings: None,
+            module_rings: None,
+            header_rings: None,
+        };
+        let (canvas, _) = square_canvas(8);
+        let mut mask = vec![false; 64];
+        mask[27] = true;
+        let mut cards = Cards {
+            rings: vec![None; 201],
+            children: std::iter::once((1..201).collect())
+                .chain(std::iter::repeat_with(Vec::new).take(200))
+                .collect(),
+            headers: BTreeMap::new(),
+            modules: BTreeMap::new(),
+            document: &document,
+        };
+        cards.place(0, &mask, &canvas, 0);
+        let parent = cards.rings[0].as_ref().unwrap();
+        let mut previous_right = f64::NEG_INFINITY;
+        for child in cards.rings.iter().skip(1) {
+            let child = child.as_ref().unwrap();
+            assert!(point_in_polygon(child[0], parent));
+            assert!(child[0][0] > previous_right);
+            previous_right = child[1][0];
+        }
     }
 }
