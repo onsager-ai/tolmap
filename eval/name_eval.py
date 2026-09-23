@@ -122,6 +122,13 @@ def render(rows: list[dict], path: Path) -> None:
         lines.append(f"| {band} | {len(subset)} | {sum(u['calls'] for u in subset)} | "
                      f"{sum(u['prompt_tokens'] for u in subset)}/{sum(u['completion_tokens'] for u in subset)} | "
                      f"{sum(u['cost_usd'] for u in subset):.4f} | {sum(u['wall_seconds'] for u in subset):.1f} |")
+    lines += ["", "## Per-map usage", "", "| Repo | Commit | Calls | Tokens in/out | Cost USD | Wall s |",
+              "|---|---|---:|---:|---:|---:|"]
+    for row in rows:
+        for commit, usage in row["map_usage"].items():
+            lines.append(f"| {row['slug']} | {commit} | {usage['calls']} | "
+                         f"{usage['prompt_tokens']}/{usage['completion_tokens']} | "
+                         f"{usage['cost_usd']:.4f} | {usage['wall_seconds']:.1f} |")
     lines += ["", "## Side-by-side current names", ""]
     for row in rows:
         lines += [f"### {row['slug']}", "", "| District | IDF | Model | Source | Numbered |",
@@ -163,6 +170,7 @@ def main() -> int:
         args = entry.get("args", ["--all-sources"])
         idf_old, _ = build(binary, clone, args, stem, output / "idf", "idf")
         model_old, model_old_usage = build(binary, clone, args, stem, output / "model", "model")
+        model_old_cache = json.loads((output / "model" / f"{stem}.names.json").read_text())
         idf_previous = output / "idf.previous.json"
         model_previous = output / "model.previous.json"
         idf_previous.write_text(json.dumps(idf_old))
@@ -172,14 +180,17 @@ def main() -> int:
         model_new, model_new_usage = build(binary, clone, args, stem, output / "model", "model", model_previous)
         idf_cache = json.loads((output / "idf" / f"{stem}.names.json").read_text())
         model_cache = json.loads((output / "model" / f"{stem}.names.json").read_text())
+        old_model_names = names(model_old, model_old_cache)
         model_names = names(model_new, model_cache)
+        old_values = list(model_old["names"].values())
         values = list(model_new["names"].values())
         row = {"slug": slug, "band": entry["band"], "commit": entry["commit"],
                "previous_commit": old, "idf_renames": rename_share(idf_old, idf_new),
                "model_renames": rename_share(model_old, model_new),
-               "collisions": len(values) - len(set(values)),
-               "numbered": sum(item["numbered"] for item in model_names),
+               "collisions": len(old_values) - len(set(old_values)) + len(values) - len(set(values)),
+               "numbered": sum(item["numbered"] for item in old_model_names + model_names),
                "idf_names": names(idf_new, idf_cache), "model_names": model_names,
+               "map_usage": {"previous": model_old_usage, "current": model_new_usage},
                "usage": {key: model_old_usage[key] + model_new_usage[key] for key in model_new_usage}}
         rows.append(row)
         (work / "results.json").write_text(json.dumps(rows, indent=2) + "\n")
