@@ -17,6 +17,7 @@ from pathlib import Path
 def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None) -> dict:
     map_doc = json.loads(map_file.read_text())
     document = json.loads(symbols_file.read_text())
+    decoded = decode_geometry(document)
     symbols = document["symbols"]
     edges = document["edges"]
     by_kind = dict(sorted(collections.Counter(row[2] for row in symbols).items()))
@@ -61,7 +62,7 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         static_districts, len(map_doc["districts"])
     )
     total = coverage["calls_total"]
-    geometry = document.get("symbol_rings", [])
+    geometry = decoded.get("symbol_rings", [])
     with_ring = sum(ring is not None for ring in geometry)
     parcels = map_doc.get("P") or {}
     eligible = [i for i, row in enumerate(symbols) if row[6] >= 1 and str(row[0]) in parcels]
@@ -73,12 +74,8 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
     correlations = [pearson(pairs) for pairs in by_file.values() if len(pairs) >= 3]
     correlations = [r for r in correlations if r is not None]
     before = {key: value for key, value in document.items() if key not in ("symbol_rings", "module_rings", "header_rings")}
-    delta = dict(document)
-    if geometry:
-        delta["symbol_rings"] = [[encode(ring) for ring in rings] if rings else None for rings in geometry]
-        delta["module_rings"] = {key: [encode(ring) for ring in rings] for key, rings in document["module_rings"].items()}
-        delta["header_rings"] = {key: [encode(ring) for ring in rings] for key, rings in document["header_rings"].items()}
     result = {
+        "geometry_encoding": "delta_1e11",
         "symbols": len(symbols),
         "by_kind": by_kind,
         "edges": len(edges),
@@ -98,9 +95,8 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         "files_with_pearson": len(correlations),
         "median_within_file_pearson": statistics.median(correlations) if correlations else None,
         "document_bytes_before_geometry": compact_bytes(before),
-        "document_bytes_delta_encoded": compact_bytes(delta),
     }
-    result.update(audit_rings(document))
+    result.update(audit_rings(decoded))
     if compare_file:
         raw = compare_file.read_bytes()
         result["before_precision_bytes"] = len(raw)
@@ -111,6 +107,33 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
             for places in range(6, 12)
         }
     return result
+
+
+def decode_ring(stream):
+    assert len(stream) >= 6 and len(stream) % 2 == 0
+    x = y = 0
+    ring = []
+    for dx, dy in zip(stream[::2], stream[1::2]):
+        x += dx
+        y += dy
+        ring.append([x / 10**11, y / 10**11])
+    return ring
+
+
+def decode_geometry(document):
+    decoded = dict(document)
+    if "symbol_rings" not in document:
+        return decoded
+    decoded["symbol_rings"] = [
+        [decode_ring(ring) for ring in card] if card else None
+        for card in document["symbol_rings"]
+    ]
+    for field in ("module_rings", "header_rings"):
+        decoded[field] = {
+            key: [decode_ring(ring) for ring in card]
+            for key, card in document[field].items()
+        }
+    return decoded
 
 
 def iter_contours(document):
@@ -219,14 +242,6 @@ def pearson(pairs):
     numerator = sum((x - xm) * (y - ym) for x, y in pairs)
     denominator = math.sqrt(sum((x - xm) ** 2 for x in xs) * sum((y - ym) ** 2 for y in ys))
     return numerator / denominator if denominator else None
-
-
-def encode(ring):
-    points = [(round(x * 10000), round(y * 10000)) for x, y in ring]
-    output = list(points[0])
-    for a, b in zip(points, points[1:]):
-        output.extend((b[0] - a[0], b[1] - a[1]))
-    return output
 
 
 if __name__ == "__main__":

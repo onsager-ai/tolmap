@@ -362,10 +362,7 @@ fn quantize_rings(rings: &mut Rings) -> Result<()> {
     for (ring_index, ring) in rings.iter().enumerate() {
         let mut points = Vec::<[i128; 2]>::with_capacity(ring.len());
         for point in ring.iter() {
-            let rounded = [
-                (point[0] * CARD_COORDINATE_SCALE).round() as i128,
-                (point[1] * CARD_COORDINATE_SCALE).round() as i128,
-            ];
+            let rounded = quantized_point(*point);
             if points.last() != Some(&rounded) {
                 points.push(rounded);
             }
@@ -424,6 +421,30 @@ fn quantize_rings(rings: &mut Rings) -> Result<()> {
     }
     *rings = output;
     Ok(())
+}
+
+fn quantized_point(point: [f64; 2]) -> [i128; 2] {
+    [
+        (point[0] * CARD_COORDINATE_SCALE).round() as i128,
+        (point[1] * CARD_COORDINATE_SCALE).round() as i128,
+    ]
+}
+
+fn encode_rings(rings: Rings) -> Vec<Vec<i64>> {
+    rings
+        .into_iter()
+        .map(|ring| {
+            let mut encoded = Vec::with_capacity(ring.len() * 2);
+            let mut previous = [0i128; 2];
+            for point in ring {
+                let current = quantized_point(point);
+                encoded.push((current[0] - previous[0]) as i64);
+                encoded.push((current[1] - previous[1]) as i64);
+                previous = current;
+            }
+            encoded
+        })
+        .collect()
 }
 
 struct Cards<'a> {
@@ -744,15 +765,38 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
     for contours in modules.values_mut().chain(headers.values_mut()) {
         quantize_rings(contours)?;
     }
-    document.symbol_rings = Some(rings);
-    document.module_rings = Some(modules);
-    document.header_rings = Some(headers);
+    document.symbol_rings = Some(
+        rings
+            .into_iter()
+            .map(|item| item.map(encode_rings))
+            .collect(),
+    );
+    document.module_rings = Some(
+        modules
+            .into_iter()
+            .map(|(key, value)| (key, encode_rings(value)))
+            .collect(),
+    );
+    document.header_rings = Some(
+        headers
+            .into_iter()
+            .map(|(key, value)| (key, encode_rings(value)))
+            .collect(),
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wire_ring_starts_absolute_then_uses_integer_deltas() {
+        assert_eq!(
+            encode_rings(rectangle([0.0, 0.0, 1e-11, 1e-11])),
+            vec![vec![0, 0, 1, 0, 0, 1, -1, 0]]
+        );
+    }
 
     #[test]
     fn reserve_moves_within_boundary_cell_before_shrinking() {
