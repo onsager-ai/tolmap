@@ -6,7 +6,8 @@ use crate::extract::round_to;
 use crate::neighbourhoods::Partition;
 use crate::schema::{MapDocument, Neighbourhood};
 
-const ITERATIONS: usize = 12;
+const CONNECTED_ITERATIONS: usize = 12;
+const FILE_ITERATIONS: usize = 26;
 const FILE_CONTOUR_POINTS: usize = 24;
 const NEIGHBOURHOOD_CONTOUR_POINTS: usize = 96;
 
@@ -84,7 +85,7 @@ pub fn build_parcels(document: &MapDocument, partition: &Partition) -> Footprint
                     .sum()
             })
             .collect::<Vec<_>>();
-        let owners = solve(&mask, grid, low, span, &sites, &targets, 1);
+        let owners = solve(&mask, grid, low, span, &sites, &targets, 1, true);
         for (group_index, (id, files, label)) in groups.into_iter().enumerate() {
             let region = owners
                 .iter()
@@ -187,6 +188,7 @@ pub fn build_parcels(document: &MapDocument, partition: &Partition) -> Footprint
                 &file_sites,
                 &file_targets,
                 4,
+                false,
             );
             for (local, &file) in files.iter().enumerate() {
                 let owned = file_owners
@@ -378,6 +380,7 @@ fn solve(
     initial: &[[f64; 2]],
     targets: &[f64],
     minimum_cells: usize,
+    connected: bool,
 ) -> Vec<usize> {
     let cells = mask
         .iter()
@@ -433,7 +436,12 @@ fn solve(
     let target_area = quotas.iter().map(|&quota| quota as f64).collect::<Vec<_>>();
     let mut weights = vec![0.0; count];
     let step = span * span / count as f64 * 0.24;
-    for iteration in 0..ITERATIONS {
+    let iterations = if connected {
+        CONNECTED_ITERATIONS
+    } else {
+        FILE_ITERATIONS
+    };
+    for iteration in 0..iterations {
         let mut areas = vec![0_usize; count];
         let mut sums = vec![[0.0; 2]; count];
         for &cell in &cells {
@@ -456,7 +464,7 @@ fn solve(
             }
             let error =
                 ((target_area[site] - areas[site] as f64) / target_area[site]).clamp(-1.5, 1.5);
-            weights[site] += step * error * (1.0 - 0.6 * iteration as f64 / ITERATIONS as f64);
+            weights[site] += step * error * (1.0 - 0.6 * iteration as f64 / iterations as f64);
         }
         let min_weight = weights.iter().copied().fold(f64::INFINITY, f64::min);
         for weight in &mut weights {
@@ -471,6 +479,28 @@ fn solve(
                 }
             }
         }
+    }
+    if !connected {
+        // The solved power cells encode file weights more faithfully than
+        // a frontier that can trap several file seeds behind one owner.
+        // Reserve one distinct pixel per file after assignment; this avoids
+        // the prototype's vanished-cell defect without giving up the area
+        // solution for the rest of the neighbourhood.
+        let mut owners = vec![usize::MAX; mask.len()];
+        for &cell in &cells {
+            let point = cell_point(cell, grid, low, span);
+            owners[cell] = (0..count)
+                .min_by(|&a, &b| {
+                    (distance2(point, sites[a]) - weights[a])
+                        .total_cmp(&(distance2(point, sites[b]) - weights[b]))
+                        .then_with(|| a.cmp(&b))
+                })
+                .unwrap();
+        }
+        for (owner, &seed) in seeds.iter().enumerate() {
+            owners[seed] = owner;
+        }
+        return owners;
     }
     // Power assignment alone can produce a vanished cell or detached island.
     // Seed each site with a distinct raster cell, then admit pixels only from
@@ -751,7 +781,16 @@ mod tests {
     fn reserved_seeds_keep_coincident_sites_present() {
         let grid = 20;
         let mask = vec![true; grid * grid];
-        let owners = solve(&mask, grid, [0.0, 0.0], 1.0, &[[0.5, 0.5]; 8], &[1.0; 8], 4);
+        let owners = solve(
+            &mask,
+            grid,
+            [0.0, 0.0],
+            1.0,
+            &[[0.5, 0.5]; 8],
+            &[1.0; 8],
+            4,
+            false,
+        );
         for owner in 0..8 {
             assert!(owners.contains(&owner));
         }
@@ -791,6 +830,7 @@ mod tests {
             &sites,
             &[1.0, 2.0, 3.0, 4.0],
             4,
+            true,
         );
         let counts = (0..4)
             .map(|owner| owners.iter().filter(|&&value| value == owner).count())
