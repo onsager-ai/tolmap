@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 
 use crate::blobs::marching_squares;
 use crate::extract::round_to;
@@ -57,6 +57,11 @@ pub fn build_parcels(document: &MapDocument, partition: &Partition) -> Footprint
             grid = (grid * 3 / 2).min(1680);
             mask = rasterize(blob, low, span, grid);
         }
+        // A district silhouette can be an archipelago. A single
+        // neighbourhood cannot be connected across disjoint mask islands;
+        // use the largest body for nested geometry while retaining the
+        // district's existing outline and layout untouched.
+        mask = largest_component(mask, grid);
         // Unconnected districts deliberately have no displayed district blob.
         // They still need file footprints, so use a local square around their
         // existing layout points. Likewise a subpixel district must never
@@ -235,6 +240,44 @@ fn rasterize(rings: &[Vec<[f64; 2]>], low: [f64; 2], span: f64, grid: usize) -> 
         }
     }
     mask
+}
+
+fn largest_component(mask: Vec<bool>, grid: usize) -> Vec<bool> {
+    let mut seen = vec![false; mask.len()];
+    let mut largest = Vec::new();
+    for start in 0..mask.len() {
+        if !mask[start] || seen[start] {
+            continue;
+        }
+        let mut cells = Vec::new();
+        let mut queue = VecDeque::from([start]);
+        seen[start] = true;
+        while let Some(cell) = queue.pop_front() {
+            cells.push(cell);
+            let x = cell % grid;
+            let y = cell / grid;
+            let neighbours = [
+                (x > 0).then(|| cell.saturating_sub(1)),
+                (x + 1 < grid).then_some(cell + 1),
+                (y > 0).then(|| cell.saturating_sub(grid)),
+                (y + 1 < grid).then_some(cell + grid),
+            ];
+            for neighbour in neighbours.into_iter().flatten() {
+                if mask[neighbour] && !seen[neighbour] {
+                    seen[neighbour] = true;
+                    queue.push_back(neighbour);
+                }
+            }
+        }
+        if cells.len() > largest.len() {
+            largest = cells;
+        }
+    }
+    let mut result = vec![false; mask.len()];
+    for cell in largest {
+        result[cell] = true;
+    }
+    result
 }
 
 fn cell_point(cell: usize, grid: usize, low: [f64; 2], span: f64) -> [f64; 2] {
@@ -609,5 +652,17 @@ mod tests {
         for owner in 0..8 {
             assert!(owners.contains(&owner));
         }
+    }
+
+    #[test]
+    fn detached_district_island_does_not_split_a_neighbourhood() {
+        let grid = 5;
+        let mut mask = vec![false; grid * grid];
+        for cell in [0, 1, 5, 6, 24] {
+            mask[cell] = true;
+        }
+        let body = largest_component(mask, grid);
+        assert_eq!(body.iter().filter(|&&inside| inside).count(), 4);
+        assert!(!body[24]);
     }
 }

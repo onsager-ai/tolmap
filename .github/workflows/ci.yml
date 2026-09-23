@@ -246,11 +246,13 @@ jobs:
         run: |
           set -euo pipefail
           for name in flask httpx synthetic_polyglot module_resolution; do
+            echo "footprint metrics: $name"
             python3 eval/footprint_metrics.py "ci-out/${name}.json" --gate \
-              --out "ci-out/${name}.footprint-metrics.json" > /dev/null
+              --out "ci-out/${name}.footprint-metrics.json"
           done
+          echo "footprint metrics: synthetic_islands"
           python3 eval/footprint_metrics.py islands-out/synthetic_islands.json --gate \
-            --out islands-out/synthetic_islands.footprint-metrics.json > /dev/null
+            --out islands-out/synthetic_islands.footprint-metrics.json
 
   # Cheap, no toolchain: prod (fly.toml) and staging
   # (deploy/railway.staging.env) must describe the same set of TOLMAP_*
