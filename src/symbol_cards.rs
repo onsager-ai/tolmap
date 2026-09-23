@@ -23,6 +23,27 @@ struct Canvas {
 fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
     let mask = largest_component(mask.to_vec(), canvas.grid);
     let mut rings = marching_squares(&mask, canvas.grid);
+    for points in &mut rings {
+        let original = std::mem::take(points);
+        let length = original.len();
+        if length < 3 {
+            *points = original;
+            continue;
+        }
+        *points = original
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &current)| {
+                let previous = original[(i + length - 1) % length];
+                let next = original[(i + 1) % length];
+                let a = [current[0] - previous[0], current[1] - previous[1]];
+                let b = [next[0] - current[0], next[1] - current[1]];
+                let cross = a[0] * b[1] - a[1] * b[0];
+                let dot = a[0] * b[0] + a[1] * b[1];
+                (cross != 0.0 || dot <= 0.0).then_some(current)
+            })
+            .collect();
+    }
     rings.sort_by(|a, b| {
         polygon_area(b)
             .total_cmp(&polygon_area(a))
@@ -808,5 +829,13 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn straight_raster_edges_need_only_corner_vertices() {
+        let (canvas, mask) = square_canvas(60);
+        let outline = ring(&mask, &canvas).unwrap();
+        assert_eq!(outline.len(), 1);
+        assert_eq!(outline[0].len(), 4);
     }
 }
