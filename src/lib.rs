@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod polyglot;
 pub mod schema;
 pub mod service;
+pub mod symbol_cards;
 pub mod symbols;
 
 pub const SEED: u64 = 7;

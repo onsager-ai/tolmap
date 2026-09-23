@@ -126,6 +126,13 @@ pub struct SymbolsDocument {
     /// Per-file code lines outside every top-level symbol.
     pub module_code_lines: BTreeMap<usize, usize>,
     pub coverage: SymbolCoverage,
+    /// Index aligned with symbols. A missing entry denotes an old document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_rings: Option<Vec<Option<Vec<[f64; 2]>>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -138,6 +145,12 @@ pub struct DistrictSymbols {
     pub symbols: Vec<HierSymbolRow>,
     pub edges: Vec<[usize; 3]>,
     pub module_code_lines: BTreeMap<usize, usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_rings: Option<Vec<Option<Vec<[f64; 2]>>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_rings: Option<BTreeMap<usize, Vec<[f64; 2]>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
