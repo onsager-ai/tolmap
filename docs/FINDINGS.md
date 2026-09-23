@@ -1164,3 +1164,22 @@ The branch median r for code lines exceeds its loc r in five of six repositories
 The count of files without `P` **did change**, contrary to the initial expectation that only area would move. The existing power diagram can assign no cell to a file when targets change; dify gains 35 missing footprints, prometheus gains 20, vue gains 3, while django loses 15. These are measured counts, not fixed by this PR. The separate nested-footprints work for #82 has the explicit zero-missing-footprint target; the present PR keeps the parcels change to one weight helper to avoid competing with that rewrite.
 
 After removing only `C` and `P` from both JSON documents and comparing their compact JSON bytes, **all six branch maps are identical to main** on every remaining key. That includes `F`, `N`, `E`, `L`, `S`, `U`, district membership and geometry, and coverage. The code-line count is additive; this PR does not move files or alter the graph.
+
+## 30. Hierarchical symbols are a separate document, and resolved calls remain a lower bound
+
+Finding 29 is reserved for the concurrent nested-footprints PR #85. This PR adds no symbol geometry or viewer drawing. The map's oracle-constrained `S` and `U` take their old path unchanged; complete symbols and their reference edges live in a sibling JSON document. Each district response includes its own symbols and both endpoints of every touching edge, retaining global indices. Symbol and module code-line counts reuse the exact line mask introduced by finding 28.
+
+[Forward-order Actions run 35878554527](https://github.com/onsager-ai/tolmap/actions/runs/35878554527) built this branch, then `main`, on the same pinned clone. [Reverse-order run 35879341393](https://github.com/onsager-ai/tolmap/actions/runs/35879341393) built `main`, then this branch. Both used standard runners and the same four corpus pins. The two symbol documents for each repository have **identical SHA-256 hashes** across the runs, even with build order reversed. The [PR gate run 35878549474](https://github.com/onsager-ai/tolmap/actions/runs/35878549474) passed format, clippy, tests, generated types, offline parity, and three-build map-plus-symbol determinism.
+
+Kind counts below are `class / function / method / nested function / interface / type / const`. Sizes are decimal MB of compact UTF-8 JSON; largest district is the serialized API response including remote endpoint rows. Resolution is resolved repository-symbol calls divided by all calls **inside symbols**. Module-level calls have no enclosing symbol and are outside that denominator.
+
+| repo | kinds | edges | resolved / calls | symbols MB | largest district MB | branch / main s | main / branch s |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| django/django | 1831 / 1196 / 7266 / 249 / 0 / 0 / 0 | 8,851 | 8,622 / 32,639 (26.4%) | 0.534 | d4 0.173 | 6.53 / 3.40 | 3.89 / 6.71 |
+| langgenius/dify | 6714 / 11243 / 11387 / 2274 / 3 / 5314 / 11226 | 33,239 | 23,584 / 176,252 (13.4%) | 2.750 | d0 0.498 | 32.04 / 15.10 | 22.40 / 48.59 |
+| prometheus/prometheus | 1047 / 2169 / 4944 / 54 / 338 / 285 / 262 | 4,609 | 6,035 / 42,569 (14.2%) | 0.414 | d1 0.117 | 10.80 / 3.34 | 3.21 / 10.19 |
+| vuejs/core | 18 / 1056 / 471 / 170 / 254 / 324 / 554 | 4,398 | 3,188 / 7,877 (40.5%) | 0.171 | d1 0.070 | 2.45 / 1.04 | 1.03 / 2.36 |
+
+The paired added wall time is **2.82–3.13 s django, 16.94–26.19 s dify, 6.98–7.46 s prometheus, and 1.33–1.41 s vue**. Each range contains the two build orders, not repeated samples sufficient for a confidence interval. The added pass reparses mapped files once to keep the parity-constrained extraction path intact. Dify's 2.750 MB document is close in scale to the prototype's ~2.8 MB, but the source selection differs and the new document has no card geometry, so their counts are not directly comparable.
+
+Unresolved calls remain explicit: dify records 97,279 `local_or_builtin`, 34,208 `external`, 10,966 `dynamic`, 6,118 `unresolved_attribute`, 3,824 `instance_or_untyped`, and 273 `parent_class_method`. These sum with its 23,584 resolved calls to the 176,252 total. The method count is therefore a lower bound: instance types and parent-class method targets are deliberately not inferred. The full per-repository JSON artifacts contain the other three repositories' reason counts.

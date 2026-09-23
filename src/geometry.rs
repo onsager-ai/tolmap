@@ -346,14 +346,17 @@ pub fn build_warm(
     });
     eprintln!("[1/5] extract   {}/{}  ({lang})", repo.display(), pkg);
     let graph = extract::build(repo, pkg, language)?;
-    build_from_graph_warm(
+    let source_nodes = graph.nodes.clone();
+    let output = build_from_graph_warm(
         graph,
         map_name,
         out,
         resolution,
         features,
         previous_document,
-    )
+    )?;
+    crate::symbols::write_sibling(repo, &source_nodes, &output)?;
+    Ok(output)
 }
 
 /// As [`build`], but unions any number of `(pkg, language)` sources (see
@@ -398,14 +401,17 @@ pub fn build_multi_warm(
         sources.len()
     );
     let graph = extract::build_multi_source(repo, sources)?;
-    build_from_graph_warm(
+    let source_nodes = graph.nodes.clone();
+    let output = build_from_graph_warm(
         graph,
         map_name,
         out,
         resolution,
         features,
         previous_document,
-    )
+    )?;
+    crate::symbols::write_sibling(repo, &source_nodes, &output)?;
+    Ok(output)
 }
 
 /// Runs the pipeline (partition, naming, geometry, parcels) against an

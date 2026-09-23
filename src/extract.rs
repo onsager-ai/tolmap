@@ -212,11 +212,11 @@ enum FileRaw {
 }
 
 #[derive(Clone, Debug)]
-struct PythonImport {
-    from: bool,
-    level: usize,
-    module: String,
-    names: Vec<(String, Option<String>)>,
+pub(crate) struct PythonImport {
+    pub(crate) from: bool,
+    pub(crate) level: usize,
+    pub(crate) module: String,
+    pub(crate) names: Vec<(String, Option<String>)>,
 }
 
 pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData> {
@@ -397,6 +397,15 @@ fn nonblank_lines(source: &[u8]) -> usize {
 /// One traversal marks lines covered by syntax leaves. A string leaf can span
 /// lines, so checking only its start would undercount multiline code.
 fn count_code_lines(root: Node<'_>, source: &[u8], language: LanguageKind) -> usize {
+    code_line_flags(root, source, language)
+        .into_iter()
+        .filter(|line| *line)
+        .count()
+}
+
+/// Shared line mask for file and symbol areas. A symbol's count uses the
+/// same syntax-leaf rule as the map's `C` field, so the areas add up.
+pub(crate) fn code_line_flags(root: Node<'_>, source: &[u8], language: LanguageKind) -> Vec<bool> {
     let mut marked = vec![false; source.iter().filter(|&&byte| byte == b'\n').count() + 1];
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -430,7 +439,7 @@ fn count_code_lines(root: Node<'_>, source: &[u8], language: LanguageKind) -> us
             }
         }
     }
-    marked.into_iter().filter(|line| *line).count()
+    marked
 }
 
 fn is_docstring(node: Node<'_>) -> bool {
@@ -1404,7 +1413,7 @@ fn module_name(relative: &str, pkg: &str) -> String {
     parts.join(".")
 }
 
-fn python_imports(root: Node<'_>, source: &[u8]) -> Vec<PythonImport> {
+pub(crate) fn python_imports(root: Node<'_>, source: &[u8]) -> Vec<PythonImport> {
     let mut result = Vec::new();
     for node in walk(root) {
         match node.kind() {
@@ -1481,7 +1490,7 @@ fn import_name(node: Node<'_>, source: &[u8]) -> Option<(String, Option<String>)
 /// relative import: at level 1 it kept the whole module name, so
 /// `from . import x` resolved to a name that was never a known module.
 /// See issue #12.
-fn python_head(import: &PythonImport, current_module: &str, is_pkg: bool) -> String {
+pub(crate) fn python_head(import: &PythonImport, current_module: &str, is_pkg: bool) -> String {
     if import.level == 0 {
         return import.module.clone();
     }

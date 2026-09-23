@@ -83,6 +83,27 @@ everywhere else in this API.
 
 ## Endpoints
 
+### `GET /api/maps/{owner}/{repo}/symbols?district=<id>[&commit=<sha>]`
+
+Returns the symbols for one district of the latest indexed commit, or the
+specified commit. `district` is required and is the numeric district id in
+the map's `N` rows. Unknown maps, commits, districts and older commits
+without a symbols sibling return 404. The
+response contains `district`, its `files` (indices into the map's `F`),
+`symbol_indices`, `symbols`, `edges`, and `module_code_lines`. Each symbol row
+is `[file, name, kind, start_line, end_line, parent, code_lines]`; `parent`
+and every edge endpoint are **global symbol indices**. Kinds are 0 class,
+1 function, 2 method, 3 nested function, 4 interface, 5 type, 6 constant.
+An edge is `[source, target, occurrences]`. An edge crossing districts is
+included from both sides, with both endpoint rows and their global indices
+so a client can place the far endpoint without fetching another district.
+`module_code_lines` maps file index to code lines outside top-level symbols.
+The full sibling `<name>.symbols.json` also has `files`, `symbols`, `edges`,
+`module_code_lines` and `coverage` (`calls_total` inside symbols,
+`calls_resolved`, and `unresolved` counts by reason). Coverage lives there to keep the initial map
+document small. The same sibling is copied to `/maps/<owner>/<repo>.symbols.json`
+when a static map includes one.
+
 ### `POST /api/index`
 
 Body: `{"repo": "owner/name"}` or `{"repo": "<https url>"}` or `{"path": "<local path>"}`.

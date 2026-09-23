@@ -260,6 +260,15 @@ impl Store {
                     eprintln!("prune: could not remove map file {map_path}: {err}");
                 }
             }
+            let symbols_path = Path::new(map_path).with_extension("symbols.json");
+            if let Err(err) = std::fs::remove_file(&symbols_path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!(
+                        "prune: could not remove symbols file {}: {err}",
+                        symbols_path.display()
+                    );
+                }
+            }
         }
         Ok(stale.len())
     }
