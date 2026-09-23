@@ -97,6 +97,94 @@ try {
       await context.close();
     }
   }
+
+  // Issue #82 C2 scope item 10: three more dify frames per profile -- a deep
+  // zoom showing cards inside a large file, a selected class with its
+  // reference lines, and the file card's outline tree. Targets are picked
+  // dynamically off the bundled district-0 symbols fixture (the same
+  // approach check-view-stability.mjs's new C2 checks use), never hardcoded.
+  if (slugs.includes(DIFY_SLUG)) {
+    const doc = await (await fetch(`${base}/maps/${DIFY_SLUG}.json`)).json();
+    const symbols = await (await fetch(`${base}/maps/${DIFY_SLUG}.symbols/0.json`)).json();
+    const stem = `${out}/${DIFY_SLUG.replace("/", "__")}`;
+
+    const fileSymbolCounts = new Map();
+    for (const row of symbols.symbols) fileSymbolCounts.set(row[0], (fileSymbolCounts.get(row[0]) ?? 0) + 1);
+    let bigFile = null;
+    let bigFileCount = -1;
+    for (const [f, n] of fileSymbolCounts) {
+      if (n > bigFileCount) {
+        bigFile = f;
+        bigFileCount = n;
+      }
+    }
+
+    const childCount = new Map();
+    symbols.symbols.forEach((row) => {
+      if (row[5] >= 0) childCount.set(row[5], (childCount.get(row[5]) ?? 0) + 1);
+    });
+    let classGlobal = null;
+    let classLocal = -1;
+    let classMembers = -1;
+    symbols.symbols.forEach((row, local) => {
+      if (row[2] !== 0) return;
+      const global = symbols.symbol_indices[local];
+      const n = childCount.get(global) ?? 0;
+      if (n > classMembers) {
+        classMembers = n;
+        classGlobal = global;
+        classLocal = local;
+      }
+    });
+    const classFile = classLocal >= 0 ? symbols.symbols[classLocal][0] : null;
+
+    if (bigFile != null) {
+      for (const profile of PROFILES) {
+        const context = await browser.newContext(profile);
+        const page = await context.newPage();
+        // Deep zoom on a large, symbol-dense file -- selecting it makes it
+        // gate-eligible regardless of on-screen size, then zooming in grows
+        // its (and its neighbours') footprints past the 40px card gate.
+        await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[bigFile])}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+        await page.waitForTimeout(700);
+        for (let i = 0; i < 6; i++) {
+          await page.locator('button[aria-label="Zoom in"]').click();
+          await page.waitForTimeout(150);
+        }
+        await page.waitForTimeout(400);
+        await page.screenshot({ path: `${stem}-${profile.name}-symbol-cards-deep-zoom.png` });
+        console.log(`${stem}-${profile.name}-symbol-cards-deep-zoom.png`);
+
+        if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+        await page.screenshot({ path: `${stem}-${profile.name}-outline-tree.png` });
+        console.log(`${stem}-${profile.name}-outline-tree.png`);
+
+        await context.close();
+      }
+    }
+
+    if (classGlobal != null && classFile != null) {
+      for (const profile of PROFILES) {
+        const context = await browser.newContext(profile);
+        const page = await context.newPage();
+        // A selected class with its rolled-up reference lines (scope item 4)
+        // -- set directly via hsym, since a card tap is exercised by the
+        // check script, not needed again here just to reach this state.
+        await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[classFile])}&hsym=${classGlobal}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+        await page.waitForTimeout(700);
+        for (let i = 0; i < 4; i++) {
+          await page.locator('button[aria-label="Zoom in"]').click();
+          await page.waitForTimeout(150);
+        }
+        await page.waitForTimeout(400);
+        await page.screenshot({ path: `${stem}-${profile.name}-symbol-references.png` });
+        console.log(`${stem}-${profile.name}-symbol-references.png`);
+        await context.close();
+      }
+    }
+  }
 } finally {
   await browser.close();
 }

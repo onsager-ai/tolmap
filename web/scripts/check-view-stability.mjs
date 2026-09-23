@@ -1336,10 +1336,21 @@ async function checkViewerCards(browser, base, profile) {
     return null;
   }, fixture.doc);
   if (fileTarget) {
+    // Issue #82 C2 scope item 3 (two-step tap): CHANGED -- `fileTarget` isn't
+    // guaranteed to sit in whichever district the earlier tap above already
+    // selected, so the first tap here can land on its district instead of
+    // the file itself. Tap up to twice and accept either a one-tap (already
+    // the selected district) or two-tap (district then file) outcome --
+    // exactly the interaction spec item 3 describes, without hardcoding
+    // which case this particular fixture point happens to be.
     await tap(page, profile, fileTarget.x, fileTarget.y);
+    await page.waitForTimeout(150);
+    if (new URL(page.url()).searchParams.get("file") !== fileTarget.file) {
+      await tap(page, profile, fileTarget.x, fileTarget.y);
+    }
     report(
       new URL(page.url()).searchParams.get("file") === fileTarget.file && (await page.locator("[data-selection-panel]").count()) === 1,
-      `${label}: tapping a file produces its card`,
+      `${label}: tapping a file produces its card (one or two taps, two-step tap #82 C2)`,
       `expected=${fileTarget.file} url=${page.url()}`,
     );
     const symbol = page.locator("button[data-symbol-row]").first();
@@ -1940,6 +1951,13 @@ async function checkFullscreenPreservesView(browser, base, profile) {
 /** Issue #82 A1 scope item 6: a file basename label carries `data-k`, so a
  * tap on the LABEL ITSELF (not the dot it names) selects that file instead
  * of falling through to nothing. */
+// Issue #82 C2 scope item 3 (two-step tap, footprints now tiling whole
+// districts): a fresh page has no "currently selected district", so the
+// FIRST tap on a file selects its district, not the file -- CHANGED from
+// the old single-tap assertion this check used to make (see the git history
+// for the pre-two-step version). Verified explicitly (the district tap),
+// then tapped again to reach the file, exactly the interaction spec item 3
+// describes.
 async function checkFileLabelTapSelects(browser, base) {
   const label = "tapping a file label selects that file (django)";
   console.log(`\n${label}`);
@@ -1965,10 +1983,16 @@ async function checkFileLabelTapSelects(browser, base) {
     return;
   }
   const doc = await (await fetch(`${base}/maps/django/django.json`)).json();
+  const expectedDistrict = String(doc.N[target.index][0]);
+  await page.mouse.click(target.x, target.y);
+  await page.waitForTimeout(300);
+  report(new URL(page.url()).searchParams.get("d") === expectedDistrict && !new URL(page.url()).searchParams.has("file"),
+    `${label}: the first tap selects the file's district (two-step tap, #82 C2)`,
+    `expected d=${expectedDistrict} url=${page.url()}`);
   await page.mouse.click(target.x, target.y);
   await page.waitForTimeout(300);
   report(new URL(page.url()).searchParams.get("file") === doc.F[target.index],
-    `${label}: tapping the label selects the file it names`,
+    `${label}: a second tap, now inside its own district, selects the file`,
     `expected=${doc.F[target.index]} url=${page.url()}`);
   await context.close();
 }
@@ -2481,10 +2505,20 @@ async function checkHubRingTap(browser, base, profile) {
   }
   const fileIndex = Number(chosenKey.slice(2));
   const expected = doc.F[fileIndex];
+  const expectedDistrict = String(doc.N[fileIndex][0]);
+  // Issue #82 C2 scope item 3 (two-step tap): CHANGED from a single-tap
+  // assertion -- a fresh page has no currently selected district, so the
+  // first tap on the hub's ring selects ITS district first.
+  await tap(page, profile, point.x, point.y);
+  report(
+    new URL(page.url()).searchParams.get("d") === expectedDistrict && !new URL(page.url()).searchParams.has("file"),
+    `${label}: the first tap selects the hub's district (two-step tap, #82 C2)`,
+    `expected d=${expectedDistrict} url=${page.url()}`,
+  );
   await tap(page, profile, point.x, point.y);
   report(
     new URL(page.url()).searchParams.get("file") === expected,
-    `${label}: tapping the ring selects the hub's file`,
+    `${label}: a second tap, now inside its own district, selects the hub's file`,
     `expected=${expected}`,
   );
   await context.close();
@@ -2576,7 +2610,7 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
           const x = rect.left + (rect.width * xi) / 10;
           const y = rect.top + (rect.height * yi) / 10;
           const key = document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k");
-          if (key === path.getAttribute("data-k")) return { x, y };
+          if (key === path.getAttribute("data-k")) return { x, y, district: path.getAttribute("data-k").slice(2) };
         }
       }
     }
@@ -2587,11 +2621,26 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     await context.close();
     return;
   }
+  // Issue #82 C2 scope item 3 (two-step tap): CHANGED from a single-tap
+  // "selects A file" assertion -- a fresh page has no currently selected
+  // district, so the first tap resolves (via the JS hit-test) to a file, but
+  // the two-step rule then routes THAT to a district selection instead. The
+  // hit-test itself is still exercised (proven by the correct district
+  // resolving, which the JS point-in-polygon lookup alone could produce --
+  // the bare polygon underneath has no other way to name a MORE specific
+  // district than itself); the second tap, now inside that district, is what
+  // proves the file resolution the hit-test is actually for.
+  await tap(page, profile, point.x, point.y);
+  report(
+    new URL(page.url()).searchParams.get("d") === point.district && !new URL(page.url()).searchParams.has("file"),
+    `${label}: the first tap resolves via JS hit-testing and selects that district (two-step tap, #82 C2)`,
+    `expected d=${point.district} url=${page.url()}`,
+  );
   await tap(page, profile, point.x, point.y);
   const selectedFile = new URL(page.url()).searchParams.get("file");
   report(
     !!selectedFile,
-    `${label}: tapping a batched footprint area selects a file via JS hit-testing`,
+    `${label}: a second tap, now inside its own district, selects a file via JS hit-testing`,
     `selected=${selectedFile} url=${page.url()}`,
   );
   await context.close();
@@ -2741,6 +2790,404 @@ async function checkLegacyMapWithoutFootprints(browser, base) {
   await context.close();
 }
 
+// ---------------------------------------------------------------------------
+// Issue #82 C2: symbol cards inside file footprints, rolled-up references,
+// outline tree. Every target below is picked DYNAMICALLY at runtime from the
+// district-0 symbols fixture the CI workflow unpacks
+// (web/check-fixtures/langgenius__dify.symbols.tar.gz -> public/maps/
+// langgenius/dify.symbols/0.json) -- never hardcoded indices, and never
+// computed by a local script outside this Playwright run (CLAUDE.md's
+// no-heavy-local-analysis rule: the corpus-scale computation happens on the
+// CI runner, inside the browser context that already fetched the file for
+// its own purposes, the same way every other dynamic pick in this script
+// already works, e.g. checkNeighbourhoodLabelsAtDeeperZoom's workflowFile).
+// ---------------------------------------------------------------------------
+
+async function loadDifySymbolsFixture(context, base) {
+  const mapDoc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  const symbols = await (await context.request.get(`${base}/maps/langgenius/dify.symbols/0.json`)).json();
+  return { mapDoc, symbols };
+}
+
+// The file with the most symbols in the bundled district -- large enough
+// that its footprint reads on screen and its cards are worth painting.
+function pickBigFileTarget(symbols) {
+  const counts = new Map();
+  for (const row of symbols.symbols) counts.set(row[0], (counts.get(row[0]) ?? 0) + 1);
+  let file = null;
+  let count = -1;
+  for (const [f, n] of counts) {
+    if (n > count) {
+      file = f;
+      count = n;
+    }
+  }
+  return { file, count };
+}
+
+// The class (kind 0) with the most members in the bundled district, plus one
+// of its members -- the pair checkClassExpandsAtShortSide and
+// checkCardTapSelectsSymbolAndBreadcrumb need to exercise expansion.
+function pickExpandableClass(symbols) {
+  const si = symbols.symbol_indices;
+  const childCount = new Map();
+  symbols.symbols.forEach((row) => {
+    if (row[5] >= 0) childCount.set(row[5], (childCount.get(row[5]) ?? 0) + 1);
+  });
+  let classGlobal = null;
+  let classLocal = -1;
+  let memberCount = -1;
+  symbols.symbols.forEach((row, local) => {
+    if (row[2] !== 0) return;
+    const global = si[local];
+    const n = childCount.get(global) ?? 0;
+    if (n > memberCount) {
+      memberCount = n;
+      classGlobal = global;
+      classLocal = local;
+    }
+  });
+  if (classGlobal == null) return null;
+  let childGlobal = null;
+  let childName = null;
+  symbols.symbols.forEach((row, local) => {
+    if (childGlobal != null || row[5] !== classGlobal) return;
+    childGlobal = si[local];
+    childName = row[1];
+  });
+  return { classGlobal, file: symbols.symbols[classLocal][0], className: symbols.symbols[classLocal][1], memberCount, childGlobal, childName };
+}
+
+// The symbol with the largest combined in+out edge weight in the bundled
+// district -- guaranteed to have SOME reference lines to check endpoints on.
+function pickReferenceTarget(symbols) {
+  const weight = new Map();
+  for (const [s, t, n] of symbols.edges) {
+    weight.set(s, (weight.get(s) ?? 0) + n);
+    weight.set(t, (weight.get(t) ?? 0) + n);
+  }
+  const si = symbols.symbol_indices;
+  let best = null;
+  let bestN = -1;
+  for (const [g, n] of weight) {
+    if (n > bestN && si.includes(g)) {
+      best = g;
+      bestN = n;
+    }
+  }
+  if (best == null) return null;
+  const local = si.indexOf(best);
+  return { global: best, file: symbols.symbols[local][0], weight: bestN };
+}
+
+// 9(a): the overview silhouette (D1's whole reason for existing, finding 27)
+// must survive -- no card anywhere with nothing selected at fit zoom.
+async function checkNoCardsAtFitZoom(browser, base, profile) {
+  const label = `no symbol cards at fit zoom (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const cardCount = await page.locator('svg.map-svg [data-k^="hs:"]').count();
+  report(cardCount === 0, `${label}: no cards drawn with nothing selected at the opening fit`, `count=${cardCount}`);
+  await context.close();
+}
+
+// 9(b): selecting a symbol-bearing file (always gate-eligible regardless of
+// on-screen size -- symbolCards.ts's fileCrossesSymbolGate) fetches its
+// district's symbols and draws its cards.
+async function checkCardsAppearAtSymbolGate(browser, base) {
+  const label = "cards appear once a file is selected (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickBigFileTarget(symbols);
+  if (target.file == null) {
+    report(false, `${label}: setup`, "no file with symbols found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const cardCount = await page.locator('svg.map-svg [data-k^="hs:"]').count();
+  report(cardCount > 0, `${label}: selecting a symbol-bearing file draws its cards`, `file=${path} symbols=${target.count} cards=${cardCount}`);
+  await context.close();
+}
+
+// 9(c): a class expands (shows a member's own card) once its short side
+// clears 110px -- checked behaviourally (a known child's data-k appears),
+// not by reading back the 110px number itself.
+async function checkClassExpandsAtShortSide(browser, base) {
+  const label = "a class expands past 110px (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickExpandableClass(symbols);
+  if (!target || target.memberCount === 0) {
+    report(false, `${label}: setup`, "no class with members found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const childKey = `hs:${target.childGlobal}`;
+  const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
+  report(initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${target.className} member=${target.childName}`);
+  let expanded = false;
+  for (let i = 0; i < 8 && !expanded; i++) {
+    await zoomIn(page, 600, 400);
+    expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
+  }
+  report(expanded, `${label}: zooming in reveals the member's own card`, `class=${target.className} member=${target.childName} childKey=${childKey}`);
+  await context.close();
+}
+
+// 9(d): tapping a card selects the symbol and sets every level at once
+// (scope item 3) -- the breadcrumb shows both the class and the method.
+async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
+  const label = "tapping a card selects the symbol and updates the breadcrumb (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickExpandableClass(symbols);
+  if (!target || target.childGlobal == null) {
+    report(false, `${label}: setup`, "no class with members found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const childKey = `hs:${target.childGlobal}`;
+  let box = null;
+  for (let i = 0; i < 8 && !box; i++) {
+    await zoomIn(page, 600, 400);
+    box = await page.locator(`svg.map-svg [data-k="${childKey}"]`).first().boundingBox().catch(() => null);
+  }
+  if (!box) {
+    report(false, `${label}: setup`, "member card never appeared after zooming in");
+    await context.close();
+    return;
+  }
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(300);
+  const url = new URL(page.url());
+  report(
+    url.searchParams.get("file") === path && Number(url.searchParams.get("hsym")) === target.childGlobal,
+    `${label}: tapping the card selects the symbol directly (file + hsym set in one step)`,
+    url.toString(),
+  );
+  const breadcrumbText = await page.locator("[data-breadcrumb]").innerText();
+  report(
+    breadcrumbText.includes(target.className) && breadcrumbText.includes(target.childName),
+    `${label}: the breadcrumb shows the class and the method`,
+    breadcrumbText,
+  );
+  await context.close();
+}
+
+// 9(e): reference-line endpoints land on a drawn card ("hs:<global>") or a
+// file ("f:<global>") -- read straight off the data-symref-target marker
+// (MapRenderer.renderSymbolRefs) rather than reconstructed from geometry.
+async function checkReferenceLineEndpoints(browser, base) {
+  const label = "reference-line endpoints land on drawn cards or files (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickReferenceTarget(symbols);
+  if (!target) {
+    report(false, `${label}: setup`, "no symbol with edges found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}&hsym=${target.global}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const info = await page.evaluate(() => {
+    const targets = [...document.querySelectorAll("svg.map-svg path[data-symref-target]")].map((el) => el.getAttribute("data-symref-target"));
+    // "s:<global>" (a rolled-up-to-drawn SYMBOL) maps to the card's own
+    // "hs:<global>" data-k; "f:<global>" (rolled up to a FILE) maps to that
+    // file's own footprint/dot, same prefix.
+    const landed = targets.filter((t) => {
+      const key = t.startsWith("s:") ? "hs:" + t.slice(2) : t;
+      return !!document.querySelector(`[data-k="${key}"]`);
+    });
+    return { total: targets.length, landed: landed.length };
+  });
+  report(info.total > 0, `${label}: at least one reference line is drawn`, `total=${info.total} weight=${target.weight}`);
+  report(info.total === 0 || info.landed === info.total, `${label}: every endpoint lands on a drawn card or file`, JSON.stringify(info));
+  await context.close();
+}
+
+// 9(f): hovering an outline row highlights its card (MapRenderer.hoverSymbol,
+// the SAME .hovered class toggle every other hoverable shape gets).
+async function checkOutlineHoverHighlightsCard(browser, base) {
+  const label = "hovering an outline row highlights its card (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickBigFileTarget(symbols);
+  if (target.file == null) {
+    report(false, `${label}: setup`, "no file with symbols found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-outline-tree]", { timeout: 15_000 }).catch(() => null);
+  const row = page.locator("[data-outline-row]").first();
+  if ((await row.count()) === 0) {
+    report(false, `${label}: setup`, "no outline row rendered in the sidebar");
+    await context.close();
+    return;
+  }
+  const global = await row.getAttribute("data-outline-row");
+  await row.hover();
+  await page.waitForTimeout(150);
+  const highlighted = await page.locator(`svg.map-svg [data-k="hs:${global}"].hovered`).count();
+  report(highlighted > 0, `${label}: the outline row's card gains the hover highlight`, `global=${global} highlighted=${highlighted}`);
+  await context.close();
+}
+
+// 9(g): step-back goes symbol -> parent symbol -> file -> district -> none.
+async function checkStepBackThroughSymbolLevels(browser, base) {
+  const label = "step-back walks symbol -> parent symbol -> file -> district -> none (dify)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickExpandableClass(symbols);
+  if (!target || target.childGlobal == null) {
+    report(false, `${label}: setup`, "no class with members found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  const districtId = String(mapDoc.N[target.file][0]);
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}&hsym=${target.childGlobal}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  const step = async (assertFn, stepLabel) => {
+    const pt = await findEmptyPointWithZoomOut(page, 1200, 800);
+    if (!pt) {
+      report(false, `${label}: ${stepLabel}`, "no empty point found even after zooming out");
+      return;
+    }
+    await tap(page, PROFILES[0], pt[0], pt[1]);
+    await page.waitForTimeout(300);
+    assertFn(new URL(page.url()), stepLabel);
+  };
+
+  await step((url, stepLabel) => report(
+    Number(url.searchParams.get("hsym")) === target.classGlobal && url.searchParams.get("file") === path,
+    `${label}: ${stepLabel}`,
+    url.toString(),
+  ), "method -> its class (parent symbol)");
+
+  await step((url, stepLabel) => report(
+    !url.searchParams.has("hsym") && url.searchParams.get("file") === path,
+    `${label}: ${stepLabel}`,
+    url.toString(),
+  ), "class -> file (drops hsym, keeps the file)");
+
+  await step((url, stepLabel) => report(
+    !url.searchParams.has("file") && url.searchParams.get("d") === districtId,
+    `${label}: ${stepLabel}`,
+    url.toString(),
+  ), "file -> its district");
+
+  await step((url, stepLabel) => report(
+    !url.searchParams.has("file") && !url.searchParams.has("d"),
+    `${label}: ${stepLabel}`,
+    url.toString(),
+  ), "district -> nothing");
+
+  await context.close();
+}
+
+// 9(h): the phone hub-ring declutter (MapRenderer.declutterHubCandidates) --
+// bounded well below the undecluttered ~100-ring measurement the spec cites
+// for dify at fit zoom on a phone. 90 is chosen as a conservative ceiling:
+// the top 12 are always eligible regardless of overlap/cap, so the bound has
+// to stay comfortably above 12, and the overlap+per-district-area rules only
+// ever REMOVE rings relative to the undecluttered count, never add -- so
+// anything meaningfully under the ~100 baseline demonstrates the declutter
+// is doing real work. Tighten this once a real CI run reports the actual
+// post-declutter count (logged unconditionally below, pass or fail).
+async function checkPhoneHubRingDeclutter(browser, base) {
+  const label = "phone hub-ring count is decluttered at fit zoom (dify)";
+  console.log(`\n${label}`);
+  const phone = PROFILES.find((p) => p.name === "phone");
+  const context = await browser.newContext({
+    viewport: phone.viewport,
+    isMobile: phone.isMobile,
+    hasTouch: phone.hasTouch,
+    deviceScaleFactor: phone.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const ringCount = await page.locator("svg.map-svg circle[data-hub-ring]").count();
+  const HUB_RING_BOUND = 90;
+  console.log(`  (info) phone hub rings at fit zoom: ${ringCount}`);
+  report(ringCount > 0 && ringCount < HUB_RING_BOUND, `${label}: ring count is under ${HUB_RING_BOUND}`, `count=${ringCount}`);
+  await context.close();
+}
+
+// 9(i): a map with no symbols sibling at all degrades silently -- no thrown
+// error, selection still works exactly as before this feature.
+async function checkMapWithoutSymbolsStillWorks(browser, base) {
+  const label = "map without a symbols sibling still works (pallets/flask) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (err) => errors.push(String(err)));
+  const doc = await (await context.request.get(`${base}/maps/pallets/flask.json`)).json();
+  await page.goto(`${base}/pallets/flask`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg [data-k^='f:']");
+  await page.waitForTimeout(700);
+  const target = await page.evaluate(() => {
+    const el = document.querySelector("svg.map-svg [data-k^='f:']");
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2, key: el.getAttribute("data-k") };
+  });
+  if (!target) {
+    report(false, `${label}: setup`, "no file element found");
+    await context.close();
+    return;
+  }
+  await page.mouse.click(target.x, target.y);
+  await page.waitForTimeout(400);
+  const url = new URL(page.url());
+  const expectedFile = doc.F[Number(target.key.slice(2))];
+  const ok = url.searchParams.get("file") === expectedFile || url.searchParams.get("d") != null;
+  report(ok, `${label}: selecting still works (file or, in footprint mode, its district first)`, url.toString());
+  report(errors.length === 0, `${label}: no uncaught page errors`, errors.join(" | "));
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   await preflight(args.base);
@@ -2786,6 +3233,16 @@ async function main() {
     for (const profile of PROFILES) await checkStreetsAndTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkNeighbourhoodLabelsAtDeeperZoom(browser, args.base, profile);
     await checkLegacyMapWithoutFootprints(browser, args.base);
+    // Issue #82 C2: symbol cards, rolled-up references, outline tree.
+    for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);
+    await checkCardsAppearAtSymbolGate(browser, args.base);
+    await checkClassExpandsAtShortSide(browser, args.base);
+    await checkCardTapSelectsSymbolAndBreadcrumb(browser, args.base);
+    await checkReferenceLineEndpoints(browser, args.base);
+    await checkOutlineHoverHighlightsCard(browser, args.base);
+    await checkStepBackThroughSymbolLevels(browser, args.base);
+    await checkPhoneHubRingDeclutter(browser, args.base);
+    await checkMapWithoutSymbolsStillWorks(browser, args.base);
   } finally {
     await browser.close();
   }

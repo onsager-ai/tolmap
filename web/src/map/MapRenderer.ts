@@ -1906,6 +1906,11 @@ export class MapRenderer {
           // hubRingRadius), so this one has to be too.
           "stroke-width": 1.6,
           "pointer-events": "none",
+          // Test marker only (no visual/behavioural effect): lets
+          // check-view-stability.mjs count actual decluttered hub rings
+          // directly, instead of relying on stroke/fill coincidence with
+          // some other circle kind.
+          "data-hub-ring": hub.i,
         }),
       );
       g.appendChild(
@@ -2837,10 +2842,24 @@ export class MapRenderer {
           "stroke-width": w,
           "stroke-dasharray": isOut ? "none" : "5 3",
           "pointer-events": "none",
+          // Test/debug markers only (no visual effect): "data-symref" is
+          // "out"/"in" the same as the drawn direction; "data-symref-target"
+          // is the rep-key itself ("hs:<global>" or "f:<global file>") --
+          // check-view-stability.mjs's endpoint check reads this directly
+          // rather than reverse-engineering it from screen geometry.
+          "data-symref": isOut ? "out" : "in",
+          "data-symref-target": key,
         }),
       );
       this.gSymRefs!.appendChild(
-        el("circle", { cx: b[0].toFixed(1), cy: b[1].toFixed(1), r: key.startsWith("f:") ? 3.4 : 2.6, fill: isOut ? "var(--hot)" : "var(--cold)", "pointer-events": "none" }),
+        el("circle", {
+          cx: b[0].toFixed(1),
+          cy: b[1].toFixed(1),
+          r: key.startsWith("f:") ? 3.4 : 2.6,
+          fill: isOut ? "var(--hot)" : "var(--cold)",
+          "pointer-events": "none",
+          "data-symref-dot": key,
+        }),
       );
     };
     for (const [key, count] of topN(out, 120)) line(key, count, true);

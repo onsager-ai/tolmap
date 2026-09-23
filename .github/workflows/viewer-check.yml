@@ -40,6 +40,10 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       # collect-maps writes the committed data/ fixtures into public/maps;
       # the two maps check:view pins by hash are then unpacked over it.
+      # Issue #82 C2: the per-district symbol fixtures (trimmed -- see
+      # check-fixtures/README.md) unpack into public/maps/<owner>/
+      # <repo>.symbols/<district>.json, the same static layout docs/API.md
+      # describes for a real `tolmap build`.
       - name: Maps
         run: |
           node scripts/collect-maps.mjs
@@ -47,6 +51,11 @@ jobs:
             slug=$(basename "$f" .json.gz)
             mkdir -p "public/maps/${slug%%__*}"
             gunzip -c "$f" > "public/maps/${slug%%__*}/${slug##*__}.json"
+          done
+          for f in check-fixtures/*.symbols.tar.gz; do
+            slug=$(basename "$f" .symbols.tar.gz)
+            mkdir -p "public/maps/${slug%%__*}"
+            tar -xzf "$f" -C "public/maps/${slug%%__*}"
           done
       # --host 127.0.0.1: Vite binds "localhost", which resolves to ::1 on
       # the runner, so a probe of 127.0.0.1 never connects.
