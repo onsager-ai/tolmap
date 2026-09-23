@@ -2776,8 +2776,17 @@ export class MapRenderer {
       const box: [number, number, number, number] = [t.cx - tw / 2 - 5, t.y0 - fs - 6, tw + 10, fs + 8];
       if (hits(box)) continue;
       placed.push(box);
-      gLabels.appendChild(el("rect", { x: box[0], y: box[1], width: box[2], height: box[3], rx: 3, fill: "var(--chrome)", "fill-opacity": 0.92, stroke: "var(--dim)", "stroke-width": 0.6 }));
-      const text = el("text", { x: t.cx, y: t.y0 - 3, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace", fill: "var(--on)" });
+      // CI review finding (issue #82 C2): an SVG <text> (and its backing
+      // <rect> here) is hit-testable by default -- with no pointer-events
+      // set, a tap that landed on this label (which sits right on top of
+      // the card it names, at or near the card's own centroid) resolved to
+      // the label element instead of the card underneath, found no data-k
+      // on it or its ancestors, and fell through to an empty-tap step-back
+      // instead of selecting the symbol. Every card/tab label is purely
+      // decorative for hit-testing -- the polygon underneath already
+      // carries the real data-k -- so both get pointer-events:none.
+      gLabels.appendChild(el("rect", { x: box[0], y: box[1], width: box[2], height: box[3], rx: 3, fill: "var(--chrome)", "fill-opacity": 0.92, stroke: "var(--dim)", "stroke-width": 0.6, "pointer-events": "none" }));
+      const text = el("text", { x: t.cx, y: t.y0 - 3, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace", fill: "var(--on)", "pointer-events": "none" });
       text.textContent = t.name;
       gLabels.appendChild(text);
     }
@@ -2799,6 +2808,10 @@ export class MapRenderer {
         fill: "var(--ink)",
         "paint-order": "stroke",
         stroke: "var(--canvas)",
+        // See the file-tab label above: a symbol label sits right on top of
+        // its own card (usually at/near its centroid), so it must not
+        // intercept the tap meant for the card underneath.
+        "pointer-events": "none",
         // Issue #82 C2 pitfall (prototype note in the handoff): set stroke
         // width through `style`, not the plain attribute -- a CSS
         // stroke-width rule would override the attribute here, and this
