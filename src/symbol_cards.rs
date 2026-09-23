@@ -163,7 +163,37 @@ fn valid_ring(ring: Option<&Ring>, parent: &Ring) -> bool {
         ring.iter().map(|p| p[0]).sum::<f64>() / ring.len() as f64,
         ring.iter().map(|p| p[1]).sum::<f64>() / ring.len() as f64,
     ];
-    point_in_polygon(centroid, parent) && polygon_area(ring) <= polygon_area(parent)
+    let low = parent.iter().fold([f64::INFINITY; 2], |mut bounds, point| {
+        bounds[0] = bounds[0].min(point[0]);
+        bounds[1] = bounds[1].min(point[1]);
+        bounds
+    });
+    let high = parent
+        .iter()
+        .fold([f64::NEG_INFINITY; 2], |mut bounds, point| {
+            bounds[0] = bounds[0].max(point[0]);
+            bounds[1] = bounds[1].max(point[1]);
+            bounds
+        });
+    let epsilon = (high[0] - low[0]).max(high[1] - low[1]) * 1e-9;
+    let near_edge = parent
+        .iter()
+        .zip(parent.iter().cycle().skip(1))
+        .any(|(a, b)| {
+            let dx = b[0] - a[0];
+            let dy = b[1] - a[1];
+            let length2 = dx * dx + dy * dy;
+            let t = if length2 > 0.0 {
+                ((centroid[0] - a[0]) * dx + (centroid[1] - a[1]) * dy) / length2
+            } else {
+                0.0
+            }
+            .clamp(0.0, 1.0);
+            let ex = centroid[0] - (a[0] + t * dx);
+            let ey = centroid[1] - (a[1] + t * dy);
+            ex * ex + ey * ey <= epsilon * epsilon
+        });
+    point_in_polygon(centroid, parent) && !near_edge && polygon_area(ring) <= polygon_area(parent)
 }
 
 fn rectangle(rect: [f64; 4]) -> Ring {
@@ -630,5 +660,14 @@ mod tests {
         assert_eq!(local_parent(&document, 0), None);
         assert_eq!(local_parent(&document, 1), None);
         assert_eq!(document.symbols[1].0 .5, 0);
+    }
+
+    #[test]
+    fn boundary_centroid_is_not_accepted_as_contained() {
+        let parent = rectangle([0.0, 0.0, 1.0, 1.0]);
+        let touching = rectangle([0.9, 0.4, 1.1, 0.6]);
+        assert!(!valid_ring(Some(&touching), &parent));
+        let interior = rectangle([0.7, 0.4, 0.9, 0.6]);
+        assert!(valid_ring(Some(&interior), &parent));
     }
 }
