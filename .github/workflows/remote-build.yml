@@ -32,9 +32,8 @@
 #     "all" dispatch queues within GitHub's per-workflow concurrent-job
 #     ceiling instead of stalling.
 #
-# No secrets are used or needed: every corpus repository is public, and
-# the default GITHUB_TOKEN is sufficient to upload/download this run's own
-# artifacts.
+# Only command=name-eval uses OPENROUTER_API_KEY. All other commands stay
+# credential-free; name-eval is manual and checks for the secret up front.
 
 name: Remote build
 
@@ -58,13 +57,14 @@ on:
         required: false
         default: ""
       command:
-        description: "operation per repo: build, dump-blend, or two-commit warm-start stability (use repos=stability or stability:owner/repo,...)"
+        description: "operation: build, dump-blend, stability, or sequential name-eval"
         required: false
         type: choice
         options:
           - build
           - dump-blend
           - stability
+          - name-eval
         default: build
 
 permissions:
@@ -106,6 +106,15 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       has_compare: ${{ steps.plan.outputs.has_compare }}
     steps:
+      - name: Require name-eval secret before any build
+        if: inputs.command == 'name-eval'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "OPENROUTER_API_KEY repository secret is required for name-eval" >&2
+            exit 1
+          fi
       # Default checkout: whatever ref this workflow file itself is
       # running from. Used only for eval/ scripts and scripts/
       # install-leiden.sh -- infrastructure that does not depend on which
@@ -238,6 +247,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
+    if: inputs.command != 'name-eval'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -538,7 +548,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always()
+    if: always() && inputs.command != 'name-eval'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -559,3 +569,55 @@ jobs:
         with:
           name: results-combined
           path: results.json
+
+  name-eval:
+    name: sequential name evaluation (20 repos, $5 reserved cap)
+    needs: setup
+    if: inputs.command == 'name-eval'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: bin-primary
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+
+      - name: Evaluate names with one persistent spend ledger
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+          TOLMAP_BIN: ${{ github.workspace }}/bin-primary/tolmap
+        run: |
+          chmod +x bin-primary/tolmap
+          python3 eval/name_eval.py
+
+      - name: Publish report in step summary
+        if: always()
+        run: |
+          if [ -f name-eval-work/report.md ]; then
+            cat name-eval-work/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: name-eval-results
+          path: |
+            name-eval-work/report.md
+            name-eval-work/results.json
+            name-eval-work/spend.json
+          if-no-files-found: warn

@@ -47,6 +47,8 @@ fn state_with_static_dir(
         cache_dir,
         static_dir,
         prune_variant: tolmap::pipeline::PruneVariant::NodeRelative,
+        namer: tolmap::naming::NamerKind::Idf,
+        namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),
         limits: Limits::default(),
         retain_commits_per_repo: 20,
     };

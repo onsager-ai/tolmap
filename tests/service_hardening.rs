@@ -56,6 +56,8 @@ fn state_with_limits(limits: Limits) -> (tempfile::TempDir, Arc<AppState>) {
         cache_dir,
         static_dir: None,
         prune_variant: tolmap::pipeline::PruneVariant::NodeRelative,
+        namer: tolmap::naming::NamerKind::Idf,
+        namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),
         limits,
         retain_commits_per_repo: 20,
     };
