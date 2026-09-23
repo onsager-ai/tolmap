@@ -45,7 +45,7 @@ import {
   tmCentre,
   worldBounds,
 } from "./geometry";
-import { bboxArea, smallFootprintHitRadii, SMALL_FOOTPRINT_HIT_CAP_PX, type ScreenPoint } from "./footprints";
+import { buildFootprintIndex, districtMedianFootprintArea, hitTestFootprint, type FootprintIndex } from "./footprints";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
 import { computeHubs, hubRingRadius, type HubSet } from "./hubs";
 import { assignNeighbourhoodShades, neighbourhoodCentroids } from "./neighbourhoods";
@@ -157,6 +157,13 @@ export class MapRenderer {
   private neighbourhoodShade: Map<string, number> = new Map();
   private neighbourhoodCentroid: Map<string, [number, number]> = new Map();
   private streetCache: { d: number; intra: StreetFlow[]; cross: CrossFlow[] } | null = null;
+  // Perf follow-up (issue #82, owner review of the first B4 PR): per-district
+  // median file footprint area (world units^2, districtFootprintsLarge's own
+  // input) and the world-space spatial index resolveKey()'s JS point-in-
+  // polygon fallback queries -- both computed once per document, like every
+  // other cache above and in loadDocument() below.
+  private districtMedianArea: Map<number, number> = new Map();
+  private footprintIndex: FootprintIndex | null = null;
 
   // Issue #51 perf follow-up: cache of mainlandBounds()/worldBounds() and
   // the two scales derived from them (see geometry.ts's scaleToFit), keyed
@@ -435,6 +442,8 @@ export class MapRenderer {
     this.neighbourhoodShade = doc.neighbourhoods ? assignNeighbourhoodShades(doc) : new Map();
     this.neighbourhoodCentroid = doc.neighbourhoods ? neighbourhoodCentroids(doc) : new Map();
     this.streetCache = null;
+    this.districtMedianArea = this.hasFootprints ? districtMedianFootprintArea(doc) : new Map();
+    this.footprintIndex = this.hasFootprints ? buildFootprintIndex(doc) : null;
     const isLandmark = new Set(doc.L.map(([i]) => i));
     const byDistrict = new Map<number, number[]>();
     for (let i = 0; i < doc.N.length; i++) {
@@ -1089,8 +1098,12 @@ export class MapRenderer {
     // both -- CELL keeps first-match priority defensively, not because a
     // real conflict is expected).
     const FOOTPRINTS = this.hasFootprints && geo !== "t";
-    const footprintPts = new Map<number, ScreenPoint>();
-    const footprintSmall: number[] = [];
+    // Perf follow-up: only the district ("d") layer's fill is a pure
+    // function of (district, shade) -- see the per-file loop's own comment
+    // on batchFootprint/footprint for why churn/complexity/package stay
+    // per-file-element on every layer.
+    const BATCH_LAYER = layer === "d";
+    const footprintBatches = new Map<string, { d: number; shade: number | null; parts: string[] }>();
     const defs = CELL ? el("defs", {}) : null;
     if (defs) g.appendChild(defs);
     // Issue #48: files that must never be thinned or culled, whatever their
@@ -1116,10 +1129,20 @@ export class MapRenderer {
         continue;
       }
       if (FOOTPRINTS && doc.P![String(i)]) {
-        const drawn = this.footprint(g, i, dim, zf0, islandFadeFloorZf, islandExceptionDistricts, folderFiles);
-        if (drawn) {
-          footprintPts.set(i, { i, x: drawn.cx, y: drawn.cy });
-          if (drawn.small) footprintSmall.push(i);
+        // Perf follow-up (issue #82, owner review): only files that need
+        // their OWN styling this paint (alwaysDrawn -- landmarks, the
+        // selection, a route/blast/folder member) or that sit in a district
+        // whose footprints are large enough on screen to be worth a real DOM
+        // element each get one. Everything else merges into one <path> per
+        // (district, shade) -- BATCH_LAYER guards this on the "d" layer
+        // only: churn/complexity/package colour every file individually
+        // (this.tint(i) is per-file, sometimes per-file-unique), which a
+        // shared (district, shade) fill can't represent.
+        const d = D_(doc, i);
+        if (BATCH_LAYER && !alwaysDrawn.has(i) && !this.districtFootprintsLarge(d)) {
+          this.batchFootprint(footprintBatches, i, d, zf0, islandFadeFloorZf, islandExceptionDistricts);
+        } else {
+          this.footprint(g, i, dim, zf0, islandFadeFloorZf, islandExceptionDistricts, folderFiles);
         }
         continue;
       }
@@ -1240,33 +1263,23 @@ export class MapRenderer {
       g.appendChild(node);
     }
 
-    // B4 (nested footprints, issue #82 scope items 2, 6): neighbourhood
-    // gutters, then the extra small-footprint hit circles -- both AFTER the
-    // footprint fill loop (so a gutter's surface-coloured stroke paints over
-    // the edge of the footprints it separates, which is what makes it read
-    // as a gap rather than a boundary line) and AFTER drawRoads/drawStreets
-    // (already true: those ran earlier in this method, before the per-file
-    // loop), satisfying scope item 6's "draw these ABOVE roads" for free.
+    // B4 (nested footprints, issue #82 scope item 2; perf follow-up): flush
+    // the batched footprint fills, THEN draw neighbourhood gutters -- both
+    // AFTER the per-file loop (so a gutter's surface-coloured stroke paints
+    // over the edge of the footprints it separates, batched or not, which is
+    // what makes it read as a gap rather than a boundary line) and AFTER
+    // drawRoads/drawStreets (already true: those ran earlier in this method,
+    // before the per-file loop). Batched fills carry no data-k and are
+    // pointer-events:none by construction (see flushFootprintBatches/
+    // batchFootprint) -- resolveKey()'s JS point-in-polygon fallback is what
+    // makes those files tappable/hoverable at all now; there is no DOM hit
+    // target left to draw "above roads" for them (scope item 6's own small-
+    // footprint hit circles are retired for the same reason: a world-space
+    // index tests the file's REAL polygon, which is strictly more precise
+    // than a synthetic circle ever was, for every batched file at once).
     if (FOOTPRINTS) {
+      this.flushFootprintBatches(g, footprintBatches, dim, zf0, islandFadeFloorZf, islandExceptionDistricts);
       this.drawNeighbourhoodGutters(g, zf0, islandFadeFloorZf, islandExceptionDistricts, selD);
-      if (footprintSmall.length > 0) {
-        const radii = smallFootprintHitRadii([...footprintPts.values()]);
-        for (const i of footprintSmall) {
-          const pt = footprintPts.get(i)!;
-          const r = radii.get(i) ?? SMALL_FOOTPRINT_HIT_CAP_PX;
-          g.appendChild(
-            el("circle", {
-              cx: pt.x.toFixed(1),
-              cy: pt.y.toFixed(1),
-              r: r.toFixed(1),
-              fill: "transparent",
-              class: "hit",
-              "pointer-events": "all",
-              "data-k": "f:" + i,
-            }),
-          );
-        }
-      }
     }
 
     // blast radius: a thread from every file that names this symbol
@@ -2026,12 +2039,12 @@ export class MapRenderer {
     islandFadeFloorZf: number,
     islandExceptionDistricts: Set<number>,
     folderFiles: ReadonlySet<number> | null,
-  ): { cx: number; cy: number; small: boolean } | null {
+  ): void {
     const { doc, sel, layer } = this.state!;
     const poly = doc.P![String(i)];
     const d = D_(doc, i);
     const dIsland = this.islandFadeForDistrict(d, zf0, islandFadeFloorZf, islandExceptionDistricts);
-    if (!this.islandFadeVisible(dIsland)) return null;
+    if (!this.islandFadeVisible(dIsland)) return;
     let dAttr = "M";
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     for (let n = 0; n < poly.length; n++) {
@@ -2045,7 +2058,7 @@ export class MapRenderer {
     }
     dAttr += "Z";
     const margin = 20;
-    if (x1 < -margin || x0 > this.VW + margin || y1 < -margin || y0 > this.VH + margin) return null;
+    if (x1 < -margin || x0 > this.VW + margin || y1 < -margin || y0 > this.VH + margin) return;
     const faded = !!(dim && !dim.has(i));
     const neigh = doc.file_neighbourhoods?.[i];
     const shade = neigh != null ? this.neighbourhoodShade.get(neigh) ?? null : null;
@@ -2095,8 +2108,128 @@ export class MapRenderer {
     if (folderFiles?.has(i)) {
       g.appendChild(el("path", { d: dAttr, fill: "none", stroke: "var(--ink)", "stroke-width": 1.4, "pointer-events": "none", "data-folder-highlight": i }));
     }
-    const small = bboxArea(x0, y0, x1, y1) < Math.PI * SMALL_FOOTPRINT_HIT_CAP_PX * SMALL_FOOTPRINT_HIT_CAP_PX;
-    return { cx: acx, cy: acy, small };
+  }
+
+  /** B4 perf follow-up: the batched sibling of `footprint()` above, for a
+   * file that isn't individually styled this paint (not selected, not a
+   * neighbour/route/blast/folder-highlight member, not a landmark -- see the
+   * per-file loop's own `alwaysDrawn` gate) AND whose district's footprints
+   * are small enough on screen not to need per-file DOM elements at all
+   * (`districtFootprintsLarge`). Appends this file's polygon as one more
+   * subpath into `batches`, keyed by (district, shade) -- `flushFootprintBatches`
+   * turns each bucket into exactly one <path>, `pointer-events: none` (no
+   * data-k: nothing here is ever meant to be hit-tested by the DOM --
+   * MapRenderer's `resolveKey`/footprints.ts's `hitTestFootprint` handle
+   * clicks/hover on these files instead, off a world-space spatial index
+   * built once per document). No title, no selection outline, no folder
+   * outline: none of those apply to a file that can't be individually
+   * targeted by the reasons above (a file WOULD be in `alwaysDrawn`, and so
+   * drawn by `footprint()` instead, the moment any of them applied to it). */
+  private batchFootprint(
+    batches: Map<string, { d: number; shade: number | null; parts: string[] }>,
+    i: number,
+    d: number,
+    zf0: number,
+    islandFadeFloorZf: number,
+    islandExceptionDistricts: Set<number>,
+  ): void {
+    const { doc } = this.state!;
+    const dIsland = this.islandFadeForDistrict(d, zf0, islandFadeFloorZf, islandExceptionDistricts);
+    if (!this.islandFadeVisible(dIsland)) return;
+    const poly = doc.P![String(i)];
+    let dAttr = "M";
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (let n = 0; n < poly.length; n++) {
+      const X_ = this.X(poly[n][0]);
+      const Y_ = this.Y(poly[n][1]);
+      dAttr += (n ? "L" : "") + X_.toFixed(1) + " " + Y_.toFixed(1);
+      if (X_ < x0) x0 = X_;
+      if (X_ > x1) x1 = X_;
+      if (Y_ < y0) y0 = Y_;
+      if (Y_ > y1) y1 = Y_;
+    }
+    dAttr += "Z";
+    const margin = 20;
+    if (x1 < -margin || x0 > this.VW + margin || y1 < -margin || y0 > this.VH + margin) return;
+    const neigh = doc.file_neighbourhoods?.[i];
+    const shade = neigh != null ? this.neighbourhoodShade.get(neigh) ?? null : null;
+    const key = `${d}:${shade ?? "x"}`;
+    let bucket = batches.get(key);
+    if (!bucket) {
+      bucket = { d, shade, parts: [] };
+      batches.set(key, bucket);
+    }
+    bucket.parts.push(dAttr);
+  }
+
+  /** One <path> per (district, shade) bucket `batchFootprint` built up
+   * during the per-file loop. Every file in every bucket is, by
+   * construction, outside `alwaysDrawn` (the loop only ever batches a file
+   * that isn't in it), and `alwaysDrawn` is a strict superset of `dim`
+   * (paint()'s own construction folds `dim`'s members into it) -- so a
+   * batched file can never be a member of `dim` either. That means every
+   * file behind a single flushed path shares the exact same faded/full
+   * state for this paint: uniformly faded if a selection/route/blast/folder
+   * highlight (`dim`) is active at all, uniformly full strength otherwise --
+   * one shared boolean, not a per-file lookup a merged path has no attribute
+   * slot for anyway. Reuses `footprint()`'s own 0.2/0.85 opacity convention
+   * for the same reason that one does (check-view-stability.mjs's exact
+   * "0.2" dim signal). */
+  private flushFootprintBatches(
+    g: SVGGElement,
+    batches: Map<string, { d: number; shade: number | null; parts: string[] }>,
+    dim: ReadonlySet<number> | null,
+    zf0: number,
+    islandFadeFloorZf: number,
+    islandExceptionDistricts: Set<number>,
+  ): void {
+    const { doc } = this.state!;
+    const faded = dim != null;
+    const baseOpacity = faded ? 0.2 : 0.85;
+    for (const [key, { d, shade, parts }] of batches) {
+      if (parts.length === 0) continue;
+      const dIsland = this.islandFadeForDistrict(d, zf0, islandFadeFloorZf, islandExceptionDistricts);
+      g.appendChild(el("path", {
+        d: parts.join(""),
+        fill: neighbourhoodShadeColor(doc, d, shade),
+        "fill-opacity": Math.round(baseOpacity * dIsland * 1000) / 1000,
+        stroke: "var(--canvas)",
+        "stroke-width": 0.7,
+        "stroke-opacity": Math.round((faded ? 0.35 : 0.85) * dIsland * 1000) / 1000,
+        "stroke-linejoin": "round",
+        "pointer-events": "none",
+        // Not `data-k` (this element is never a click/hover target -- see
+        // resolveKey()'s own comment for why it can't be). A plain marker
+        // attribute, the same non-data-k convention data-file-label/data-
+        // folder-highlight/data-neighbourhood-label already use, so
+        // check-view-stability.mjs can identify "a batched footprint fill"
+        // and read its fill-opacity directly -- every file behind one is
+        // uniformly faded/full together (this method's own doc comment),
+        // so the BATCH's opacity is exactly as meaningful a "some non-
+        // special file is dimmed" signal as an individual file's used to be.
+        "data-footprint-batch": key,
+      }));
+    }
+  }
+
+  /** B4 perf follow-up: is district `d`'s TYPICAL file large enough on
+   * screen, at the CURRENT zoom, to justify drawing every one of its files
+   * as its own DOM element? `districtMedianArea` (world units^2, one entry
+   * per district, computed once in loadDocument from `districtMedianFootprintArea`)
+   * scales into an on-screen px side length by `sqrt(area) * k` -- k, not
+   * k^2, because area scales with k^2 and a LENGTH threshold (the spec's own
+   * "~24px") needs one sqrt to get there. Recomputed here (not cached) since
+   * it depends on the CURRENT k and this is an O(1) lookup + a sqrt, called
+   * once per district per paint (dify: ~80 districts), not once per file. A
+   * district with no measured median (no files with `P`, or none of its
+   * files' polygons met the >=3-point sanity check) draws every file
+   * individually -- the safe default when there's nothing to size a
+   * decision on. */
+  private static readonly LARGE_FOOTPRINT_PX = 24;
+  private districtFootprintsLarge(d: number): boolean {
+    const medianArea = this.districtMedianArea.get(d);
+    if (!medianArea || medianArea <= 0) return true;
+    return Math.sqrt(medianArea) * this.k >= MapRenderer.LARGE_FOOTPRINT_PX;
   }
 
   /** B4 scope item 2: each neighbourhood's blob stroked as a white (surface-
@@ -2694,9 +2827,7 @@ export class MapRenderer {
       this.clearHover();
       return;
     }
-    let t: Element | null = e.target as Element;
-    while (t && t !== this.svg && !t.getAttribute?.("data-k")) t = t.parentNode as Element | null;
-    const key = t && t !== this.svg ? t.getAttribute?.("data-k") : null;
+    const key = this.resolveKey(e.target as Element, e.clientX, e.clientY);
     if (key !== this.hoverKey) this.setHover(key);
     this.positionCard(e.clientX, e.clientY);
   }
@@ -2993,7 +3124,11 @@ export class MapRenderer {
   }
 
   // ---------- pan / zoom / tap (the subtle part) ----------
-  private toSvg(ev: PointerEvent | WheelEvent): [number, number] {
+  // Perf follow-up: widened from `PointerEvent | WheelEvent` to accept a
+  // plain `{clientX, clientY}` too -- resolveKey() below calls this from
+  // click(), whose event is a MouseEvent (PointerEvent's own supertype), and
+  // this function only ever reads those two fields regardless.
+  private toSvg(ev: { clientX: number; clientY: number }): [number, number] {
     const r = this.svg.getBoundingClientRect();
     return [((ev.clientX - r.left) / r.width) * this.VW, ((ev.clientY - r.top) / r.height) * this.VH];
   }
@@ -3147,15 +3282,42 @@ export class MapRenderer {
   // captured pointer, may never fire at all — a data attribute survives
   // both, because the browser resolves the click target itself and we just
   // read it back off whatever element (or its ancestor) is still there.
+  /** Bug fix #3's own data-k walk, extended (perf follow-up, issue #82): a
+   * BATCHED footprint (batchFootprint/flushFootprintBatches) has no element
+   * of its own to carry a data-k, and is pointer-events:none by design, so
+   * the browser's hit-test for a click/hover over one keeps going to
+   * whatever's underneath that DOES have pointer-events -- the district
+   * polygon, which does have a data-k ("d:<id>"). Refine that (and the
+   * genuine no-hit-at-all case, `kk == null`) through the world-space JS
+   * point-in-polygon index (footprints.ts's `hitTestFootprint`) before
+   * trusting either: if it finds a file, that's more specific and wins; if
+   * it doesn't, `kk` is exactly right as it already stood (a real district
+   * tap, or genuinely nothing). A file that already resolved to its OWN
+   * "f:i" via the plain DOM walk (an individually-drawn, non-batched file --
+   * large-on-screen district, or one of the `alwaysDrawn` set) never reaches
+   * this branch at all, so this changes nothing for maps without footprints
+   * or for large-on-screen files. */
+  private resolveKey(target: Element, clientX: number, clientY: number): string | null {
+    let t: Element | null = target;
+    while (t && t !== this.svg && !t.getAttribute?.("data-k")) t = t.parentNode as Element | null;
+    const kk = t && t !== this.svg ? t.getAttribute?.("data-k") : null;
+    if (this.hasFootprints && this.footprintIndex && this.state && (kk == null || kk.startsWith("d:"))) {
+      const [sx, sy] = this.toSvg({ clientX, clientY });
+      const wx = (sx - this.tx) / this.k;
+      const wy = (sy - this.ty) / this.k;
+      const i = hitTestFootprint(this.state.doc, this.footprintIndex, wx, wy);
+      if (i != null) return "f:" + i;
+    }
+    return kk;
+  }
+
   private click(e: MouseEvent) {
     if (this.moved >= MapRenderer.DRAG_THRESHOLD_PX) return; // that was a drag
     if (this.tapped) {
       this.tapped = false;
       return; // that was a double-tap zoom
     }
-    let t: Element | null = e.target as Element;
-    while (t && t !== this.svg && !t.getAttribute?.("data-k")) t = t.parentNode as Element | null;
-    const kk = t && t !== this.svg ? t.getAttribute?.("data-k") : null;
+    const kk = this.resolveKey(e.target as Element, e.clientX, e.clientY);
     if (!kk) {
       // Issue #82 A1 scope item 2: an empty tap no longer clears the whole
       // selection in one step. The renderer has no notion of "levels" --

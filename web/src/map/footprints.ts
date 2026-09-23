@@ -1,74 +1,150 @@
-// B4 (nested footprints, issue #82, scope item 6): small-footprint hit
-// circles. A file whose on-screen footprint area is under pi*8^2 also gets an
-// invisible circular hit target, radius `min(8px, half the distance to the
-// nearest OTHER visible file centroid)` -- generous enough to tap reliably,
-// capped so two small, close-together footprints never get overlapping hit
-// circles that would fight over the same tap. The "nearest visible centroid"
-// is necessarily a per-PAINT, screen-space quantity (what's visible changes
-// every pan/zoom), so this can't be precomputed once per document the way
-// districtOrder/roadPlan/hubSet are -- it's recomputed each paint(), but only
-// over the files actually drawn that frame (viewport-culled already), not
-// the whole document, so the cost is proportional to what's on screen.
-// Grid-accelerated for the same reason colour.ts's `near()` is: an all-pairs
-// scan across a few thousand visible files would be millions of distance
-// calls for what is, per file, a handful of realistic neighbours. Pure and
-// DOM-free so it's unit-testable without a browser.
-export const SMALL_FOOTPRINT_HIT_CAP_PX = 8;
+// B4 perf follow-up (issue #82, owner review of the first B4 PR): footprint
+// mode's per-file paint cost was the blocker -- one <path> element per file,
+// with hit-testing riding on the browser's own native hit-test for each of
+// them, put dify's paint well over budget (measured: desktop drag p50
+// 198.8ms, phone p50 1325ms against a ~150ms target -- see the PR
+// description). The fix has two halves:
+//
+//   1. Fills for SMALL-on-screen files batch into one <path> per (district,
+//      shade), pointer-events:none (MapRenderer's own batching logic).
+//   2. Hit-testing for those files moves off the DOM entirely: a world-space
+//      spatial index over every file's `P` polygon, queried by point-in-
+//      polygon on click/hover instead of relying on an element existing to
+//      hit-test against at all. This module is that index -- pure and
+//      DOM-free, like every other map/*.ts geometry module, so it's testable
+//      without a browser.
+import type { MapDocument } from "@/types";
+import { D_, polygonArea } from "./geometry";
+import { inRings } from "./roads";
 
-export interface ScreenPoint {
-  i: number;
-  x: number;
-  y: number;
-}
+type Pt = [number, number];
 
-/** For every point in `points`, half the distance to its nearest OTHER point
- * in the same list, capped at `capPx` -- exactly the radius scope item 6
- * specifies. A point with no other point within `capPx*2` (so nothing could
- * possibly beat the cap) gets `capPx` outright without a distance check. */
-export function smallFootprintHitRadii(points: readonly ScreenPoint[], capPx: number = SMALL_FOOTPRINT_HIT_CAP_PX): Map<number, number> {
-  const cell = Math.max(1, capPx * 2);
-  const grid = new Map<string, ScreenPoint[]>();
-  const keyOf = (x: number, y: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
-  for (const p of points) {
-    const k = keyOf(p.x, p.y);
-    let bucket = grid.get(k);
-    if (!bucket) {
-      bucket = [];
-      grid.set(k, bucket);
+/** Each district's MEDIAN file footprint area (world units^2) -- the input
+ * to MapRenderer's own "is this district's footprints large enough on
+ * screen to draw individually" decision (perf follow-up, issue #82): the
+ * caller multiplies by k^2 and compares the square root against a px
+ * threshold every paint, but the per-file areas themselves are static
+ * geometry, computed once per document like every other loadDocument()
+ * cache. Median, not mean: a district with one huge landmark file and many
+ * tiny ones should still batch the tiny ones, which a mean would resist. */
+export function districtMedianFootprintArea(doc: MapDocument): Map<number, number> {
+  const byDistrict = new Map<number, number[]>();
+  if (doc.P) {
+    for (let i = 0; i < doc.F.length; i++) {
+      const poly = doc.P[String(i)];
+      if (!poly || poly.length < 3) continue;
+      const d = D_(doc, i);
+      let list = byDistrict.get(d);
+      if (!list) {
+        list = [];
+        byDistrict.set(d, list);
+      }
+      list.push(polygonArea(poly));
     }
-    bucket.push(p);
   }
   const out = new Map<number, number>();
-  for (const p of points) {
-    const cx = Math.floor(p.x / cell);
-    const cy = Math.floor(p.y / cell);
-    let best = Infinity;
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        const bucket = grid.get(`${cx + dx},${cy + dy}`);
-        if (!bucket) continue;
-        for (const q of bucket) {
-          if (q.i === p.i) continue;
-          const d = Math.hypot(p.x - q.x, p.y - q.y);
-          if (d < best) best = d;
-        }
-      }
-    }
-    out.set(p.i, Math.min(capPx, best === Infinity ? capPx : best / 2));
+  for (const [d, areas] of byDistrict) {
+    areas.sort((a, b) => a - b);
+    out.set(d, areas[areas.length >> 1] || 0);
   }
   return out;
 }
 
-/** On-screen area a footprint's own bounding box occupies -- cheap stand-in
- * for the polygon's true (shoelace) area, computed from the same x0/y0/x1/y1
- * extrema the renderer already tracks while building the path's `d` string,
- * so this costs nothing extra per file. A bbox is >= the true polygon area,
- * so this only ever OVER-estimates -- a file that's genuinely small enough to
- * need the extra hit circle is never missed by this approximation; the worst
- * case is an oddly elongated footprint that could have qualified on true
- * area but doesn't on bbox area, which just means it relies on its own
- * (larger) polygon shape for hit-testing instead, which is exactly what a
- * bigger footprint does anyway. */
-export function bboxArea(x0: number, y0: number, x1: number, y1: number): number {
-  return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+export interface FootprintIndex {
+  /** World-space grid cell size. */
+  cell: number;
+  /** cell key ("cx,cy") -> file indices whose bbox overlaps that cell. A
+   * file can appear in several cells (its bbox can span more than one), so a
+   * lookup only ever needs to check ONE cell -- the one containing the query
+   * point -- not a 3x3 neighbourhood, unlike the point-to-point grids in
+   * colour.ts/footprints.ts's own former near-neighbour search: those find
+   * the nearest of many discrete POINTS, which can sit just across a cell
+   * boundary from the query cell, while this index inserts by AREA overlap,
+   * so any polygon covering the query point was already registered in the
+   * query point's own cell when it was built. */
+  grid: Map<string, number[]>;
+}
+
+/** Every file with a `P` polygon, bucketed by world-space bbox overlap. Cell
+ * size is the MEDIAN file bbox extent across the document -- large enough
+ * that most files land in a small, boundable number of cells (not one cell
+ * per pixel), small enough that a query's single cell doesn't end up
+ * holding a large fraction of the document (dify: 6,347 files, cells sized
+ * to its own median footprint keep bucket counts in the tens, not
+ * thousands). Built once per document (MapRenderer.loadDocument), the same
+ * "per-document work never repeats per paint" rule every other cache in
+ * that method follows. */
+export function buildFootprintIndex(doc: MapDocument): FootprintIndex {
+  const grid = new Map<string, number[]>();
+  if (!doc.P) return { cell: 1, grid };
+  const extents: number[] = [];
+  const boxes = new Map<number, [number, number, number, number]>();
+  for (let i = 0; i < doc.F.length; i++) {
+    const poly = doc.P[String(i)];
+    if (!poly || poly.length < 3) continue;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of poly) {
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+    }
+    boxes.set(i, [x0, y0, x1, y1]);
+    extents.push(Math.max(x1 - x0, y1 - y0));
+  }
+  if (extents.length === 0) return { cell: 1, grid };
+  extents.sort((a, b) => a - b);
+  const median = extents[extents.length >> 1] || 1e-6;
+  const cell = Math.max(median, 1e-6);
+  for (const [i, [x0, y0, x1, y1]] of boxes) {
+    const cx0 = Math.floor(x0 / cell);
+    const cx1 = Math.floor(x1 / cell);
+    const cy0 = Math.floor(y0 / cell);
+    const cy1 = Math.floor(y1 / cell);
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const key = `${cx},${cy}`;
+        let bucket = grid.get(key);
+        if (!bucket) {
+          bucket = [];
+          grid.set(key, bucket);
+        }
+        bucket.push(i);
+      }
+    }
+  }
+  return { cell, grid };
+}
+
+/** Which file's footprint (if any) contains world point `(wx, wy)` --
+ * point-in-polygon (roads.ts's own `inRings`, one ring at a time) over just
+ * the query cell's bucket, not the whole document. Ties (touching polygons
+ * at a shared edge, vanishingly rare with a Voronoi-style diagram) resolve
+ * to the lowest file index in the bucket, deterministically. Called from
+ * MapRenderer's click/hover resolution, replacing the DOM hit-test a
+ * batched (pointer-events:none) footprint has no element to receive.
+ *
+ * Known limitation, measured on the django fixture rather than assumed: a
+ * file's own reported `footprint_centroids` entry does not always land
+ * inside that file's own `P` polygon (roughly 15% of django's files, all in
+ * districts with many near-degenerate, reserved-minimum-pixel cells --
+ * finding 27's own prototype measurement of the same phenomenon, "only 17%
+ * of sites fell inside their own cell", was never claimed fully closed by
+ * finding 29's rewrite at this sub-pixel scale). For those files, a tap
+ * exactly on the reported centroid can resolve to a geometrically adjacent
+ * file instead. This is a layout/backend precision question, not a viewer
+ * bug -- `hitTestFootprint` faithfully tests the polygon it's given -- and
+ * is out of scope for this (viewer-only) change; not observed to affect
+ * anything larger than the smallest slivers in a district. */
+export function hitTestFootprint(doc: MapDocument, index: FootprintIndex, wx: number, wy: number): number | null {
+  if (!doc.P) return null;
+  const key = `${Math.floor(wx / index.cell)},${Math.floor(wy / index.cell)}`;
+  const bucket = index.grid.get(key);
+  if (!bucket) return null;
+  const p: Pt = [wx, wy];
+  for (const i of bucket) {
+    const poly = doc.P[String(i)];
+    if (poly && inRings(p, [poly])) return i;
+  }
+  return null;
 }

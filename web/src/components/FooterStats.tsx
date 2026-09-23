@@ -54,8 +54,16 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
         </>
       )}
       </span>}
+      {/* B4 perf follow-up: the footprint-area sentence added to the "d"
+          layer's text made this paragraph long enough that its wrapped last
+          line and this chip -- both inline-level, sharing the same line box
+          via nothing but this chip's own `mt-1` -- started overlapping
+          (desktop-langgenius__dify-zoom0.png). `mt-1` alone only adds space
+          ABOVE an element already on its own line; it doesn't put it there.
+          `block w-fit` does: always its own line under the paragraph, sized
+          to its own content rather than the full row. */}
       {unconnectedCount > 0 && <button type="button" data-unconnected-chip
-        className={`pointer-events-auto mt-1 rounded border border-[var(--rule)] bg-[var(--chrome)] px-2 py-1 text-[10px] text-[var(--on)] hover:text-[var(--hot)] max-[820px]:mt-0 ${mobileHidden ? "max-[820px]:hidden" : ""}`}
+        className={`pointer-events-auto mt-1 block w-fit rounded border border-[var(--rule)] bg-[var(--chrome)] px-2 py-1 text-[10px] text-[var(--on)] hover:text-[var(--hot)] max-[820px]:mt-0 ${mobileHidden ? "max-[820px]:hidden" : ""}`}
         onClick={onOpenUnconnected}>{unconnectedCount} unconnected files</button>}
     </div>
   );

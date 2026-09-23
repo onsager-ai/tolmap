@@ -66,16 +66,24 @@ jobs:
           name: viewer-shots
           path: web/shots/
           if-no-files-found: warn
-      # B4 (nested footprints, issue #82 scope item 7): dify is the one
-      # fixture large enough (6,347 footprints) for footprint-mode paint cost
-      # to be worth measuring in CI -- perf-bench.mjs is Playwright-based, so
-      # this is the only place it can run (see CLAUDE.md's no-browser-locally
-      # rule). `--runs 3` on desktop; dify's file count clears perf-bench's
-      # own big-map threshold (5000), so it automatically drops to one run
-      # with a capped gesture budget there -- reported plainly either way.
-      - name: Perf bench (dify)
+      # B4 perf follow-up (issue #82, owner review): dify is the one fixture
+      # large enough (6,347 files) for paint cost to be worth measuring in
+      # CI -- perf-bench.mjs is Playwright-based, so this is the only place
+      # it can run (see CLAUDE.md's no-browser-locally rule). Runs BOTH the
+      # footprint-mode map and a dots-only baseline (check-fixtures/README.md:
+      # the same map with P/footprint_centroids/file_neighbourhoods/
+      # neighbourhoods stripped, so the SAME code takes the old dot path) in
+      # one invocation so both land in the same output table. dify's file
+      # count clears perf-bench's own big-map threshold (5000) and drops to
+      # one run with a capped gesture budget; dify-baseline isn't in
+      # collect-maps.mjs's index.json (it's a synthetic slug, not a real
+      # catalogue entry), so perf-bench treats it as small and runs it the
+      # full 3x/40-step way instead -- an asymmetry in SAMPLE SIZE, not in
+      # what's being measured (the same tolmap:draw performance-mark
+      # duration either way), and both are reported plainly regardless.
+      - name: Perf bench (dify, footprints vs dots baseline)
         if: always()
-        run: node scripts/perf-bench.mjs --base http://127.0.0.1:5176 --maps langgenius/dify --runs 3 --out perf/dify.json
+        run: node scripts/perf-bench.mjs --base http://127.0.0.1:5176 --maps langgenius/dify,dify-baseline/dify --runs 3 --out perf/dify.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,3 +1,5 @@
 The two map documents `scripts/check-view-stability.mjs` pins by SHA-256, gzipped. `public/maps/` is generated and gitignored, so without these copies CI had no way to supply them. The viewer-check workflow (`.github/workflows/viewer-check.yml`) unpacks them over the `collect-maps.mjs` output before it runs the check.
 
 When the check's pinned hashes move (a map rebuilt from a newer pipeline), replace the file here in the same change.
+
+`dify-baseline__dify.json.gz` is the perf-bench dots baseline (issue #82 B4 perf follow-up): `langgenius__dify.json.gz` with `P`/`footprint_centroids`/`file_neighbourhoods`/`neighbourhoods` stripped, so the SAME code renders it via the old dot path (`hasFootprints` is false) instead of footprint mode -- a same-code, same-underlying-map A/B rather than a separate old build. Served at `/dify-baseline/dify`, not a real repository. Regenerate it from a fresh `langgenius__dify.json.gz` the same way (strip those four keys) if that fixture is ever replaced; it is not itself pinned by `check-view-stability.mjs`.

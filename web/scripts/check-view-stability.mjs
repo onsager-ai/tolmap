@@ -251,11 +251,22 @@ async function readDot(page, dataK) {
     // own anchor point; see MapRenderer's `footprint()`). Falls through to
     // `null` (not found on that element either) exactly like the pre-B4
     // `x`/`y` fallback already did for a treemap rect.
-    return {
-      cx: parseFloat(el.getAttribute("cx") ?? el.getAttribute("x") ?? el.getAttribute("data-cx")),
-      cy: parseFloat(el.getAttribute("cy") ?? el.getAttribute("y") ?? el.getAttribute("data-cy")),
-      r: el.hasAttribute("r") ? parseFloat(el.getAttribute("r")) : null,
-    };
+    let cx = parseFloat(el.getAttribute("cx") ?? el.getAttribute("x") ?? el.getAttribute("data-cx"));
+    let cy = parseFloat(el.getAttribute("cy") ?? el.getAttribute("y") ?? el.getAttribute("data-cy"));
+    // Perf follow-up: a district/neighbourhood outline (or a batched
+    // footprint fill, though that one carries no data-k to look up by) has
+    // none of the above -- fall back to its own first vertex, parsed off the
+    // `d` attribute the same way fitFraming() already does a few functions
+    // down. A district polygon's first point is a perfectly good fixed world
+    // point for a k/pan measurement; it just isn't a "centre" of anything.
+    if (Number.isNaN(cx) || Number.isNaN(cy)) {
+      const m = el.getAttribute("d")?.match(/-?\d+(?:\.\d+)?/g);
+      if (m && m.length >= 2) {
+        cx = Number(m[0]);
+        cy = Number(m[1]);
+      }
+    }
+    return { cx, cy, r: el.hasAttribute("r") ? parseFloat(el.getAttribute("r")) : null };
   }, dataK);
 }
 
@@ -349,29 +360,43 @@ async function pickDistrictPoint(page, hasTouch) {
 async function pickTwoOnScreenDots(page, vw, vh, minDist = 80) {
   return page.evaluate(
     ({ vw, vh, minDist }) => {
+      const collect = (selector) => {
+        const els = [...document.querySelectorAll(selector)];
+        const out = [];
+        for (const el of els) {
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) continue;
+          const cx = r.x + r.width / 2;
+          const cy = r.y + r.height / 2;
+          if (cx > vw * 0.15 && cx < vw * 0.85 && cy > vh * 0.15 && cy < vh * 0.85) {
+            out.push({ dataK: el.getAttribute("data-k"), cx, cy });
+          }
+          if (out.length >= 40) break;
+        }
+        return out;
+      };
+      const findPair = (candidates) => {
+        for (let a = 0; a < candidates.length; a++) {
+          for (let b = a + 1; b < candidates.length; b++) {
+            const d = Math.hypot(candidates[a].cx - candidates[b].cx, candidates[a].cy - candidates[b].cy);
+            if (d >= minDist) return [candidates[a].dataK, candidates[b].dataK];
+          }
+        }
+        return null;
+      };
       // B4: `.hit` (not `circle.hit`) so this also matches a footprint-mode
       // file's own path element, not just a dot-mode circle -- see
       // visibleDots()'s own comment for why the same generalisation applies
-      // there.
-      const els = [...document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')];
-      const candidates = [];
-      for (const el of els) {
-        const r = el.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) continue;
-        const cx = r.x + r.width / 2;
-        const cy = r.y + r.height / 2;
-        if (cx > vw * 0.15 && cx < vw * 0.85 && cy > vh * 0.15 && cy < vh * 0.85) {
-          candidates.push({ dataK: el.getAttribute("data-k"), cx, cy });
-        }
-        if (candidates.length >= 40) break;
-      }
-      for (let a = 0; a < candidates.length; a++) {
-        for (let b = a + 1; b < candidates.length; b++) {
-          const d = Math.hypot(candidates[a].cx - candidates[b].cx, candidates[a].cy - candidates[b].cy);
-          if (d >= minDist) return [candidates[a].dataK, candidates[b].dataK];
-        }
-      }
-      return null;
+      // there. Perf follow-up: most files in a footprint-mode district with
+      // small on-screen footprints no longer have an individual element at
+      // all (they're batched -- MapRenderer's own districtFootprintsLarge),
+      // so file candidates alone can run out; fall back to district
+      // polygons ("d:"), which stay one real element per district
+      // regardless of footprint mode and serve exactly the same "two fixed
+      // world points" purpose this function exists for.
+      const filePair = findPair(collect('svg.map-svg .hit[data-k^="f:"]'));
+      if (filePair) return filePair;
+      return findPair(collect('svg.map-svg path.hit[data-k^="d:"]'));
     },
     { vw, vh, minDist },
   );
@@ -712,7 +737,16 @@ async function checkSelectionDim(browser, base, profile) {
     // Exact "0.2" only (see the fresh-load check's own comment above for
     // why a threshold isn't safe on dify specifically: #49's UNRELATED
     // density-fade opacity can coincidentally sit under any threshold too).
+    // Perf follow-up: a non-neighbour, non-landmark file in a small-on-
+    // screen district has no individual element any more (batched --
+    // MapRenderer's flushFootprintBatches) -- every batch is uniformly
+    // faded or full for this whole paint (that method's own doc comment),
+    // so a batched fill's OWN fill-opacity is exactly as valid a "some non-
+    // neighbour file is dimmed" signal as an individual dimmed dot's used
+    // to be, and is very likely the ONLY one on dify at fit zoom now.
     const dimmed = nonSelected.filter((c) => c.getAttribute("fill-opacity") === "0.2");
+    const dimmedBatches = [...document.querySelectorAll("svg.map-svg path[data-footprint-batch]")]
+      .filter((p) => p.getAttribute("fill-opacity") === "0.2");
     // A neighbour ring (MapRenderer.ring(), var(--hot) or var(--cold) stroke)
     // marks a file that's connected -- find one and check ITS OWN file's
     // opacity, which should read as full strength (alwaysDrawn), not dimmed.
@@ -733,9 +767,9 @@ async function checkSelectionDim(browser, base, profile) {
         break;
       }
     }
-    return { totalCircles: circles.length, dimmedCount: dimmed.length, neighbourFull };
+    return { totalCircles: circles.length, dimmedCount: dimmed.length, dimmedBatchCount: dimmedBatches.length, neighbourFull };
   }, target.i);
-  report(result.dimmedCount > 0, `${label}: at least one non-neighbour dot is dimmed`, JSON.stringify(result));
+  report(result.dimmedCount > 0 || result.dimmedBatchCount > 0, `${label}: at least one non-neighbour file (or batch) is dimmed`, JSON.stringify(result));
   report(result.neighbourFull != null && result.neighbourFull >= 0.8, `${label}: a ringed neighbour's dot stays at full opacity`, JSON.stringify(result));
   await context.close();
 }
@@ -2465,13 +2499,22 @@ async function checkFootprintModeDrawsPolygons(browser, base, profile) {
   await context.close();
 }
 
-// 9(b): a small footprint's extra invisible hit circle (scope item 6) is
-// tappable and selects its file, same as the hub ring test one section above
-// this proves for a hub's ring -- disambiguated from a hub's own ring by
-// EXCLUDING hub file indices this time (the inverse filter of
-// checkHubRingTap's own fix).
-async function checkSmallFootprintHitCircle(browser, base, profile) {
-  const label = `small footprint hit circle selects its file (dify) / ${profile.name}`;
+// 9(b), rewritten for the perf follow-up: scope item 6's dedicated small-
+// footprint hit CIRCLES are retired (MapRenderer's own resolveKey() /
+// footprints.ts's hitTestFootprint test the file's REAL polygon instead, off
+// a world-space index, for every batched file at once -- see paint()'s own
+// comment on why the circles became redundant). This proves that JS hit-
+// test path directly: pick the file with the smallest on-screen footprint
+// (excluding landmarks, which stay individually drawn and would exercise the
+// OLD per-element DOM path instead), compute where its footprint_centroid
+// lands on screen by reproducing the SAME fit-view transform
+// checkFitFraming/fitFraming already validate against the live DOM
+// elsewhere in this file, and tap exactly there with no DOM element lookup
+// at all -- if a batched (pointer-events:none, no data-k) fill is what's
+// actually under that point, only resolveKey()'s hit-test can be what
+// selects the right file.
+async function checkFootprintCoordinateHitTest(browser, base, profile) {
+  const label = `tapping a footprint by coordinate selects it (dify) / ${profile.name}`;
   console.log(`\n${label}`);
   const context = await browser.newContext({
     viewport: profile.viewport,
@@ -2481,59 +2524,95 @@ async function checkSmallFootprintHitCircle(browser, base, profile) {
   });
   const page = await context.newPage();
   const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
-  const HUB_FANIN_THRESHOLD = 30;
-  const hubIndices = new Set(doc.N.flatMap((row, i) => (row[6] >= HUB_FANIN_THRESHOLD ? [i] : [])));
+  const landmarks = new Set(doc.L.map((l) => l[0]));
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
-  const candidates = await page.evaluate((hubIdx) => {
-    const els = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"][fill="transparent"]')];
-    return els
-      .map((el) => ({ key: el.getAttribute("data-k"), r: parseFloat(el.getAttribute("r")) }))
-      .filter((c) => !hubIdx.includes(Number(c.key.slice(2))));
-  }, [...hubIndices]);
-  if (candidates.length === 0) {
-    report(false, `${label}: at least one small-footprint hit circle on screen`, "none found");
-    await context.close();
-    return;
-  }
-  // Largest radius first: `smallFootprintHitRadii` caps a circle's radius at
-  // half the distance to its nearest OTHER visible centroid (map/
-  // footprints.ts), so a small radius means two hit circles sit close
-  // together -- exactly the case where a real touch device's own tap-
-  // adjustment heuristic (Chromium included: `page.touchscreen.tap` is not
-  // pixel-precise the way a mouse click is, unlike `isPointClickable`'s
-  // `elementFromPoint`, which IS) can land the tap on the neighbour instead.
-  // A well-isolated (near-8px) circle is both the common case and the one a
-  // real tap can't be ambiguous about.
-  const candidateKeys = candidates.sort((a, b) => b.r - a.r).map((c) => c.key);
-  let chosenKey = null;
-  let point = null;
-  for (const key of candidateKeys) {
-    // No CSS.escape here -- that's a browser global, not a Node one, and
-    // this template string is built in the SCRIPT's own process to hand to
-    // page.locator(), never inside a page.evaluate() callback. `key` is
-    // always exactly "f:<digits>" (filtered from a "f:"-prefixed data-k
-    // above), so nothing in it needs escaping for a CSS attribute selector.
-    const box = await page.locator(`svg.map-svg circle.hit[data-k="${key}"][fill="transparent"]`).first().boundingBox();
-    if (!box) continue;
-    const candidate = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    if (await isPointClickable(page, candidate.x, candidate.y, key)) {
-      chosenKey = key;
-      point = candidate;
-      break;
+
+  const batchCount = await page.locator("svg.map-svg path[data-footprint-batch]").count();
+  report(batchCount > 0, `${label}: at least one batched footprint fill exists at fit zoom`, `${batchCount} batches`);
+
+  const result = await page.evaluate(({ doc, landmarkArr }) => {
+    const landmarkSet = new Set(landmarkArr);
+    const svg = document.querySelector("svg.map-svg");
+    const { width: vw, height: vh } = svg.getBoundingClientRect();
+    const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+    // Same fit-view transform derivation fitFraming() already validates
+    // against the live DOM elsewhere in this file (mainlandBounds + fit
+    // scale/tx/ty, ported from map/geometry.ts's own formulas) -- computed
+    // independently here rather than read off the app, since there's no API
+    // to read MapRenderer's private k/tx/ty from outside it.
+    const b = [Infinity, Infinity, -Infinity, -Infinity];
+    const add = ([x, y]) => { b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y); b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y); };
+    const mainland = (d) => !["island", "unconnected"].includes(doc.districts[String(d)].class);
+    doc.N.forEach((row) => { if (mainland(row[0])) add([row[1], row[2]]); });
+    for (const [d, district] of Object.entries(doc.districts)) {
+      if (mainland(d)) district.blob.forEach((poly) => poly.forEach(add));
     }
-  }
-  if (!chosenKey) {
-    report(false, `${label}: an unobstructed small-footprint hit circle found`, `checked ${candidateKeys.length}`);
+    const scale = Math.min((rect[2] - rect[0]) / (b[2] - b[0]), (rect[3] - rect[1]) / (b[3] - b[1]));
+    const tx = rect[0] + (rect[2] - rect[0] - (b[2] - b[0]) * scale) / 2 - b[0] * scale;
+    const middle = (rect[1] + rect[3]) / 2;
+    const centreY = vw <= 820 ? Math.max(rect[1] + (b[3] - b[1]) * scale / 2, Math.min(middle, 315)) : middle;
+    const ty = centreY - (b[1] + b[3]) * scale / 2;
+
+    const area = (poly) => {
+      let a = 0;
+      for (let i = 0; i < poly.length; i++) {
+        const [x0, y0] = poly[i];
+        const [x1, y1] = poly[(i + 1) % poly.length];
+        a += x0 * y1 - x1 * y0;
+      }
+      return Math.abs(a) / 2;
+    };
+    // Even-odd ray cast, ported from map/roads.ts's inRings -- verifies the
+    // reported footprint_centroid actually lands inside its OWN polygon
+    // before trusting it as a tap target: footprints.ts's own hitTestFootprint
+    // doc comment records that ~15% of a fixture's files (measured on
+    // django) do NOT satisfy this, almost always the smallest, most
+    // degenerate cells -- exactly the population this test is drawn from.
+    // Skipping those (rather than picking the single smallest file
+    // unconditionally) keeps this a test of the hit-testing CODE, not of
+    // that separate, out-of-scope layout precision question.
+    const inPoly = (p, poly) => {
+      let c = false;
+      for (let a = 0, bI = poly.length - 1; a < poly.length; bI = a++) {
+        const [xi, yi] = poly[a];
+        const [xj, yj] = poly[bI];
+        if (yi > p[1] !== yj > p[1] && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) c = !c;
+      }
+      return c;
+    };
+
+    const candidates = [];
+    for (let i = 0; i < doc.F.length; i++) {
+      if (landmarkSet.has(i)) continue;
+      if (!mainland(doc.N[i][0])) continue;
+      const poly = doc.P?.[String(i)];
+      const c = doc.footprint_centroids?.[i];
+      if (!poly || poly.length < 3 || !c) continue;
+      candidates.push({ i, area: area(poly), poly, c });
+    }
+    candidates.sort((x, y) => x.area - y.area);
+    for (const cand of candidates.slice(0, 200)) {
+      if (!inPoly(cand.c, cand.poly)) continue;
+      const sx = cand.c[0] * scale + tx;
+      const sy = cand.c[1] * scale + ty;
+      if (sx < rect[0] || sx > rect[2] || sy < rect[1] || sy > rect[3]) continue;
+      return { i: cand.i, sx, sy };
+    }
+    return null;
+  }, { doc, landmarkArr: [...landmarks] });
+
+  if (!result) {
+    report(false, `${label}: setup`, "no small, on-screen, self-containing footprint found");
     await context.close();
     return;
   }
-  const expected = doc.F[Number(chosenKey.slice(2))];
-  await tap(page, profile, point.x, point.y);
+  const expected = doc.F[result.i];
+  await tap(page, profile, result.sx, result.sy);
   report(
     new URL(page.url()).searchParams.get("file") === expected,
-    `${label}: tapping the small footprint's hit circle selects it`,
+    `${label}: tapping a small footprint by coordinate selects it`,
     `expected=${expected} url=${page.url()}`,
   );
   await context.close();
@@ -2723,7 +2802,7 @@ async function main() {
     for (const profile of PROFILES) await checkHubRingTap(browser, args.base, profile);
     // B4 (nested footprints, issue #82): scope item 9(a)-(f)
     for (const profile of PROFILES) await checkFootprintModeDrawsPolygons(browser, args.base, profile);
-    for (const profile of PROFILES) await checkSmallFootprintHitCircle(browser, args.base, profile);
+    for (const profile of PROFILES) await checkFootprintCoordinateHitTest(browser, args.base, profile);
     await checkImportLinesAnchorOnFootprintCentroids(browser, args.base);
     for (const profile of PROFILES) await checkStreetsAndTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkNeighbourhoodLabelsAtDeeperZoom(browser, args.base, profile);
