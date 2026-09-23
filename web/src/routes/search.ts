@@ -10,6 +10,8 @@ export interface MapSearch {
   file?: string;
   sym?: number;
   d?: number;
+  dir?: string;
+  depth?: number;
   geo: Geo;
   layer: Layer;
 }
@@ -25,17 +27,21 @@ export interface MapSearch {
 // still understand "p"/"t" (MapRenderer.ts is untouched); only the URL
 // surface stops offering them.
 const GEOS: Geo[] = ["r"];
-const LAYERS: Layer[] = ["d", "c", "x"];
+const LAYERS: Layer[] = ["d", "c", "x", "p"];
 
 export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const geo = GEOS.includes(search.geo as Geo) ? (search.geo as Geo) : "r";
   const layer = LAYERS.includes(search.layer as Layer) ? (search.layer as Layer) : "d";
   const file = typeof search.file === "string" && search.file.length > 0 ? search.file : undefined;
+  const dirRaw = typeof search.dir === "string" ? search.dir.trim().replace(/^\/+|\/+$/g, "") : "";
+  const dir = !file && dirRaw ? dirRaw : undefined;
   const symRaw = Number(search.sym);
   const sym = file && Number.isInteger(symRaw) && symRaw >= 0 ? symRaw : undefined;
   const dRaw = Number(search.d);
-  const d = !file && Number.isInteger(dRaw) && dRaw >= 0 ? dRaw : undefined;
-  return { file, sym, d, geo, layer };
+  const d = !file && !dir && Number.isInteger(dRaw) && dRaw >= 0 ? dRaw : undefined;
+  const depthRaw = Number(search.depth);
+  const depth = Number.isInteger(depthRaw) && depthRaw > 0 ? depthRaw : undefined;
+  return { file, sym, d, dir, depth, geo, layer };
 }
 
 /** Search state for the /new progress route (see routes/IndexJobView.tsx).

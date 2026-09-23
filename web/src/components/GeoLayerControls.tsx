@@ -2,8 +2,8 @@ import type { Layer } from "@/map/constants";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 
-const LAYER_LABEL: Record<Layer, string> = { d: "district", c: "churn", x: "complexity" };
-const LAYER_ORDER: Layer[] = ["d", "c", "x"];
+const LAYER_LABEL: Record<Layer, string> = { d: "district", c: "churn", x: "complexity", p: "package" };
+const LAYER_ORDER: Layer[] = ["d", "c", "x", "p"];
 
 interface Props {
   layer: Layer;
@@ -28,7 +28,7 @@ export function GeoLayerControls({ layer, onLayer }: Props) {
     return (
       <button
         className="whitespace-nowrap rounded-md border border-[var(--rule)] bg-[var(--chrome2)] px-2.5 py-1.5 text-[11px] text-[var(--on)]"
-        onClick={() => onLayer(LAYER_ORDER[(LAYER_ORDER.indexOf(layer) + 1) % 3])}
+        onClick={() => onLayer(LAYER_ORDER[(LAYER_ORDER.indexOf(layer) + 1) % LAYER_ORDER.length])}
         aria-label="Cycle layer"
       >
         {LAYER_LABEL[layer]}

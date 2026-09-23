@@ -3,6 +3,7 @@ import type { MapDocument } from "@/types";
 import { MapRenderer, type MapRenderState, type MapRendererCallbacks, type TerrainSelection } from "./MapRenderer";
 import type { Geo, Layer } from "./constants";
 import type { Route } from "./graph";
+import type { PackageGrouping } from "./packageLayout";
 
 export interface MapCanvasHandle {
   fit(anim?: boolean): void;
@@ -21,6 +22,9 @@ interface MapCanvasProps {
   selD: number | null;
   selTerrain: TerrainSelection | null;
   route: Route | null;
+  packageGrouping: PackageGrouping;
+  folderFiles: ReadonlySet<number> | null;
+  folderOnlyIslands: boolean;
   callbacks: MapRendererCallbacks;
   handleRef?: React.Ref<MapCanvasHandle>;
 }
@@ -31,7 +35,21 @@ interface MapCanvasProps {
  * imperative class that never re-renders through React's reconciler. At
  * ~1000 files and several thousand symbols, diffing that as JSX on every
  * pan frame is the thing this split avoids. */
-export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, route, callbacks, handleRef }: MapCanvasProps) {
+export function MapCanvas({
+  doc,
+  geo,
+  layer,
+  sel,
+  selSym,
+  selD,
+  selTerrain,
+  route,
+  packageGrouping,
+  folderFiles,
+  folderOnlyIslands,
+  callbacks,
+  handleRef,
+}: MapCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<MapRenderer | null>(null);
@@ -103,7 +121,19 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, rout
     renderer.loadDocument(doc);
     const r = wrapRef.current.getBoundingClientRect();
     renderer.resize(r.width, r.height);
-    const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, selTerrain, route };
+    const state: MapRenderState = {
+      doc,
+      geo,
+      layer,
+      sel,
+      selSym,
+      selD,
+      selTerrain,
+      route,
+      packageGrouping,
+      folderFiles,
+      folderOnlyIslands,
+    };
     renderer.fit(false, state);
     justFittedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -116,9 +146,21 @@ export function MapCanvas({ doc, geo, layer, sel, selSym, selD, selTerrain, rout
       justFittedRef.current = false;
       return;
     }
-    const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, selTerrain, route };
+    const state: MapRenderState = {
+      doc,
+      geo,
+      layer,
+      sel,
+      selSym,
+      selD,
+      selTerrain,
+      route,
+      packageGrouping,
+      folderFiles,
+      folderOnlyIslands,
+    };
     renderer.render(state);
-  }, [doc, geo, layer, sel, selSym, selD, selTerrain, route]);
+  }, [doc, geo, layer, sel, selSym, selD, selTerrain, route, packageGrouping, folderFiles, folderOnlyIslands]);
 
   // The wrapper's box, watched once for the component's life. Selection,
   // layer, geo and route changes must never touch this subscription: the

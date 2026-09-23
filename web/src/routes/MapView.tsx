@@ -13,6 +13,9 @@ import { SelectionPanel } from "@/components/SelectionPanel";
 import { RouteBox } from "@/components/RouteBox";
 import { FooterStats } from "@/components/FooterStats";
 import { ZoomControls } from "@/components/ZoomControls";
+import { PackageLegend } from "@/components/PackageLegend";
+import { buildPackageLayout } from "@/map/packageLayout";
+import type { MapSearch } from "@/routes/search";
 
 /** The /:owner/:repo page: assembles chrome (TopBar, Sidebar, SearchBox,
  * SelectionPanel, RouteBox, FooterStats, ZoomControls) around one MapCanvas.
@@ -21,13 +24,7 @@ import { ZoomControls } from "@/components/ZoomControls";
  * ever receive it as props and report gestures back through callbacks. */
 export function MapView() {
   const { owner, repo } = useParams({ strict: false }) as { owner: string; repo: string };
-  const search = useSearch({ strict: false }) as {
-    file?: string;
-    sym?: number;
-    d?: number;
-    geo: "r" | "p" | "t";
-    layer: "d" | "c" | "x";
-  };
+  const search = useSearch({ strict: false }) as MapSearch;
   const navigate = useNavigate();
   const { data: catalogue } = useCatalogue();
   const { data: doc, isLoading, isError, error } = useMapDocument(owner, repo);
@@ -38,6 +35,7 @@ export function MapView() {
   const [routeFrom, setRouteFrom] = useState<number | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
   const [selTerrain, setSelTerrain] = useState<TerrainSelection | null>(null);
+  const packageLayout = useMemo(() => (doc ? buildPackageLayout(doc) : null), [doc]);
 
   // radj (imported-by) is new here: SelectionPanel's "links" line and
   // MapRenderer's own selection-links feature both need it, and buildAdj
@@ -81,7 +79,7 @@ export function MapView() {
   function selectFile(i: number, opts: { fly?: boolean; symbol?: number } = {}) {
     if (!doc) return;
     setSelTerrain(null);
-    updateSearch({ file: doc.F[i], sym: opts.symbol, d: undefined });
+    updateSearch({ file: doc.F[i], sym: opts.symbol, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
     if (opts.fly !== false) canvasRef.current?.flyTo(i);
@@ -89,21 +87,30 @@ export function MapView() {
   function selectSymbolDetail(i: number, s: number) {
     if (!doc) return;
     setSelTerrain(null);
-    updateSearch({ file: doc.F[i], sym: s, d: undefined });
+    updateSearch({ file: doc.F[i], sym: s, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
     canvasRef.current?.flyToDetail(i);
   }
   function selectDistrict(d: number) {
     setSelTerrain(null);
-    updateSearch({ file: undefined, sym: undefined, d });
+    updateSearch({ file: undefined, sym: undefined, d, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
   }
   function clearSelection() {
     setSelTerrain(null);
-    updateSearch({ file: undefined, sym: undefined, d: undefined });
+    updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined });
     setPanelOpen(false);
+  }
+
+  function selectDirectory(path?: string) {
+    setSelTerrain(null);
+    setRoute(null);
+    setRouteFrom(null);
+    updateSearch({ file: undefined, sym: undefined, d: undefined, dir: path });
+    setPanelOpen(true);
+    setSideOpen(false);
   }
 
   const rendererCallbacks: MapRendererCallbacks = {
@@ -111,13 +118,13 @@ export function MapView() {
     onSelectFile: (i) => selectFile(i, { fly: false }),
     onSelectSymbol: (i, s) => selectFile(i, { fly: false, symbol: s }),
     onSelectSubdistrict: (district, index) => {
-      updateSearch({ file: undefined, sym: undefined, d: undefined });
+      updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined });
       setSelTerrain({ kind: "subdistrict", district, index });
       setPanelOpen(true);
       setSideOpen(false);
     },
     onSelectParcel: (district, index) => {
-      updateSearch({ file: undefined, sym: undefined, d: undefined });
+      updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined });
       setSelTerrain({ kind: "parcel", district, index });
       setPanelOpen(true);
       setSideOpen(false);
@@ -133,7 +140,7 @@ export function MapView() {
       </div>
     );
   }
-  if (isError || !doc) {
+  if (isError || !doc || !packageLayout) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--chrome)] p-6 text-center text-sm text-[var(--hot)]">
         <p>couldn't load {owner}/{repo}.</p>
@@ -141,6 +148,15 @@ export function MapView() {
       </div>
     );
   }
+
+  const packageDepth = Math.max(
+    packageLayout.minDepth,
+    Math.min(packageLayout.maxDepth, search.depth ?? packageLayout.autoDepth),
+  );
+  const packageGrouping = packageLayout.groupings.get(packageDepth)!;
+  const activeDirectory = search.dir && packageLayout.filesByDirectory.has(search.dir) ? search.dir : undefined;
+  const folderFiles = activeDirectory ? (packageLayout.filesByDirectory.get(activeDirectory) ?? null) : null;
+  const folderOnlyIslands = activeDirectory ? packageLayout.islandOnlyDirectories.has(activeDirectory) : false;
 
   return (
     <div className="flex h-full flex-col">
@@ -186,6 +202,9 @@ export function MapView() {
             selD={selD}
             selTerrain={selTerrain}
             route={route}
+            packageGrouping={packageGrouping}
+            folderFiles={folderFiles}
+            folderOnlyIslands={folderOnlyIslands}
             callbacks={rendererCallbacks}
             handleRef={canvasRef}
           />
@@ -204,10 +223,13 @@ export function MapView() {
             selTerrain={selTerrain}
             adj={adj}
             radj={radj}
+            packageLayout={packageLayout}
+            activeDirectory={activeDirectory}
             open={panelOpen}
             onToggleOpen={() => setPanelOpen((v) => !v)}
             onSelectFile={(i, opts) => selectFile(i, opts)}
             onSelectSymbol={(i, s) => selectFile(i, { fly: false, symbol: s })}
+            onSelectDistrict={selectDistrict}
             onZoomDistrict={(d) => canvasRef.current?.zoomDistrict(d)}
             onRouteFrom={(i) => setRouteFrom(i)}
             onRouteTo={(i) => {
@@ -217,8 +239,19 @@ export function MapView() {
               }
               setRoute(findRoute(doc, adj, routeFrom, i));
             }}
+            onSelectDirectory={selectDirectory}
           />
-          <FooterStats doc={doc} layer={search.layer} maxCh={maxCh} maxCx={maxCx} />
+          {search.layer === "p" ? (
+            <PackageLegend
+              grouping={packageGrouping}
+              auto={search.depth == null}
+              minDepth={packageLayout.minDepth}
+              maxDepth={packageLayout.maxDepth}
+              onDepth={(depth) => updateSearch({ depth: depth === packageLayout.autoDepth ? undefined : depth })}
+            />
+          ) : (
+            <FooterStats doc={doc} layer={search.layer} maxCh={maxCh} maxCx={maxCx} />
+          )}
           <RouteBox
             doc={doc}
             routeFrom={routeFrom}

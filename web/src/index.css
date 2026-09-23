@@ -40,17 +40,52 @@
   --c9: #93502a;
   --c10: #4a5e8c;
   --c11: #6e6a33;
+  /* Package rank is a separate visual category from district identity.
+     Alternate cool/warm hues so adjacent ranks stay distinct; the first
+     (blue/gold) pair is the strongest contrast because it covers the two
+     groups that normally dominate a repository. These deeper light-canvas
+     values are replaced by brighter equivalents on the dark canvas below. */
+  --p0: #0057a8;
+  --p1: #c47700;
+  --p2: #007f6d;
+  --p3: #aa3d75;
+  --p4: #5c7f22;
+  --p5: #b6423d;
+  --p6: #3b789a;
+  --p7: #8556a3;
+  --p8: #8b633c;
+  --p9: #69737d;
 }
 :root[data-theme="dark"] {
   --canvas: #0e161a;
   --coast: #293539;
   --ink: #dce4e4;
+  --p0: #54a9f0;
+  --p1: #ffc247;
+  --p2: #52c7aa;
+  --p3: #f184be;
+  --p4: #9ccd61;
+  --p5: #f37972;
+  --p6: #6cc3d5;
+  --p7: #c69be9;
+  --p8: #d19a6a;
+  --p9: #b0bac5;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --canvas: #0e161a;
     --coast: #293539;
     --ink: #dce4e4;
+    --p0: #54a9f0;
+    --p1: #ffc247;
+    --p2: #52c7aa;
+    --p3: #f184be;
+    --p4: #9ccd61;
+    --p5: #f37972;
+    --p6: #6cc3d5;
+    --p7: #c69be9;
+    --p8: #d19a6a;
+    --p9: #b0bac5;
   }
 }
 

@@ -11,7 +11,8 @@
 // This drives a real Vite dev server (own port, never 5173 -- that belongs
 // to another worktree's live session) with Playwright, on both a map small
 // enough to eyeball (django/django) and one with a denser, more irregular
-// mainland silhouette (n8n-io/n8n), at a desktop size and a touch phone
+// mainland silhouette still below the local browser ceiling
+// (langgenius/dify), at a desktop size and a touch phone
 // size, and asserts the view is byte-for-byte the same SVG geometry after
 // each of: tapping a file dot, tapping empty map, and switching the layer.
 // It also resizes the browser viewport and checks the view shifts by
@@ -47,7 +48,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const MAPS = ["django/django", "n8n-io/n8n"];
+const MAPS = ["django/django", "langgenius/dify"];
 const PROFILES = [
   { name: "desktop", viewport: { width: 1200, height: 800 }, isMobile: false, hasTouch: false },
   { name: "phone", viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
@@ -429,7 +430,12 @@ async function checkRepoSwitch(browser, base, profile) {
   // A plain CSS locator, not getByLabel: the map SVG's own long aria-label
   // ("Pannable, zoomable map...") confused Playwright's fuzzy accessible-name
   // matching into treating getByLabel("Repository") as ambiguous.
-  await page.locator('select[aria-label="Repository"]').selectOption("n8n-io/n8n");
+  const available = await page.locator('select[aria-label="Repository"] option').evaluateAll((options) =>
+    options.map((option) => option.value),
+  );
+  await page.locator('select[aria-label="Repository"]').selectOption(
+    available.includes("langgenius/dify") ? "langgenius/dify" : "prometheus/prometheus",
+  );
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(1000);
   const after = await stableBox(page);
@@ -581,6 +587,573 @@ async function checkSelectionDim(browser, base, profile) {
   await context.close();
 }
 
+// Issue #74: all path-derived UI and the folder dim route, exercised through
+// the real URL and controls at both supported interaction profiles. Django is
+// deliberately used here: every dot is above #49's density floor at fit, so
+// exact 0.2 opacity means the directory dim set and cannot collide with a
+// density-fade value the way it can on the medium fixture.
+async function checkPackageLayout(browser, base, profile) {
+  const label = `package layout overlays (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django?geo=r&layer=p`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForSelector("[data-package-legend]");
+  await page.waitForTimeout(700);
+
+  const initialLegend = await page.locator("[data-package-legend]").evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const zoomBox = document.querySelector('button[aria-label="Zoom in"]')?.parentElement?.getBoundingClientRect();
+    const root = document.documentElement;
+    const previousTheme = root.getAttribute("data-theme");
+    const readPalette = (theme) => {
+      root.setAttribute("data-theme", theme);
+      const css = getComputedStyle(root);
+      return Array.from({ length: 10 }, (_, i) => css.getPropertyValue(`--p${i}`).trim());
+    };
+    const light = readPalette("light");
+    const dark = readPalette("dark");
+    const rgb = (hex) => [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
+    const distance = (a, b) => Math.hypot(...rgb(a).map((channel, i) => channel - rgb(b)[i]));
+    const firstPairStrongest = (palette) => {
+      const adjacent = palette.slice(0, -1).map((color, i) => distance(color, palette[i + 1]));
+      return adjacent[0] === Math.max(...adjacent);
+    };
+    if (previousTheme == null) root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", previousTheme);
+    const overlapsZoom =
+      !!zoomBox && box.left < zoomBox.right && box.right > zoomBox.left && box.top < zoomBox.bottom && box.bottom > zoomBox.top;
+    return {
+      expanded: element.getAttribute("data-package-expanded") === "true",
+      rows: element.querySelectorAll("[data-package-groups] [style*='background']").length,
+      text: element.textContent ?? "",
+      height: box.height,
+      visible: box.width > 0,
+      overlapsZoom,
+      light,
+      dark,
+      firstPairStrongest: firstPairStrongest(light) && firstPairStrongest(dark),
+    };
+  });
+  report(initialLegend.visible && !initialLegend.overlapsZoom, `${label}: package legend does not overlap zoom controls`, JSON.stringify(initialLegend));
+  report(
+    new Set(initialLegend.light).size === 10 &&
+      new Set(initialLegend.dark).size === 10 &&
+      initialLegend.light.every((color, i) => color !== initialLegend.dark[i]) &&
+      initialLegend.firstPairStrongest,
+    `${label}: package palette has ten distinct light and dark colours`,
+    JSON.stringify({ light: initialLegend.light, dark: initialLegend.dark }),
+  );
+  if (profile.isMobile) {
+    report(
+      !initialLegend.expanded && initialLegend.rows === 0 && initialLegend.height < 40 && /packages\s*·\s*depth\s+\d/.test(initialLegend.text),
+      `${label}: phone package legend starts as a one-line chip`,
+      JSON.stringify(initialLegend),
+    );
+    await page.getByRole("button", { name: "Expand package legend" }).click();
+    await page.waitForSelector('[data-package-legend][data-package-expanded="true"]');
+  } else {
+    report(initialLegend.expanded, `${label}: desktop package legend starts expanded`, JSON.stringify(initialLegend));
+  }
+
+  const legend = await page.locator("[data-package-legend]").evaluate((element) => ({
+    rows: element.querySelectorAll("[data-package-groups] [style*='background']").length,
+    depth: element.querySelector("[data-package-depth]")?.textContent ?? "",
+    visible: element.getBoundingClientRect().width > 0,
+  }));
+  report(legend.visible && legend.rows >= 3, `${label}: layer p renders a package legend`, JSON.stringify(legend));
+  report(new URL(page.url()).searchParams.get("depth") == null, `${label}: automatic depth is omitted from the URL`);
+
+  const plus = page.locator('button[aria-label="Increase package depth"]');
+  if (await plus.isEnabled()) {
+    const beforeDepth = await stableBox(page);
+    await plus.click();
+    await page.waitForTimeout(250);
+    report(new URL(page.url()).searchParams.has("depth"), `${label}: an overridden package depth is in the URL`);
+    report(boxesClose(beforeDepth, await stableBox(page)), `${label}: changing package depth does not re-fit the view`);
+  } else {
+    report(false, `${label}: package depth has an available override`);
+  }
+  if (profile.isMobile) {
+    await page.getByRole("button", { name: "Collapse package legend" }).click();
+    const collapsed = await page.locator("[data-package-legend]").getAttribute("data-package-expanded");
+    report(collapsed === "false", `${label}: expanded phone package legend collapses again`);
+  }
+
+  const target = await page.evaluate(async () => {
+    const response = await fetch("/maps/django/django.json");
+    const doc = await response.json();
+    const counts = new Map();
+    for (let i = 0; i < doc.F.length; i++) {
+      const parts = doc.F[i].split("/").slice(0, -1);
+      for (let depth = 1; depth <= parts.length; depth++) {
+        const path = parts.slice(0, depth).join("/");
+        const row = counts.get(path) || { path, files: [] };
+        row.files.push(i);
+        counts.set(path, row);
+      }
+    }
+    const folder = [...counts.values()]
+      .filter((row) => row.files.length >= 3 && row.files.length <= doc.F.length / 2)
+      .sort((a, b) => b.files.length - a.files.length || a.path.localeCompare(b.path))[0];
+    const district = Object.keys(doc.districts)
+      .map(Number)
+      .sort((a, b) => doc.districts[String(b)].size - doc.districts[String(a)].size)[0];
+    return { dir: folder?.path ?? null, district };
+  });
+  if (!target.dir) {
+    report(false, `${label}: fixture has a usable directory`);
+    await context.close();
+    return;
+  }
+
+  if (profile.isMobile) {
+    const header = page.locator("[data-selection-panel] > div").first();
+    const box = await header.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+  }
+  const treeRow = page.locator('[data-folder-browser] button[data-folder-path]').first();
+  const rootPath = await treeRow.getAttribute("data-folder-path");
+  const rootCount = await page.evaluate(async (path) => {
+    const doc = await (await fetch("/maps/django/django.json")).json();
+    return { total: doc.F.length, count: doc.F.filter((file) => file.startsWith(`${path}/`)).length };
+  }, rootPath);
+  const shareLabel = (count, total) => {
+    const percent = (count / total) * 100;
+    return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
+  };
+  report(
+    (await treeRow.locator("xpath=..").innerText()).includes(shareLabel(rootCount.count, rootCount.total)),
+    `${label}: folder tree row shows its share of repository files`,
+  );
+  const rootExpand = page.getByRole("button", { name: `Expand ${rootPath}` });
+  if (await rootExpand.count()) {
+    await rootExpand.click();
+    const child = page.locator('[data-folder-browser] button[data-folder-path]').nth(1);
+    const childPath = await child.getAttribute("data-folder-path");
+    const childCount = await page.evaluate(async (path) => {
+      const doc = await (await fetch("/maps/django/django.json")).json();
+      return doc.F.filter((file) => file.startsWith(`${path}/`)).length;
+    }, childPath);
+    report(
+      (await child.locator("xpath=..").innerText()).includes(shareLabel(childCount, rootCount.total)),
+      `${label}: child folder share uses repository total`,
+    );
+  }
+  const beforeFolder = await stableBox(page);
+  const input = page.locator('input[aria-label="Filter folder paths"]');
+  await input.fill(target.dir);
+  const filteredRow = page.locator(`[data-folder-browser] button[data-folder-path="${target.dir}"]`);
+  const filteredCount = await page.evaluate(async (path) => {
+    const doc = await (await fetch("/maps/django/django.json")).json();
+    return doc.F.filter((file) => file.startsWith(`${path}/`)).length;
+  }, target.dir);
+  report(
+    (await filteredRow.innerText()).includes(shareLabel(filteredCount, rootCount.total)),
+    `${label}: folder filter result shows repository share`,
+  );
+  await input.press("Enter");
+  await page.waitForFunction((dir) => new URL(location.href).searchParams.get("dir") === dir, target.dir);
+  await page.waitForTimeout(250);
+  report(boxesClose(beforeFolder, await stableBox(page)), `${label}: picking a folder does not re-fit the view`);
+
+  const dim = await page.evaluate((dir) => {
+    const circles = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+    let insideFull = 0;
+    let outsideDim = 0;
+    for (const circle of circles) {
+      const index = Number(circle.getAttribute("data-k").slice(2));
+      const title = circle.querySelector("title")?.textContent?.split("\n")[0] ?? "";
+      const inside = title.startsWith(`${dir}/`);
+      const opacity = circle.getAttribute("fill-opacity");
+      if (inside && opacity !== "0.2") insideFull++;
+      if (!inside && opacity === "0.2") outsideDim++;
+      if (!Number.isInteger(index)) return { insideFull: 0, outsideDim: 0 };
+    }
+    const outlined = [...document.querySelectorAll("svg.map-svg [data-folder-highlight]")];
+    const outlinesInside = outlined.every((ring) => {
+      const index = Number(ring.getAttribute("data-folder-highlight"));
+      return Number.isInteger(index) && circles.some((circle) => circle.getAttribute("data-k") === `f:${index}` && (circle.querySelector("title")?.textContent ?? "").startsWith(`${dir}/`));
+    });
+    return { insideFull, outsideDim, outlined: outlined.length, outlinesInside };
+  }, target.dir);
+  report(dim.insideFull > 0 && dim.outsideDim > 0, `${label}: ?dir= keeps folder files bright and dims files outside`, JSON.stringify(dim));
+  report(dim.outlined > 0 && dim.outlinesInside, `${label}: highlighted folder files have a contrasting outline`, JSON.stringify(dim));
+
+  const empty = await findEmptyPoint(page, profile.viewport.width, profile.viewport.height);
+  if (empty) {
+    await tap(page, profile, empty[0], empty[1]);
+    report(!new URL(page.url()).searchParams.has("dir"), `${label}: an empty-map tap clears the folder highlight`);
+  } else {
+    report(false, `${label}: an empty-map tap clears the folder highlight`, "no empty map point found");
+  }
+
+  await page.goto(`${base}/django/django?geo=r&layer=d&d=${target.district}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(600);
+  if (profile.isMobile) {
+    const header = page.locator("[data-selection-panel] > div").first();
+    const box = await header.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+  }
+  const panel = page.locator("[data-selection-panel]");
+  const folderToggle = panel.locator("[data-district-folders-toggle]");
+  const fileToggle = panel.locator("[data-district-files-toggle]");
+  report(
+    (await folderToggle.getAttribute("aria-expanded")) === "false" &&
+      (await fileToggle.getAttribute("aria-expanded")) === "false" &&
+      (await panel.locator("[data-district-path]").count()) === 0,
+    `${label}: district folders and key files start collapsed`,
+  );
+  if (profile.isMobile) {
+    const height = await panel.evaluate((element) => element.getBoundingClientRect().height);
+    report(height <= 844 * 0.22, `${label}: collapsed phone district card fits 22% of viewport`, `height=${height}`);
+  }
+  const beforeZoom = await stableBox(page);
+  await panel.getByRole("button", { name: "Zoom to district" }).click();
+  await page.waitForTimeout(650);
+  report(!boxesClose(beforeZoom, await stableBox(page)), `${label}: district zoom icon changes map view`);
+  await fileToggle.click();
+  const fileRows = panel.locator("[data-district-key-file]");
+  report(
+    (await fileRows.count()) > 0 && (await fileRows.first().innerText()).includes("lines"),
+    `${label}: expanded key files label line counts`,
+  );
+  await fileToggle.click();
+  await folderToggle.click();
+  const pathRows = page.locator("[data-district-path]");
+  const rowCount = await pathRows.count();
+  report(rowCount > 0 && (await folderToggle.getAttribute("aria-expanded")) === "true", `${label}: expanded folders show path breakdown`, `rows=${rowCount}`);
+  const neighbours = panel.locator("[data-neighbour-district]");
+  if (await neighbours.count()) {
+    const neighbourId = await neighbours.first().getAttribute("data-neighbour-district");
+    await neighbours.first().click();
+    report(
+      new URL(page.url()).searchParams.get("d") === neighbourId && (await folderToggle.getAttribute("aria-expanded")) === "true",
+      `${label}: neighbour tap selects district and preserves folder expansion`,
+    );
+  } else {
+    report(false, `${label}: selected district has a tappable neighbour`);
+  }
+  const selectedPathRows = page.locator("[data-district-path]");
+  if (await selectedPathRows.count()) {
+    const first = selectedPathRows.first();
+    const path = await first.getAttribute("data-district-path");
+    const box = await first.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+    report(
+      !!path && new URL(page.url()).searchParams.get("dir") === path,
+      `${label}: tapping a district path applies the folder highlight`,
+      `expected=${path} url=${page.url()}`,
+    );
+  }
+  await context.close();
+}
+
+// Review regression for district refinement. A single docker file makes the
+// district-wide common prefix empty; the 886-file workflow branch still has
+// to refine past web/ and its single-child chain before reaching five rows.
+// A wide workflow fan-out must instead keep its parent: showing only nodes/
+// would hide about half of the district in `other`.
+// Intercepting one small synthetic map keeps this an end-to-end check of the
+// actual memoised TypeScript derivation and district-card rendering without
+// adding a second implementation of the algorithm to this script.
+async function checkDistrictRefinement(browser, base) {
+  const label = "district path iterative refinement / synthetic";
+  console.log(`\n${label}`);
+  const seed = await (await fetch(`${base}/maps/django/django.json`)).json();
+  const balancedPaths = Array.from(
+    { length: 886 },
+    (_, i) => `web/app/components/workflow/${["a", "b", "c"][i % 3]}/file-${i}.ts`,
+  ).concat("web/types/index.ts", "docker/compose.yml");
+  const widePaths = Array.from({ length: 434 }, (_, i) => `web/app/components/workflow/nodes/file-${i}.ts`);
+  for (let child = 0; child < 20; child++) {
+    for (let i = 0; i < (child < 10 ? 23 : 22); i++) {
+      widePaths.push(`web/app/components/workflow/sub${String(child).padStart(2, "0")}/file-${i}.ts`);
+    }
+  }
+  widePaths.push("web/app/(commonLayout)/index.ts", "web/app/(humanInputLayout)/form/[token]/index.ts", "docker/compose.yml");
+  const context = await browser.newContext({ viewport: { width: 1000, height: 700 } });
+  const page = await context.newPage();
+  let paths = balancedPaths;
+  await page.route("**/maps/synthetic/refinement.json", (route) => route.fulfill({
+    json: {
+      ...seed,
+      repo: "synthetic/refinement",
+      names: { 0: "workflow" },
+      districts: { 0: { ...seed.districts["0"], size: paths.length } },
+      F: paths,
+      N: paths.map((_, i) => {
+        const row = [...seed.N[i % seed.N.length]];
+        row[0] = 0;
+        return row;
+      }),
+      E: [], L: [], S: {}, U: {}, roads: [],
+    },
+  }));
+  const open = () => page.goto(`${base}/synthetic/refinement?geo=r&layer=d&d=0`, { waitUntil: "domcontentloaded" });
+  await open();
+  await page.waitForSelector("[data-district-path-breakdown]");
+  report((await page.locator("[data-district-path]").count()) === 0, `${label}: breakdown is collapsed by default`);
+  report(!(await page.locator("[data-district-summary]").innerText()).includes("mostly"), `${label}: no mostly line below 40%`);
+  await page.locator("[data-district-folders-toggle]").click();
+  const rows = await page.locator("[data-district-path]").evaluateAll((elements) =>
+    elements.map((element) => ({ path: element.getAttribute("data-district-path"), text: element.textContent ?? "" })),
+  );
+  const rowPaths = rows.map((row) => row.path);
+  report(
+    rows.length === 5 &&
+      ["a", "b", "c"].every((branch) => rowPaths.includes(`web/app/components/workflow/${branch}`)) &&
+      rowPaths.includes("web/types") &&
+      rowPaths.includes("docker"),
+    `${label}: dominant web branch refines to workflow children`,
+    JSON.stringify(rows),
+  );
+  report(
+    rows.filter((row) => /\(1 file\)/.test(row.text)).length === 2 && rows.every((row) => !/\(1 files\)/.test(row.text)),
+    `${label}: singular file counts use “file”`,
+    JSON.stringify(rows),
+  );
+
+  paths = widePaths;
+  await open();
+  await page.waitForSelector("[data-district-path-breakdown]");
+  report(
+    (await page.locator("[data-district-summary]").innerText()).includes("mostly web/app/components/workflow/"),
+    `${label}: wide workflow fan-out keeps the parent as mostly`,
+  );
+  await page.locator("[data-district-folders-toggle]").click();
+  const wideRows = await page.locator("[data-district-path-breakdown] > :not([data-district-folders-toggle])").evaluateAll((elements) =>
+    elements.map((element) => ({
+      path: element.getAttribute("data-district-path"),
+      count: Number(element.textContent?.match(/\((\d+) files?\)/)?.[1]),
+      text: element.textContent ?? "",
+    })),
+  );
+  const largestNamed = Math.max(...wideRows.filter((row) => row.path != null).map((row) => row.count));
+  const other = wideRows.find((row) => row.path == null);
+  report(
+    wideRows[0]?.path === "web/app/components/workflow" && wideRows[0].count === 884 &&
+      wideRows.every((row, i) => i === 0 || wideRows[i - 1].count >= row.count) &&
+      (!other || other.count <= largestNamed),
+    `${label}: wide split preserves the 884-file parent and ranks all rows`,
+    JSON.stringify(wideRows),
+  );
+  await context.close();
+}
+
+async function checkDifyDistrictSummary(browser, base, profile) {
+  const label = `workflow district summary (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=d&d=0`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-selection-panel] h3");
+  if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap();
+  await page.waitForSelector("[data-district-summary]");
+  const panel = page.locator("[data-selection-panel]");
+  const text = await panel.innerText();
+  report(
+    text.includes("887 files · 106k lines") &&
+      text.includes("mostly web/app/components/workflow/") &&
+      text.includes("folders (5)") &&
+      text.includes("key files (6)"),
+    `${label}: compact summary and folder count match the fixture`,
+    text,
+  );
+  report(
+    (await panel.locator("[data-neighbour-district]").count()) === 2 &&
+      !text.includes("landmarks") &&
+      (await panel.getByRole("button", { name: "Zoom to district" }).count()) === 1,
+    `${label}: two tappable neighbours and header zoom replace the old rows`,
+  );
+  await panel.locator("[data-district-folders-toggle]").click();
+  const rows = await panel.locator("[data-district-path-breakdown] > :not([data-district-folders-toggle])").evaluateAll((elements) =>
+    elements.map((element) => ({
+      path: element.getAttribute("data-district-path"),
+      count: Number(element.textContent?.match(/\((\d+) files?\)/)?.[1]),
+    })),
+  );
+  const named = rows.filter((row) => row.path != null);
+  const largestNamed = Math.max(...named.map((row) => row.count));
+  report(
+    rows[0]?.path === "web/app/components/workflow" && rows[0].count === 755 &&
+      named.every((row, i) => i === 0 || named[i - 1].count >= row.count) &&
+      rows.at(-1)?.path == null && rows.at(-1).count <= largestNamed,
+    `${label}: folder rows are ranked, other is last and below the largest folder`,
+    JSON.stringify(rows),
+  );
+  await context.close();
+}
+
+// A mixed mainland/island folder must not become an island-fade exception.
+// Compare the opening pin ranks before and after applying api/: the folder
+// outline and dim are allowed to change, but no previously hidden pin may
+// appear. (An all-island folder is intentionally exempted in MapRenderer so
+// a legitimate highlight cannot produce an empty view.)
+async function checkFolderIslandFade(browser, base, profile) {
+  const label = `folder highlight preserves island fade (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const visiblePinRanks = () =>
+    page.locator('svg.map-svg g.hit[data-k^="f:"] > text').evaluateAll((elements) => elements.map((element) => element.textContent));
+
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=p`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(2200);
+  if (profile.isMobile) await page.getByRole("button", { name: "Expand package legend" }).click();
+  const legendText = await page.locator("[data-package-legend]").innerText();
+  report(
+    legendText.includes("(repo root)") && !legendText.includes("(root)/"),
+    `${label}: repository-root package uses the explicit legend label`,
+    legendText,
+  );
+  const before = await visiblePinRanks();
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=p&dir=api`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg [data-folder-highlight]");
+  await page.waitForTimeout(2200);
+  const after = await visiblePinRanks();
+  const extra = after.filter((rank) => !before.includes(rank));
+  const folderClasses = await page.evaluate(async () => {
+    const doc = await (await fetch("/maps/langgenius/dify.json")).json();
+    return [...new Set(doc.F.map((path, i) => (path.startsWith("api/") ? doc.districts[String(doc.N[i][0])].class : null)).filter(Boolean))];
+  });
+  report(
+    folderClasses.includes("mainland") && folderClasses.includes("island"),
+    `${label}: api/ exercises a mixed mainland/island folder`,
+    JSON.stringify(folderClasses),
+  );
+  report(extra.length === 0, `${label}: folder highlight reveals no extra opening-zoom pins`, JSON.stringify({ before, after, extra }));
+  await context.close();
+}
+
+// CLAUDE.md's standing viewer contract: the navigation lists remain
+// populated, and the three tap paths that open detail (district polygon,
+// file dot, symbol row) work on both a mouse viewport and a coarse-pointer
+// phone. Kept here beside #74's additions because the always-present empty
+// Folders panel changes the chrome around those same taps.
+async function checkViewerCards(browser, base, profile) {
+  const label = `viewer cards and directory lists (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  const fixture = await page.evaluate(async () => {
+    const response = await fetch("/maps/django/django.json");
+    const doc = await response.json();
+    return {
+      doc,
+      firstDistrictName: doc.names[Object.keys(doc.districts)[0]],
+      firstLandmarkPath: doc.F[doc.L[0][0]],
+    };
+  });
+  const sidebarText = await page.locator("aside").first().textContent();
+  report(
+    sidebarText?.includes(fixture.firstDistrictName) && sidebarText?.includes(fixture.firstLandmarkPath.split("/").pop()),
+    `${label}: districts are named and landmarks are listed`,
+  );
+
+  const districtTarget = await page.evaluate(() => {
+    const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
+    for (const path of paths) {
+      const rect = path.getBoundingClientRect();
+      for (let yi = 1; yi < 6; yi++) {
+        for (let xi = 1; xi < 6; xi++) {
+          const x = rect.left + (rect.width * xi) / 6;
+          const y = rect.top + (rect.height * yi) / 6;
+          const hit = document.elementFromPoint(x, y)?.closest?.('[data-k^="d:"]');
+          if (hit?.getAttribute("data-k") === path.getAttribute("data-k")) {
+            return { x, y, key: path.getAttribute("data-k") };
+          }
+        }
+      }
+    }
+    return null;
+  });
+  if (districtTarget) {
+    await tap(page, profile, districtTarget.x, districtTarget.y);
+    const districtId = districtTarget.key.split(":")[1];
+    report(
+      new URL(page.url()).searchParams.get("d") === districtId && (await page.locator("[data-selection-panel] h3").count()) > 0,
+      `${label}: tapping a district produces its card`,
+    );
+  } else {
+    report(false, `${label}: tapping a district produces its card`, "no unobstructed district point found");
+  }
+
+  if (profile.isMobile && districtTarget) {
+    const header = page.locator("[data-selection-panel] > div").first();
+    const box = await header.boundingBox();
+    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+  }
+  const fileTarget = await page.evaluate((doc) => {
+    const circles = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+    for (const circle of circles) {
+      const index = Number(circle.getAttribute("data-k").slice(2));
+      if (!doc.S?.[String(index)]?.length) continue;
+      const rect = circle.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const hitKey = document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k");
+      if (hitKey !== `f:${index}`) continue;
+      if (x > innerWidth * 0.22 && x < innerWidth * 0.78 && y > innerHeight * 0.18 && y < innerHeight * 0.72) {
+        return { x, y, index, file: doc.F[index] };
+      }
+    }
+    return null;
+  }, fixture.doc);
+  if (fileTarget) {
+    await tap(page, profile, fileTarget.x, fileTarget.y);
+    report(
+      new URL(page.url()).searchParams.get("file") === fileTarget.file && (await page.locator("[data-selection-panel]").count()) === 1,
+      `${label}: tapping a file produces its card`,
+      `expected=${fileTarget.file} url=${page.url()}`,
+    );
+    const symbol = page.locator("button[data-symbol-row]").first();
+    if ((await symbol.count()) > 0) {
+      const key = await symbol.getAttribute("data-symbol-row");
+      if (profile.hasTouch) await symbol.tap();
+      else await symbol.click();
+      await page.waitForTimeout(400);
+      report(
+        !!key && new URL(page.url()).searchParams.get("sym") === key.split(":")[1],
+        `${label}: tapping a symbol produces its card`,
+      );
+    } else {
+      report(false, `${label}: tapping a symbol produces its card`, "selected file has no visible symbol row");
+    }
+  } else {
+    report(false, `${label}: tapping a file produces its card`, "no on-screen file with symbols found");
+    report(false, `${label}: tapping a symbol produces its card`, "no file card to tap from");
+  }
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const browser = await chromium.launch();
@@ -595,6 +1168,19 @@ async function main() {
   await checkMultiPolygonHover(browser, args.base);
   for (const profile of PROFILES) {
     await checkSelectionDim(browser, args.base, profile);
+  }
+  for (const profile of PROFILES) {
+    await checkPackageLayout(browser, args.base, profile);
+  }
+  await checkDistrictRefinement(browser, args.base);
+  for (const profile of PROFILES) {
+    await checkDifyDistrictSummary(browser, args.base, profile);
+  }
+  for (const profile of PROFILES) {
+    await checkFolderIslandFade(browser, args.base, profile);
+  }
+  for (const profile of PROFILES) {
+    await checkViewerCards(browser, args.base, profile);
   }
   await browser.close();
 

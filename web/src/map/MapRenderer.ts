@@ -29,6 +29,7 @@ import {
   worldBounds,
 } from "./geometry";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
+import type { PackageGrouping } from "./packageLayout";
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { PIN_CAPITAL_HIDE_ZF, PIN_ESTABLISH_AREA, selectPins } from "./pins";
 
@@ -66,6 +67,9 @@ export interface MapRenderState {
   selD: number | null;
   selTerrain: TerrainSelection | null;
   route: Route | null;
+  packageGrouping: PackageGrouping;
+  folderFiles: ReadonlySet<number> | null;
+  folderOnlyIslands: boolean;
 }
 
 export interface MapRendererCallbacks {
@@ -744,10 +748,11 @@ export class MapRenderer {
     return v * this.k;
   }
   private tint(i: number): string {
-    const { doc, layer } = this.state!;
+    const { doc, layer, packageGrouping } = this.state!;
     if (layer === "d") return districtColor(D_(doc, i));
     if (layer === "c") return ramp(Math.min(1, CH(doc, i) / (this.maxCh || 1)));
-    return ramp(Math.min(1, CX_(doc, i) / (this.maxCx || 1)));
+    if (layer === "x") return ramp(Math.min(1, CX_(doc, i) / (this.maxCx || 1)));
+    return packageGrouping.fileColors[i];
   }
   private narrow() {
     return window.innerWidth <= 820;
@@ -786,7 +791,7 @@ export class MapRenderer {
     svg.classList.remove("previewing");
     this.rootG = null;
     if (!state) return;
-    const { doc, geo, layer, sel, selSym, selD, route } = state;
+    const { doc, geo, layer, sel, selSym, selD, route, folderFiles, folderOnlyIslands } = state;
     const g = el("g", {});
     svg.appendChild(g);
     // Issue #51: remember exactly what this paint() drew at, so a later
@@ -831,13 +836,15 @@ export class MapRenderer {
     // down) only decides which lines get drawn and never narrows this set.
     const blast = computeBlast(doc, sel, selSym);
     const selNeighbours = !route && !blast && sel != null ? { out: this.outAdj.get(sel) ?? [], in: this.inAdj.get(sel) ?? [] } : null;
-    const dim = route
-      ? new Set(route.path)
-      : blast
-        ? new Set([...blast.set, sel!])
-        : selNeighbours
-          ? new Set([sel!, ...selNeighbours.out, ...selNeighbours.in])
-          : null;
+    const dim: ReadonlySet<number> | null = folderFiles
+      ? folderFiles
+      : route
+        ? new Set(route.path)
+        : blast
+          ? new Set([...blast.set, sel!])
+          : selNeighbours
+            ? new Set([sel!, ...selNeighbours.out, ...selNeighbours.in])
+            : null;
     // Districts touched by the plain-selection dim set, for fading the
     // ones that aren't (route/blast's district rendering is intentionally
     // untouched -- "keep precedence exactly as today"). Uses the same
@@ -847,7 +854,12 @@ export class MapRenderer {
       ? new Set([D_(doc, sel!), ...selNeighbours.out.map((j) => D_(doc, j)), ...selNeighbours.in.map((j) => D_(doc, j))])
       : null;
     // Issue #63's fade exceptions: an island touched by a selection, route,
-    // blast radius or search result is drawn at full strength. Reuses the
+    // blast radius or search result is drawn at full strength. A folder is
+    // different: it can span mainland and offshore districts, and treating
+    // its whole dim set as a selection exception made hidden island pins
+    // suddenly appear at opening zoom. Preserve the fade unless EVERY file
+    // in the folder is on an island, where suppressing those islands would
+    // leave a valid folder highlight with nothing visible at all. Reuses the
     // SAME sets built above rather than a parallel notion of "important" --
     // `selD` directly (a district picked from the sidebar's islands list,
     // see Sidebar.tsx/MapView.tsx), `sel`'s own district (the selected
@@ -859,7 +871,8 @@ export class MapRenderer {
     const islandExceptionDistricts = new Set<number>();
     if (selD != null) islandExceptionDistricts.add(selD);
     if (sel != null) islandExceptionDistricts.add(D_(doc, sel));
-    if (dim) for (const i of dim) islandExceptionDistricts.add(D_(doc, i));
+    if (dim && (!folderFiles || folderOnlyIslands))
+      for (const i of dim) islandExceptionDistricts.add(D_(doc, i));
 
     if (geo !== "t") {
       doc.roads.forEach(([a, b, w]) => {
@@ -1028,6 +1041,42 @@ export class MapRenderer {
       const t = el("title", {});
       t.textContent = `${doc.F[i]}\n${LOC(doc, i)} loc · churn ${CH(doc, i)} · cplx ${CX_(doc, i)}`;
       node.appendChild(t);
+      // Folder dimming deliberately matches #61's selection opacity. The
+      // positive outline is what makes the kept set readable even when the
+      // package/district fills beneath it remain strongly coloured. It is a
+      // separate pointer-free element so the generous transparent touch
+      // stroke on `node` stays intact.
+      if (folderFiles?.has(i)) {
+        if (node.tagName === "circle") {
+          g.appendChild(
+            el("circle", {
+              cx: node.getAttribute("cx")!,
+              cy: node.getAttribute("cy")!,
+              r: (Number(node.getAttribute("r")) + 0.8).toFixed(2),
+              fill: "none",
+              stroke: "var(--ink)",
+              "stroke-width": 1.1,
+              "pointer-events": "none",
+              "data-folder-highlight": i,
+            }),
+          );
+        } else {
+          g.appendChild(
+            el("rect", {
+              x: (Number(node.getAttribute("x")) - 0.8).toFixed(1),
+              y: (Number(node.getAttribute("y")) - 0.8).toFixed(1),
+              width: (Number(node.getAttribute("width")) + 1.6).toFixed(1),
+              height: (Number(node.getAttribute("height")) + 1.6).toFixed(1),
+              rx: 2.4,
+              fill: "none",
+              stroke: "var(--ink)",
+              "stroke-width": 1.1,
+              "pointer-events": "none",
+              "data-folder-highlight": i,
+            }),
+          );
+        }
+      }
       g.appendChild(node);
     }
 
@@ -1607,7 +1656,7 @@ export class MapRenderer {
   // cell, solved so that AREA tracks line count. Rooms are laid inside it and
   // clipped to its boundary, so a file's classes divide exactly the land the
   // file owns.
-  private plot(g: SVGGElement, defs: SVGDefsElement, i: number, dim: Set<number> | null, roomsOn: boolean) {
+  private plot(g: SVGGElement, defs: SVGDefsElement, i: number, dim: ReadonlySet<number> | null, roomsOn: boolean) {
     const { doc, sel, selSym, layer } = this.state!;
     const poly = doc.P![String(i)];
     const faded = !!(dim && !dim.has(i));
