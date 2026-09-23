@@ -49,7 +49,7 @@ struct Candidate {
     owner: usize,
     chain: Vec<String>,
     call: bool,
-    dynamic: bool,
+    unresolved_reason: Option<&'static str>,
 }
 
 struct FileInfo {
@@ -353,11 +353,24 @@ fn collect_candidates(
                 .child_by_field_name("function")
                 .or_else(|| node.child_by_field_name("method"));
             let resolved = callee.and_then(|n| chain(n, bytes));
+            let parent_class_method = callee.is_some_and(|n| {
+                n.kind() == "attribute"
+                    && n.child_by_field_name("object").is_some_and(|object| {
+                        object.kind() == "call"
+                            && object
+                                .child_by_field_name("function")
+                                .is_some_and(|function| text(function, bytes) == "super")
+                    })
+            });
             out.push(Candidate {
                 owner,
                 chain: resolved.clone().unwrap_or_default(),
                 call: true,
-                dynamic: resolved.is_none(),
+                unresolved_reason: resolved.is_none().then_some(if parent_class_method {
+                    "parent_class_method"
+                } else {
+                    "dynamic"
+                }),
             });
         } else if !covered_by_reference_wrapper(node)
             && matches!(
@@ -377,7 +390,7 @@ fn collect_candidates(
                     owner,
                     chain: parts,
                     call: false,
-                    dynamic: false,
+                    unresolved_reason: None,
                 });
             }
         } else if node.kind() == "class_definition" {
@@ -389,7 +402,7 @@ fn collect_candidates(
                         owner,
                         chain: parts,
                         call: false,
-                        dynamic: false,
+                        unresolved_reason: None,
                     });
                 }
             }
@@ -501,11 +514,18 @@ fn imports_multi(
                 }
             }
             let stem = pieces.join("/");
+            // NodeNext emits `.js` specifiers for TypeScript source. The
+            // existing file resolver accepts this same substitution (finding
+            // 20), and only an actually mapped target is credited here.
+            let source_stem = stem
+                .strip_suffix(".js")
+                .or_else(|| stem.strip_suffix(".jsx"))
+                .unwrap_or(&stem);
             let target = [
                 stem.clone(),
-                format!("{stem}.ts"),
-                format!("{stem}.tsx"),
-                format!("{stem}/index.ts"),
+                format!("{source_stem}.ts"),
+                format!("{source_stem}.tsx"),
+                format!("{source_stem}/index.ts"),
             ]
             .into_iter()
             .find_map(|p| modules.get(&p).copied());
@@ -649,7 +669,10 @@ fn resolve(
 ) -> Result<usize, &'static str> {
     let source = &spans[candidate.owner];
     let parts = &candidate.chain;
-    if candidate.dynamic || parts.is_empty() {
+    if let Some(reason) = candidate.unresolved_reason {
+        return Err(reason);
+    }
+    if parts.is_empty() {
         return Err("dynamic");
     }
     let head = parts[0].as_str();
@@ -778,10 +801,29 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
         };
         let mut parser = Parser::new();
         parser.set_language(&grammar)?;
+        // A parse failure still occupies its map file index. Keeping an
+        // empty slot prevents a later file's imports from reading the wrong
+        // binding table, which would fabricate cross-file references.
         let Some(tree) = parser.parse(&bytes, None) else {
+            module_code_lines.insert(fi, entry.code_lines.unwrap_or(0));
+            infos.push(FileInfo {
+                lang,
+                directory: entry.file.rsplit_once('/').map_or("", |v| v.0).to_owned(),
+                imports: BTreeMap::new(),
+                candidates: Vec::new(),
+                shadowed: BTreeMap::new(),
+            });
             continue;
         };
         if lang == LanguageKind::Python && tree.root_node().has_error() {
+            module_code_lines.insert(fi, entry.code_lines.unwrap_or(0));
+            infos.push(FileInfo {
+                lang,
+                directory: entry.file.rsplit_once('/').map_or("", |v| v.0).to_owned(),
+                imports: BTreeMap::new(),
+                candidates: Vec::new(),
+                shadowed: BTreeMap::new(),
+            });
             continue;
         }
         let root = tree.root_node();
@@ -1109,7 +1151,7 @@ mod tests {
         let (dir, nodes) = fixture(&[
             ("pkg/__init__.py", "pkg", "from .core import Target\n"),
             ("pkg/core.py", "pkg.core", "class Target:\n    def method(self):\n        pass\n"),
-            ("caller.py", "caller", "from pkg import Target\nimport pkg.core as core\n\nclass Caller(Target):\n    def method(self):\n        self.helper()\n        Target.method()\n        core.Target.method()\n        Target()\n    def helper(self):\n        pass\n\ndef outer():\n    def inner():\n        outer()\n    inner()\n\ndef typed(x: Target) -> Target:\n    return x\n\n@Target\ndef decorated():\n    pass\n"),
+            ("caller.py", "caller", "from pkg import Target\nimport pkg.core as core\n\nclass Caller(Target):\n    def method(self):\n        self.helper()\n        Target.method()\n        core.Target.method()\n        super().method()\n        Target()\n    def helper(self):\n        pass\n\ndef outer():\n    def inner():\n        outer()\n    inner()\n\ndef typed(x: Target) -> Target:\n    return x\n\n@Target\ndef decorated():\n    pass\n"),
         ]);
         let doc = build(dir.path(), &nodes).unwrap();
         let target = id(&doc, 1, "Target");
@@ -1135,6 +1177,7 @@ mod tests {
             2
         );
         assert!(doc.coverage.calls_resolved > 0);
+        assert_eq!(doc.coverage.unresolved["parent_class_method"], 1);
     }
 
     #[test]
@@ -1146,6 +1189,19 @@ mod tests {
         assert_eq!(doc.coverage.calls_resolved, 0);
         assert!(!doc.coverage.unresolved.is_empty());
         assert_eq!(doc.symbols[id(&doc, 0, "known")].0 .6, 3);
+    }
+
+    #[test]
+    fn follows_four_reexport_hops_but_no_further() {
+        let (dir, nodes) = fixture(&[
+            ("p/__init__.py", "p", "from .a import X\n"),
+            ("p/a.py", "p.a", "from .b import X\n"),
+            ("p/b.py", "p.b", "from .c import X\n"),
+            ("p/c.py", "p.c", "class X:\n    pass\n"),
+            ("use.py", "use", "from p import X\ndef f():\n    X()\n"),
+        ]);
+        let doc = build(dir.path(), &nodes).unwrap();
+        assert!(edge(&doc, id(&doc, 4, "f"), id(&doc, 3, "X")));
     }
 
     #[test]
@@ -1203,7 +1259,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.path().join("use.ts"),
-            "import { Thing as Alias } from './thing';\nfunction use() { Alias.run(); }\n",
+            "import { Thing as Alias } from './thing.js';\nfunction use() { Alias.run(); }\n",
         )
         .unwrap();
         let nodes = vec![
