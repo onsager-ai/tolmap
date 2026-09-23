@@ -798,4 +798,20 @@ mod tests {
             assert!(parse_reply(&bad, &contexts).is_none());
         }
     }
+
+    #[test]
+    fn spend_reservations_persist_and_stop_before_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spend.json");
+        std::env::set_var("TOLMAP_NAMER_BUDGET_USD", "0.05");
+        let namer = ModelNamer::new(DEFAULT_MODEL.to_owned(), path.clone());
+        assert!(namer.reserve(100).is_some());
+        let reopened = ModelNamer::new(DEFAULT_MODEL.to_owned(), path.clone());
+        assert!(reopened.reserve(100).is_some());
+        assert!(reopened.reserve(100).is_none());
+        let ledger: SpendLedger = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(ledger.calls, 2);
+        assert!(ledger.reserved_usd <= 0.05);
+        std::env::remove_var("TOLMAP_NAMER_BUDGET_USD");
+    }
 }
