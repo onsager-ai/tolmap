@@ -211,11 +211,11 @@ enum FileRaw {
 }
 
 #[derive(Clone, Debug)]
-struct PythonImport {
-    from: bool,
-    level: usize,
-    module: String,
-    names: Vec<(String, Option<String>)>,
+pub(crate) struct PythonImport {
+    pub(crate) from: bool,
+    pub(crate) level: usize,
+    pub(crate) module: String,
+    pub(crate) names: Vec<(String, Option<String>)>,
 }
 
 pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData> {
@@ -1298,7 +1298,7 @@ fn module_name(relative: &str, pkg: &str) -> String {
     parts.join(".")
 }
 
-fn python_imports(root: Node<'_>, source: &[u8]) -> Vec<PythonImport> {
+pub(crate) fn python_imports(root: Node<'_>, source: &[u8]) -> Vec<PythonImport> {
     let mut result = Vec::new();
     for node in walk(root) {
         match node.kind() {
@@ -1375,7 +1375,7 @@ fn import_name(node: Node<'_>, source: &[u8]) -> Option<(String, Option<String>)
 /// relative import: at level 1 it kept the whole module name, so
 /// `from . import x` resolved to a name that was never a known module.
 /// See issue #12.
-fn python_head(import: &PythonImport, current_module: &str, is_pkg: bool) -> String {
+pub(crate) fn python_head(import: &PythonImport, current_module: &str, is_pkg: bool) -> String {
     if import.level == 0 {
         return import.module.clone();
     }

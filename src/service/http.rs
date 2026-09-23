@@ -32,6 +32,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{job_id}/events", get(get_job_events))
         .route("/api/maps", get(get_maps))
         .route("/api/maps/{owner}/{repo}", get(get_map))
+        .route("/api/maps/{owner}/{repo}/symbols", get(get_symbols))
         .route("/api/healthz", get(get_healthz));
 
     // Opt-in (TOLMAP_STATIC_DIR unset keeps this identical to before it
@@ -299,6 +300,41 @@ async fn get_map(
         bytes,
     )
         .into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct SymbolsQuery {
+    commit: Option<String>,
+    district: usize,
+}
+
+async fn get_symbols(
+    State(state): State<Arc<AppState>>,
+    AxPath((owner, repo)): AxPath<(String, String)>,
+    Query(query): Query<SymbolsQuery>,
+) -> Result<Json<crate::schema::DistrictSymbols>, ApiError> {
+    let slug = format!(
+        "{}/{}",
+        clone::canonicalize(&owner),
+        clone::canonicalize(&repo)
+    );
+    let row = match &query.commit {
+        Some(commit) => state.store.get(&slug, commit)?,
+        None => state.store.latest(&slug)?,
+    }
+    .ok_or_else(|| ApiError::not_found(format!("{slug} has not been indexed")))?;
+    let map: crate::schema::MapDocument = super::store::read_map_document(&row.map_path)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let path = row.map_path.with_extension("symbols.json");
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| ApiError::internal(format!("read {}: {e}", path.display())))?;
+    let symbols: crate::schema::SymbolsDocument = serde_json::from_slice(&bytes)
+        .map_err(|e| ApiError::internal(format!("parse {}: {e}", path.display())))?;
+    let district = symbols.district(&map, query.district).ok_or_else(|| {
+        ApiError::not_found(format!("district {} does not exist", query.district))
+    })?;
+    Ok(Json(district))
 }
 
 // ---- GET /api/healthz ------------------------------------------------------

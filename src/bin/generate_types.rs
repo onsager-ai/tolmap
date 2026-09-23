@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use tolmap::schema::MapDocument;
+use tolmap::schema::{DistrictSymbols, MapDocument, SymbolsDocument};
 use ts_rs::{Config, TS};
 
 #[derive(Debug, Parser)]
@@ -42,6 +42,8 @@ fn typescript_files(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
 fn export_to(directory: &Path) -> Result<()> {
     fs::create_dir_all(directory)?;
     MapDocument::export_all(&Config::default().with_out_dir(directory))?;
+    SymbolsDocument::export_all(&Config::default().with_out_dir(directory))?;
+    DistrictSymbols::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 

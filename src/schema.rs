@@ -103,6 +103,43 @@ pub struct CoverageReport {
     pub by_language: BTreeMap<String, CoverageLanguage>,
 }
 
+/// Indices in this document are global and stable across district responses.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(type = "[number, string, number, number, number, number, number]")]
+pub struct HierSymbolRow(pub (usize, String, usize, usize, usize, isize, usize));
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+pub struct SymbolCoverage {
+    pub calls_total: usize,
+    pub calls_resolved: usize,
+    pub unresolved: BTreeMap<String, usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+pub struct SymbolsDocument {
+    pub files: Vec<usize>,
+    pub symbols: Vec<HierSymbolRow>,
+    /// [source symbol, target symbol, occurrence count].
+    pub edges: Vec<[usize; 3]>,
+    /// Per-file code lines outside every top-level symbol.
+    pub module_code_lines: BTreeMap<usize, usize>,
+    pub coverage: SymbolCoverage,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+pub struct DistrictSymbols {
+    pub district: usize,
+    pub files: Vec<usize>,
+    /// Global symbol indices, including remote endpoints of touching edges.
+    pub symbol_indices: Vec<usize>,
+    pub symbols: Vec<HierSymbolRow>,
+    pub edges: Vec<[usize; 3]>,
+    pub module_code_lines: BTreeMap<usize, usize>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MapDocument {

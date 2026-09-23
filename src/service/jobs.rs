@@ -367,6 +367,7 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
             )
         }
     };
+    let symbol_nodes = graph.nodes.clone();
 
     // Warm start (finding 4): read the previous commit's membership out of
     // the store, if there is one for this slug, and seed the partitioner
@@ -463,6 +464,16 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
             )
         }
     };
+    if let Err(err) = crate::symbols::write_sibling(&materialized.path, &symbol_nodes, &built_path)
+    {
+        return finish_failed(
+            &tx,
+            ErrorBody {
+                error: "index_failed".to_owned(),
+                message: format!("{err:#}"),
+            },
+        );
+    }
 
     if let Err(err) = state
         .store
@@ -513,6 +524,17 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         }
     }
     if let Err(err) = std::fs::rename(&built_path, &final_path) {
+        return finish_failed(
+            &tx,
+            ErrorBody {
+                error: "internal_error".to_owned(),
+                message: err.to_string(),
+            },
+        );
+    }
+    let built_symbols = built_path.with_extension("symbols.json");
+    let final_symbols = final_path.with_extension("symbols.json");
+    if let Err(err) = std::fs::rename(&built_symbols, &final_symbols) {
         return finish_failed(
             &tx,
             ErrorBody {

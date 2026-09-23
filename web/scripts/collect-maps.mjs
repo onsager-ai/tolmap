@@ -121,6 +121,10 @@ async function collectMap(indexBySlug, slug, file) {
   const destDir = path.join(OUT_DIR, owner);
   await mkdir(destDir, { recursive: true });
   await writeFile(path.join(destDir, `${repo}.json`), JSON.stringify(doc));
+  const symbolsFile = file.replace(/\.json$/, ".symbols.json");
+  if (existsSync(symbolsFile)) {
+    await writeFile(path.join(destDir, `${repo}.symbols.json`), await readFile(symbolsFile));
+  }
   indexBySlug.set(slug, {
     slug,
     owner,
