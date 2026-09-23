@@ -27,24 +27,64 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
             .total_cmp(&polygon_area(a))
             .then_with(|| a.len().cmp(&b.len()))
     });
-    let output = rings
-        .into_iter()
-        .filter_map(|points| {
-            let stride = points.len().div_ceil(CARD_CONTOUR_POINTS).max(1);
-            let polygon = points
-                .into_iter()
-                .step_by(stride)
-                .map(|p| {
-                    [
-                        ((canvas.low[0] + p[0] * canvas.step) * 1e9).round() / 1e9,
-                        ((canvas.low[1] + p[1] * canvas.step) * 1e9).round() / 1e9,
-                    ]
-                })
-                .collect::<Ring>();
-            (polygon.len() >= 3 && polygon_area(&polygon) > 0.0).then_some(polygon)
-        })
-        .collect::<Rings>();
-    (!output.is_empty()).then_some(output)
+    let maximum = rings.iter().map(Vec::len).max()?;
+    let mut limit = CARD_CONTOUR_POINTS;
+    loop {
+        let output = rings
+            .iter()
+            .filter_map(|points| {
+                let stride = points.len().div_ceil(limit).max(1);
+                let polygon = points
+                    .iter()
+                    .step_by(stride)
+                    .map(|p| {
+                        [
+                            ((canvas.low[0] + p[0] * canvas.step) * 1e9).round() / 1e9,
+                            ((canvas.low[1] + p[1] * canvas.step) * 1e9).round() / 1e9,
+                        ]
+                    })
+                    .collect::<Ring>();
+                (polygon.len() >= 3 && polygon_area(&polygon) > 0.0).then_some(polygon)
+            })
+            .collect::<Rings>();
+        if output.is_empty() {
+            return None;
+        }
+        if !covers_unowned_pixel(mask, canvas, &output) || limit >= maximum {
+            return Some(output);
+        }
+        limit = (limit * 2).min(maximum);
+    }
+}
+
+fn covers_unowned_pixel(mask: &[bool], canvas: &Canvas, rings: &Rings) -> bool {
+    let mut low = [f64::INFINITY; 2];
+    let mut high = [f64::NEG_INFINITY; 2];
+    for point in rings.iter().flatten() {
+        for axis in 0..2 {
+            low[axis] = low[axis].min(point[axis]);
+            high[axis] = high[axis].max(point[axis]);
+        }
+    }
+    let x0 = (((low[0] - canvas.low[0]) / canvas.step).floor() as isize).max(0) as usize;
+    let y0 = (((low[1] - canvas.low[1]) / canvas.step).floor() as isize).max(0) as usize;
+    let x1 = (((high[0] - canvas.low[0]) / canvas.step).ceil() as usize).min(canvas.grid - 1);
+    let y1 = (((high[1] - canvas.low[1]) / canvas.step).ceil() as usize).min(canvas.grid - 1);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if mask[y * canvas.grid + x] {
+                continue;
+            }
+            let point = [
+                canvas.low[0] + x as f64 * canvas.step,
+                canvas.low[1] + y as f64 * canvas.step,
+            ];
+            if point_in_rings(point, rings) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn point_in_rings(point: [f64; 2], rings: &Rings) -> bool {
@@ -720,5 +760,26 @@ mod tests {
         assert!(point_in_rings([0.1, 0.1], &outline));
         assert!(!point_in_rings([0.5, 0.5], &outline));
         assert!(rings_area(&outline) < polygon_area(&outline[0]));
+    }
+
+    #[test]
+    fn simplified_card_does_not_cover_another_owners_pixel() {
+        let (canvas, mask) = square_canvas(60);
+        let regions = allocate(&mask, &canvas, &[1.0, 3.0, 9.0, 2.0]);
+        for (owner, region) in regions.iter().enumerate() {
+            let outline = ring(region, &canvas).unwrap();
+            for (pixel, &claimed) in mask.iter().enumerate() {
+                if claimed && !region[pixel] {
+                    let center = [
+                        canvas.low[0] + (pixel % canvas.grid) as f64 * canvas.step,
+                        canvas.low[1] + (pixel / canvas.grid) as f64 * canvas.step,
+                    ];
+                    assert!(
+                        !point_in_rings(center, &outline),
+                        "owner {owner} covers {pixel}"
+                    );
+                }
+            }
+        }
     }
 }
