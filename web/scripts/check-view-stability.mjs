@@ -320,14 +320,27 @@ async function findEmptyPointWithZoomOut(page, vw, vh, maxAttempts = 3) {
   return null;
 }
 
-/** A point that resolves (via elementFromPoint) to a district polygon
- * itself -- large by construction, unlike a file dot (see
- * checkDragThresholdNoSelect's own comment for why that distinction
- * matters there). Same unobstructed-point algorithm checkViewerCards uses
- * for its own district tap, factored out since a second check needs it. */
-async function pickDistrictPoint(page, hasTouch) {
-  return page.evaluate((touch) => {
-    const paths = [...document.querySelectorAll(touch ? 'svg.map-svg text.hit[data-k^="d:"]' : 'svg.map-svg path.hit[data-k^="d:"]')];
+/** A point that resolves (via elementFromPoint) to a district itself --
+ * large by construction, unlike a file dot (see checkDragThresholdNoSelect's
+ * own comment for why that distinction matters there). Same unobstructed-
+ * point algorithm checkViewerCards uses for its own district tap, factored
+ * out since a second check needs it.
+ *
+ * Perf follow-up (issue #82): always the district's NAME LABEL now, on both
+ * profiles -- a footprint-mode district's own polygon fill is tiled edge to
+ * edge by its files (batched or not), so a point that resolves to the BARE
+ * polygon (not a label) is, semantically, either a rounding-gap artefact
+ * between two adjacent file fills or a gutter stroke's paint-over -- both
+ * genuinely belong to some file underneath, and MapRenderer's own
+ * resolveKey() now deliberately refines exactly that case to the file (see
+ * its own doc comment for the CI failure that fix addresses). A label tap is
+ * the one gesture resolveKey() never second-guesses, and it's what this
+ * function now finds on either profile -- desktop used to search the
+ * polygon specifically; touch already searched the label, so only the
+ * desktop path's target selector changes here. */
+async function pickDistrictPoint(page, _hasTouch) {
+  return page.evaluate(() => {
+    const paths = [...document.querySelectorAll('svg.map-svg text.hit[data-k^="d:"]')];
     for (const path of paths) {
       const rect = path.getBoundingClientRect();
       for (let yi = 1; yi < 6; yi++) {
@@ -342,7 +355,7 @@ async function pickDistrictPoint(page, hasTouch) {
       }
     }
     return null;
-  }, hasTouch);
+  });
 }
 
 /** Two on-screen file dots, at least `minDist` CSS px apart, for measuring k
@@ -1269,8 +1282,11 @@ async function checkViewerCards(browser, base, profile) {
     `${label}: districts are named and landmarks are listed`,
   );
 
-  const districtTarget = await page.evaluate((touch) => {
-    const paths = [...document.querySelectorAll(touch ? 'svg.map-svg text.hit[data-k^="d:"]' : 'svg.map-svg path.hit[data-k^="d:"]')];
+  // Perf follow-up: always the district's NAME LABEL now -- see
+  // pickDistrictPoint's own comment for why a bare-polygon point is no
+  // longer a reliable "selects the district" target in footprint mode.
+  const districtTarget = await page.evaluate(() => {
+    const paths = [...document.querySelectorAll('svg.map-svg text.hit[data-k^="d:"]')];
     for (const path of paths) {
       const rect = path.getBoundingClientRect();
       for (let yi = 1; yi < 6; yi++) {
@@ -1472,6 +1488,18 @@ async function checkFolderWinsFileCollision(browser, base) {
       doc.P[String(probe)] = doc.P[String(probe)].map(([x, y]) => [x + dx, y + dy]);
     }
   }
+  // Perf follow-up: `probe` is an ordinary file, so in a small-on-screen
+  // (batched) district it would have no individual element to assert
+  // `[data-k="f:${probe}"]` against at all (MapRenderer's own
+  // districtFootprintsLarge). Adding it to `doc.L` as a synthetic landmark
+  // forces it into `alwaysDrawn` regardless of district size -- this test's
+  // whole point is the folder-label/file collision at this exact spot, not
+  // the batching threshold, so guaranteeing an individual element here is
+  // the fixture tweak, not a workaround for a real bug. "capital" specifically
+  // (not e.g. "entry"): pins.ts's isRetiredPinKind means a capital lands in
+  // alwaysDrawn WITHOUT also placing a competing pin glyph that could itself
+  // collide with the folder label this test is about.
+  doc.L = [...doc.L, [probe, "capital", "test fixture", 99999]];
   await page.route("**/maps/langgenius/dify.json", (route) => route.fulfill({ json: doc }));
   await page.goto(`${base}/langgenius/dify?d=${district}`);
   await page.waitForSelector('button[aria-label="Zoom to district"]');
@@ -2598,7 +2626,7 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
       const sx = cand.c[0] * scale + tx;
       const sy = cand.c[1] * scale + ty;
       if (sx < rect[0] || sx > rect[2] || sy < rect[1] || sy > rect[3]) continue;
-      return { i: cand.i, sx, sy };
+      return { i: cand.i, sx, sy, wx: cand.c[0], wy: cand.c[1] };
     }
     return null;
   }, { doc, landmarkArr: [...landmarks] });
@@ -2608,12 +2636,42 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     await context.close();
     return;
   }
-  const expected = doc.F[result.i];
   await tap(page, profile, result.sx, result.sy);
+  const selectedFile = new URL(page.url()).searchParams.get("file");
+  // Assert the OUTCOME is geometrically justified rather than predicting
+  // which exact file wins -- multiple tiny, adjacent, reserved-minimum-pixel
+  // cells (finding 29) can genuinely all contain the same point at this
+  // scale (footprints.ts's hitTestFootprint ties to the lowest file index in
+  // its bucket, deterministically, but this script doesn't replicate that
+  // bucket's exact contents/order independently). Verifying the selected
+  // file's OWN polygon contains the exact world point that was tapped is a
+  // direct proof the JS hit-test worked, without depending on tie-breaking.
+  const selectedContains = selectedFile
+    ? await page.evaluate(
+        ({ file, wx, wy }) => {
+          // Same even-odd ray cast as the candidate search above.
+          return fetch("/maps/langgenius/dify.json")
+            .then((r) => r.json())
+            .then((doc) => {
+              const i = doc.F.indexOf(file);
+              const poly = doc.P?.[String(i)];
+              if (!poly) return false;
+              let c = false;
+              for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
+                const [xi, yi] = poly[a];
+                const [xj, yj] = poly[b];
+                if (yi > wy !== yj > wy && wx < ((xj - xi) * (wy - yi)) / (yj - yi) + xi) c = !c;
+              }
+              return c;
+            });
+        },
+        { file: selectedFile, wx: result.wx, wy: result.wy },
+      )
+    : false;
   report(
-    new URL(page.url()).searchParams.get("file") === expected,
-    `${label}: tapping a small footprint by coordinate selects it`,
-    `expected=${expected} url=${page.url()}`,
+    !!selectedFile && selectedContains,
+    `${label}: tapping a small footprint by coordinate selects a file whose polygon actually contains that point`,
+    `guessed=${doc.F[result.i]} selected=${selectedFile}`,
   );
   await context.close();
 }

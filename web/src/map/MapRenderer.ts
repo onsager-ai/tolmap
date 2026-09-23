@@ -3287,21 +3287,37 @@ export class MapRenderer {
    * of its own to carry a data-k, and is pointer-events:none by design, so
    * the browser's hit-test for a click/hover over one keeps going to
    * whatever's underneath that DOES have pointer-events -- the district
-   * polygon, which does have a data-k ("d:<id>"). Refine that (and the
-   * genuine no-hit-at-all case, `kk == null`) through the world-space JS
-   * point-in-polygon index (footprints.ts's `hitTestFootprint`) before
-   * trusting either: if it finds a file, that's more specific and wins; if
-   * it doesn't, `kk` is exactly right as it already stood (a real district
-   * tap, or genuinely nothing). A file that already resolved to its OWN
-   * "f:i" via the plain DOM walk (an individually-drawn, non-batched file --
-   * large-on-screen district, or one of the `alwaysDrawn` set) never reaches
-   * this branch at all, so this changes nothing for maps without footprints
-   * or for large-on-screen files. */
+   * polygon, which does have a data-k ("d:<id>"). Refine THAT specific case
+   * (and the genuine no-hit-at-all case, `kk == null`) through the world-
+   * space JS point-in-polygon index (footprints.ts's `hitTestFootprint`)
+   * before trusting either.
+   *
+   * Refinement is gated on the RESOLVED ELEMENT's tag, not merely on the key
+   * string starting with "d:" -- a district's NAME LABEL carries the exact
+   * same "d:<id>" key as its polygon (placeDistrictLabels' own `put()`), and
+   * a label tap is a deliberate, explicit "select this district" gesture
+   * that must never be second-guessed: a label sits at the district's own
+   * centroid, comfortably inside whatever footprint tiles that spot, so the
+   * hit-test would ALWAYS find a file there and silently turn every label
+   * tap into a file tap without this guard (a CI review finding:
+   * checkViewerCards/checkDragThresholdNoSelect both pick an on-screen
+   * district point specifically to avoid file-sized hit-target flakiness,
+   * and both started failing when this refinement first shipped without the
+   * guard). Only a bare `<path>` (the polygon itself, no label/badge on top)
+   * is eligible for refinement -- that is specifically the "fell through a
+   * batched fill, or a gutter, to the polygon underneath" case, which is
+   * exactly what needs a second opinion from real geometry. A file that
+   * already resolved to its own "f:i" via the plain DOM walk (an
+   * individually-drawn, non-batched file -- large-on-screen district, or one
+   * of the `alwaysDrawn` set) never reaches this branch at all, so this
+   * changes nothing for maps without footprints or for large-on-screen
+   * files. */
   private resolveKey(target: Element, clientX: number, clientY: number): string | null {
     let t: Element | null = target;
     while (t && t !== this.svg && !t.getAttribute?.("data-k")) t = t.parentNode as Element | null;
     const kk = t && t !== this.svg ? t.getAttribute?.("data-k") : null;
-    if (this.hasFootprints && this.footprintIndex && this.state && (kk == null || kk.startsWith("d:"))) {
+    const isBarePolygon = !!t && t !== this.svg && t.tagName?.toLowerCase() === "path" && !!kk?.startsWith("d:");
+    if (this.hasFootprints && this.footprintIndex && this.state && (kk == null || isBarePolygon)) {
       const [sx, sy] = this.toSvg({ clientX, clientY });
       const wx = (sx - this.tx) / this.k;
       const wy = (sy - this.ty) / this.k;
