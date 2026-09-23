@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { MapDocument, SymbolRow } from "@/types";
-import { CH, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
+import { CH, CODE_LINES, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
 import { KCOL, KIND, LINK_PREVIEW_MAX } from "@/map/constants";
 import { computeBlast, type AdjMap } from "@/map/graph";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
@@ -540,7 +540,7 @@ function FileBody({
           <b>{doc.names[String(D_(doc, i))]}</b>
         </Row>
         <Row label="file lines">
-          <b>{LOC(doc, i)}</b>
+          <b>{LOC(doc, i)} lines · {CODE_LINES(doc, i)} code</b>
         </Row>
         {sy.length > 0 && (
           <Row label="symbols">

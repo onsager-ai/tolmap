@@ -228,58 +228,6 @@ fn attach_go_methods(root: Node<'_>, bytes: &[u8], spans: &mut [Span], offset: u
     visit(root, bytes, spans, &types, offset);
 }
 
-// TODO(feat/code-lines): reuse its shared code-line counter when that PR lands.
-// The local counter excludes blank, comment-only, and Python docstring lines.
-fn code_line_flags(root: Node<'_>, bytes: &[u8], lang: LanguageKind) -> Vec<bool> {
-    let lines: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
-    let mut flags = lines
-        .iter()
-        .map(|line| {
-            let s = String::from_utf8_lossy(line);
-            let s = s.trim();
-            !s.is_empty()
-                && !s.starts_with('#')
-                && !s.starts_with("//")
-                && !s.starts_with("/*")
-                && !s.starts_with('*')
-        })
-        .collect::<Vec<_>>();
-    fn exclude(node: Node<'_>, lines: &[&[u8]], flags: &mut [bool], lang: LanguageKind) {
-        let docstring = lang == LanguageKind::Python
-            && node.kind() == "expression_statement"
-            && node
-                .parent()
-                .is_some_and(|p| matches!(p.kind(), "module" | "block"))
-            && node
-                .parent()
-                .and_then(|p| children(p).first().copied())
-                .is_some_and(|first| first.id() == node.id())
-            && children(node)
-                .first()
-                .is_some_and(|first| first.kind() == "string");
-        if node.kind() == "comment" || docstring {
-            for row in node.start_position().row..=node.end_position().row {
-                if let Some(flag) = flags.get_mut(row) {
-                    let line = String::from_utf8_lossy(lines.get(row).copied().unwrap_or(&[]));
-                    if docstring
-                        || line.trim_start().starts_with('#')
-                        || line.trim_start().starts_with("//")
-                        || line.trim_start().starts_with("/*")
-                        || line.trim_start().starts_with('*')
-                    {
-                        *flag = false;
-                    }
-                }
-            }
-        }
-        for child in children(node) {
-            exclude(child, lines, flags, lang);
-        }
-    }
-    exclude(root, &lines, &mut flags, lang);
-    flags
-}
-
 fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
     match node.kind() {
         "identifier" | "type_identifier" | "package_identifier" | "this" => {
@@ -756,7 +704,7 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
         if lang == LanguageKind::Go {
             attach_go_methods(root, &bytes, &mut spans[first..], first);
         }
-        let flags = code_line_flags(root, &bytes, lang);
+        let flags = extract::code_line_flags(root, &bytes, lang);
         for span in &mut spans[first..] {
             span.code_lines = flags
                 .iter()
@@ -970,6 +918,7 @@ mod tests {
             module: module.to_owned(),
             lang: lang.to_owned(),
             loc: 0,
+            code_lines: None,
             complexity: 0,
             churn: 0,
             fanin: 0.0,

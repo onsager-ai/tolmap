@@ -611,6 +611,12 @@ fn compact(
             ))
         })
         .collect::<Vec<_>>();
+    let code_lines = layout
+        .weighted
+        .nodes
+        .iter()
+        .map(|node| node.code_lines)
+        .collect::<Option<Vec<_>>>();
     let edges = layout
         .weighted
         .imports
@@ -694,6 +700,7 @@ fn compact(
         districts,
         files,
         nodes,
+        code_lines,
         edges,
         landmarks,
         symbols,

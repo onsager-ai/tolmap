@@ -1113,3 +1113,54 @@ Dify's 7,038 new directed import pairs lose **zero** old pairs, with identical f
 Owner decisions 2026-09-23 (AskUserQuestion, session 266f58ce): **“Folder labels on zoom-in”** and **“Collapse the island ring.”** Labels reuse #75's district path rows. A row needs at least 8% of its district's files, and at most four rows per mainland district qualify. The label sits at the median of its members' existing dot coordinates; neither file positions nor district geometry changes. It appears above fit zoom only when the square root of the district's world area times the current scale reaches **25% of the viewport's shorter side**. On the 390×844 phone dify view, the `workflow & nodes` district's area is 1.5138 world units², its fitted scale is 72.21 px/unit, and its equivalent side is **88.8 px at fit** versus the **97.5 px gate**. At the district's 2.2× zoom it is **195.5 px**. Its `web/app/components/workflow/` breakdown row holds **755/887 files (85.1%)**, so the label is eligible. Labels lose collision ties to district text and pins; a nearby district name can shorten the displayed tail from two path segments to one.
 
 The terrain-off dify document captured before #79 has **420 files in 91 unconnected districts**; finding 25 records how the resolver update reduces a new build at the current pin to 293 zero-edge files and 41 unconnected districts. These files no longer produce SVG dots, labels, pins, selection rings or zoom bounds. The footer chip reports the file count and opens a folder-grouped list; a file there, in search, or in a deep link opens a card without moving the map. Real islands retain their map geometry and fade. The web viewer check compares visible dot `cx`/`cy` with `origin/main` at the same zoom and confirms the ring is absent after zooming out. This viewer-only change requires no schema or upstream layout rebuild.
+
+## 27. The prototype redesign: four owner decisions that overturn earlier rules
+
+Owner decisions, 2026-09-23. The owner built a visual prototype outside this repository on seven Python repositories (dify, superset, saleor, zulip, langchain, airflow, sentry). It ran runtime wrappers over the frozen reference at `1ec9320` and did not modify this repository. The owner handed it over with four decisions in its `HANDOFF_PROMPT.md` §0 and said "Follow the handoff md attached" in session `16030105-19f0-4a84-933b-c5953f23c6b3` (transcript line 13, 2026-09-23T13:43:38Z). The go to implement is at line 181, 2026-09-23T14:16:42Z. Tracking issue #82. The prototype's documents are historical records and use its older vocabulary; `docs/GLOSSARY.md` has the owner's final terms.
+
+**D1 — symbols on the map, gated by level of detail.** This overturns `CLAUDE.md`'s "the map stops at the file" and the README section that said symbols were tried twice and reverted twice. Both attempts drew symbols at every zoom, and the overview lost the district silhouette. The prototype draws district outlines and roads at the overview. A file draws its symbols once its footprint is ≥ 40 px on screen, and a class expands its members once its short side is ≥ 110 px. The silhouette therefore survives at the overview, which was the reason for the earlier reversals.
+
+**D2 — file footprints (`P`) on by default.** This overturns the 2026-09-22 decision to hide the plots geometry. Every map carries footprints, and the acceptance fixtures are re-recorded with `P`. Footprint area follows **code lines**: lines that are not blank, comment-only or docstrings. In dify, code lines are 76.8% of 370,771 total lines and docstrings are 7.1%. Areas are comparable only within one district, because the district's total area comes from the layout.
+
+**D3 — neighbourhoods as gutters and shading.** Finding 24 removed terrain partly because sub-district outlines "add clutter" and "the square parcel grid looks artificial". A neighbourhood is a second-level group of files inside a district. The prototype draws neighbourhoods with no grid, only white gutters and three alternating shades, and the owner judged that readable. This is a different presentation, not a return of terrain.
+
+**D4 — partition and layout unchanged.** The prototype grouped files by import-only Leiden with 50-seed consensus and packed districts tangentially along a maximum spanning tree. Its preregistered multi-repo test (parameters frozen from dify) passed both district-level adjacency criteria on only **2 of 6** new repositories: strongest neighbour = nearest ≥ 50%, and distance/strength ρ ≤ −0.30. The prototype's own rule was that < 4/6 means the method did not generalise, so neither goes into the default pipeline. Results at prototype scope:
+
+| repo | files | districts | strongest = nearest | ρ | neighbourhood connected | area ~ code lines r | files without footprint |
+|---|---:|---:|---|---|---:|---:|---:|
+| dify (control) | 1854 | 14 | 0.57 ✓ | −0.57 ✓ | 1.00 | 0.88 | 17 |
+| superset | 1102 | 14 | 0.57 ✓ | −0.18 ✗ | 1.00 | 0.74 | 11 |
+| saleor | 1138 | 16 | 0.50 ✓ | −0.37 ✓ | 1.00 | 0.89 | 5 |
+| zulip | 904 | 13 | 0.45 ✗ | −0.23 ✗ | 1.00 | 0.76 | 19 |
+| langchain | 1737 | 9 | 0.44 ✗ | −0.44 ✓ | 1.00 | 0.71 | 111 |
+| airflow | 591 | 9 | 0.56 ✓ | −0.65 ✓ | 1.00 | 0.77 | 5 |
+| sentry | 4587 | 20 | 0.29 ✗ | −0.20 ✗ | 1.00 | 0.76 | 35 |
+
+These numbers are the prototype's own and were not independently re-run here.
+
+What carries over, per D1–D3: nested footprints (district › neighbourhood › file), neighbourhood gutters, district roads, hub rings, symbol cards gated by zoom, and the interaction model. The table also shows two defects the port has to fix rather than inherit. Every repository has files that received no footprint, and the port must guarantee every file a minimum area. Early prototype lines were also anchored on power-diagram sites rather than displayed footprint centroids, and only 17% of sites fell inside their own cell. The prototype's 10 layout metrics will be reported for each geometry change, but they are not a gate, with two exceptions that are hard targets: neighbourhood connectivity ≥ 95%, and files without a footprint = 0.
+
+Consequence of D4: the product will not match the prototype's screenshots one-to-one. District placement, outlines, islands and the unconnected list stay as findings 17, 24 and 26 left them. The ported parts are what is drawn inside and between the outlines.
+
+Two further owner choices, made the same day through AskUserQuestion (transcript line 163): phones keep the full-screen map shell, where one finger pans (the prototype's scrolling-page layout is not adopted). Hub rings (files with fan-in ≥ 30) replace hub pins. Entry, bridge and hazard stay as smaller ranked pins, capital pins are dropped because district names are always shown, and all five landmark kinds stay in the sidebar.
+
+## 28. Code-line weights change footprint area, and the current solver can lose more cells
+
+Owner decision D2 (finding 27, 2026-09-23) makes file footprint area follow **code lines**, excluding blank lines, comment-only lines and Python module/class/function docstrings. This supersedes `docs/PIPELINE.md`'s old statement that parcels track line count. The prototype's dify measurement was 76.8% code in 370,771 lines; that was a different source selection from this product's `--all-sources` dify build, so the percentages are not directly comparable.
+
+[Actions comparison run 35874556711](https://github.com/onsager-ai/tolmap/actions/runs/35874556711) built each pinned repository with this branch and `compare_ref=main` on standard runners. The table reports summed `N[*][3]` total lines, summed new `C` code lines, and **median per-district Pearson r** between shoelace polygon area and file code lines / total lines. Each r uses only files with a `P` polygon in that district; a district needs at least three such files and nonzero variance. For the main polygons, the code-line r uses this branch's `C` aligned by the identical `F` order. All eligible districts, including their individual r values and sample counts, are in [the per-district CSV](measurements/code-lines-district-correlations.csv). An empty r there means the district did not meet the Pearson conditions.
+
+| repo | total lines | code lines (share) | eligible districts | branch r code / loc | main r code / loc | missing P branch / main | wall s branch / main |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| django/django | 150,765 | 103,970 (69.0%) | 12 | 0.956 / 0.941 | 0.940 / 0.959 | 48 / 63 | 3.28 / 3.15 |
+| encode/httpx | 8,850 | 5,773 (65.2%) | 4 | 0.742 / 0.742 | 0.802 / 0.740 | 1 / 1 | 0.28 / 0.27 |
+| langgenius/dify | 907,285 | 763,138 (84.1%) | 32 | 0.894 / 0.880 | 0.900 / 0.884 | 505 / 470 | 24.54 / 23.77 |
+| pallets/flask | 9,537 | 4,281 (44.9%) | 4 | 0.921 / 0.895 | 0.874 / 0.899 | 0 / 0 | 0.41 / 0.40 |
+| prometheus/prometheus | 201,894 | 156,902 (77.7%) | 10 | 0.978 / 0.975 | 0.973 / 0.979 | 42 / 22 | 3.37 / 3.22 |
+| vuejs/core | 57,564 | 46,465 (80.7%) | 8 | 0.981 / 0.973 | 0.976 / 0.984 | 5 / 2 | 1.06 / 1.00 |
+
+The branch median r for code lines exceeds its loc r in five of six repositories (httpx is essentially tied), but it does not exceed main's code-line r in every repository. This is not an optimizer guarantee: district boundaries, point locations and a finite raster constrain parcel areas. Dify has 78 districts but only 32 meet the correlation conditions; 43 have no `P` polygon at all, primarily the unconnected districts. Its eligible per-district branch code-line r spans **−0.536 to 1.000**, so the median does not imply every district fits well.
+
+The count of files without `P` **did change**, contrary to the initial expectation that only area would move. The existing power diagram can assign no cell to a file when targets change; dify gains 35 missing footprints, prometheus gains 20, vue gains 3, while django loses 15. These are measured counts, not fixed by this PR. The separate nested-footprints work for #82 has the explicit zero-missing-footprint target; the present PR keeps the parcels change to one weight helper to avoid competing with that rewrite.
+
+After removing only `C` and `P` from both JSON documents and comparing their compact JSON bytes, **all six branch maps are identical to main** on every remaining key. That includes `F`, `N`, `E`, `L`, `S`, `U`, district membership and geometry, and coverage. The code-line count is additive; this PR does not move files or alter the graph.

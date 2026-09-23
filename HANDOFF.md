@@ -66,7 +66,7 @@ Replace the import-derived reference graph with SCIP or an LSP index. Blast radi
 ## Things deliberately not built
 
 - **Agent context.** Feeding the graph to an LLM is a solved and crowded space (`CodeGraph`, `code-graph`, `gograph`, …). Agents need an index, not a picture. The map's value is for the human who is now accountable for code they did not write.
-- **Symbols on the map.** Tried twice, reverted twice. See README.
+- **Symbols on the map at every zoom.** Tried twice, reverted twice. Symbols now appear only when zoomed in far enough (finding 27); see README.
 - **An IDE plugin.** The map is not a code browser; the editor wins that.
 
 ## The idea worth considering next

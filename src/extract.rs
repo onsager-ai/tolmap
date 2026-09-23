@@ -167,6 +167,7 @@ fn grammar_for_file(language: LanguageKind, file: &str) -> Language {
 #[derive(Clone)]
 struct ParsedFile {
     loc: usize,
+    code_lines: usize,
     complexity: usize,
     identifiers: BTreeMap<String, usize>,
     symbols: Vec<SymbolRow>,
@@ -314,6 +315,31 @@ fn parse_files(
             .context("initialize tree-sitter parser")?;
         let source = fs::read(repo.join(file)).with_context(|| format!("read {file}"))?;
         let Some(tree) = parser.parse(&source, None) else {
+            // Tree-sitter can return None on cancellation. Keep the file's
+            // conservative metrics without inventing symbols or edges.
+            parsed.insert(
+                file.clone(),
+                ParsedFile {
+                    loc: source.iter().filter(|&&byte| byte == b'\n').count() + 1,
+                    code_lines: nonblank_lines(&source),
+                    complexity: 0,
+                    identifiers: BTreeMap::new(),
+                    symbols: Vec::new(),
+                },
+            );
+            raw.insert(
+                file.clone(),
+                match language {
+                    LanguageKind::Python => FileRaw::Python {
+                        imports: Vec::new(),
+                        attribute_candidates: Vec::new(),
+                    },
+                    _ => FileRaw::Multi {
+                        imports: Vec::new(),
+                        named_candidates: Vec::new(),
+                    },
+                },
+            );
             continue;
         };
         // ast.parse rejects a Python file as a unit. Matching that behavior is
@@ -342,6 +368,7 @@ fn parse_files(
             },
         };
         let loc = source.iter().filter(|&&byte| byte == b'\n').count() + 1;
+        let code_lines = count_code_lines(root, &source, language);
         // `source` and `tree` (and `root`, which borrows `tree`) go out of
         // scope at the end of this iteration -- the tree for this file is
         // never retained past the file that produced it.
@@ -349,6 +376,7 @@ fn parse_files(
             file.clone(),
             ParsedFile {
                 loc,
+                code_lines,
                 complexity,
                 identifiers,
                 symbols,
@@ -357,6 +385,93 @@ fn parse_files(
         raw.insert(file.clone(), file_raw);
     }
     Ok((parsed, raw))
+}
+
+fn nonblank_lines(source: &[u8]) -> usize {
+    source
+        .split(|&byte| byte == b'\n')
+        .filter(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()))
+        .count()
+}
+
+/// One traversal marks lines covered by syntax leaves. A string leaf can span
+/// lines, so checking only its start would undercount multiline code.
+fn count_code_lines(root: Node<'_>, source: &[u8], language: LanguageKind) -> usize {
+    code_line_flags(root, source, language)
+        .into_iter()
+        .filter(|line| *line)
+        .count()
+}
+
+/// Shared line mask for file and symbol areas. A symbol's count uses the
+/// same syntax-leaf rule as the map's `C` field, so the areas add up.
+pub(crate) fn code_line_flags(root: Node<'_>, source: &[u8], language: LanguageKind) -> Vec<bool> {
+    let mut marked = vec![false; source.iter().filter(|&&byte| byte == b'\n').count() + 1];
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "comment" || (language == LanguageKind::Python && is_docstring(node)) {
+            continue;
+        }
+        if node.child_count() == 0 {
+            if source[node.byte_range()]
+                .iter()
+                .all(u8::is_ascii_whitespace)
+            {
+                continue;
+            }
+            let start = node.start_position().row;
+            let end = node.end_position();
+            let last = if end.column == 0 && end.row > start {
+                end.row - 1
+            } else {
+                end.row
+            };
+            for row in start..=last {
+                if let Some(line) = marked.get_mut(row) {
+                    *line = true;
+                }
+            }
+        } else {
+            for index in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(index) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    marked
+}
+
+fn is_docstring(node: Node<'_>) -> bool {
+    if node.kind() != "expression_statement" || node.named_child_count() != 1 {
+        return false;
+    }
+    let Some(value) = node.named_child(0) else {
+        return false;
+    };
+    if value.kind() != "string" && value.kind() != "concatenated_string" {
+        return false;
+    }
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    // Comments are named tree-sitter children, but Python does not count
+    // them as statements before a docstring.
+    let first_statement = (0..parent.named_child_count())
+        .filter_map(|index| parent.named_child(index))
+        .find(|child| child.kind() != "comment");
+    match parent.kind() {
+        "module" => first_statement == Some(node),
+        "block" => {
+            let Some(owner) = parent.parent() else {
+                return false;
+            };
+            matches!(owner.kind(), "class_definition" | "function_definition")
+                && owner.child_by_field_name("body") == Some(parent)
+                && first_statement == Some(node)
+        }
+        _ => false,
+    }
 }
 
 /// The parse+resolve output of one `(pkg, language)` source: everything
@@ -2523,6 +2638,7 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
             SourceNode {
                 file: file.clone(),
                 loc: value.loc,
+                code_lines: Some(value.code_lines),
                 complexity: value.complexity,
                 churn: history.churn.get(file).copied().unwrap_or(0),
                 fanin: if language == LanguageKind::Python {
@@ -3508,10 +3624,51 @@ mod tests {
     ) -> ParsedFile {
         ParsedFile {
             loc,
+            code_lines: loc,
             complexity,
             identifiers: identifiers.iter().cloned().collect(),
             symbols: Vec::new(),
         }
+    }
+
+    fn code_lines_of(source: &str, language: LanguageKind) -> usize {
+        let mut parser = Parser::new();
+        parser.set_language(&language.tree_sitter()).unwrap();
+        let tree = parser.parse(source.as_bytes(), None).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "snippet does not parse: {source}"
+        );
+        count_code_lines(tree.root_node(), source.as_bytes(), language)
+    }
+
+    #[test]
+    fn python_docstrings_and_multiline_code() {
+        let source = "# preface\n\"\"\"module\ntext\"\"\"\nclass C:\n    # preface\n    \"class\" \"doc\"\n    def f(self):\n        # preface\n        \"\"\"function\n        doc\"\"\"\n        value = \"\"\"code\n        still code\"\"\"\n        return value\n";
+        assert_eq!(code_lines_of(source, LanguageKind::Python), 5);
+    }
+
+    #[test]
+    fn comments_blank_lines_and_trailing_comment() {
+        assert_eq!(
+            code_lines_of("# only\nx = 1 # still code\n\n", LanguageKind::Python),
+            1
+        );
+        assert_eq!(code_lines_of(" \n\t\n", LanguageKind::Python), 0);
+        assert_eq!(
+            code_lines_of(
+                "// only\nvar x = 1 // code\n/* block\ncomment */\n",
+                LanguageKind::Go
+            ),
+            1
+        );
+        assert_eq!(
+            code_lines_of(
+                "// only\nconst x = 1; // code\n/* block\ncomment */\n",
+                LanguageKind::TypeScript
+            ),
+            1
+        );
     }
 
     fn identifiers_of(source: &str) -> BTreeMap<String, usize> {

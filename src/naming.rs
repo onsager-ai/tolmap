@@ -726,6 +726,7 @@ mod tests {
             .map(|file| SourceNode {
                 file: file.clone(),
                 loc: 10,
+                code_lines: None,
                 complexity: 0,
                 churn: 0,
                 fanin: 1.0,
