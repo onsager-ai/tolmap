@@ -4,6 +4,7 @@ pub mod detect;
 pub mod extract;
 pub mod geometry;
 pub mod naming;
+pub mod neighbourhoods;
 pub mod parcels;
 pub mod parity;
 pub mod partition;

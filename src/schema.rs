@@ -105,6 +105,15 @@ pub struct CoverageReport {
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct Neighbourhood {
+    pub d: usize,
+    pub size: usize,
+    pub label: String,
+    pub blob: Vec<Vec<[f64; 2]>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct MapDocument {
     pub repo: String,
     pub q: f64,
@@ -131,6 +140,14 @@ pub struct MapDocument {
     pub coverage: Option<CoverageReport>,
     #[serde(rename = "P", skip_serializing_if = "Option::is_none")]
     pub parcels: Option<BTreeMap<String, Vec<[f64; 2]>>>,
+    /// Index aligned with F; N remains the original layout position so a
+    /// later warm start cannot accidentally feed displayed geometry back in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footprint_centroids: Option<Vec<[f64; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_neighbourhoods: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neighbourhoods: Option<BTreeMap<String, Neighbourhood>>,
 }
 
 // GraphData and its parts derive Serialize/Deserialize so a graph can be
