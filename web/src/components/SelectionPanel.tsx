@@ -57,6 +57,7 @@ export function SelectionPanel({
   onSelectDirectory,
 }: Props) {
   const narrow = useIsNarrow();
+  const unconnectedTotal = packageLayout.unconnectedFiles.length;
   const [foldersExpanded, setFoldersExpanded] = useState(false);
   const [filesExpanded, setFilesExpanded] = useState(false);
 
@@ -76,8 +77,12 @@ export function SelectionPanel({
           {showUnconnected ? (
             <><h3 className="font-sans text-[13px] font-semibold">Unconnected files</h3>
               {doc.coverage && <p className="text-[10px] text-[var(--dim)]" data-coverage-detail>
-                Repo coverage (no detected edge): {Object.entries(doc.coverage.by_language).map(([lang, row]) =>
-                  `${lang}: ${row.zero_edge_files.toLocaleString("en-US")}/${row.total_files.toLocaleString("en-US")}`).join(" · ")}
+                {/* Two different counts: the list is files in unconnected
+                    districts (not placed on the map); coverage counts every
+                    file with no kept edge, including ones merge_tiny placed
+                    into a district by folder (#46). Say which is which. */}
+                {unconnectedTotal.toLocaleString("en-US")} not placed on the map. {doc.coverage.zero_edge_files.toLocaleString("en-US")} files have no detected link in all ({Object.entries(doc.coverage.by_language).map(([lang, row]) =>
+                  `${lang}: ${row.zero_edge_files.toLocaleString("en-US")}/${row.total_files.toLocaleString("en-US")}`).join(" · ")}); the rest sit in districts by folder.
               </p>}
             </>
           ) : selD == null && sel == null ? (
