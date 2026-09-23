@@ -501,14 +501,7 @@ pub fn build_from_graph_warm(
             geometry.blobs.remove(&district);
         }
     }
-    let mut document = compact(
-        map_name,
-        layout,
-        geometry,
-        names,
-        previous_document,
-        &classes,
-    );
+    let mut document = compact(map_name, layout, geometry, names, &classes);
     if features.parcels {
         eprintln!("[5/5] geometry weighted-voronoi plots");
         document.parcels = Some(parcels::build_parcels(&document));
@@ -535,7 +528,6 @@ fn compact(
     layout: pipeline::PipelineOutput,
     geometry: blobs::BlobGeometry,
     names: BTreeMap<String, String>,
-    previous_document: Option<&MapDocument>,
     classes: &BTreeMap<usize, DistrictClass>,
 ) -> MapDocument {
     let files = layout
@@ -747,6 +739,15 @@ fn define_site(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// District 0 is a lone file (index 0); every other file is one large
+    /// district (1, always mainland regardless of the boundary under test),
+    /// so `total` reflects the repo size the percentage is taken against.
+    fn membership_with_singleton(total: usize) -> Vec<usize> {
+        let mut membership = vec![1; total];
+        membership[0] = 0;
+        membership
+    }
 
     #[test]
     fn a_district_exactly_at_one_percent_is_mainland() {
