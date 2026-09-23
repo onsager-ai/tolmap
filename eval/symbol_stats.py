@@ -124,8 +124,17 @@ def iter_contours(document):
 
 def integer_area(ring, scale=10**11):
     points = [(round(x * scale), round(y * scale)) for x, y in ring]
-    return abs(sum(a[0] * b[1] - a[1] * b[0]
-                   for a, b in zip(points, points[1:] + points[:1])))
+    return abs(signed_integer_area(points))
+
+
+def signed_integer_area(points):
+    return sum(a[0] * b[1] - a[1] * b[0]
+               for a, b in zip(points, points[1:] + points[:1]))
+
+
+def card_area(card):
+    return abs(sum(signed_integer_area([(round(x * 10**11), round(y * 10**11)) for x, y in ring])
+                   for ring in card))
 
 
 def collapsed_at_precision(document, places):
@@ -173,7 +182,7 @@ def audit_rings(document):
         exterior = child[0]
         center = [sum(p[axis] for p in exterior) / len(exterior) for axis in (0, 1)]
         outside += not contains(center, ancestor)
-        oversized += sum(integer_area(r) for r in child) > sum(integer_area(r) for r in ancestor)
+        oversized += card_area(child) > card_area(ancestor)
     assert duplicate == 0 and collinear == 0 and collapsed == 0 and outside == 0 and oversized == 0, (
         duplicate, collinear, collapsed, outside, oversized)
     return {
