@@ -260,7 +260,7 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
     for (pkg, language) in &sorted_sources {
         let (parsed, raw) = parse_files(repo, pkg, *language)?;
         let intermediate = match language {
-            LanguageKind::Python => parse_python(pkg, parsed, raw)?,
+            LanguageKind::Python => parse_python(repo, pkg, parsed, raw)?,
             LanguageKind::Go | LanguageKind::TypeScript => parse_multi(
                 pkg,
                 *language,
@@ -1121,6 +1121,7 @@ fn multi_metrics(
 }
 
 fn parse_python(
+    repo: &Path,
     pkg: &str,
     parsed: BTreeMap<String, ParsedFile>,
     raw: BTreeMap<String, FileRaw>,
@@ -1132,6 +1133,35 @@ fn parse_python(
     }
     let known = modules.keys().cloned().collect::<BTreeSet<_>>();
     let file_of = modules.clone();
+    // A monorepo can contain an independently launched Python project below
+    // the selected source root. Python searches sys.path entries for absolute
+    // imports; a process launched in that project can import `core.x` from
+    // `api/core/x.py`, while the repository-root spelling is `api.core.x`.
+    // Keep both exact, parsed-file spellings, scoped by the declaring project
+    // directory. See https://docs.python.org/3/reference/import.html#the-module-cache
+    // and https://docs.python.org/3/reference/import.html#the-path-based-finder.
+    let mut project_for = BTreeMap::<String, String>::new();
+    let mut project_modules = BTreeMap::<String, BTreeMap<String, String>>::new();
+    if pkg == "." {
+        for file in parsed.keys() {
+            if let Some(project) = python_project_root(repo, file) {
+                project_modules
+                    .entry(project.clone())
+                    .or_default()
+                    .insert(python_project_module(file, &project), file.clone());
+                project_for.insert(file.clone(), project);
+            }
+        }
+    }
+    let project_known = project_modules
+        .iter()
+        .map(|(project, files)| {
+            (
+                project.clone(),
+                files.keys().cloned().collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
 
     let mut static_edges = BTreeMap::<(FileId, FileId), f64>::new();
     let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
@@ -1148,9 +1178,22 @@ fn parse_python(
         };
         let is_pkg = file.rsplit('/').next() == Some("__init__.py");
         for import in imports {
-            for target in resolve_python(import, module, &known, is_pkg) {
-                let target_file = &file_of[&target];
-                let target_id = ids[target_file];
+            let mut target_files = resolve_python(import, module, &known, is_pkg)
+                .into_iter()
+                .map(|target| file_of[&target].clone())
+                .collect::<BTreeSet<_>>();
+            if let Some(project) = project_for.get(file) {
+                let scoped = &project_modules[project];
+                let current = python_project_module(file, project);
+                if python_relative_within_package(import, &current, is_pkg) {
+                    for target in resolve_python(import, &current, &project_known[project], is_pkg)
+                    {
+                        target_files.insert(scoped[&target].clone());
+                    }
+                }
+            }
+            for target_file in target_files {
+                let target_id = ids[&target_file];
                 if target_id == file_id {
                     continue;
                 }
@@ -1161,14 +1204,32 @@ fn parse_python(
                 *fanin.entry(target_id).or_default() += 1.0;
             }
         }
-        for (target_file, name) in python_uses_from_raw(
+        let mut resolved_uses = python_uses_from_raw(
             module,
             file,
             imports,
             attribute_candidates,
             &known,
             &file_of,
-        ) {
+        );
+        if let Some(project) = project_for.get(file) {
+            let scoped = &project_modules[project];
+            let current = python_project_module(file, project);
+            let scoped_imports = imports
+                .iter()
+                .filter(|import| python_relative_within_package(import, &current, is_pkg))
+                .cloned()
+                .collect::<Vec<_>>();
+            resolved_uses.extend(python_uses_from_raw(
+                &current,
+                file,
+                &scoped_imports,
+                attribute_candidates,
+                &project_known[project],
+                scoped,
+            ));
+        }
+        for (target_file, name) in resolved_uses {
             uses.insert((file_id, ids[&target_file], name));
         }
     }
@@ -1189,6 +1250,39 @@ fn parse_python(
         uses,
         module_for,
     })
+}
+
+fn python_project_root(repo: &Path, file: &str) -> Option<String> {
+    let mut directory = Path::new(file).parent()?;
+    while !directory.as_os_str().is_empty() {
+        if repo.join(directory).join("pyproject.toml").is_file()
+            || repo.join(directory).join("setup.py").is_file()
+        {
+            return Some(directory.to_string_lossy().replace('\\', "/"));
+        }
+        directory = directory.parent()?;
+    }
+    None
+}
+
+fn python_project_module(file: &str, project: &str) -> String {
+    let relative = file
+        .strip_prefix(project)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(file);
+    let stem = relative.strip_suffix(".py").unwrap_or(relative);
+    let stem = stem.strip_suffix("/__init__").unwrap_or(stem);
+    let stem = if stem == "__init__" { "" } else { stem };
+    stem.replace('/', ".")
+}
+
+fn python_relative_within_package(import: &PythonImport, current: &str, is_pkg: bool) -> bool {
+    if import.level == 0 {
+        return true;
+    }
+    let segments = current.split('.').filter(|part| !part.is_empty()).count();
+    let package_depth = segments.saturating_sub(usize::from(!is_pkg));
+    import.level <= package_depth
 }
 
 fn module_name(relative: &str, pkg: &str) -> String {
@@ -1382,6 +1476,17 @@ pub fn coverage_diagnostics(
             .enumerate()
             .map(|(i, node)| (node.file.clone(), i as FileId))
             .collect::<BTreeMap<_, _>>();
+        let mut projects = BTreeMap::<String, BTreeSet<String>>::new();
+        if pkg == "." && *lang == LanguageKind::Python {
+            for file in by_file.keys() {
+                if let Some(project) = python_project_root(repo, file) {
+                    projects
+                        .entry(project.clone())
+                        .or_default()
+                        .insert(python_project_module(file, &project));
+                }
+            }
+        }
         let known = source_nodes
             .iter()
             .map(|node| module_name(&node.file, pkg))
@@ -1409,9 +1514,26 @@ pub fn coverage_diagnostics(
                 LanguageKind::Python => {
                     let current = module_name(&node.file, pkg);
                     let is_pkg = node.file.ends_with("/__init__.py");
+                    let project = (pkg == ".")
+                        .then(|| python_project_root(repo, &node.file))
+                        .flatten();
+                    let scoped_known = project.as_ref().and_then(|project| projects.get(project));
                     for spec in python_imports(root, &bytes) {
                         let head = python_head(&spec, &current, is_pkg);
-                        let targets = resolve_python(&spec, &current, &known, is_pkg);
+                        let mut targets = resolve_python(&spec, &current, &known, is_pkg);
+                        if let (Some(project), Some(scoped_known)) =
+                            (project.as_ref(), scoped_known)
+                        {
+                            let scoped_current = python_project_module(&node.file, project);
+                            if python_relative_within_package(&spec, &scoped_current, is_pkg) {
+                                targets.extend(resolve_python(
+                                    &spec,
+                                    &scoped_current,
+                                    scoped_known,
+                                    is_pkg,
+                                ));
+                            }
+                        }
                         let relative_error = spec.level > 0
                             && spec.level > current.split('.').count() - usize::from(!is_pkg);
                         let reason = if relative_error {
@@ -1444,7 +1566,7 @@ pub fn coverage_diagnostics(
                                     .join(", ")
                             )
                         };
-                        imports.push(json!({"specifier": display, "head": head, "reason": reason, "targets": targets}));
+                        imports.push(json!({"specifier": display, "head": head, "project_root": project, "reason": reason, "targets": targets}));
                     }
                 }
                 LanguageKind::Go | LanguageKind::TypeScript => {
@@ -2775,6 +2897,37 @@ mod tests {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn python_project_imports_stay_in_the_declaring_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        write(root, "api/pyproject.toml", "[project]\nname = 'api'\n");
+        write(root, "api/app.py", "from core import helper\n");
+        write(root, "api/core/__init__.py", "");
+        write(root, "api/core/helper.py", "VALUE = 1\n");
+        write(root, "other/pyproject.toml", "[project]\nname = 'other'\n");
+        write(root, "other/app.py", "from core import helper\n");
+        write(root, "other/core/__init__.py", "");
+        write(root, "other/core/helper.py", "VALUE = 2\n");
+        write(root, "outside.py", "from core import helper\n");
+        let (parsed, raw) = parse_files(root, ".", LanguageKind::Python).unwrap();
+        let intermediate = parse_python(root, ".", parsed, raw).unwrap();
+        let edges = intermediate
+            .directed
+            .keys()
+            .map(|&(a, b)| {
+                (
+                    intermediate.files[a as usize].as_str(),
+                    intermediate.files[b as usize].as_str(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert!(edges.contains(&("api/app.py", "api/core/helper.py")));
+        assert!(edges.contains(&("other/app.py", "other/core/helper.py")));
+        assert!(!edges.contains(&("api/app.py", "other/core/helper.py")));
+        assert!(!edges.contains(&("outside.py", "api/core/helper.py")));
     }
 
     fn resolved_import_edge_count(root: &Path, pkg: &str, language: LanguageKind) -> usize {

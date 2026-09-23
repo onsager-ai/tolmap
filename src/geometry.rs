@@ -11,7 +11,8 @@ use crate::parcels;
 use crate::partition::LeidenFfi;
 use crate::pipeline::{self, LayoutDistrict};
 use crate::schema::{
-    District, DistrictClass, FileId, GraphData, LandmarkRow, MapDocument, NodeRow, SymbolRow,
+    CoverageLanguage, CoverageReport, District, DistrictClass, FileId, GraphData, LandmarkRow,
+    MapDocument, NodeRow, SymbolRow,
 };
 #[derive(Clone, Copy, Debug)]
 pub struct BuildFeatures {
@@ -530,6 +531,36 @@ fn compact(
     names: BTreeMap<String, String>,
     classes: &BTreeMap<usize, DistrictClass>,
 ) -> MapDocument {
+    let mut incident = BTreeSet::new();
+    for edge in &layout.weighted.edges {
+        incident.insert(edge.a.as_str());
+        incident.insert(edge.b.as_str());
+    }
+    let mut by_language = BTreeMap::<String, CoverageLanguage>::new();
+    let mut zero_edge_files = 0;
+    for node in &layout.weighted.nodes {
+        let language = if node.lang.is_empty() {
+            layout.weighted.lang.as_str()
+        } else {
+            node.lang.as_str()
+        };
+        let row = by_language
+            .entry(language.to_owned())
+            .or_insert(CoverageLanguage {
+                zero_edge_files: 0,
+                total_files: 0,
+            });
+        row.total_files += 1;
+        if !incident.contains(node.file.as_str()) {
+            row.zero_edge_files += 1;
+            zero_edge_files += 1;
+        }
+    }
+    let coverage = CoverageReport {
+        zero_edge_files,
+        total_files: layout.weighted.nodes.len(),
+        by_language,
+    };
     let files = layout
         .weighted
         .nodes
@@ -653,6 +684,7 @@ fn compact(
         uses,
         roads: geometry.roads,
         lang: layout.weighted.lang,
+        coverage: Some(coverage),
         parcels: None,
     }
 }
