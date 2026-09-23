@@ -108,7 +108,7 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         old = json.loads(raw)
         result["before_precision_collapsed_by_decimals"] = {
             str(places): collapsed_at_precision(old, places)
-            for places in range(6, 13)
+            for places in range(6, 12)
         }
     return result
 
@@ -122,7 +122,7 @@ def iter_contours(document):
             yield from card
 
 
-def integer_area(ring, scale=10**12):
+def integer_area(ring, scale=10**11):
     points = [(round(x * scale), round(y * scale)) for x, y in ring]
     return abs(signed_integer_area(points))
 
@@ -133,7 +133,7 @@ def signed_integer_area(points):
 
 
 def card_area(card):
-    return abs(sum(signed_integer_area([(round(x * 10**12), round(y * 10**12)) for x, y in ring])
+    return abs(sum(signed_integer_area([(round(x * 10**11), round(y * 10**11)) for x, y in ring])
                    for ring in card))
 
 
@@ -167,7 +167,7 @@ def audit_rings(document):
     for ring in iter_contours(document):
         duplicate += any(a == b for a, b in zip(ring, ring[1:] + ring[:1]))
         collapsed += len(ring) < 3 or integer_area(ring) == 0
-        points = [(round(x * 10**12), round(y * 10**12)) for x, y in ring]
+        points = [(round(x * 10**11), round(y * 10**11)) for x, y in ring]
         for a, b, c in zip(points[-1:] + points[:-1], points, points[1:] + points[:1]):
             ab = (b[0] - a[0], b[1] - a[1])
             bc = (c[0] - b[0], c[1] - b[1])

@@ -13,10 +13,10 @@ type Rings = Vec<Ring>;
 // The prototype used roughly 9–12 vertices per card. A larger contour made
 // dify's separate symbol document far heavier without adding visible detail.
 const CARD_CONTOUR_POINTS: usize = 12;
-// The smallest reserved fallback cards are roughly 1e-10 wide. Eleven
-// decimals kept exteriors but moved one dify child across its parent's edge;
-// twelve keeps that margin without changing accepted fallback placement.
-const CARD_COORDINATE_SCALE: f64 = 1e12;
+// The smallest reserved fallback cards are roughly 1e-10 wide. The paired
+// artifact audit found that ten decimals collapses exteriors; eleven keeps
+// them once reserves sit clear of parent boundaries.
+const CARD_COORDINATE_SCALE: f64 = 1e11;
 
 struct Canvas {
     grid: usize,
@@ -269,24 +269,55 @@ fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Rings) -> Option<[f64; 4
             da.total_cmp(&db).then_with(|| a.0.cmp(&b.0))
         })?;
     mask[selected.0] = false;
+    let inside_square = |center: [f64; 2], half: f64| {
+        [
+            [center[0] - half, center[1] - half],
+            [center[0] + half, center[1] - half],
+            [center[0] + half, center[1] + half],
+            [center[0] - half, center[1] + half],
+        ]
+        .iter()
+        .all(|&corner| point_in_rings(corner, parent))
+    };
+    let mut center = selected.1;
     let mut half = canvas.step * 0.2;
+    if !inside_square(center, half) {
+        // A raster cell can straddle a concave parent's boundary. Shrinking
+        // a rectangle at its centre produced sub-1e-11 slivers and a child
+        // centroid outside the rounded parent on dify. Search only within
+        // the reserved cell for a point with a real interior margin.
+        let mut clearance = boundary_distance2(center, parent);
+        for level in 0..20 {
+            let offset = canvas.step * 0.25 / 2f64.powi(level);
+            for dx in [-1.0, 0.0, 1.0] {
+                for dy in [-1.0, 0.0, 1.0] {
+                    let candidate = [selected.1[0] + dx * offset, selected.1[1] + dy * offset];
+                    if !point_in_rings(candidate, parent) {
+                        continue;
+                    }
+                    let margin = boundary_distance2(candidate, parent);
+                    if margin > clearance {
+                        center = candidate;
+                        clearance = margin;
+                    }
+                }
+            }
+            if inside_square(center, half) {
+                break;
+            }
+        }
+    }
     for _ in 0..24 {
-        let corners = [
-            [selected.1[0] - half, selected.1[1] - half],
-            [selected.1[0] + half, selected.1[1] - half],
-            [selected.1[0] + half, selected.1[1] + half],
-            [selected.1[0] - half, selected.1[1] + half],
-        ];
-        if corners.iter().all(|&point| point_in_rings(point, parent)) {
+        if inside_square(center, half) {
             break;
         }
         half *= 0.5;
     }
     Some([
-        selected.1[0] - half,
-        selected.1[1] - half,
-        selected.1[0] + half,
-        selected.1[1] + half,
+        center[0] - half,
+        center[1] - half,
+        center[0] + half,
+        center[1] + half,
     ])
 }
 
@@ -375,7 +406,7 @@ fn quantize_rings(rings: &mut Rings) -> Result<()> {
             // it would emit an invalid contour. Exteriors must remain valid.
             ensure!(
                 ring_index > 0,
-                "card exterior collapsed at 12 decimals: {ring:?}"
+                "card exterior collapsed at 11 decimals: {ring:?}"
             );
             continue;
         }
@@ -724,6 +755,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reserve_moves_within_boundary_cell_before_shrinking() {
+        let canvas = Canvas {
+            grid: 3,
+            low: [-1.0, -1.0 - 1e-12],
+            step: 1.0,
+        };
+        let mut mask = vec![false; 9];
+        mask[4] = true;
+        let mut parent = vec![vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0]]];
+        let rect = reserve(&mut mask, &canvas, &parent).unwrap();
+        assert!(rect[2] - rect[0] > 0.01);
+        assert!(rect[3] - rect[1] > 0.01);
+        let mut child = rectangle(rect);
+        quantize_rings(&mut parent).unwrap();
+        quantize_rings(&mut child).unwrap();
+        assert!(valid_ring(Some(&child), &parent));
+    }
+
+    #[test]
     fn output_quantization_keeps_tiny_cards_and_removes_redundant_points() {
         let mut contours = vec![vec![
             [1.0, 1.0],
@@ -736,7 +786,7 @@ mod tests {
         quantize_rings(&mut contours).unwrap();
         assert_eq!(contours[0].len(), 4);
         assert_ne!(contours[0][0], contours[0][1]);
-        let mut collapsed = rectangle([1.0, 1.0, 1.0 + 1e-14, 1.0 + 1e-14]);
+        let mut collapsed = rectangle([1.0, 1.0, 1.0 + 1e-12, 1.0 + 1e-12]);
         assert!(quantize_rings(&mut collapsed).is_err());
     }
 
