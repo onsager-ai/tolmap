@@ -38,6 +38,52 @@
 //   node scripts/check-view-stability.mjs [--base http://127.0.0.1:5176]
 
 import { chromium } from "playwright";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
+// Required generated files, relative to web/. The dify fixture is the #79
+// rebuilt main map (not the older terrain-off map). public/maps is gitignored;
+// a fresh checkout must supply this artifact before running check:view.
+const MAP_FIXTURES = {
+  "django/django": "d37c1e72dfd6363d6da2368505fb375f0094fa50e750f084b45b099ec292843e",
+  "langgenius/dify": "bdc82e2586be79f091d28bba0cc2b32138e8452efa7e87ad108e8e863aef2014",
+};
+
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+async function preflight(base) {
+  console.log("Required map files in web/public/maps/: " + Object.keys(MAP_FIXTURES).map((slug) => `${slug}.json`).join(", "));
+  for (const [slug, expectedHash] of Object.entries(MAP_FIXTURES)) {
+    const relative = `public/maps/${slug}.json`;
+    const file = new URL(`../${relative}`, import.meta.url);
+    let local;
+    try {
+      local = await readFile(file);
+    } catch (error) {
+      if (error.code === "ENOENT") throw new Error(`Required map missing: web/${relative}. Generate/copy the map before running check:view.`);
+      throw error;
+    }
+    const actualHash = sha256(local);
+    if (actualHash !== expectedHash) {
+      throw new Error(`Wrong map fixture: web/${relative} has SHA-256 ${actualHash}; check:view requires ${expectedHash} (#79 rebuilt main artifact).`);
+    }
+    let response;
+    try {
+      response = await fetch(`${base}/maps/${slug}.json`);
+    } catch (error) {
+      throw new Error(`Cannot reach Vite at ${base}: ${error.message}`);
+    }
+    if (!response.ok) throw new Error(`Vite did not serve required map /maps/${slug}.json (HTTP ${response.status}).`);
+    const servedHash = sha256(Buffer.from(await response.arrayBuffer()));
+    if (servedHash !== actualHash) {
+      throw new Error(`Vite at ${base} serves a different /maps/${slug}.json (SHA-256 ${servedHash}); start Vite from this worktree's web/ directory.`);
+    }
+  }
+  const source = await fetch(`${base}/src/map/MapRenderer.ts`);
+  if (!source.ok || !(await source.text()).includes("data-folder-label")) {
+    throw new Error(`Vite at ${base} does not serve this branch's folder-label viewer; start Vite from this worktree's web/ directory.`);
+  }
+}
 
 function parseArgs(argv) {
   const args = { base: "http://127.0.0.1:5176", beforeBase: null, featureOnly: false };
@@ -1427,56 +1473,47 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  await preflight(args.base);
   const browser = await chromium.launch();
-  if (args.featureOnly) {
-    for (const slug of MAPS) for (const profile of PROFILES) await checkFitFraming(browser, args.base, slug, profile);
-    await checkFolderWinsFileCollision(browser, args.base);
-    for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
-    await browser.close();
-    console.log(`\n${checks - failures}/${checks} checks passed`);
-    if (failures) process.exit(1);
-    return;
-  }
-  for (const slug of MAPS) {
-    for (const profile of PROFILES) {
-      await checkFitFraming(browser, args.base, slug, profile);
-      await runOne({ browser, base: args.base, slug, profile });
+  try {
+    if (args.featureOnly) {
+      for (const slug of MAPS) for (const profile of PROFILES) await checkFitFraming(browser, args.base, slug, profile);
+      await checkFolderWinsFileCollision(browser, args.base);
+      for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
+      return;
     }
-  }
-  await checkFolderWinsFileCollision(browser, args.base);
-  for (const profile of PROFILES) {
-    await checkRepoSwitch(browser, args.base, profile);
-  }
-  await checkMultiPolygonHover(browser, args.base);
-  for (const profile of PROFILES) {
-    await checkSelectionDim(browser, args.base, profile);
-  }
-  for (const profile of PROFILES) {
-    await checkPackageLayout(browser, args.base, profile);
-  }
-  await checkDistrictRefinement(browser, args.base);
-  for (const profile of PROFILES) {
-    await checkDifyDistrictSummary(browser, args.base, profile);
-  }
-  for (const profile of PROFILES) {
-    await checkFolderIslandFade(browser, args.base, profile);
-  }
-  for (const profile of PROFILES) {
-    await checkViewerCards(browser, args.base, profile);
-  }
-  for (const profile of PROFILES) {
-    await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
-  }
-  await browser.close();
-
-  console.log(`\n${checks - failures}/${checks} checks passed`);
-  if (failures > 0) {
-    console.error(`${failures} check(s) failed`);
-    process.exit(1);
+    for (const slug of MAPS) {
+      for (const profile of PROFILES) {
+        await checkFitFraming(browser, args.base, slug, profile);
+        await runOne({ browser, base: args.base, slug, profile });
+      }
+    }
+    await checkFolderWinsFileCollision(browser, args.base);
+    for (const profile of PROFILES) await checkRepoSwitch(browser, args.base, profile);
+    await checkMultiPolygonHover(browser, args.base);
+    for (const profile of PROFILES) await checkSelectionDim(browser, args.base, profile);
+    for (const profile of PROFILES) await checkPackageLayout(browser, args.base, profile);
+    await checkDistrictRefinement(browser, args.base);
+    for (const profile of PROFILES) await checkDifyDistrictSummary(browser, args.base, profile);
+    for (const profile of PROFILES) await checkFolderIslandFade(browser, args.base, profile);
+    for (const profile of PROFILES) await checkViewerCards(browser, args.base, profile);
+    for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
+  } finally {
+    await browser.close();
   }
 }
 
-main().catch((err) => {
+let runError = false;
+try {
+  await main();
+} catch (err) {
   console.error(err);
-  process.exit(1);
-});
+  runError = true;
+  process.exitCode = 1;
+} finally {
+  console.log(`\n${checks - failures}/${checks} checks passed${runError ? " (run aborted)" : ""}`);
+  if (failures) {
+    console.error(`${failures} check(s) failed`);
+    process.exitCode = 1;
+  }
+}
