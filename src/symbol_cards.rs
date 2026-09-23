@@ -133,13 +133,34 @@ fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Ring) -> Option<[f64; 4]
             da.total_cmp(&db).then_with(|| a.0.cmp(&b.0))
         })?;
     mask[selected.0] = false;
-    let half = canvas.step * 0.2;
+    let mut half = canvas.step * 0.2;
+    for _ in 0..24 {
+        let corners = [
+            [selected.1[0] - half, selected.1[1] - half],
+            [selected.1[0] + half, selected.1[1] - half],
+            [selected.1[0] + half, selected.1[1] + half],
+            [selected.1[0] - half, selected.1[1] + half],
+        ];
+        if corners.iter().all(|&point| point_in_polygon(point, parent)) {
+            break;
+        }
+        half *= 0.5;
+    }
     Some([
         selected.1[0] - half,
         selected.1[1] - half,
         selected.1[0] + half,
         selected.1[1] + half,
     ])
+}
+
+fn valid_ring(ring: Option<&Ring>, parent: &Ring) -> bool {
+    let Some(ring) = ring else { return false };
+    let centroid = [
+        ring.iter().map(|p| p[0]).sum::<f64>() / ring.len() as f64,
+        ring.iter().map(|p| p[1]).sum::<f64>() / ring.len() as f64,
+    ];
+    point_in_polygon(centroid, parent) && polygon_area(ring) <= polygon_area(parent)
 }
 
 fn rectangle(rect: [f64; 4]) -> Ring {
@@ -272,7 +293,11 @@ impl Cards<'_> {
         let reserve_rect = self.rings[symbol]
             .as_ref()
             .and_then(|parent| reserve(&mut body, canvas, parent));
-        if !self.headers.contains_key(&symbol) {
+        let header_valid = valid_ring(
+            self.headers.get(&symbol),
+            self.rings[symbol].as_ref().unwrap(),
+        );
+        if !header_valid {
             if let Some(rect) = reserve_rect {
                 self.headers.insert(
                     symbol,
@@ -290,15 +315,21 @@ impl Cards<'_> {
             .map(|&child| self.mass(child) as f64)
             .collect::<Vec<_>>();
         let regions = allocate(&body, canvas, &weights);
+        for (&child, region) in children.iter().zip(&regions) {
+            if region.contains(&true) {
+                self.place(child, region, canvas, depth + 1);
+            }
+        }
+        let parent = self.rings[symbol].as_ref().unwrap();
         let missing = children
             .iter()
-            .zip(regions.iter())
-            .filter_map(|(&child, region)| (!region.contains(&true)).then_some(child))
+            .copied()
+            .filter(|&child| !valid_ring(self.rings[child].as_ref(), parent))
             .collect::<Vec<_>>();
         if !missing.is_empty() {
             if let Some(rect) = reserve_rect {
                 let step = (rect[2] - rect[0]) / missing.len() as f64;
-                let top = if header_count == 0 {
+                let top = if !header_valid {
                     rect[1] + (rect[3] - rect[1]) * 0.78
                 } else {
                     rect[3]
@@ -307,11 +338,6 @@ impl Cards<'_> {
                     let x = rect[0] + slot as f64 * step;
                     self.fallback(*child, [x + step * 0.02, rect[1], x + step * 0.98, top]);
                 }
-            }
-        }
-        for (&child, region) in children.iter().zip(regions) {
-            if region.contains(&true) {
-                self.place(child, &region, canvas, depth + 1);
             }
         }
     }
@@ -405,13 +431,13 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
                     }
                 }
                 let mut missing = Vec::new();
-                if has_module && !cards.modules.contains_key(&file) {
+                if has_module && !valid_ring(cards.modules.get(&file), polygon) {
                     missing.push(None);
                 }
                 missing.extend(
                     top.iter()
                         .copied()
-                        .filter(|&i| cards.rings[i].is_none())
+                        .filter(|&i| !valid_ring(cards.rings[i].as_ref(), polygon))
                         .map(Some),
                 );
                 if let Some(rect) = reserve_rect {
@@ -427,10 +453,9 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
                     }
                 }
             }
-            let complete = symbols
-                .iter()
-                .all(|&i| document.symbols[i].0 .6 == 0 || cards.rings[i].is_some())
-                && (!has_module || cards.modules.contains_key(&file));
+            let complete = symbols.iter().all(|&i| {
+                document.symbols[i].0 .6 == 0 || valid_ring(cards.rings[i].as_ref(), polygon)
+            }) && (!has_module || valid_ring(cards.modules.get(&file), polygon));
             if complete {
                 break;
             }
