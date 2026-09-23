@@ -1,8 +1,10 @@
 import type { MapDocument } from "@/types";
-import { D_ } from "./geometry";
+import { D_, districtClass } from "./geometry";
 
 export const PACKAGE_GROUP_LIMIT = 10;
 export const PACKAGE_OTHER_COLOR = "var(--dim)";
+const DISTRICT_PATH_LIMIT = 5;
+const DISTRICT_REFINE_MIN_SHARE = 0.15;
 
 export interface PackageGroup {
   path: string | null;
@@ -41,6 +43,7 @@ export interface PackageLayout {
   directoryRoots: readonly DirectoryNode[];
   directories: readonly DirectoryNode[];
   filesByDirectory: ReadonlyMap<string, ReadonlySet<number>>;
+  islandOnlyDirectories: ReadonlySet<string>;
   districtPaths: ReadonlyMap<number, readonly DistrictPathRow[]>;
 }
 
@@ -63,10 +66,17 @@ function commonPrefixLength(paths: readonly (readonly string[])[]): number {
   return length;
 }
 
+function compareText(a: string, b: string): number {
+  // Package rank decides colour, so ordering must not depend on the host's
+  // locale. Plain code-point order is deterministic everywhere JS runs.
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function packageColor(index: number): string {
-  // The same fixed, light/dark-tested palette as districtColor. Package
-  // groups are ranked deterministically by count then path, never hashed.
-  return `var(--c${index % 12})`;
+  // Package groups have their own categorical palette: district hues carry
+  // spatial meaning and reusing them made unrelated package ranks look the
+  // same. Groups are ranked deterministically by count then path.
+  return `var(--p${index % PACKAGE_GROUP_LIMIT})`;
 }
 
 function packagePath(parts: readonly string[], depth: number): string {
@@ -78,7 +88,7 @@ function makeGrouping(fileParts: readonly (readonly string[])[], depth: number):
   const paths = fileParts.map((parts) => packagePath(parts, depth));
   for (const path of paths) counts.set(path, (counts.get(path) ?? 0) + 1);
 
-  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || compareText(a[0], b[0]));
   const shown = ranked.slice(0, PACKAGE_GROUP_LIMIT);
   const shownIndex = new Map(shown.map(([path], index) => [path, index]));
   const groups: PackageGroup[] = shown.map(([path, count], index) => ({
@@ -111,51 +121,121 @@ function freezeTree(node: MutableDirectoryNode): DirectoryNode {
     path: node.path,
     count: node.count,
     children: [...node.children.values()]
-      .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path))
+      .sort((a, b) => b.count - a.count || compareText(a.path, b.path))
       .map(freezeTree),
   };
 }
 
-/** Partition a district beneath its own common directory root, then extend
- * each branch to the longest prefix shared by that branch. The rows do not
- * overlap, so their counts/shares add up to the district total. */
+interface BreakdownBucket {
+  path: string;
+  parts: readonly string[];
+  members: readonly number[];
+}
+
+function breakdownBucket(members: readonly number[], fileParts: readonly (readonly string[])[]): BreakdownBucket {
+  const memberPaths = members.map((index) => fileParts[index]);
+  const prefix = commonPrefixLength(memberPaths);
+  const parts = memberPaths[0].slice(0, prefix);
+  return { path: parts.join("/") || ".", parts, members };
+}
+
+/** Split one already-compressed row at its next directory boundary. Files
+ * directly in the row's directory cannot become a narrower, non-overlapping
+ * folder highlight, so the caller folds them into the non-tappable `other`
+ * count. A one-child chain is deliberately not a split: breakdownBucket()
+ * already extended the row through that chain to its longest common prefix. */
+function splitBreakdownBucket(
+  row: BreakdownBucket,
+  fileParts: readonly (readonly string[])[],
+): { children: BreakdownBucket[]; directCount: number } | null {
+  const childMembers = new Map<string, number[]>();
+  let directCount = 0;
+  for (const index of row.members) {
+    const child = fileParts[index][row.parts.length];
+    if (child == null) {
+      directCount++;
+      continue;
+    }
+    const members = childMembers.get(child);
+    if (members) members.push(index);
+    else childMembers.set(child, [index]);
+  }
+  if (childMembers.size <= 1) return null;
+  return {
+    children: [...childMembers.values()].map((members) => breakdownBucket(members, fileParts)),
+    directCount,
+  };
+}
+
+/** Begin with the branches at a district's common directory root, extending
+ * each through its own single-child chain. Then repeatedly refine the
+ * largest splittable row until there are five useful paths or the candidate
+ * is already below 15% of the district. If a wide fan-out would exceed five,
+ * only children still above that usefulness floor remain named; smaller
+ * siblings move to `other`, which lets a dominant single-child spine keep
+ * refining instead of getting stuck at `web/`. Rows remain disjoint. */
 function districtBreakdown(indices: readonly number[], fileParts: readonly (readonly string[])[]): readonly DistrictPathRow[] {
   if (indices.length === 0) return [];
   const paths = indices.map((index) => fileParts[index]);
   const common = commonPrefixLength(paths);
-  const buckets = new Map<string, number[]>();
+  const childMembers = new Map<string, number[]>();
+  let otherCount = 0;
   for (const index of indices) {
     const parts = fileParts[index];
-    const branch = parts[common] ?? "";
-    const bucket = buckets.get(branch);
-    if (bucket) bucket.push(index);
-    else buckets.set(branch, [index]);
+    const branch = parts[common];
+    if (branch == null) {
+      otherCount++;
+      continue;
+    }
+    const members = childMembers.get(branch);
+    if (members) members.push(index);
+    else childMembers.set(branch, [index]);
   }
 
-  const ranked = [...buckets.values()]
-    .map((members) => {
-      const memberPaths = members.map((index) => fileParts[index]);
-      const prefix = commonPrefixLength(memberPaths);
-      return { path: memberPaths[0].slice(0, prefix).join("/") || ".", count: members.length };
-    })
-    .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
-  // A file directly in the repository root has no narrower directory that
-  // can be highlighted: selecting the root itself necessarily covers every
-  // file below it too. Fold those direct-root files into "other" rather
-  // than render a misleading tappable `(root)/` row for only their count.
-  const named = ranked.filter((row) => row.path !== ".");
-  const shown: DistrictPathRow[] = named.slice(0, 5).map(({ path, count }) => ({
-    path,
-    count,
-    share: Math.round((count / indices.length) * 1000) / 10,
+  let rows = [...childMembers.values()].map((members) => breakdownBucket(members, fileParts));
+  // If every file is directly in one non-root directory, that common folder
+  // is still a useful row. At repository root it would highlight the whole
+  // map, so it remains `other` instead.
+  if (rows.length === 0 && common > 0) {
+    rows = [breakdownBucket(indices, fileParts)];
+    otherCount = 0;
+  }
+
+  const rankRows = () => rows.sort((a, b) => b.members.length - a.members.length || compareText(a.path, b.path));
+  rankRows();
+  if (rows.length > DISTRICT_PATH_LIMIT) {
+    otherCount += rows.slice(DISTRICT_PATH_LIMIT).reduce((sum, row) => sum + row.members.length, 0);
+    rows = rows.slice(0, DISTRICT_PATH_LIMIT);
+  } else {
+    while (rows.length < DISTRICT_PATH_LIMIT) {
+      const candidates = rows
+        .map((row) => ({ row, split: splitBreakdownBucket(row, fileParts) }))
+        .filter((candidate): candidate is { row: BreakdownBucket; split: NonNullable<typeof candidate.split> } => candidate.split != null)
+        .sort((a, b) => b.row.members.length - a.row.members.length || compareText(a.row.path, b.row.path));
+      const candidate = candidates[0];
+      if (!candidate || candidate.row.members.length / indices.length < DISTRICT_REFINE_MIN_SHARE) break;
+      let children = candidate.split.children;
+      if (rows.length - 1 + children.length > DISTRICT_PATH_LIMIT) {
+        const largeChildren = children.filter((child) => child.members.length / indices.length >= DISTRICT_REFINE_MIN_SHARE);
+        if (largeChildren.length === 0 || rows.length - 1 + largeChildren.length > DISTRICT_PATH_LIMIT) break;
+        const large = new Set(largeChildren);
+        otherCount += children.filter((child) => !large.has(child)).reduce((sum, child) => sum + child.members.length, 0);
+        children = largeChildren;
+      }
+      rows = rows.filter((row) => row !== candidate.row).concat(children);
+      otherCount += candidate.split.directCount;
+      rankRows();
+    }
+  }
+
+  const shown: DistrictPathRow[] = rows.map((row) => ({
+    path: row.path,
+    count: row.members.length,
+    share: Math.round((row.members.length / indices.length) * 1000) / 10,
     other: false,
   }));
-  const count =
-    ranked.filter((row) => row.path === ".").reduce((sum, row) => sum + row.count, 0) +
-    named.slice(5).reduce((sum, row) => sum + row.count, 0);
-  if (count > 0) {
-    shown.push({ path: null, count, share: Math.round((count / indices.length) * 1000) / 10, other: true });
-  }
+  if (otherCount > 0)
+    shown.push({ path: null, count: otherCount, share: Math.round((otherCount / indices.length) * 1000) / 10, other: true });
   return shown;
 }
 
@@ -195,7 +275,7 @@ export function buildPackageLayout(doc: MapDocument): PackageLayout {
     }
   }
   const directoryRoots = [...roots.values()]
-    .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path))
+    .sort((a, b) => b.count - a.count || compareText(a.path, b.path))
     .map(freezeTree);
   const directories: DirectoryNode[] = [];
   const visit = (node: DirectoryNode) => {
@@ -205,6 +285,15 @@ export function buildPackageLayout(doc: MapDocument): PackageLayout {
   directoryRoots.forEach(visit);
   const filesByDirectory = new Map<string, ReadonlySet<number>>(
     [...directoryMembers].map(([path, members]) => [path, new Set(members)]),
+  );
+  // Island-fade precedence is path-derived state too. Resolve it once here,
+  // rather than scanning a possibly-thousand-file folder on every SVG paint.
+  const islandOnlyDirectories = new Set(
+    [...directoryMembers]
+      .filter(([, members]) =>
+        members.every((index) => districtClass(doc.districts[String(D_(doc, index))]) === "island"),
+      )
+      .map(([path]) => path),
   );
 
   const membersByDistrict = new Map<number, number[]>();
@@ -217,9 +306,19 @@ export function buildPackageLayout(doc: MapDocument): PackageLayout {
   const districtPaths = new Map<number, readonly DistrictPathRow[]>();
   for (const [district, indices] of membersByDistrict) districtPaths.set(district, districtBreakdown(indices, fileParts));
 
-  return { autoDepth, minDepth, maxDepth, groupings, directoryRoots, directories, filesByDirectory, districtPaths };
+  return {
+    autoDepth,
+    minDepth,
+    maxDepth,
+    groupings,
+    directoryRoots,
+    directories,
+    filesByDirectory,
+    islandOnlyDirectories,
+    districtPaths,
+  };
 }
 
 export function formatDirectory(path: string): string {
-  return path === "." ? "(root)/" : `${path}/`;
+  return path === "." ? "(repo root)" : `${path}/`;
 }

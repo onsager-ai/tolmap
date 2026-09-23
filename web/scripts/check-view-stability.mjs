@@ -602,8 +602,63 @@ async function checkPackageLayout(browser, base, profile) {
   await page.waitForSelector("[data-package-legend]");
   await page.waitForTimeout(700);
 
+  const initialLegend = await page.locator("[data-package-legend]").evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const zoomBox = document.querySelector('button[aria-label="Zoom in"]')?.parentElement?.getBoundingClientRect();
+    const root = document.documentElement;
+    const previousTheme = root.getAttribute("data-theme");
+    const readPalette = (theme) => {
+      root.setAttribute("data-theme", theme);
+      const css = getComputedStyle(root);
+      return Array.from({ length: 10 }, (_, i) => css.getPropertyValue(`--p${i}`).trim());
+    };
+    const light = readPalette("light");
+    const dark = readPalette("dark");
+    const rgb = (hex) => [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
+    const distance = (a, b) => Math.hypot(...rgb(a).map((channel, i) => channel - rgb(b)[i]));
+    const firstPairStrongest = (palette) => {
+      const adjacent = palette.slice(0, -1).map((color, i) => distance(color, palette[i + 1]));
+      return adjacent[0] === Math.max(...adjacent);
+    };
+    if (previousTheme == null) root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", previousTheme);
+    const overlapsZoom =
+      !!zoomBox && box.left < zoomBox.right && box.right > zoomBox.left && box.top < zoomBox.bottom && box.bottom > zoomBox.top;
+    return {
+      expanded: element.getAttribute("data-package-expanded") === "true",
+      rows: element.querySelectorAll("[data-package-groups] [style*='background']").length,
+      text: element.textContent ?? "",
+      height: box.height,
+      visible: box.width > 0,
+      overlapsZoom,
+      light,
+      dark,
+      firstPairStrongest: firstPairStrongest(light) && firstPairStrongest(dark),
+    };
+  });
+  report(initialLegend.visible && !initialLegend.overlapsZoom, `${label}: package legend does not overlap zoom controls`, JSON.stringify(initialLegend));
+  report(
+    new Set(initialLegend.light).size === 10 &&
+      new Set(initialLegend.dark).size === 10 &&
+      initialLegend.light.every((color, i) => color !== initialLegend.dark[i]) &&
+      initialLegend.firstPairStrongest,
+    `${label}: package palette has ten distinct light and dark colours`,
+    JSON.stringify({ light: initialLegend.light, dark: initialLegend.dark }),
+  );
+  if (profile.isMobile) {
+    report(
+      !initialLegend.expanded && initialLegend.rows === 0 && initialLegend.height < 40 && /packages\s*·\s*depth\s+\d/.test(initialLegend.text),
+      `${label}: phone package legend starts as a one-line chip`,
+      JSON.stringify(initialLegend),
+    );
+    await page.getByRole("button", { name: "Expand package legend" }).click();
+    await page.waitForSelector('[data-package-legend][data-package-expanded="true"]');
+  } else {
+    report(initialLegend.expanded, `${label}: desktop package legend starts expanded`, JSON.stringify(initialLegend));
+  }
+
   const legend = await page.locator("[data-package-legend]").evaluate((element) => ({
-    rows: element.querySelectorAll("[style*='background']").length,
+    rows: element.querySelectorAll("[data-package-groups] [style*='background']").length,
     depth: element.querySelector("[data-package-depth]")?.textContent ?? "",
     visible: element.getBoundingClientRect().width > 0,
   }));
@@ -619,6 +674,11 @@ async function checkPackageLayout(browser, base, profile) {
     report(boxesClose(beforeDepth, await stableBox(page)), `${label}: changing package depth does not re-fit the view`);
   } else {
     report(false, `${label}: package depth has an available override`);
+  }
+  if (profile.isMobile) {
+    await page.getByRole("button", { name: "Collapse package legend" }).click();
+    const collapsed = await page.locator("[data-package-legend]").getAttribute("data-package-expanded");
+    report(collapsed === "false", `${label}: expanded phone package legend collapses again`);
   }
 
   const target = await page.evaluate(async () => {
@@ -674,9 +734,15 @@ async function checkPackageLayout(browser, base, profile) {
       if (!inside && opacity === "0.2") outsideDim++;
       if (!Number.isInteger(index)) return { insideFull: 0, outsideDim: 0 };
     }
-    return { insideFull, outsideDim };
+    const outlined = [...document.querySelectorAll("svg.map-svg [data-folder-highlight]")];
+    const outlinesInside = outlined.every((ring) => {
+      const index = Number(ring.getAttribute("data-folder-highlight"));
+      return Number.isInteger(index) && circles.some((circle) => circle.getAttribute("data-k") === `f:${index}` && (circle.querySelector("title")?.textContent ?? "").startsWith(`${dir}/`));
+    });
+    return { insideFull, outsideDim, outlined: outlined.length, outlinesInside };
   }, target.dir);
   report(dim.insideFull > 0 && dim.outsideDim > 0, `${label}: ?dir= keeps folder files bright and dims files outside`, JSON.stringify(dim));
+  report(dim.outlined > 0 && dim.outlinesInside, `${label}: highlighted folder files have a contrasting outline`, JSON.stringify(dim));
 
   const empty = await findEmptyPoint(page, profile.viewport.width, profile.viewport.height);
   if (empty) {
@@ -708,6 +774,109 @@ async function checkPackageLayout(browser, base, profile) {
       `expected=${path} url=${page.url()}`,
     );
   }
+  await context.close();
+}
+
+// Review regression for district refinement. A single docker file makes the
+// district-wide common prefix empty; the 886-file workflow branch still has
+// to refine past web/ and its single-child chain before reaching five rows.
+// Intercepting one small synthetic map keeps this an end-to-end check of the
+// actual memoised TypeScript derivation and district-card rendering without
+// adding a second implementation of the algorithm to this script.
+async function checkDistrictRefinement(browser, base) {
+  const label = "district path iterative refinement / synthetic";
+  console.log(`\n${label}`);
+  const seed = await (await fetch(`${base}/maps/django/django.json`)).json();
+  const paths = Array.from(
+    { length: 886 },
+    (_, i) => `web/app/components/workflow/${["a", "b", "c"][i % 3]}/file-${i}.ts`,
+  ).concat("web/types/index.ts", "docker/compose.yml");
+  const doc = {
+    ...seed,
+    repo: "synthetic/refinement",
+    names: { 0: "workflow" },
+    districts: { 0: { ...seed.districts["0"], size: paths.length } },
+    F: paths,
+    N: paths.map((_, i) => {
+      const row = [...seed.N[i % seed.N.length]];
+      row[0] = 0;
+      return row;
+    }),
+    E: [],
+    L: [],
+    S: {},
+    U: {},
+    roads: [],
+  };
+  const context = await browser.newContext({ viewport: { width: 1000, height: 700 } });
+  const page = await context.newPage();
+  await page.route("**/maps/synthetic/refinement.json", (route) => route.fulfill({ json: doc }));
+  await page.goto(`${base}/synthetic/refinement?geo=r&layer=d&d=0`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-district-path-breakdown]");
+  const rows = await page.locator("[data-district-path]").evaluateAll((elements) =>
+    elements.map((element) => ({ path: element.getAttribute("data-district-path"), text: element.textContent ?? "" })),
+  );
+  const rowPaths = rows.map((row) => row.path);
+  report(
+    rows.length === 5 &&
+      ["a", "b", "c"].every((branch) => rowPaths.includes(`web/app/components/workflow/${branch}`)) &&
+      rowPaths.includes("web/types") &&
+      rowPaths.includes("docker"),
+    `${label}: dominant web branch refines to workflow children`,
+    JSON.stringify(rows),
+  );
+  report(
+    rows.filter((row) => /\(1 file\)/.test(row.text)).length === 2 && rows.every((row) => !/\(1 files\)/.test(row.text)),
+    `${label}: singular file counts use “file”`,
+    JSON.stringify(rows),
+  );
+  await context.close();
+}
+
+// A mixed mainland/island folder must not become an island-fade exception.
+// Compare the opening pin ranks before and after applying api/: the folder
+// outline and dim are allowed to change, but no previously hidden pin may
+// appear. (An all-island folder is intentionally exempted in MapRenderer so
+// a legitimate highlight cannot produce an empty view.)
+async function checkFolderIslandFade(browser, base, profile) {
+  const label = `folder highlight preserves island fade (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const visiblePinRanks = () =>
+    page.locator('svg.map-svg g.hit[data-k^="f:"] > text').evaluateAll((elements) => elements.map((element) => element.textContent));
+
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=p`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(2200);
+  if (profile.isMobile) await page.getByRole("button", { name: "Expand package legend" }).click();
+  const legendText = await page.locator("[data-package-legend]").innerText();
+  report(
+    legendText.includes("(repo root)") && !legendText.includes("(root)/"),
+    `${label}: repository-root package uses the explicit legend label`,
+    legendText,
+  );
+  const before = await visiblePinRanks();
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=p&dir=api`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg [data-folder-highlight]");
+  await page.waitForTimeout(2200);
+  const after = await visiblePinRanks();
+  const extra = after.filter((rank) => !before.includes(rank));
+  const folderClasses = await page.evaluate(async () => {
+    const doc = await (await fetch("/maps/langgenius/dify.json")).json();
+    return [...new Set(doc.F.map((path, i) => (path.startsWith("api/") ? doc.districts[String(doc.N[i][0])].class : null)).filter(Boolean))];
+  });
+  report(
+    folderClasses.includes("mainland") && folderClasses.includes("island"),
+    `${label}: api/ exercises a mixed mainland/island folder`,
+    JSON.stringify(folderClasses),
+  );
+  report(extra.length === 0, `${label}: folder highlight reveals no extra opening-zoom pins`, JSON.stringify({ before, after, extra }));
   await context.close();
 }
 
@@ -838,6 +1007,10 @@ async function main() {
   }
   for (const profile of PROFILES) {
     await checkPackageLayout(browser, args.base, profile);
+  }
+  await checkDistrictRefinement(browser, args.base);
+  for (const profile of PROFILES) {
+    await checkFolderIslandFade(browser, args.base, profile);
   }
   for (const profile of PROFILES) {
     await checkViewerCards(browser, args.base, profile);

@@ -417,7 +417,7 @@ function DistrictBody({
               >
                 <b className="text-[var(--on)]">{path.share}%</b>
                 <span>other</span>
-                <span>({path.count} files)</span>
+                <span>({path.count} {path.count === 1 ? "file" : "files"})</span>
               </div>
             ) : (
               <button
@@ -430,7 +430,7 @@ function DistrictBody({
               >
                 <b>{path.share}%</b>
                 <span className="overflow-hidden text-ellipsis whitespace-nowrap">{formatDirectory(path.path!)}</span>
-                <span className="text-[var(--dim)]">({path.count} files)</span>
+                <span className="text-[var(--dim)]">({path.count} {path.count === 1 ? "file" : "files"})</span>
               </button>
             ),
           )}

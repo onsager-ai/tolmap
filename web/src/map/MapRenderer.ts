@@ -69,6 +69,7 @@ export interface MapRenderState {
   route: Route | null;
   packageGrouping: PackageGrouping;
   folderFiles: ReadonlySet<number> | null;
+  folderOnlyIslands: boolean;
 }
 
 export interface MapRendererCallbacks {
@@ -790,7 +791,7 @@ export class MapRenderer {
     svg.classList.remove("previewing");
     this.rootG = null;
     if (!state) return;
-    const { doc, geo, layer, sel, selSym, selD, route, folderFiles } = state;
+    const { doc, geo, layer, sel, selSym, selD, route, folderFiles, folderOnlyIslands } = state;
     const g = el("g", {});
     svg.appendChild(g);
     // Issue #51: remember exactly what this paint() drew at, so a later
@@ -853,7 +854,12 @@ export class MapRenderer {
       ? new Set([D_(doc, sel!), ...selNeighbours.out.map((j) => D_(doc, j)), ...selNeighbours.in.map((j) => D_(doc, j))])
       : null;
     // Issue #63's fade exceptions: an island touched by a selection, route,
-    // blast radius or search result is drawn at full strength. Reuses the
+    // blast radius or search result is drawn at full strength. A folder is
+    // different: it can span mainland and offshore districts, and treating
+    // its whole dim set as a selection exception made hidden island pins
+    // suddenly appear at opening zoom. Preserve the fade unless EVERY file
+    // in the folder is on an island, where suppressing those islands would
+    // leave a valid folder highlight with nothing visible at all. Reuses the
     // SAME sets built above rather than a parallel notion of "important" --
     // `selD` directly (a district picked from the sidebar's islands list,
     // see Sidebar.tsx/MapView.tsx), `sel`'s own district (the selected
@@ -865,7 +871,8 @@ export class MapRenderer {
     const islandExceptionDistricts = new Set<number>();
     if (selD != null) islandExceptionDistricts.add(selD);
     if (sel != null) islandExceptionDistricts.add(D_(doc, sel));
-    if (dim) for (const i of dim) islandExceptionDistricts.add(D_(doc, i));
+    if (dim && (!folderFiles || folderOnlyIslands))
+      for (const i of dim) islandExceptionDistricts.add(D_(doc, i));
 
     if (geo !== "t") {
       doc.roads.forEach(([a, b, w]) => {
@@ -1034,6 +1041,42 @@ export class MapRenderer {
       const t = el("title", {});
       t.textContent = `${doc.F[i]}\n${LOC(doc, i)} loc · churn ${CH(doc, i)} · cplx ${CX_(doc, i)}`;
       node.appendChild(t);
+      // Folder dimming deliberately matches #61's selection opacity. The
+      // positive outline is what makes the kept set readable even when the
+      // package/district fills beneath it remain strongly coloured. It is a
+      // separate pointer-free element so the generous transparent touch
+      // stroke on `node` stays intact.
+      if (folderFiles?.has(i)) {
+        if (node.tagName === "circle") {
+          g.appendChild(
+            el("circle", {
+              cx: node.getAttribute("cx")!,
+              cy: node.getAttribute("cy")!,
+              r: (Number(node.getAttribute("r")) + 0.8).toFixed(2),
+              fill: "none",
+              stroke: "var(--ink)",
+              "stroke-width": 1.1,
+              "pointer-events": "none",
+              "data-folder-highlight": i,
+            }),
+          );
+        } else {
+          g.appendChild(
+            el("rect", {
+              x: (Number(node.getAttribute("x")) - 0.8).toFixed(1),
+              y: (Number(node.getAttribute("y")) - 0.8).toFixed(1),
+              width: (Number(node.getAttribute("width")) + 1.6).toFixed(1),
+              height: (Number(node.getAttribute("height")) + 1.6).toFixed(1),
+              rx: 2.4,
+              fill: "none",
+              stroke: "var(--ink)",
+              "stroke-width": 1.1,
+              "pointer-events": "none",
+              "data-folder-highlight": i,
+            }),
+          );
+        }
+      }
       g.appendChild(node);
     }
 

@@ -24,6 +24,7 @@ interface MapCanvasProps {
   route: Route | null;
   packageGrouping: PackageGrouping;
   folderFiles: ReadonlySet<number> | null;
+  folderOnlyIslands: boolean;
   callbacks: MapRendererCallbacks;
   handleRef?: React.Ref<MapCanvasHandle>;
 }
@@ -45,6 +46,7 @@ export function MapCanvas({
   route,
   packageGrouping,
   folderFiles,
+  folderOnlyIslands,
   callbacks,
   handleRef,
 }: MapCanvasProps) {
@@ -119,7 +121,19 @@ export function MapCanvas({
     renderer.loadDocument(doc);
     const r = wrapRef.current.getBoundingClientRect();
     renderer.resize(r.width, r.height);
-    const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, selTerrain, route, packageGrouping, folderFiles };
+    const state: MapRenderState = {
+      doc,
+      geo,
+      layer,
+      sel,
+      selSym,
+      selD,
+      selTerrain,
+      route,
+      packageGrouping,
+      folderFiles,
+      folderOnlyIslands,
+    };
     renderer.fit(false, state);
     justFittedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -132,9 +146,21 @@ export function MapCanvas({
       justFittedRef.current = false;
       return;
     }
-    const state: MapRenderState = { doc, geo, layer, sel, selSym, selD, selTerrain, route, packageGrouping, folderFiles };
+    const state: MapRenderState = {
+      doc,
+      geo,
+      layer,
+      sel,
+      selSym,
+      selD,
+      selTerrain,
+      route,
+      packageGrouping,
+      folderFiles,
+      folderOnlyIslands,
+    };
     renderer.render(state);
-  }, [doc, geo, layer, sel, selSym, selD, selTerrain, route, packageGrouping, folderFiles]);
+  }, [doc, geo, layer, sel, selSym, selD, selTerrain, route, packageGrouping, folderFiles, folderOnlyIslands]);
 
   // The wrapper's box, watched once for the component's life. Selection,
   // layer, geo and route changes must never touch this subscription: the

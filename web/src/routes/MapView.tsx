@@ -156,6 +156,7 @@ export function MapView() {
   const packageGrouping = packageLayout.groupings.get(packageDepth)!;
   const activeDirectory = search.dir && packageLayout.filesByDirectory.has(search.dir) ? search.dir : undefined;
   const folderFiles = activeDirectory ? (packageLayout.filesByDirectory.get(activeDirectory) ?? null) : null;
+  const folderOnlyIslands = activeDirectory ? packageLayout.islandOnlyDirectories.has(activeDirectory) : false;
 
   return (
     <div className="flex h-full flex-col">
@@ -203,6 +204,7 @@ export function MapView() {
             route={route}
             packageGrouping={packageGrouping}
             folderFiles={folderFiles}
+            folderOnlyIslands={folderOnlyIslands}
             callbacks={rendererCallbacks}
             handleRef={canvasRef}
           />
