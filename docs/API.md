@@ -48,13 +48,15 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_MAX_CLONE_BYTES` | `2147483648` (2 GiB) | reject a clone whose working tree + `.git` exceeds this |
 | `TOLMAP_MAX_HISTORY_COMMITS` | `200000` | reject a repo whose `HEAD` history has more commits than this -- does not bound indexing cost (`extract.rs` caps its own history read at 4000 regardless of depth); see `service::config::Limits::max_history_commits`'s doc comment for what it actually guards on each of `service::clone::materialize`'s two request paths (pre-clone on a local path, a narrower post-clone refusal on a remote one). Default was 20000 until 2026-09-20, which rejected django (34942 commits) |
 | `TOLMAP_MAX_JOB_SECONDS` | `900` | wall-clock budget for one job before it fails as `index_failed` |
+| `TOLMAP_MAX_CONCURRENT_JOBS` | `1` | maximum blocking index jobs running at once; zero is treated as one |
+| `TOLMAP_MAX_QUEUED_JOBS` | `16` | pending jobs allowed beyond running jobs; zero disables waiting |
 | `TOLMAP_RATE_LIMIT_PER_IP` | `30` | requests per window, per source IP, under `/api/` |
 | `TOLMAP_RATE_LIMIT_WINDOW_SECONDS` | `60` | window for the per-IP limit |
 | `TOLMAP_RATE_LIMIT_PER_REPO` | `3` | `POST /api/index` requests per window, per slug |
 | `TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS` | `300` | window for the per-repo limit |
 | `TOLMAP_RETAIN_COMMITS_PER_REPO` | `20` | indexed commits kept per slug before older ones are pruned (see "Store" below) |
 
-All eight limit/rate-limit variables map directly to `service::config::Limits`'s
+All limit/rate-limit variables map directly to `service::config::Limits`'s
 fields, which is the single place their defaults are documented and the
 only place that reads them from the environment -- request-handling code
 only ever sees a resolved `Limits` value, never `std::env::var` itself.
@@ -93,6 +95,11 @@ A fresh index is queued:
 {"job_id": "<uuid>", "slug": "owner/name", "status": "queued"}
 ```
 
+If the same `(slug, commit)` is already queued or running, the request gets
+that job's id with the same `202` body. The per-repo rate limit still applies.
+When all workers and pending slots are occupied, a new job gets `503 busy`
+with `Retry-After: 30` (seconds). A duplicate can still join a full queue.
+
 The commit already has a cached map (see "Store" below):
 
 ```
@@ -114,6 +121,7 @@ be answered in the same request rather than always queuing a job.
   "commit": "<sha>" | null,
   "status": "queued" | "cloning" | "detecting" | "indexing" | "done" | "failed",
   "stage": "<human-readable current step>",
+  "queue_position": 1 | null,
   "started_at": "<RFC3339>",
   "finished_at": "<RFC3339>" | null,
   "error": "<human text>" | null,          // rendered directly by clients
@@ -121,7 +129,12 @@ be answered in the same request rather than always queuing a job.
 }
 ```
 
-`commit` is `null` until the clone stage resolves HEAD. `stage` is a short
+`commit` is the commit resolved before admission. `queue_position` is a
+one-based FIFO position while waiting, updated when jobs ahead start. It is
+`null` once running and in terminal states. The 900-second job clock starts
+when a worker starts the job, so queue waiting does not count. A timed-out
+blocking thread can continue, and holds its worker slot until it exits.
+`stage` is a short
 free-text description of what is happening right now (e.g. `"cloning
 github.com/django/django"`, `"indexing (partition)"`) -- it is for display,
 not for matching on; only `status` is a stable enum.
@@ -176,6 +189,7 @@ Every non-2xx response is JSON:
 | 404 | `not_found` | unknown job id, or unknown slug/commit for `GET /api/maps/{owner}/{repo}` |
 | 413 | `repo_too_large` | a configured limit was tripped -- `message` names which one and its value (e.g. `"file count 1204 exceeds the configured limit of 1000"`). **Fixed exactly** (code and status), by agreement with the frontend, which detects this by exact match rather than a heuristic. |
 | 429 | `rate_limited` | per-IP or per-repo rate limit tripped -- `message` says which |
+| 503 | `busy` | all workers and pending queue slots are occupied; `Retry-After: 30` seconds |
 | 422 | `detection_failed` | `detect::detect` (issue #4) found no supported source at all -- an empty or non-source repository, not a size or confidence problem |
 | 422 | `detection_uncertain` | detection succeeded but at `Confidence::Low` -- `message` is the chosen candidate's evidence text. Never indexed silently: a wrong source root produces a plausible-looking wrong map (finding 7) |
 | 502 | `clone_failed` | git clone/fetch failed (bad URL, network, repo does not exist) |
