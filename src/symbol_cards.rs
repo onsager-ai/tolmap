@@ -9,6 +9,9 @@ use crate::parcels::{point_in_polygon, polygon_area, rasterize, solve};
 use crate::schema::{MapDocument, SymbolsDocument};
 
 type Ring = Vec<[f64; 2]>;
+// The prototype used roughly 9–12 vertices per card. A larger contour made
+// dify's separate symbol document far heavier without adding visible detail.
+const CARD_CONTOUR_POINTS: usize = 12;
 
 struct Canvas {
     grid: usize,
@@ -24,7 +27,7 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Ring> {
             .then_with(|| a.len().cmp(&b.len()))
     });
     let points = rings.into_iter().next()?;
-    let stride = points.len().div_ceil(64).max(1);
+    let stride = points.len().div_ceil(CARD_CONTOUR_POINTS).max(1);
     let polygon = points
         .into_iter()
         .step_by(stride)
