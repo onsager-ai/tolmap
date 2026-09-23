@@ -163,6 +163,7 @@ def contains(point, rings):
 def audit_rings(document):
     rings = document.get("symbol_rings", [])
     duplicate = collinear = collapsed = outside = oversized = 0
+    outside_examples = []
     for ring in iter_contours(document):
         duplicate += any(a == b for a, b in zip(ring, ring[1:] + ring[:1]))
         collapsed += len(ring) < 3 or integer_area(ring) == 0
@@ -181,10 +182,17 @@ def audit_rings(document):
             continue
         exterior = child[0]
         center = [sum(p[axis] for p in exterior) / len(exterior) for axis in (0, 1)]
-        outside += not contains(center, ancestor)
+        if not contains(center, ancestor):
+            outside += 1
+            if len(outside_examples) < 2:
+                outside_examples.append({
+                    "symbol": i, "parent": parent, "center": center,
+                    "child": child, "ancestor": ancestor,
+                    "child_area": card_area(child), "parent_area": card_area(ancestor),
+                })
         oversized += card_area(child) > card_area(ancestor)
     assert duplicate == 0 and collinear == 0 and collapsed == 0 and outside == 0 and oversized == 0, (
-        duplicate, collinear, collapsed, outside, oversized)
+        duplicate, collinear, collapsed, outside, oversized, outside_examples)
     return {
         "duplicate_consecutive_points": duplicate,
         "collinear_points": collinear,
