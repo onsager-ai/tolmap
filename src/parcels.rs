@@ -129,9 +129,51 @@ pub fn build_parcels(document: &MapDocument, partition: &Partition) -> Footprint
             if local_mask.iter().filter(|&&inside| inside).count() < files.len() {
                 local_mask.fill(true);
             }
-            let file_sites = files
+            let raw_sites = files
                 .iter()
                 .map(|&file| document.nodes[file].point())
+                .collect::<Vec<_>>();
+            // File layout points often lie outside the power cell assigned
+            // to their neighbourhood. Projecting all of them to the nearest
+            // boundary pixel stacked their seeds together; a single seed
+            // then enclosed the others and took ~99% of that region even
+            // with area quotas. Preserve their relative layout and scale it
+            // into the neighbourhood's own box before solving.
+            let source_center = mean(&raw_sites);
+            let source_span = raw_sites.iter().fold([f64::INFINITY; 2], |mut low, point| {
+                for axis in 0..2 {
+                    low[axis] = low[axis].min(point[axis]);
+                }
+                low
+            });
+            let source_high = raw_sites
+                .iter()
+                .fold([f64::NEG_INFINITY; 2], |mut high, point| {
+                    for axis in 0..2 {
+                        high[axis] = high[axis].max(point[axis]);
+                    }
+                    high
+                });
+            let source_span = (source_high[0] - source_span[0])
+                .max(source_high[1] - source_span[1])
+                .max(1e-9);
+            let file_sites = raw_sites
+                .iter()
+                .enumerate()
+                .map(|(local, point)| {
+                    let angle = local as f64 * std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+                    let jitter = local_span * 1e-4;
+                    [
+                        local_low[0]
+                            + local_span * 0.5
+                            + (point[0] - source_center[0]) / source_span * local_span * 0.7
+                            + jitter * angle.cos(),
+                        local_low[1]
+                            + local_span * 0.5
+                            + (point[1] - source_center[1]) / source_span * local_span * 0.7
+                            + jitter * angle.sin(),
+                    ]
+                })
                 .collect::<Vec<_>>();
             let file_targets = files
                 .iter()
@@ -191,6 +233,14 @@ fn mean_points(document: &MapDocument, files: &[usize]) -> [f64; 2] {
         sum[1] += point[1];
     }
     [sum[0] / files.len() as f64, sum[1] / files.len() as f64]
+}
+
+fn mean(points: &[[f64; 2]]) -> [f64; 2] {
+    let n = points.len().max(1) as f64;
+    [
+        points.iter().map(|p| p[0]).sum::<f64>() / n,
+        points.iter().map(|p| p[1]).sum::<f64>() / n,
+    ]
 }
 
 fn bounds(points: &[[f64; 2]]) -> ([f64; 2], f64) {
