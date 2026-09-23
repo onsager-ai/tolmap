@@ -43,7 +43,9 @@ Five computable selectors, each answering a different orientation question: entr
 ## 7 · geometry
 `blobs.py` rasterises a density field per district, assigns winner-take-all, and marching-squares the contour; the threshold drops until ≥95% of members fall inside, because a region must contain its own files. A district whose members form disconnected clumps renders as an archipelago rather than dropping the smaller islands.
 
-`parcels.py` solves a power diagram per district so each file's plot area tracks its line count. Optional; the map is useful without it.
+`parcels.py` solves a power diagram per district so each file's plot area tracks its line count. This describes the frozen Python reference; its parcels were optional.
+
+The Rust product adds a seeded neighbourhood partition after the district partition, using each district's induced kept weighted graph. Its default geometry solves nested regions (district › neighbourhood › file) and emits `P` for every file, neighbourhood outlines, and displayed footprint centroids separate from the layout coordinates in `N`. File weights come from the index-aligned code-line array `C`, falling back to LOC for older maps. `--no-parcels` remains a CLI opt-out. The district partition, modularity, and layout do not read the neighbourhood results.
 
 ## `.tolmap/layout.json` — not yet implemented
 
