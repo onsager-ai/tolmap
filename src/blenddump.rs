@@ -13,6 +13,7 @@
 //! in a different order can differ in the last ulp, and compared exactly that
 //! flags every edge and buries the real divergence.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Result;
@@ -38,7 +39,12 @@ pub fn dump(
 ) -> Result<()> {
     let language = LanguageKind::parse(lang)?;
     let data = extract::build(repo, pkg, language)?;
-    dump_data(data, prune_variant, out)
+    dump_data(
+        data,
+        prune_variant,
+        out,
+        Some((repo, &[(pkg.to_owned(), language)])),
+    )
 }
 
 /// As [`dump`], but unions any number of `(pkg, language)` sources (see
@@ -50,14 +56,25 @@ pub fn dump_multi(
     out: &Path,
 ) -> Result<()> {
     let data = extract::build_multi_source(repo, sources)?;
-    dump_data(data, prune_variant, out)
+    dump_data(data, prune_variant, out, Some((repo, sources)))
 }
 
 fn dump_data(
     mut data: crate::schema::GraphData,
     prune_variant: PruneVariant,
     out: &Path,
+    diagnostic_source: Option<(&Path, &[(String, LanguageKind)])>,
 ) -> Result<()> {
+    let mut candidate_files = BTreeSet::new();
+    let mut static_files = BTreeSet::new();
+    for edge in &data.edges {
+        candidate_files.insert(edge.a.clone());
+        candidate_files.insert(edge.b.clone());
+    }
+    for &(a, b, _) in &data.imports {
+        static_files.insert(data.nodes[a as usize].file.clone());
+        static_files.insert(data.nodes[b as usize].file.clone());
+    }
     let candidate_edges = data.edges.len();
     let mass =
         |select: fn(&crate::schema::SignalEdge) -> f64| data.edges.iter().map(select).sum::<f64>();
@@ -93,6 +110,12 @@ fn dump_data(
         .collect();
     edges.sort_by(|left, right| left.partial_cmp(right).expect("weights are finite"));
 
+    let coverage = diagnostic_source
+        .map(|(repo, sources)| {
+            extract::coverage_diagnostics(repo, sources, &candidate_files, &static_files, &data)
+        })
+        .transpose()?;
+
     let document = json!({
         "repo": data.repo,
         "tolerance": TOLERANCE,
@@ -112,6 +135,7 @@ fn dump_data(
         "below_prune_floor": round_to(below_prune_floor, 6),
         "node_order": data.nodes.iter().map(|n| n.file.clone()).collect::<Vec<_>>(),
         "edges": edges,
+        "coverage": coverage,
     });
     std::fs::write(out, serde_json::to_string_pretty(&document)?)?;
     println!(

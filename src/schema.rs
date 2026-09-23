@@ -90,6 +90,21 @@ pub struct RoadRow(pub (usize, usize, f64));
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
+pub struct CoverageLanguage {
+    pub zero_edge_files: usize,
+    pub total_files: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CoverageReport {
+    pub zero_edge_files: usize,
+    pub total_files: usize,
+    pub by_language: BTreeMap<String, CoverageLanguage>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct MapDocument {
     pub repo: String,
     pub q: f64,
@@ -109,6 +124,9 @@ pub struct MapDocument {
     pub uses: BTreeMap<String, Vec<usize>>,
     pub roads: Vec<RoadRow>,
     pub lang: String,
+    // Kept-edge coverage; absent in maps built before issue #40.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<CoverageReport>,
     #[serde(rename = "P", skip_serializing_if = "Option::is_none")]
     pub parcels: Option<BTreeMap<String, Vec<[f64; 2]>>>,
 }
