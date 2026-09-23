@@ -3210,7 +3210,27 @@ async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
     await context.close();
     return;
   }
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const clickX = box.x + box.width / 2;
+  const clickY = box.y + box.height / 2;
+  // Diagnostic: exactly what the browser's own hit-test resolves at the
+  // click point, and how many elements actually carry this child's data-k
+  // right now -- definitive, rather than inferring it from the URL after
+  // the fact.
+  const hitInfo = await page.evaluate(({ x, y, want }) => {
+    const el = document.elementFromPoint(x, y);
+    const chain = [];
+    let n = el;
+    for (let depth = 0; n && depth < 6; depth++, n = n.parentElement) {
+      chain.push(`${n.tagName}${n.getAttribute?.("data-k") ? `[data-k=${n.getAttribute("data-k")}]` : ""}`);
+    }
+    return {
+      elementChain: chain.join(" < "),
+      matchingCount: document.querySelectorAll(`[data-k="${want}"]`).length,
+      breadcrumbCount: document.querySelectorAll("[data-breadcrumb]").length,
+    };
+  }, { x: clickX, y: clickY, want: childKey });
+  console.log(`  (info) click at (${Math.round(clickX)},${Math.round(clickY)}) hitChain=${hitInfo.elementChain} matchingChildEls=${hitInfo.matchingCount} breadcrumbEls=${hitInfo.breadcrumbCount}`);
+  await page.mouse.click(clickX, clickY);
   await page.waitForTimeout(300);
   const url = new URL(page.url());
   report(
