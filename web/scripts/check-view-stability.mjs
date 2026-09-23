@@ -593,26 +593,28 @@ async function checkRepoSwitch(browser, base, profile) {
 // `blob` has several polygons draws one <path> per polygon (plus its label)
 // all sharing data-k="d:N"; the fix highlights every element for that key,
 // not just the one the pointer resolved to. Wants dify per the user's
-// report, but dify's OWN build (every worktree's copy of it checked, none
-// built with tolmap build for this task) happens to have ZERO multi-polygon
-// districts -- every one of its districts is a single contiguous blob, so
-// there is nothing there to exercise this on. django DOES have one
-// (district "sessions", 3 polygons, found by exactly the districts[d].blob
-// .length > 1 scan the task asked for) and is well inside the browser-size
-// limit, so this runs there instead; the fix itself is generic (keyElements
-// is built from every element carrying a data-k, not district-specific), so
-// this is still a real exercise of the code path dify would use too.
+// report, but dify's OWN build has ZERO multi-polygon districts -- every one
+// of its districts is a single contiguous blob, so there is nothing there to
+// exercise this on. B4 (nested footprints, issue #82) rebuilt django too
+// (finding 29) and its own multi-polygon district went away along with it
+// (0 of 12, measured against the current pinned fixture) -- so this now runs
+// against encode/httpx instead, one of the committed data/ fixtures the
+// catalogue already serves (also used by checkLegacyMapWithoutFootprints,
+// scope item 9(f)), which reliably has four. The fix itself is generic
+// (keyElements is built from every element carrying a data-k, not district-
+// specific), so this is still a real exercise of the code path any repo's
+// multi-polygon district would use.
 async function checkMultiPolygonHover(browser, base) {
-  const label = "multi-polygon district hover (django, desktop -- dify has none, see comment)";
+  const label = "multi-polygon district hover (encode/httpx, desktop)";
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
-  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${base}/encode/httpx`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
 
   const districtId = await page.evaluate(async () => {
-    const res = await fetch("/maps/django/django.json");
+    const res = await fetch("/maps/encode/httpx.json");
     const doc = await res.json();
     for (const k in doc.districts) {
       if (doc.districts[k].blob.length > 1) return k;
@@ -620,7 +622,7 @@ async function checkMultiPolygonHover(browser, base) {
     return null;
   });
   if (districtId == null) {
-    report(false, `${label}: no multi-polygon district found in django either`, "fixture data may have changed");
+    report(false, `${label}: no multi-polygon district found`, "fixture data may have changed");
     await context.close();
     return;
   }
@@ -712,21 +714,21 @@ async function checkSelectionDim(browser, base, profile) {
     // density-fade opacity can coincidentally sit under any threshold too).
     const dimmed = nonSelected.filter((c) => c.getAttribute("fill-opacity") === "0.2");
     // A neighbour ring (MapRenderer.ring(), var(--hot) or var(--cold) stroke)
-    // marks a file that's connected -- find one and check ITS dot opacity,
-    // which should read as full strength (alwaysDrawn), not dimmed. `ring()`
-    // still always draws a circle regardless of footprint mode, so its own
-    // cx/cy read is unaffected; the DOT it's matched against may now be a
-    // path, whose position lives in data-cx/data-cy instead.
-    const rings = [...document.querySelectorAll("svg.map-svg circle[stroke]:not(.hit)")];
-    const pos = (el) => [parseFloat(el.getAttribute("cx") ?? el.getAttribute("data-cx")), parseFloat(el.getAttribute("cy") ?? el.getAttribute("data-cy"))];
+    // marks a file that's connected -- find one and check ITS OWN file's
+    // opacity, which should read as full strength (alwaysDrawn), not dimmed.
+    // B4: matched by `data-ring-for` (which file the ring belongs to,
+    // MapRenderer.ring()'s own doc comment), not by cx/cy proximity -- a
+    // position match stopped being reliable once footprint mode puts every
+    // file's anchor on screen at once (thousands of them, some within 1px of
+    // each other at a small fit-zoom k), where dot mode's #48 thinning only
+    // ever left a sparse handful actually drawn at a time.
+    const rings = [...document.querySelectorAll("svg.map-svg circle[data-ring-for]")];
     let neighbourFull = null;
     for (const ring of rings) {
-      const [cx, cy] = pos(ring);
-      const dot = circles.find((c) => {
-        const [dx, dy] = pos(c);
-        return Math.abs(dx - cx) < 1 && Math.abs(dy - cy) < 1;
-      });
-      if (dot && dot.getAttribute("data-k") !== `f:${i}`) {
+      const key = ring.getAttribute("data-ring-for");
+      if (key === `f:${i}`) continue;
+      const dot = circles.find((c) => c.getAttribute("data-k") === key);
+      if (dot) {
         neighbourFull = parseFloat(dot.getAttribute("fill-opacity"));
         break;
       }
@@ -1417,8 +1419,25 @@ async function checkFolderWinsFileCollision(browser, base) {
   // Move one uniquely named, ranked file to the folder's measured median.
   // This changes only the test response. The control below hides that folder
   // label without moving the view, proving the file has label budget.
-  doc.N[probe][1] = median(1);
-  doc.N[probe][2] = median(2);
+  //
+  // B4: N's x,y is a LAYOUT input only once a document carries
+  // footprint_centroids (map/geometry.ts's fileXY) -- moving only N[probe]
+  // no longer moves what actually renders in footprint mode (dify has `P`).
+  // Move the footprint's own anchor and polygon by the same delta so the
+  // file's rendered position changes here too, whichever geometry drew it.
+  const targetX = median(1);
+  const targetY = median(2);
+  doc.N[probe][1] = targetX;
+  doc.N[probe][2] = targetY;
+  if (doc.footprint_centroids) {
+    const [ox, oy] = doc.footprint_centroids[probe];
+    const dx = targetX - ox;
+    const dy = targetY - oy;
+    doc.footprint_centroids[probe] = [targetX, targetY];
+    if (doc.P?.[String(probe)]) {
+      doc.P[String(probe)] = doc.P[String(probe)].map(([x, y]) => [x + dx, y + dy]);
+    }
+  }
   await page.route("**/maps/langgenius/dify.json", (route) => route.fulfill({ json: doc }));
   await page.goto(`${base}/langgenius/dify?d=${district}`);
   await page.waitForSelector('button[aria-label="Zoom to district"]');
@@ -2045,11 +2064,13 @@ async function checkSearchPanOffscreen(browser, base) {
   }
 
   const before = await readDot(page, picked.companionKey);
+  const beforeTarget = await readDot(page, `f:${picked.index}`);
   await page.locator('input[aria-label="Search files"]').fill(picked.file.split("/").pop());
   await page.waitForTimeout(150);
   await page.locator('input[aria-label="Search files"]').press("Enter");
   await page.waitForTimeout(650); // glide()/settle
   const after = await readDot(page, picked.companionKey);
+  const afterTarget = await readDot(page, `f:${picked.index}`);
 
   report(new URL(page.url()).searchParams.get("file") === picked.file,
     `${label}: search selected the off-screen target`, page.url());
@@ -2075,13 +2096,22 @@ async function checkSearchPanOffscreen(browser, base) {
   }, picked.index);
   report(targetInView, `${label}: the off-screen target is now inside the viewport`);
 
-  if (!before || !after) {
+  if (!before || !after || !beforeTarget || !afterTarget) {
     report(false, `${label}: companion dot present before and after`, JSON.stringify({ before, after }));
   } else {
     const moved = Math.hypot(after.cx - before.cx, after.cy - before.cy) > 5;
-    const sameRadius = before.r != null && after.r != null && Math.abs(before.r - after.r) <= 0.05;
+    // B4: `r` is a dot-mode-only signal (a footprint `<path>` has no radius
+    // to compare -- both before.r and after.r read null there, which used to
+    // read as "not proven unchanged" rather than "unchanged"). The distance
+    // between the TARGET and its COMPANION is a k-only invariant regardless
+    // of which geometry drew either of them: pan doesn't change the distance
+    // between two world points, zoom does, so an unchanged distance is
+    // exactly the same positive evidence `r` used to provide.
+    const distBefore = Math.hypot(beforeTarget.cx - before.cx, beforeTarget.cy - before.cy);
+    const distAfter = Math.hypot(afterTarget.cx - after.cx, afterTarget.cy - after.cy);
+    const sameScale = Math.abs(distBefore - distAfter) <= Math.max(1, distBefore * 0.02);
     report(moved, `${label}: the view actually panned`, JSON.stringify({ before, after }));
-    report(sameRadius, `${label}: k unchanged (companion dot radius identical)`, JSON.stringify({ before, after }));
+    report(sameScale, `${label}: k unchanged (target-companion distance identical)`, JSON.stringify({ distBefore, distAfter }));
   }
   await context.close();
 }
@@ -2183,14 +2213,24 @@ async function checkDistrictHueAdjacency(browser, base) {
 // exactly this (getPointAtLength), then map it from the path's own local
 // user space to viewport CSS pixels with getScreenCTM -- the same
 // coordinate space page.mouse.click/page.touchscreen.tap expect.
-async function pointOnPathMidpoint(locator) {
-  return locator.evaluate((el) => {
+// B4 (nested footprints, issue #82): footprints now tile most of a
+// district's own area, so a road/street's exact MIDPOINT is more likely than
+// before to sit visually under one of them (footprints paint AFTER
+// drawRoads/drawStreets -- MapRenderer.paint()'s own z-order) -- a plain dot
+// rarely covered a road's path pixel-for-pixel, but a district-wide footprint
+// tiling regularly does. Several points along the path's length, not just
+// the midpoint, so a caller can fall back toward the ribbon's own ends
+// (nearer a district's edge, where fewer footprints extend) when the middle
+// is covered.
+async function pointOnPathAt(locator, fraction) {
+  return locator.evaluate((el, fraction) => {
     const len = el.getTotalLength();
-    const pt = el.getPointAtLength(len / 2);
+    const pt = el.getPointAtLength(len * fraction);
     const screenPt = pt.matrixTransform(el.getScreenCTM());
     return { x: screenPt.x, y: screenPt.y };
-  });
+  }, fraction);
 }
+const PATH_SAMPLE_FRACTIONS = [0.5, 0.3, 0.7, 0.15, 0.85];
 
 // On-screen coordinates aren't enough on the PHONE profile specifically: the
 // bottom drawer's peek strip, the zoom controls, the search box and the
@@ -2254,16 +2294,23 @@ async function checkRoadTap(browser, base, profile) {
   const { width: vw, height: vh } = profile.viewport;
   let point = null;
   for (const road of roads) {
-    const p = await pointOnPathMidpoint(road);
-    if (p.x < 0 || p.x > vw || p.y < 0 || p.y > vh) continue;
     const dataK = await road.getAttribute("data-k");
-    if (await isPointClickable(page, p.x, p.y, dataK)) {
-      point = p;
-      break;
+    // B4: try several points along the ribbon, not just the midpoint -- a
+    // footprint-mode district's own files now tile most of its area and can
+    // cover a road's exact middle where a dot rarely did (see
+    // pointOnPathAt's own comment).
+    for (const fraction of PATH_SAMPLE_FRACTIONS) {
+      const p = await pointOnPathAt(road, fraction);
+      if (p.x < 0 || p.x > vw || p.y < 0 || p.y > vh) continue;
+      if (await isPointClickable(page, p.x, p.y, dataK)) {
+        point = p;
+        break;
+      }
     }
+    if (point) break;
   }
   if (!point) {
-    report(false, `${label}: at least one road's midpoint is on screen and not covered by chrome`, `checked ${roads.length} roads`);
+    report(false, `${label}: at least one point along a road is on screen and not covered by chrome`, `checked ${roads.length} roads`);
     await context.close();
     return;
   }
@@ -2336,7 +2383,13 @@ async function checkHubRingTap(browser, base, profile) {
   let chosenKey = null;
   let point = null;
   for (const key of hubKeys) {
-    const box = await page.locator(`svg.map-svg circle.hit[data-k="${key}"][fill="transparent"]`).boundingBox();
+    // B4: a hub file small enough ALSO to qualify for scope item 6's own
+    // extra small-footprint hit circle now has TWO transparent circle.hit
+    // elements sharing this data-k (the hub ring's own hit circle, and the
+    // small-footprint one) -- `.first()` since either is a valid tap target
+    // for the same file, and a strict-mode locator throws on the 2-element
+    // match otherwise.
+    const box = await page.locator(`svg.map-svg circle.hit[data-k="${key}"][fill="transparent"]`).first().boundingBox();
     if (!box) continue;
     const candidate = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     if (await isPointClickable(page, candidate.x, candidate.y, key)) {
@@ -2431,7 +2484,7 @@ async function checkSmallFootprintHitCircle(browser, base, profile) {
   let chosenKey = null;
   let point = null;
   for (const key of candidateKeys) {
-    const box = await page.locator(`svg.map-svg circle.hit[data-k="${CSS.escape(key)}"][fill="transparent"]`).boundingBox();
+    const box = await page.locator(`svg.map-svg circle.hit[data-k="${CSS.escape(key)}"][fill="transparent"]`).first().boundingBox();
     if (!box) continue;
     const candidate = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     if (await isPointClickable(page, candidate.x, candidate.y, key)) {
@@ -2527,17 +2580,20 @@ async function checkStreetsAndTap(browser, base, profile) {
   let point = null;
   let dataK = null;
   for (const street of streets) {
-    const p = await pointOnPathMidpoint(street);
-    if (p.x < 0 || p.x > vw || p.y < 0 || p.y > vh) continue;
     const k = await street.getAttribute("data-k");
-    if (await isPointClickable(page, p.x, p.y, k)) {
-      point = p;
-      dataK = k;
-      break;
+    for (const fraction of PATH_SAMPLE_FRACTIONS) {
+      const p = await pointOnPathAt(street, fraction);
+      if (p.x < 0 || p.x > vw || p.y < 0 || p.y > vh) continue;
+      if (await isPointClickable(page, p.x, p.y, k)) {
+        point = p;
+        dataK = k;
+        break;
+      }
     }
+    if (point) break;
   }
   if (!point) {
-    report(false, `${label}: at least one street's midpoint is on screen and not covered by chrome`, `checked ${streets.length}`);
+    report(false, `${label}: at least one point along a street is on screen and not covered by chrome`, `checked ${streets.length}`);
     await context.close();
     return;
   }

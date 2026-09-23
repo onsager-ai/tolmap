@@ -1394,11 +1394,17 @@ export class MapRenderer {
     // growing `placed` array threaded through every step below is the fix.
     const placed: Array<[number, number, number, number]> = [];
     this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed);
-    // B4 scope item 5: neighbourhood labels go through the SAME shared
-    // collision list, right after district names -- "labels go through the
-    // shared collision list below district names" (spec), so a district's
-    // own name always wins a collision against one of its neighbourhoods'.
-    if (FOOTPRINTS) this.placeNeighbourhoodLabels(g, placed, selD);
+    // B4 scope item 5: neighbourhood labels share the SAME collision list
+    // ("below district names", spec) but are placed later, inside
+    // placeContentLabels (after folder labels and hub labels, before file
+    // labels) -- NOT here. Folder labels and hub labels both predate this
+    // PR; a brand-new label kind does not get to outrank either of them for
+    // the same reason A4's hubs didn't outrank folder labels (see
+    // placeContentLabels' own comment). Placing it here instead regressed a
+    // pre-existing check: a focused, neighbourhood-dense district (dify's
+    // "workflow", many neighbourhoods >=6 files) filled the collision budget
+    // before the folder-label pass ever ran, so "workflow folder label
+    // appears after zooming in" started failing.
 
     // Ranked-pin selection (readable-overview PR, scope item 1; see pins.ts's
     // top comment for issue #57, the msgraph-sdk-python case this fixes):
@@ -2296,6 +2302,11 @@ export class MapRenderer {
     // `placed` list so neither collides with a district name, a pin, or a
     // folder label above it.
     this.placeHubLabels(g, zf0, hubCandidates, placed);
+    // B4 scope item 5: neighbourhood labels come after hub labels (see this
+    // method's own doc comment and paint()'s call site for why -- folder and
+    // hub labels both predate this PR and keep the priority they already
+    // had) and before file labels.
+    if (this.hasFootprints) this.placeNeighbourhoodLabels(g, placed, this.state!.selD);
     // file labels appear as you zoom in — the budget grows with scale
     if (geo === "p" && zf > BUILD_ZOOM) return; // plots label themselves
     const budget = Math.round(Math.min(narrow ? 18 : 60, Math.max(0, (zf - 1.5) * (narrow ? 10 : 26))));
@@ -2368,6 +2379,16 @@ export class MapRenderer {
           // stepped back the selection instead of re-selecting what it
           // already outlines.
           "pointer-events": "none",
+          // B4: which file this ring belongs to, for a geometry-stability
+          // check to read directly instead of re-deriving it by matching the
+          // ring's own cx/cy against a "nearby dot" -- position-matching
+          // stopped being reliable once footprint mode draws every file at
+          // once (thousands of anchors on screen simultaneously, some closer
+          // than 1px apart at a small fit-zoom k, versus the sparse
+          // #48-thinned set dot mode ever had on screen at once). Not
+          // `data-k` itself: this ring is `pointer-events:none` and must
+          // never become a click/hover target or a hoverContent() key.
+          "data-ring-for": "f:" + i,
         }),
       );
     } else {
