@@ -3,12 +3,27 @@
 //
 // The budget (constants.ts DOT_DENSITY_FLOOR, MapRenderer.dotFactor) must
 // never engage on the nine acceptance fixtures at the fit zoom -- every
-// district's on-screen area per file has to clear the floor there, or the
-// port would render a different DOM than before #48 on repos the acceptance
-// gate already covers. This re-derives that per-district number using the
-// renderer's own pure geometry functions (fitScale, districtWorldArea,
-// districtClass) rather than reimplementing the math a second time, so it
-// can't silently drift from what MapRenderer actually computes at runtime.
+// district's on-screen area per file has to clear the floor there. This
+// re-derives that per-district number using the renderer's own pure
+// geometry functions (fitScale, districtWorldArea, districtClass) rather
+// than reimplementing the math a second time, so it can't silently drift
+// from what MapRenderer actually computes at runtime.
+//
+// What this DOES NOT prove, as of issue #82 (district hues, import roads,
+// hub rings, always-on district names): the DOM is no longer byte-identical
+// to the pre-#48 renderer at fit zoom on these fixtures, and that was never
+// this script's own claim -- #48's ORIGINAL comment reasoned "budget never
+// engages here" -> "DOM stays byte-identical", which held only because
+// nothing else in the renderer changed anything #48 didn't already touch.
+// #82 intentionally changes district fill/stroke colour (A2), adds road
+// ribbons and hub rings that did not exist before (A3/A4), and makes every
+// mainland district's name label unconditional (A5) -- all deliberate DOM
+// changes this PR's own scope calls for, none of them related to the
+// density gate this script actually checks. The assertion below (every
+// district's px²/file clears DOT_DENSITY_FLOOR at fit zoom on the nine
+// fixtures) is unaffected by any of #82's changes and still holds; read this
+// script as "the dot-thinning gate doesn't engage on these fixtures," not as
+// a DOM snapshot test.
 //
 // Run: npx tsx web/scripts/no-change-proof.ts
 // (no test runner exists in this project yet -- see web/README.md -- so this

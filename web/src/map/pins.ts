@@ -14,27 +14,19 @@
 // district" put 10,034 pins on the map regardless of zoom. The fix is not to
 // the partition (that's #57's own scope) -- it's that a capital pin should
 // only draw once its district is actually a legible PLACE on screen.
-import type { District, LandmarkRow, MapDocument } from "@/types";
-import { D_, districtClass, districtWorldArea } from "./geometry";
-import { DOT_DENSITY_FLOOR } from "./constants";
+import type { LandmarkRow, MapDocument } from "@/types";
 
-// "It should need at least a few dots' worth of area": DOT_DENSITY_FLOOR
-// (constants.ts) is the px²/file a district needs before #49's budget draws
-// a file's dot at all, so re-using it here (rather than inventing a second,
-// unrelated constant) means "established" tracks the same reader-tested
-// number "legible" already means elsewhere on this map. 3 dots' worth is
-// small enough that an island barely bigger than a handful of files still
-// earns its capital pin once it's toe-to-toe with a few visible file dots,
-// and large enough that a sliver too small to show ANY dots (#49's fast
-// path: edge < 1) can't earn one either.
-export const PIN_ESTABLISH_DOTS = 3;
-export const PIN_ESTABLISH_AREA = PIN_ESTABLISH_DOTS * DOT_DENSITY_FLOOR;
-
-// Pre-existing cutoff (unchanged from the renderer this replaces): once
-// zoomed in this far, individual file dots are legible on their own and a
-// capital pin reads as clutter rather than a wayfinding aid. Global
-// landmarks (entry/bridge/hub/hazard) were never subject to this and still
-// aren't -- they're not tied to a district's own legibility.
+// PIN_ESTABLISH_DOTS/PIN_ESTABLISH_AREA (the "is this district established
+// enough on screen to earn its capital pin" gate) were removed with capital
+// pins themselves -- see isRetiredPinKind below (issue #82 A4).
+//
+// PIN_CAPITAL_HIDE_ZF is kept and still exported even though capital pins no
+// longer read it: MapRenderer's island-fade curve (islandFadeOpacity) reuses
+// this SAME numeric threshold for an unrelated reason (the zoom past which
+// an island's file dots are legible on their own), and renaming/duplicating
+// the constant there would be the actual churn -- the comment at each of
+// its remaining call sites explains why that reuse, not this one, is what
+// keeps it alive.
 export const PIN_CAPITAL_HIDE_ZF = 3.4;
 
 // Approximate on-screen footprint of the pin glyph (the teardrop path plus
@@ -62,24 +54,55 @@ export interface PinPlacement {
  * establishment or collision -- "the selected file's pin ... always draws."
  * Picking a landmark from the sidebar always sets `sel` to that file
  * (MapView.tsx's onPickLandmark -> selectFile), so there's no separate
- * "sidebar pick" state to thread through here; `sel` already covers it. */
+ * "sidebar pick" state to thread through here; `sel` already covers it.
+ *
+ * `_districtArea`/`_k`/`_zf` are kept in the signature, underscore-prefixed
+ * (both call sites -- MapRenderer.paint() and pin-counts.ts -- already pass
+ * them positionally) even though the only logic that read them, capital-pin
+ * establishment, was removed with capital pins themselves (issue #82 A4, see
+ * isRetiredPinKind below). Changing this function's signature/call sites is
+ * out of this PR's stated scope. */
 export function selectPins(
   doc: MapDocument,
-  districtArea: Map<number, number>,
+  _districtArea: Map<number, number>,
   screenOf: (i: number) => [number, number] | null,
-  k: number,
-  zf: number,
+  _k: number,
+  _zf: number,
   sel: number | null,
+  // A5 (district labels always on, issue #82): boxes already claimed by
+  // something with HIGHER placement priority than a pin -- today, a
+  // district's own name label. A pin candidate that would land on one of
+  // these is skipped, same as if another pin had already taken the spot;
+  // this is what "district names take priority over pins" actually means
+  // in code (previously pins were selected with no knowledge of where
+  // district names ended up, so the two could visually collide even though
+  // neither's OWN collision logic ever saw a conflict). Optional and
+  // defaulted so pin-counts.ts's reporting call (which doesn't model
+  // district-label placement) keeps working unchanged.
+  preplaced: ReadonlyArray<[number, number, number, number]> = [],
 ): PinPlacement[] {
-  const placed: [number, number, number, number][] = [];
+  const placed: [number, number, number, number][] = [...preplaced];
   const box = (cx: number, cy: number): [number, number, number, number] => [cx - PIN_W / 2, cy - PIN_H, PIN_W, PIN_H];
   const hits = (b: [number, number, number, number]) =>
     placed.some((r) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3]));
 
   const out: PinPlacement[] = [];
 
+  // Owner decision (AskUserQuestion, 2026-09-23, issue #82 A4): capital pins
+  // are dropped -- district names are unconditional now (A5), so a capital
+  // pin's whole job (naming a district that's otherwise anonymous at a
+  // glance) is redundant. Hub pins are dropped too, replaced by the new hub
+  // RING layer (map/hubs.ts, drawn by MapRenderer.drawHubRings), which
+  // covers every hub above the fan-in threshold, not just the top two
+  // landmarks() happens to pick. Both kinds stay in doc.L and the sidebar's
+  // landmark list (all five kinds, unchanged) -- only the MAP PIN is
+  // retired, including for the selected file: a selected capital/hub still
+  // gets its selection ring (MapRenderer.paint()'s `ring()` call), just no
+  // second, now-redundant pin glyph on top of it.
+  const isRetiredPinKind = (why: LandmarkRow[1]) => why === "capital" || why === "hub";
+
   if (sel != null) {
-    const selRow = doc.L.find(([i]) => i === sel);
+    const selRow = doc.L.find(([i, why]) => i === sel && !isRetiredPinKind(why));
     if (selRow) {
       const p = screenOf(sel);
       if (p) {
@@ -94,22 +117,7 @@ export function selectPins(
   for (const row of doc.L) {
     const [i, why, , rank] = row;
     if (i === sel) continue; // already placed above, unconditionally
-    if (why === "capital") {
-      if (zf > PIN_CAPITAL_HIDE_ZF) continue;
-      const d = D_(doc, i);
-      const district = doc.districts[String(d)] as District;
-      // Mainland is always established -- it's the map's actual subject
-      // (issue #34), never gated. Island and unconnected districts share the
-      // same area check: an unconnected district has an EMPTY blob
-      // (geometry.rs never gives it a polygon -- districtClass's doc
-      // comment in geometry.ts), so districtArea reads 0 for it and it can
-      // never clear PIN_ESTABLISH_AREA -- correctly, since it has no
-      // on-screen place for a pin to anchor to.
-      if (districtClass(district) !== "mainland") {
-        const area = (districtArea.get(d) ?? districtWorldArea(district)) * k * k;
-        if (area < PIN_ESTABLISH_AREA) continue;
-      }
-    }
+    if (isRetiredPinKind(why)) continue;
     const p = screenOf(i);
     if (!p) continue;
     candidates.push({ row, cx: p[0], cy: p[1], rank });

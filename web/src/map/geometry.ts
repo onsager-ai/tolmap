@@ -1,4 +1,5 @@
 import type { District, DistrictClass, MapDocument } from "@/types";
+import { assignDistrictHues } from "./colour";
 import type { Geo } from "./constants";
 
 /** A district's legibility class (issue #34), defaulting to "mainland" when
@@ -182,14 +183,55 @@ export function ramp(t: number): string {
 }
 
 let cssCache: CSSStyleDeclaration | null = null;
-/** District colour is a pure function of `district id % 12` against the
- * --c0..--c11 custom properties in index.css — never randomised, never a
- * hash of the district's name (names can change on rename; ids are stable
- * within one build). This is the determinism rule from CLAUDE.md applied to
- * colour instead of geometry. */
-export function districtColor(d: number): string {
+// A2 (issue #82): district colour used to be a pure function of `district id
+// % 12` against a 12-colour wheel with no idea which districts actually
+// touch on the map. It is now a greedy colouring of the district ADJACENCY
+// graph over six colour-blind-validated hues (map/colour.ts's
+// assignDistrictHues) -- still a pure function of the document (never
+// randomised, never a hash of the district's NAME, which can change on
+// rename), just one that needs the whole document rather than one id to
+// compute, since a district's hue depends on its neighbours'. Cached by doc
+// reference (the same one-instance-per-document assumption MapRenderer's own
+// per-document caches make) so repainting every file's dot doesn't re-run
+// the adjacency scan per call.
+let hueCache: { doc: MapDocument; mixed: Map<number, string> } | null = null;
+const HUE_VARS = ["--H0", "--H1", "--H2", "--H3", "--H4", "--H5"];
+// "the fill is the hue mixed toward the surface colour ... about 40% for
+// now" (issue #82 A2) -- the neighbourhood 3-shade scheme (the prototype's
+// lobe tints at .30/.40/.50) arrives later; one flat ratio is this PR's
+// whole scope here.
+const DISTRICT_HUE_MIX = 0.4;
+
+function districtHueMap(doc: MapDocument): Map<number, string> {
+  if (hueCache?.doc === doc) return hueCache.mixed;
   if (!cssCache) cssCache = getComputedStyle(document.documentElement);
-  return cssCache.getPropertyValue(`--c${((d % 12) + 12) % 12}`).trim();
+  const hues = HUE_VARS.map((v) => hx(cssCache!.getPropertyValue(v).trim()));
+  const surface = hx(cssCache.getPropertyValue("--canvas").trim());
+  const assigned = assignDistrictHues(doc);
+  const mixed = new Map<number, string>();
+  for (const [d, h] of assigned) {
+    const rgb = mix(surface, hues[h] ?? hues[0], DISTRICT_HUE_MIX);
+    mixed.set(d, `rgb(${rgb.join(",")})`);
+  }
+  hueCache = { doc, mixed };
+  return mixed;
+}
+
+// Note: colour.ts imports `districtClass` from this file, so this is a
+// two-file import cycle. ES modules tolerate it (neither side runs anything
+// at module-eval time that needs the other, only inside functions called
+// later), and `districtAdjacency`/`assignDistrictHues` themselves stay pure
+// and DOM-free in colour.ts precisely so they can be unit-tested and run
+// from check-district-colours.ts without a browser.
+
+/** A district's fill/stroke colour: the hue map/colour.ts's greedy
+ * colouring assigned it, mixed toward the surface colour (~40% hue -- see
+ * DISTRICT_HUE_MIX). Falls back to hue 0's mix for a district id the
+ * current document doesn't actually have (shouldn't happen; defensive only,
+ * matching the old function's total-for-any-integer contract). */
+export function districtColor(doc: MapDocument, d: number): string {
+  const mixed = districtHueMap(doc);
+  return mixed.get(d) ?? mixed.get(0) ?? "#888";
 }
 
 // ---------- rooms / treemap ----------

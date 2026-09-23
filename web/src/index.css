@@ -28,18 +28,20 @@
      light theme's #eaede9 and dark's #0e161a, --hot itself is likewise
      unchanged between themes) without needing its own dark-mode override. */
   --cold: #4f8fc4;
-  --c0: #2f6f63;
-  --c1: #b05a2c;
-  --c2: #3a6796;
-  --c3: #8a6b1c;
-  --c4: #5e626a;
-  --c5: #7e3f5d;
-  --c6: #4e7a33;
-  --c7: #8c4132;
-  --c8: #356f7d;
-  --c9: #93502a;
-  --c10: #4a5e8c;
-  --c11: #6e6a33;
+  /* District hues (A2, issue #82): six colour-blind-validated categorical
+     hues, replacing the old `id % 12` wheel (--c0..--c11, no adjacency
+     awareness -- removed). map/colour.ts greedy-colours the district
+     adjacency graph against these six so two districts that actually touch
+     never render the same hue; geometry.ts's districtColor() mixes the
+     picked hue toward --canvas (~40% hue) rather than using it at full
+     strength. Values match the validated prototype palette
+     (arch20.head.html's --H0..--H5) so screenshots stay comparable. */
+  --H0: #2a78d6;
+  --H1: #eb6834;
+  --H2: #1baf7a;
+  --H3: #eda100;
+  --H4: #e87ba4;
+  --H5: #008300;
   /* Package rank is a separate visual category from district identity.
      Alternate cool/warm hues so adjacent ranks stay distinct; the first
      (blue/gold) pair is the strongest contrast because it covers the two
@@ -60,6 +62,12 @@
   --canvas: #0e161a;
   --coast: #293539;
   --ink: #dce4e4;
+  --H0: #3987e5;
+  --H1: #d95926;
+  --H2: #199e70;
+  --H3: #c98500;
+  --H4: #d55181;
+  --H5: #008300;
   --p0: #54a9f0;
   --p1: #ffc247;
   --p2: #52c7aa;
@@ -76,6 +84,12 @@
     --canvas: #0e161a;
     --coast: #293539;
     --ink: #dce4e4;
+    --H0: #3987e5;
+    --H1: #d95926;
+    --H2: #199e70;
+    --H3: #c98500;
+    --H4: #d55181;
+    --H5: #008300;
     --p0: #54a9f0;
     --p1: #ffc247;
     --p2: #52c7aa;

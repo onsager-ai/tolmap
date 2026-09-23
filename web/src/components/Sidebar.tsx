@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { MapDocument } from "@/types";
 import { districtClass, districtColor } from "@/map/geometry";
+import { computeHubs } from "@/map/hubs";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 
 const WHY_COLOR: Record<string, string> = {
@@ -16,6 +17,11 @@ interface Props {
   open: boolean;
   onToggleOpen(): void;
   onPickLandmark(fileIndex: number): void;
+  /** A4 (hubs, issue #82): tapping a hub row selects the file. Wired to the
+   * same pan-only selectFile() every other pick in this sidebar uses
+   * (MapView.tsx, post issue #82 A1's "selection never moves the map" --
+   * see MapView.tsx's own selectFile doc comment). */
+  onPickHub(fileIndex: number): void;
   /** Issue #82 A1: renamed from onFlyDistrict now that a row SELECTS the
    * district (mainland and island alike) and pans to it only if it's off
    * screen, instead of always zooming in -- see MapView.tsx's wiring. */
@@ -29,7 +35,7 @@ function DistrictRow({ doc, d, onSelectDistrict }: { doc: MapDocument; d: string
       onClick={() => onSelectDistrict(+d)}
       className="flex cursor-pointer items-center gap-1.5 px-3 py-1 text-[10.5px] hover:bg-[var(--chrome2)]"
     >
-      <i className="block h-2.5 w-2.5 flex-none rounded-sm" style={{ background: districtColor(+d) }} />
+      <i className="block h-2.5 w-2.5 flex-none rounded-sm" style={{ background: districtColor(doc, +d) }} />
       {doc.names[d]}
       <span className="ml-auto text-[9.5px] text-[var(--dim)]">{doc.districts[d].size}</span>
     </div>
@@ -83,7 +89,7 @@ function CollapsibleSection({
  *
  * Districts split into mainland and islands. Unconnected files now live in
  * the footer list, with no district row to select from here. */
-export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onSelectDistrict }: Props) {
+export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onPickHub, onSelectDistrict }: Props) {
   const narrow = useIsNarrow();
   const byClass = (cls: "mainland" | "island") =>
     Object.keys(doc.districts)
@@ -91,6 +97,12 @@ export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onSelectDistr
       .sort((a, b) => doc.districts[b].size - doc.districts[a].size);
   const mainlandIds = byClass("mainland");
   const islandIds = byClass("island");
+  // A4: same computeHubs() MapRenderer itself calls (map/hubs.ts) -- the
+  // sidebar's top-12 list and the map's own rings/labels can never disagree
+  // about which files are hubs or how they're ranked/named. Memoised on
+  // `doc` since it's an O(files) scan, not free to redo on every render this
+  // component's own state (narrow, open) triggers.
+  const topHubs = useMemo(() => computeHubs(doc).hubs.slice(0, 12), [doc]);
 
   const body = (
     <>
@@ -115,6 +127,25 @@ export function Sidebar({ doc, open, onToggleOpen, onPickLandmark, onSelectDistr
         ))}
         {doc.L.length === 0 && <p className="px-3 py-2 text-[10.5px] text-[var(--dim)]">no landmarks surfaced</p>}
       </div>
+      {topHubs.length > 0 && (
+        <>
+          <h2 className="mb-1.5 mt-3 px-3 font-sans text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--dim)]">
+            Hubs
+          </h2>
+          <div>
+            {topHubs.map((hub) => (
+              <div
+                key={hub.i}
+                onClick={() => onPickHub(hub.i)}
+                className="flex cursor-pointer items-center gap-1.5 px-3 py-1 text-[10.5px] hover:bg-[var(--chrome2)]"
+              >
+                <span className="overflow-hidden text-ellipsis whitespace-nowrap">{hub.name}</span>
+                <span className="ml-auto text-[9.5px] text-[var(--dim)]">{hub.fi}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
       <h2 className="mb-1.5 mt-3 px-3 font-sans text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--dim)]">
         Districts
       </h2>
