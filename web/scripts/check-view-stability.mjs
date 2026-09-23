@@ -2809,11 +2809,29 @@ async function loadDifySymbolsFixture(context, base) {
   return { mapDoc, symbols };
 }
 
+// CI review finding (issue #82 C2): docs/API.md says a district's symbols
+// response includes "both endpoint rows" of every crossing edge, so
+// `symbols.symbols` carries a handful of FOREIGN symbols too -- the far end
+// of an edge whose own file sits in some OTHER, unbundled district. Picking
+// one of those as a test target (a real risk when ranking by a single
+// symbol's own code_lines/member count, which a lone foreign stub can win
+// outright) sends the check to a file whose district was never fetched, so
+// nothing about it ever decodes or renders -- indistinguishable from "the
+// card never rendered" until you check `symbols.files` (this district's
+// actual member files) specifically. Every picker below filters to it.
+function memberFileSet(symbols) {
+  return new Set(symbols.files);
+}
+
 // The file with the most symbols in the bundled district -- large enough
 // that its footprint reads on screen and its cards are worth painting.
 function pickBigFileTarget(symbols) {
+  const members = memberFileSet(symbols);
   const counts = new Map();
-  for (const row of symbols.symbols) counts.set(row[0], (counts.get(row[0]) ?? 0) + 1);
+  for (const row of symbols.symbols) {
+    if (!members.has(row[0])) continue;
+    counts.set(row[0], (counts.get(row[0]) ?? 0) + 1);
+  }
   let file = null;
   let count = -1;
   for (const [f, n] of counts) {
@@ -2848,6 +2866,7 @@ function pickBigFileTarget(symbols) {
 // lines and every descendant's) tracks far more directly than a raw member
 // count does.
 function pickExpandableClasses(symbols, limit = 6) {
+  const members = memberFileSet(symbols);
   const si = symbols.symbol_indices;
   const childCount = new Map();
   symbols.symbols.forEach((row) => {
@@ -2856,6 +2875,7 @@ function pickExpandableClasses(symbols, limit = 6) {
   const candidates = [];
   symbols.symbols.forEach((row, local) => {
     if (row[2] !== 0) return;
+    if (!members.has(row[0])) return; // CI review finding: exclude foreign (crossing-edge) symbols -- see memberFileSet
     const global = si[local];
     const memberCount = childCount.get(global) ?? 0;
     if (memberCount === 0) return;
@@ -2891,23 +2911,32 @@ function pickExpandableClasses(symbols, limit = 6) {
 
 // The symbol with the largest combined in+out edge weight in the bundled
 // district -- guaranteed to have SOME reference lines to check endpoints on.
+// Restricted to real member files (memberFileSet) for the same reason
+// pickBigFileTarget/pickExpandableClasses are: the symbol being SELECTED
+// here has to be one whose own file's district is the one actually bundled,
+// or nothing about it ever decodes.
 function pickReferenceTarget(symbols) {
+  const members = memberFileSet(symbols);
+  const si = symbols.symbol_indices;
+  const localByGlobal = new Map(si.map((g, local) => [g, local]));
   const weight = new Map();
   for (const [s, t, n] of symbols.edges) {
     weight.set(s, (weight.get(s) ?? 0) + n);
     weight.set(t, (weight.get(t) ?? 0) + n);
   }
-  const si = symbols.symbol_indices;
   let best = null;
   let bestN = -1;
   for (const [g, n] of weight) {
-    if (n > bestN && si.includes(g)) {
+    const local = localByGlobal.get(g);
+    if (local == null) continue;
+    if (!members.has(symbols.symbols[local][0])) continue;
+    if (n > bestN) {
       best = g;
       bestN = n;
     }
   }
   if (best == null) return null;
-  const local = si.indexOf(best);
+  const local = localByGlobal.get(best);
   return { global: best, file: symbols.symbols[local][0], weight: bestN };
 }
 
@@ -2998,9 +3027,16 @@ async function checkClassExpandsAtShortSide(browser, base) {
 // ever called once real content is already known to be there.
 async function tryExpandClass(page, base, mapDoc, candidate) {
   const path = mapDoc.F[candidate.file];
+  const trueDistrict = mapDoc.N[candidate.file][0];
+  const hasFootprint = !!mapDoc.P?.[String(candidate.file)];
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
+  // Diagnostic only: is the file's OWN footprint drawn at all (a "hs:" card
+  // can only ever exist inside one)? Read via .hit[data-k="f:<i>"], the same
+  // selector footprint()/batchFootprint() tag every file's polygon with,
+  // batched or not.
+  const footprintDrawn = (await page.locator(`svg.map-svg .hit[data-k="f:${candidate.file}"]`).count()) > 0;
   const classKey = `hs:${candidate.classGlobal}`;
   const childKey = `hs:${candidate.childGlobal}`;
   const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
@@ -3011,13 +3047,14 @@ async function tryExpandClass(page, base, mapDoc, candidate) {
   }
   const classCount = await page.locator(`svg.map-svg [data-k="${classKey}"]`).count();
   const classBox = classCount > 0 ? await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null) : null;
+  const context = `(mapDoc district=${trueDistrict}, doc.P present=${hasFootprint}, footprint drawn=${footprintDrawn})`;
   const diagnostic = expanded
-    ? "expanded"
+    ? `expanded ${context}`
     : classCount === 0
-      ? "class card never rendered at all"
+      ? `class card never rendered at all ${context}`
       : classBox
-        ? `class card ${Math.round(classBox.width)}x${Math.round(classBox.height)}px (short side ${Math.round(Math.min(classBox.width, classBox.height))}px, want >=110) but member never appeared`
-        : "class card rendered but bounding box unavailable";
+        ? `class card ${Math.round(classBox.width)}x${Math.round(classBox.height)}px (short side ${Math.round(Math.min(classBox.width, classBox.height))}px, want >=110) but member never appeared ${context}`
+        : `class card rendered but bounding box unavailable ${context}`;
   return { expanded, initiallyCollapsed, classBox, diagnostic, path };
 }
 

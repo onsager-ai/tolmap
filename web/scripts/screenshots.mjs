@@ -126,8 +126,18 @@ try {
     const symbols = await (await fetch(`${base}/maps/${DIFY_SLUG}.symbols/0.json`)).json();
     const stem = `${out}/${DIFY_SLUG.replace("/", "__")}`;
 
+    // CI review finding (issue #82 C2): a district's symbols response also
+    // carries the FAR END of every crossing edge, whose own file sits in
+    // some other, unbundled district (docs/API.md) -- picking one of those
+    // as a screenshot target lands on a file that can never decode any
+    // cards. Both scans below are restricted to `symbols.files`, this
+    // district's actual member files.
+    const memberFiles = new Set(symbols.files);
     const fileSymbolCounts = new Map();
-    for (const row of symbols.symbols) fileSymbolCounts.set(row[0], (fileSymbolCounts.get(row[0]) ?? 0) + 1);
+    for (const row of symbols.symbols) {
+      if (!memberFiles.has(row[0])) continue;
+      fileSymbolCounts.set(row[0], (fileSymbolCounts.get(row[0]) ?? 0) + 1);
+    }
     let bigFile = null;
     let bigFileCount = -1;
     for (const [f, n] of fileSymbolCounts) {
@@ -138,7 +148,7 @@ try {
     }
 
     // Ranked by code_lines, not member count -- see check-view-stability.mjs's
-    // pickExpandableClass for why (a class's allocated area follows its
+    // pickExpandableClasses for why (a class's allocated area follows its
     // code-line "mass", which a raw member count can badly under-predict for
     // a class full of one-line members).
     const childCount = new Map();
@@ -150,6 +160,7 @@ try {
     let classCodeLines = -1;
     symbols.symbols.forEach((row, local) => {
       if (row[2] !== 0) return;
+      if (!memberFiles.has(row[0])) return;
       const global = symbols.symbol_indices[local];
       const n = childCount.get(global) ?? 0;
       if (n === 0) return;
