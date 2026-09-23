@@ -424,7 +424,6 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         RESOLUTION,
         geometry::BuildFeatures {
             parcels: WITH_PARCELS,
-            terrain: state.config.terrain,
             prune_variant: state.config.prune_variant,
         },
         previous_document.as_ref(),
@@ -536,7 +535,6 @@ mod tests {
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
 
-    use crate::geometry::TerrainMode;
     use crate::pipeline::PruneVariant;
     use crate::service::clone::RepoSource;
     use crate::service::config::{Limits, ServeConfig};
@@ -550,7 +548,6 @@ mod tests {
             db_path: dir.path().join("store.sqlite3"),
             cache_dir: dir.path().join("cache"),
             static_dir: None,
-            terrain: TerrainMode::Off,
             prune_variant: PruneVariant::NodeRelative,
             limits,
             retain_commits_per_repo: 20,

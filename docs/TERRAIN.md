@@ -1,3 +1,7 @@
+## Status: Removed 2026-09-23 by owner decision
+
+**Historical record.** After comparing phone screenshots of dify and vscode with terrain off and on at 2× and 4×, the owner chose to remove terrain entirely. The four reasons were: **districts look emptier** (large districts become sparse clumps with blank space); **the square parcel grid looks artificial**; **harder to read** (sub-district clusters and outlines add clutter without telling you anything); and **not useful enough** (it does not earn its complexity). See [finding 24](FINDINGS.md#24-terrain-was-built-measured-and-removed). The measurements below remain as historical analysis.
+
 # Terrain-aware subdivision of oversized districts
 
 This began as the measured Stage 3 proposal for issue #41. Terrain shipped behind `--terrain` in #47; finding 22 records the later policy that makes it automatic above 2,000 mapped source files, while keeping smaller default maps byte-identical.

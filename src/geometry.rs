@@ -8,55 +8,14 @@ use crate::blobs;
 use crate::extract::{self, round_to, LanguageKind};
 use crate::naming;
 use crate::parcels;
-use crate::parity;
 use crate::partition::LeidenFfi;
 use crate::pipeline::{self, LayoutDistrict};
 use crate::schema::{
     District, DistrictClass, FileId, GraphData, LandmarkRow, MapDocument, NodeRow, SymbolRow,
-    TerrainArterial, TerrainDistrict, TerrainParcel, TerrainSubdistrict,
 };
-use crate::terrain;
-
-/// Terrain's automatic-mode boundary, measured against the mapped source
-/// files the build actually indexes (the same count serialized as `F`).
-/// Finding 21's medians of three GitHub runner builds per side put build-time
-/// changes inside runner noise and peak RSS unchanged except vscode (+19%).
-pub const TERRAIN_AUTO_FILE_THRESHOLD: usize = 2_000;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TerrainMode {
-    Off,
-    Auto,
-    On,
-}
-
-impl TerrainMode {
-    pub fn enabled_for(self, file_count: usize) -> bool {
-        match self {
-            Self::Off => false,
-            Self::Auto => file_count > TERRAIN_AUTO_FILE_THRESHOLD,
-            Self::On => true,
-        }
-    }
-}
-
-impl std::str::FromStr for TerrainMode {
-    type Err = ();
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "false" => Ok(Self::Off),
-            "auto" => Ok(Self::Auto),
-            "true" => Ok(Self::On),
-            _ => Err(()),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct BuildFeatures {
     pub parcels: bool,
-    pub terrain: TerrainMode,
     pub prune_variant: pipeline::PruneVariant,
 }
 
@@ -465,10 +424,8 @@ pub fn build_from_graph(
     build_from_graph_warm(graph, map_name, out, resolution, features, None)
 }
 
-/// As [`build_from_graph`], but a prior [`MapDocument`] both seeds the
-/// top-level partitioner and preserves matched terrain suffixes.  The job
-/// service already has that document at this call site, so the terrain warm
-/// path needs no new store or lookup plumbing.
+/// As [`build_from_graph`], but a prior [`MapDocument`] seeds the
+/// top-level partitioner.
 pub fn build_from_graph_warm(
     graph: GraphData,
     map_name: String,
@@ -477,10 +434,6 @@ pub fn build_from_graph_warm(
     features: BuildFeatures,
     previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
-    // Extraction assigns one graph node to every mapped source file, and
-    // compact() later serializes those same nodes as F. Resolve Auto here so
-    // repository, --all-sources and --graph builds all use that exact count.
-    let with_terrain = features.terrain.enabled_for(graph.nodes.len());
     eprintln!("[2/5] partition resolution={resolution}");
     let partitioner = LeidenFfi;
     let previous_membership = previous_document.map(|document| {
@@ -536,7 +489,7 @@ pub fn build_from_graph_warm(
         eprintln!("        d{district:<2} {count:4} files  {district_name}");
     }
     eprintln!("[4/5] geometry regions");
-    let mut geometry = blobs::build_geometry(&layout, &partitioner, with_terrain)?;
+    let mut geometry = blobs::build_geometry(&layout, &partitioner)?;
     // Unconnected districts get no region: they are not places (issue #34).
     // Their files already have a defined, deterministic point from the
     // scatter above (`compact` still emits a `NodeRow` for every file
@@ -548,14 +501,7 @@ pub fn build_from_graph_warm(
             geometry.blobs.remove(&district);
         }
     }
-    let mut document = compact(
-        map_name,
-        layout,
-        geometry,
-        names,
-        previous_document,
-        &classes,
-    );
+    let mut document = compact(map_name, layout, geometry, names, &classes);
     if features.parcels {
         eprintln!("[5/5] geometry weighted-voronoi plots");
         document.parcels = Some(parcels::build_parcels(&document));
@@ -582,7 +528,6 @@ fn compact(
     layout: pipeline::PipelineOutput,
     geometry: blobs::BlobGeometry,
     names: BTreeMap<String, String>,
-    previous_document: Option<&MapDocument>,
     classes: &BTreeMap<usize, DistrictClass>,
 ) -> MapDocument {
     let files = layout
@@ -658,133 +603,6 @@ fn compact(
         })
         .collect::<BTreeMap<_, _>>();
     let uses = compact_uses(&layout, &file_index);
-    let terrain = geometry.terrain.as_ref().map(|districts| {
-        // Parent matching exists only to warm terrain suffixes. Keep it
-        // inside this branch so the service's default terrain-off path does
-        // no new matching work; the prior document still seeds the existing
-        // top-level warm partition above.
-        let previous_district_matches = previous_document.map(|previous| {
-            let candidate = files
-                .iter()
-                .cloned()
-                .zip(layout.membership.iter().copied())
-                .collect::<BTreeMap<_, _>>();
-            let reference = previous
-                .files
-                .iter()
-                .cloned()
-                .zip(previous.nodes.iter().map(NodeRow::district))
-                .collect::<BTreeMap<_, _>>();
-            let common = candidate
-                .keys()
-                .filter(|file| reference.contains_key(*file))
-                .map(String::as_str)
-                .collect::<BTreeSet<_>>();
-            parity::match_districts(&candidate, &reference, &common)
-        });
-        districts
-            .iter()
-            .map(|(&district, district_geometry)| {
-                let current_files = district_geometry
-                    .subdistricts
-                    .iter()
-                    .map(|subdistrict| {
-                        subdistrict
-                            .members
-                            .iter()
-                            .map(|&file| files[file].clone())
-                            .collect::<Vec<_>>()
-                    })
-                    .collect::<Vec<_>>();
-                let previous_district_id = previous_district_matches
-                    .as_ref()
-                    .and_then(|matches| matches.get(&district))
-                    .map(|(previous, _)| *previous);
-                let previous_district = previous_document
-                    .and_then(|document| document.terrain.as_ref())
-                    .and_then(|terrain| terrain.get(&previous_district_id?.to_string()));
-                let previous_groups = previous_district.map(|previous| {
-                    previous
-                        .subdistricts
-                        .iter()
-                        .map(|subdistrict| {
-                            (
-                                subdistrict.suffix,
-                                subdistrict
-                                    .members
-                                    .iter()
-                                    .filter_map(|&file| {
-                                        previous_document
-                                            .and_then(|document| document.files.get(file))
-                                            .cloned()
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                });
-                let (suffixes, max_suffix) = terrain::assign_suffixes(
-                    &current_files,
-                    previous_groups.as_deref(),
-                    previous_district.map_or(0, |previous| previous.max_suffix),
-                );
-                let mut subdistricts = district_geometry
-                    .subdistricts
-                    .iter()
-                    .zip(suffixes)
-                    .map(|(subdistrict, suffix)| TerrainSubdistrict {
-                        suffix,
-                        members: subdistrict.members.clone(),
-                        c: [
-                            round_to(subdistrict.center[0], 4),
-                            round_to(subdistrict.center[1], 4),
-                        ],
-                        blob: subdistrict
-                            .blob
-                            .iter()
-                            .map(|polygon| {
-                                polygon
-                                    .iter()
-                                    .map(|point| [round_to(point[0], 4), round_to(point[1], 4)])
-                                    .collect()
-                            })
-                            .collect(),
-                    })
-                    .collect::<Vec<_>>();
-                subdistricts.sort_by_key(|subdistrict| subdistrict.suffix);
-                (
-                    district.to_string(),
-                    TerrainDistrict {
-                        arterials: district_geometry
-                            .arterials
-                            .iter()
-                            .map(|(file, stranded, links)| TerrainArterial {
-                                file: *file,
-                                stranded: *stranded,
-                                links: links.clone(),
-                            })
-                            .collect(),
-                        subdistricts,
-                        parcels: district_geometry
-                            .parcels
-                            .iter()
-                            .map(|parcel| TerrainParcel {
-                                address: parcel.address.clone(),
-                                members: parcel.members.clone(),
-                                rect: [
-                                    round_to(parcel.rect[0], 4),
-                                    round_to(parcel.rect[1], 4),
-                                    round_to(parcel.rect[2], 4),
-                                    round_to(parcel.rect[3], 4),
-                                ],
-                            })
-                            .collect(),
-                        max_suffix,
-                    },
-                )
-            })
-            .collect()
-    });
     let mut groups = BTreeMap::<usize, Vec<usize>>::new();
     for (index, &district) in layout.membership.iter().enumerate() {
         groups.entry(district).or_default().push(index);
@@ -836,7 +654,6 @@ fn compact(
         roads: geometry.roads,
         lang: layout.weighted.lang,
         parcels: None,
-        terrain,
     }
 }
 
@@ -922,14 +739,6 @@ fn define_site(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn terrain_auto_starts_above_two_thousand_mapped_files() {
-        assert!(!TerrainMode::Auto.enabled_for(TERRAIN_AUTO_FILE_THRESHOLD));
-        assert!(TerrainMode::Auto.enabled_for(TERRAIN_AUTO_FILE_THRESHOLD + 1));
-        assert!(!TerrainMode::Off.enabled_for(TERRAIN_AUTO_FILE_THRESHOLD + 1));
-        assert!(TerrainMode::On.enabled_for(0));
-    }
 
     /// District 0 is a lone file (index 0); every other file is one large
     /// district (1, always mainland regardless of the boundary under test),

@@ -18,7 +18,6 @@ import {
   districtColor,
   districtWorldArea,
   mainlandBounds,
-  polygonArea,
   px as pxOf,
   ramp,
   rooms,
@@ -31,7 +30,7 @@ import {
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
 import type { PackageGrouping } from "./packageLayout";
 import { pinchTransform, type PinchAnchor } from "./pinch";
-import { PIN_CAPITAL_HIDE_ZF, PIN_ESTABLISH_AREA, selectPins } from "./pins";
+import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
 
 declare global {
   interface Window {
@@ -41,12 +40,6 @@ declare global {
     __TOLMAP_PERF__?: boolean;
   }
 }
-
-export type TerrainSelection = {
-  kind: "subdistrict" | "parcel";
-  district: number;
-  index: number;
-};
 
 const NS = "http://www.w3.org/2000/svg";
 function el<K extends keyof SVGElementTagNameMap>(
@@ -65,7 +58,6 @@ export interface MapRenderState {
   sel: number | null;
   selSym: number | null;
   selD: number | null;
-  selTerrain: TerrainSelection | null;
   route: Route | null;
   packageGrouping: PackageGrouping;
   folderFiles: ReadonlySet<number> | null;
@@ -76,8 +68,6 @@ export interface MapRendererCallbacks {
   onSelectDistrict(d: number): void;
   onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
-  onSelectSubdistrict(d: number, index: number): void;
-  onSelectParcel(d: number, index: number): void;
   onClearSelection(): void;
   /** Fired once a drag has actually moved the map, so React can dismiss
    * transient chrome (the mobile drawer, a suggestion list) the way a real
@@ -935,7 +925,6 @@ export class MapRenderer {
           g.appendChild(path);
         });
       }
-      this.drawTerrain(g, this.k);
     }
 
     const CELL = geo === "p" && doc.P && zf0 > PARCEL_ZOOM;
@@ -1272,210 +1261,6 @@ export class MapRenderer {
     // is not a repaint of its own, just one more DOM read/write on the
     // paint that already happened.
     if (this.HOVER && this.hoverKey) this.reapplyHover();
-  }
-
-  /** Terrain stays inside the imperative surface and uses the same delegated
-   * `data-k` click path as files and districts. In particular, the invisible
-   * hit strokes below widen on coarse pointers without adding a touch-only
-   * event path (the three pointer bugs documented at the bottom of this
-   * file apply to these targets too).
-   *
-   * Issue #54: every element below gates on its OWN measured on-screen area
-   * clearing a floor this map already trusts for "is this a legible place",
-   * rather than a flat zoom constant picked once and left to drift out of
-   * sync with #49's dot budget as districts/pinch/gesture-preview changed
-   * around it (which is what shipped in #47 -- flat 1.25/1.7/2.4/4 zoom
-   * cutoffs with no measurement behind them, `web/scripts/
-   * terrain-zoom-measure.ts`'s own doc comment has the numbers). Two floors,
-   * both reused rather than invented:
-   *   - PIN_ESTABLISH_AREA (pins.ts, 3 file-dots' worth of screen area): the
-   *     bar a district's own capital pin already has to clear before IT
-   *     draws. A sub-district is a smaller place than its parent district
-   *     but the same kind of place, so a sub-district's contour+label use
-   *     the same bar -- gates SUBDISTRICTS below, and (against the PARENT
-   *     district's own area, computed once per district) ARTERIALS, which
-   *     are roads through the whole district rather than a sub-region of
-   *     their own.
-   *   - DOT_DENSITY_FLOOR (constants.ts, the px²/file floor #49's file-dot
-   *     budget itself uses): a PARCEL packs >=1 files into one grid cell and
-   *     reads as one thing, so the natural floor for the cell is "at least
-   *     as legible as a single file dot" -- one DOT_DENSITY_FLOOR of screen
-   *     area, not a fraction or multiple of it.
-   * A subdistrict/arterial's contour is smaller than a legible place made of
-   * dots at DOT_DENSITY_FLOOR's own per-file rate (`web/scripts/
-   * terrain-zoom-measure.ts` confirms subdistrict zf_establish sits below
-   * the parent district's own full-file-reveal zf for every measured
-   * large/ultra-band district except dify's two smallest eligible districts,
-   * "features" and "plugins", which are close enough to the 2T eligibility
-   * floor that their sub-districts and their files become legible within a
-   * few hundredths of zf of each other -- recorded, not chased further,
-   * since it only affects near-floor districts, not the districts terrain
-   * exists for).
-   *
-   * A sub-district's LABEL additionally has to fit: rather than a second
-   * area floor, this reuses the exact text-footprint formula drawLabels()
-   * already uses for every other label on the map (`txt.length * size *
-   * 0.62` wide, `size * 1.25` tall) against the contour's own characteristic
-   * on-screen size (sqrt of its measured area -- blobs are traced to be
-   * reasonably round, finding 16's compactness pass; a bounding-box walk
-   * would be more exact but this is the same area already computed for the
-   * contour gate above, so it costs nothing extra per subdistrict). A
-   * parcel's label keeps the exact on-screen width/height check it already
-   * had (>30x>12px) -- that one was already measuring the real footprint,
-   * not a flat zoom cutoff, so #54 leaves it alone. */
-  private drawTerrain(g: SVGGElement, k: number) {
-    const { doc, selTerrain } = this.state!;
-    if (!doc.terrain) return;
-    for (const [districtKey, terrain] of Object.entries(doc.terrain)) {
-      const district = +districtKey;
-      const color = districtColor(district);
-      const districtArea = (this.districtArea.get(district) ?? 0) * k * k;
-      terrain.subdistricts.forEach((subdistrict, index) => {
-        let subWorldArea = 0;
-        for (const poly of subdistrict.blob) subWorldArea += polygonArea(poly);
-        const subScreenArea = subWorldArea * k * k;
-        if (subScreenArea < PIN_ESTABLISH_AREA) return;
-        const selected =
-          selTerrain?.kind === "subdistrict" && selTerrain.district === district && selTerrain.index === index;
-        subdistrict.blob.forEach((polygon) => {
-          const path = el("path", {
-            d: "M" + polygon.map((point) => `${this.X(point[0]).toFixed(1)} ${this.Y(point[1]).toFixed(1)}`).join("L") + "Z",
-            fill: color,
-            "fill-opacity": selected ? 0.28 : 0.07,
-            stroke: selected ? "var(--hot)" : color,
-            "stroke-width": selected ? 2.4 : 1.1,
-            "stroke-opacity": selected ? 1 : 0.82,
-            "stroke-dasharray": selected ? "none" : "4 2",
-            "stroke-linejoin": "round",
-            class: "hit",
-            "pointer-events": "all",
-            "data-k": `sd:${district}:${index}`,
-          });
-          const title = el("title");
-          title.textContent = `${doc.names[districtKey]} · ${subdistrict.suffix} — ${subdistrict.members.length} files`;
-          path.appendChild(title);
-          g.appendChild(path);
-        });
-        // Label footprint (drawLabels()'s own w/h formula at this label's
-        // font-size) against the contour's characteristic on-screen size --
-        // see this method's doc comment for why sqrt(area) stands in for a
-        // bounding-box walk here.
-        const labelText = `${doc.names[districtKey]} · ${subdistrict.suffix}`;
-        const labelW = labelText.length * 9.5 * 0.62;
-        const labelH = 9.5 * 1.25;
-        if (Math.sqrt(subScreenArea) > Math.max(labelW, labelH)) {
-          const label = el("text", {
-            x: this.X(subdistrict.c[0]).toFixed(1),
-            y: this.Y(subdistrict.c[1]).toFixed(1),
-            "font-size": 9.5,
-            "text-anchor": "middle",
-            fill: "var(--ink)",
-            "fill-opacity": 0.82,
-            "font-family": "IBM Plex Mono, monospace",
-            "paint-order": "stroke",
-            stroke: "var(--canvas)",
-            "stroke-width": 3.2,
-            "stroke-linejoin": "round",
-            class: "hit",
-            "pointer-events": "all",
-            "data-k": `sd:${district}:${index}`,
-          });
-          label.textContent = `${doc.names[districtKey]} · ${subdistrict.suffix}`;
-          g.appendChild(label);
-        }
-      });
-
-      terrain.parcels.forEach((parcel, index) => {
-        const [x, y, width, height] = parcel.rect;
-        const parcelScreenArea = width * height * k * k;
-        if (parcelScreenArea < DOT_DENSITY_FLOOR) return;
-        const selected = selTerrain?.kind === "parcel" && selTerrain.district === district && selTerrain.index === index;
-        g.appendChild(
-          el("rect", {
-            x: this.X(x).toFixed(1),
-            y: this.Y(y).toFixed(1),
-            width: Math.max(0.5, this.S(width)).toFixed(1),
-            height: Math.max(0.5, this.S(height)).toFixed(1),
-            fill: color,
-            "fill-opacity": selected ? 0.34 : 0.13,
-            stroke: selected ? "var(--hot)" : color,
-            "stroke-width": selected ? 2.1 : 0.8,
-            "stroke-opacity": 0.8,
-            "pointer-events": "none",
-          }),
-        );
-        const hit = el("rect", {
-          x: this.X(x).toFixed(1),
-          y: this.Y(y).toFixed(1),
-          width: Math.max(0.5, this.S(width)).toFixed(1),
-          height: Math.max(0.5, this.S(height)).toFixed(1),
-          fill: "transparent",
-          stroke: "transparent",
-          "stroke-width": this.TOUCH ? 12 : 2,
-          class: "hit",
-          "pointer-events": "all",
-          "data-k": `p:${district}:${index}`,
-        });
-        const title = el("title");
-        title.textContent = `${parcel.address} — ${parcel.members.length} files`;
-        hit.appendChild(title);
-        g.appendChild(hit);
-        if (this.S(width) > 30 && this.S(height) > 12) {
-          const label = el("text", {
-            x: this.X(x + width / 2).toFixed(1),
-            y: (this.Y(y + height / 2) + 3).toFixed(1),
-            "font-size": 8.5,
-            "text-anchor": "middle",
-            fill: "var(--ink)",
-            "fill-opacity": 0.8,
-            "font-family": "IBM Plex Mono, monospace",
-            "paint-order": "stroke",
-            stroke: "var(--canvas)",
-            "stroke-width": 3,
-            "pointer-events": "none",
-          });
-          label.textContent = parcel.address;
-          g.appendChild(label);
-        }
-      });
-
-      if (districtArea < PIN_ESTABLISH_AREA) continue;
-      terrain.arterials.forEach((arterial) => {
-        const origin = this.px(arterial.file);
-        const commands = arterial.links
-          .map((neighbour) => {
-            const target = this.px(neighbour);
-            return `M${this.X(origin[0]).toFixed(1)} ${this.Y(origin[1]).toFixed(1)}L${this.X(target[0]).toFixed(1)} ${this.Y(target[1]).toFixed(1)}`;
-          })
-          .join("");
-        if (!commands) return;
-        g.appendChild(
-          el("path", {
-            d: commands,
-            fill: "none",
-            stroke: color,
-            "stroke-width": Math.min(3.4, 1.3 + Math.log2(arterial.stranded + 1) * 0.22).toFixed(1),
-            "stroke-opacity": 0.45,
-            "stroke-linecap": "round",
-            "pointer-events": "none",
-          }),
-        );
-        const hit = el("path", {
-          d: commands,
-          fill: "none",
-          stroke: "transparent",
-          "stroke-width": this.TOUCH ? 18 : 7,
-          "stroke-linecap": "round",
-          class: "hit",
-          "pointer-events": "stroke",
-          "data-k": `f:${arterial.file}`,
-        });
-        const title = el("title");
-        title.textContent = `${doc.F[arterial.file]} — arterial, strands ${arterial.stranded} files`;
-        hit.appendChild(title);
-        g.appendChild(hit);
-      });
-    }
   }
 
   // Label budget: districts first, then files by importance, skipping
@@ -2063,20 +1848,6 @@ export class MapRenderer {
       if (!sm) return null;
       return { lines: [sm[0], KIND[sm[1]] ?? "symbol", `lines ${sm[2]}-${sm[3]}`] };
     }
-    if (parts[0] === "sd") {
-      const d = parts[1];
-      const index = +parts[2];
-      const sub = doc.terrain?.[d]?.subdistricts[index];
-      if (!sub) return null;
-      return { lines: [`${doc.names[d]} · ${sub.suffix}`, `${sub.members.length} files`] };
-    }
-    if (parts[0] === "p") {
-      const d = parts[1];
-      const index = +parts[2];
-      const parcel = doc.terrain?.[d]?.parcels[index];
-      if (!parcel) return null;
-      return { lines: [parcel.address, `${parcel.members.length} files`] };
-    }
     return null;
   }
 
@@ -2326,7 +2097,5 @@ export class MapRenderer {
     if (parts[0] === "d") this.callbacks.onSelectDistrict(+parts[1]);
     else if (parts[0] === "f") this.callbacks.onSelectFile(+parts[1]);
     else if (parts[0] === "s") this.callbacks.onSelectSymbol(+parts[1], +parts[2]);
-    else if (parts[0] === "sd") this.callbacks.onSelectSubdistrict(+parts[1], +parts[2]);
-    else if (parts[0] === "p") this.callbacks.onSelectParcel(+parts[1], +parts[2]);
   }
 }

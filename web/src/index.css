@@ -205,7 +205,7 @@ body {
    everything else. non-scaling-stroke keeps stroke width constant in device
    pixels for exactly that transient window (the class comes off again the
    moment a real paint() runs), which reads as noticeably less "rubbery" on
-   the thin district/road/terrain outlines than letting them scale too.
+   the thin district/road outlines than letting them scale too.
    Scoped to the class rather than applied unconditionally, so it costs
    nothing outside a gesture and never adds a per-element attribute to what
    paint() itself puts in the DOM. */

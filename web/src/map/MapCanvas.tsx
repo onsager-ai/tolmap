@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { MapDocument } from "@/types";
-import { MapRenderer, type MapRenderState, type MapRendererCallbacks, type TerrainSelection } from "./MapRenderer";
+import { MapRenderer, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
 import type { Geo, Layer } from "./constants";
 import type { Route } from "./graph";
 import type { PackageGrouping } from "./packageLayout";
@@ -20,7 +20,6 @@ interface MapCanvasProps {
   sel: number | null;
   selSym: number | null;
   selD: number | null;
-  selTerrain: TerrainSelection | null;
   route: Route | null;
   packageGrouping: PackageGrouping;
   folderFiles: ReadonlySet<number> | null;
@@ -42,7 +41,6 @@ export function MapCanvas({
   sel,
   selSym,
   selD,
-  selTerrain,
   route,
   packageGrouping,
   folderFiles,
@@ -65,8 +63,6 @@ export function MapCanvas({
       onSelectDistrict: (d) => callbacksRef.current.onSelectDistrict(d),
       onSelectFile: (i) => callbacksRef.current.onSelectFile(i),
       onSelectSymbol: (i, s) => callbacksRef.current.onSelectSymbol(i, s),
-      onSelectSubdistrict: (d, index) => callbacksRef.current.onSelectSubdistrict(d, index),
-      onSelectParcel: (d, index) => callbacksRef.current.onSelectParcel(d, index),
       onClearSelection: () => callbacksRef.current.onClearSelection(),
       onDragStart: () => callbacksRef.current.onDragStart?.(),
     };
@@ -101,7 +97,7 @@ export function MapCanvas({
   // comment for the full story and why this used to work by accident.
   //
   // Issue #51: justFittedRef flags that the fit() call below just baked this
-  // exact (doc, geo, layer, sel, selSym, selD, selTerrain, route) into the
+  // exact (doc, geo, layer, sel, selSym, selD, route) into the
   // DOM, so the state-render effect immediately following it in this SAME
   // commit (React runs a component's layout effects in declaration order,
   // and repoKey changing always also changes `doc`, which is in that
@@ -128,7 +124,6 @@ export function MapCanvas({
       sel,
       selSym,
       selD,
-      selTerrain,
       route,
       packageGrouping,
       folderFiles,
@@ -153,14 +148,13 @@ export function MapCanvas({
       sel,
       selSym,
       selD,
-      selTerrain,
       route,
       packageGrouping,
       folderFiles,
       folderOnlyIslands,
     };
     renderer.render(state);
-  }, [doc, geo, layer, sel, selSym, selD, selTerrain, route, packageGrouping, folderFiles, folderOnlyIslands]);
+  }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, folderFiles, folderOnlyIslands]);
 
   // The wrapper's box, watched once for the component's life. Selection,
   // layer, geo and route changes must never touch this subscription: the

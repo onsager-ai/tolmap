@@ -11,6 +11,5 @@ pub mod pipeline;
 pub mod polyglot;
 pub mod schema;
 pub mod service;
-pub mod terrain;
 
 pub const SEED: u64 = 7;
