@@ -3121,6 +3121,9 @@ async function checkClassExpandsAtShortSide(browser, base) {
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
+  const consoleErrors = [];
+  page.on("console", (msg) => { if (msg.type() === "error") consoleErrors.push(msg.text()); });
+  page.on("pageerror", (err) => consoleErrors.push(`pageerror: ${err.message}`));
   const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
   const bigFile = pickBigFileTarget(symbols);
   if (bigFile.file == null) {
@@ -3130,19 +3133,29 @@ async function checkClassExpandsAtShortSide(browser, base) {
   }
   const path = mapDoc.F[bigFile.file];
   const multiplier = await pickSyntheticMultiplier(page, base, path, bigFile.file);
-  const { json, childGlobal, className, childName } = buildSyntheticClassResponse(mapDoc, bigFile.file, multiplier);
-  await page.route("**/maps/langgenius/dify.symbols/0.json", (route) => route.fulfill({ json }));
+  const { json, classGlobal, childGlobal, className, childName } = buildSyntheticClassResponse(mapDoc, bigFile.file, multiplier);
+  let routeHit = 0;
+  await page.route("**/maps/langgenius/dify.symbols/0.json", (route) => {
+    routeHit++;
+    route.fulfill({ json });
+  });
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
+  const classKey = `hs:${classGlobal}`;
   const childKey = `hs:${childGlobal}`;
+  const classBoxAtFit = await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   const initiallyCollapsed = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) === 0;
+  console.log(`  (info) multiplier=${multiplier.toFixed(2)} routeHit=${routeHit} classBoxAtFit=${classBoxAtFit ? `${Math.round(classBoxAtFit.width)}x${Math.round(classBoxAtFit.height)}` : "MISSING"} consoleErrors=${consoleErrors.length ? JSON.stringify(consoleErrors.slice(0, 5)) : "none"}`);
   report(initiallyCollapsed, `${label}: the class starts collapsed (no member card) before zooming in`, `class=${className} member=${childName}`);
   let expanded = false;
+  let classBox = classBoxAtFit;
   for (let i = 0; i < 8 && !expanded; i++) {
     await zoomIn(page, 600, 400);
     expanded = (await page.locator(`svg.map-svg [data-k="${childKey}"]`).count()) > 0;
+    classBox = await page.locator(`svg.map-svg [data-k="${classKey}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   }
+  console.log(`  (info) final classBox=${classBox ? `${Math.round(classBox.width)}x${Math.round(classBox.height)} (short side ${Math.round(Math.min(classBox.width, classBox.height))})` : "MISSING"} consoleErrors=${consoleErrors.length ? JSON.stringify(consoleErrors.slice(0, 5)) : "none"}`);
   report(expanded, `${label}: zooming in reveals the member's own card`, `class=${className} member=${childName} childKey=${childKey}`);
   await context.close();
 }
