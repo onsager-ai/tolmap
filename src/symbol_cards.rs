@@ -38,7 +38,7 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Ring> {
     (polygon.len() >= 3 && polygon_area(&polygon) > 0.0).then_some(polygon)
 }
 
-fn inset(mask: &[bool], canvas: &Canvas, depth: usize) -> Vec<bool> {
+fn inset(mask: &[bool], canvas: &Canvas, depth: usize, minimum_pixels: usize) -> Vec<bool> {
     let area = mask.iter().filter(|&&pixel| pixel).count() as f64 * canvas.step.powi(2);
     let distance = (if depth == 0 { 0.035 } else { 0.05 }) * area.sqrt();
     let cap = if depth == 0 { 0.004 } else { 0.003 };
@@ -67,7 +67,7 @@ fn inset(mask: &[bool], canvas: &Canvas, depth: usize) -> Vec<bool> {
         }
     }
     // A thin but valid card keeps its one-cell sliver instead of vanishing.
-    if result.contains(&true) {
+    if result.iter().filter(|&&yes| yes).count() >= minimum_pixels {
         result
     } else {
         mask.to_vec()
@@ -129,10 +129,18 @@ impl Cards<'_> {
         )
     }
 
+    fn mass(&self, symbol: usize) -> usize {
+        self.own_lines(symbol).max(1)
+            + self.children[symbol]
+                .iter()
+                .map(|&child| self.mass(child))
+                .sum::<usize>()
+    }
+
     fn place(&mut self, symbol: usize, mask: &[bool], canvas: &Canvas, depth: usize) {
-        let display = inset(mask, canvas, depth);
-        self.rings[symbol] = ring(&display, canvas);
         let children = self.children[symbol].clone();
+        let display = inset(mask, canvas, depth, children.len() * 2 + 1);
+        self.rings[symbol] = ring(&display, canvas);
         if children.is_empty() {
             return;
         }
@@ -143,7 +151,7 @@ impl Cards<'_> {
             .collect::<Vec<_>>();
         pixels.sort_by_key(|&i| (std::cmp::Reverse(i / canvas.grid), i % canvas.grid));
         let own = self.own_lines(symbol).max(1) as f64;
-        let total = self.document.symbols[symbol].0 .6.max(1) as f64;
+        let total = self.mass(symbol) as f64;
         let share = (own / total).clamp(0.12, 0.40);
         let header_count = ((pixels.len() as f64 * share).round() as usize)
             .max(1)
@@ -159,7 +167,7 @@ impl Cards<'_> {
         }
         let weights = children
             .iter()
-            .map(|&child| self.document.symbols[child].0 .6.max(1) as f64)
+            .map(|&child| self.mass(child) as f64)
             .collect::<Vec<_>>();
         let regions = allocate(&body, canvas, &weights);
         for (&child, region) in children.iter().zip(regions) {
@@ -216,16 +224,6 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
             .sqrt()
             .ceil() as usize;
         grid = grid.clamp(32, 320);
-        let mut mask = rasterize(std::slice::from_ref(polygon), low, span, grid);
-        while mask.iter().filter(|&&yes| yes).count() < symbols.len() * 8 + 8 && grid < 1024 {
-            grid = (grid * 2).min(1024);
-            mask = rasterize(std::slice::from_ref(polygon), low, span, grid);
-        }
-        let canvas = Canvas {
-            grid,
-            low,
-            step: span / (grid - 1) as f64,
-        };
         let has_module = module_lines > 0;
         let weights = (if has_module {
             vec![module_lines as f64]
@@ -233,18 +231,47 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
             vec![]
         })
         .into_iter()
-        .chain(top.iter().map(|&i| document.symbols[i].0 .6.max(1) as f64))
+        .chain(top.iter().map(|&i| cards.mass(i) as f64))
         .collect::<Vec<_>>();
-        let regions = allocate(&mask, &canvas, &weights);
-        let mut offset = 0;
-        if has_module {
-            if let Some(outline) = ring(&inset(&regions[0], &canvas, 0), &canvas) {
-                cards.modules.insert(file, outline);
+        loop {
+            let mask = rasterize(std::slice::from_ref(polygon), low, span, grid);
+            let canvas = Canvas {
+                grid,
+                low,
+                step: span / (grid - 1) as f64,
+            };
+            for &symbol in symbols {
+                cards.rings[symbol] = None;
+                cards.headers.remove(&symbol);
             }
-            offset = 1;
-        }
-        for (&symbol, region) in top.iter().zip(regions.iter().skip(offset)) {
-            cards.place(symbol, region, &canvas, 0);
+            cards.modules.remove(&file);
+            if mask.iter().filter(|&&yes| yes).count()
+                >= symbols.len() * 12 + usize::from(has_module)
+            {
+                let regions = allocate(&mask, &canvas, &weights);
+                let mut offset = 0;
+                if has_module {
+                    if let Some(outline) = ring(&inset(&regions[0], &canvas, 0, 1), &canvas) {
+                        cards.modules.insert(file, outline);
+                    }
+                    offset = 1;
+                }
+                for (&symbol, region) in top.iter().zip(regions.iter().skip(offset)) {
+                    cards.place(symbol, region, &canvas, 0);
+                }
+            }
+            let complete = symbols
+                .iter()
+                .all(|&i| document.symbols[i].0 .6 == 0 || cards.rings[i].is_some())
+                && (!has_module || cards.modules.contains_key(&file));
+            if complete {
+                break;
+            }
+            ensure!(
+                grid < 1024,
+                "missing card in file {file} at maximum raster resolution"
+            );
+            grid = (grid * 2).min(1024);
         }
     }
     for (i, row) in document.symbols.iter().enumerate() {
@@ -303,10 +330,10 @@ mod tests {
     #[test]
     fn child_card_centroid_and_area_stay_inside_parent() {
         let (canvas, mask) = square_canvas(80);
-        let parent = ring(&inset(&mask, &canvas, 0), &canvas).unwrap();
-        let body = inset(&mask, &canvas, 0);
+        let parent = ring(&inset(&mask, &canvas, 0, 1), &canvas).unwrap();
+        let body = inset(&mask, &canvas, 0, 1);
         for child in allocate(&body, &canvas, &[1.0, 3.0, 2.0]) {
-            let child = ring(&inset(&child, &canvas, 1), &canvas).unwrap();
+            let child = ring(&inset(&child, &canvas, 1, 1), &canvas).unwrap();
             let center = [
                 child.iter().map(|p| p[0]).sum::<f64>() / child.len() as f64,
                 child.iter().map(|p| p[1]).sum::<f64>() / child.len() as f64,
@@ -325,5 +352,25 @@ mod tests {
             .map(|region| region.iter().filter(|&&yes| yes).count())
             .collect::<Vec<_>>();
         assert!(areas[0] < areas[1] && areas[1] < areas[2], "{areas:?}");
+    }
+
+    #[test]
+    fn type_mass_includes_methods_outside_its_source_span() {
+        let document: SymbolsDocument = serde_json::from_value(serde_json::json!({
+            "files": [0],
+            "symbols": [[0,"T",0,1,2,-1,2],[0,"A",2,10,12,0,3],[0,"B",2,14,16,0,3]],
+            "edges": [],
+            "module_code_lines": {"0": 0},
+            "coverage": {"calls_total":0,"calls_resolved":0,"unresolved":{}}
+        }))
+        .unwrap();
+        let cards = Cards {
+            rings: vec![None; 3],
+            children: vec![vec![1, 2], vec![], vec![]],
+            headers: BTreeMap::new(),
+            modules: BTreeMap::new(),
+            document: &document,
+        };
+        assert_eq!(cards.mass(0), 8);
     }
 }

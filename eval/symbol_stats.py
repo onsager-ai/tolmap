@@ -46,7 +46,8 @@ def measure(map_file: Path, symbols_file: Path) -> dict:
     total = coverage["calls_total"]
     geometry = document.get("symbol_rings", [])
     with_ring = sum(ring is not None for ring in geometry)
-    eligible = [i for i, row in enumerate(symbols) if row[6] >= 1 and str(row[0]) in map_doc.get("P", {})]
+    parcels = map_doc.get("P") or {}
+    eligible = [i for i, row in enumerate(symbols) if row[6] >= 1 and str(row[0]) in parcels]
     missing = sum(i >= len(geometry) or geometry[i] is None for i in eligible)
     by_file = collections.defaultdict(list)
     for i, row in enumerate(symbols):
