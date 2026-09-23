@@ -539,6 +539,16 @@ jobs:
           cp -f "out-compare/${STEM}.json" "artifact/${STEM}.compare.json" 2>/dev/null || true
           cp -f "out-compare/${STEM}.symbols.json" "artifact/${STEM}.compare.symbols.json" 2>/dev/null || true
 
+      - name: Measure symbol card geometry
+        if: always() && inputs.command == 'build'
+        env:
+          STEM: ${{ matrix.stem }}
+        run: |
+          if [ -f "artifact/${STEM}.json" ] && [ -f "artifact/${STEM}.symbols.json" ]; then
+            python3 eval/symbol_stats.py "artifact/${STEM}.json" "artifact/${STEM}.symbols.json" > artifact/symbol_stats.json
+            cat artifact/symbol_stats.json
+          fi
+
       - name: Upload result artifact
         if: always()
         uses: actions/upload-artifact@v4

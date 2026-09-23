@@ -121,9 +121,14 @@ struct Cards<'a> {
 
 impl Cards<'_> {
     fn own_lines(&self, symbol: usize) -> usize {
+        let parent = &self.document.symbols[symbol].0;
         self.document.symbols[symbol].0 .6.saturating_sub(
             self.children[symbol]
                 .iter()
+                .filter(|&&child| {
+                    let span = &self.document.symbols[child].0;
+                    span.3 >= parent.3 && span.4 <= parent.4
+                })
                 .map(|&child| self.document.symbols[child].0 .6)
                 .sum(),
         )
