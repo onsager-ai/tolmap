@@ -836,6 +836,8 @@ Two gaps remain outside this fix. TypeScript also substitutes `.mjs` → `.mts` 
 
 ## 21. Terrain's viewer zoom gates were flat constants with no measurement behind them; per-element on-screen area reuses the floors the map already trusts
 
+**Superseded 2026-09-23:** terrain was removed by owner decision; see [finding 24](#24-terrain-was-built-measured-and-removed). The measurements below remain historical.
+
 Issue #54 asked two questions about the terrain subdivision finding 16 shipped: whether it should become the corpus default (an owner decision, not made here — see below), and whether its four viewer zoom gates (contour, sub-district label, parcel grid, parcel label) actually sequence the map the way `docs/TERRAIN.md` intends: districts, then sub-districts (contours and labels, a few dots), then files. They shipped in #47 as four flat constants (`zoom < 1.25`, `zoom > 1.7`, `zoom > 2.4`, `zoom > 4`) picked with no corpus behind them — finding 16 built the mechanism and measured its geometry, cost and determinism, but not this.
 
 ### What was built
@@ -917,6 +919,8 @@ The CLAUDE.md viewer check (districts named, landmarks listed, tapping a distric
 - **`aws/aws-sdk-go-v2`'s wall-time cost, mechanistically.** The cost table above flags it; nothing here traced which of its many eligible districts is driving it or whether it is the recursive-Leiden-per-district cost finding 16's model predicts or something else.
 
 ## 22. Terrain defaults on above 2,000 mapped files; staging goes first
+
+**Superseded 2026-09-23:** the default and staging setting were removed by owner decision; see [finding 24](#24-terrain-was-built-measured-and-removed).
 
 Ruled 2026-09-22 by the project owner after finding 21's terrain zoom and cost review:
 
@@ -1060,3 +1064,16 @@ The matched district renames are recorded rather than hidden:
 | prometheus | web api | web & notifier |
 | prometheus | chunk encoding | chunkenc & tsdb |
 | prometheus | kubernetes discovery | kubernetes |
+
+## 24. Terrain was built, measured and removed
+
+Owner decision 2026-09-23 (AskUserQuestion, session 266f58ce): **“Remove terrain entirely.”** The owner compared phone screenshots of dify and vscode with terrain off and on at 2× and 4×. All four reasons were selected:
+
+- **districts look emptier** (big districts become a few sparse clumps with blank space instead of the dense dot spread);
+- **the square parcel grid looks artificial**;
+- **harder to read** (sub-district clusters and outlines add clutter without telling you anything);
+- **not useful enough** (it doesn't earn its complexity).
+
+Terrain (#47) subdivided oversized districts into arterial files, organic sub-district contours, and an address-ordered square parcel grid. It adjusted positions within eligible districts and overlaid their geometry in the viewer; the top-level partition was unchanged. Finding 16 and `docs/TERRAIN.md` record the decomposition and geometry measurements. Finding 21 measured zoom gates across eight maps: median sub-district establishment at zf 1.874 on phone and 0.631 on desktop, before full file reveal at 2.578 and 0.875; parcel establishment followed at 3.419 and 1.175. Six of 41 eligible districts were exceptions near the eligibility floor. Repeated remote cost runs put median wall-time changes within runner noise, while vscode's peak RSS rose 19%. Finding 22 then enabled CLI terrain automatically above 2,000 files and selected `auto` for staging. Those policy choices are superseded by this removal.
+
+The motivating graph observations remain true. Django's locale files form a plat with weak internal structure; n8n's integration directories accumulate under one large district through shared imports; and dify's unconnected Python files remain a separate issue (#40). Removing the terrain presentation does not claim those observations were false. The viewer now ignores legacy map documents' extra `terrain` key, while new documents omit it. Ordinary per-file weighted-Voronoi plots (`P`, `--no-parcels`), island fade, ranked pins and badges, package layout overlays, and node-relative pruning remain.

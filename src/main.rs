@@ -51,14 +51,6 @@ enum Command {
         resolution: f64,
         #[arg(long)]
         no_parcels: bool,
-        /// Force terrain on. By default terrain is automatic: on above 2,000
-        /// mapped source files and off at or below 2,000.
-        #[arg(long, conflicts_with = "no_terrain")]
-        terrain: bool,
-        /// Force terrain off, including for repositories above 2,000 mapped
-        /// source files.
-        #[arg(long)]
-        no_terrain: bool,
         /// Blend/prune route to run. Defaults to `node-relative`; pass
         /// `--prune-variant absolute` to reproduce the original fixed floor.
         #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::NodeRelative)]
@@ -329,8 +321,6 @@ fn main() -> Result<()> {
             out,
             resolution,
             no_parcels,
-            terrain,
-            no_terrain,
             prune_variant,
             previous_map,
             graph,
@@ -344,13 +334,6 @@ fn main() -> Result<()> {
                         .with_context(|| format!("parse previous map {}", path.display()))
                 })
                 .transpose()?;
-            let terrain = if terrain {
-                tolmap::geometry::TerrainMode::On
-            } else if no_terrain {
-                tolmap::geometry::TerrainMode::Off
-            } else {
-                tolmap::geometry::TerrainMode::Auto
-            };
             match (repo, graph) {
                 (Some(_), Some(_)) => {
                     anyhow::bail!("pass either a repository or --graph, not both")
@@ -367,7 +350,6 @@ fn main() -> Result<()> {
                             resolution,
                             tolmap::geometry::BuildFeatures {
                                 parcels: !no_parcels,
-                                terrain,
                                 prune_variant,
                             },
                             previous_document.as_ref(),
@@ -388,7 +370,6 @@ fn main() -> Result<()> {
                             resolution,
                             tolmap::geometry::BuildFeatures {
                                 parcels: !no_parcels,
-                                terrain,
                                 prune_variant,
                             },
                             previous_document.as_ref(),
@@ -413,7 +394,6 @@ fn main() -> Result<()> {
                         resolution,
                         tolmap::geometry::BuildFeatures {
                             parcels: !no_parcels,
-                            terrain,
                             prune_variant,
                         },
                         previous_document.as_ref(),

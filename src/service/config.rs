@@ -21,7 +21,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use crate::geometry::TerrainMode;
 use crate::pipeline::PruneVariant;
 
 #[derive(Clone, Debug)]
@@ -208,12 +207,6 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_STATIC_DIR`.
     pub static_dir: Option<PathBuf>,
-    /// Select terrain-aware subdivision for maps built by the job service.
-    /// The service stays off when unset so each hosted environment must make
-    /// its rollout choice explicitly.
-    ///
-    /// Env: `TOLMAP_TERRAIN` (`false`, `auto`, or `true`).
-    pub terrain: TerrainMode,
     /// Select the blend/prune route for maps built by the job service.
     /// Node-relative is the owner-approved default; every measured route
     /// remains available for controlled comparisons.
@@ -236,7 +229,7 @@ pub struct ServeConfig {
 impl ServeConfig {
     /// Reads overridable settings from the environment
     /// (`TOLMAP_PORT`, `TOLMAP_BIND_ADDR`, `TOLMAP_DB_PATH`,
-    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`, `TOLMAP_TERRAIN`,
+    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`,
     /// `TOLMAP_PRUNE_VARIANT`, `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus
     /// `Limits::from_env`'s
     /// `TOLMAP_MAX_*`/`TOLMAP_RATE_LIMIT_*`); anything left unset uses its
@@ -266,9 +259,6 @@ impl ServeConfig {
         // Unset (the default) keeps the router exactly as it is without
         // this -- see the `static_dir` field's doc comment.
         let static_dir = env::var("TOLMAP_STATIC_DIR").ok().map(PathBuf::from);
-        // Unlike the CLI's Auto default, the hosted service stays Off unless
-        // an operator explicitly chooses Auto or On for that environment.
-        let terrain = env_var_or("TOLMAP_TERRAIN", TerrainMode::Off);
         let prune_variant = env_var_or("TOLMAP_PRUNE_VARIANT", PruneVariant::default());
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the
@@ -279,7 +269,6 @@ impl ServeConfig {
             db_path,
             cache_dir,
             static_dir,
-            terrain,
             prune_variant,
             limits: Limits::from_env(),
             retain_commits_per_repo,
@@ -426,28 +415,6 @@ mod tests {
             Some(PathBuf::from("/srv/tolmap/web"))
         );
         env::remove_var("TOLMAP_STATIC_DIR");
-    }
-
-    #[test]
-    fn terrain_is_off_by_default_and_requires_an_explicit_valid_opt_in() {
-        let _guard = lock_env();
-        env::remove_var("TOLMAP_TERRAIN");
-        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Off);
-
-        env::set_var("TOLMAP_TERRAIN", "true");
-        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::On);
-
-        env::set_var("TOLMAP_TERRAIN", "auto");
-        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Auto);
-
-        env::set_var("TOLMAP_TERRAIN", "false");
-        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Off);
-
-        // Match every other typed setting: invalid input falls back to the
-        // safe documented default instead of changing startup behaviour.
-        env::set_var("TOLMAP_TERRAIN", "not-a-boolean");
-        assert_eq!(ServeConfig::from_env().terrain, TerrainMode::Off);
-        env::remove_var("TOLMAP_TERRAIN");
     }
 
     #[test]

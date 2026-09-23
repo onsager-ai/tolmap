@@ -6,7 +6,6 @@ import { computeBlast, type AdjMap } from "@/map/graph";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import type { TerrainSelection } from "@/map/MapRenderer";
 import type { DirectoryNode, DistrictPathRow, PackageLayout } from "@/map/packageLayout";
 import { formatDirectory } from "@/map/packageLayout";
 import { Input } from "@/components/ui/input";
@@ -16,7 +15,6 @@ interface Props {
   sel: number | null;
   selSym: number | null;
   selD: number | null;
-  selTerrain: TerrainSelection | null;
   adj: AdjMap;
   radj: AdjMap;
   packageLayout: PackageLayout;
@@ -42,7 +40,6 @@ export function SelectionPanel({
   sel,
   selSym,
   selD,
-  selTerrain,
   adj,
   radj,
   packageLayout,
@@ -74,10 +71,8 @@ export function SelectionPanel({
         className={narrow ? "grid cursor-pointer grid-cols-[1fr_auto] items-center gap-2.5 px-3.5 py-2.5" : ""}
       >
         <div className="overflow-hidden">
-          {selTerrain == null && selD == null && sel == null ? (
+          {selD == null && sel == null ? (
             <FolderHead layout={packageLayout} activeDirectory={activeDirectory} />
-          ) : selTerrain != null ? (
-            <TerrainHead doc={doc} selection={selTerrain} />
           ) : selD != null ? (
             <DistrictHead doc={doc} d={selD} onZoomDistrict={onZoomDistrict} />
           ) : (
@@ -90,14 +85,12 @@ export function SelectionPanel({
       </div>
       {(!narrow || isOpen) && (
         <div className={narrow ? "max-h-[44vh] overflow-y-auto px-3.5 pb-3" : ""}>
-          {selTerrain == null && selD == null && sel == null ? (
+          {selD == null && sel == null ? (
             <FolderBody
               layout={packageLayout}
               activeDirectory={activeDirectory}
               onSelectDirectory={onSelectDirectory}
             />
-          ) : selTerrain != null ? (
-            <TerrainBody doc={doc} selection={selTerrain} onSelectFile={onSelectFile} />
           ) : selD != null ? (
             <DistrictBody
               doc={doc}
@@ -291,66 +284,6 @@ function FolderTreeRow({
             onPick={onPick}
           />
         ))}
-    </div>
-  );
-}
-
-function TerrainHead({ doc, selection }: { doc: MapDocument; selection: TerrainSelection }) {
-  const district = doc.terrain?.[String(selection.district)];
-  if (!district) return null;
-  if (selection.kind === "subdistrict") {
-    const subdistrict = district.subdistricts[selection.index];
-    if (!subdistrict) return null;
-    return (
-      <>
-        <h3 className="truncate font-sans text-[13px] font-semibold">
-          {doc.names[String(selection.district)]} · {subdistrict.suffix}
-        </h3>
-        <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">{subdistrict.members.length} files</p>
-      </>
-    );
-  }
-  const parcel = district.parcels[selection.index];
-  if (!parcel) return null;
-  return (
-    <>
-      <h3 className="truncate font-sans text-[13px] font-semibold">{parcel.address}</h3>
-      <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">
-        parcel · {parcel.members.length} file{parcel.members.length === 1 ? "" : "s"}
-      </p>
-    </>
-  );
-}
-
-function TerrainBody({
-  doc,
-  selection,
-  onSelectFile,
-}: {
-  doc: MapDocument;
-  selection: TerrainSelection;
-  onSelectFile: Props["onSelectFile"];
-}) {
-  const district = doc.terrain?.[String(selection.district)];
-  if (!district) return null;
-  const members =
-    selection.kind === "subdistrict"
-      ? district.subdistricts[selection.index]?.members
-      : district.parcels[selection.index]?.members;
-  if (!members) return null;
-  return (
-    <div className="mt-2 max-h-[240px] overflow-y-auto">
-      {members.map((file) => (
-        <button
-          key={file}
-          onClick={() => onSelectFile(file)}
-          className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-[10.5px] text-[var(--on)] first:border-t-0 hover:text-white"
-        >
-          <i className="h-2 w-2 rounded-sm" style={{ background: districtColor(selection.district) }} />
-          <span className="overflow-hidden text-ellipsis whitespace-nowrap">{doc.F[file]}</span>
-          <span className="text-[9.5px] text-[var(--dim)]">{LOC(doc, file)}</span>
-        </button>
-      ))}
     </div>
   );
 }

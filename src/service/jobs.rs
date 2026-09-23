@@ -302,7 +302,6 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         RESOLUTION,
         geometry::BuildFeatures {
             parcels: WITH_PARCELS,
-            terrain: state.config.terrain,
             prune_variant: state.config.prune_variant,
         },
         previous_document.as_ref(),

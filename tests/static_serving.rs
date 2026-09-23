@@ -26,7 +26,6 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use tolmap::geometry::TerrainMode;
 use tolmap::service::config::{Limits, ServeConfig};
 use tolmap::service::ratelimit::RateLimiter;
 use tolmap::service::store::Store;
@@ -47,7 +46,6 @@ fn state_with_static_dir(
         db_path,
         cache_dir,
         static_dir,
-        terrain: TerrainMode::Off,
         prune_variant: tolmap::pipeline::PruneVariant::NodeRelative,
         limits: Limits::default(),
         retain_commits_per_repo: 20,

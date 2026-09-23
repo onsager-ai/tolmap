@@ -90,45 +90,6 @@ pub struct RoadRow(pub (usize, usize, f64));
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct TerrainArterial {
-    pub file: usize,
-    pub stranded: usize,
-    /// Weighted-pruned in-district neighbours.  Keeping this separate from
-    /// `roads` matters: `RoadRow` joins top-level districts, while these
-    /// links draw one load-bearing file as a road inside its own district.
-    pub links: Vec<usize>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct TerrainSubdistrict {
-    pub suffix: usize,
-    pub members: Vec<usize>,
-    pub c: [f64; 2],
-    pub blob: Vec<Vec<[f64; 2]>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct TerrainParcel {
-    pub address: String,
-    pub members: Vec<usize>,
-    /// `[x, y, width, height]` in the same region coordinate system as `N`.
-    pub rect: [f64; 4],
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct TerrainDistrict {
-    pub arterials: Vec<TerrainArterial>,
-    pub subdistricts: Vec<TerrainSubdistrict>,
-    pub parcels: Vec<TerrainParcel>,
-    /// Monotonic high-water mark; retired suffixes are never reissued.
-    pub max_suffix: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
 pub struct MapDocument {
     pub repo: String,
     pub q: f64,
@@ -150,8 +111,6 @@ pub struct MapDocument {
     pub lang: String,
     #[serde(rename = "P", skip_serializing_if = "Option::is_none")]
     pub parcels: Option<BTreeMap<String, Vec<[f64; 2]>>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terrain: Option<BTreeMap<String, TerrainDistrict>>,
 }
 
 // GraphData and its parts derive Serialize/Deserialize so a graph can be
@@ -367,6 +326,27 @@ pub struct WeightedGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_map_with_terrain_deserializes_and_drops_removed_field() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../data/flask.json")).unwrap();
+        value["terrain"] = serde_json::json!({
+            "0": {
+                "arterials": [{"file": 0, "stranded": 2, "links": [1]}],
+                "subdistricts": [{"suffix": 1, "members": [0], "c": [0.0, 0.0], "blob": []}],
+                "parcels": [{"address": "src", "members": [1], "rect": [0.0, 0.0, 1.0, 1.0]}],
+                "max_suffix": 1
+            }
+        });
+        // Serde ignores unknown fields unless deny_unknown_fields is set.
+        // Stored maps may still carry this removed optional block.
+        let document: MapDocument = serde_json::from_value(value).unwrap();
+        assert!(serde_json::to_value(document)
+            .unwrap()
+            .get("terrain")
+            .is_none());
+    }
 
     #[test]
     fn graph_data_keeps_path_based_json_with_indexed_edges() {

@@ -4,6 +4,4 @@ import type { LandmarkRow } from "./LandmarkRow";
 import type { NodeRow } from "./NodeRow";
 import type { RoadRow } from "./RoadRow";
 import type { SymbolRow } from "./SymbolRow";
-import type { TerrainDistrict } from "./TerrainDistrict";
-
-export type MapDocument = { repo: string, q: number, names: { [key in string]: string }, districts: { [key in string]: District }, F: Array<string>, N: Array<NodeRow>, E: Array<[number, number]>, L: Array<LandmarkRow>, S: { [key in string]: Array<SymbolRow> }, U: { [key in string]: Array<number> }, roads: Array<RoadRow>, lang: string, P: { [key in string]: Array<[number, number]> } | null, terrain?: { [key in string]: TerrainDistrict } | null, };
+export type MapDocument = { repo: string, q: number, names: { [key in string]: string }, districts: { [key in string]: District }, F: Array<string>, N: Array<NodeRow>, E: Array<[number, number]>, L: Array<LandmarkRow>, S: { [key in string]: Array<SymbolRow> }, U: { [key in string]: Array<number> }, roads: Array<RoadRow>, lang: string, P: { [key in string]: Array<[number, number]> } | null, };

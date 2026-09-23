@@ -31,8 +31,6 @@ EXPECTED_ONLY_IN_STAGING = {
     # staging forwards it. Fly matches the compiled-in default via
     # fly.toml's internal_port and leaves the variable unset.
     "TOLMAP_PORT",
-    # owner: staging first, prod after a look, 2026-09-22
-    "TOLMAP_TERRAIN",
 }
 EXPECTED_ONLY_IN_FLY: set[str] = set()
 

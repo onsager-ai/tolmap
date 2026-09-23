@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Regression check for fix/keep-view-on-select: MapCanvas's ResizeObserver
 // used to be recreated on every [doc, geo, layer, sel, selSym, selD,
-// selTerrain, route] change, and ResizeObserver.observe() always delivers
+// route] change, and ResizeObserver.observe() always delivers
 // one synchronous "initial size" callback on subscribe -- size unchanged or
 // not. That callback called MapRenderer.resize(), which always called
 // fit(), so tapping a file dot, tapping it away, or switching the layer all
@@ -150,7 +150,7 @@ async function pickTarget(page, vw, vh) {
 
 /** A point that resolves (via elementFromPoint) to something inside the map
  * SVG but with no data-k ancestor -- i.e. actually empty map, not a
- * district/file/symbol/terrain hit target, and not chrome (the sidebar, the
+ * district/file/symbol hit target, and not chrome (the sidebar, the
  * selection panel, search, footer, zoom controls) sitting on top of the SVG,
  * since none of those are descendants of svg.map-svg. Tries a spread of
  * candidate points because how much blank margin is on screen depends on

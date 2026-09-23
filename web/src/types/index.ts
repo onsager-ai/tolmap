@@ -9,10 +9,6 @@ export type { NodeRow } from "@bindings/NodeRow";
 export type { LandmarkRow } from "@bindings/LandmarkRow";
 export type { RoadRow } from "@bindings/RoadRow";
 export type { SymbolRow } from "@bindings/SymbolRow";
-export type { TerrainArterial } from "@bindings/TerrainArterial";
-export type { TerrainDistrict } from "@bindings/TerrainDistrict";
-export type { TerrainParcel } from "@bindings/TerrainParcel";
-export type { TerrainSubdistrict } from "@bindings/TerrainSubdistrict";
 
 /** One entry in /maps/index.json, emitted by scripts/collect-maps.mjs, or
  * one entry from GET /api/maps normalised to the same shape (see

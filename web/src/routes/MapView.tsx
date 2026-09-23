@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useCatalogue, useMapDocument } from "@/data/queries";
 import { MapCanvas, type MapCanvasHandle } from "@/map/MapCanvas";
-import type { MapRendererCallbacks, TerrainSelection } from "@/map/MapRenderer";
+import type { MapRendererCallbacks } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
 import { districtClass } from "@/map/geometry";
 import type { SearchHit } from "@/map/search";
@@ -34,7 +34,6 @@ export function MapView() {
   const [sideOpen, setSideOpen] = useState(false);
   const [routeFrom, setRouteFrom] = useState<number | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
-  const [selTerrain, setSelTerrain] = useState<TerrainSelection | null>(null);
   const packageLayout = useMemo(() => (doc ? buildPackageLayout(doc) : null), [doc]);
 
   // radj (imported-by) is new here: SelectionPanel's "links" line and
@@ -78,7 +77,6 @@ export function MapView() {
 
   function selectFile(i: number, opts: { fly?: boolean; symbol?: number } = {}) {
     if (!doc) return;
-    setSelTerrain(null);
     updateSearch({ file: doc.F[i], sym: opts.symbol, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
@@ -86,26 +84,22 @@ export function MapView() {
   }
   function selectSymbolDetail(i: number, s: number) {
     if (!doc) return;
-    setSelTerrain(null);
     updateSearch({ file: doc.F[i], sym: s, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
     canvasRef.current?.flyToDetail(i);
   }
   function selectDistrict(d: number) {
-    setSelTerrain(null);
     updateSearch({ file: undefined, sym: undefined, d, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
   }
   function clearSelection() {
-    setSelTerrain(null);
     updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined });
     setPanelOpen(false);
   }
 
   function selectDirectory(path?: string) {
-    setSelTerrain(null);
     setRoute(null);
     setRouteFrom(null);
     updateSearch({ file: undefined, sym: undefined, d: undefined, dir: path });
@@ -117,18 +111,6 @@ export function MapView() {
     // Taps directly on the map never fly — the file is already in view.
     onSelectFile: (i) => selectFile(i, { fly: false }),
     onSelectSymbol: (i, s) => selectFile(i, { fly: false, symbol: s }),
-    onSelectSubdistrict: (district, index) => {
-      updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined });
-      setSelTerrain({ kind: "subdistrict", district, index });
-      setPanelOpen(true);
-      setSideOpen(false);
-    },
-    onSelectParcel: (district, index) => {
-      updateSearch({ file: undefined, sym: undefined, d: undefined, dir: undefined });
-      setSelTerrain({ kind: "parcel", district, index });
-      setPanelOpen(true);
-      setSideOpen(false);
-    },
     onSelectDistrict: (d) => selectDistrict(d),
     onClearSelection: () => clearSelection(),
   };
@@ -200,7 +182,6 @@ export function MapView() {
             sel={sel}
             selSym={selSym}
             selD={selD}
-            selTerrain={selTerrain}
             route={route}
             packageGrouping={packageGrouping}
             folderFiles={folderFiles}
@@ -220,7 +201,6 @@ export function MapView() {
             sel={sel}
             selSym={selSym}
             selD={selD}
-            selTerrain={selTerrain}
             adj={adj}
             radj={radj}
             packageLayout={packageLayout}

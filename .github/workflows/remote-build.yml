@@ -50,7 +50,7 @@ on:
         required: false
         default: "all"
       extra_args:
-        description: "extra tolmap build flags appended to every repo's own args, e.g. --terrain"
+        description: "extra tolmap build flags appended to every repo's own args"
         required: false
         default: ""
       compare_ref:
@@ -333,10 +333,7 @@ jobs:
       # edge in the whole graph, so one dominant edge can push most other
       # real edges under the prune floor) manifesting on
       # microsoftgraph/msgraph-sdk-python and date-fns/date-fns, both of
-      # which degenerate into near-singleton-district partitions. `--terrain`
-      # in `extra_args` is a `build`-only flag and errors on `dump-blend`;
-      # that is a real clap error, not silently ignored, if the two are
-      # combined.
+      # which degenerate into near-singleton-district partitions.
       # GitHub Actions runs a default `run:` step as `bash -e ...` (the `-e`
       # is on before this script's own first line ever executes), and
       # `set -uo pipefail` does not touch `-e` -- it only adds `-u` and
