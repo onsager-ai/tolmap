@@ -159,6 +159,13 @@ struct Cards<'a> {
     modules: BTreeMap<usize, Ring>,
 }
 
+fn local_parent(document: &SymbolsDocument, symbol: usize) -> Option<usize> {
+    let row = &document.symbols[symbol].0;
+    (row.5 >= 0)
+        .then_some(row.5 as usize)
+        .filter(|&parent| document.symbols[parent].0 .0 == row.0)
+}
+
 impl Cards<'_> {
     fn own_lines(&self, symbol: usize) -> usize {
         let parent = &self.document.symbols[symbol].0;
@@ -318,8 +325,8 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
     let mut children = vec![Vec::new(); document.symbols.len()];
     for (i, row) in document.symbols.iter().enumerate() {
         by_file[row.0 .0].push(i);
-        if row.0 .5 >= 0 {
-            children[row.0 .5 as usize].push(i);
+        if let Some(parent) = local_parent(document, i) {
+            children[parent].push(i);
         }
     }
     let mut cards = Cards {
@@ -336,7 +343,7 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
         let top = symbols
             .iter()
             .copied()
-            .filter(|&symbol| document.symbols[symbol].0 .5 < 0)
+            .filter(|&symbol| local_parent(document, symbol).is_none())
             .collect::<Vec<_>>();
         let module_lines = document.module_code_lines.get(&file).copied().unwrap_or(0);
         if top.is_empty() && module_lines == 0 {
@@ -580,5 +587,20 @@ mod tests {
             assert!(child[0][0] > previous_right);
             previous_right = child[1][0];
         }
+    }
+
+    #[test]
+    fn go_method_with_receiver_in_another_file_gets_local_card() {
+        let document: SymbolsDocument = serde_json::from_value(serde_json::json!({
+            "files": [0, 1],
+            "symbols": [[0,"Receiver",0,1,2,-1,2],[1,"Method",2,10,12,0,3]],
+            "edges": [],
+            "module_code_lines": {"0": 0, "1": 0},
+            "coverage": {"calls_total":0,"calls_resolved":0,"unresolved":{}}
+        }))
+        .unwrap();
+        assert_eq!(local_parent(&document, 0), None);
+        assert_eq!(local_parent(&document, 1), None);
+        assert_eq!(document.symbols[1].0 .5, 0);
     }
 }
