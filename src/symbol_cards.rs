@@ -13,9 +13,10 @@ type Rings = Vec<Ring>;
 // The prototype used roughly 9–12 vertices per card. A larger contour made
 // dify's separate symbol document far heavier without adding visible detail.
 const CARD_CONTOUR_POINTS: usize = 12;
-// The smallest reserved fallback cards in the measured dify and django maps
-// are roughly 1e-10 wide. Ten decimals still collapses some exteriors.
-const CARD_COORDINATE_SCALE: f64 = 1e11;
+// The smallest reserved fallback cards are roughly 1e-10 wide. Eleven
+// decimals kept exteriors but moved one dify child across its parent's edge;
+// twelve keeps that margin without changing accepted fallback placement.
+const CARD_COORDINATE_SCALE: f64 = 1e12;
 
 struct Canvas {
     grid: usize,
@@ -260,17 +261,12 @@ fn reserve(mask: &mut [bool], canvas: &Canvas, parent: &Rings) -> Option<[f64; 4
                 canvas.low[0] + (i % canvas.grid) as f64 * canvas.step,
                 canvas.low[1] + (i / canvas.grid) as f64 * canvas.step,
             ];
-            point_in_rings(center, parent).then(|| (i, center, boundary_distance2(center, parent)))
+            point_in_rings(center, parent).then_some((i, center))
         })
         .min_by(|a, b| {
-            // The arithmetic centroid can sit on a concave card's edge.
-            // A rectangle reserved there passed pre-rounding containment
-            // but crossed the parent after 11-decimal export on dify.
             let da = (a.1[0] - target[0]).powi(2) + (a.1[1] - target[1]).powi(2);
             let db = (b.1[0] - target[0]).powi(2) + (b.1[1] - target[1]).powi(2);
-            b.2.total_cmp(&a.2)
-                .then_with(|| da.total_cmp(&db))
-                .then_with(|| a.0.cmp(&b.0))
+            da.total_cmp(&db).then_with(|| a.0.cmp(&b.0))
         })?;
     mask[selected.0] = false;
     let mut half = canvas.step * 0.2;
@@ -379,7 +375,7 @@ fn quantize_rings(rings: &mut Rings) -> Result<()> {
             // it would emit an invalid contour. Exteriors must remain valid.
             ensure!(
                 ring_index > 0,
-                "card exterior collapsed at 11 decimals: {ring:?}"
+                "card exterior collapsed at 12 decimals: {ring:?}"
             );
             continue;
         }
@@ -740,7 +736,7 @@ mod tests {
         quantize_rings(&mut contours).unwrap();
         assert_eq!(contours[0].len(), 4);
         assert_ne!(contours[0][0], contours[0][1]);
-        let mut collapsed = rectangle([1.0, 1.0, 1.0 + 1e-12, 1.0 + 1e-12]);
+        let mut collapsed = rectangle([1.0, 1.0, 1.0 + 1e-14, 1.0 + 1e-14]);
         assert!(quantize_rings(&mut collapsed).is_err());
     }
 
