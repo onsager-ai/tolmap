@@ -2230,7 +2230,37 @@ async function pointOnPathAt(locator, fraction) {
     return { x: screenPt.x, y: screenPt.y };
   }, fraction);
 }
-const PATH_SAMPLE_FRACTIONS = [0.5, 0.3, 0.7, 0.15, 0.85];
+const PATH_SAMPLE_FRACTIONS = [0.5, 0.3, 0.7, 0.15, 0.85, 0.4, 0.6, 0.2, 0.8, 0.05, 0.95];
+
+// B4: on the phone profile, dify's districts pack edge to edge at fit zoom
+// (confirmed by looking at the CI screenshots -- the gap a road threads
+// through is a couple of screen px at most there), and footprint mode's own
+// tiling closes even more of what little gap dot mode left open. The same
+// "zoom in and try again" fallback findEmptyPointWithZoomOut already uses
+// for the inverse problem (finding empty space): re-reads the path list
+// after each zoom (some roads leave the viewport, in-district streets don't
+// exist at this scope but the same helper serves both callers below).
+async function findTappablePathPoint(page, selector, vw, vh, maxZoomIns = 2) {
+  for (let attempt = 0; attempt <= maxZoomIns; attempt++) {
+    const paths = await page.locator(selector).all();
+    for (const path of paths) {
+      const dataK = await path.getAttribute("data-k");
+      for (const fraction of PATH_SAMPLE_FRACTIONS) {
+        const p = await pointOnPathAt(path, fraction);
+        if (p.x < 0 || p.x > vw || p.y < 0 || p.y > vh) continue;
+        if (await isPointClickable(page, p.x, p.y, dataK)) {
+          return { point: p, dataK, checked: paths.length };
+        }
+      }
+    }
+    if (attempt < maxZoomIns) {
+      await page.locator('button[aria-label="Zoom in"]').click();
+      await page.waitForTimeout(500);
+    }
+  }
+  const finalCount = await page.locator(selector).count();
+  return { point: null, dataK: null, checked: finalCount };
+}
 
 // On-screen coordinates aren't enough on the PHONE profile specifically: the
 // bottom drawer's peek strip, the zoom controls, the search box and the
@@ -2292,25 +2322,9 @@ async function checkRoadTap(browser, base, profile) {
     return;
   }
   const { width: vw, height: vh } = profile.viewport;
-  let point = null;
-  for (const road of roads) {
-    const dataK = await road.getAttribute("data-k");
-    // B4: try several points along the ribbon, not just the midpoint -- a
-    // footprint-mode district's own files now tile most of its area and can
-    // cover a road's exact middle where a dot rarely did (see
-    // pointOnPathAt's own comment).
-    for (const fraction of PATH_SAMPLE_FRACTIONS) {
-      const p = await pointOnPathAt(road, fraction);
-      if (p.x < 0 || p.x > vw || p.y < 0 || p.y > vh) continue;
-      if (await isPointClickable(page, p.x, p.y, dataK)) {
-        point = p;
-        break;
-      }
-    }
-    if (point) break;
-  }
+  const { point, checked } = await findTappablePathPoint(page, 'svg.map-svg path.hit[data-k^="r:"]', vw, vh);
   if (!point) {
-    report(false, `${label}: at least one point along a road is on screen and not covered by chrome`, `checked ${roads.length} roads`);
+    report(false, `${label}: at least one point along a road is on screen and not covered by chrome`, `checked ${checked} roads`);
     await context.close();
     return;
   }
@@ -2484,7 +2498,12 @@ async function checkSmallFootprintHitCircle(browser, base, profile) {
   let chosenKey = null;
   let point = null;
   for (const key of candidateKeys) {
-    const box = await page.locator(`svg.map-svg circle.hit[data-k="${CSS.escape(key)}"][fill="transparent"]`).first().boundingBox();
+    // No CSS.escape here -- that's a browser global, not a Node one, and
+    // this template string is built in the SCRIPT's own process to hand to
+    // page.locator(), never inside a page.evaluate() callback. `key` is
+    // always exactly "f:<digits>" (filtered from a "f:"-prefixed data-k
+    // above), so nothing in it needs escaping for a CSS attribute selector.
+    const box = await page.locator(`svg.map-svg circle.hit[data-k="${key}"][fill="transparent"]`).first().boundingBox();
     if (!box) continue;
     const candidate = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     if (await isPointClickable(page, candidate.x, candidate.y, key)) {
@@ -2577,23 +2596,9 @@ async function checkStreetsAndTap(browser, base, profile) {
     return;
   }
   const { width: vw, height: vh } = profile.viewport;
-  let point = null;
-  let dataK = null;
-  for (const street of streets) {
-    const k = await street.getAttribute("data-k");
-    for (const fraction of PATH_SAMPLE_FRACTIONS) {
-      const p = await pointOnPathAt(street, fraction);
-      if (p.x < 0 || p.x > vw || p.y < 0 || p.y > vh) continue;
-      if (await isPointClickable(page, p.x, p.y, k)) {
-        point = p;
-        dataK = k;
-        break;
-      }
-    }
-    if (point) break;
-  }
+  const { point, dataK, checked } = await findTappablePathPoint(page, 'svg.map-svg path.hit[data-k^="st:"]', vw, vh);
   if (!point) {
-    report(false, `${label}: at least one point along a street is on screen and not covered by chrome`, `checked ${streets.length}`);
+    report(false, `${label}: at least one point along a street is on screen and not covered by chrome`, `checked ${checked}`);
     await context.close();
     return;
   }
