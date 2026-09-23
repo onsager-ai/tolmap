@@ -196,7 +196,7 @@ def score(document):
             neighbourhood_rhos.append(rho)
     areas, code_lines = [], []
     missing = 0
-    code = document.get('code_lines')
+    code = document.get('C')
     for i in range(len(files)):
         polygon = parcels.get(str(i), [])
         polygon_area = area(polygon)

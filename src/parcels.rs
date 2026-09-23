@@ -583,3 +583,31 @@ fn pearson(left: &[f64], right: &[f64]) -> Option<f64> {
     let r = right.iter().map(|b| (b - rm).powi(2)).sum::<f64>();
     (l * r > 0.0).then_some(num / (l * r).sqrt())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polygon_test_handles_inside_and_outside() {
+        let square = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert!(point_in_polygon([0.5, 0.5], &square));
+        assert!(!point_in_polygon([2.0, 0.5], &square));
+    }
+
+    #[test]
+    fn shoelace_area_is_positive() {
+        let square = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
+        assert_eq!(polygon_area(&square), 4.0);
+    }
+
+    #[test]
+    fn reserved_seeds_keep_coincident_sites_present() {
+        let grid = 20;
+        let mask = vec![true; grid * grid];
+        let owners = solve(&mask, grid, [0.0, 0.0], 1.0, &[[0.5, 0.5]; 8], &[1.0; 8]);
+        for owner in 0..8 {
+            assert!(owners.contains(&owner));
+        }
+    }
+}

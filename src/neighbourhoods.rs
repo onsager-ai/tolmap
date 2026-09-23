@@ -89,10 +89,11 @@ fn split<P: Partitioner>(
         node_count: members.len(),
         edges,
     };
-    // Larger districts need more communities in the first pass. If Leiden
-    // returns one, increase resolution a bounded number of times before
-    // declaring the component indivisible.
-    let base = (members.len() as f64 / TARGET as f64).sqrt().max(1.1);
+    // Recurse at a fixed resolution instead of asking one high-resolution
+    // pass to split a huge district into near-singletons. The latter made
+    // folding quadratic and lost the graph's useful larger communities.
+    // Raise resolution only if this induced component does not split.
+    let base = 1.1;
     let mut parts = Vec::new();
     for multiplier in [1.0, 2.0, 4.0] {
         let result = partitioner.partition(&graph, base * multiplier, SEED, None)?;
