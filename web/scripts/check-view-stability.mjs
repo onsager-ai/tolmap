@@ -323,6 +323,45 @@ async function pickDistrictPoint(page, hasTouch) {
   }, hasTouch);
 }
 
+/** Two on-screen file dots, at least `minDist` CSS px apart, for measuring k
+ * directly (CI review finding on the fullscreen check, see
+ * checkFullscreenPreservesView's own comment): the on-screen distance
+ * between two fixed world points is exactly `worldDistance * k`, independent
+ * of tx/ty (pan) AND of fitScale() -- unlike a single dot's own radius
+ * (`Math.sqrt(this.k / this.fitScale())` in MapRenderer.paint()), which
+ * moves whenever fitScale() does, and fitScale() DOES change across a
+ * fullscreen transition (removing/adding chrome changes the available
+ * fitting box) even when k itself does not. `minDist` keeps the distance
+ * comparison meaningful against the renderer's own `toFixed(1)` rounding on
+ * cx/cy -- too close together and that rounding alone could swing the
+ * measured distance by a percent or more. */
+async function pickTwoOnScreenDots(page, vw, vh, minDist = 80) {
+  return page.evaluate(
+    ({ vw, vh, minDist }) => {
+      const els = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')];
+      const candidates = [];
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const cx = r.x + r.width / 2;
+        const cy = r.y + r.height / 2;
+        if (cx > vw * 0.15 && cx < vw * 0.85 && cy > vh * 0.15 && cy < vh * 0.85) {
+          candidates.push({ dataK: el.getAttribute("data-k"), cx, cy });
+        }
+        if (candidates.length >= 40) break;
+      }
+      for (let a = 0; a < candidates.length; a++) {
+        for (let b = a + 1; b < candidates.length; b++) {
+          const d = Math.hypot(candidates[a].cx - candidates[b].cx, candidates[a].cy - candidates[b].cy);
+          if (d >= minDist) return [candidates[a].dataK, candidates[b].dataK];
+        }
+      }
+      return null;
+    },
+    { vw, vh, minDist },
+  );
+}
+
 async function tap(page, profile, x, y) {
   if (profile.hasTouch) await page.touchscreen.tap(x, y);
   else await page.mouse.click(x, y);
@@ -1667,12 +1706,22 @@ async function checkBreadcrumbNoMove(browser, base, profile) {
 /** Issue #82 A1 scope item 5: entering and leaving fullscreen keeps k and
  * the centre world point, changing only the aspect -- the same contract
  * MapRenderer.resize() already gives a plain viewport resize (see runOne's
- * own "resize preserves centre" step, which this borrows its measurement
- * technique from almost verbatim). Whether the browser actually grants the
- * native Fullscreen API or MapView falls back to its CSS-only mode is not
- * asserted either way -- both paths go through the exact same resize(),
- * never fit() (see MapView.tsx's isFullscreen wiring), so the invariant
- * holds regardless of which one engaged. */
+ * own "resize preserves centre" step, whose centre-point formula this
+ * reuses almost verbatim). Whether the browser actually grants the native
+ * Fullscreen API or MapView falls back to its CSS-only mode is not asserted
+ * either way -- both paths go through the exact same resize(), never fit()
+ * (see MapView.tsx's isFullscreen wiring), so the invariant holds
+ * regardless of which one engaged.
+ *
+ * CI review finding: this used to compare a single dot's own radius before
+ * and after, on the theory that radius is a pure function of k for a fixed
+ * file. It isn't -- MapRenderer.paint() computes it as
+ * `... * Math.sqrt(this.k / this.fitScale())`, and fitScale() itself
+ * changes across this exact transition (removing/adding chrome changes the
+ * available fitting box), so the radius moves even when k does not. Fixed
+ * by comparing the on-screen DISTANCE between two fixed dots instead
+ * (pickTwoOnScreenDots) -- distance = worldDistance * k is independent of
+ * both tx/ty and fitScale(), so it isolates k cleanly. */
 async function checkFullscreenPreservesView(browser, base, profile) {
   const label = `fullscreen keeps k and the centre point (django) / ${profile.name}`;
   console.log(`\n${label}`);
@@ -1686,47 +1735,56 @@ async function checkFullscreenPreservesView(browser, base, profile) {
   await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
-  // Zoom in one notch first, off the exact fit-scale view: fullscreen adds
-  // (desktop) or removes (any profile, symmetrically on exit) chrome around
-  // the map, which changes fitScale() itself (a bigger/smaller available
-  // box for the same mainland). clampK's floor is fitScale()*0.5, so
-  // starting EXACTLY at fit -- where k sits right at that floor already --
-  // risks resize()'s existing, correct, and unrelated re-clamp bumping k by
-  // a hair as the floor moves under it, which would be a false failure of
-  // THIS check, not a bug in the fullscreen feature (see resize()'s own
-  // doc comment for why that clamp exists at all). One notch of headroom
-  // above fit is enough that the floor can't reach k in a normal chrome
-  // size change.
+  // Zoom in one notch first, off the exact fit-scale view: clampK's floor
+  // is fitScale()*0.5, and fitScale() itself moves across this transition
+  // (see above) -- starting EXACTLY at fit, where k already sits right at
+  // that floor, risks resize()'s existing, correct, and unrelated re-clamp
+  // bumping k by a hair as the floor moves under it, a false failure of
+  // THIS check rather than a bug in the fullscreen feature. One notch of
+  // headroom above fit is enough that the floor can't reach k in a normal
+  // chrome size change.
   await zoomIn(page, profile.viewport.width / 2, profile.viewport.height / 2);
 
-  const target = await pickTarget(page, profile.viewport.width, profile.viewport.height);
-  if (!target?.dataK) {
-    report(false, `${label}: setup`, "no target dot found");
+  const keys = await pickTwoOnScreenDots(page, profile.viewport.width, profile.viewport.height);
+  if (!keys) {
+    report(false, `${label}: setup`, "could not find two on-screen dots far enough apart");
     await context.close();
     return;
   }
+  const [keyA, keyB] = keys;
   const vbBefore = await readViewBox(page);
-  const before = await readDot(page, target.dataK);
+  const beforeA = await readDot(page, keyA);
+  const beforeB = await readDot(page, keyB);
+  const distBefore = beforeA && beforeB ? Math.hypot(beforeA.cx - beforeB.cx, beforeA.cy - beforeB.cy) : null;
 
   await page.locator('button[aria-label="Enter fullscreen"]').click();
   await page.waitForTimeout(500);
   const vbAfter = await readViewBox(page);
-  const after = await readDot(page, target.dataK);
-  if (!before || !after) {
-    report(false, `${label}: entering fullscreen`, "target dot missing after entering fullscreen");
+  const afterA = await readDot(page, keyA);
+  const afterB = await readDot(page, keyB);
+  const distAfter = afterA && afterB ? Math.hypot(afterA.cx - afterB.cx, afterA.cy - afterB.cy) : null;
+
+  if (!beforeA || !afterA) {
+    report(false, `${label}: entering fullscreen`, "reference dot A missing after entering fullscreen");
   } else {
     // Same formula as runOne's "resize preserves centre" step: resize()
     // keeps the world point under the OLD viewport centre under the NEW
-    // one, which is exactly a shift of half the viewBox delta.
+    // one, which is exactly a shift of half the viewBox delta. Dot A is an
+    // arbitrary fixed world point for this purpose; either would do.
     const expectDx = (vbAfter.w - vbBefore.w) / 2;
     const expectDy = (vbAfter.h - vbBefore.h) / 2;
-    const actualDx = after.cx - before.cx;
-    const actualDy = after.cy - before.cy;
+    const actualDx = afterA.cx - beforeA.cx;
+    const actualDy = afterA.cy - beforeA.cy;
     const centreOk = Math.abs(actualDx - expectDx) <= 1.5 && Math.abs(actualDy - expectDy) <= 1.5;
     report(centreOk, `${label}: entering fullscreen keeps the centre world point`,
       centreOk ? undefined : `expected shift (${expectDx.toFixed(1)}, ${expectDy.toFixed(1)}), got (${actualDx.toFixed(1)}, ${actualDy.toFixed(1)})`);
-    report(before.r != null && after.r != null && Math.abs(before.r - after.r) <= 0.05,
-      `${label}: entering fullscreen keeps k (dot radius unchanged)`, JSON.stringify({ before, after }));
+  }
+  if (distBefore == null || distAfter == null) {
+    report(false, `${label}: entering fullscreen keeps k`, "one of the two reference dots went missing");
+  } else {
+    const kOk = Math.abs(distBefore - distAfter) <= 1.5;
+    report(kOk, `${label}: entering fullscreen keeps k (screen distance between two fixed dots unchanged)`,
+      kOk ? undefined : `distance before=${distBefore.toFixed(2)}px after=${distAfter.toFixed(2)}px`);
   }
   report(await page.locator('button[aria-label="Exit fullscreen"]').count() === 1,
     `${label}: the zoom controls now show an exit-fullscreen button`);
@@ -1734,14 +1792,19 @@ async function checkFullscreenPreservesView(browser, base, profile) {
   await page.locator('button[aria-label="Exit fullscreen"]').click();
   await page.waitForTimeout(500);
   const vbFinal = await readViewBox(page);
-  const final = await readDot(page, target.dataK);
-  if (final) {
-    const backOk = Math.abs(final.cx - before.cx) <= 1.5 && Math.abs(final.cy - before.cy) <= 1.5 &&
+  const finalA = await readDot(page, keyA);
+  const finalB = await readDot(page, keyB);
+  const distFinal = finalA && finalB ? Math.hypot(finalA.cx - finalB.cx, finalA.cy - finalB.cy) : null;
+  if (finalA && distFinal != null) {
+    const backOk = Math.abs(finalA.cx - beforeA.cx) <= 1.5 && Math.abs(finalA.cy - beforeA.cy) <= 1.5 &&
       Math.abs(vbFinal.w - vbBefore.w) <= 1.5 && Math.abs(vbFinal.h - vbBefore.h) <= 1.5;
     report(backOk, `${label}: exiting fullscreen returns to the original view`,
-      backOk ? undefined : JSON.stringify({ vbBefore, vbFinal, before, final }));
+      backOk ? undefined : JSON.stringify({ vbBefore, vbFinal, beforeA, finalA }));
+    const kBackOk = distBefore != null && Math.abs(distBefore - distFinal) <= 1.5;
+    report(kBackOk, `${label}: exiting fullscreen restores k`,
+      kBackOk ? undefined : `distance before=${distBefore?.toFixed(2)}px final=${distFinal.toFixed(2)}px`);
   } else {
-    report(false, `${label}: exiting fullscreen`, "target dot missing after exiting fullscreen");
+    report(false, `${label}: exiting fullscreen`, "a reference dot went missing after exiting fullscreen");
   }
   await context.close();
 }
@@ -1839,7 +1902,20 @@ async function checkDragThresholdNoSelect(browser, base) {
  * rect right now), and checks an UNRELATED on-screen reference dot's own
  * cx/cy shift (proves a pan happened) and radius (proves k didn't, see
  * readDot's own comment) rather than trying to read the target's geometry,
- * which may not even be in the DOM yet (paint() culls far-off content). */
+ * which may not even be in the DOM yet (paint() culls far-off content).
+ *
+ * CI review finding: searching by bare basename picked
+ * "django/conf/locale/<lang>/formats.py" as the off-screen target on one
+ * run, then landed on "django/utils/formats.py" instead -- not an app bug.
+ * django ships 86 files literally named `formats.py` (one per locale
+ * directory), and map/search.ts's own ranking (an intentional, unrelated
+ * design: "exact match wins over a substring match") ties ALL of them at
+ * its best bucket for an exact-basename query, breaking the tie by import
+ * fan-in -- so searching a NON-unique basename is inherently ambiguous
+ * about which file Enter selects, independent of anything this PR touches.
+ * Fixed by only ever choosing an off-screen candidate whose basename is
+ * unique across the whole document, so the search has exactly one right
+ * answer. */
 async function checkSearchPanOffscreen(browser, base) {
   const label = "search pick for an off-screen file pans without changing k (django)";
   console.log(`\n${label}`);
@@ -1863,14 +1939,20 @@ async function checkSearchPanOffscreen(browser, base) {
     return;
   }
   const doc = await (await fetch(`${base}/maps/django/django.json`)).json();
+  const basenameCounts = new Map();
+  for (const f of doc.F) {
+    const base = f.split("/").pop();
+    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+  }
   const offscreen = await page.evaluate(
-    ({ files, refKey }) => {
+    ({ files, refKey, uniqueBasenames }) => {
       const svg = document.querySelector("svg.map-svg");
       const vw = svg.clientWidth;
       const vh = svg.clientHeight;
       const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
       for (let i = 0; i < files.length; i++) {
         if (`f:${i}` === refKey) continue;
+        if (!uniqueBasenames.includes(files[i].split("/").pop())) continue;
         const el = document.querySelector(`[data-k="f:${i}"]`);
         if (!el) continue; // not drawn near the viewport at all -- also off screen, but nothing to measure against the rect
         const r = el.getBoundingClientRect();
@@ -1880,10 +1962,14 @@ async function checkSearchPanOffscreen(browser, base) {
       }
       return null;
     },
-    { files: doc.F, refKey: reference.dataK },
+    {
+      files: doc.F,
+      refKey: reference.dataK,
+      uniqueBasenames: [...basenameCounts.entries()].filter(([, count]) => count === 1).map(([base]) => base),
+    },
   );
   if (!offscreen) {
-    report(false, `${label}: setup`, "no off-screen file found after zooming in");
+    report(false, `${label}: setup`, "no off-screen file with a unique basename found after zooming in");
     await context.close();
     return;
   }
