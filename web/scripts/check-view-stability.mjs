@@ -2611,6 +2611,22 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
       return c;
     };
 
+    // Screen-space equivalent side (sqrt(world area) * scale), the same
+    // quantity MapRenderer's own districtFootprintsLarge compares against
+    // its ~24px threshold. Banded to [10, 22]px rather than "smallest
+    // possible": the ABSOLUTE smallest footprints are exactly where two
+    // INDEPENDENTLY computed transforms (this script's own scale/tx/ty vs
+    // the live app's k/tx/ty) can disagree by more than the polygon's own
+    // size, tipping a world-correct point into a neighbouring file's (or, if
+    // it's a bigger, individually-drawn landmark sitting nearby, THAT file's)
+    // territory on screen even though `inPoly` below holds exactly in world
+    // space -- a real precision hazard of testing pixel-perfect taps on the
+    // tiniest targets, not a hit-testing bug. checkFitFraming's own
+    // pointError assertion elsewhere in this file accepts UP TO 2px of
+    // exactly this kind of discrepancy between an independently-computed
+    // transform and the live one; the margin check just below is sized
+    // against that same accepted tolerance, and 10px of on-screen size
+    // comfortably clears it while staying well under the batching threshold.
     const candidates = [];
     for (let i = 0; i < doc.F.length; i++) {
       if (landmarkSet.has(i)) continue;
@@ -2618,11 +2634,24 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
       const poly = doc.P?.[String(i)];
       const c = doc.footprint_centroids?.[i];
       if (!poly || poly.length < 3 || !c) continue;
-      candidates.push({ i, area: area(poly), poly, c });
+      const screenSide = Math.sqrt(area(poly)) * scale;
+      if (screenSide < 10 || screenSide > 22) continue;
+      candidates.push({ i, screenSide, poly, c });
     }
-    candidates.sort((x, y) => x.area - y.area);
-    for (const cand of candidates.slice(0, 200)) {
-      if (!inPoly(cand.c, cand.poly)) continue;
+    candidates.sort((x, y) => x.screenSide - y.screenSide);
+    const marginWorld = 2.5 / scale;
+    for (const cand of candidates) {
+      // Robust to the SAME ~2px transform tolerance checkFitFraming already
+      // accepts: the centroid AND every point up to that margin away (in
+      // world units) must all still resolve inside this file's own polygon.
+      const probes = [
+        cand.c,
+        [cand.c[0] + marginWorld, cand.c[1]],
+        [cand.c[0] - marginWorld, cand.c[1]],
+        [cand.c[0], cand.c[1] + marginWorld],
+        [cand.c[0], cand.c[1] - marginWorld],
+      ];
+      if (!probes.every((p) => inPoly(p, cand.poly))) continue;
       const sx = cand.c[0] * scale + tx;
       const sy = cand.c[1] * scale + ty;
       if (sx < rect[0] || sx > rect[2] || sy < rect[1] || sy > rect[3]) continue;
