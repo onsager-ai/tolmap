@@ -1896,15 +1896,16 @@ async function checkDragThresholdNoSelect(browser, base) {
 }
 
 /** Issue #82 A1 scope item 1: a search pick for a file that's currently off
- * screen pans it into view without changing k. Zooms in on a corner first
- * so plenty of the mainland ends up off screen, picks an off-screen file by
- * data-k geometry (not by ID -- has to be genuinely outside the safe content
- * rect right now), and checks an UNRELATED on-screen reference dot's own
- * cx/cy shift (proves a pan happened) and radius (proves k didn't, see
- * readDot's own comment) rather than trying to read the target's geometry,
- * which may not even be in the DOM yet (paint() culls far-off content).
+ * screen pans it into view without changing k. Zooms in on the viewport's
+ * own centre first so plenty of the mainland ends up off screen, then picks
+ * an off-screen file by data-k geometry (not by ID -- has to be genuinely
+ * outside the safe content rect right now) AND a "companion" dot near it in
+ * LOCAL (SVG) space, and checks the companion's own cx/cy shift (proves a
+ * pan happened) and radius (proves k didn't, see readDot's own comment)
+ * rather than trying to read the target's own geometry (which is exactly
+ * what the pan is establishing, not a fixed reference to measure against).
  *
- * CI review finding: searching by bare basename picked
+ * CI review finding #1: searching by bare basename picked
  * "django/conf/locale/<lang>/formats.py" as the off-screen target on one
  * run, then landed on "django/utils/formats.py" instead -- not an app bug.
  * django ships 86 files literally named `formats.py` (one per locale
@@ -1913,9 +1914,23 @@ async function checkDragThresholdNoSelect(browser, base) {
  * its best bucket for an exact-basename query, breaking the tie by import
  * fan-in -- so searching a NON-unique basename is inherently ambiguous
  * about which file Enter selects, independent of anything this PR touches.
- * Fixed by only ever choosing an off-screen candidate whose basename is
- * unique across the whole document, so the search has exactly one right
- * answer. */
+ * Fixed by only ever choosing an off-screen TARGET whose basename is unique
+ * across the whole document, so the search has exactly one right answer.
+ *
+ * CI review finding #2: the first fix still used an arbitrary CENTRAL dot
+ * (pickTarget(), picked from the OLD view before the pan) as the fixed
+ * reference point, and it went missing after the pan -- not because
+ * nothing moved, but because it moved OFF screen. panTo() recentres the
+ * target exactly (MapRenderer.panToPoint), which can be a large jump when
+ * the target starts far from the viewport centre, and a dot that was
+ * comfortably central in the OLD view is not guaranteed to survive an
+ * arbitrarily large recentring translation even given paint()'s generous
+ * cull margin. Fixed by picking the reference NEAR THE TARGET instead (a
+ * "companion" dot within a small LOCAL-space radius of it): a pure
+ * translation preserves relative positions, so anything close to the target
+ * before the pan is equally close to it after -- and after, the target is
+ * centred by definition, so its companion is guaranteed to still be on (or
+ * very near) screen too. */
 async function checkSearchPanOffscreen(browser, base) {
   const label = "search pick for an off-screen file pans without changing k (django)";
   console.log(`\n${label}`);
@@ -1924,87 +1939,95 @@ async function checkSearchPanOffscreen(browser, base) {
   await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
-  // Zoom in centred on the viewport's own centre (not a corner): anchoring
-  // there keeps pickTarget()'s central safe region populated (it needs a
-  // reference dot to still be on screen afterwards) while still shrinking
-  // the visible extent enough that plenty of files near the EDGES of the
-  // old view end up genuinely off screen -- which is what makes finding an
+  // Zoom in centred on the viewport's own centre (not a corner): shrinks the
+  // visible extent enough that plenty of files near the EDGES of the old
+  // view end up genuinely off screen, which is what makes finding an
   // off-screen target below possible at all.
   await zoomIn(page, 600, 400);
 
-  const reference = await pickTarget(page, 1200, 800);
-  if (!reference?.dataK) {
-    report(false, `${label}: setup`, "no on-screen reference dot found");
-    await context.close();
-    return;
-  }
   const doc = await (await fetch(`${base}/maps/django/django.json`)).json();
   const basenameCounts = new Map();
   for (const f of doc.F) {
     const base = f.split("/").pop();
     basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
   }
-  // CI review finding: this used getBoundingClientRect() (PAGE coordinates)
-  // for cx/cy, compared against fitViewport()'s rect -- which is in SVG-
-  // LOCAL units (0..VW, 0..VH; see MapRenderer.resize()/paint(), where VW/VH
-  // come from the wrap div's own box, and this.X()/this.Y() bake tx/ty and k
-  // in but never a page offset). The SVG element itself does not start at
-  // page (0,0) on desktop -- Sidebar (250px) sits to its left and TopBar
-  // above it -- so a page-relative cx/cy is shifted from local space by
-  // exactly that offset, and comparing the two directly misclassified a
-  // genuinely ON-screen dot (in local space, which is what panTo() itself
-  // checks) as off screen. Fixed by reading the `cx`/`cy` ATTRIBUTES the
-  // renderer actually wrote (`this.X(p[0]).toFixed(1)` et al) instead of a
-  // derived bounding rect -- exactly the coordinate space panTo()'s own
-  // bounds check runs in, so there is no origin to get wrong. (readDot()
-  // elsewhere in this file already reads attributes for the same reason;
-  // this is the one spot that had reintroduced getBoundingClientRect().)
-  const offscreen = await page.evaluate(
-    ({ files, refKey, uniqueBasenames }) => {
+  const uniqueBasenames = [...basenameCounts.entries()].filter(([, count]) => count === 1).map(([b]) => b);
+
+  // cx/cy are read from the `cx`/`cy` ATTRIBUTES the renderer wrote
+  // (`this.X(p[0]).toFixed(1)` et al), never getBoundingClientRect() -- that
+  // is SVG-LOCAL space, exactly what fitViewport()'s rect and panTo()'s own
+  // bounds check use (see MapRenderer.resize()/paint(): VW/VH come from the
+  // wrap div's own box, and this.X()/this.Y() never add a page offset). The
+  // <svg> element itself does not start at page (0,0) on desktop -- Sidebar
+  // (250px) sits to its left, TopBar above it -- so a page-relative
+  // getBoundingClientRect() cx/cy would be shifted from local space by
+  // exactly that offset and misclassify things.
+  const picked = await page.evaluate(
+    ({ files, uniqueBasenames, companionRadius }) => {
       const svg = document.querySelector("svg.map-svg");
       const vw = svg.clientWidth;
       const vh = svg.clientHeight;
       const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+      const dots = [...document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"]')]
+        .map((el) => ({ el, key: el.getAttribute("data-k"), cx: parseFloat(el.getAttribute("cx")), cy: parseFloat(el.getAttribute("cy")) }))
+        .filter((d) => !Number.isNaN(d.cx) && !Number.isNaN(d.cy));
       for (let i = 0; i < files.length; i++) {
-        if (`f:${i}` === refKey) continue;
         if (!uniqueBasenames.includes(files[i].split("/").pop())) continue;
-        const el = document.querySelector(`[data-k="f:${i}"]`);
-        if (!el) continue; // not drawn near the viewport at all -- also off screen, but nothing to measure against the rect
-        const cx = parseFloat(el.getAttribute("cx"));
-        const cy = parseFloat(el.getAttribute("cy"));
-        if (Number.isNaN(cx) || Number.isNaN(cy)) continue;
-        if (cx < rect[0] || cx > rect[2] || cy < rect[1] || cy > rect[3]) return { index: i, file: files[i] };
+        const key = `f:${i}`;
+        const target = dots.find((d) => d.key === key);
+        if (!target) continue; // not drawn near the viewport at all -- also off screen, but nothing to measure against the rect
+        const offScreen = target.cx < rect[0] || target.cx > rect[2] || target.cy < rect[1] || target.cy > rect[3];
+        if (!offScreen) continue;
+        const companion = dots.find((d) => d.key !== key && Math.hypot(d.cx - target.cx, d.cy - target.cy) <= companionRadius);
+        if (!companion) continue;
+        return { index: i, file: files[i], companionKey: companion.key };
       }
       return null;
     },
-    {
-      files: doc.F,
-      refKey: reference.dataK,
-      uniqueBasenames: [...basenameCounts.entries()].filter(([, count]) => count === 1).map(([base]) => base),
-    },
+    { files: doc.F, uniqueBasenames, companionRadius: 60 },
   );
-  if (!offscreen) {
-    report(false, `${label}: setup`, "no off-screen file with a unique basename found after zooming in");
+  if (!picked) {
+    report(false, `${label}: setup`, "no off-screen file with a unique basename and a nearby companion dot found");
     await context.close();
     return;
   }
 
-  const before = await readDot(page, reference.dataK);
-  await page.locator('input[aria-label="Search files"]').fill(offscreen.file.split("/").pop());
+  const before = await readDot(page, picked.companionKey);
+  await page.locator('input[aria-label="Search files"]').fill(picked.file.split("/").pop());
   await page.waitForTimeout(150);
   await page.locator('input[aria-label="Search files"]').press("Enter");
   await page.waitForTimeout(650); // glide()/settle
-  const after = await readDot(page, reference.dataK);
+  const after = await readDot(page, picked.companionKey);
 
-  report(new URL(page.url()).searchParams.get("file") === offscreen.file,
+  report(new URL(page.url()).searchParams.get("file") === picked.file,
     `${label}: search selected the off-screen target`, page.url());
+
+  // The positive complement to "the companion survived and didn't scale":
+  // the TARGET itself -- off screen before -- is now actually inside the
+  // safe content rect. Same rect formula, same attribute-based cx/cy as the
+  // candidate search above (never getBoundingClientRect(), see this
+  // function's own doc comment for why that matters).
+  const targetInView = await page.evaluate((index) => {
+    const svg = document.querySelector("svg.map-svg");
+    const vw = svg.clientWidth;
+    const vh = svg.clientHeight;
+    const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+    const el = document.querySelector(`[data-k="f:${index}"]`);
+    if (!el) return false;
+    const cx = parseFloat(el.getAttribute("cx"));
+    const cy = parseFloat(el.getAttribute("cy"));
+    if (Number.isNaN(cx) || Number.isNaN(cy)) return false;
+    return cx >= rect[0] && cx <= rect[2] && cy >= rect[1] && cy <= rect[3];
+  }, picked.index);
+  report(targetInView, `${label}: the off-screen target is now inside the viewport`);
+
   if (!before || !after) {
-    report(false, `${label}: reference dot present before and after`, JSON.stringify({ before, after }));
+    report(false, `${label}: companion dot present before and after`, JSON.stringify({ before, after }));
   } else {
     const moved = Math.hypot(after.cx - before.cx, after.cy - before.cy) > 5;
     const sameRadius = before.r != null && after.r != null && Math.abs(before.r - after.r) <= 0.05;
     report(moved, `${label}: the view actually panned`, JSON.stringify({ before, after }));
-    report(sameRadius, `${label}: k unchanged (reference dot radius identical)`, JSON.stringify({ before, after }));
+    report(sameRadius, `${label}: k unchanged (companion dot radius identical)`, JSON.stringify({ before, after }));
   }
   await context.close();
 }
