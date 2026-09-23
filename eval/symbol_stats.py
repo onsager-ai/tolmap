@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Summarise the separate symbol document and district response sizes.
+"""Summarise symbol cards and audit exported rings on a remote-build runner.
 
-This reads JSON only. It is safe to run on the development laptop; the
-repository build that produced the documents runs in GitHub Actions.
+This is corpus-scale JSON work. Run it in GitHub Actions, not on the
+development laptop with the broken cooling system.
 """
 
 import argparse
 import collections
+import gzip
 import json
 import math
 import statistics
 from pathlib import Path
 
 
-def measure(map_file: Path, symbols_file: Path) -> dict:
+def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None) -> dict:
     map_doc = json.loads(map_file.read_text())
     document = json.loads(symbols_file.read_text())
     symbols = document["symbols"]
@@ -21,6 +22,9 @@ def measure(map_file: Path, symbols_file: Path) -> dict:
     by_kind = dict(sorted(collections.Counter(row[2] for row in symbols).items()))
     largest = 0
     largest_id = None
+    largest_gzip = 0
+    static_districts = 0
+    district_dir = symbols_file.with_suffix("")
     for district in map_doc["districts"]:
         files = {i for i, node in enumerate(map_doc["N"]) if str(node[0]) == district}
         local_ids = {i for i, row in enumerate(symbols) if row[0] in files}
@@ -39,9 +43,19 @@ def measure(map_file: Path, symbols_file: Path) -> dict:
             slice_doc["module_rings"] = {key: value for key, value in document["module_rings"].items() if int(key) in files}
             slice_doc["header_rings"] = {key: value for key, value in document["header_rings"].items() if int(key) in all_ids}
         size = len(json.dumps(slice_doc, separators=(",", ":"), ensure_ascii=False).encode())
+        district_file = district_dir / f"{district}.json"
+        if district_file.exists():
+            raw = district_file.read_bytes()
+            assert json.loads(raw) == slice_doc, f"static district {district} differs from API projection"
+            size = len(raw)
+            gzip_size = len(gzip.compress(raw, mtime=0))
+            static_districts += 1
+        else:
+            gzip_size = 0
         if size > largest:
             largest = size
             largest_id = int(district)
+            largest_gzip = gzip_size
     coverage = document["coverage"]
     total = coverage["calls_total"]
     geometry = document.get("symbol_rings", [])
@@ -61,7 +75,7 @@ def measure(map_file: Path, symbols_file: Path) -> dict:
         delta["symbol_rings"] = [[encode(ring) for ring in rings] if rings else None for rings in geometry]
         delta["module_rings"] = {key: [encode(ring) for ring in rings] for key, rings in document["module_rings"].items()}
         delta["header_rings"] = {key: [encode(ring) for ring in rings] for key, rings in document["header_rings"].items()}
-    return {
+    result = {
         "symbols": len(symbols),
         "by_kind": by_kind,
         "edges": len(edges),
@@ -70,8 +84,11 @@ def measure(map_file: Path, symbols_file: Path) -> dict:
         "resolution_rate": coverage["calls_resolved"] / total if total else 0,
         "unresolved": coverage["unresolved"],
         "document_bytes": symbols_file.stat().st_size,
+        "document_gzip_bytes": len(gzip.compress(symbols_file.read_bytes(), mtime=0)),
         "largest_district": largest_id,
         "largest_district_bytes": largest,
+        "largest_district_gzip_bytes": largest_gzip,
+        "static_districts": static_districts,
         "symbols_with_ring": with_ring,
         "eligible_symbols_without_ring": missing,
         "eligible_symbols": len(eligible),
@@ -79,6 +96,83 @@ def measure(map_file: Path, symbols_file: Path) -> dict:
         "median_within_file_pearson": statistics.median(correlations) if correlations else None,
         "document_bytes_before_geometry": compact_bytes(before),
         "document_bytes_delta_encoded": compact_bytes(delta),
+    }
+    result.update(audit_rings(document))
+    if compare_file:
+        raw = compare_file.read_bytes()
+        result["before_precision_bytes"] = len(raw)
+        result["before_precision_gzip_bytes"] = len(gzip.compress(raw, mtime=0))
+        old = json.loads(raw)
+        result["before_precision_collapsed_by_decimals"] = {
+            str(places): collapsed_at_precision(old, places)
+            for places in range(6, 12)
+        }
+    return result
+
+
+def iter_contours(document):
+    for card in document.get("symbol_rings", []):
+        if card:
+            yield from card
+    for field in ("module_rings", "header_rings"):
+        for card in document.get(field, {}).values():
+            yield from card
+
+
+def integer_area(ring, scale=10**11):
+    points = [(round(x * scale), round(y * scale)) for x, y in ring]
+    return abs(sum(a[0] * b[1] - a[1] * b[0]
+                   for a, b in zip(points, points[1:] + points[:1])))
+
+
+def collapsed_at_precision(document, places):
+    scale = 10**places
+    count = 0
+    for card in document.get("symbol_rings", []):
+        if card and integer_area(card[0], scale) == 0:
+            count += 1
+    for field in ("module_rings", "header_rings"):
+        for card in document.get(field, {}).values():
+            if integer_area(card[0], scale) == 0:
+                count += 1
+    return count
+
+
+def contains(point, rings):
+    x, y = point
+    inside = False
+    for ring in rings:
+        for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
+            if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
+                inside = not inside
+    return inside
+
+
+def audit_rings(document):
+    rings = document.get("symbol_rings", [])
+    duplicate = collapsed = outside = oversized = 0
+    for ring in iter_contours(document):
+        duplicate += any(a == b for a, b in zip(ring, ring[1:] + ring[:1]))
+        collapsed += len(ring) < 3 or integer_area(ring) == 0
+    for i, row in enumerate(document["symbols"]):
+        parent = row[5]
+        if parent < 0 or row[0] != document["symbols"][parent][0]:
+            continue
+        child = rings[i]
+        ancestor = rings[parent]
+        if not child or not ancestor:
+            continue
+        exterior = child[0]
+        center = [sum(p[axis] for p in exterior) / len(exterior) for axis in (0, 1)]
+        outside += not contains(center, ancestor)
+        oversized += sum(integer_area(r) for r in child) > sum(integer_area(r) for r in ancestor)
+    assert duplicate == 0 and collapsed == 0 and outside == 0 and oversized == 0, (
+        duplicate, collapsed, outside, oversized)
+    return {
+        "duplicate_consecutive_points": duplicate,
+        "collapsed_rings": collapsed,
+        "child_centroid_outside_parent": outside,
+        "child_area_larger_than_parent": oversized,
     }
 
 
@@ -113,5 +207,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("map", type=Path)
     parser.add_argument("symbols", type=Path)
+    parser.add_argument("--compare-symbols", type=Path)
     args = parser.parse_args()
-    print(json.dumps(measure(args.map, args.symbols), indent=2, sort_keys=True))
+    print(json.dumps(measure(args.map, args.symbols, args.compare_symbols), indent=2, sort_keys=True))

@@ -103,6 +103,13 @@ The full sibling `<name>.symbols.json` also has `files`, `symbols`, `edges`,
 `calls_resolved`, and `unresolved` counts by reason). Coverage lives there to keep the initial map
 document small. The same sibling is copied to `/maps/<owner>/<repo>.symbols.json`
 when a static map includes one.
+`tolmap build` also writes `<name>.symbols/<district>.json` for every district.
+Each file has the same JSON object returned by this endpoint for that district,
+including any symbols at the far ends of crossing edges. Static map collection
+copies this directory to `/maps/<owner>/<repo>.symbols/`, so a static client can
+fetch one district at `/maps/<owner>/<repo>.symbols/<district>.json`. The full
+symbols sibling remains available for the service and determinism checks.
+The API currently sends these JSON responses without gzip compression.
 
 ### `POST /api/index`
 

@@ -1030,8 +1030,30 @@ pub fn write_sibling(repo: &Path, nodes: &[SourceNode], map_path: &Path) -> Resu
     crate::symbol_cards::attach(&map, &mut document)?;
     let output = map_path.with_extension("symbols.json");
     let temporary = map_path.with_extension("symbols.json.tmp");
+    let district_dir = map_path.with_extension("symbols");
+    let temporary_dir = map_path.with_extension("symbols.tmp");
+    if temporary_dir.exists() {
+        fs::remove_dir_all(&temporary_dir)?;
+    }
+    fs::create_dir(&temporary_dir)?;
+    for key in map.districts.keys() {
+        let id = key
+            .parse::<usize>()
+            .with_context(|| format!("invalid district {key}"))?;
+        let response = document
+            .district(&map, id)
+            .with_context(|| format!("missing district {id}"))?;
+        fs::write(
+            temporary_dir.join(format!("{id}.json")),
+            serde_json::to_vec(&response)?,
+        )?;
+    }
     fs::write(&temporary, serde_json::to_vec(&document)?)?;
     fs::rename(&temporary, &output)?;
+    if district_dir.exists() {
+        fs::remove_dir_all(&district_dir)?;
+    }
+    fs::rename(&temporary_dir, &district_dir)?;
     eprintln!("wrote {}", output.display());
     Ok(())
 }

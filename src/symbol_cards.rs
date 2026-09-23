@@ -13,6 +13,9 @@ type Rings = Vec<Ring>;
 // The prototype used roughly 9–12 vertices per card. A larger contour made
 // dify's separate symbol document far heavier without adding visible detail.
 const CARD_CONTOUR_POINTS: usize = 12;
+// The smallest reserved fallback cards in the measured dify and django maps
+// are roughly 1e-10 wide. Ten decimals still collapses some exteriors.
+const CARD_COORDINATE_SCALE: f64 = 1e11;
 
 struct Canvas {
     grid: usize,
@@ -61,8 +64,8 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
                     .step_by(stride)
                     .map(|p| {
                         [
-                            ((canvas.low[0] + p[0] * canvas.step) * 1e9).round() / 1e9,
-                            ((canvas.low[1] + p[1] * canvas.step) * 1e9).round() / 1e9,
+                            canvas.low[0] + p[0] * canvas.step,
+                            canvas.low[1] + p[1] * canvas.step,
                         ]
                     })
                     .collect::<Ring>();
@@ -307,6 +310,66 @@ fn rectangle(rect: [f64; 4]) -> Rings {
         [rect[2], rect[3]],
         [rect[0], rect[3]],
     ]]
+}
+
+fn quantize_rings(rings: &mut Rings) -> Result<()> {
+    for ring in rings {
+        let mut points = Vec::<[i128; 2]>::with_capacity(ring.len());
+        for point in ring.iter() {
+            let rounded = [
+                (point[0] * CARD_COORDINATE_SCALE).round() as i128,
+                (point[1] * CARD_COORDINATE_SCALE).round() as i128,
+            ];
+            if points.last() != Some(&rounded) {
+                points.push(rounded);
+            }
+        }
+        if points.len() > 1 && points.first() == points.last() {
+            points.pop();
+        }
+        loop {
+            let length = points.len();
+            if length < 3 {
+                break;
+            }
+            let kept = points
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &point)| {
+                    let previous = points[(i + length - 1) % length];
+                    let next = points[(i + 1) % length];
+                    let a = [point[0] - previous[0], point[1] - previous[1]];
+                    let b = [next[0] - point[0], next[1] - point[1]];
+                    let cross = a[0] * b[1] - a[1] * b[0];
+                    let dot = a[0] * b[0] + a[1] * b[1];
+                    (cross != 0 || dot <= 0).then_some(point)
+                })
+                .collect::<Vec<_>>();
+            if kept.len() == length {
+                break;
+            }
+            points = kept;
+        }
+        let doubled_area = points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
+            .sum::<i128>();
+        ensure!(
+            points.len() >= 3 && doubled_area != 0,
+            "card ring collapsed at 11 decimals"
+        );
+        *ring = points
+            .into_iter()
+            .map(|p| {
+                [
+                    p[0] as f64 / CARD_COORDINATE_SCALE,
+                    p[1] as f64 / CARD_COORDINATE_SCALE,
+                ]
+            })
+            .collect();
+    }
+    Ok(())
 }
 
 struct Cards<'a> {
@@ -614,11 +677,19 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
         }
     }
     let Cards {
-        rings,
-        modules,
-        headers,
+        mut rings,
+        mut modules,
+        mut headers,
         ..
     } = cards;
+    // All exported card coordinates, including fallback and header rectangles,
+    // pass through the same rounding step after the raster ownership is final.
+    for contours in rings.iter_mut().flatten() {
+        quantize_rings(contours)?;
+    }
+    for contours in modules.values_mut().chain(headers.values_mut()) {
+        quantize_rings(contours)?;
+    }
     document.symbol_rings = Some(rings);
     document.module_rings = Some(modules);
     document.header_rings = Some(headers);
