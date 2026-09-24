@@ -2110,10 +2110,16 @@ mod tests {
                 previous_maps: vec![],
                 names_cache: None,
             };
-            let error =
-                process_worker_exe(&tx, spec, Instant::now(), &fake_worker, Some(&state.jobs))
-                    .err()
-                    .expect("shutdown must fail the running child");
+            let error = process_worker_exe(
+                &tx,
+                spec,
+                Instant::now(),
+                &fake_worker,
+                Some(&state.jobs),
+                &WorkerHardening::for_test(dir.path()),
+            )
+            .err()
+            .expect("shutdown must fail the running child");
             finish_failed(&tx, error);
         });
         let id = enqueue_job(state.clone(), repo("solo"), "a".to_owned(), runner).unwrap();
