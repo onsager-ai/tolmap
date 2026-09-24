@@ -383,7 +383,7 @@ fn build_multi_source_inner(
     ));
     if spool.is_some() {
         // Disjoint steps inside `symbol_collection`; they sum to it up to
-        // timer overhead. Finding 39 reads these before and after.
+        // timer overhead. Finding 40 reads these before and after.
         for (label, duration) in collect_steps.rows() {
             progress.log(format!(
                 "phase symbol_collection.{label}: {:.3}s",

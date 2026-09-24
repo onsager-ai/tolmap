@@ -115,7 +115,7 @@ enum RawImports {
 }
 
 /// Wall time spent inside symbol collection, split by step so a build log
-/// can show where the `symbol_collection` phase goes (finding 39). Purely
+/// can show where the `symbol_collection` phase goes (finding 40). Purely
 /// observational: nothing here reaches a map or a symbols document.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CollectTimings {
@@ -400,7 +400,7 @@ fn abstract_decl(
 /// tree-sitter 0.25 `ts_node_parent` has no parent pointer: it descends from
 /// the tree root through `ts_node_child_with_descendant`, scanning siblings
 /// at every level. An ancestor chain therefore cost O(depth² × fan-out) per
-/// node, and the reference-wrapper check ran it for every node (finding 39).
+/// node, and the reference-wrapper check ran it for every node (finding 40).
 /// The ancestors are the same nodes `parent()` returns: only named nodes are
 /// entered, and an unnamed node's subtree was never visited before either.
 fn preorder<'t, S, F>(root: Node<'t>, mut enter: F)
@@ -2326,7 +2326,7 @@ mod tests {
     }
 }
 
-/// The recursive `parent()`-based walks replaced in finding 39, kept verbatim
+/// The recursive `parent()`-based walks replaced in finding 40, kept verbatim
 /// (renamed `old_*`) so a test can assert the cursor walks collect exactly
 /// the same spans, receivers, imports and candidates.
 #[cfg(test)]

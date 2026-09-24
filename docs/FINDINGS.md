@@ -1405,3 +1405,41 @@ The [standard-runner replay](https://github.com/onsager-ai/tolmap/actions/runs/3
 | **Median absolute error** | — | **5.505** | **3.036** | **0.918** |
 
 N8n is the material miss: at 10% wall time the model predicted 53.872 s remaining versus 95.908 s actual, and at 50% it predicted 28.547 s versus 53.282 s. A file count and byte total do not capture its per-file extraction and symbol-card cost from a cold seed. This run does **not** establish accurate early ETAs for repositories of n8n's scale. The model will learn completed stage durations on the service machine, but that post-refit accuracy was not measured here. The [CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35953081409) passed Rust formatting, clippy, build and tests, checked-in TypeScript binding generation, offline parity and determinism, web build/lint, and deployment-environment parity; full nine-fixture parity remained skipped by the workflow's on-demand/nightly policy.
+
+## 40. Symbol collection was quadratic in tree depth through `Node::parent()`
+
+The owner prioritized performance follow-ups in session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 1874, 2026-09-24T00:24:36Z (tracking issue #82). Finding 33 measured symbol collection at 20.1 s on dify, the largest single build phase. This finding uses number 40 because [open PR #112](https://github.com/onsager-ai/tolmap/pull/112) already cites 39.
+
+The build log now splits `symbol_collection` into disjoint steps: `spans`, `receivers` (Go), `lines` (code-line prefix sums), `imports`, `candidates` (reference candidates), `encode` (JSON record) and `write` (spool file). A [timing-only baseline run](https://github.com/onsager-ai/tolmap/actions/runs/35958212033) at `685028d` produced map and symbols hashes identical to `main` (`453daf2`) on all four repositories. It showed that the suspected costs were small. Spool serialization plus writing took 0.195 s on dify, import collection 0.102 s, and line counting 0.005 s. **Candidate collection took 22.628 of 23.746 s.** Its share was the same on the other repositories: django 2.582 of 2.749 s, prometheus 6.337 of 6.804 s, and vue 1.154 of 1.212 s.
+
+The cause was `Node::parent()`. Tree-sitter 0.25 stores no parent pointer. `ts_node_parent` starts at the tree root and descends through `ts_node_child_with_descendant`, which scans siblings at every level. The candidate walk called `covered_by_reference_wrapper` on every syntax node that was not a call. That function climbed `parent()` to the nearest definition. `value_attribute` climbed `parent()` from every attribute, member or selector expression to the root. As a result, each ancestor chain cost O(depth² × fan-out) per node. Deep TypeScript/JSX expressions and long class bodies make that expensive. The walks also allocated a tree cursor and a `Vec` for every node's children.
+
+All four collection walks (spans, Go receivers, Go imports and candidates) now use one pre-order cursor walk. The walk carries the stack of named ancestors. Whether a node lies below a reference wrapper becomes a flag inherited from its parent: `wrapper(parent) || (!definition(parent) && flag(parent))`. This is the same rule the upward search applied. The value-reference check walks the ancestor stack instead of calling `parent()`. The walk enters named nodes only, as `named_children` recursion did. For any node it visits, the stack therefore holds exactly the nodes `parent()` returned. The previous recursive implementations remain in a test module. Tests assert identical spans, receivers, Go imports, candidates and shadowed names on inline Python, TypeScript, TSX and Go samples, and on every Python file under `src/tolmap/` and every TypeScript file under `web/src/`. The TypeScript sample contains JSX, so parsing it with the non-TSX grammar also covers a tree with syntax errors.
+
+The [final paired standard-runner run](https://github.com/onsager-ai/tolmap/actions/runs/35959267885) built this branch at `94f11fb` and `main` at `dc9f14b` from the same four `eval/corpus.toml` pins. SHA-256 of the full map JSON **and** full symbols JSON matched `main` on every row. That covers `F`/`N`/`E`/`L`/`S`/`U`, hierarchy, typed edges from #104 and card geometry. The typed-edge audit and the card-geometry audit passed. Wall time and peak RSS come from `/usr/bin/time`. Collection steps for `main` are from the timing-only baseline run on a different runner, because `main` does not log them.
+
+| repository | files | map / symbols SHA-256 prefix (both) | symbol collection s, main → branch | candidates s, baseline → branch | spans s, baseline → branch | build wall s, main → branch | peak RSS KB, main → branch |
+|---|---:|---|---:|---:|---:|---:|---:|
+| django/django | 851 | `24849f34f13f` / `3add7c6c474e` | 2.507 → 0.365 | 2.582 → 0.241 | 0.127 → 0.085 | 6.93 → 4.83 | 46,984 → 47,344 (+0.8%) |
+| langgenius/dify | 6,347 | `2b7c2dcbda9f` / `45848ce8a527` | 23.693 → 2.526 | 22.628 → 1.614 | 0.809 → 0.605 | 50.80 → 29.79 | 204,988 → 204,480 (−0.2%) |
+| prometheus/prometheus | 631 | `eb0e4c425f75` / `9d44825f614d` | 6.692 → 0.687 | 6.337 → 0.350 | 0.172 → 0.121 | 10.94 → 4.92 | 47,304 → 46,828 (−1.0%) |
+| vuejs/core | 239 | `c6716cd7883e` / `ad9a9c41dee2` | 1.225 → 0.135 | 1.154 → 0.088 | 0.046 → 0.035 | 2.68 → 1.63 | 32,568 → 32,156 (−1.3%) |
+
+On the same runner, the dify job also ran balanced warm replays in the order `main → branch → branch → main`, with the same clone and output hashing throughout. Main took 50.816 and 50.719 s; the branch took 29.487 and 29.426 s. The medians are **50.768 → 29.457 s (−42.0%)**, and all four outputs were byte-identical. An [earlier paired run](https://github.com/onsager-ai/tolmap/actions/runs/35958481265) of the same code at `eb74c9c` had a faster runner and measured dify at 37.38 → 23.12 s, with collection at 16.266 → 1.707 s. The saving scales with runner speed; it is not a fixed number of seconds.
+
+The dify worker stages from the final run are below, in seconds. Only the two parse passes changed, because symbol collection runs inside them. Every other stage is within 0.1 s of `main`.
+
+| stage | main | branch |
+|---|---:|---:|
+| parse (Python pass) | 11.69 | 5.11 |
+| parse (TypeScript pass) | 20.63 | 6.07 |
+| resolve (both passes) | 0.29 | 0.29 |
+| history | 0.45 | 0.47 |
+| partition + neighbourhoods + naming | 0.44 | 0.44 |
+| regions | 1.89 | 1.89 |
+| footprints | 6.52 | 6.61 |
+| symbols (resolution) | 0.51 | 0.52 |
+| symbol cards | 6.81 | 6.78 |
+| write map + symbols | 0.21 | 0.22 |
+
+After this change, dify's symbol collection (2.53 s) is smaller than extraction's parsing and metrics (8.75 s), symbol cards (6.78 s) and footprints (6.61 s). Those three are now the large phases, and this change does not touch them. The remaining collection time is mostly candidates (1.61 s) and spans (0.61 s). The span walk still scans earlier spans linearly to find each symbol's parent. That scan is kept for exactness because the step is no longer material. The ETA model in `src/service/eta.rs` is still seeded from finding 36's timeline, which had a 26.9 s dify parse. A cold-start ETA will therefore overestimate the parse stage until learned rows move it, and each learned ratio is clipped. This was not re-measured here. The [CI gate on `94f11fb`](https://github.com/onsager-ai/tolmap/actions/runs/35959226248) passed Rust formatting, clippy, release build and tests (including both equivalence tests), generated TypeScript bindings, offline parity and three-build map-plus-symbol determinism. The full nine-fixture parity job was skipped by its on-demand/nightly policy.
