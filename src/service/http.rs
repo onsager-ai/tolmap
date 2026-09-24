@@ -16,6 +16,7 @@ use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::ReceiverStream;
+use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
@@ -71,7 +72,9 @@ pub fn router(state: Arc<AppState>) -> Router {
             .fallback_service(serve_dir);
     }
 
-    router.with_state(state)
+    // tower-http's default predicate excludes text/event-stream, so job
+    // progress frames are still flushed as they arrive.
+    router.layer(CompressionLayer::new()).with_state(state)
 }
 
 /// Catch-all for any `/api/*` path none of the explicit routes above
@@ -312,7 +315,7 @@ async fn get_symbols(
     State(state): State<Arc<AppState>>,
     AxPath((owner, repo)): AxPath<(String, String)>,
     Query(query): Query<SymbolsQuery>,
-) -> Result<Json<crate::schema::DistrictSymbols>, ApiError> {
+) -> Result<Response, ApiError> {
     let slug = format!(
         "{}/{}",
         clone::canonicalize(&owner),
@@ -323,8 +326,46 @@ async fn get_symbols(
         None => state.store.latest(&slug)?,
     }
     .ok_or_else(|| ApiError::not_found(format!("{slug} has not been indexed")))?;
-    let map: crate::schema::MapDocument = super::store::read_map_document(&row.map_path)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let district_dir = row.map_path.with_extension("symbols");
+    match tokio::fs::metadata(&district_dir).await {
+        Ok(metadata) if metadata.is_dir() => {
+            let path = district_dir.join(format!("{}.json", query.district));
+            let bytes = tokio::fs::read(&path).await.map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    ApiError::not_found(format!("district {} does not exist", query.district))
+                } else {
+                    ApiError::internal(format!("read {}: {e}", path.display()))
+                }
+            })?;
+            return Ok((
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                bytes,
+            )
+                .into_response());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(ApiError::internal(format!(
+                "{} is not a directory",
+                district_dir.display()
+            )));
+        }
+        Err(e) => {
+            return Err(ApiError::internal(format!(
+                "stat {}: {e}",
+                district_dir.display()
+            )));
+        }
+    }
+
+    // Commits indexed before district files existed still have the full
+    // sibling. Read both files asynchronously for that historical path.
+    let map_bytes = tokio::fs::read(&row.map_path)
+        .await
+        .map_err(|e| ApiError::internal(format!("read {}: {e}", row.map_path.display())))?;
+    let map: crate::schema::MapDocument = serde_json::from_slice(&map_bytes)
+        .map_err(|e| ApiError::internal(format!("parse {}: {e}", row.map_path.display())))?;
     let path = row.map_path.with_extension("symbols.json");
     let bytes = tokio::fs::read(&path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -338,7 +379,7 @@ async fn get_symbols(
     let district = symbols.district(&map, query.district).ok_or_else(|| {
         ApiError::not_found(format!("district {} does not exist", query.district))
     })?;
-    Ok(Json(district))
+    Ok(Json(district).into_response())
 }
 
 // ---- GET /api/healthz ------------------------------------------------------
