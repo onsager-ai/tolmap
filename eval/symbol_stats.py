@@ -478,6 +478,10 @@ def audit_rings(document):
         parent = row[5]
         if parent < 0 or row[0] != document["symbols"][parent][0]:
             continue
+        # Maps built without footprints (the --no-parcels fixtures) carry no
+        # card geometry, so `symbol_rings` is absent and `rings` is empty.
+        if i >= len(rings) or parent >= len(rings):
+            continue
         child = rings[i]
         ancestor = rings[parent]
         if not child or not ancestor:
