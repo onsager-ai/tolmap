@@ -57,7 +57,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation: build, dump-blend, stability, or sequential name-eval"
+        description: "operation: build, dump-blend, stability, sequential name-eval, or scip-spike (issue #110 P0; ignores repos/extra_args/compare_ref)"
         required: false
         type: choice
         options:
@@ -65,7 +65,12 @@ on:
           - dump-blend
           - stability
           - name-eval
+          - scip-spike
         default: build
+      scip_reuse_run:
+        description: "scip-spike only: analyze this earlier run's scip-base-*/scip-idx-* artifacts instead of re-indexing"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -237,7 +242,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval'
+    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -580,6 +585,13 @@ jobs:
             if [ -f "artifact/${STEM}.compare.symbols.json" ]; then
               compare=(--compare-symbols "artifact/${STEM}.compare.symbols.json")
             fi
+            # Card-pass wall time comes from each build's own stage log line.
+            if [ -f artifact/primary.log ]; then
+              compare+=(--log artifact/primary.log)
+            fi
+            if [ -f artifact/compare.log ]; then
+              compare+=(--compare-log artifact/compare.log)
+            fi
             python3 eval/symbol_stats.py "artifact/${STEM}.json" "artifact/${STEM}.symbols.json" "${compare[@]}" > artifact/symbol_stats.json
             cat artifact/symbol_stats.json
           fi
@@ -617,7 +629,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -695,3 +707,19 @@ jobs:
             name-eval-work/results.json
             name-eval-work/spend.json
           if-no-files-found: warn
+
+  # Issue #110 P0: SCIP indexes measured against today's hand-written
+  # resolution. Everything lives in scip-spike.yml; this job only hands it
+  # `setup`'s binary (built from inputs.ref, main by default). See that
+  # file's header for why it is a reusable workflow behind this one.
+  # `actions: read` lets `scip_reuse_run` download another run's artifacts.
+  scip-spike:
+    name: scip spike
+    needs: setup
+    if: inputs.command == 'scip-spike'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/scip-spike.yml
+    with:
+      reuse_run: ${{ inputs.scip_reuse_run }}

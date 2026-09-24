@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use tolmap::schema::{DistrictSymbols, MapDocument, SymbolsDocument};
+use tolmap::service::jobs::JobSnapshot;
 use tolmap::worker::{WorkerEvent, WorkerSpec};
 use ts_rs::{Config, TS};
 
@@ -47,6 +48,7 @@ fn export_to(directory: &Path) -> Result<()> {
     DistrictSymbols::export_all(&Config::default().with_out_dir(directory))?;
     WorkerSpec::export_all(&Config::default().with_out_dir(directory))?;
     WorkerEvent::export_all(&Config::default().with_out_dir(directory))?;
+    JobSnapshot::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 

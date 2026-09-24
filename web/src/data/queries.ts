@@ -8,6 +8,7 @@ import {
   pingService,
   type ServiceCatalogueEntry,
 } from "@/api/client";
+import { fetchJsonTracked } from "@/api/streaming";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -15,19 +16,34 @@ async function fetchJson<T>(url: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// The catalogue index is small (one row per repo) -- no streaming/worker
+// parse needed. The map document and district symbols below are the two
+// documents that can be large enough for that to matter, so only they go
+// through fetchJsonTracked (src/api/streaming.ts), for both the service and
+// the static path -- a static build serves the exact same JSON shape, and
+// the reader doesn't know or care which source produced the bytes it's
+// waiting on.
 function fetchStaticCatalogue(): Promise<CatalogueEntry[]> {
   return fetchJson<CatalogueEntry[]>("/maps/index.json");
 }
 
 function fetchStaticMap(owner: string, repo: string): Promise<MapDocument> {
-  return fetchJson<MapDocument>(`/maps/${owner}/${repo}.json`);
+  return fetchJsonTracked<MapDocument>(`/maps/${owner}/${repo}.json`, `map:${owner}/${repo}`, (res) => {
+    if (!res.ok) throw new Error(`/maps/${owner}/${repo}.json: ${res.status} ${res.statusText}`);
+  });
 }
 
 /** docs/API.md: "Static map collection copies this directory to
  * /maps/<owner>/<repo>.symbols/, so a static client can fetch one district
  * at /maps/<owner>/<repo>.symbols/<district>.json." */
 function fetchStaticDistrictSymbols(owner: string, repo: string, district: number): Promise<DistrictSymbols> {
-  return fetchJson<DistrictSymbols>(`/maps/${owner}/${repo}.symbols/${district}.json`);
+  return fetchJsonTracked<DistrictSymbols>(
+    `/maps/${owner}/${repo}.symbols/${district}.json`,
+    `symbols:${owner}/${repo}:${district}`,
+    (res) => {
+      if (!res.ok) throw new Error(`/maps/${owner}/${repo}.symbols/${district}.json: ${res.status} ${res.statusText}`);
+    },
+  );
 }
 
 function toCatalogueEntry(m: ServiceCatalogueEntry): CatalogueEntry {

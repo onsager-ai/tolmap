@@ -19,6 +19,19 @@ export type { DistrictSymbols } from "@bindings/DistrictSymbols";
 export type { HierSymbolRow } from "@bindings/HierSymbolRow";
 export type { SymbolCoverage } from "@bindings/SymbolCoverage";
 
+// Issue #97 (job progress, ETA, cancel): the job service's snapshot shape,
+// generated the same way -- src/service/jobs.rs's JobSnapshot is the one
+// definition, ts-rs emits these bindings, and src/api/client.ts re-exports
+// them instead of the hand-written `JobStatus` interface this replaced.
+export type { JobSnapshot } from "@bindings/JobSnapshot";
+export type { JobStatus } from "@bindings/JobStatus";
+export type { StageSnapshot } from "@bindings/StageSnapshot";
+export type { StageState } from "@bindings/StageState";
+export type { ProgressValue } from "@bindings/ProgressValue";
+export type { StageId } from "@bindings/StageId";
+export type { Eta } from "@bindings/Eta";
+export type { EtaBasis } from "@bindings/EtaBasis";
+
 /** One entry in /maps/index.json, emitted by scripts/collect-maps.mjs, or
  * one entry from GET /api/maps normalised to the same shape (see
  * src/data/queries.ts). `source` and `commit` distinguish the two — a slug
