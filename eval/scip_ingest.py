@@ -340,6 +340,10 @@ def ingest(
     references = Counter()
     symbol_stats = Counter()
     calls = Counter()
+    # References into repository files outside the map (tests, generated
+    # code, declaration files), by source top-level directory and target
+    # directory prefix: a resolved reference the map cannot show.
+    unmapped_targets: Counter = Counter()
 
     # Pass 2: references from mapped documents.
     seen_paths.clear()
@@ -382,6 +386,8 @@ def ingest(
             if sites is None:
                 if sid is not None and sid in repo_unmapped_defs:
                     references["to_repo_unmapped"] += 1
+                    target_file = min(def_sites[sid])[0]
+                    unmapped_targets[(path.split("/", 1)[0], "/".join(target_file.split("/")[:3]))] += 1
                     if is_call_like and owner >= 0:
                         calls["to_repo_unmapped"] += 1
                 else:
@@ -476,6 +482,7 @@ def ingest(
         "calls": dict(sorted(calls.items())),
         "symbol_stats": dict(sorted(symbol_stats.items())),
         "relationships": dict(sorted(relationship_counts.items())),
+        "unmapped_targets": sorted([a, b, n] for (a, b), n in unmapped_targets.items()),
         "file_edges": file_edges,
         "symbol_edges": edges_out,
         "relationship_pairs": relationship_rows,

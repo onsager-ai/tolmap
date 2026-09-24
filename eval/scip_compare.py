@@ -367,6 +367,7 @@ def compare_repo(args) -> int:
         lang_files = [f for f in files if lang_of[f] == lang]
         touched_hand = {x for pair in hand_l for x in pair}
         touched_scip = {x for pair in scip_all for x in pair}
+        entry["unmapped_targets_top"] = sorted(data["unmapped_targets"], key=lambda r: (-r[2], r[0], r[1]))[:12]
         entry["files_without_edge"] = {
             "hand": sum(1 for f in lang_files if f not in touched_hand),
             "scip": sum(1 for f in lang_files if f not in touched_scip),
@@ -380,6 +381,10 @@ def compare_repo(args) -> int:
             entry["issue_101_cli_to_contracts"] = {
                 "hand": sorted(list(p) for p in hand_l if issue101(p)),
                 "scip": sorted(list(p) for p in scip_all if issue101(p)),
+                "scip_references_into_unmapped_contracts_files": sum(
+                    n for a, b, n in data["unmapped_targets"]
+                    if a == "cli" and b.startswith("packages/contracts")
+                ),
             }
 
         scip_pairs = {(a, b): mask for a, b, _, mask in data["symbol_edges"]}
@@ -491,6 +496,26 @@ def compare_repo(args) -> int:
         row["q"] = built["q"]
         row["zero_edge_files"] = (built.get("coverage") or {}).get("zero_edge_files")
         row["vs_control"] = parity(args.tolmap, control, out / f"{name}.json")
+        # The product would not switch signals cold: finding 4's warm start
+        # seeds Leiden with the previous membership. The same graph,
+        # warm-started from the control map, is the retention a user of an
+        # existing map would see.
+        warm_name = f"{name}.warm"
+        run = subprocess.run(
+            [str(args.tolmap), "build", "--graph", str(graph_path), "--name", warm_name,
+             "--out", str(out), "--no-parcels", "--previous-map", str(control)],
+            capture_output=True,
+            text=True,
+        )
+        if run.returncode == 0:
+            warm = json.loads((out / f"{warm_name}.json").read_text())
+            row["warm"] = {
+                "districts": len(warm["districts"]),
+                "q": warm["q"],
+                "vs_control": parity(args.tolmap, control, out / f"{warm_name}.json"),
+            }
+        else:
+            row["warm"] = {"error": (run.stdout + run.stderr).strip().splitlines()[-5:]}
         result["repartition"][key] = row
         graph_path.unlink()
 
@@ -578,28 +603,33 @@ def summary(args) -> int:
                 i101 = e["issue_101_cli_to_contracts"]
                 lines.append(
                     f"- {r['slug']} {index_id}: cross-package hand {cp['hand']}, SCIP {cp['scip']}, both {cp['both']}; "
-                    f"cli/→packages/contracts/ hand {len(i101['hand'])}, SCIP {len(i101['scip'])}"
+                    f"cli/→packages/contracts/ (mapped files) hand {len(i101['hand'])}, SCIP {len(i101['scip'])}; "
+                    f"SCIP references from cli/ into unmapped packages/contracts files {i101.get('scip_references_into_unmapped_contracts_files')}"
                 )
     lines += [
         "",
         "## Re-partition (SCIP edges as the static signal)",
         "",
-        "| repo | variant | sources | districts | q | placement vs control | zero-edge files |",
-        "|---|---|---|---:|---:|---:|---:|",
+        "| repo | variant | sources | districts | q | placement vs control | warm-started: districts / q / placement | zero-edge files |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
     ]
     for r in results:
         b = r["baseline"]
         cvd = r.get("control_vs_direct_build", {})
         lines.append(
             f"| {r['slug']} | today (direct build) | hand-written | {b['districts']} | {fmt(b['q'], 4)} "
-            f"| control {fmt(cvd.get('placement_pct'))}% | — |"
+            f"| control {fmt(cvd.get('placement_pct'))}% | — | — |"
         )
         for key, row in sorted(r.get("repartition", {}).items()):
             vc = row.get("vs_control", {})
+            w = row.get("warm", {})
+            wv = w.get("vs_control", {})
             sources = ", ".join(f"{k}: {v}" for k, v in sorted(row["sources"].items()))
             lines.append(
                 f"| {r['slug']} | {key} | {sources or 'hand'} | {fmt(row.get('districts'))} "
-                f"| {fmt(row.get('q'), 4)} | {fmt(vc.get('placement_pct'))}% | {fmt(row.get('zero_edge_files'))} |"
+                f"| {fmt(row.get('q'), 4)} | {fmt(vc.get('placement_pct'))}% "
+                f"| {fmt(w.get('districts'))} / {fmt(w.get('q'), 4)} / {fmt(wv.get('placement_pct'))}% "
+                f"| {fmt(row.get('zero_edge_files'))} |"
             )
     args.markdown.write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
