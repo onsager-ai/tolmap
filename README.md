@@ -63,9 +63,11 @@ data/           nine prebuilt maps — render these without indexing anything
 docs/           pipeline, findings, decisions
 ```
 
-## Deployment
+## Self-hosting
 
-Production is Fly (`fly.toml`), deployed on a `v*` tag; staging is Railway (`railway.json`), deployed on every push to `main`. `docs/DEPLOY.md` has the split, the first-time setup and what staging does not reproduce.
+Build the `Dockerfile` and run `tolmap serve`. Configure it with the `TOLMAP_*` environment variables in `docs/API.md`'s configuration table, and persist `TOLMAP_CACHE_DIR` and `TOLMAP_DB_PATH` on a volume so the store and clone cache survive a restart.
+
+The maintainers' own production/staging hosting config (Fly, Railway, pricing and machine sizing) is not in this repo.
 
 ## State
 

@@ -1,6 +1,8 @@
-# Fly.io deployment (2026-09-20): one image, one always-on machine, serving
-# both the API and the built web bundle from a single origin -- see
-# docs/API.md's TOLMAP_STATIC_DIR section and fly.toml.
+# Built to run as one image serving both the API and the built web bundle
+# from a single origin -- see docs/API.md's TOLMAP_STATIC_DIR section. The
+# maintainers' own production deployment (Fly) config lives in a private
+# repo, not here; README.md's "Self-hosting" section covers running this
+# image yourself.
 #
 # Five stages. The first two exist because of the one real native
 # dependency this crate has (docs/ARCHITECTURE.md's "The one real risk:
@@ -17,9 +19,9 @@
 # and Python runtimes they need at index time, not just at their own build
 # time. It is independent of the other four (no dependency on the Rust or
 # web build) and is copied into `runtime` the same way `native`'s libs are.
-# See docs/DEPLOY.md's "SCIP indexers" section for the env vars P1a's ingest
-# reads to find these binaries, and docs/FINDINGS.md finding 41 for the
-# indexer versions and what they were measured against.
+# See docs/API.md's configuration table for the TOLMAP_SCIP_* env vars
+# P1a's ingest reads to find these binaries, and docs/FINDINGS.md finding
+# 41 for the indexer versions and what they were measured against.
 #
 # Image tags are pinned to a specific version everywhere, not `latest` --
 # `docker.io/library/rust` and `docker.io/library/node`'s registry tag
@@ -287,8 +289,8 @@ RUN groupadd --system --gid 10001 tolmap-worker \
 
 # Baked-in image-layout constants (same pattern as TOLMAP_STATIC_DIR
 # below): the uid/gid above is fixed at image build time, not a
-# deployment-tunable fly.toml value, so the running service reads it back
-# from here rather than fly.toml's [env]. See
+# deployment-tunable value, so the running service reads it back from here
+# rather than from a deploy-time env config. See
 # `service::config::ServeConfig::worker_uid`/`worker_gid`.
 ENV TOLMAP_WORKER_UID=10001
 ENV TOLMAP_WORKER_GID=10001
@@ -313,10 +315,11 @@ ENV PATH="/opt/go/bin:/opt/node/bin:${PATH}" \
 
 # Env overrides for P1a's ingest module (branch `feat/scip-ingest`, issue
 # #110 P1a) to find these binaries -- chosen here because P1a had not yet
-# named them when this change was written; documented in docs/DEPLOY.md so
-# P1a's `TOLMAP_SCIP_*` reads match. Defaulted to the absolute paths above
-# rather than bare names on PATH, so a future PATH change in this file
-# cannot silently change which binary an unset-override falls back to.
+# named them when this change was written; documented in docs/API.md's
+# configuration table so P1a's `TOLMAP_SCIP_*` reads match. Defaulted to
+# the absolute paths above rather than bare names on PATH, so a future PATH
+# change in this file cannot silently change which binary an
+# unset-override falls back to.
 ENV TOLMAP_SCIP_TYPESCRIPT=/opt/node/bin/scip-typescript \
     TOLMAP_SCIP_PYTHON=/opt/node/bin/scip-python \
     TOLMAP_SCIP_GO=/usr/local/bin/scip-go
@@ -328,10 +331,11 @@ COPY --from=web-builder /app/web/dist /app/web/dist
 # Opt-in static serving (src/service/http.rs, docs/API.md): this is an
 # image-layout constant -- the built bundle always lands at this exact
 # path inside this image -- not a deployment-tunable value, so it is baked
-# in here rather than left to fly.toml's [env]. TOLMAP_BIND_ADDR,
+# in here rather than left to a deploy-time env config. TOLMAP_BIND_ADDR,
 # TOLMAP_DB_PATH, TOLMAP_CACHE_DIR and the TOLMAP_MAX_*/TOLMAP_RATE_LIMIT_*
-# limits *are* deployment-tunable (they depend on the volume and the VM
-# shape) and are set in fly.toml instead, not here.
+# limits *are* deployment-tunable (they depend on the volume and the host's
+# shape) and are set at deploy time instead, not here -- see docs/API.md's
+# configuration table for what each one does.
 ENV TOLMAP_STATIC_DIR=/app/web/dist
 
 EXPOSE 8787

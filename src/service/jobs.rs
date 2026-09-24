@@ -1027,7 +1027,7 @@ fn chown_recursive(path: &Path, uid: u32, gid: u32) -> std::io::Result<()> {
 ///
 /// Deliberately **not** used for the sqlite store's own directory (see
 /// `store::Store::open`, which locks the *file* down instead): in today's
-/// `fly.toml` (`TOLMAP_DB_PATH=/data/tolmap.sqlite3`,
+/// production deployment (`TOLMAP_DB_PATH=/data/tolmap.sqlite3`,
 /// `TOLMAP_CACHE_DIR=/data/cache`) the store's directory is `/data`, an
 /// *ancestor* of `cache_dir` -- chmod'ing `/data` to `0700` root-owned
 /// would deny the dropped-uid worker even `x` (search) permission to reach

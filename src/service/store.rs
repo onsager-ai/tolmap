@@ -158,7 +158,7 @@ impl Store {
         // Worker hardening (docs/SCIP_SANDBOX.md #4.1 point 4): lock the
         // file itself down to the service's own uid, not its *directory*.
         // The directory is deliberately left alone here -- in today's
-        // `fly.toml` layout the store's directory (`/data`, from
+        // production deployment's layout the store's directory (`/data`, from
         // `TOLMAP_DB_PATH=/data/tolmap.sqlite3`) is an *ancestor* of
         // `TOLMAP_CACHE_DIR=/data/cache`, and a `0700`-root-owned `/data`
         // would deny the dropped-uid worker child even search permission

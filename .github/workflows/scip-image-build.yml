@@ -2,15 +2,18 @@
 # (issue #110 P1b). CLAUDE.md: the maintainer's laptop cannot run `docker
 # build`, cargo, indexers or browsers -- its cooling is broken -- so this is
 # the only place this Dockerfile gets built or run before a real deploy.
-# `fly-deploy.yml` doesn't help here: it builds on Fly's own remote builder,
-# not a GitHub-hosted runner, and only on a pushed `v*` tag.
+# The production deploy workflow doesn't help here: it lives in the
+# private hosting repo (`tolmap-infra`), builds on Fly's own remote
+# builder rather than a GitHub-hosted runner, and only runs on a manual
+# dispatch naming a release.
 #
 # Two full image builds, not one: `after` is this ref's Dockerfile (with the
 # `scip-tools` stage), `before` is main's (without it), built from a
 # separate worktree of the same checkout. Comparing them is the only way to
 # get real before/after image-size and build-time numbers for the PR body
 # rather than guessing at what the new stage costs -- hosting spend is the
-# owner's call (docs/DEPLOY.md), but the owner needs real numbers to make it.
+# owner's call (see the private hosting repo's docs/SIZING.md), but the
+# owner needs real numbers to make it.
 # `scip-tools` is also timed in isolation, `--no-cache`, so its own cost
 # isn't hidden inside the Rust/web build's much larger and more variable
 # wall time.
@@ -28,7 +31,6 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "tests/fixtures/scip/**"
-      - "docs/DEPLOY.md"
       - ".github/workflows/scip-image-build.yml"
   workflow_dispatch:
     inputs:

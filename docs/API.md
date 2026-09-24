@@ -56,6 +56,9 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_RATE_LIMIT_PER_REPO` | `3` | `POST /api/index` requests per window, per slug |
 | `TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS` | `300` | window for the per-repo limit |
 | `TOLMAP_RETAIN_COMMITS_PER_REPO` | `20` | indexed commits kept per slug before older ones are pruned (see "Store" below) |
+| `TOLMAP_SCIP_TYPESCRIPT` | `scip-typescript` on `PATH` | path to the scip-typescript binary (issue #110 P1a); the runtime image's `Dockerfile` sets this to an absolute path, overridable for a different install |
+| `TOLMAP_SCIP_PYTHON` | `scip-python` on `PATH` | path to the scip-python binary, same pattern |
+| `TOLMAP_SCIP_GO` | `scip-go` on `PATH` | path to the scip-go binary, same pattern |
 
 These queue, cache and rate settings map to `service::config::Limits`. There are no file-count, clone-size, history-depth or job-time admission caps. The co-change algorithm still reads at most 4000 commits per build; that horizon does not reject a repository with deeper history.
 
@@ -224,7 +227,7 @@ killing any worker process group already started, the same way cancelling
 that job would -- with `status: "failed"` and `error_code: "server_stopping"`
 (`error: "the service is shutting down"`), before the process exits. This is
 what makes an operator-initiated stop (a deploy, a resize, a platform
-auto-stop -- see `fly.toml`) observable rather than silent: a client
+auto-stop, if your host has one) observable rather than silent: a client
 watching `GET /api/jobs/{job_id}/events` gets a final SSE frame carrying the
 terminal snapshot before its connection closes, and a client that only
 polls `GET /api/jobs/{job_id}` sees the same terminal state on its next

@@ -157,7 +157,7 @@ pub struct ServeConfig {
     /// privilege is even possible (`CommandExt::uid()/gid()` fails if the
     /// caller isn't root). Baked into the image as `TOLMAP_WORKER_UID` /
     /// `TOLMAP_WORKER_GID` `ENV`, the same image-layout-constant pattern as
-    /// `TOLMAP_STATIC_DIR` -- not a fly.toml deployment tunable, since the
+    /// `TOLMAP_STATIC_DIR` -- not a deploy-time tunable, since the
     /// uid is fixed at image build time (`useradd --uid 10001` in the
     /// Dockerfile) and there is nothing an operator would ever want to
     /// retune per-deployment. Defaults below (10001/10001) only matter for
