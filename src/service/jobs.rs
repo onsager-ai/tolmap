@@ -1,35 +1,24 @@
-//! Job orchestration: `POST /api/index` spawns one of these, `GET
-//! /api/jobs/{id}` and its SSE sibling read its current [`JobSnapshot`] off
-//! a `tokio::sync::watch` channel (one value, overwritten in place, which
-//! is exactly "one frame per status change" -- no separate history buffer
-//! needed).
-//!
-//! The whole job body runs on a blocking thread
-//! (`tokio::task::spawn_blocking`): cloning shells out to `git` and waits
-//! on it, and `extract`/`pipeline` are CPU-bound synchronous code (tree-
-//! sitter parsing, Leiden via FFI) with no async equivalent. Running that
-//! on an async worker thread would stall every other request this process
-//! is serving.
+//! FIFO admission and snapshots live in the service. Each blocking build
+//! runs in a child process; the child never opens the service database.
 
 use std::collections::{HashMap, VecDeque};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::detect::{self, Confidence};
-use crate::extract;
-use crate::geometry;
+use crate::progress::{ProgressValue, StageId};
 use crate::service::clone::{self, RepoRef};
 use crate::service::error::{ApiError, ErrorBody};
 use crate::service::store::{self, MapRow};
 use crate::service::time::now_rfc3339;
 use crate::service::AppState;
-
-const RESOLUTION: f64 = 1.1;
-const WITH_PARCELS: bool = true;
+use crate::worker::{PreviousMap, WorkerEvent, WorkerSpec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -63,6 +52,27 @@ pub struct JobSnapshot {
     /// ...), or null. Clients branch on this rather than pattern-matching the
     /// message text.
     pub error_code: Option<String>,
+    pub progress: Option<ProgressValue>,
+    pub elapsed_s: f64,
+    pub stages: Vec<StageSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StageState {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StageSnapshot {
+    pub id: StageId,
+    pub label: &'static str,
+    pub state: StageState,
+    pub started_at: Option<String>,
+    pub duration_s: Option<f64>,
 }
 
 impl JobSnapshot {
@@ -152,6 +162,18 @@ fn enqueue_job(
         finished_at: None,
         error: None,
         error_code: None,
+        progress: None,
+        elapsed_s: 0.0,
+        stages: StageId::ALL
+            .iter()
+            .map(|&id| StageSnapshot {
+                id,
+                label: id.label(),
+                state: StageState::Pending,
+                started_at: None,
+                duration_s: None,
+            })
+            .collect(),
     };
     let (tx, _rx) = watch::channel(snapshot);
     registry.jobs.insert(job_id, tx.clone());
@@ -293,317 +315,327 @@ fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
     });
 }
 
-/// The whole job, synchronously: clone/fetch, detect, limit checks, index,
-/// warm-start, store. Every early return leaves the snapshot in a terminal
-/// `Failed` state via `finish_failed` before returning, so the caller never
-/// needs to know *why* it stopped, only that it eventually reaches `Done`
-/// or `Failed`.
+/// Run the whole blocking pipeline outside the API process. A child that
+/// exits without a terminal protocol event is a job failure, not a service
+/// failure; the queue loop retains the slot until this function returns.
 fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSnapshot>) {
-    advance(
-        &tx,
-        JobStatus::Cloning,
-        &format!("cloning {}", repo_ref.slug),
-    );
-    let materialized =
-        match clone::materialize(&state.config.cache_dir, &repo_ref, &state.config.limits) {
-            Ok(m) => m,
-            Err(api_error) => return finish_failed(&tx, api_error.body),
-        };
-    set_commit(&tx, &materialized.commit);
-
-    advance(
-        &tx,
-        JobStatus::Detecting,
-        "detecting language and source root",
-    );
-    // issue #4's real detector (src/detect.rs), landed on main after this
-    // milestone's placeholder was written -- see that module's doc comment
-    // for what `chosen`/`candidates` carry and why confidence is never
-    // inflated.
-    let detection = match detect::detect(&materialized.path) {
-        Ok(detection) => detection,
-        Err(err) => {
-            return finish_failed(
-                &tx,
-                ErrorBody {
-                    error: "detection_failed".to_owned(),
-                    message: err.to_string(),
-                },
-            )
-        }
+    let started = Instant::now();
+    let previous_maps = match state.store.warm_start_candidates(&repo_ref.slug) {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|row| PreviousMap {
+                branch: row.branch,
+                path: row.map_path.to_string_lossy().into_owned(),
+            })
+            .collect(),
+        Err(error) => return finish_failed(&tx, ApiError::internal(error.to_string()).body),
     };
-    let chosen = detection.chosen;
-
-    if chosen.confidence == Confidence::Low {
-        // Finding 7: a wrong source root produces a plausible-looking wrong
-        // map, not a loud failure. Surfaced as its own terminal state
-        // (rather than indexed anyway) so the frontend can render "we are
-        // not sure this is right" instead of a map that looks trustworthy
-        // and is not.
-        return finish_failed(&tx, ApiError::detection_uncertain(chosen.describe()).body);
-    }
-
-    if chosen.file_count > state.config.limits.max_files {
-        return finish_failed(
-            &tx,
-            ApiError::repo_too_large(format!(
-                "file count {} exceeds the configured limit of {}",
-                chosen.file_count, state.config.limits.max_files
-            ))
-            .body,
-        );
-    }
-
-    advance(&tx, JobStatus::Indexing, "indexing (extract)");
-    let graph = match extract::build(&materialized.path, &chosen.pkg, chosen.language) {
-        Ok(graph) => graph,
-        Err(err) => {
-            return finish_failed(
-                &tx,
-                ErrorBody {
-                    error: "index_failed".to_owned(),
-                    message: format!("{err:#}"),
-                },
-            )
-        }
-    };
-    let symbol_nodes = graph.nodes.clone();
-
-    // Warm start (finding 4): read the previous commit's membership out of
-    // the store, if there is one for this slug, and seed the partitioner
-    // with it. `state.store.warm_start_source` already picks same-branch
-    // history first.
-    let warm_start_row = state
-        .store
-        .warm_start_source(&repo_ref.slug, materialized.branch.as_deref())
-        .ok()
-        .flatten();
-    match &warm_start_row {
-        Some(row) => eprintln!(
-            "warm start: seeding {} from {}'s membership ({})",
-            repo_ref.slug,
-            row.commit,
-            row.map_path.display()
-        ),
-        None => eprintln!(
-            "warm start: no prior indexed commit for {} -- cold start",
-            repo_ref.slug
-        ),
-    }
-    let previous_document =
-        warm_start_row.and_then(|row| store::read_map_document(&row.map_path).ok());
-
-    advance(
-        &tx,
-        JobStatus::Indexing,
-        "indexing (partition, geometry, naming)",
-    );
-    let work_dir = state
+    let output_dir = state
         .config
         .cache_dir
         .join("work")
         .join(&repo_ref.owner)
         .join(&repo_ref.repo);
-    if let Err(err) = std::fs::create_dir_all(&work_dir) {
-        return finish_failed(
-            &tx,
-            ErrorBody {
-                error: "internal_error".to_owned(),
-                message: err.to_string(),
-            },
-        );
+    if let Err(error) = std::fs::create_dir_all(&output_dir) {
+        return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
-    // map_name stays the bare repo name (stable across commits) so the
-    // names cache (`<work_dir>/<repo>.names.json`) is reused build over
-    // build -- naming.rs's cache is keyed by a fingerprint of district
-    // membership, not by commit, so this is what makes it actually pay off
-    // across re-indexes rather than starting cold every time.
-    let names_path = work_dir.join(format!("{}.names.json", repo_ref.repo));
-    let persisted_names = match state.store.load_names(&repo_ref.slug) {
-        Ok(cache) => cache,
-        Err(err) => {
-            return finish_failed(
-                &tx,
-                ErrorBody {
-                    error: "internal_error".to_owned(),
-                    message: err.to_string(),
-                },
-            )
-        }
+    let names_input = output_dir.join("worker-names-input.json");
+    let names = match state.store.load_names(&repo_ref.slug) {
+        Ok(names) => names,
+        Err(error) => return finish_failed(&tx, ApiError::internal(error.to_string()).body),
     };
-    if let Err(err) = crate::naming::save_cache(&names_path, &persisted_names) {
-        return finish_failed(
-            &tx,
-            ErrorBody {
-                error: "internal_error".to_owned(),
-                message: err.to_string(),
-            },
-        );
+    if let Err(error) = crate::naming::save_cache(&names_input, &names) {
+        return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
-    let built_path = match geometry::build_from_graph_warm(
-        graph,
-        repo_ref.repo.clone(),
-        &work_dir,
-        RESOLUTION,
-        geometry::BuildFeatures {
-            parcels: WITH_PARCELS,
-            prune_variant: state.config.prune_variant,
-            namer: state.config.namer,
-            namer_model: state.config.namer_model.clone(),
-        },
-        previous_document.as_ref(),
-    ) {
-        Ok(path) => path,
-        Err(err) => {
-            return finish_failed(
-                &tx,
-                ErrorBody {
-                    error: "index_failed".to_owned(),
-                    message: format!("{err:#}"),
-                },
-            )
-        }
+    let (source, local) = match &repo_ref.source {
+        clone::RepoSource::Local(path) => (path.to_string_lossy().into_owned(), true),
+        clone::RepoSource::Remote(url) => (url.clone(), false),
     };
-    if let Err(err) = crate::symbols::write_sibling(&materialized.path, &symbol_nodes, &built_path)
-    {
-        return finish_failed(
-            &tx,
-            ErrorBody {
-                error: "index_failed".to_owned(),
-                message: format!("{err:#}"),
-            },
-        );
-    }
-
-    if let Err(err) = state
-        .store
-        .save_names(&repo_ref.slug, &crate::naming::load_cache(&names_path))
-    {
-        return finish_failed(
-            &tx,
-            ErrorBody {
-                error: "internal_error".to_owned(),
-                message: err.to_string(),
-            },
-        );
-    }
-
-    let document = match store::read_map_document(&built_path) {
-        Ok(document) => document,
-        Err(err) => {
-            return finish_failed(
-                &tx,
-                ErrorBody {
-                    error: "internal_error".to_owned(),
-                    message: err.to_string(),
-                },
-            )
-        }
+    let spec = WorkerSpec {
+        v: 1,
+        slug: repo_ref.slug.clone(),
+        owner: repo_ref.owner.clone(),
+        repo: repo_ref.repo.clone(),
+        source,
+        local,
+        cache_dir: state.config.cache_dir.to_string_lossy().into_owned(),
+        output_dir: output_dir.to_string_lossy().into_owned(),
+        max_clone_bytes: state.config.limits.max_clone_bytes,
+        max_history_commits: state.config.limits.max_history_commits,
+        max_files: state.config.limits.max_files,
+        prune_variant: state.config.prune_variant.to_string(),
+        namer: state.config.namer.to_string(),
+        namer_model: state.config.namer_model.clone(),
+        previous_maps,
+        names_cache: Some(names_input.to_string_lossy().into_owned()),
     };
-
-    // Content-addressed final home for this commit's map (store.rs's
-    // module doc explains the choice); `built_path` is scratch, overwritten
-    // by the next build for this slug, so it is moved out from under it
-    // rather than left to be clobbered.
+    let output = match process_worker(&tx, spec, started) {
+        Ok(output) => output,
+        Err(error) => return finish_failed(&tx, error),
+    };
+    set_commit(&tx, &output.commit);
+    let built_path = PathBuf::from(&output.map_path);
     let final_path = state
         .config
         .cache_dir
         .join("maps")
         .join(&repo_ref.owner)
         .join(&repo_ref.repo)
-        .join(format!("{}.json", materialized.commit));
-    if let Some(parent) = final_path.parent() {
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            return finish_failed(
-                &tx,
-                ErrorBody {
-                    error: "internal_error".to_owned(),
-                    message: err.to_string(),
-                },
-            );
+        .join(format!("{}.json", output.commit));
+    let save = (|| -> anyhow::Result<()> {
+        std::fs::create_dir_all(final_path.parent().expect("map parent"))?;
+        std::fs::rename(&built_path, &final_path)?;
+        std::fs::rename(
+            &output.symbols_path,
+            final_path.with_extension("symbols.json"),
+        )?;
+        let final_dir = final_path.with_extension("symbols");
+        if final_dir.exists() {
+            std::fs::remove_dir_all(&final_dir)?;
         }
+        std::fs::rename(&output.symbols_dir, final_dir)?;
+        state.store.save_names(
+            &repo_ref.slug,
+            &crate::naming::load_cache(&PathBuf::from(&output.names_cache)),
+        )?;
+        let row = MapRow {
+            slug: repo_ref.slug.clone(),
+            owner: repo_ref.owner.clone(),
+            repo: repo_ref.repo.clone(),
+            commit: output.commit.clone(),
+            branch: output.branch,
+            lang: output.lang,
+            files: output.files as i64,
+            districts: output.districts as i64,
+            modularity: output.modularity,
+            map_path: final_path,
+            indexed_at: now_rfc3339(),
+        };
+        state.store.insert(&row)?;
+        Ok(())
+    })();
+    if let Err(error) = save {
+        return finish_failed(&tx, ApiError::internal(format!("{error:#}")).body);
     }
-    if let Err(err) = std::fs::rename(&built_path, &final_path) {
-        return finish_failed(
-            &tx,
-            ErrorBody {
-                error: "internal_error".to_owned(),
-                message: err.to_string(),
-            },
-        );
-    }
-    let built_symbols = built_path.with_extension("symbols.json");
-    let final_symbols = final_path.with_extension("symbols.json");
-    if let Err(err) = std::fs::rename(&built_symbols, &final_symbols) {
-        return finish_failed(
-            &tx,
-            ErrorBody {
-                error: "internal_error".to_owned(),
-                message: err.to_string(),
-            },
-        );
-    }
-    let final_symbols_dir = final_path.with_extension("symbols");
-    if final_symbols_dir.exists() {
-        if let Err(err) = std::fs::remove_dir_all(&final_symbols_dir) {
-            return finish_failed(
-                &tx,
-                ErrorBody {
-                    error: "internal_error".to_owned(),
-                    message: err.to_string(),
-                },
-            );
-        }
-    }
-    if let Err(err) = std::fs::rename(built_path.with_extension("symbols"), &final_symbols_dir) {
-        return finish_failed(
-            &tx,
-            ErrorBody {
-                error: "internal_error".to_owned(),
-                message: err.to_string(),
-            },
-        );
-    }
-
-    let row = MapRow {
-        slug: repo_ref.slug.clone(),
-        owner: repo_ref.owner.clone(),
-        repo: repo_ref.repo.clone(),
-        commit: materialized.commit.clone(),
-        branch: materialized.branch.clone(),
-        lang: document.lang.clone(),
-        files: document.files.len() as i64,
-        districts: document.districts.len() as i64,
-        modularity: document.q,
-        map_path: final_path,
-        indexed_at: now_rfc3339(),
-    };
-    if let Err(err) = state.store.insert(&row) {
-        return finish_failed(
-            &tx,
-            ErrorBody {
-                error: "internal_error".to_owned(),
-                message: err.to_string(),
-            },
-        );
-    }
-
-    // Bound store growth (issue #23 gap 2): keep only the newest
-    // `retain_commits_per_repo` indexed commits for this slug, evicting
-    // older rows and their map files. Run right after `insert` succeeds so
-    // the row just written is always counted as the newest -- prune never
-    // evicts it (see `store::Store::prune`'s doc comment on why that
-    // matters for finding 4's warm start). Best-effort like cache
-    // eviction in `clone.rs`: failing to reclaim space is not a reason to
-    // fail a job that already finished successfully.
-    if let Err(err) = state
+    if let Err(error) = state
         .store
         .prune(&repo_ref.slug, state.config.retain_commits_per_repo)
     {
-        eprintln!("prune warning for {}: {err:#}", repo_ref.slug);
+        eprintln!("prune warning for {}: {error:#}", repo_ref.slug);
     }
-
+    tx.send_modify(|snapshot| snapshot.elapsed_s = started.elapsed().as_secs_f64());
     finish_done(&tx);
+}
+
+struct WorkerOutput {
+    map_path: String,
+    symbols_path: String,
+    symbols_dir: String,
+    names_cache: String,
+    commit: String,
+    branch: Option<String>,
+    lang: String,
+    files: usize,
+    districts: usize,
+    modularity: f64,
+}
+
+fn process_worker(
+    tx: &watch::Sender<JobSnapshot>,
+    spec: WorkerSpec,
+    started: Instant,
+) -> Result<WorkerOutput, ErrorBody> {
+    let exe =
+        std::env::current_exe().map_err(|error| ApiError::internal(error.to_string()).body)?;
+    let mut child = Command::new(exe)
+        .arg("worker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| ErrorBody {
+            error: "worker_crashed".to_owned(),
+            message: format!("could not spawn worker: {error}"),
+        })?;
+    let stderr = child.stderr.take().expect("piped worker stderr");
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr)
+            .take(1024 * 1024)
+            .read_to_string(&mut text);
+        text
+    });
+    let write_spec = (|| -> anyhow::Result<()> {
+        let mut stdin = child.stdin.take().expect("piped worker stdin");
+        serde_json::to_writer(&mut stdin, &spec)?;
+        stdin.write_all(b"\n")?;
+        Ok(())
+    })();
+    if let Err(error) = write_spec {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stderr_reader.join();
+        return Err(ErrorBody {
+            error: "worker_crashed".to_owned(),
+            message: format!("could not send worker spec: {error}"),
+        });
+    }
+    let stdout = child.stdout.take().expect("piped worker stdout");
+    let mut outcome = None;
+    let mut error = None;
+    let mut last_stage = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(reason) => {
+                error = Some(format!("read worker event: {reason}"));
+                break;
+            }
+        };
+        let event: WorkerEvent = match serde_json::from_str(&line) {
+            Ok(event) => event,
+            Err(reason) => {
+                error = Some(format!("invalid worker event: {reason}"));
+                break;
+            }
+        };
+        if event.version() != 1 {
+            error = Some(format!(
+                "unsupported worker event version {}",
+                event.version()
+            ));
+            break;
+        }
+        match event {
+            WorkerEvent::StageStarted { stage, .. } => {
+                last_stage = Some(stage);
+                let status = match stage {
+                    StageId::Clone
+                    | StageId::CloneObjects
+                    | StageId::CloneDeltas
+                    | StageId::CloneCheckout => JobStatus::Cloning,
+                    StageId::Detect => JobStatus::Detecting,
+                    _ => JobStatus::Indexing,
+                };
+                tx.send_modify(|snapshot| {
+                    if is_terminal(snapshot) {
+                        return;
+                    }
+                    snapshot.status = status;
+                    snapshot.stage = stage.label().to_owned();
+                    snapshot.progress = None;
+                    snapshot.elapsed_s = started.elapsed().as_secs_f64();
+                    let row = &mut snapshot.stages[stage.index() - 1];
+                    row.state = StageState::Running;
+                    row.started_at = Some(now_rfc3339());
+                });
+            }
+            WorkerEvent::Progress { value, .. } => {
+                last_stage = Some(value.stage);
+                tx.send_modify(|snapshot| {
+                    if is_terminal(snapshot) {
+                        return;
+                    }
+                    let mut value = value;
+                    if let Some(old) = &snapshot.progress {
+                        if old.stage == value.stage {
+                            value.done = value.done.max(old.done);
+                        }
+                    }
+                    snapshot.progress = Some(value);
+                    snapshot.elapsed_s = started.elapsed().as_secs_f64();
+                });
+            }
+            WorkerEvent::StageFinished {
+                stage,
+                duration_s,
+                success,
+                ..
+            } => {
+                tx.send_modify(|snapshot| {
+                    if is_terminal(snapshot) {
+                        return;
+                    }
+                    let row = &mut snapshot.stages[stage.index() - 1];
+                    row.state = if success {
+                        StageState::Done
+                    } else {
+                        StageState::Failed
+                    };
+                    row.duration_s = Some(duration_s);
+                    snapshot.elapsed_s = started.elapsed().as_secs_f64();
+                });
+            }
+            WorkerEvent::Log { message, .. } => {
+                tx.send_modify(|snapshot| {
+                    if !is_terminal(snapshot) {
+                        snapshot.stage = message;
+                    }
+                });
+            }
+            WorkerEvent::Result {
+                map_path,
+                symbols_path,
+                symbols_dir,
+                names_cache,
+                commit,
+                branch,
+                lang,
+                files,
+                districts,
+                modularity,
+                ..
+            } => {
+                outcome = Some(WorkerOutput {
+                    map_path,
+                    symbols_path,
+                    symbols_dir,
+                    names_cache,
+                    commit,
+                    branch,
+                    lang,
+                    files,
+                    districts,
+                    modularity,
+                });
+            }
+            WorkerEvent::Error { code, message, .. } => {
+                error = Some(format!("{code}\n{message}"));
+            }
+        }
+    }
+    let status = child.wait().map_err(|reason| ErrorBody {
+        error: "worker_crashed".to_owned(),
+        message: format!("wait for worker: {reason}"),
+    })?;
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if let Some(error) = error {
+        if let Some((code, message)) = error.split_once('\n') {
+            return Err(ErrorBody {
+                error: code.to_owned(),
+                message: message.to_owned(),
+            });
+        }
+        return Err(ErrorBody {
+            error: "worker_crashed".to_owned(),
+            message: error,
+        });
+    }
+    if !status.success() || outcome.is_none() {
+        return Err(ErrorBody {
+            error: "worker_crashed".to_owned(),
+            message: format!(
+                "worker exited {status} at {}{}",
+                last_stage.map_or("before first stage", StageId::label),
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", stderr.trim())
+                },
+            ),
+        });
+    }
+    Ok(outcome.expect("checked above"))
 }
 
 #[cfg(test)]

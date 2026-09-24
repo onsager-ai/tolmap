@@ -1016,6 +1016,15 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
 }
 
 pub fn write_sibling(repo: &Path, nodes: &[SourceNode], map_path: &Path) -> Result<()> {
+    write_sibling_with_progress(repo, nodes, map_path, &crate::progress::Progress::silent())
+}
+
+pub fn write_sibling_with_progress(
+    repo: &Path,
+    nodes: &[SourceNode],
+    map_path: &Path,
+    progress: &crate::progress::Progress,
+) -> Result<()> {
     let map: MapDocument = serde_json::from_slice(&fs::read(map_path)?)?;
     ensure!(
         map.files.len() == nodes.len()
@@ -1026,8 +1035,17 @@ pub fn write_sibling(repo: &Path, nodes: &[SourceNode], map_path: &Path) -> Resu
                 .all(|(file, node)| file == &node.file),
         "symbol source file order differs from map F order"
     );
+    let symbols_stage = progress.stage(crate::progress::StageId::Symbols, Some(nodes.len() as u64));
     let mut document = build(repo, nodes)?;
+    symbols_stage.set(nodes.len() as u64);
+    symbols_stage.finish();
+    let cards_stage = progress.stage(
+        crate::progress::StageId::SymbolCards,
+        Some(nodes.len() as u64),
+    );
     crate::symbol_cards::attach(&map, &mut document)?;
+    cards_stage.set(nodes.len() as u64);
+    cards_stage.finish();
     let output = map_path.with_extension("symbols.json");
     let temporary = map_path.with_extension("symbols.json.tmp");
     let district_dir = map_path.with_extension("symbols");
@@ -1054,7 +1072,6 @@ pub fn write_sibling(repo: &Path, nodes: &[SourceNode], map_path: &Path) -> Resu
         fs::remove_dir_all(&district_dir)?;
     }
     fs::rename(&temporary_dir, &district_dir)?;
-    eprintln!("wrote {}", output.display());
     Ok(())
 }
 

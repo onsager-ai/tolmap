@@ -338,6 +338,30 @@ pub fn build_warm(
     features: BuildFeatures,
     previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
+    build_warm_with_progress(
+        repo,
+        pkg,
+        lang,
+        name,
+        out,
+        resolution,
+        features,
+        previous_document,
+        &crate::progress::Progress::silent(),
+    )
+}
+
+pub fn build_warm_with_progress(
+    repo: &Path,
+    pkg: &str,
+    lang: &str,
+    name: Option<&str>,
+    out: &Path,
+    resolution: f64,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
+    progress: &crate::progress::Progress,
+) -> Result<PathBuf> {
     let language = LanguageKind::parse(lang)?;
     let map_name = name.map(str::to_owned).unwrap_or_else(|| {
         repo.file_name()
@@ -345,18 +369,18 @@ pub fn build_warm(
             .to_string_lossy()
             .into_owned()
     });
-    eprintln!("[1/5] extract   {}/{}  ({lang})", repo.display(), pkg);
-    let graph = extract::build(repo, pkg, language)?;
+    let graph = extract::build_with_progress(repo, pkg, language, progress)?;
     let source_nodes = graph.nodes.clone();
-    let output = build_from_graph_warm(
+    let output = build_from_graph_warm_with_progress(
         graph,
         map_name,
         out,
         resolution,
         features,
         previous_document,
+        progress,
     )?;
-    crate::symbols::write_sibling(repo, &source_nodes, &output)?;
+    crate::symbols::write_sibling_with_progress(repo, &source_nodes, &output, progress)?;
     Ok(output)
 }
 
@@ -385,33 +409,46 @@ pub fn build_multi_warm(
     features: BuildFeatures,
     previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
+    build_multi_warm_with_progress(
+        repo,
+        sources,
+        name,
+        out,
+        resolution,
+        features,
+        previous_document,
+        &crate::progress::Progress::silent(),
+    )
+}
+
+pub fn build_multi_warm_with_progress(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    name: Option<&str>,
+    out: &Path,
+    resolution: f64,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
+    progress: &crate::progress::Progress,
+) -> Result<PathBuf> {
     let map_name = name.map(str::to_owned).unwrap_or_else(|| {
         repo.file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned()
     });
-    let described = sources
-        .iter()
-        .map(|(pkg, language)| format!("{pkg} ({})", language.as_str()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    eprintln!(
-        "[1/5] extract   {}  {} sources: {described}",
-        repo.display(),
-        sources.len()
-    );
-    let graph = extract::build_multi_source(repo, sources)?;
+    let graph = extract::build_multi_source_with_progress(repo, sources, progress)?;
     let source_nodes = graph.nodes.clone();
-    let output = build_from_graph_warm(
+    let output = build_from_graph_warm_with_progress(
         graph,
         map_name,
         out,
         resolution,
         features,
         previous_document,
+        progress,
     )?;
-    crate::symbols::write_sibling(repo, &source_nodes, &output)?;
+    crate::symbols::write_sibling_with_progress(repo, &source_nodes, &output, progress)?;
     Ok(output)
 }
 
@@ -444,7 +481,26 @@ pub fn build_from_graph_warm(
     features: BuildFeatures,
     previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
-    eprintln!("[2/5] partition resolution={resolution}");
+    build_from_graph_warm_with_progress(
+        graph,
+        map_name,
+        out,
+        resolution,
+        features,
+        previous_document,
+        &crate::progress::Progress::silent(),
+    )
+}
+
+pub fn build_from_graph_warm_with_progress(
+    graph: GraphData,
+    map_name: String,
+    out: &Path,
+    resolution: f64,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
+    progress: &crate::progress::Progress,
+) -> Result<PathBuf> {
     let partitioner = LeidenFfi;
     let previous_membership = previous_document.map(|document| {
         document
@@ -457,12 +513,13 @@ pub fn build_from_graph_warm(
     let initial = previous_membership
         .as_ref()
         .map(|prev| pipeline::align_initial_membership(&graph, prev));
-    let mut layout = pipeline::run_with_variant(
+    let mut layout = pipeline::run_with_variant_progress(
         graph,
         resolution,
         &partitioner,
         initial.as_deref(),
         features.prune_variant,
+        progress,
     )?;
     // Classification and offshore placement (issue #34) read the partition
     // `pipeline::run` just produced -- they never feed back into it. Doing
@@ -475,11 +532,22 @@ pub fn build_from_graph_warm(
     // This second partition only reads the kept graph. The top-level
     // membership, modularity and district layout are already fixed.
     let neighbourhood_partition = if features.parcels {
-        Some(neighbourhoods::partition(&layout, &partitioner)?)
+        let district_count = layout.districts.len() as u64;
+        let stage = progress.stage(
+            crate::progress::StageId::Neighbourhoods,
+            Some(district_count),
+        );
+        let partition = neighbourhoods::partition(&layout, &partitioner)?;
+        stage.set(district_count);
+        stage.finish();
+        Some(partition)
     } else {
         None
     };
-    eprintln!("[3/5] name     districts");
+    let naming_stage = progress.stage(
+        crate::progress::StageId::Naming,
+        Some(layout.districts.len() as u64),
+    );
     // Same convention `cli.py::build` uses: the cache lives next to the map
     // it names, `<out>/<name>.names.json`, so a rerun into the same --out
     // finds it with no extra flag. `eval/seed_names.py` writes this same
@@ -505,16 +573,15 @@ pub fn build_from_graph_warm(
     );
     naming::save_cache(&names_cache_path, &names_cache)
         .with_context(|| format!("write district names cache {}", names_cache_path.display()))?;
-    for (district, district_name) in &names {
-        let count = layout
-            .membership
-            .iter()
-            .filter(|value| value.to_string() == *district)
-            .count();
-        eprintln!("        d{district:<2} {count:4} files  {district_name}");
-    }
-    eprintln!("[4/5] geometry regions");
+    naming_stage.set(layout.districts.len() as u64);
+    naming_stage.finish();
+    let regions_stage = progress.stage(
+        crate::progress::StageId::Regions,
+        Some(layout.districts.len() as u64),
+    );
     let mut geometry = blobs::build_geometry(&layout, &partitioner)?;
+    regions_stage.set(layout.districts.len() as u64);
+    regions_stage.finish();
     // Unconnected districts get no region: they are not places (issue #34).
     // Their files already have a defined, deterministic point from the
     // scatter above (`compact` still emits a `NodeRow` for every file
@@ -528,30 +595,31 @@ pub fn build_from_graph_warm(
     }
     let mut document = compact(map_name, layout, geometry, names, &classes);
     if features.parcels {
-        eprintln!("[5/5] geometry weighted-voronoi plots");
+        let footprints_stage = progress.stage(
+            crate::progress::StageId::Footprints,
+            Some(document.districts.len() as u64),
+        );
         let partition = neighbourhood_partition
             .as_ref()
             .expect("partitioned with parcels enabled");
         let output = parcels::build_parcels(&document, partition);
+        footprints_stage.set(document.districts.len() as u64);
+        footprints_stage.finish();
         document.parcels = Some(output.parcels);
         document.footprint_centroids = Some(output.centroids);
         document.file_neighbourhoods = Some(partition.file_ids.clone());
         document.neighbourhoods = Some(output.neighbourhoods);
-        if let Some(correlation) = parcels::area_correlation(&document) {
-            eprintln!(
-                "        parcels={}/{}  area~weight r={correlation:.3}",
-                document.parcels.as_ref().map_or(0, BTreeMap::len),
-                document.files.len()
-            );
-        }
     }
+    let write_stage = progress.stage(crate::progress::StageId::Write, None);
     fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
     let output = out.join(format!("{}.json", document.repo));
     let bytes = serde_json::to_vec(&document)?;
     let temporary = output.with_extension("json.tmp");
+    let byte_count = bytes.len() as u64;
     fs::write(&temporary, bytes)?;
     fs::rename(&temporary, &output)?;
-    eprintln!("\nwrote {}", output.display());
+    write_stage.set(byte_count);
+    write_stage.finish();
     Ok(output)
 }
 

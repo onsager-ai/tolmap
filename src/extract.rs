@@ -223,6 +223,15 @@ pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData
     build_multi_source(repo, &[(pkg.to_owned(), language)])
 }
 
+pub fn build_with_progress(
+    repo: &Path,
+    pkg: &str,
+    language: LanguageKind,
+    progress: &crate::progress::Progress,
+) -> Result<GraphData> {
+    build_multi_source_with_progress(repo, &[(pkg.to_owned(), language)], progress)
+}
+
 /// Unions any number of `(pkg, language)` sources into one graph, extracted
 /// before `finish_graph` runs co-change, semantic and proximity over the
 /// combined file set (see the module comment on [`finish_graph`] for why the
@@ -237,6 +246,14 @@ pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData
 /// upstream of it) -- this fixes both the merge order below and,
 /// transitively, which source wins a file-path collision.
 pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Result<GraphData> {
+    build_multi_source_with_progress(repo, sources, &crate::progress::Progress::silent())
+}
+
+pub fn build_multi_source_with_progress(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    progress: &crate::progress::Progress,
+) -> Result<GraphData> {
     ensure!(
         repo.is_dir(),
         "repository {} is not a directory",
@@ -259,7 +276,9 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
 
     let mut intermediates = Vec::with_capacity(sorted_sources.len());
     for (pkg, language) in &sorted_sources {
-        let (parsed, raw) = parse_files(repo, pkg, *language)?;
+        let (parsed, raw) = parse_files_with_progress(repo, pkg, *language, progress)?;
+        let resolve_stage =
+            progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
         let intermediate = match language {
             LanguageKind::Python => parse_python(repo, pkg, parsed, raw)?,
             LanguageKind::Go | LanguageKind::TypeScript => parse_multi(
@@ -272,11 +291,13 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
                     .expect("multi-language source has an index"),
             )?,
         };
+        resolve_stage.set(intermediate.parsed.len() as u64);
+        resolve_stage.finish();
         intermediates.push(intermediate);
     }
 
     let merged = union_sources(intermediates)?;
-    finish_graph(repo, merged)
+    finish_graph(repo, merged, progress)
 }
 
 /// Parses every source file `source_files` finds for `(pkg, language)` under
@@ -299,7 +320,17 @@ fn parse_files(
     pkg: &str,
     language: LanguageKind,
 ) -> Result<(BTreeMap<String, ParsedFile>, BTreeMap<String, FileRaw>)> {
+    parse_files_with_progress(repo, pkg, language, &crate::progress::Progress::silent())
+}
+
+fn parse_files_with_progress(
+    repo: &Path,
+    pkg: &str,
+    language: LanguageKind,
+    progress: &crate::progress::Progress,
+) -> Result<(BTreeMap<String, ParsedFile>, BTreeMap<String, FileRaw>)> {
     let files = source_files(repo, pkg, language)?;
+    let parse_stage = progress.stage(crate::progress::StageId::Parse, Some(files.len() as u64));
     let mut parser = Parser::new();
 
     let mut parsed = BTreeMap::new();
@@ -340,11 +371,13 @@ fn parse_files(
                     },
                 },
             );
+            parse_stage.advance(1);
             continue;
         };
         // ast.parse rejects a Python file as a unit. Matching that behavior is
         // important: accepting the valid half would guess edges upward.
         if language == LanguageKind::Python && tree.root_node().has_error() {
+            parse_stage.advance(1);
             continue;
         }
         let root = tree.root_node();
@@ -383,7 +416,9 @@ fn parse_files(
             },
         );
         raw.insert(file.clone(), file_raw);
+        parse_stage.advance(1);
     }
+    parse_stage.finish();
     Ok((parsed, raw))
 }
 
@@ -2488,7 +2523,11 @@ fn normalize_relative(directory: &str, import: &str) -> String {
 /// the first place. `build_multi_source` therefore merges at the *parsed
 /// file + resolved static edge* stage (see [`union_sources`]) and calls this
 /// function exactly once, over the combined set.
-fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
+fn finish_graph(
+    repo: &Path,
+    merged: MergedSources,
+    progress: &crate::progress::Progress,
+) -> Result<GraphData> {
     let MergedSources {
         parsed,
         files,
@@ -2503,7 +2542,10 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
         dominant_lang,
     } = merged;
 
+    let history_stage = progress.stage(crate::progress::StageId::History, None);
     let history = git_history(repo, &files, 4000)?;
+    history_stage.set(history.commits as u64);
+    history_stage.finish();
     let semantic = semantic_vectors(&parsed);
     let file_ids = files
         .iter()

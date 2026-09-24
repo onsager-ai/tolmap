@@ -32,11 +32,23 @@ pub enum StageId {
 
 impl StageId {
     pub const ALL: [Self; 17] = [
-        Self::Clone, Self::CloneObjects, Self::CloneDeltas, Self::CloneCheckout,
-        Self::Detect, Self::History, Self::Parse, Self::Resolve,
-        Self::BlendPrune, Self::Partition, Self::Neighbourhoods,
-        Self::Naming, Self::Regions, Self::Footprints, Self::Symbols,
-        Self::SymbolCards, Self::Write,
+        Self::Clone,
+        Self::CloneObjects,
+        Self::CloneDeltas,
+        Self::CloneCheckout,
+        Self::Detect,
+        Self::History,
+        Self::Parse,
+        Self::Resolve,
+        Self::BlendPrune,
+        Self::Partition,
+        Self::Neighbourhoods,
+        Self::Naming,
+        Self::Regions,
+        Self::Footprints,
+        Self::Symbols,
+        Self::SymbolCards,
+        Self::Write,
     ];
 
     pub fn index(self) -> usize {
@@ -69,7 +81,11 @@ impl StageId {
         match self {
             Self::Clone | Self::CloneDeltas => "objects",
             Self::CloneObjects | Self::Write => "bytes",
-            Self::CloneCheckout | Self::Parse | Self::Resolve | Self::Symbols | Self::SymbolCards => "files",
+            Self::CloneCheckout
+            | Self::Parse
+            | Self::Resolve
+            | Self::Symbols
+            | Self::SymbolCards => "files",
             Self::History => "commits",
             Self::Regions | Self::Footprints | Self::Neighbourhoods | Self::Naming => "districts",
             Self::Detect | Self::BlendPrune | Self::Partition => "steps",
@@ -87,6 +103,10 @@ pub struct ProgressValue {
     pub done: u64,
     pub total: Option<u64>,
     pub rate_per_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_rate_bytes_per_s: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -96,24 +116,35 @@ pub struct Progress {
 
 impl Progress {
     pub fn new(emit: impl Fn(crate::worker::WorkerEvent) + Send + Sync + 'static) -> Self {
-        Self { emit: Arc::new(emit) }
+        Self {
+            emit: Arc::new(emit),
+        }
     }
 
-    pub fn silent() -> Self { Self::new(|_| {}) }
+    pub fn silent() -> Self {
+        Self::new(|_| {})
+    }
 
     pub fn stage(&self, id: StageId, total: Option<u64>) -> StageCounter {
         (self.emit)(crate::worker::WorkerEvent::StageStarted { v: 1, stage: id });
         let counter = StageCounter {
-            id, total, done: AtomicU64::new(0),
-            last_ms: AtomicU64::new(0), started: Instant::now(),
-            progress: self.clone(), finished: false,
+            id,
+            total,
+            done: AtomicU64::new(0),
+            last_ms: AtomicU64::new(0),
+            started: Instant::now(),
+            progress: self.clone(),
+            finished: false,
         };
         counter.emit_progress();
         counter
     }
 
     pub fn log(&self, message: impl Into<String>) {
-        (self.emit)(crate::worker::WorkerEvent::Log { v: 1, message: message.into() });
+        (self.emit)(crate::worker::WorkerEvent::Log {
+            v: 1,
+            message: message.into(),
+        });
     }
 
     pub fn emit_event(&self, event: crate::worker::WorkerEvent) {
@@ -145,8 +176,12 @@ impl StageCounter {
     fn maybe_emit(&self) {
         let elapsed = self.started.elapsed().as_millis() as u64;
         let previous = self.last_ms.load(Ordering::Relaxed);
-        if elapsed < previous.saturating_add(250) ||
-            self.last_ms.compare_exchange(previous, elapsed, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+        if elapsed < previous.saturating_add(250)
+            || self
+                .last_ms
+                .compare_exchange(previous, elapsed, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+        {
             return;
         }
         self.emit_progress();
@@ -158,10 +193,16 @@ impl StageCounter {
         (self.progress.emit)(crate::worker::WorkerEvent::Progress {
             v: 1,
             value: ProgressValue {
-                stage: self.id, stage_index: self.id.index(), stage_count: StageId::ALL.len(),
-                label: self.id.label().to_owned(), unit: self.id.unit().to_owned(),
-                done, total: self.total,
+                stage: self.id,
+                stage_index: self.id.index(),
+                stage_count: StageId::ALL.len(),
+                label: self.id.label().to_owned(),
+                unit: self.id.unit().to_owned(),
+                done,
+                total: self.total,
                 rate_per_s: (done > 0 && elapsed > 0.0).then_some(done as f64 / elapsed),
+                transfer_bytes: None,
+                transfer_rate_bytes_per_s: None,
             },
         });
     }
@@ -170,7 +211,9 @@ impl StageCounter {
         self.emit_progress();
         self.finished = true;
         (self.progress.emit)(crate::worker::WorkerEvent::StageFinished {
-            v: 1, stage: self.id, duration_s: self.started.elapsed().as_secs_f64(),
+            v: 1,
+            stage: self.id,
+            duration_s: self.started.elapsed().as_secs_f64(),
             success: true,
         });
     }
@@ -180,7 +223,9 @@ impl Drop for StageCounter {
     fn drop(&mut self) {
         if !self.finished {
             (self.progress.emit)(crate::worker::WorkerEvent::StageFinished {
-                v: 1, stage: self.id, duration_s: self.started.elapsed().as_secs_f64(),
+                v: 1,
+                stage: self.id,
+                duration_s: self.started.elapsed().as_secs_f64(),
                 success: false,
             });
         }

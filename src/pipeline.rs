@@ -144,12 +144,35 @@ pub fn run_with_variant<P: Partitioner>(
     initial_membership: Option<&[usize]>,
     prune_variant: PruneVariant,
 ) -> Result<PipelineOutput> {
+    run_with_variant_progress(
+        data,
+        resolution,
+        partitioner,
+        initial_membership,
+        prune_variant,
+        &crate::progress::Progress::silent(),
+    )
+}
+
+pub fn run_with_variant_progress<P: Partitioner>(
+    mut data: GraphData,
+    resolution: f64,
+    partitioner: &P,
+    initial_membership: Option<&[usize]>,
+    prune_variant: PruneVariant,
+    progress: &crate::progress::Progress,
+) -> Result<PipelineOutput> {
+    let blend_stage = progress.stage(crate::progress::StageId::BlendPrune, Some(1));
     apply_prune_variant_inner(&mut data, prune_variant, false)?;
+    blend_stage.set(1);
+    blend_stage.finish();
     let graph = weighted_graph(&data)?;
+    let partition_stage = progress.stage(crate::progress::StageId::Partition, None);
     let PartitionResult {
         membership,
         modularity,
     } = partitioner.partition(&graph, resolution, SEED, initial_membership)?;
+    partition_stage.finish();
     let membership = merge_tiny(&membership, &data, 4);
     let (districts, nodes) = layout(&membership, &data);
     let landmarks = landmarks(&membership, &data, &graph);

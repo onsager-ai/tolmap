@@ -1,3 +1,4 @@
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -153,6 +154,48 @@ enum Command {
     /// it builds one itself rather than paying async overhead on every
     /// other `tolmap` invocation.
     Serve,
+    /// One JSON job spec on stdin; versioned JSON events on stdout.
+    Worker,
+}
+
+fn cli_progress() -> tolmap::progress::Progress {
+    let tty = std::io::stderr().is_terminal();
+    let width = std::sync::Mutex::new(0usize);
+    tolmap::progress::Progress::new(move |event| {
+        use tolmap::worker::WorkerEvent;
+        let line = match &event {
+            WorkerEvent::StageStarted { stage, .. } => format!("{}", stage.label()),
+            WorkerEvent::Progress { value, .. } => format!(
+                "{}: {}{}{}",
+                value.label,
+                value.done,
+                value
+                    .total
+                    .map_or(String::new(), |total| format!("/{total}")),
+                value.rate_per_s.map_or(String::new(), |rate| format!(
+                    " {} {:.1}/s",
+                    value.unit, rate
+                )),
+            ),
+            WorkerEvent::StageFinished {
+                stage, duration_s, ..
+            } => format!("{}: done in {duration_s:.2}s", stage.label()),
+            WorkerEvent::Log { message, .. } => message,
+            _ => return,
+        };
+        if tty {
+            let mut old = width.lock().unwrap();
+            eprint!("\r{line}{}", " ".repeat(old.saturating_sub(line.len())));
+            *old = line.len();
+            if matches!(event, WorkerEvent::StageFinished { .. }) {
+                eprintln!();
+                *old = 0;
+            }
+            let _ = std::io::stderr().flush();
+        } else {
+            eprintln!("{line}");
+        }
+    })
 }
 
 /// Resolves the `--pkg`/`--lang` `build` actually runs with: an explicit
@@ -333,6 +376,7 @@ fn main() -> Result<()> {
             namer_model,
             graph,
         } => {
+            let progress = cli_progress();
             let namer_model = namer_model
                 .or_else(|| std::env::var("TOLMAP_NAMER_MODEL").ok())
                 .unwrap_or_else(|| tolmap::naming::DEFAULT_MODEL.to_owned());
@@ -353,7 +397,7 @@ fn main() -> Result<()> {
                 (Some(repo), None) => {
                     if wants_multi_source(&pkg, &lang, all_sources) {
                         let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
-                        tolmap::geometry::build_multi_warm(
+                        tolmap::geometry::build_multi_warm_with_progress(
                             &repo,
                             &sources,
                             name.as_deref(),
@@ -366,6 +410,7 @@ fn main() -> Result<()> {
                                 namer_model,
                             },
                             previous_document.as_ref(),
+                            &progress,
                         )
                         .map(|_| ())
                     } else {
@@ -374,7 +419,7 @@ fn main() -> Result<()> {
                             pkg.into_iter().next(),
                             lang.into_iter().next(),
                         )?;
-                        tolmap::geometry::build_warm(
+                        tolmap::geometry::build_warm_with_progress(
                             &repo,
                             &pkg,
                             &lang,
@@ -388,6 +433,7 @@ fn main() -> Result<()> {
                                 namer_model,
                             },
                             previous_document.as_ref(),
+                            &progress,
                         )
                         .map(|_| ())
                     }
@@ -402,7 +448,7 @@ fn main() -> Result<()> {
                         .with_context(|| format!("read {}", graph_path.display()))?;
                     let data: tolmap::schema::GraphData = serde_json::from_str(&raw)
                         .with_context(|| format!("parse graph {}", graph_path.display()))?;
-                    tolmap::geometry::build_from_graph_warm(
+                    tolmap::geometry::build_from_graph_warm_with_progress(
                         data,
                         name,
                         &out,
@@ -414,6 +460,7 @@ fn main() -> Result<()> {
                             namer_model,
                         },
                         previous_document.as_ref(),
+                        &progress,
                     )
                     .map(|_| ())
                 }
@@ -533,5 +580,6 @@ fn main() -> Result<()> {
             let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
             runtime.block_on(tolmap::service::serve(config))
         }
+        Command::Worker => tolmap::worker::run_stdio(),
     }
 }
