@@ -2874,25 +2874,39 @@ fn resolve_package_entry(
 /// and pure (no filesystem or parsed-set access) so a diagnostic can also
 /// see what was attempted when nothing resolved.
 ///
-/// Precedence: `exports` first when the manifest declares one at all --
-/// Node's own resolution stops there and never falls back to `main` once
-/// `exports` exists, so this does not either. Otherwise `types`/`typings`,
-/// then `module`, then `main` (with a `main` pointing at built output, e.g.
-/// `dist/index.js`, additionally trying the same stem under `src/`), then
-/// `src/index.ts(x)` and `index.ts(x)`. A subpath with no `exports` field
-/// falls back to the plain `<dir>/<subpath>` extension/index probe used for
-/// relative imports.
+/// Precedence, as one flat chain tried in order: `exports` (every condition
+/// present, not only the first), then `types`/`typings`, then `module`, then
+/// `main` (with a `main` pointing at built output, e.g. `dist/index.js`,
+/// additionally trying the same stem under `src/`), then `src/index.ts(x)`
+/// and `index.ts(x)`. A subpath appends the plain `<dir>/<subpath>`
+/// extension/index probe used for relative imports, after any `exports`
+/// subpath match.
+///
+/// **This is not Node's own resolution algorithm.** Real Node stops at
+/// `exports` once a package declares one at all, and never falls back to
+/// `main` or a bare index file. An earlier version of this function did the
+/// same -- and vue's own workspace packages broke it: `packages/reactivity`'s
+/// `exports` declares `types`/`node`/`module`/`import`/`require`, and *every
+/// one* points at `dist/...` (unbuilt in a fresh clone, and `dist` is itself
+/// excluded from source collection, `MULTI_SKIP_DIR`) or a root `index.js`
+/// stub that isn't TypeScript at all. The real source is `src/index.ts`,
+/// reached only through the legacy `main` field's dist-stem fallback below.
+/// Node-faithful encapsulation measured as a real regression against the
+/// committed vue fixture (E: 1186 -> 934, this PR's PR #113 review) --
+/// every candidate in this chain is still accepted only if it names a parsed
+/// file, so this remains "keep looking, invent nothing", the same rule
+/// tsconfig alias resolution already applies across entries.
 fn package_entry_candidates(
     pkg_dir: &str,
     subpath: Option<&str>,
     manifest: &PackageManifest,
 ) -> Vec<String> {
+    let mut candidates = Vec::new();
     if let Some(exports) = &manifest.exports {
-        return exports_candidates(pkg_dir, subpath, exports);
+        candidates.extend(exports_candidates(pkg_dir, subpath, exports));
     }
     match subpath {
         None => {
-            let mut candidates = Vec::new();
             for field in [manifest.types.as_deref(), manifest.module.as_deref()] {
                 if let Some(value) = field {
                     candidates.push(join_slash(pkg_dir, value));
@@ -2900,14 +2914,13 @@ fn package_entry_candidates(
             }
             if let Some(main) = &manifest.main {
                 candidates.push(join_slash(pkg_dir, main));
-                // A `main` that points at built output (`dist/index.js`) has
-                // no source counterpart at that path -- `dist` is itself
-                // excluded from source collection (MULTI_SKIP_DIR), so it
-                // can never be in the parsed set. Try the same stem under
-                // `src/` instead, and only that exact file: this is not a
-                // general rule that a package's source always lives under
-                // `src/`, just the one substitution finding 101 measured as
-                // worth making.
+                // A `main` (or, above, `types`/`module`) that points at
+                // built output has no source counterpart at that path --
+                // try the same stem under `src/` instead, and only that
+                // exact file. Not a general rule that a package's source
+                // always lives under `src/`, just the one substitution
+                // finding 101 (and vue's own packages) measured as worth
+                // making.
                 if let Some(stem) = Path::new(main).file_stem().and_then(|s| s.to_str()) {
                     candidates.push(join_slash(pkg_dir, &format!("src/{stem}.ts")));
                     candidates.push(join_slash(pkg_dir, &format!("src/{stem}.tsx")));
@@ -2917,51 +2930,59 @@ fn package_entry_candidates(
             candidates.push(join_slash(pkg_dir, "src/index.tsx"));
             candidates.push(join_slash(pkg_dir, "index.ts"));
             candidates.push(join_slash(pkg_dir, "index.tsx"));
-            candidates
         }
         Some(sub) => {
             let target = join_slash(pkg_dir, sub);
-            vec![
-                format!("{target}.ts"),
-                format!("{target}/index.ts"),
-                format!("{target}.tsx"),
-                format!("{target}/index.tsx"),
-                target,
-            ]
+            candidates.push(format!("{target}.ts"));
+            candidates.push(format!("{target}/index.ts"));
+            candidates.push(format!("{target}.tsx"));
+            candidates.push(format!("{target}/index.tsx"));
+            candidates.push(target);
         }
     }
+    candidates
 }
 
 /// `exports` resolution for the `"."` entry (`subpath` is `None`) or a
 /// `"./subpath"` entry, handling the wildcard subpath pattern form
 /// (`"./api/*"`) and the condition keys `types`, `import`, `default`,
-/// `require` in that order. Returns at most one candidate: `exports` either
-/// names an exact file or it does not apply, unlike the plain relative-import
-/// probe this deliberately does not extension-probe or index-probe further.
+/// `require`. Returns one candidate per condition *present*, in that fixed
+/// order (not just the first) -- `types` is present on nearly every real
+/// package and almost never resolves to a parsed file (`.d.ts` is excluded
+/// from source collection), so stopping at the first present condition
+/// leaves every other condition, and the whole legacy `main` chain after it,
+/// unreachable. See [`package_entry_candidates`]'s doc comment.
 fn exports_candidates(
     pkg_dir: &str,
     subpath: Option<&str>,
     exports: &serde_json::Value,
 ) -> Vec<String> {
     let key = subpath.map_or_else(|| ".".to_owned(), |s| format!("./{s}"));
-    let resolved = match exports {
-        serde_json::Value::String(value) => (key == ".").then(|| value.clone()),
-        serde_json::Value::Object(map) => {
-            if map.keys().any(|k| k.starts_with('.')) {
-                match_export_key(map, &key)
-                    .and_then(|(value, capture)| pick_condition(value).map(|t| (t, capture)))
-                    .map(|(template, capture)| substitute_wildcard(template, &capture))
-            } else if key == "." {
-                pick_condition(exports).map(str::to_owned)
-            } else {
-                None
+    let mut templates = Vec::new();
+    match exports {
+        serde_json::Value::String(value) => {
+            if key == "." {
+                templates.push((value.as_str(), String::new()));
             }
         }
-        _ => None,
-    };
-    resolved
+        serde_json::Value::Object(map) => {
+            if map.keys().any(|k| k.starts_with('.')) {
+                if let Some((value, capture)) = match_export_key(map, &key) {
+                    for template in pick_conditions(value) {
+                        templates.push((template, capture.clone()));
+                    }
+                }
+            } else if key == "." {
+                for template in pick_conditions(exports) {
+                    templates.push((template, String::new()));
+                }
+            }
+        }
+        _ => {}
+    }
+    templates
         .into_iter()
-        .map(|relative| join_slash(pkg_dir, &relative))
+        .map(|(template, capture)| join_slash(pkg_dir, &substitute_wildcard(template, &capture)))
         .collect()
 }
 
@@ -3001,16 +3022,20 @@ fn match_export_key<'a>(
         })
 }
 
-/// Depth-first search for the first present condition, in the fixed order
-/// `types`, `import`, `default`, `require`. A plain string value is itself
-/// the target (no conditions to pick between).
-fn pick_condition(value: &serde_json::Value) -> Option<&str> {
+/// Every present condition's target, in the fixed order `types`, `import`,
+/// `default`, `require` -- not just the first, so a condition that can never
+/// resolve (typically `types`, since `.d.ts` is excluded from source
+/// collection) does not block a later one that can. A plain string value is
+/// itself the one target (no conditions to pick between).
+fn pick_conditions(value: &serde_json::Value) -> Vec<&str> {
     match value {
-        serde_json::Value::String(s) => Some(s.as_str()),
+        serde_json::Value::String(s) => vec![s.as_str()],
         serde_json::Value::Object(map) => ["types", "import", "default", "require"]
             .into_iter()
-            .find_map(|cond| map.get(cond).and_then(pick_condition)),
-        _ => None,
+            .filter_map(|cond| map.get(cond))
+            .flat_map(pick_conditions)
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -4102,6 +4127,60 @@ mod tests {
             dir.path(),
             "packages/core/package.json",
             r#"{"name":"@scope/core","main":"./dist/index.js"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/src/index.ts",
+            "export const core = 1;\n",
+        );
+        write(dir.path(), "apps/site/main.ts", "import '@scope/core';\n");
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/core/src/index.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// Regression for the vue fixture: `packages/reactivity/package.json`
+    /// declares `exports` whose `types`/`import`/`require` conditions all
+    /// point at unbuilt `dist/` output (or a non-TypeScript `index.js`
+    /// stub), while the real source is `src/index.ts`, reached only through
+    /// `main`'s dist-stem fallback. An `exports` field must not block that
+    /// fallback just by existing -- every one of its own conditions still
+    /// has to fail to resolve first.
+    #[test]
+    fn exports_pointing_at_unbuilt_output_falls_back_to_main_and_then_src_index() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{
+                "name":"@scope/core",
+                "main":"index.js",
+                "exports":{
+                    ".": {
+                        "types": "./dist/core.d.ts",
+                        "node": {"default": "./dist/core.cjs.js"},
+                        "import": "./dist/core.esm.js",
+                        "require": "./index.js"
+                    }
+                }
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/index.js",
+            "module.exports = require('./dist/core.cjs.js');\n",
         );
         write(
             dir.path(),
