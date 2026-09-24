@@ -580,6 +580,13 @@ jobs:
             if [ -f "artifact/${STEM}.compare.symbols.json" ]; then
               compare=(--compare-symbols "artifact/${STEM}.compare.symbols.json")
             fi
+            # Card-pass wall time comes from each build's own stage log line.
+            if [ -f artifact/primary.log ]; then
+              compare+=(--log artifact/primary.log)
+            fi
+            if [ -f artifact/compare.log ]; then
+              compare+=(--compare-log artifact/compare.log)
+            fi
             python3 eval/symbol_stats.py "artifact/${STEM}.json" "artifact/${STEM}.symbols.json" "${compare[@]}" > artifact/symbol_stats.json
             cat artifact/symbol_stats.json
           fi
