@@ -613,7 +613,7 @@ pub fn build_from_graph_warm_with_progress(
         document.file_neighbourhoods = Some(partition.file_ids.clone());
         document.neighbourhoods = Some(output.neighbourhoods);
     }
-    let write_stage = progress.stage(crate::progress::StageId::Write, None);
+    let write_stage = progress.stage(crate::progress::StageId::WriteMap, None);
     fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
     let output = out.join(format!("{}.json", document.repo));
     let bytes = serde_json::to_vec(&document)?;

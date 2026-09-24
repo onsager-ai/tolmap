@@ -1064,6 +1064,7 @@ pub fn write_sibling_with_progress(
     cards_stage.set(nodes.len() as u64);
     cards_stage.finish();
     let output = map_path.with_extension("symbols.json");
+    let write_stage = progress.stage(crate::progress::StageId::Write, None);
     let temporary = map_path.with_extension("symbols.json.tmp");
     let district_dir = map_path.with_extension("symbols");
     let temporary_dir = map_path.with_extension("symbols.tmp");
@@ -1078,17 +1079,21 @@ pub fn write_sibling_with_progress(
         let response = document
             .district(&map, id)
             .with_context(|| format!("missing district {id}"))?;
-        fs::write(
-            temporary_dir.join(format!("{id}.json")),
-            serde_json::to_vec(&response)?,
-        )?;
+        let bytes = serde_json::to_vec(&response)?;
+        let byte_count = bytes.len() as u64;
+        fs::write(temporary_dir.join(format!("{id}.json")), bytes)?;
+        write_stage.advance(byte_count);
     }
-    fs::write(&temporary, serde_json::to_vec(&document)?)?;
+    let bytes = serde_json::to_vec(&document)?;
+    let byte_count = bytes.len() as u64;
+    fs::write(&temporary, bytes)?;
+    write_stage.advance(byte_count);
     fs::rename(&temporary, &output)?;
     if district_dir.exists() {
         fs::remove_dir_all(&district_dir)?;
     }
     fs::rename(&temporary_dir, &district_dir)?;
+    write_stage.finish();
     Ok(())
 }
 

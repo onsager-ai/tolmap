@@ -286,7 +286,7 @@ mod tests {
             value: ProgressValue {
                 stage: StageId::Parse,
                 stage_index: 7,
-                stage_count: 17,
+                stage_count: 18,
                 label: "Parsing files".to_owned(),
                 unit: "files".to_owned(),
                 done: 3,

@@ -25,13 +25,14 @@ pub enum StageId {
     Naming,
     Regions,
     Footprints,
+    WriteMap,
     Symbols,
     SymbolCards,
     Write,
 }
 
 impl StageId {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Clone,
         Self::CloneObjects,
         Self::CloneDeltas,
@@ -46,6 +47,7 @@ impl StageId {
         Self::Naming,
         Self::Regions,
         Self::Footprints,
+        Self::WriteMap,
         Self::Symbols,
         Self::SymbolCards,
         Self::Write,
@@ -71,16 +73,17 @@ impl StageId {
             Self::Naming => "Naming districts",
             Self::Regions => "Drawing regions",
             Self::Footprints => "Drawing footprints",
+            Self::WriteMap => "Writing map",
             Self::Symbols => "Extracting symbols",
             Self::SymbolCards => "Drawing symbol cards",
-            Self::Write => "Writing output",
+            Self::Write => "Writing symbols",
         }
     }
 
     pub fn unit(self) -> &'static str {
         match self {
             Self::Clone | Self::CloneObjects | Self::CloneDeltas => "objects",
-            Self::Write => "bytes",
+            Self::Write | Self::WriteMap => "bytes",
             Self::CloneCheckout
             | Self::Parse
             | Self::Resolve

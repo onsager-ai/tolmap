@@ -57,7 +57,7 @@ pub struct JobSnapshot {
     pub stages: Vec<StageSnapshot>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StageState {
     Pending,
@@ -312,6 +312,11 @@ fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
         snapshot.stage = "failed".to_owned();
         snapshot.finished_at = Some(now_rfc3339());
         snapshot.set_error(error);
+        for stage in &mut snapshot.stages {
+            if matches!(stage.state, StageState::Running) {
+                stage.state = StageState::Failed;
+            }
+        }
     });
 }
 
@@ -463,16 +468,29 @@ fn process_worker_exe(
     started: Instant,
     exe: &std::path::Path,
 ) -> Result<WorkerOutput, ErrorBody> {
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .arg("worker")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| ErrorBody {
-            error: "worker_crashed".to_owned(),
-            message: format!("could not spawn worker: {error}"),
-        })?;
+        .stderr(Stdio::piped());
+    let mut attempts = 0;
+    let mut child = loop {
+        match command.spawn() {
+            Ok(child) => break child,
+            // An executable being replaced during deployment can briefly be busy on Linux.
+            Err(error) if error.raw_os_error() == Some(26) && attempts < 5 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(ErrorBody {
+                    error: "worker_crashed".to_owned(),
+                    message: format!("could not spawn worker: {error}"),
+                })
+            }
+        }
+    };
     let stderr = child.stderr.take().expect("piped worker stderr");
     let stderr_reader = std::thread::spawn(move || {
         let mut text = String::new();
@@ -863,6 +881,10 @@ mod tests {
         let failed = snapshot(&state, first);
         assert_eq!(failed.error_code.as_deref(), Some("worker_crashed"));
         assert!(failed.error.unwrap().contains("Parsing files"));
+        assert_eq!(
+            failed.stages[StageId::Parse.index() - 1].state,
+            StageState::Failed
+        );
         let second = enqueue_job(state.clone(), repo("second"), "b".to_owned(), runner).unwrap();
         until(|| snapshot(&state, second).status == JobStatus::Done).await;
     }
@@ -878,7 +900,7 @@ mod tests {
         let fake_worker = dir.path().join("regressing-worker");
         let value = |done| {
             format!(
-            "{{\"type\":\"progress\",\"v\":1,\"value\":{{\"stage\":\"parse\",\"stage_index\":7,\"stage_count\":17,\"label\":\"Parsing files\",\"unit\":\"files\",\"done\":{done},\"total\":3,\"rate_per_s\":null}}}}"
+            "{{\"type\":\"progress\",\"v\":1,\"value\":{{\"stage\":\"parse\",\"stage_index\":7,\"stage_count\":18,\"label\":\"Parsing files\",\"unit\":\"files\",\"done\":{done},\"total\":3,\"rate_per_s\":null}}}}"
         )
         };
         let script = format!(
