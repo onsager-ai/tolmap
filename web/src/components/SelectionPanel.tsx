@@ -10,8 +10,16 @@ import {
   externalReferences,
   fileOutline,
   isBoldKind,
+  KIND_CLASS,
+  KIND_INTERFACE,
+  KIND_METHOD,
+  rowAbstract,
+  rowKind,
+  symbolHierarchy,
   symbolLabel,
+  type DecodedDistrictSymbols,
   type ExternalRefGroup,
+  type HierarchyRelation,
   type OutlineRow,
 } from "@/map/symbolCards";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
@@ -153,7 +161,7 @@ export function SelectionPanel({
           ) : selD != null ? (
             <DistrictHead doc={doc} d={selD} onZoomDistrict={onZoomDistrict} />
           ) : (
-            <FileHead doc={doc} i={sel!} selSym={selSym} adj={adj} radj={radj} />
+            <FileHead doc={doc} i={sel!} selSym={selSym} selHSym={selHSym} symbolsDoc={symbolsDoc} adj={adj} radj={radj} />
           )}
         </div>
         {narrow && (
@@ -541,11 +549,41 @@ function DistrictBody({
 // exact line SelectionSummaryBar.tsx shows means the phone sheet and the
 // fullscreen bar can't drift apart the way two independent implementations
 // would.
-function FileHead({ doc, i, selSym, adj, radj }: { doc: MapDocument; i: number; selSym: number | null; adj: AdjMap; radj: AdjMap }) {
+function FileHead({
+  doc,
+  i,
+  selSym,
+  selHSym,
+  symbolsDoc,
+  adj,
+  radj,
+}: {
+  doc: MapDocument;
+  i: number;
+  selSym: number | null;
+  selHSym?: number | null;
+  symbolsDoc?: DistrictSymbols;
+  adj: AdjMap;
+  radj: AdjMap;
+}) {
   const sy = symbolsOf(doc, i);
   const sm = selSym != null ? sy[selSym] : null;
   const outDeg = adj.get(i)?.length ?? 0;
   const inDeg = radj.get(i)?.length ?? 0;
+  // #103 build item 4: the legend gains the hollow-triangle "extends /
+  // implements" segment only when the currently selected hierarchical
+  // symbol actually has one of those relations -- decoded independently
+  // here the same way Breadcrumb decodes its own copy (this file's own
+  // props doc comment), rather than threading a shared decode down from
+  // SelectionPanel.
+  const decoded = useMemo(() => (symbolsDoc ? decodeDistrictSymbols(symbolsDoc) : null), [symbolsDoc]);
+  const hasInheritance = useMemo(() => {
+    if (!decoded || selHSym == null) return false;
+    const local = decoded.globalToLocal.get(selHSym);
+    if (local == null) return false;
+    const info = symbolHierarchy(decoded, local);
+    return info.extends.length > 0 || info.implements.length > 0;
+  }, [decoded, selHSym]);
   return (
     <>
       <h3 className="truncate font-sans text-[13px] font-semibold">{sm ? sm[0] : doc.F[i].split("/").pop()}</h3>
@@ -553,7 +591,7 @@ function FileHead({ doc, i, selSym, adj, radj }: { doc: MapDocument; i: number; 
         {sm ? (
           `${doc.F[i].split("/").pop()}:${sm[2]} · ${KIND[sm[1]]}`
         ) : (
-          <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} stacked />
+          <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} stacked hasInheritance={hasInheritance} />
         )}
       </p>
     </>
@@ -635,6 +673,9 @@ function FileBody({
             </b>
           </Row>
         </>
+      )}
+      {decoded && selHSym != null && (
+        <SymbolRelationsCard decoded={decoded} global={selHSym} onSelectHierSymbol={onSelectHierSymbol} />
       )}
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
         {lm && (
@@ -809,6 +850,96 @@ function SymbolDirectory({
   );
 }
 
+// #103 build item 2: "the class card" -- extends/implements/subclasses/
+// implemented-by/overridden-by, each a short tappable list, plus an
+// "abstract" tag. Renders nothing for a plain function/type/const with no
+// abstract flag and no hierarchy relations at all (a file card selecting an
+// ordinary method, say) -- the same silent-degrade rule every other optional
+// section in this file follows.
+function RelationLine({
+  label,
+  items,
+  dataKey,
+  onSelectHierSymbol,
+  max = 6,
+}: {
+  label: string;
+  items: HierarchyRelation[];
+  dataKey: string;
+  onSelectHierSymbol: Props["onSelectHierSymbol"];
+  max?: number;
+}) {
+  if (items.length === 0) return null;
+  const shown = items.slice(0, max);
+  const extra = items.length - shown.length;
+  return (
+    <p className="mt-1 text-[10.5px] leading-relaxed" data-symbol-relation={dataKey}>
+      <span className="text-[var(--dim)]">{label}: </span>
+      {shown.map((it, idx) => (
+        <span key={it.global}>
+          {idx > 0 ? ", " : ""}
+          <button
+            type="button"
+            data-relation-target={it.global}
+            className="text-[var(--on)] underline decoration-[var(--rule)] underline-offset-2 hover:text-[var(--hot)]"
+            onClick={() => onSelectHierSymbol(it.global)}
+          >
+            {it.name}
+          </button>
+        </span>
+      ))}
+      {extra > 0 && <span className="text-[var(--dim)]"> +{extra} more</span>}
+    </p>
+  );
+}
+
+function SymbolRelationsCard({
+  decoded,
+  global,
+  onSelectHierSymbol,
+}: {
+  decoded: DecodedDistrictSymbols;
+  global: number;
+  onSelectHierSymbol: Props["onSelectHierSymbol"];
+}) {
+  const local = decoded.globalToLocal.get(global);
+  const info = useMemo(() => (local != null ? symbolHierarchy(decoded, local) : null), [decoded, local]);
+  if (local == null || !info) return null;
+  const row = decoded.raw.symbols[local];
+  const kind = rowKind(row);
+  const abstract = rowAbstract(row);
+  const isClassLike = kind === KIND_CLASS || kind === KIND_INTERFACE;
+  const isAbstractMethod = kind === KIND_METHOD && abstract;
+  const hasRelations =
+    (isClassLike && (info.extends.length > 0 || info.implements.length > 0 || info.subclasses.length > 0 || info.implementedBy.length > 0)) ||
+    (isAbstractMethod && info.overriddenBy.length > 0);
+  if (!abstract && !hasRelations) return null;
+
+  return (
+    <div className="mt-1.5" data-symbol-relations>
+      {abstract && (
+        <span
+          className="inline-block rounded bg-[var(--chrome2)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--dim)]"
+          data-abstract-tag
+        >
+          abstract
+        </span>
+      )}
+      {isClassLike && (
+        <>
+          <RelationLine label="extends" items={info.extends} dataKey="extends" onSelectHierSymbol={onSelectHierSymbol} />
+          <RelationLine label="implements" items={info.implements} dataKey="implements" onSelectHierSymbol={onSelectHierSymbol} />
+          <RelationLine label={`subclasses (${info.subclasses.length})`} items={info.subclasses} dataKey="subclasses" onSelectHierSymbol={onSelectHierSymbol} />
+          <RelationLine label={`implemented by (${info.implementedBy.length})`} items={info.implementedBy} dataKey="implemented-by" onSelectHierSymbol={onSelectHierSymbol} />
+        </>
+      )}
+      {isAbstractMethod && (
+        <RelationLine label={`overridden by (${info.overriddenBy.length})`} items={info.overriddenBy} dataKey="overridden-by" onSelectHierSymbol={onSelectHierSymbol} />
+      )}
+    </div>
+  );
+}
+
 // Issue #82 C2 scope item 5: the file's hierarchical outline (source order,
 // nested -- classes contain their methods, unlike SymbolDirectory above's
 // flat bar-chart list of the map's older, non-nested `S`), external
@@ -846,6 +977,21 @@ function HierOutline({
       >
         <span className={`overflow-hidden text-ellipsis whitespace-nowrap ${isBoldKind(r.row[2]) ? "font-semibold" : ""}`}>
           {symbolLabel(r.row, r.children.length, false)}
+          {/* #103 build item 3: a class/interface's own direct bases, dimly,
+              right after its name -- "Migration ‹ BaseMigration›". Never for
+              anything without at least one in-repo base (fileOutline's
+              `bases` is empty otherwise, including an out-of-repo-only
+              base -- see its own comment). */}
+          {r.bases.length > 0 && (
+            <span className="font-normal italic text-[var(--dim)]" data-outline-bases>
+              {" "}‹ {r.bases.join(", ")}›
+            </span>
+          )}
+          {rowAbstract(r.row) && (
+            <span className="ml-1 font-normal text-[9px] uppercase tracking-wide text-[var(--dim)]" data-outline-abstract>
+              abstract
+            </span>
+          )}
         </span>
         <span className="text-[9.5px] text-[var(--dim)]" title="incoming references">
           {r.refsIn > 0 ? `← ${r.refsIn}` : ""}

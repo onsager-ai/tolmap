@@ -3260,6 +3260,38 @@ function pickReferenceTarget(symbols) {
   return { global: best, file: symbols.symbols[local][0], weight: bestN };
 }
 
+// #103 build item "Checks": a class with an IN-REPO base, found at runtime
+// from the loaded district data -- the `kinds` legend's own "extends" index
+// (never hardcoded: src/schema.rs's symbol_edge_kinds() order is a
+// convention, not a contract this script should assume), restricted to a
+// real member class (memberFileSet, same reasoning as pickReferenceTarget)
+// so the class itself is guaranteed to decode and render. An edge only
+// exists once the base resolved to a span in this same build (src/
+// symbols.rs's resolve()), so the base end is necessarily in-repo too --
+// there is no separate "found an unresolved base" case to filter out.
+function pickInheritanceTarget(symbols) {
+  const extendsIdx = symbols.kinds ? symbols.kinds.indexOf("extends") : -1;
+  if (extendsIdx < 0) return null;
+  const members = memberFileSet(symbols);
+  const si = symbols.symbol_indices;
+  const localByGlobal = new Map(si.map((g, local) => [g, local]));
+  for (const [source, target, , kind] of symbols.edges) {
+    if (kind !== extendsIdx) continue;
+    const sourceLocal = localByGlobal.get(source);
+    const targetLocal = localByGlobal.get(target);
+    if (sourceLocal == null || targetLocal == null) continue;
+    if (!members.has(symbols.symbols[sourceLocal][0])) continue;
+    return {
+      classGlobal: source,
+      file: symbols.symbols[sourceLocal][0],
+      className: symbols.symbols[sourceLocal][1],
+      baseGlobal: target,
+      baseName: symbols.symbols[targetLocal][1],
+    };
+  }
+  return null;
+}
+
 // 9(a): the overview silhouette (D1's whole reason for existing, finding 27)
 // must survive -- no card anywhere with nothing selected at fit zoom.
 async function checkNoCardsAtFitZoom(browser, base, profile) {
@@ -3609,6 +3641,48 @@ async function checkReferenceLineEndpoints(browser, base) {
   });
   report(info.total > 0, `${label}: at least one reference line is drawn`, `total=${info.total} weight=${target.weight}`);
   report(info.total === 0 || info.landed === info.total, `${label}: every endpoint lands on a drawn card or file`, JSON.stringify(info));
+  await context.close();
+}
+
+// #103 build item "Checks": a selected class with an in-repo base draws a
+// kind-aware extends line and lists it in its card. Target picked at
+// runtime (pickInheritanceTarget) -- never hardcoded -- and set directly via
+// `hsym` the same way checkStepBackThroughSymbolLevels/
+// checkReferenceLineEndpoints already do, since reaching this state through
+// a card tap/zoom is exercised by those other checks already.
+async function checkInheritanceLineAndCard(browser, base) {
+  const label = "extends line and card (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickInheritanceTarget(symbols);
+  if (!target) {
+    report(false, `${label}: setup`, "no in-repo extends relation found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}&hsym=${target.classGlobal}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+
+  const hasExtendsRow = (await page.locator('[data-symbol-relation="extends"]').count()) > 0;
+  report(hasExtendsRow, `${label}: the card lists "extends"`, `class=${target.className} base=${target.baseName}`);
+
+  const info = await page.evaluate(() => ({
+    edgeKinds: [...document.querySelectorAll("svg.map-svg path[data-edge-kind]")].map((el) => el.getAttribute("data-edge-kind")),
+  }));
+  report(info.edgeKinds.includes("extends"), `${label}: at least one drawn reference line carries the inheritance marker`, JSON.stringify(info.edgeKinds));
+  // possible_implementation never gets a data-edge-kind at all -- neither
+  // symbolCards.ts's classifyEdgeKind (only extends/implements/overrides
+  // read as anything but "call") nor exactEdges (the call lines' own edge
+  // source) ever lets it through, so this is a structural invariant, true
+  // by construction, checked the same way checkPhoneHubRingDeclutter checks
+  // its own structural invariant -- not merely "this fixture happens to
+  // have none" (dify has no Go in this district, so it may well have none).
+  report(!info.edgeKinds.includes("possible_implementation"), `${label}: no possible_implementation edge is ever drawn`, JSON.stringify(info.edgeKinds));
+
   await context.close();
 }
 
@@ -4257,6 +4331,7 @@ async function main() {
     await checkClassExpandsAtShortSide(browser, args.base);
     await checkCardTapSelectsSymbolAndBreadcrumb(browser, args.base);
     await checkReferenceLineEndpoints(browser, args.base);
+    await checkInheritanceLineAndCard(browser, args.base);
     await checkOutlineHoverHighlightsCard(browser, args.base);
     await checkSymbolCardsCarryLabelOrChild(browser, args.base);
     await checkSymbolCardsSingleSubpath(browser, args.base);

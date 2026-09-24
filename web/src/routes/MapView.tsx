@@ -485,6 +485,8 @@ export function MapView() {
               sel={sel}
               selSym={selSym}
               selD={selD}
+              selHSym={selHSym}
+              symbolsDoc={selSymbolsDoc}
               adj={adj}
               radj={radj}
               onDetails={() => {
