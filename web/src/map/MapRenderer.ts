@@ -72,12 +72,14 @@ import {
   referenceLineWidth,
   ringBounds,
   ringCentroid,
+  rollInheritanceReferences,
   rollReferences,
   rowKind,
   rowName,
   symbolLabel,
   topN,
   type DecodedDistrictSymbols,
+  type RolledInheritanceLink,
   type WorldContours,
 } from "./symbolCards";
 
@@ -98,6 +100,35 @@ function el<K extends keyof SVGElementTagNameMap>(
   const e = document.createElementNS(NS, name) as SVGElementTagNameMap[K];
   for (const k in attrs) e.setAttribute(k, String(attrs[k]));
   return e;
+}
+
+/** UML's hollow (unfilled) triangle arrowhead, apex at `parent` pointing
+ * back along the line toward `child` -- #103 build item 1's extends/
+ * implements marker. Drawn as a small closed path rather than an SVG
+ * `<marker>` element (this file draws every other line-end decoration --
+ * the call lines' own endpoint dots just above -- as a plain appended
+ * shape, not a marker def, so a hover-only redraw stays one flat list of
+ * elements under `gSymRefs` with no separate defs bookkeeping to keep in
+ * sync). "Hollow" is the canvas colour fill, not `fill: none`, so it
+ * occludes whatever's behind it exactly the way a real UML arrowhead does. */
+function hollowTriangleGlyph(parent: [number, number], child: [number, number], size = 9): SVGPathElement {
+  const angle = Math.atan2(parent[1] - child[1], parent[0] - child[0]);
+  const backX = parent[0] - Math.cos(angle) * size;
+  const backY = parent[1] - Math.sin(angle) * size;
+  const perp = angle + Math.PI / 2;
+  const halfW = size * 0.52;
+  const p1x = backX + Math.cos(perp) * halfW;
+  const p1y = backY + Math.sin(perp) * halfW;
+  const p2x = backX - Math.cos(perp) * halfW;
+  const p2y = backY - Math.sin(perp) * halfW;
+  return el("path", {
+    d: `M${parent[0].toFixed(1)} ${parent[1].toFixed(1)} L${p1x.toFixed(1)} ${p1y.toFixed(1)} L${p2x.toFixed(1)} ${p2y.toFixed(1)} Z`,
+    fill: "var(--canvas)",
+    stroke: "var(--ink)",
+    "stroke-width": 1.3,
+    "stroke-linejoin": "round",
+    "pointer-events": "none",
+  });
 }
 
 export interface MapRenderState {
@@ -3081,7 +3112,49 @@ export class MapRenderer {
     };
     for (const [key, count] of topN(out, 120)) line(key, count, true);
     for (const [key, count] of topN(inn, 120)) line(key, count, false);
+    // #103 build item 1: extends/implements/overrides draw separately from
+    // the call lines above -- neutral ink, never the hot/cold direction
+    // colour, with their own UML-ish styling instead of a count-scaled
+    // width (rollInheritanceReferences already dropped anything that isn't
+    // one of these three kinds, possible_implementation included).
+    for (const inheritance of rollInheritanceReferences(decoded, local, this.symVisible)) {
+      this.drawInheritanceLine(meScreen, anchorFor(inheritance.key), inheritance);
+    }
     this.gSymRefs.appendChild(el("circle", { cx: meScreen[0].toFixed(1), cy: meScreen[1].toFixed(1), r: 3.6, fill: "var(--ink)", stroke: "var(--canvas)", "stroke-width": 1.4, "pointer-events": "none" }));
+  }
+
+  /** One extends/implements/overrides line, from the active symbol's own hub
+   * point (`meScreen`, same single anchor every call line above converges
+   * on) to `b` (already rolled to the nearest drawn card or file --
+   * anchorFor, same as the call lines). UML convention: a hollow triangle at
+   * the PARENT end of an extends/implements edge -- the far end (`b`) when
+   * `local` is the child (isOut), the hub end (`meScreen`) when `local` IS
+   * the parent and `b` is one of its subclasses/implementors (!isOut). An
+   * `overrides` edge gets no arrowhead, just a thin dashed line (spec item
+   * 1: "thin dashed lines from the overriding method to the base method"). */
+  private drawInheritanceLine(meScreen: [number, number], b: [number, number] | null, link: RolledInheritanceLink): void {
+    if (!b || !this.gSymRefs) return;
+    const isOverrides = link.kind === "overrides";
+    this.gSymRefs.appendChild(
+      el("path", {
+        d: `M${meScreen[0].toFixed(1)} ${meScreen[1].toFixed(1)} L${b[0].toFixed(1)} ${b[1].toFixed(1)}`,
+        fill: "none",
+        stroke: "var(--ink)",
+        "stroke-width": isOverrides ? 1.1 : 1.5,
+        "stroke-opacity": 0.7,
+        "stroke-dasharray": isOverrides ? "3 2" : "none",
+        "pointer-events": "none",
+        // check-view-stability.mjs reads data-edge-kind directly (the same
+        // "target" marker the call lines' data-symref-target already uses,
+        // plus which of the three kinds this is).
+        "data-edge-kind": link.kind,
+        "data-symref-target": link.key,
+      }),
+    );
+    if (isOverrides) return; // no arrowhead -- just the dashed line itself
+    const parentPoint = link.isOut ? b : meScreen;
+    const childPoint = link.isOut ? meScreen : b;
+    this.gSymRefs.appendChild(hollowTriangleGlyph(parentPoint, childPoint));
   }
 
   /** Public: SelectionPanel's outline tree hovers a row -> highlight its

@@ -375,6 +375,47 @@ try {
         }
       }
     }
+
+    // #103 build items 1/2/4: a selected class with a drawn extends line
+    // (the hollow-triangle arrowhead is --ink, theme-dependent) and its
+    // card's own "extends" list -- both themes, same reasoning as every
+    // other frame in this block. Target picked dynamically off the bundled
+    // fixture's OWN `kinds` legend (never a hardcoded edge-kind index): the
+    // first `extends` edge whose class is a real member of this district,
+    // same memberFiles restriction the picks above already use.
+    const extendsIdx = symbols.kinds ? symbols.kinds.indexOf("extends") : -1;
+    let inheritanceClassGlobal = null;
+    let inheritanceClassFile = null;
+    if (extendsIdx >= 0) {
+      const localByGlobal = new Map(symbols.symbol_indices.map((g, local) => [g, local]));
+      for (const [source, , , kind] of symbols.edges) {
+        if (kind !== extendsIdx) continue;
+        const sourceLocal = localByGlobal.get(source);
+        if (sourceLocal == null || !memberFiles.has(symbols.symbols[sourceLocal][0])) continue;
+        inheritanceClassGlobal = source;
+        inheritanceClassFile = symbols.symbols[sourceLocal][0];
+        break;
+      }
+    }
+
+    if (inheritanceClassGlobal != null && inheritanceClassFile != null) {
+      for (const colorScheme of ["light", "dark"]) {
+        for (const profile of PROFILES) {
+          const context = await browser.newContext({ ...profile, colorScheme });
+          const page = await context.newPage();
+
+          await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[inheritanceClassFile])}&hsym=${inheritanceClassGlobal}`, { waitUntil: "domcontentloaded" });
+          await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+          await page.waitForTimeout(700);
+          await wheelZoomIn(page, profile.viewport.width * 0.35, profile.viewport.height * 0.4, 6); // ~1.6^4, same as the symbol-references frame above
+          if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+          await page.screenshot({ path: `${stem}-${profile.name}-class-extends-${colorScheme}.png` });
+          console.log(`${stem}-${profile.name}-class-extends-${colorScheme}.png`);
+
+          await context.close();
+        }
+      }
+    }
   }
 } finally {
   await browser.close();

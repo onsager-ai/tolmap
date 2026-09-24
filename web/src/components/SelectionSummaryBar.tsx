@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
-import type { MapDocument } from "@/types";
+import { useMemo, type ReactNode } from "react";
+import type { DistrictSymbols, MapDocument } from "@/types";
 import { symbolsOf } from "@/map/geometry";
 import { KIND } from "@/map/constants";
 import type { AdjMap } from "@/map/graph";
+import { decodeDistrictSymbols, symbolHierarchy } from "@/map/symbolCards";
 import { Button } from "@/components/ui/button";
 import { LinkCountsLabel } from "@/components/LinkLegend";
 
@@ -11,6 +12,14 @@ interface Props {
   sel: number | null;
   selSym: number | null;
   selD: number | null;
+  /** #103 build item 4: same GLOBAL hier-symbol index and (undecoded)
+   * district symbols document SelectionPanel's FileHead reads, decoded
+   * independently here for the same "extends / implements" legend segment
+   * -- see FileHead's own comment for why each reader decodes its own
+   * copy. `undefined` degrades to the plain two-line legend, same as
+   * before #103. */
+  selHSym?: number | null;
+  symbolsDoc?: DistrictSymbols;
   adj: AdjMap;
   radj: AdjMap;
   onDetails(): void;
@@ -26,7 +35,16 @@ interface Props {
  * opens the real panel/sheet rather than growing this bar into one. Renders
  * nothing when nothing is selected -- fullscreen with an empty selection is
  * just the map, with no bar to show. */
-export function SelectionSummaryBar({ doc, sel, selSym, selD, adj, radj, onDetails }: Props) {
+export function SelectionSummaryBar({ doc, sel, selSym, selD, selHSym, symbolsDoc, adj, radj, onDetails }: Props) {
+  const decoded = useMemo(() => (symbolsDoc ? decodeDistrictSymbols(symbolsDoc) : null), [symbolsDoc]);
+  const hasInheritance = useMemo(() => {
+    if (!decoded || selHSym == null) return false;
+    const local = decoded.globalToLocal.get(selHSym);
+    if (local == null) return false;
+    const info = symbolHierarchy(decoded, local);
+    return info.extends.length > 0 || info.implements.length > 0;
+  }, [decoded, selHSym]);
+
   if (sel == null && selD == null) return null;
 
   let title: string;
@@ -48,7 +66,8 @@ export function SelectionSummaryBar({ doc, sel, selSym, selD, adj, radj, onDetai
       // Issue #82 "link colour legend": the fullscreen bar shows the same
       // imported-by/imports counts SelectionPanel's FileHead does, so it
       // gets the same colour+glyph legend rather than a plain string here.
-      subtitle = <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} />;
+      // #103 build item 4: same triangle-glyph addition too.
+      subtitle = <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} hasInheritance={hasInheritance} />;
     }
   }
 

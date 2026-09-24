@@ -46,6 +46,7 @@ const ROW_START = 3;
 const ROW_END = 4;
 const ROW_PARENT = 5;
 const ROW_CODE_LINES = 6;
+const ROW_ABSTRACT = 7;
 
 export const rowFile = (r: HierSymbolRow) => r[ROW_FILE];
 export const rowName = (r: HierSymbolRow) => r[ROW_NAME];
@@ -54,6 +55,14 @@ export const rowStart = (r: HierSymbolRow) => r[ROW_START];
 export const rowEnd = (r: HierSymbolRow) => r[ROW_END];
 export const rowParent = (r: HierSymbolRow) => r[ROW_PARENT];
 export const rowCodeLines = (r: HierSymbolRow) => r[ROW_CODE_LINES];
+/** #103/#104: the trailing boolean on a HierSymbolRow -- true for an
+ * abstract class/interface or an abstract method (docs/API.md). src/schema.rs
+ * defaults a legacy 7-column row (no `abstract` column at all) to `false` on
+ * deserialize, but a raw fixture that never passed through that server-side
+ * path -- e.g. a stale CI tarball served as-is -- could still ship a bare
+ * 7-tuple; `=== true` treats anything short of an explicit `true` as "not
+ * abstract" rather than throwing. */
+export const rowAbstract = (r: HierSymbolRow): boolean => r[ROW_ABSTRACT] === true;
 
 /** A card, in world coordinates: `[x, y]` points, closed implicitly (no
  * repeated last point). Later contours (holes) are rare in practice but kept
@@ -334,25 +343,32 @@ export interface RolledReferences {
   in: Map<string, number>;
 }
 
-/** Roll a symbol's (or, for a hover/selection on a class, its whole
- * subtree's) references up to whatever is actually drawn on screen this
- * paint -- spec item 4 / prototype's `rolled`/`rep`. `visibleGlobals` is the
- * set of GLOBAL symbol indices that got a card drawn this paint (VIS, in the
- * prototype); `rep` walks a target's ancestor chain until it finds one that
- * IS drawn, falling back to the target's own file. Edges internal to the
- * subtree, and edges to the subtree's own ancestors (a member referencing
- * its own class, for instance), are dropped -- spec: "Drop edges internal to
- * the subtree and edges to its own ancestors." */
-export function rollReferences(
-  decoded: DecodedDistrictSymbols,
-  local: number,
-  visibleGlobals: ReadonlySet<number>,
-): RolledReferences {
-  const subtree = subtreeOf(decoded, local);
-  const subtreeGlobals = new Set<number>([...subtree].map((i) => decoded.raw.symbol_indices[i]));
-  const ancestorGlobals = new Set<number>(ancestorsOf(decoded, local).map((i) => decoded.raw.symbol_indices[i]));
+/** #103: the three edge kinds a class/interface/method hierarchy relates on
+ * -- everything else (call, value, annotation, decorator, the legacy
+ * "unknown" default, and possible_implementation, which exactEdges already
+ * drops) rolls up through rollReferences' plain hot/cold call lines exactly
+ * as before. A document with no `kinds` legend at all (a fixture built
+ * before #104) reports every edge as "call" here -- build spec item 5's
+ * "everything must still render exactly as before". */
+export type InheritanceKind = "extends" | "implements" | "overrides";
 
-  const rep = (globalIdx: number): string => {
+/** The edge's drawing/relation bucket, read from the document's OWN `kinds`
+ * legend (never a hardcoded index -- the legend's order is data, matching
+ * src/schema.rs's `symbol_edge_kinds()` only by convention, not by
+ * contract). Anything not one of the three inheritance kinds -- including a
+ * legacy document with no legend, where every lookup below misses -- is
+ * "call". */
+export function classifyEdgeKind(raw: { kinds?: ReadonlyArray<string> }, kindIdx: number): InheritanceKind | "call" {
+  const name = raw.kinds?.[kindIdx];
+  if (name === "extends" || name === "implements" || name === "overrides") return name;
+  return "call";
+}
+
+/** Shared by rollReferences and rollInheritanceReferences: walks a target's
+ * ancestor chain until it finds one that's drawn, falling back to the
+ * target's own file -- prototype's `rep`. */
+function repFor(decoded: DecodedDistrictSymbols, visibleGlobals: ReadonlySet<number>) {
+  return (globalIdx: number): string => {
     if (visibleGlobals.has(globalIdx)) return `s:${globalIdx}`;
     const localIdx = decoded.globalToLocal.get(globalIdx);
     if (localIdx != null) {
@@ -367,10 +383,35 @@ export function rollReferences(
     // somehow references a global index it didn't also ship a row for).
     return `f:${globalIdx}`;
   };
+}
+
+/** Roll a symbol's (or, for a hover/selection on a class, its whole
+ * subtree's) references up to whatever is actually drawn on screen this
+ * paint -- spec item 4 / prototype's `rolled`/`rep`. `visibleGlobals` is the
+ * set of GLOBAL symbol indices that got a card drawn this paint (VIS, in the
+ * prototype); `rep` walks a target's ancestor chain until it finds one that
+ * IS drawn, falling back to the target's own file. Edges internal to the
+ * subtree, and edges to the subtree's own ancestors (a member referencing
+ * its own class, for instance), are dropped -- spec: "Drop edges internal to
+ * the subtree and edges to its own ancestors." #103 follow-up: an
+ * extends/implements/overrides edge is drawn separately (kind-aware, neutral
+ * ink -- see rollInheritanceReferences) and dropped from this call-only
+ * rollup, so a base class no longer shows up as an ordinary red/blue "call"
+ * line the way it did before #104's typed edges landed. */
+export function rollReferences(
+  decoded: DecodedDistrictSymbols,
+  local: number,
+  visibleGlobals: ReadonlySet<number>,
+): RolledReferences {
+  const subtree = subtreeOf(decoded, local);
+  const subtreeGlobals = new Set<number>([...subtree].map((i) => decoded.raw.symbol_indices[i]));
+  const ancestorGlobals = new Set<number>(ancestorsOf(decoded, local).map((i) => decoded.raw.symbol_indices[i]));
+  const rep = repFor(decoded, visibleGlobals);
 
   const out = new Map<string, number>();
   const inn = new Map<string, number>();
-  for (const [source, target, occurrences] of exactEdges(decoded.raw)) {
+  for (const [source, target, occurrences, kindIdx] of exactEdges(decoded.raw)) {
+    if (classifyEdgeKind(decoded.raw, kindIdx) !== "call") continue;
     const sourceInSubtree = subtreeGlobals.has(source);
     const targetInSubtree = subtreeGlobals.has(target);
     if (sourceInSubtree === targetInSubtree) continue; // internal, or touches neither
@@ -387,6 +428,67 @@ export function rollReferences(
     }
   }
   return { out, in: inn };
+}
+
+export interface RolledInheritanceLink {
+  /** rep-key ("s:<global>" or "f:<global file>"), same roll-up rule as
+   * RolledReferences: the nearest drawn card, or the symbol's file. */
+  key: string;
+  kind: InheritanceKind;
+  /** true when `local`'s own subtree is the SOURCE of this edge (it extends/
+   * implements/overrides `key`); false when `key` is the source (something
+   * extends/implements/overrides INTO `local`'s subtree, e.g. a subclass or
+   * an overriding method elsewhere). MapRenderer uses this to decide which
+   * end of the drawn line is the "parent" -- always the edge's target. */
+  isOut: boolean;
+}
+
+/** The extends/implements/overrides counterpart to rollReferences, kept
+ * separate rather than folded into RolledReferences' out/in maps: these
+ * three kinds draw with their own neutral-ink, arrowhead/dash styling
+ * (build spec item 1), never the call lines' red/blue direction colour or
+ * aggregated occurrence count -- a class has at most a handful of bases, not
+ * a call count worth summing. Same subtree/ancestor/roll-up rules as
+ * rollReferences (spec: "every existing roll-up rule stays"), and the same
+ * silent no-op on a document with no `kinds` legend (classifyEdgeKind falls
+ * back to "call", so this returns empty and MapRenderer draws nothing new). */
+export function rollInheritanceReferences(
+  decoded: DecodedDistrictSymbols,
+  local: number,
+  visibleGlobals: ReadonlySet<number>,
+): RolledInheritanceLink[] {
+  const subtree = subtreeOf(decoded, local);
+  const subtreeGlobals = new Set<number>([...subtree].map((i) => decoded.raw.symbol_indices[i]));
+  const ancestorGlobals = new Set<number>(ancestorsOf(decoded, local).map((i) => decoded.raw.symbol_indices[i]));
+  const rep = repFor(decoded, visibleGlobals);
+  const selfGlobal = decoded.raw.symbol_indices[local];
+
+  const seen = new Set<string>();
+  const links: RolledInheritanceLink[] = [];
+  for (const [source, target, , kindIdx] of decoded.raw.edges) {
+    const kind = classifyEdgeKind(decoded.raw, kindIdx);
+    if (kind === "call") continue; // ordinary reference, or possible_implementation/legacy -- not ours
+    const sourceInSubtree = subtreeGlobals.has(source);
+    const targetInSubtree = subtreeGlobals.has(target);
+    if (sourceInSubtree === targetInSubtree) continue; // internal, or touches neither
+    let key: string;
+    let isOut: boolean;
+    if (sourceInSubtree) {
+      if (ancestorGlobals.has(target) || subtreeGlobals.has(target)) continue;
+      key = rep(target);
+      isOut = true;
+    } else {
+      if (ancestorGlobals.has(source) || subtreeGlobals.has(source)) continue;
+      key = rep(source);
+      isOut = false;
+    }
+    if (key === `s:${selfGlobal}`) continue;
+    const dedupe = `${kind}:${isOut}:${key}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    links.push({ key, kind, isOut });
+  }
+  return links;
 }
 
 export function topN(m: ReadonlyMap<string, number>, n: number): [string, number][] {
@@ -431,12 +533,17 @@ export const KIND_NAMES: Record<number, string> = {
  * (spec item 5). Nesting mirrors `children`; a row's `refsIn` is the RAW
  * in-degree of that one symbol (not rolled up to what's drawn), since the
  * sidebar shows the file regardless of what the map happens to have
- * expanded. */
+ * expanded. `bases` (#103 build item 3) is a class/interface row's own
+ * direct `extends` targets' names, in-repo only (an edge only exists once
+ * resolved -- see src/symbols.rs's resolve()), for the dim "‹ Base›"
+ * suffix; empty for anything else, including a class with only
+ * out-of-repo/unresolved bases. */
 export interface OutlineRow {
   local: number;
   global: number;
   row: HierSymbolRow;
   refsIn: number;
+  bases: string[];
   children: OutlineRow[];
 }
 
@@ -455,11 +562,26 @@ export function fileOutline(decoded: DecodedDistrictSymbols, fileIdx: number): O
   for (const [, target, occurrences] of exactEdges(decoded.raw)) {
     inCounts.set(target, (inCounts.get(target) ?? 0) + occurrences);
   }
+  // A second, independent pass (left out of the inCounts loop above so that
+  // count keeps meaning exactly what it always has -- every non-possible-
+  // implementation reference, inheritance kinds included, per finding 30's
+  // existing under-count note) -- extends targets only, for the outline's
+  // own dim base display.
+  const basesOf = new Map<number, string[]>();
+  for (const [source, target, , kindIdx] of decoded.raw.edges) {
+    if (classifyEdgeKind(decoded.raw, kindIdx) !== "extends") continue;
+    const targetLocal = decoded.globalToLocal.get(target);
+    if (targetLocal == null) continue;
+    const list = basesOf.get(source) ?? [];
+    list.push(rowName(decoded.raw.symbols[targetLocal]));
+    basesOf.set(source, list);
+  }
   const build = (local: number): OutlineRow => ({
     local,
     global: decoded.raw.symbol_indices[local],
     row: decoded.raw.symbols[local],
     refsIn: inCounts.get(decoded.raw.symbol_indices[local]) ?? 0,
+    bases: basesOf.get(decoded.raw.symbol_indices[local]) ?? [],
     children: decoded.children[local].map(build),
   });
   return (decoded.topByFile.get(fileIdx) ?? []).map(build);
@@ -473,6 +595,79 @@ export function countOutlineSymbols(rows: readonly OutlineRow[]): number {
   let n = 0;
   for (const r of rows) n += 1 + countOutlineSymbols(r.children);
   return n;
+}
+
+/** One direct (unrolled) relation for the class card (build spec item 2):
+ * a name plus its global index, so the caller can tap through. Every entry
+ * here is necessarily in-repo -- src/symbols.rs only emits an extends/
+ * implements/overrides edge once the candidate resolved to a span in this
+ * same build (an external/stdlib base that never resolved gets no edge at
+ * all), so there is no separate "unresolved" case to render differently. */
+export interface HierarchyRelation {
+  key: string;
+  global: number;
+  name: string;
+}
+
+/** A class/interface/method's DIRECT hierarchy relations -- the selected
+ * symbol's own #103 typed edges, unrolled (unlike rollInheritanceReferences,
+ * which is the MAP's rolled-up-to-what's-drawn version of the same data).
+ * SelectionPanel's class card (build spec item 2) reads this straight: a
+ * class's own "extends"/"implements" targets, who extends/implements IT
+ * ("subclasses"/"implemented by"), and -- for an abstract method only,
+ * per spec item 2's "For an abstract method, 'overridden by (N)'" -- which
+ * methods override it. A concrete method's own overriders are computed too
+ * (`overriddenBy`) but the card only shows them for an abstract one; nothing
+ * here is dropped for being concrete, callers decide what to render. */
+export interface SymbolHierarchy {
+  extends: HierarchyRelation[];
+  implements: HierarchyRelation[];
+  subclasses: HierarchyRelation[];
+  implementedBy: HierarchyRelation[];
+  overriddenBy: HierarchyRelation[];
+}
+
+export function symbolHierarchy(decoded: DecodedDistrictSymbols, local: number): SymbolHierarchy {
+  const raw = decoded.raw;
+  const global = raw.symbol_indices[local];
+  const nameOf = (g: number): string => {
+    const l = decoded.globalToLocal.get(g);
+    return l != null ? rowName(raw.symbols[l]) : `#${g}`;
+  };
+  const relation = (g: number): HierarchyRelation => ({ key: `s:${g}`, global: g, name: nameOf(g) });
+  const dedupeSort = (list: HierarchyRelation[]): HierarchyRelation[] => {
+    const byGlobal = new Map<number, HierarchyRelation>();
+    for (const r of list) byGlobal.set(r.global, r);
+    return [...byGlobal.values()].sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  const extendsOut: HierarchyRelation[] = [];
+  const implementsOut: HierarchyRelation[] = [];
+  const subclasses: HierarchyRelation[] = [];
+  const implementedBy: HierarchyRelation[] = [];
+  const overriddenBy: HierarchyRelation[] = [];
+  for (const [source, target, , kindIdx] of raw.edges) {
+    const kind = classifyEdgeKind(raw, kindIdx);
+    if (kind === "extends") {
+      if (source === global) extendsOut.push(relation(target));
+      if (target === global) subclasses.push(relation(source));
+    } else if (kind === "implements") {
+      if (source === global) implementsOut.push(relation(target));
+      if (target === global) implementedBy.push(relation(source));
+    } else if (kind === "overrides") {
+      // source overrides target -- only the incoming direction ("who
+      // overrides ME") is card-facing (spec item 2); the outgoing base
+      // method is what the map's own reference line draws instead.
+      if (target === global) overriddenBy.push(relation(source));
+    }
+  }
+  return {
+    extends: dedupeSort(extendsOut),
+    implements: dedupeSort(implementsOut),
+    subclasses: dedupeSort(subclasses),
+    implementedBy: dedupeSort(implementedBy),
+    overriddenBy: dedupeSort(overriddenBy),
+  };
 }
 
 /** External references for the sidebar, grouped by top-level class/function
@@ -520,6 +715,7 @@ export function externalReferences(
         global: decoded.raw.symbol_indices[topLocal],
         row: decoded.raw.symbols[topLocal],
         refsIn: 0,
+        bases: [],
         children: [],
       },
       targets: [...targets.entries()]
