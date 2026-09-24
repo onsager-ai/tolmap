@@ -88,6 +88,17 @@ function compareText(a: string, b: string): number {
 
 let cssCache: CSSStyleDeclaration | null = null;
 
+/** Issue #82 "chrome follows the theme": this module's own copy of
+ * geometry.ts's cache-invalidation problem (see that file's
+ * invalidateColourCache doc comment) -- `--p0..--p9` resolve once and stick
+ * until this is called. lib/theme.ts calls both invalidators together on
+ * every theme change; MapView.tsx also rebuilds `packageLayout` itself on a
+ * theme change (its own `useMemo` dependency), which is what actually gets
+ * this module to call packageColor() again with the now-cleared cache. */
+export function invalidatePackageColourCache(): void {
+  cssCache = null;
+}
+
 function packageColor(index: number): string {
   // Package groups have their own categorical palette: district hues carry
   // spatial meaning and reusing them made unrelated package ranks look the

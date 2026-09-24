@@ -11,14 +11,35 @@
  * and conflating them would make map colour depend on chrome theme choices.
  * ------------------------------------------------------------------------- */
 :root {
-  --chrome: #151c21;
-  --chrome2: #1e272d;
-  --rule: #2b363d;
+  /* Chrome (issue #82 "chrome follows the theme", owner decision
+   * "Follow system + toggle", 2026-09-24): these five used to be dark-only
+   * constants sitting in this base block regardless of theme -- the chrome
+   * (top bar, district rail/drawer, panels/cards, footer, search box, the
+   * file-name chips/tabs drawn ON the map) stayed dark even when the map
+   * itself followed the OS to light, giving a dark frame around a light
+   * map. Light values now live here (this block IS the light theme for
+   * every OTHER token below already -- --canvas, --ink, --H0.. etc.), dark
+   * values move to the two dark blocks right after, the same three places
+   * those tokens already use. Picked close in lightness to --canvas
+   * (#eaede9) so chrome and map read as one surface (the owner's own
+   * complaint), not to pure white -- see docs/FINDINGS.md if this palette
+   * changes, contrast ratios were computed and are re-checked in CI
+   * (check-view-stability.mjs's chrome-contrast check). */
+  --chrome: #eef1ee;
+  --chrome2: #ffffff;
+  --rule: #d7dbd6;
+  --on: #131a1e;
+  --dim: #5b6367;
+  /* Floating map overlays (FooterStats, PackageLegend, SelectionSummaryBar,
+   * RouteBox) draw a translucent chrome panel OVER the canvas -- a plain
+   * `--chrome` token can't do that (it's opaque), and each caller wants a
+   * slightly different alpha (.94 vs .96), so this carries just the RGB
+   * triple (no alpha) for `rgba(var(--chrome-float-rgb), <alpha>)` at the
+   * call site. Same light/dark split as --chrome itself. */
+  --chrome-float-rgb: 255, 255, 255;
   --canvas: #eaede9;
   --coast: #bfc7bf;
   --ink: #121a1e;
-  --on: #d9e1e3;
-  --dim: #8b989e;
   --hot: #c0472f;
   /* Selection links (readable-overview PR): the "imported-by" direction's
      colour, paired with --hot for "imports" -- direction is never colour
@@ -59,6 +80,12 @@
   --p9: #69737d;
 }
 :root[data-theme="dark"] {
+  --chrome: #151c21;
+  --chrome2: #1e272d;
+  --rule: #2b363d;
+  --on: #d9e1e3;
+  --dim: #8b989e;
+  --chrome-float-rgb: 21, 28, 33;
   --canvas: #0e161a;
   --coast: #293539;
   --ink: #dce4e4;
@@ -81,6 +108,12 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    --chrome: #151c21;
+    --chrome2: #1e272d;
+    --rule: #2b363d;
+    --on: #d9e1e3;
+    --dim: #8b989e;
+    --chrome-float-rgb: 21, 28, 33;
     --canvas: #0e161a;
     --coast: #293539;
     --ink: #dce4e4;
@@ -100,6 +133,60 @@
     --p7: #c69be9;
     --p8: #d19a6a;
     --p9: #b0bac5;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * A handful of map colours that are deliberately the SAME in both themes --
+ * tokens per the theme-alignment audit's own rule ("anything hard-coded to a
+ * dark or light value becomes a token"), but not variants, because the thing
+ * they draw is theme-independent by design:
+ *   --pin-fill/--pin-ink: a landmark pin's dark badge + white rank number
+ *     (MapRenderer's pin pass). A pin always carries its own white ring, the
+ *     same way a paper map's pins stay one colour on day and night editions
+ *     -- it needs to read against EITHER canvas colour at once (a pin near a
+ *     district boundary can sit over a lighter or darker fill within the
+ *     same paint), not switch with the page theme.
+ *   --room-fallback: KCOL's own "no symbol colour for this row" fallback
+ *     (deep-zoom plot/room cells) -- a defensive default for data KCOL
+ *     doesn't cover, not a themed surface.
+ *   --room-label-ink: a room cell's symbol-name label, painted on top of the
+ *     cell's OWN fill (already mixed toward --canvas), never on raw canvas --
+ *     white reads against every cell fill in both themes because the fill
+ *     itself is never mixed past LAYER_SURFACE_MIX (40%, geometry.ts).
+ * ------------------------------------------------------------------------- */
+:root {
+  --pin-fill: #111a1e;
+  --pin-ink: #fff;
+  --room-fallback: #5e626a;
+  --room-label-ink: #fff;
+  /* Landmark badges (SelectionPanel's WHY_COLOR, file card "landmark" row).
+   * The dark-chrome-only values validated fine against --chrome when chrome
+   * was always #151c21; against the new light --chrome (#eef1ee) they drop
+   * to ~2.1-2.8:1 (measured), well under WCAG AA's 4.5:1 for text. Light
+   * variants below are the same hue darkened until each clears 4.5:1 against
+   * #eef1ee; dark keeps the original values (already ~5.4-7.1:1 against
+   * #151c21). */
+  --why-entry: #3c7262;
+  --why-bridge: #8e5e1f;
+  --why-hub: #316497;
+  --why-capital: #5b656e;
+  --why-hazard: #b93b23;
+}
+:root[data-theme="dark"] {
+  --why-entry: #6fb39f;
+  --why-bridge: #d79a4a;
+  --why-hub: #79a7d4;
+  --why-capital: #9fa8b0;
+  --why-hazard: #e0705a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --why-entry: #6fb39f;
+    --why-bridge: #d79a4a;
+    --why-hub: #79a7d4;
+    --why-capital: #9fa8b0;
+    --why-hazard: #e0705a;
   }
 }
 

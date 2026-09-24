@@ -29,7 +29,7 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
     else if (cls === "island") islandCount++;
   }
   return (
-    <div className={`pointer-events-none absolute bottom-2.5 left-2.5 max-w-[min(440px,calc(100%-22px))] rounded-md border border-[var(--rule)] bg-[rgba(21,28,33,.94)] px-2.5 py-2 text-[9.5px] leading-relaxed text-[var(--dim)] max-[820px]:bottom-[calc(112px+env(safe-area-inset-bottom,0px))] max-[820px]:z-20 max-[820px]:border-0 max-[820px]:bg-transparent max-[820px]:p-0 ${layer === "p" ? "min-[821px]:left-[225px]" : ""}`}>
+    <div className={`pointer-events-none absolute bottom-2.5 left-2.5 max-w-[min(440px,calc(100%-22px))] rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] px-2.5 py-2 text-[9.5px] leading-relaxed text-[var(--dim)] max-[820px]:bottom-[calc(112px+env(safe-area-inset-bottom,0px))] max-[820px]:z-20 max-[820px]:border-0 max-[820px]:bg-transparent max-[820px]:p-0 ${layer === "p" ? "min-[821px]:left-[225px]" : ""}`}>
       {layer !== "p" && <span className="max-[820px]:hidden">
       {layer === "d" ? (
         <>

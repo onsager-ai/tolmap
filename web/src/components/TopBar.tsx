@@ -2,6 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import type { CatalogueEntry } from "@/types";
 import type { Layer } from "@/map/constants";
 import { GeoLayerControls } from "./GeoLayerControls";
+import { ThemeToggle } from "./ThemeToggle";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
 
 interface Props {
@@ -63,6 +64,7 @@ export function TopBar({ catalogue, owner, repo, layer, onLayer }: Props) {
       </select>
       <span className="flex-1" />
       <GeoLayerControls layer={layer} onLayer={onLayer} />
+      <ThemeToggle />
     </div>
   );
 }

@@ -23,7 +23,7 @@ const KIND_TEXT: Record<Route["kind"], string> = {
 export function RouteBox({ doc, routeFrom, route, onClear }: Props) {
   if (routeFrom == null && !route) return null;
   return (
-    <div className="absolute bottom-2.5 left-2.5 max-w-[min(430px,calc(100%-22px))] rounded-md border border-[var(--rule)] bg-[rgba(21,28,33,.96)] px-3 py-2.5 text-[10.5px] leading-relaxed text-[var(--on)] max-[820px]:inset-x-2.5 max-[820px]:max-w-none">
+    <div className="absolute bottom-2.5 left-2.5 max-w-[min(430px,calc(100%-22px))] rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.96)] px-3 py-2.5 text-[10.5px] leading-relaxed text-[var(--on)] max-[820px]:inset-x-2.5 max-[820px]:max-w-none">
       <span onClick={onClear} className="float-right ml-2.5 cursor-pointer text-[var(--dim)]">
         clear
       </span>

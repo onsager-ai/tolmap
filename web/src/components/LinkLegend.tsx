@@ -26,17 +26,45 @@ function LineGlyph({ color, dashed }: { color: string; dashed: boolean }) {
 }
 
 /** "imported by N file(s) · imports M", both halves colour- and glyph-coded
- * to match the map's own selection rings/lines for the same direction. */
-export function LinkCountsLabel({ inDeg, outDeg }: { inDeg: number; outDeg: number }) {
+ * to match the map's own selection rings/lines for the same direction.
+ *
+ * `stacked` (owner follow-up, issue #82): the desktop file card's fixed
+ * 230px panel ellipsised this line once either count hit three digits
+ * (`langgenius__dify-desktop-file-selected.png`: "imported by 687 files ·
+ * — imp…", `imports 11` cut off entirely) -- a real count, not a label,
+ * belongs fully on screen rather than truncated. `stacked` puts each half on
+ * its own line instead of joining them with " · ", so neither ever competes
+ * with the other for width; SelectionPanel's FileHead (the desktop card AND
+ * the phone sheet, same markup) passes it, SelectionSummaryBar's fullscreen
+ * bar does not -- that bar is one line by design (its own "Details" button
+ * is the way to see the rest), and a two-line subtitle there would fight its
+ * own `truncate` for height instead of width. */
+export function LinkCountsLabel({ inDeg, outDeg, stacked = false }: { inDeg: number; outDeg: number; stacked?: boolean }) {
+  const importedBy = (
+    <span className={stacked ? "block truncate" : undefined} style={{ color: "var(--cold)" }}>
+      <LineGlyph color="var(--cold)" dashed />
+      imported by {inDeg} file{inDeg === 1 ? "" : "s"}
+    </span>
+  );
+  const imports = (
+    <span className={stacked ? "block truncate" : undefined} style={{ color: "var(--hot)" }}>
+      <LineGlyph color="var(--hot)" dashed={false} />
+      imports {outDeg}
+    </span>
+  );
+  if (stacked) {
+    return (
+      <span data-link-legend className="flex flex-col gap-0.5">
+        {importedBy}
+        {imports}
+      </span>
+    );
+  }
   return (
     <span data-link-legend>
-      <LineGlyph color="var(--cold)" dashed />
-      <span style={{ color: "var(--cold)" }}>
-        imported by {inDeg} file{inDeg === 1 ? "" : "s"}
-      </span>
+      {importedBy}
       {" · "}
-      <LineGlyph color="var(--hot)" dashed={false} />
-      <span style={{ color: "var(--hot)" }}>imports {outDeg}</span>
+      {imports}
     </span>
   );
 }

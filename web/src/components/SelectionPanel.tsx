@@ -549,8 +549,12 @@ function FileHead({ doc, i, selSym, adj, radj }: { doc: MapDocument; i: number; 
   return (
     <>
       <h3 className="truncate font-sans text-[13px] font-semibold">{sm ? sm[0] : doc.F[i].split("/").pop()}</h3>
-      <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">
-        {sm ? `${doc.F[i].split("/").pop()}:${sm[2]} · ${KIND[sm[1]]}` : <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} />}
+      <p className={`mt-0.5 text-[10px] text-[var(--dim)] ${sm ? "truncate" : ""}`}>
+        {sm ? (
+          `${doc.F[i].split("/").pop()}:${sm[2]} · ${KIND[sm[1]]}`
+        ) : (
+          <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} stacked />
+        )}
       </p>
     </>
   );
@@ -707,12 +711,18 @@ function FileBody({
   );
 }
 
+// Theme-alignment audit: these used to be fixed hex values, which read fine
+// against the old dark-only --chrome but drop under WCAG AA against the new
+// light --chrome (index.css's own --why-* comment has the measured ratios).
+// Indirected through CSS custom properties (light/dark variants defined
+// there) rather than a second JS-side light/dark table here, so this file
+// doesn't need to know which theme is active.
 const WHY_COLOR: Record<string, string> = {
-  entry: "#6FB39F",
-  bridge: "#D79A4A",
-  hub: "#79A7D4",
-  capital: "#9FA8B0",
-  hazard: "#E0705A",
+  entry: "var(--why-entry)",
+  bridge: "var(--why-bridge)",
+  hub: "var(--why-hub)",
+  capital: "var(--why-capital)",
+  hazard: "var(--why-hazard)",
 };
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
