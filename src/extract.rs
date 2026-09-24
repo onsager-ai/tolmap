@@ -374,13 +374,13 @@ fn build_multi_source_inner(
     // resolution. Metadata discovery and the ordinary file walks are the
     // remainder labelled `extract`.
     let extract_time = total.saturating_sub(symbol_collection + graph_time);
-    eprintln!("phase extract: {:.3}s", extract_time.as_secs_f64());
-    eprintln!(
+    progress.log(format!("phase extract: {:.3}s", extract_time.as_secs_f64()));
+    progress.log(format!(
         "phase symbol_collection: {:.3}s",
         symbol_collection.as_secs_f64()
-    );
-    eprintln!("phase graph: {:.3}s", graph_time.as_secs_f64());
-    eprintln!("phase extract_total: {:.3}s", total.as_secs_f64());
+    ));
+    progress.log(format!("phase graph: {:.3}s", graph_time.as_secs_f64()));
+    progress.log(format!("phase extract_total: {:.3}s", total.as_secs_f64()));
     Ok((graph, spool))
 }
 

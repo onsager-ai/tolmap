@@ -525,6 +525,8 @@ fn process_worker_exe(
     let mut outcome = None;
     let mut error = None;
     let mut last_stage = None;
+    let mut stage_offsets = [0_u64; StageId::ALL.len()];
+    let mut stage_max = [0_u64; StageId::ALL.len()];
     for line in BufReader::new(stdout).lines() {
         let line = match line {
             Ok(line) => line,
@@ -550,6 +552,7 @@ fn process_worker_exe(
         match event {
             WorkerEvent::StageStarted { stage, .. } => {
                 last_stage = Some(stage);
+                stage_offsets[stage.index() - 1] = stage_max[stage.index() - 1];
                 let status = match stage {
                     StageId::Clone
                     | StageId::CloneObjects
@@ -568,20 +571,24 @@ fn process_worker_exe(
                     snapshot.elapsed_s = started.elapsed().as_secs_f64();
                     let row = &mut snapshot.stages[stage.index() - 1];
                     row.state = StageState::Running;
-                    row.started_at = Some(now_rfc3339());
+                    if row.started_at.is_none() {
+                        row.started_at = Some(now_rfc3339());
+                    }
                 });
             }
             WorkerEvent::Progress { value, .. } => {
                 last_stage = Some(value.stage);
+                let index = value.stage.index() - 1;
+                let mut value = value;
+                value.done = value.done.saturating_add(stage_offsets[index]);
+                value.total = value
+                    .total
+                    .map(|total| total.saturating_add(stage_offsets[index]));
+                value.done = value.done.max(stage_max[index]);
+                stage_max[index] = value.done;
                 tx.send_modify(|snapshot| {
                     if is_terminal(snapshot) {
                         return;
-                    }
-                    let mut value = value;
-                    if let Some(old) = &snapshot.progress {
-                        if old.stage == value.stage {
-                            value.done = value.done.max(old.done);
-                        }
                     }
                     snapshot.progress = Some(value);
                     snapshot.elapsed_s = started.elapsed().as_secs_f64();
@@ -603,7 +610,7 @@ fn process_worker_exe(
                     } else {
                         StageState::Failed
                     };
-                    row.duration_s = Some(duration_s);
+                    row.duration_s = Some(row.duration_s.unwrap_or(0.0) + duration_s);
                     snapshot.elapsed_s = started.elapsed().as_secs_f64();
                 });
             }
@@ -900,12 +907,12 @@ mod tests {
         let fake_worker = dir.path().join("regressing-worker");
         let value = |done| {
             format!(
-            "{{\"type\":\"progress\",\"v\":1,\"value\":{{\"stage\":\"parse\",\"stage_index\":7,\"stage_count\":18,\"label\":\"Parsing files\",\"unit\":\"files\",\"done\":{done},\"total\":3,\"rate_per_s\":null}}}}"
+            "{{\"type\":\"progress\",\"v\":1,\"value\":{{\"stage\":\"parse\",\"stage_index\":6,\"stage_count\":18,\"label\":\"Parsing files\",\"unit\":\"files\",\"done\":{done},\"total\":3,\"rate_per_s\":null}}}}"
         )
         };
         let script = format!(
-            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{{\"type\":\"error\",\"v\":1,\"code\":\"index_failed\",\"message\":\"test\"}}'\n",
-            value(1), value(3), value(2),
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{{\"type\":\"stage_finished\",\"v\":1,\"stage\":\"parse\",\"duration_s\":0.1,\"success\":true}}' '{{\"type\":\"stage_started\",\"v\":1,\"stage\":\"parse\"}}' '{}'\nsleep 0.35\nprintf '%s\\n' '{{\"type\":\"error\",\"v\":1,\"code\":\"index_failed\",\"message\":\"test\"}}'\n",
+            value(1), value(3), value(2), value(1),
         );
         std::fs::write(&fake_worker, script).unwrap();
         std::fs::set_permissions(&fake_worker, std::fs::Permissions::from_mode(0o755)).unwrap();
