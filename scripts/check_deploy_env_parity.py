@@ -3,9 +3,8 @@
 stop describing the same set of TOLMAP_* knobs.
 
 Staging exists to be evidence about production. The moment one side gains a
-limit the other does not have -- a larger clone budget, a longer job
-timeout -- a repository that indexes on staging tells you nothing about
-whether it indexes on prod, and nothing anywhere says so out loud. This
+setting the other does not have -- for example a different clone cache
+budget -- a staging result tells you less about production, and nothing anywhere says so out loud. This
 check is cheap and catches that at review time.
 
 It compares KEY SETS, not values. Values are allowed to differ (the port is

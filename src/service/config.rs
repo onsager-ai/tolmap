@@ -1,20 +1,5 @@
-//! Configuration for `tolmap serve`, and the limits a public-facing clone-
-//! and-index service needs (docs/ARCHITECTURE.md's "Limits" section).
-//!
-//! Every field has a documented default rather than a magic number sitting
-//! in `jobs.rs`/`clone.rs` -- the brief is explicit that this belongs in one
-//! place. Defaults are picked to comfortably admit django (851 files, the
-//! largest fixture) with headroom: the corpus is the floor, not the ceiling.
-//! `max_history_commits` is the one field this did not actually hold for
-//! until 2026-09-20 -- see its own doc comment below.
-//!
-//! **Every default here is also overridable by an environment variable**
-//! (issue #23 gap 4: these were defaults in code with no way to change one
-//! without a rebuild). `Limits::from_env` is the one place that reads
-//! `TOLMAP_MAX_*`/`TOLMAP_RATE_LIMIT_*` -- request-path code
-//! (`clone.rs`/`jobs.rs`/`http.rs`) only ever reads `Limits` fields, never
-//! `std::env::var` itself, so this stays the single source of truth rather
-//! than env lookups scattering across the request path.
+//! Service configuration. Queue length and request frequency stay bounded;
+//! repository size and job runtime are deliberately unbounded (issue #97).
 
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -26,86 +11,16 @@ use crate::pipeline::PruneVariant;
 
 #[derive(Clone, Debug)]
 pub struct Limits {
-    /// Reject a repository with more source files than this, after
-    /// detection has picked a language and root. django is 851; the
-    /// default leaves ~6x headroom for a larger monorepo before it is
-    /// worth raising deliberately rather than by surprise.
-    ///
-    /// Env: `TOLMAP_MAX_FILES`.
-    pub max_files: usize,
-    /// Reject a clone whose working tree + `.git` exceeds this many bytes.
-    /// Checked with `du -sb` on the materialised clone before indexing
-    /// starts, so an oversized repo fails as `repo_too_large`, not partway
-    /// through a long extract.
-    ///
-    /// Env: `TOLMAP_MAX_CLONE_BYTES`.
-    pub max_clone_bytes: u64,
-    /// Reject a repository whose `HEAD` history (`git rev-list --count
-    /// HEAD`) has more commits than this.
-    ///
-    /// **This does not bound indexing cost** -- correcting a false claim an
-    /// earlier version of this comment made. `extract.rs`'s `git_history`
-    /// call is hardcoded to walk only the most recent 4000 commits for
-    /// co-change no matter how deep `HEAD`'s history is (see
-    /// `service::clone`'s module doc comment), so a repository with 200,000
-    /// commits costs `extract::build` exactly what one with 4,000 does.
-    ///
-    /// What it actually bounds depends on which of
-    /// `service::clone::materialize`'s two paths a request takes -- an
-    /// earlier version of *this* correction also overstated it, by
-    /// describing only one of the two paths as if it were both:
-    ///
-    /// - `RepoSource::Local` (fixtures and tests; nothing is cloned):
-    ///   `check_history_depth` runs first, before anything else, so it
-    ///   genuinely pre-empts work -- a repository over the limit never
-    ///   reaches `detect`/`extract::build`.
-    /// - `RepoSource::Remote`: `clone_blobless`/`fetch_and_fast_forward`
-    ///   run *first*, so the clone -- network transfer and disk writes
-    ///   alike -- has already happened by the time this check runs.
-    ///   `check_clone_size` has also already measured the real,
-    ///   already-materialised size with `du -sb` and rejected an
-    ///   oversized clone on its own. So on this path
-    ///   `check_history_depth` is a **post-clone refusal to index**, not a
-    ///   pre-clone gate: it cannot save the clone cost, because that cost
-    ///   is already paid by the time it runs. What it still catches that
-    ///   `check_clone_size` alone cannot is a repository with an enormous
-    ///   commit *count* but a small byte footprint (many tiny or
-    ///   near-empty commits can keep total `.git` bytes modest while
-    ///   `git rev-list`-style traversals over that history stay expensive
-    ///   in wall-clock terms, independent of size) -- a real but narrow
-    ///   case, not a restatement of the size check. Whether that narrow
-    ///   case earns a second, independent knob here rather than just
-    ///   tightening `max_clone_bytes` is an open question this change
-    ///   does not resolve -- see the PR that added this correction.
-    ///
-    /// The default used to be 20,000, on the belief that this "comfortably
-    /// admits django ... with headroom" (this file's module doc comment).
-    /// That was false and untested: django's real history is 34,942
-    /// commits (measured 2026-09-20 via `TOLMAP_FIXTURE_REPOS`, `git -C
-    /// django rev-list --count HEAD`), so the old default rejected the
-    /// fixture the comment claimed it admitted. 200,000 restores roughly
-    /// the same ~5.9x headroom over django's real depth that `max_files`
-    /// keeps over its file count (5,000 / 851 ~= 5.87), rather than a
-    /// number picked to sound safe. That part of this change stands
-    /// regardless of the open question above -- a repository this deep
-    /// should be admitted either way.
-    ///
-    /// Env: `TOLMAP_MAX_HISTORY_COMMITS`.
-    pub max_history_commits: usize,
-    /// Wall-clock budget from the start of clone + detect + index, excluding
-    /// queue time. A timeout reports `index_failed`; the blocking thread
-    /// still holds its worker slot until it really exits.
-    ///
-    /// Env: `TOLMAP_MAX_JOB_SECONDS`.
-    pub max_job_seconds: u64,
+    /// Total clone cache budget; eviction never rejects the active clone.
+    /// Env: `TOLMAP_CLONE_CACHE_BYTES`.
+    pub clone_cache_bytes: u64,
     /// Maximum number of blocking index bodies running at once. One fits
     /// the production 1 GB machine; raising this needs a memory measurement.
     /// Env: `TOLMAP_MAX_CONCURRENT_JOBS`.
     pub max_concurrent_jobs: usize,
     /// Pending jobs only, excluding running jobs. Sixteen keeps admission
     /// bounded on the 1 GB machine; with one worker and a 900 s job budget,
-    /// the last accepted job could wait up to four hours. More pending
-    /// requests would promise an even less useful wait without adding CPU.
+    /// pending requests still need a bounded queue on one worker.
     /// Env: `TOLMAP_MAX_QUEUED_JOBS`.
     pub max_queued_jobs: usize,
     /// Requests per window, per source IP, across all endpoints under
@@ -130,10 +45,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Limits {
-            max_files: 5_000,
-            max_clone_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB
-            max_history_commits: 200_000, // see field doc comment -- was 20_000, rejected django
-            max_job_seconds: 900,         // 15 minutes
+            clone_cache_bytes: 2 * 1024 * 1024 * 1024,
             max_concurrent_jobs: 1,
             max_queued_jobs: 16,
             rate_limit_per_ip: 30,
@@ -145,7 +57,7 @@ impl Default for Limits {
 }
 
 impl Limits {
-    /// Overlays `TOLMAP_MAX_*`/`TOLMAP_RATE_LIMIT_*` on top of
+    /// Overlays queue, cache and rate settings on top of
     /// [`Limits::default`] -- an unset or unparsable variable falls back to
     /// the default rather than failing startup, since a typo'd env var
     /// should not take the whole service down when a working default
@@ -154,13 +66,7 @@ impl Limits {
     fn from_env() -> Self {
         let default = Limits::default();
         Limits {
-            max_files: env_var_or("TOLMAP_MAX_FILES", default.max_files),
-            max_clone_bytes: env_var_or("TOLMAP_MAX_CLONE_BYTES", default.max_clone_bytes),
-            max_history_commits: env_var_or(
-                "TOLMAP_MAX_HISTORY_COMMITS",
-                default.max_history_commits,
-            ),
-            max_job_seconds: env_var_or("TOLMAP_MAX_JOB_SECONDS", default.max_job_seconds),
+            clone_cache_bytes: env_var_or("TOLMAP_CLONE_CACHE_BYTES", default.clone_cache_bytes),
             max_concurrent_jobs: env_var_or(
                 "TOLMAP_MAX_CONCURRENT_JOBS",
                 default.max_concurrent_jobs,
@@ -253,7 +159,7 @@ impl ServeConfig {
     /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`,
     /// `TOLMAP_PRUNE_VARIANT`, `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus
     /// `Limits::from_env`'s
-    /// `TOLMAP_MAX_*`/`TOLMAP_RATE_LIMIT_*`); anything left unset uses its
+    /// `TOLMAP_CLONE_CACHE_BYTES`/queue/rate variables); anything left unset uses its
     /// documented default. No config file yet -- the job service has no
     /// equivalent of `.tolmap/config.toml` to read limits from, and env
     /// vars are enough for what an operator needs to move today.
@@ -269,7 +175,7 @@ impl ServeConfig {
         // comment. `env_var_or` falls back to the default on anything that
         // does not parse as an `IpAddr`, so a typo'd TOLMAP_BIND_ADDR can't
         // take the service down at startup (same handling as every
-        // TOLMAP_MAX_*/TOLMAP_RATE_LIMIT_* variable).
+        // queue/rate variable).
         let bind_ip = env_var_or("TOLMAP_BIND_ADDR", IpAddr::V4(Ipv4Addr::LOCALHOST));
         let cache_dir = env::var("TOLMAP_CACHE_DIR")
             .map(PathBuf::from)
@@ -338,10 +244,7 @@ mod tests {
     fn limits_from_env_overrides_defaults_and_falls_back_on_garbage() {
         let _guard = lock_env();
         let keys = [
-            "TOLMAP_MAX_FILES",
-            "TOLMAP_MAX_CLONE_BYTES",
-            "TOLMAP_MAX_HISTORY_COMMITS",
-            "TOLMAP_MAX_JOB_SECONDS",
+            "TOLMAP_CLONE_CACHE_BYTES",
             "TOLMAP_MAX_CONCURRENT_JOBS",
             "TOLMAP_MAX_QUEUED_JOBS",
             "TOLMAP_RATE_LIMIT_PER_IP",
@@ -356,35 +259,29 @@ mod tests {
         // Nothing set: every field matches the documented default.
         let defaults = Limits::default();
         let from_env = Limits::from_env();
-        assert_eq!(from_env.max_files, defaults.max_files);
-        assert_eq!(from_env.max_clone_bytes, defaults.max_clone_bytes);
-        assert_eq!(from_env.max_history_commits, defaults.max_history_commits);
+        assert_eq!(from_env.clone_cache_bytes, defaults.clone_cache_bytes);
         assert_eq!(from_env.max_concurrent_jobs, 1);
         assert_eq!(from_env.max_queued_jobs, 16);
         assert_eq!(from_env.rate_limit_per_repo, defaults.rate_limit_per_repo);
 
         // Set: the environment value wins, without a rebuild.
-        env::set_var("TOLMAP_MAX_FILES", "10");
-        env::set_var("TOLMAP_MAX_CLONE_BYTES", "1024");
+        env::set_var("TOLMAP_CLONE_CACHE_BYTES", "1024");
         env::set_var("TOLMAP_RATE_LIMIT_PER_IP", "5");
         env::set_var("TOLMAP_MAX_CONCURRENT_JOBS", "2");
         env::set_var("TOLMAP_MAX_QUEUED_JOBS", "4");
         let overridden = Limits::from_env();
-        assert_eq!(overridden.max_files, 10);
-        assert_eq!(overridden.max_clone_bytes, 1024);
+        assert_eq!(overridden.clone_cache_bytes, 1024);
         assert_eq!(overridden.rate_limit_per_ip, 5);
         assert_eq!(overridden.max_concurrent_jobs, 2);
         assert_eq!(overridden.max_queued_jobs, 4);
-        // A field with no override still reads its default.
-        assert_eq!(overridden.max_history_commits, defaults.max_history_commits);
 
         // Garbage: falls back to the default instead of panicking the
         // service on startup or silently coercing to 0.
-        env::set_var("TOLMAP_MAX_FILES", "not-a-number");
+        env::set_var("TOLMAP_CLONE_CACHE_BYTES", "not-a-number");
         env::set_var("TOLMAP_MAX_CONCURRENT_JOBS", "0");
         env::set_var("TOLMAP_MAX_QUEUED_JOBS", "bad");
         let garbage = Limits::from_env();
-        assert_eq!(garbage.max_files, defaults.max_files);
+        assert_eq!(garbage.clone_cache_bytes, defaults.clone_cache_bytes);
         assert_eq!(garbage.max_concurrent_jobs, 1);
         assert_eq!(garbage.max_queued_jobs, defaults.max_queued_jobs);
 
@@ -480,31 +377,5 @@ mod tests {
             PruneVariant::NodeRelative
         );
         env::remove_var("TOLMAP_PRUNE_VARIANT");
-    }
-
-    /// The regression this change fixes: `max_history_commits`'s default
-    /// used to be 20,000, and django's real history is 34,942 commits (see
-    /// the field's doc comment for how that was measured) -- so the old
-    /// default rejected the exact fixture the module doc comment claimed
-    /// it "comfortably admits ... with headroom". This pins both the fact
-    /// (django's real depth) and the headroom this change restores, so a
-    /// future change that lowers the default again gets caught here
-    /// instead of only when someone actually tries to index django.
-    #[test]
-    fn default_history_limit_keeps_headroom_over_djangos_real_history() {
-        const DJANGO_REAL_HISTORY_COMMITS: usize = 34_942;
-        let default = Limits::default().max_history_commits;
-        assert!(
-            default > DJANGO_REAL_HISTORY_COMMITS,
-            "default max_history_commits ({default}) must admit django's real history \
-             ({DJANGO_REAL_HISTORY_COMMITS} commits)"
-        );
-        // Same ~5.9x headroom style as max_files (5_000 / 851 ~= 5.87) --
-        // not just "bigger than django", a deliberately chosen margin.
-        assert!(
-            (default as f64) / (DJANGO_REAL_HISTORY_COMMITS as f64) > 5.0,
-            "default should keep roughly max_files's headroom ratio over the real fixture, \
-             not just clear it narrowly"
-        );
     }
 }

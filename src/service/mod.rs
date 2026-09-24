@@ -6,6 +6,7 @@
 pub mod clone;
 pub mod config;
 pub mod error;
+pub mod eta;
 pub mod http;
 pub mod jobs;
 pub mod ratelimit;
@@ -36,10 +37,12 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
     let store = Store::open(&config.db_path)
         .with_context(|| format!("open store at {}", config.db_path.display()))?;
     let bind = config.bind;
+    let jobs = jobs::new_registry();
+    jobs.load_timings(&store)?;
     let state = Arc::new(AppState {
         store,
         config,
-        jobs: jobs::new_registry(),
+        jobs,
         rate_limiter: RateLimiter::new(),
     });
     let app = http::router(state);

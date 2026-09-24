@@ -48,10 +48,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_PRUNE_VARIANT` | `node-relative` | blend/prune route: `absolute`, `percentile`, `node-relative`, or `pre-rescale`; unset or invalid uses `node-relative` |
 | `TOLMAP_DB_PATH` | `<TOLMAP_CACHE_DIR>/tolmap.sqlite3` | the SQLite store |
 | `TOLMAP_CACHE_DIR` | system temp dir `/tolmap-cache` | clone cache + indexed map files |
-| `TOLMAP_MAX_FILES` | `5000` | reject a repo with more source files than this after detection |
-| `TOLMAP_MAX_CLONE_BYTES` | `2147483648` (2 GiB) | reject a clone whose working tree + `.git` exceeds this |
-| `TOLMAP_MAX_HISTORY_COMMITS` | `200000` | reject a repo whose `HEAD` history has more commits than this -- does not bound indexing cost (`extract.rs` caps its own history read at 4000 regardless of depth); see `service::config::Limits::max_history_commits`'s doc comment for what it actually guards on each of `service::clone::materialize`'s two request paths (pre-clone on a local path, a narrower post-clone refusal on a remote one). Default was 20000 until 2026-09-20, which rejected django (34942 commits) |
-| `TOLMAP_MAX_JOB_SECONDS` | `900` | wall-clock budget for one job before it fails as `index_failed` |
+| `TOLMAP_CLONE_CACHE_BYTES` | `2147483648` (2 GiB) | total clone-cache LRU eviction budget; never rejects or evicts the active clone |
 | `TOLMAP_MAX_CONCURRENT_JOBS` | `1` | maximum blocking index jobs running at once; zero is treated as one |
 | `TOLMAP_MAX_QUEUED_JOBS` | `16` | pending jobs allowed beyond running jobs; zero disables waiting |
 | `TOLMAP_RATE_LIMIT_PER_IP` | `30` | requests per window, per source IP, under `/api/` |
@@ -60,10 +57,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS` | `300` | window for the per-repo limit |
 | `TOLMAP_RETAIN_COMMITS_PER_REPO` | `20` | indexed commits kept per slug before older ones are pruned (see "Store" below) |
 
-All limit/rate-limit variables map directly to `service::config::Limits`'s
-fields, which is the single place their defaults are documented and the
-only place that reads them from the environment -- request-handling code
-only ever sees a resolved `Limits` value, never `std::env::var` itself.
+These queue, cache and rate settings map to `service::config::Limits`. There are no file-count, clone-size, history-depth or job-time admission caps. The co-change algorithm still reads at most 4000 commits per build; that horizon does not reject a repository with deeper history.
 
 ## Repository identifiers
 
@@ -180,6 +174,8 @@ be answered in the same request rather than always queuing a job.
     "transfer_bytes": 1048576,             // optional, git transfer only
     "transfer_rate_bytes_per_s": 524288.0 // optional, git transfer only
   } | null,
+  "eta": {"low_s": 15.0, "high_s": 32.0, "basis": "model" | "rate" | "blend"} | null,
+  "eta_start_s": 44.0 | null,
   "elapsed_s": 12.3,
   "stages": [
     {"id": "parse", "label": "Parsing files", "state": "pending" | "running" | "done" | "failed",
@@ -190,9 +186,7 @@ be answered in the same request rather than always queuing a job.
 
 `commit` is the commit resolved before admission. `queue_position` is a
 one-based FIFO position while waiting, updated when jobs ahead start. It is
-`null` once running and in terminal states. The 900-second job clock starts
-when a worker starts the job, so queue waiting does not count. A timed-out
-child can continue, and holds its worker slot until it exits. `elapsed_s`
+`null` once running and in terminal states. For queued jobs, `eta_start_s` is the sum of the estimated remaining time of the running job and the estimated runtimes of jobs ahead in FIFO order. It updates as jobs ahead progress; it is null once running or terminal. `eta` is a remaining-time range for the job itself. The model starts from finding 36 and corpus timings, refits from completed job stages in SQLite, and blends current-stage progress with an EWMA rate. The interval widens when file count exceeds observed training sizes. Either field may be null when unknown. No wall-time timeout is imposed. `elapsed_s`
 is updated with each worker event and on completion. Progress counters never
 decrease for a stage during a job, even when a multi-source build repeats
 parsing and resolution. `total` may be unknown and can grow as another source
@@ -204,6 +198,10 @@ fails the job with `worker_crashed`, including its exit status and last stage.
 free-text description of what is happening right now (e.g. `"cloning
 github.com/django/django"`, `"indexing (partition)"`) -- it is for display,
 not for matching on; only `status` is a stable enum.
+
+### `POST /api/jobs/{job_id}/cancel`
+
+Returns the current `JobSnapshot` with `200 OK`. Cancelling a queued job removes it from the FIFO queue and updates later positions and start estimates. Cancelling a running job kills the worker process group, including git children, and releases the slot only after the child exits. Both finish as `status: "failed"` with `error_code: "cancelled"`; the existing status enum stays compatible with older clients. Repeating the request returns the same terminal snapshot. Unknown IDs return 404. The endpoint has the same per-IP and per-repo request rate limits as `POST /api/index`.
 
 ### `GET /api/jobs/{job_id}/events`
 
@@ -220,7 +218,7 @@ heartbeat comment is sent every 15 seconds.
 
 `tolmap worker` reads one JSON `WorkerSpec` line from stdin and writes one
 JSON event per stdout line. Events carry `v: 1` and a `type` of
-`stage_started`, `progress`, `stage_finished`, `log`, `result`, or `error`.
+`stage_started`, `progress`, `stage_finished`, `features`, `log`, `result`, or `error`.
 `stage_finished` has `duration_s` and `success`. `result` carries the map,
 symbols sibling, district symbols directory, names cache paths, commit and
 branch, plus language, file count, district count and modularity. `error`
@@ -228,7 +226,7 @@ carries a machine `code` and human `message`. The Rust definitions in
 `src/worker.rs` and generated `bindings/WorkerEvent.ts` are authoritative.
 
 The service owns its SQLite store and queue. It gives the child clone source,
-limits, output directory, previous map candidates and a names cache file.
+clone-cache eviction budget, output directory, previous map candidates and a names cache file. The worker emits `features` after clone (clone bytes and history count) and after detection (source file counts and bytes per language).
 The child chooses the newest previous map on the cloned branch, falling back
 to the newest overall, then clones, detects and builds. The service registers
 the returned artifacts only after a successful terminal result. The job spec
@@ -275,7 +273,6 @@ Every non-2xx response is JSON:
 |---|---|---|
 | 400 | `invalid_request` | body does not match the contract above |
 | 404 | `not_found` | unknown job id, or unknown slug/commit for `GET /api/maps/{owner}/{repo}` |
-| 413 | `repo_too_large` | a configured limit was tripped -- `message` names which one and its value (e.g. `"file count 1204 exceeds the configured limit of 1000"`). **Fixed exactly** (code and status), by agreement with the frontend, which detects this by exact match rather than a heuristic. |
 | 429 | `rate_limited` | per-IP or per-repo rate limit tripped -- `message` says which |
 | 503 | `busy` | all workers and pending queue slots are occupied; `Retry-After: 30` seconds |
 | 422 | `detection_failed` | `detect::detect` (issue #4) found no supported source at all -- an empty or non-source repository, not a size or confidence problem |
@@ -284,20 +281,15 @@ Every non-2xx response is JSON:
 | 500 | `index_failed` | the indexing pipeline itself errored on an otherwise-valid repository |
 | 500 | `internal_error` | a bug, not a caller or repository problem |
 
-A job that fails carries the same `error`/`message` shape in its `error`
-field (`GET /api/jobs/{job_id}` and the SSE stream), with `status: "failed"`
-instead of an HTTP error status, since the job accepted successfully at
-`202` and failed later. A job that fails with `repo_too_large` after
-already being accepted still carries that exact code in its `error` field,
-for the same reason the HTTP shape is fixed: the frontend renders it as its
-own "too large for this index" state, retry disabled, rather than a generic
-failure.
-
-**A repository rejected for size must never present as a timeout.** Every
-limit check that can run before the expensive stages (file count from
-detection, clone size on disk, history depth) runs first and fails fast
-with `repo_too_large` naming the limit, rather than letting indexing start
-and time out.
+A job that fails carries `error` and `error_code` in its terminal snapshot,
+with `status: "failed"`, because admission already returned `202`. A worker
+that crashes or is killed by the machine (including out-of-memory) reports
+`worker_crashed`. Very large repositories may take a long time or fail this
+way on the current worker; a full volume can also make cloning fail with
+`clone_failed`. This is the owner's accepted MVP trade-off;
+[issue #97](https://github.com/onsager-ai/tolmap/issues/97) tracks routing
+large reports to appropriate worker classes. Existing clients should render
+unknown error codes as a generic failure; `repo_too_large` is no longer emitted.
 
 ## Store
 

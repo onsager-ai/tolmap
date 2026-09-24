@@ -28,6 +28,7 @@ use rusqlite::{params, Connection};
 
 use crate::naming::{CacheEntry, NameCache};
 use crate::schema::MapDocument;
+use crate::service::eta::TimingRow;
 
 #[derive(Clone, Debug)]
 pub struct MapRow {
@@ -74,6 +75,16 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (slug, fingerprint)
     );
 "#,
+    r#"
+    CREATE TABLE job_timings (
+        job_id TEXT PRIMARY KEY,
+        features_json TEXT NOT NULL,
+        stage_s_json TEXT NOT NULL,
+        elapsed_s REAL NOT NULL,
+        completed_at TEXT NOT NULL
+    );
+    CREATE INDEX job_timings_completed ON job_timings(completed_at DESC);
+"#,
 ];
 
 pub struct Store {
@@ -81,6 +92,36 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn save_timing(&self, job_id: &str, row: &TimingRow) -> Result<()> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        conn.execute(
+            "INSERT OR REPLACE INTO job_timings (job_id, features_json, stage_s_json, elapsed_s, completed_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![job_id, serde_json::to_string(&row.features)?, serde_json::to_string(&row.stage_s)?, row.elapsed_s, crate::service::time::now_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn recent_timings(&self) -> Result<Vec<TimingRow>> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        let mut query = conn.prepare("SELECT features_json, stage_s_json, elapsed_s FROM job_timings ORDER BY completed_at DESC, job_id DESC LIMIT 256")?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (features, stage_s, elapsed_s) = row?;
+            Ok(TimingRow {
+                features: serde_json::from_str(&features)?,
+                stage_s: serde_json::from_str(&stage_s)?,
+                elapsed_s,
+            })
+        })
+        .collect()
+    }
+
     /// Durable derivation cache, independent of the disposable work directory.
     pub fn load_names(&self, slug: &str) -> Result<NameCache> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
@@ -379,6 +420,37 @@ pub fn membership_by_file(document: &MapDocument) -> BTreeMap<String, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_timings_survive_store_reopen_for_online_refit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timings.sqlite3");
+        let row = TimingRow {
+            features: crate::worker::RepoFeatures {
+                clone_bytes: Some(1024),
+                commits: Some(42),
+                languages: [(
+                    "py".to_owned(),
+                    crate::worker::LanguageFeatures {
+                        files: 12,
+                        bytes: 8000,
+                    },
+                )]
+                .into(),
+            },
+            elapsed_s: 4.0,
+            stage_s: vec![Some(1.0), None, Some(2.0)],
+        };
+        Store::open(&path)
+            .unwrap()
+            .save_timing("job-1", &row)
+            .unwrap();
+        let reopened = Store::open(&path).unwrap();
+        let saved = reopened.recent_timings().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].features.languages["py"].files, 12);
+        assert_eq!(saved[0].stage_s, row.stage_s);
+    }
 
     fn temp_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();

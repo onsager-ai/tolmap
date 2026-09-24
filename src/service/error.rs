@@ -45,14 +45,6 @@ impl ApiError {
         Self::new(StatusCode::NOT_FOUND, "not_found", message)
     }
 
-    /// `repo_too_large` (not `too_large`) and 413 are fixed by the frontend
-    /// contract, which detects this code by exact match rather than a
-    /// heuristic -- do not rename either half without updating the
-    /// frontend agent's session too.
-    pub fn repo_too_large(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::PAYLOAD_TOO_LARGE, "repo_too_large", message)
-    }
-
     pub fn rate_limited(message: impl Into<String>) -> Self {
         Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message)
     }

@@ -16,22 +16,22 @@ def main() -> None:
     binary = Path(sys.argv[1]).resolve()
     clone = Path(sys.argv[2]).resolve()
     report = Path(sys.argv[3])
+    slug = sys.argv[4]
+    owner, repo = slug.split("/", 1)
     root = Path("worker-timeline").resolve()
     output_dir = root / "out"
     output_dir.mkdir(parents=True, exist_ok=True)
     spec = {
         "v": 1,
-        "slug": "langgenius/dify",
-        "owner": "langgenius",
-        "repo": "dify",
+        "slug": slug,
+        "owner": owner,
+        "repo": repo,
         "source": str(clone),
         "local": True,
         "all_sources": True,
         "cache_dir": str(root / "cache"),
         "output_dir": str(output_dir),
-        "max_clone_bytes": 2147483648,
-        "max_history_commits": 200000,
-        "max_files": 20000,
+        "clone_cache_bytes": 2147483648,
         "prune_variant": "node-relative",
         "namer": "idf",
         "namer_model": "anthropic/claude-haiku-4.5",
@@ -59,6 +59,7 @@ def main() -> None:
         for e in events if e["type"] == "stage_finished"
     ]
     result = {
+        "slug": slug,
         "exit_code": exit_code,
         "elapsed_s": round(time.monotonic() - started, 3),
         "terminal": terminal[-1] if terminal else None,

@@ -185,10 +185,8 @@ pub fn resolve_head(source: &RepoSource) -> Result<String> {
 /// Clones (first time) or fetches + fast-forwards (subsequent times) a
 /// remote into `<cache_dir>/repos/<owner>/<repo>`, or simply resolves HEAD
 /// for a local path with no copy. Runs LRU eviction against
-/// `limits.max_clone_bytes` after a remote materialisation, and enforces
-/// the clone-size and history-depth caps before returning -- both checks
-/// that must happen before the (much slower) indexing stage per
-/// docs/API.md's "must not present as a timeout".
+/// `limits.clone_cache_bytes` after a remote materialisation. The active
+/// clone is never rejected or evicted, even when it exceeds the budget.
 pub fn materialize(
     cache_dir: &Path,
     repo_ref: &RepoRef,
@@ -208,7 +206,6 @@ pub fn materialize_with_progress(
             let commit =
                 rev_parse(path, "HEAD").map_err(|e| ApiError::clone_failed(e.to_string()))?;
             let branch = current_branch(path);
-            check_history_depth(path, limits)?;
             Ok(Materialized {
                 path: path.clone(),
                 commit,
@@ -230,16 +227,11 @@ pub fn materialize_with_progress(
                     .map_err(|e| ApiError::clone_failed(e.to_string()))?;
             }
             touch(&dest);
-            let size = directory_size(&dest).unwrap_or(0);
-            // Over budget as soon as we can measure it -- do not run
-            // extraction over a repo we are about to reject anyway.
-            check_clone_size(size, limits)?;
-            if let Err(err) = evict_lru(&cache_dir.join("repos"), limits.max_clone_bytes, &dest) {
+            if let Err(err) = evict_lru(&cache_dir.join("repos"), limits.clone_cache_bytes, &dest) {
                 // Eviction is best-effort: failing to reclaim space for the
                 // *next* job is not a reason to fail *this* one.
                 eprintln!("cache eviction warning: {err:#}");
             }
-            check_history_depth(&dest, limits)?;
             let commit =
                 rev_parse(&dest, "HEAD").map_err(|e| ApiError::clone_failed(e.to_string()))?;
             let branch = current_branch(&dest);
@@ -250,50 +242,6 @@ pub fn materialize_with_progress(
             })
         }
     }
-}
-
-/// The clone-size half of docs/API.md's "must not present as a timeout"
-/// pre-checks. Factored out of `materialize` so it is directly testable
-/// against a real measured size without needing a real clone -- issue #23
-/// gap 5's fixture corpus is entirely git partial clones
-/// (`promisor`/`--filter=blob:none`, see `data/fixtures.toml`'s clone
-/// step), and a partial clone cannot be re-served as a local `git` remote
-/// (`git-upload-pack` refuses with "possible repository corruption": it
-/// does not have the blobs to send). Exercising `materialize`'s `Remote`
-/// branch end to end would need live network access to GitHub, which this
-/// test environment does not have.
-fn check_clone_size(size: u64, limits: &Limits) -> Result<(), ApiError> {
-    if size > limits.max_clone_bytes {
-        return Err(ApiError::repo_too_large(format!(
-            "clone size {size} bytes exceeds the configured limit of {} bytes",
-            limits.max_clone_bytes
-        )));
-    }
-    Ok(())
-}
-
-fn check_history_depth(repo: &Path, limits: &Limits) -> Result<(), ApiError> {
-    let output = Command::new("git")
-        .args(["-C", &repo.to_string_lossy(), "rev-list", "--count", "HEAD"])
-        .output()
-        .map_err(|e| ApiError::internal(format!("run git rev-list: {e}")))?;
-    if !output.status.success() {
-        // Not fatal to the request -- an unborn/empty repo (no commits
-        // yet) fails `rev-list` too, and that is a legitimate (if useless)
-        // input, not an oversized one. Let indexing itself reject it.
-        return Ok(());
-    }
-    let count: usize = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .unwrap_or(0);
-    if count > limits.max_history_commits {
-        return Err(ApiError::repo_too_large(format!(
-            "history depth {count} commits exceeds the configured limit of {}",
-            limits.max_history_commits
-        )));
-    }
-    Ok(())
 }
 
 fn clone_blobless(url: &str, dest: &Path, progress: &Progress) -> Result<()> {
@@ -585,7 +533,7 @@ fn last_used(dir: &Path) -> SystemTime {
 /// walk rather than shelling out to `du`: one less external-tool
 /// dependency to assume is on `PATH`, and the size this needs is "bytes
 /// this directory occupies", not `du`'s block-rounded view.
-fn directory_size(root: &Path) -> Result<u64> {
+pub(crate) fn directory_size(root: &Path) -> Result<u64> {
     let mut total = 0u64;
     let mut stack = vec![root.to_owned()];
     while let Some(dir) = stack.pop() {
@@ -735,82 +683,22 @@ mod tests {
         }
     }
 
-    /// Issue #23 gap 5: fires `check_clone_size` (the exact function
-    /// `materialize` calls) against a real measured directory size, since a
-    /// live clone cannot be exercised here -- see that function's doc
-    /// comment. Skips with a clear message when there is no fixture corpus
-    /// to measure, mirroring `tests/fixtures_detect.rs`'s convention.
     #[test]
-    fn clone_size_limit_fires_against_a_real_directory_over_budget() {
-        let Some(dir) = std::env::var("TOLMAP_FIXTURE_REPOS")
-            .ok()
-            .map(|repos| Path::new(&repos).join("httpx"))
-            .filter(|p| p.is_dir())
-        else {
-            eprintln!(
-                "skipping: TOLMAP_FIXTURE_REPOS is not set (or httpx is not there) -- \
-                 e.g. TOLMAP_FIXTURE_REPOS=/tmp/tolmap-fixtures.XXXXXX cargo test --release"
-            );
-            return;
-        };
-        let size = directory_size(&dir).expect("measure the fixture directory");
-        assert!(size > 0, "a real repo should have a nonzero size");
-
-        let mut limits = Limits {
-            max_clone_bytes: size - 1, // one byte under budget
-            ..Limits::default()
-        };
-        let err = check_clone_size(size, &limits).expect_err("should be rejected as too large");
-        assert_eq!(err.body.error, "repo_too_large");
-        assert!(err.body.message.contains("clone size"));
-        assert!(err
-            .body
-            .message
-            .contains(&limits.max_clone_bytes.to_string()));
-
-        // Headroom (a generously high limit) is not rejected.
-        limits.max_clone_bytes = size + 1;
-        assert!(check_clone_size(size, &limits).is_ok());
-    }
-
-    /// The defect this change fixes (see `config::Limits::max_history_commits`'s
-    /// doc comment): django's real history is 34,942 commits, and the old
-    /// default of 20,000 rejected it -- the exact fixture the module doc
-    /// comment claimed the defaults "comfortably admit ... with headroom".
-    /// Exercises `check_history_depth` (the function `materialize` actually
-    /// calls) against the real fixture clone rather than a synthetic
-    /// repository, the same way `clone_size_limit_fires_against_a_real_directory_over_budget`
-    /// does for the clone-size check. Skips with a clear message when there
-    /// is no fixture corpus to check against.
-    #[test]
-    fn history_depth_check_admits_djangos_real_history_under_the_new_default() {
-        let Some(django) = std::env::var("TOLMAP_FIXTURE_REPOS")
-            .ok()
-            .map(|repos| Path::new(&repos).join("django"))
-            .filter(|p| p.is_dir())
-        else {
-            eprintln!(
-                "skipping: TOLMAP_FIXTURE_REPOS is not set (or django is not there) -- \
-                 e.g. TOLMAP_FIXTURE_REPOS=/tmp/tolmap-fixtures.XXXXXX cargo test --release"
-            );
-            return;
-        };
-
-        // The old default (20,000) rejected the real fixture -- pinning
-        // this alongside the new default's success is what makes this test
-        // a regression check for the defect, not just a happy-path check.
-        let old_default = Limits {
-            max_history_commits: 20_000,
-            ..Limits::default()
-        };
-        let err = check_history_depth(&django, &old_default)
-            .expect_err("the old 20,000 default must have rejected django's real history");
-        assert!(err.body.message.contains("34942") || err.body.message.contains("history depth"));
-
+    fn oversized_clone_is_retained_while_cache_evicts_older_clone() {
+        let root = tempfile::tempdir().unwrap();
+        let repos = root.path().join("repos");
+        let old = repos.join("o/old");
+        let keep = repos.join("o/keep");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::write(old.join("data"), vec![0; 32]).unwrap();
+        std::fs::write(keep.join("data"), vec![0; 64]).unwrap();
+        evict_lru(&repos, 8, &keep).unwrap();
         assert!(
-            check_history_depth(&django, &Limits::default()).is_ok(),
-            "the new default must admit django's real history"
+            keep.exists(),
+            "the active clone is never rejected or evicted"
         );
+        assert!(!old.exists(), "older clones still give up disk space");
     }
 
     #[test]

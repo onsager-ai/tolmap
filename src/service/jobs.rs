@@ -1,26 +1,27 @@
 //! FIFO admission and snapshots live in the service. Each blocking build
 //! runs in a child process; the child never opens the service database.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::progress::{ProgressValue, StageId};
 use crate::service::clone::{self, RepoRef};
 use crate::service::error::{ApiError, ErrorBody};
+use crate::service::eta::{expected_passes, progress_total, Eta, EtaModel, TimingRow};
 use crate::service::store::MapRow;
 use crate::service::time::now_rfc3339;
 use crate::service::AppState;
-use crate::worker::{PreviousMap, WorkerEvent, WorkerSpec};
+use crate::worker::{PreviousMap, RepoFeatures, WorkerEvent, WorkerSpec};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
     Queued,
@@ -31,7 +32,7 @@ pub enum JobStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobSnapshot {
     pub job_id: Uuid,
     pub slug: String,
@@ -43,21 +44,22 @@ pub struct JobSnapshot {
     pub started_at: String,
     pub finished_at: Option<String>,
     /// Human-readable failure text, or null. Flat, not an object: this is
-    /// rendered directly by the client, and a nested object here crashed the
-    /// progress view on every job failure -- including `repo_too_large`, the
-    /// one failure docs/ARCHITECTURE.md specifically requires to read clearly
-    /// rather than as a timeout. The machine code lives beside it.
+    /// rendered directly by the client. The machine code lives beside it.
     pub error: Option<String>,
-    /// Machine-readable failure code (`repo_too_large`, `detection_failed`,
+    /// Machine-readable failure code (`cancelled`, `detection_failed`,
     /// ...), or null. Clients branch on this rather than pattern-matching the
     /// message text.
     pub error_code: Option<String>,
     pub progress: Option<ProgressValue>,
+    #[serde(default)]
+    pub eta: Option<Eta>,
+    #[serde(default)]
+    pub eta_start_s: Option<f64>,
     pub elapsed_s: f64,
     pub stages: Vec<StageSnapshot>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StageState {
     Pending,
@@ -66,10 +68,10 @@ pub enum StageState {
     Failed,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StageSnapshot {
     pub id: StageId,
-    pub label: &'static str,
+    pub label: String,
     pub state: StageState,
     pub started_at: Option<String>,
     pub duration_s: Option<f64>,
@@ -100,11 +102,120 @@ struct RegistryInner {
     active: HashMap<JobKey, Uuid>,
     queue: VecDeque<PendingJob>,
     running: usize,
+    running_jobs: BTreeMap<Uuid, watch::Sender<JobSnapshot>>,
+    children: HashMap<Uuid, u32>,
+    cancelled: HashSet<Uuid>,
+    features: HashMap<Uuid, RepoFeatures>,
+    eta_model: EtaModel,
 }
 
 pub struct JobRegistry(Mutex<RegistryInner>);
 
 impl JobRegistry {
+    pub fn load_timings(&self, store: &crate::service::store::Store) -> anyhow::Result<()> {
+        let rows = store.recent_timings()?;
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .eta_model = EtaModel::from_rows(rows);
+        Ok(())
+    }
+
+    pub fn cancel(&self, id: Uuid) -> Result<JobSnapshot, ApiError> {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        let tx = registry
+            .jobs
+            .get(&id)
+            .ok_or_else(|| ApiError::not_found(format!("no job {id}")))?
+            .clone();
+        if is_terminal(&tx.borrow()) {
+            return Ok(tx.borrow().clone());
+        }
+        if let Some(position) = registry.queue.iter().position(|job| job.id == id) {
+            let job = registry.queue.remove(position).expect("position exists");
+            registry.active.remove(&job.key);
+            finish_failed(&tx, cancelled_error());
+            refresh_queue_etas(&mut registry);
+        } else {
+            registry.cancelled.insert(id);
+            registry.active.retain(|_, active_id| *active_id != id);
+            finish_failed(&tx, cancelled_error());
+            if let Some(&pid) = registry.children.get(&id) {
+                kill_worker_group(pid);
+            }
+            refresh_queue_etas(&mut registry);
+        }
+        let result = tx.borrow().clone();
+        Ok(result)
+    }
+
+    fn register_child(&self, id: Uuid, pid: u32) {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        registry.children.insert(id, pid);
+        if registry.cancelled.contains(&id) {
+            kill_worker_group(pid);
+        }
+    }
+
+    fn unregister_child(&self, id: Uuid) {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .children
+            .remove(&id);
+    }
+
+    fn is_cancelled(&self, id: Uuid) -> bool {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .cancelled
+            .contains(&id)
+    }
+
+    fn set_features(&self, id: Uuid, features: RepoFeatures) {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .features
+            .insert(id, features);
+    }
+
+    fn features(&self, id: Uuid) -> RepoFeatures {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .features
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn estimate(
+        &self,
+        tx: &watch::Sender<JobSnapshot>,
+        running: Option<(StageId, f64, Option<f64>, Option<f64>)>,
+        completed_passes: &[usize; StageId::ALL.len()],
+    ) {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        let snapshot = tx.borrow().clone();
+        if is_terminal(&snapshot) {
+            return;
+        }
+        let features = registry
+            .features
+            .get(&snapshot.job_id)
+            .cloned()
+            .unwrap_or_default();
+        let mut done = [false; StageId::ALL.len()];
+        for stage in &snapshot.stages {
+            done[stage.id.index() - 1] = stage.state == StageState::Done
+                && completed_passes[stage.id.index() - 1] >= expected_passes(stage.id, &features);
+        }
+        let eta = registry.eta_model.predict(&features, &done, running);
+        tx.send_modify(|snapshot| snapshot.eta = Some(eta));
+        refresh_queue_etas(&mut registry);
+    }
     pub fn subscribe(&self, id: Uuid) -> Option<watch::Receiver<JobSnapshot>> {
         self.0
             .lock()
@@ -117,6 +228,62 @@ impl JobRegistry {
 
 pub fn new_registry() -> JobRegistry {
     JobRegistry(Mutex::new(RegistryInner::default()))
+}
+
+fn cancelled_error() -> ErrorBody {
+    ErrorBody {
+        error: "cancelled".to_owned(),
+        message: "job cancelled".to_owned(),
+    }
+}
+
+#[cfg(unix)]
+fn kill_worker_group(pid: u32) {
+    // CommandExt::process_group(0) made the worker the group leader. Git
+    // children inherit that group, so a single signal terminates the tree.
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    if let Ok(pid) = i32::try_from(pid) {
+        unsafe {
+            kill(-pid, 9);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_worker_group(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .status();
+}
+
+fn refresh_queue_etas(registry: &mut RegistryInner) {
+    let prior = registry
+        .eta_model
+        .predict(&RepoFeatures::default(), &[false; 18], None);
+    let mut wait_s: f64 = registry
+        .running_jobs
+        .values()
+        .map(|tx| {
+            let row = tx.borrow();
+            if is_terminal(&row) {
+                0.0
+            } else {
+                row.eta.unwrap_or(prior).midpoint()
+            }
+        })
+        .sum();
+    for (index, job) in registry.queue.iter().enumerate() {
+        let features = registry.features.get(&job.id).cloned().unwrap_or_default();
+        let eta = registry.eta_model.predict(&features, &[false; 18], None);
+        job.tx.send_modify(|snapshot| {
+            snapshot.queue_position = Some(index + 1);
+            snapshot.eta_start_s = Some(wait_s);
+            snapshot.eta = Some(eta);
+        });
+        wait_s += eta.midpoint();
+    }
 }
 
 /// Queues a job and returns its id immediately; the work happens on a
@@ -163,12 +330,14 @@ fn enqueue_job(
         error: None,
         error_code: None,
         progress: None,
+        eta: None,
+        eta_start_s: None,
         elapsed_s: 0.0,
         stages: StageId::ALL
             .iter()
             .map(|&id| StageSnapshot {
                 id,
-                label: id.label(),
+                label: id.label().to_owned(),
                 state: StageState::Pending,
                 started_at: None,
                 duration_s: None,
@@ -176,6 +345,10 @@ fn enqueue_job(
             .collect(),
     };
     let (tx, _rx) = watch::channel(snapshot);
+    let initial_eta = registry
+        .eta_model
+        .predict(&RepoFeatures::default(), &[false; 18], None);
+    tx.send_modify(|snapshot| snapshot.eta = Some(initial_eta));
     registry.jobs.insert(job_id, tx.clone());
     registry.active.insert(key.clone(), job_id);
     let job = PendingJob {
@@ -187,12 +360,16 @@ fn enqueue_job(
     };
     if registry.running < max_running {
         registry.running += 1;
+        job.tx
+            .send_modify(|snapshot| snapshot.eta_start_s = Some(0.0));
+        registry.running_jobs.insert(job_id, job.tx.clone());
         tokio::spawn(worker_loop(state.clone(), job));
     } else {
         job.tx
             .send_modify(|snapshot| snapshot.queue_position = Some(registry.queue.len() + 1));
         registry.queue.push_back(job);
     }
+    refresh_queue_etas(&mut registry);
     Ok(job_id)
 }
 
@@ -208,36 +385,22 @@ async fn worker_loop(state: Arc<AppState>, first: PendingJob) {
         } = job;
         tx.send_modify(|snapshot| {
             snapshot.queue_position = None;
+            snapshot.eta_start_s = None;
             snapshot.started_at = now_rfc3339();
         });
-        let max_seconds = state.config.limits.max_job_seconds;
         let blocking_state = state.clone();
         let blocking_tx = tx.clone();
-        let mut handle =
-            tokio::task::spawn_blocking(move || runner(blocking_state, repo_ref, blocking_tx));
-        tokio::select! {
-            result = &mut handle => {
-                if let Err(join_error) = result {
-                    finish_failed(&tx, ErrorBody {
-                        error: "internal_error".to_owned(),
-                        message: format!("job task panicked: {join_error}"),
-                    });
-                }
-            }
-            _ = tokio::time::sleep(Duration::from_secs(max_seconds)) => {
-                finish_failed(&tx, ErrorBody {
-                    error: "index_failed".to_owned(),
-                    message: format!("job exceeded the {max_seconds}s wall-time limit"),
-                });
-                // spawn_blocking cannot be cancelled. Keep this worker slot
-                // occupied until its thread actually exits, or a timed-out
-                // build could run beside the next queued build on a 1 GB VM.
-                {
-                    let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
-                    if registry.active.get(&key) == Some(&id) { registry.active.remove(&key); }
-                }
-                let _ = handle.await;
-            }
+        let result =
+            tokio::task::spawn_blocking(move || runner(blocking_state, repo_ref, blocking_tx))
+                .await;
+        if let Err(join_error) = result {
+            finish_failed(
+                &tx,
+                ErrorBody {
+                    error: "internal_error".to_owned(),
+                    message: format!("job task panicked: {join_error}"),
+                },
+            );
         }
         // The runner normally sets a terminal snapshot itself. A panic or
         // an unexpected return must never leave an accepted job in flight.
@@ -251,18 +414,37 @@ async fn worker_loop(state: Arc<AppState>, first: PendingJob) {
             );
         }
         let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+        let snapshot = tx.borrow().clone();
+        let row = TimingRow {
+            features: registry.features.remove(&id).unwrap_or_default(),
+            elapsed_s: snapshot.elapsed_s,
+            stage_s: snapshot
+                .stages
+                .iter()
+                .map(|stage| {
+                    (snapshot.status == JobStatus::Done && stage.state == StageState::Done)
+                        .then_some(stage.duration_s)
+                        .flatten()
+                })
+                .collect(),
+        };
+        if let Err(error) = state.store.save_timing(&id.to_string(), &row) {
+            eprintln!("timing store warning for {id}: {error:#}");
+        } else {
+            registry.eta_model.record(row);
+        }
+        registry.running_jobs.remove(&id);
+        registry.cancelled.remove(&id);
         if registry.active.get(&key) == Some(&id) {
             registry.active.remove(&key);
         }
         if let Some(next) = registry.queue.pop_front() {
-            for (index, waiting) in registry.queue.iter().enumerate() {
-                waiting
-                    .tx
-                    .send_modify(|snapshot| snapshot.queue_position = Some(index + 1));
-            }
+            registry.running_jobs.insert(next.id, next.tx.clone());
+            refresh_queue_etas(&mut registry);
             job = next;
         } else {
             registry.running -= 1;
+            refresh_queue_etas(&mut registry);
             break;
         }
     }
@@ -300,6 +482,8 @@ fn finish_done(tx: &watch::Sender<JobSnapshot>) {
         snapshot.finished_at = Some(now_rfc3339());
         snapshot.error = None;
         snapshot.error_code = None;
+        snapshot.eta = None;
+        snapshot.eta_start_s = None;
     });
 }
 
@@ -312,6 +496,8 @@ fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
         snapshot.stage = "failed".to_owned();
         snapshot.finished_at = Some(now_rfc3339());
         snapshot.set_error(error);
+        snapshot.eta = None;
+        snapshot.eta_start_s = None;
         for stage in &mut snapshot.stages {
             if matches!(stage.state, StageState::Running) {
                 stage.state = StageState::Failed;
@@ -325,6 +511,9 @@ fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
 /// failure; the queue loop retains the slot until this function returns.
 fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSnapshot>) {
     let started = Instant::now();
+    if state.jobs.is_cancelled(tx.borrow().job_id) {
+        return;
+    }
     let previous_maps = match state.store.warm_start_candidates(&repo_ref.slug) {
         Ok(rows) => rows
             .into_iter()
@@ -367,22 +556,24 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         all_sources: false,
         cache_dir: state.config.cache_dir.to_string_lossy().into_owned(),
         output_dir: output_dir.to_string_lossy().into_owned(),
-        max_clone_bytes: state.config.limits.max_clone_bytes,
-        max_history_commits: state.config.limits.max_history_commits,
-        max_files: state.config.limits.max_files,
+        clone_cache_bytes: state.config.limits.clone_cache_bytes,
         prune_variant: state.config.prune_variant.to_string(),
         namer: state.config.namer.to_string(),
         namer_model: state.config.namer_model.clone(),
         previous_maps,
         names_cache: Some(names_input.to_string_lossy().into_owned()),
     };
-    let output = match process_worker(&tx, spec, started) {
+    let output = match process_worker(&state, &tx, spec, started) {
         Ok(output) => output,
         Err(error) => {
             let _ = std::fs::remove_dir_all(&output_dir);
             return finish_failed(&tx, error);
         }
     };
+    if state.jobs.is_cancelled(tx.borrow().job_id) {
+        let _ = std::fs::remove_dir_all(&output_dir);
+        return;
+    }
     set_commit(&tx, &output.commit);
     let built_path = PathBuf::from(&output.map_path);
     let final_path = state
@@ -453,13 +644,14 @@ struct WorkerOutput {
 }
 
 fn process_worker(
+    state: &Arc<AppState>,
     tx: &watch::Sender<JobSnapshot>,
     spec: WorkerSpec,
     started: Instant,
 ) -> Result<WorkerOutput, ErrorBody> {
     let exe =
         std::env::current_exe().map_err(|error| ApiError::internal(error.to_string()).body)?;
-    process_worker_exe(tx, spec, started, &exe)
+    process_worker_exe(tx, spec, started, &exe, Some(&state.jobs))
 }
 
 fn process_worker_exe(
@@ -467,6 +659,7 @@ fn process_worker_exe(
     spec: WorkerSpec,
     started: Instant,
     exe: &std::path::Path,
+    registry: Option<&JobRegistry>,
 ) -> Result<WorkerOutput, ErrorBody> {
     let mut command = Command::new(exe);
     command
@@ -474,6 +667,11 @@ fn process_worker_exe(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let mut attempts = 0;
     let mut child = loop {
         match command.spawn() {
@@ -491,6 +689,19 @@ fn process_worker_exe(
             }
         }
     };
+    let id = tx.borrow().job_id;
+    if let Some(registry) = registry {
+        registry.register_child(id, child.id());
+    }
+    struct Registration<'a>(Option<&'a JobRegistry>, Uuid);
+    impl Drop for Registration<'_> {
+        fn drop(&mut self) {
+            if let Some(registry) = self.0 {
+                registry.unregister_child(self.1);
+            }
+        }
+    }
+    let _registration = Registration(registry, id);
     let stderr = child.stderr.take().expect("piped worker stderr");
     let stderr_reader = std::thread::spawn(move || {
         let mut text = String::new();
@@ -513,6 +724,7 @@ fn process_worker_exe(
         Ok(())
     })();
     if let Err(error) = write_spec {
+        kill_worker_group(child.id());
         let _ = child.kill();
         let _ = child.wait();
         let _ = stderr_reader.join();
@@ -529,6 +741,12 @@ fn process_worker_exe(
     // each pass separately, while API counters belong to the stable stage ID.
     let mut stage_offsets = [0_u64; StageId::ALL.len()];
     let mut stage_max = [0_u64; StageId::ALL.len()];
+    let mut stage_started_at: [Option<Instant>; StageId::ALL.len()] = std::array::from_fn(|_| None);
+    let mut last_progress: [Option<(u64, Instant)>; StageId::ALL.len()] =
+        std::array::from_fn(|_| None);
+    let mut ewma_rate: [Option<f64>; StageId::ALL.len()] = [None; StageId::ALL.len()];
+    let mut completed_passes = [0usize; StageId::ALL.len()];
+    let mut running_eta: Option<(StageId, f64, Option<f64>, Option<f64>)> = None;
     for line in BufReader::new(stdout).lines() {
         let line = match line {
             Ok(line) => line,
@@ -554,6 +772,23 @@ fn process_worker_exe(
         match event {
             WorkerEvent::StageStarted { stage, .. } => {
                 last_stage = Some(stage);
+                stage_started_at[stage.index() - 1] = Some(Instant::now());
+                let eta_stage = if matches!(
+                    stage,
+                    StageId::CloneObjects | StageId::CloneDeltas | StageId::CloneCheckout
+                ) {
+                    StageId::Clone
+                } else {
+                    stage
+                };
+                running_eta = Some((
+                    eta_stage,
+                    stage_started_at[eta_stage.index() - 1]
+                        .map(|at| at.elapsed().as_secs_f64())
+                        .unwrap_or(0.0),
+                    None,
+                    None,
+                ));
                 stage_offsets[stage.index() - 1] = stage_max[stage.index() - 1];
                 let status = match stage {
                     StageId::Clone
@@ -588,6 +823,45 @@ fn process_worker_exe(
                     .map(|total| total.saturating_add(stage_offsets[index]));
                 value.done = value.done.max(stage_max[index]);
                 stage_max[index] = value.done;
+                let now = Instant::now();
+                if let Some((last_done, last_at)) = last_progress[index] {
+                    let dt = now.duration_since(last_at).as_secs_f64();
+                    if value.done > last_done && dt > 0.0 {
+                        let instantaneous = (value.done - last_done) as f64 / dt;
+                        ewma_rate[index] = Some(
+                            ewma_rate[index]
+                                .map_or(instantaneous, |old| 0.35 * instantaneous + 0.65 * old),
+                        );
+                    }
+                }
+                last_progress[index] = Some((value.done, now));
+                let rate = ewma_rate[index].or(value.rate_per_s).filter(|r| *r > 0.0);
+                let features = registry
+                    .map(|registry| registry.features(id))
+                    .unwrap_or_default();
+                let effective_total = progress_total(&value, &features);
+                let remaining = effective_total.and_then(|total| {
+                    rate.map(|rate| total.saturating_sub(value.done) as f64 / rate)
+                });
+                let fraction = effective_total
+                    .filter(|total| *total > 0)
+                    .map(|total| value.done as f64 / total as f64);
+                let eta_stage = if matches!(
+                    value.stage,
+                    StageId::CloneObjects | StageId::CloneDeltas | StageId::CloneCheckout
+                ) {
+                    StageId::Clone
+                } else {
+                    value.stage
+                };
+                running_eta = Some((
+                    eta_stage,
+                    stage_started_at[eta_stage.index() - 1]
+                        .map(|at| at.elapsed().as_secs_f64())
+                        .unwrap_or(0.0),
+                    remaining,
+                    fraction,
+                ));
                 tx.send_modify(|snapshot| {
                     if is_terminal(snapshot) {
                         return;
@@ -602,6 +876,9 @@ fn process_worker_exe(
                 success,
                 ..
             } => {
+                if success {
+                    completed_passes[stage.index() - 1] += 1;
+                }
                 tx.send_modify(|snapshot| {
                     if is_terminal(snapshot) {
                         return;
@@ -615,6 +892,14 @@ fn process_worker_exe(
                     row.duration_s = Some(row.duration_s.unwrap_or(0.0) + duration_s);
                     snapshot.elapsed_s = started.elapsed().as_secs_f64();
                 });
+                if running_eta.is_some_and(|(current, _, _, _)| current == stage) {
+                    running_eta = None;
+                }
+            }
+            WorkerEvent::Features { features, .. } => {
+                if let Some(registry) = registry {
+                    registry.set_features(id, features);
+                }
             }
             WorkerEvent::Log { message, .. } => {
                 tx.send_modify(|snapshot| {
@@ -653,12 +938,34 @@ fn process_worker_exe(
                 error = Some(format!("{code}\n{message}"));
             }
         }
+        if let Some(registry) = registry {
+            registry.estimate(
+                tx,
+                running_eta.map(|(stage, _, remaining, fraction)| {
+                    (
+                        stage,
+                        stage_started_at[stage.index() - 1]
+                            .map(|at| at.elapsed().as_secs_f64())
+                            .unwrap_or(0.0),
+                        remaining,
+                        fraction,
+                    )
+                }),
+                &completed_passes,
+            );
+        }
+    }
+    if error.is_some() || registry.is_some_and(|r| r.is_cancelled(id)) {
+        kill_worker_group(child.id());
     }
     let status = child.wait().map_err(|reason| ErrorBody {
         error: "worker_crashed".to_owned(),
         message: format!("wait for worker: {reason}"),
     })?;
     let stderr = stderr_reader.join().unwrap_or_default();
+    if registry.is_some_and(|r| r.is_cancelled(id)) {
+        return Err(cancelled_error());
+    }
     if let Some(error) = error {
         if let Some((code, message)) = error.split_once('\n') {
             return Err(ErrorBody {
@@ -748,6 +1055,20 @@ mod tests {
         state.jobs.subscribe(id).unwrap().borrow().clone()
     }
 
+    #[test]
+    fn previous_snapshot_shape_deserializes_without_eta_fields() {
+        let job_id = Uuid::new_v4();
+        let mut value = serde_json::json!({
+            "job_id": job_id, "slug": "a/b", "commit": null,
+            "status": "queued", "stage": "queued", "queue_position": 1,
+            "started_at": "2026-09-24T00:00:00Z", "finished_at": null,
+            "error": null, "error_code": null, "progress": null,
+            "elapsed_s": 0.0, "stages": []
+        });
+        let decoded: JobSnapshot = serde_json::from_value(value.take()).unwrap();
+        assert!(decoded.eta.is_none() && decoded.eta_start_s.is_none());
+    }
+
     #[tokio::test]
     async fn bounded_fifo_deduplicates_and_updates_positions() {
         let limits = Limits {
@@ -778,6 +1099,9 @@ mod tests {
             enqueue_job(state.clone(), repo("three"), "c".to_owned(), runner.clone()).unwrap();
         assert_eq!(snapshot(&state, second).queue_position, Some(1));
         assert_eq!(snapshot(&state, third).queue_position, Some(2));
+        let expected = snapshot(&state, first).eta.unwrap().midpoint()
+            + snapshot(&state, second).eta.unwrap().midpoint();
+        assert!((snapshot(&state, third).eta_start_s.unwrap() - expected).abs() < 0.001);
         assert_eq!(snapshot(&state, second).stage, "queued");
         assert_eq!(
             enqueue_job(state.clone(), repo("two"), "b".to_owned(), runner.clone()).unwrap(),
@@ -813,36 +1137,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_keeps_worker_slot_until_blocking_body_exits() {
-        let limits = Limits {
-            max_concurrent_jobs: 1,
-            max_queued_jobs: 1,
-            max_job_seconds: 1,
-            ..Limits::default()
-        };
-        let (_dir, state) = state(limits);
+    async fn cancelling_queued_job_is_idempotent_and_repositions_fifo() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let (_dir, state) = state(Limits::default());
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let release_rx = Arc::new(Mutex::new(release_rx));
-        let started = Arc::new(Mutex::new(Vec::<String>::new()));
-        let runner: JobRunner = Arc::new({
-            let release_rx = release_rx.clone();
-            let started = started.clone();
-            move |_, repo, tx| {
-                started.lock().unwrap().push(repo.slug);
-                release_rx.lock().unwrap().recv().unwrap();
-                finish_done(&tx);
-            }
+        let runner: JobRunner = Arc::new(move |_, _, tx| {
+            release_rx.lock().unwrap().recv().unwrap();
+            finish_done(&tx);
         });
         let first =
             enqueue_job(state.clone(), repo("one"), "a".to_owned(), runner.clone()).unwrap();
-        let second = enqueue_job(state.clone(), repo("two"), "b".to_owned(), runner).unwrap();
-        until(|| snapshot(&state, first).status == JobStatus::Failed).await;
-        assert_eq!(started.lock().unwrap().len(), 1);
-        assert_eq!(snapshot(&state, second).queue_position, Some(1));
+        let second =
+            enqueue_job(state.clone(), repo("two"), "b".to_owned(), runner.clone()).unwrap();
+        let third = enqueue_job(state.clone(), repo("three"), "c".to_owned(), runner).unwrap();
+        assert_eq!(snapshot(&state, third).queue_position, Some(2));
+        let before = snapshot(&state, third).eta_start_s.unwrap();
+        let cancel_request = || {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/jobs/{second}/cancel"))
+                .extension(ConnectInfo(
+                    "127.0.0.1:1".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = crate::service::http::router(state.clone())
+            .oneshot(cancel_request())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let cancelled: JobSnapshot = serde_json::from_slice(&body).unwrap();
+        assert_eq!(cancelled.status, JobStatus::Failed);
+        assert_eq!(cancelled.error_code.as_deref(), Some("cancelled"));
+        let repeated = crate::service::http::router(state.clone())
+            .oneshot(cancel_request())
+            .await
+            .unwrap();
+        assert_eq!(repeated.status(), StatusCode::OK);
+        assert_eq!(
+            state.jobs.cancel(second).unwrap().error_code.as_deref(),
+            Some("cancelled")
+        );
+        assert_eq!(snapshot(&state, third).queue_position, Some(1));
+        assert!(snapshot(&state, third).eta_start_s.unwrap() < before);
         release_tx.send(()).unwrap();
-        until(|| started.lock().unwrap().len() == 2).await;
-        assert_eq!(snapshot(&state, first).status, JobStatus::Failed);
+        until(|| snapshot(&state, first).status == JobStatus::Done).await;
         release_tx.send(()).unwrap();
+        until(|| snapshot(&state, third).status == JobStatus::Done).await;
     }
 
     #[cfg(unix)]
@@ -867,16 +1214,14 @@ mod tests {
                     all_sources: false,
                     cache_dir: String::new(),
                     output_dir: String::new(),
-                    max_clone_bytes: 1,
-                    max_history_commits: 1,
-                    max_files: 1,
+                    clone_cache_bytes: 1,
                     prune_variant: "node-relative".to_owned(),
                     namer: "idf".to_owned(),
                     namer_model: String::new(),
                     previous_maps: vec![],
                     names_cache: None,
                 };
-                let error = process_worker_exe(&tx, spec, Instant::now(), &fake_worker)
+                let error = process_worker_exe(&tx, spec, Instant::now(), &fake_worker, None)
                     .err()
                     .expect("killed child fails");
                 finish_failed(&tx, error);
@@ -896,6 +1241,75 @@ mod tests {
         );
         let second = enqueue_job(state.clone(), repo("second"), "b".to_owned(), runner).unwrap();
         until(|| snapshot(&state, second).status == JobStatus::Done).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cancelling_running_worker_kills_git_child_and_starts_next_job() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, state) = state(Limits::default());
+        let fake_worker = dir.path().join("sleeping-worker");
+        let child_pid_file = dir.path().join("descendant.pid");
+        let script = format!(
+            "#!/bin/sh\ncat >/dev/null\nsleep 30 &\necho $! > '{}'\nprintf '%s\\n' '{{\"type\":\"stage_started\",\"v\":1,\"stage\":\"parse\"}}'\nwait\n",
+            child_pid_file.display()
+        );
+        std::fs::write(&fake_worker, script).unwrap();
+        std::fs::set_permissions(&fake_worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner: JobRunner = Arc::new(move |state, repo, tx| {
+            if repo.repo == "first" {
+                let spec = WorkerSpec {
+                    v: 1,
+                    slug: repo.slug,
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    source: "unused".to_owned(),
+                    local: false,
+                    all_sources: false,
+                    cache_dir: String::new(),
+                    output_dir: String::new(),
+                    clone_cache_bytes: 1,
+                    prune_variant: "node-relative".to_owned(),
+                    namer: "idf".to_owned(),
+                    namer_model: String::new(),
+                    previous_maps: vec![],
+                    names_cache: None,
+                };
+                let error =
+                    process_worker_exe(&tx, spec, Instant::now(), &fake_worker, Some(&state.jobs))
+                        .err()
+                        .expect("cancelled child must exit");
+                finish_failed(&tx, error);
+            } else {
+                finish_done(&tx);
+            }
+        });
+        let first =
+            enqueue_job(state.clone(), repo("first"), "a".to_owned(), runner.clone()).unwrap();
+        let second = enqueue_job(state.clone(), repo("second"), "b".to_owned(), runner).unwrap();
+        until(|| child_pid_file.exists() && snapshot(&state, first).status == JobStatus::Indexing)
+            .await;
+        let child_pid: u32 = std::fs::read_to_string(&child_pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let cancelled = state.jobs.cancel(first).unwrap();
+        assert_eq!(cancelled.error_code.as_deref(), Some("cancelled"));
+        until(|| snapshot(&state, second).status == JobStatus::Done).await;
+        until(|| {
+            let stat = std::fs::read_to_string(format!("/proc/{child_pid}/stat"));
+            stat.is_err()
+                || stat
+                    .unwrap()
+                    .split(") ")
+                    .nth(1)
+                    .is_some_and(|tail| tail.starts_with('Z'))
+        })
+        .await;
+        assert_eq!(snapshot(&state, first).status, JobStatus::Failed);
+        assert!(snapshot(&state, first).eta.is_none());
+        assert_eq!(snapshot(&state, second).queue_position, None);
     }
 
     #[cfg(unix)]
@@ -929,16 +1343,14 @@ mod tests {
                 all_sources: false,
                 cache_dir: String::new(),
                 output_dir: String::new(),
-                max_clone_bytes: 1,
-                max_history_commits: 1,
-                max_files: 1,
+                clone_cache_bytes: 1,
                 prune_variant: "node-relative".to_owned(),
                 namer: "idf".to_owned(),
                 namer_model: String::new(),
                 previous_maps: vec![],
                 names_cache: None,
             };
-            let error = process_worker_exe(&tx, spec, Instant::now(), &fake_worker)
+            let error = process_worker_exe(&tx, spec, Instant::now(), &fake_worker, None)
                 .err()
                 .expect("worker terminal error");
             finish_failed(&tx, error);
