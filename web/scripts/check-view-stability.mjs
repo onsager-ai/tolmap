@@ -4217,6 +4217,17 @@ async function submitMockJob(base, slug) {
   return res.json();
 }
 
+// The mock models the service's one-concurrent-job default (docs/API.md),
+// so a check that submits a job and never finishes or cancels it leaves that
+// slot occupied for its own ~12s run -- which stacked across several checks
+// used to starve checkWorkerCrashedJobPage's job at the back of the queue
+// past its own timeout. Cancelling a check's job(s) as soon as its own
+// assertions are done frees the slot immediately instead of waiting out the
+// remaining stages.
+async function cancelMockJob(base, jobId) {
+  await fetch(`${base}/api/jobs/${jobId}/cancel`, { method: "POST" }).catch(() => {});
+}
+
 async function checkJobProgressPage(browser, base) {
   const label = "job progress page (mock API)";
   console.log(`\n${label}`);
@@ -4248,6 +4259,7 @@ async function checkJobProgressPage(browser, base) {
   report(/left/.test(etaText), `${label}: ETA range text appears`, JSON.stringify(etaText));
 
   await context.close();
+  await cancelMockJob(base, accepted.job_id);
 }
 
 async function checkQueuedJobPage(browser, base) {
@@ -4261,7 +4273,7 @@ async function checkQueuedJobPage(browser, base) {
   // comes back queued behind the first.
   const runningSlug = `checkorg/queue-running-${Date.now()}`;
   const queuedSlug = `checkorg/queue-behind-${Date.now()}`;
-  await submitMockJob(base, runningSlug);
+  const running = await submitMockJob(base, runningSlug);
   const queued = await submitMockJob(base, queuedSlug);
   report(queued.status === "queued", `${label}: second job accepted as queued`, JSON.stringify(queued));
 
@@ -4272,6 +4284,8 @@ async function checkQueuedJobPage(browser, base) {
   report(/#\d+ in queue/.test(queuedText), `${label}: queued text shows queue position`, queuedText);
 
   await context.close();
+  await cancelMockJob(base, running.job_id);
+  await cancelMockJob(base, queued.job_id);
 }
 
 async function checkCancelJobPage(browser, base) {
@@ -4308,7 +4322,11 @@ async function checkWorkerCrashedJobPage(browser, base) {
   const slug = `checkorg/crashes-${Date.now()}`;
   const accepted = await submitMockJob(base, slug);
   await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector('[data-job-failure][data-job-failure-code="worker_crashed"]', { timeout: 30_000 });
+  // A generous timeout: the earlier job-page checks above free their own
+  // concurrency slot as soon as they're done (cancelMockJob), but this still
+  // budgets for this job to sit briefly behind whatever's ahead of it in the
+  // mock's one-at-a-time queue before it can even start.
+  await page.waitForSelector('[data-job-failure][data-job-failure-code="worker_crashed"]', { timeout: 45_000 });
   const text = await page.locator("[data-job-failure]").innerText();
   report(
     /The indexer stopped during .+ — the repository may be too large for this server\./.test(text),
