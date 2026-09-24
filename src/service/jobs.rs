@@ -355,18 +355,19 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     }
 
     advance(&tx, JobStatus::Indexing, "indexing (extract)");
-    let graph = match extract::build(&materialized.path, &chosen.pkg, chosen.language) {
-        Ok(graph) => graph,
-        Err(err) => {
-            return finish_failed(
-                &tx,
-                ErrorBody {
-                    error: "index_failed".to_owned(),
-                    message: format!("{err:#}"),
-                },
-            )
-        }
-    };
+    let (graph, symbol_records) =
+        match extract::build_with_symbols(&materialized.path, &chosen.pkg, chosen.language) {
+            Ok(result) => result,
+            Err(err) => {
+                return finish_failed(
+                    &tx,
+                    ErrorBody {
+                        error: "index_failed".to_owned(),
+                        message: format!("{err:#}"),
+                    },
+                )
+            }
+        };
     let symbol_nodes = graph.nodes.clone();
 
     // Warm start (finding 4): read the previous commit's membership out of
@@ -464,8 +465,12 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
             )
         }
     };
-    if let Err(err) = crate::symbols::write_sibling(&materialized.path, &symbol_nodes, &built_path)
-    {
+    if let Err(err) = crate::symbols::write_sibling(
+        &materialized.path,
+        &symbol_nodes,
+        &built_path,
+        symbol_records,
+    ) {
         return finish_failed(
             &tx,
             ErrorBody {

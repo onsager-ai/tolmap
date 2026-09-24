@@ -184,6 +184,13 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def file_sha256(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
 def main() -> int:
     slug = env("SLUG")
     stem = env("STEM")
@@ -198,6 +205,7 @@ def main() -> int:
         Path("out-primary") / f"{stem}.json", fixture_stem=fixture_stem
     )
     primary_sha = primary_stats["sha256"]
+    primary_symbols_sha = file_sha256(Path("out-primary") / f"{stem}.symbols.json")
     primary_exit_raw = env("PRIMARY_EXIT")
     primary_exit = int(primary_exit_raw) if primary_exit_raw.strip() else None
     primary_status = "built" if primary_exit == 0 and primary_sha else "failed"
@@ -218,6 +226,7 @@ def main() -> int:
         "peak_rss_kb": primary_peak,
         "wall_s": primary_wall,
         "map_sha256": primary_sha,
+        "symbols_sha256": primary_symbols_sha,
         "files": primary_stats["files"],
         "below_prune_floor": primary_stats["below_prune_floor"],
         "kept_edges": primary_stats["kept_edges"],
@@ -236,9 +245,11 @@ def main() -> int:
         "compare_peak_rss_kb": None,
         "compare_wall_s": None,
         "compare_map_sha256": None,
+        "compare_symbols_sha256": None,
         "compare_files": None,
         "compare_below_prune_floor": None,
         "identical": None,
+        "identical_symbols": None,
     }
 
     if command == "stability" and primary_status == "built":
@@ -255,6 +266,7 @@ def main() -> int:
         compare_wall, compare_peak = time_fields(Path("compare.time.txt"))
         compare_stats = sha256_and_stats(Path("out-compare") / f"{stem}.json")
         compare_sha = compare_stats["sha256"]
+        compare_symbols_sha = file_sha256(Path("out-compare") / f"{stem}.symbols.json")
         compare_exit_raw = env("COMPARE_EXIT")
         compare_exit = int(compare_exit_raw) if compare_exit_raw.strip() else None
         compare_status = "built" if compare_exit == 0 and compare_sha else "failed"
@@ -266,11 +278,17 @@ def main() -> int:
             compare_peak_rss_kb=compare_peak,
             compare_wall_s=compare_wall,
             compare_map_sha256=compare_sha,
+            compare_symbols_sha256=compare_symbols_sha,
             compare_files=compare_stats["files"],
             compare_below_prune_floor=compare_stats["below_prune_floor"],
         )
         if primary_status == "built" and compare_status == "built":
             result["identical"] = primary_sha == compare_sha
+            result["identical_symbols"] = (
+                primary_symbols_sha == compare_symbols_sha
+                if primary_symbols_sha and compare_symbols_sha
+                else None
+            )
 
     Path("result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(f"{slug}: {primary_status}" + (f", compare {result['compare_status']}" if has_compare else ""))
