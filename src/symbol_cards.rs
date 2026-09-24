@@ -569,10 +569,66 @@ fn inset(ring: &[Point], delta: f64) -> Option<Ring> {
     }
 }
 
+fn in_triangle(p: Point, a: Point, b: Point, c: Point) -> bool {
+    cross(a, b, p) >= 0.0 && cross(b, c, p) >= 0.0 && cross(c, a, p) >= 0.0
+}
+
+/// Cuts small convex corners off a ring, smallest first. A top-level piece
+/// inherits the file footprint's raster outline, whose one-cell steps are
+/// the staircase that finding 34 only rounded; the mitred inset cannot pass
+/// such a step either. Removing a convex vertex only removes the triangle it
+/// spans, so the result stays inside the piece, and a corner is only cut
+/// when no other vertex lies in that triangle, so the ring stays simple.
+/// Convex power cells only lose near-degenerate corners; a non-convex piece
+/// may give up at most 8% of its area.
+fn simplify_inward(ring: &[Point]) -> Ring {
+    let total = signed_area(ring);
+    let (corner, budget) = if is_convex(ring) {
+        (0.002, 0.01)
+    } else {
+        (0.02, 0.08)
+    };
+    let mut points = ring.to_vec();
+    let mut removed = 0.0;
+    while points.len() > 3 {
+        let n = points.len();
+        let mut best: Option<(f64, usize)> = None;
+        for k in 0..n {
+            let (before, after) = ((k + n - 1) % n, (k + 1) % n);
+            let (a, b, c) = (points[before], points[k], points[after]);
+            let area = cross(a, b, c) * 0.5;
+            if area <= 0.0 || area > corner * total || removed + area > budget * total {
+                continue;
+            }
+            if best.is_some_and(|(top, _)| area >= top) {
+                continue;
+            }
+            let blocked = (0..n)
+                .any(|m| m != k && m != before && m != after && in_triangle(points[m], a, b, c));
+            if !blocked {
+                best = Some((area, k));
+            }
+        }
+        let Some((area, k)) = best else {
+            break;
+        };
+        removed += area;
+        points.remove(k);
+    }
+    let points = clean(&points);
+    if points.len() >= 3 && signed_area(&points) > 0.0 {
+        points
+    } else {
+        ring.to_vec()
+    }
+}
+
 /// The drawn card for an allocated piece: inset by the raster pass's gutter
 /// distances, halving the distance when a thin piece cannot take the full
 /// gutter, and never a ring that collapses at the wire precision.
 fn card_ring(piece: &[Point], depth: usize) -> Option<Ring> {
+    let simplified = simplify_inward(piece);
+    let piece = simplified.as_slice();
     let area = signed_area(piece).max(0.0);
     let mut delta = if depth == 0 {
         (0.035 * area.sqrt()).min(0.004)
@@ -647,7 +703,7 @@ fn interior_point(ring: &[Point]) -> Option<Point> {
     }
     xs.sort_by(f64::total_cmp);
     let mut best: Option<(f64, Point)> = None;
-    for pair in xs.chunks_exact(2) {
+    for pair in xs.as_chunks::<2>().0 {
         let width = pair[1] - pair[0];
         if width > 0.0 && best.is_none_or(|(top, _)| width > top) {
             best = Some((width, [(pair[0] + pair[1]) * 0.5, y]));
@@ -1419,6 +1475,27 @@ mod tests {
         assert!(is_simple(&card));
         assert!(card.iter().all(|&p| point_in_polygon(p, &region)));
         assert!(signed_area(&card) < signed_area(&region));
+    }
+
+    #[test]
+    fn inward_simplification_cuts_staircase_steps_but_stays_inside() {
+        // A 10-step staircase edge on an otherwise square footprint.
+        let mut ring = vec![[0.0, 0.0], [1.0, 0.0]];
+        for step in 0..10 {
+            let x = 1.0 - step as f64 * 0.1;
+            let y = step as f64 * 0.1;
+            ring.push([x, y + 0.1]);
+            ring.push([x - 0.1, y + 0.1]);
+        }
+        ring.push([0.0, 1.0]);
+        let ring = normalise(&ring).unwrap();
+        let simplified = simplify_inward(&ring);
+        assert!(simplified.len() < ring.len() / 2, "{simplified:?}");
+        assert!(is_simple(&simplified));
+        assert!(signed_area(&simplified) <= signed_area(&ring));
+        assert!(signed_area(&simplified) >= 0.92 * signed_area(&ring));
+        let center = centroid(&simplified);
+        assert!(point_in_polygon(center, &ring));
     }
 
     #[test]
