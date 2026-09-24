@@ -65,9 +65,33 @@ That fires `.github/workflows/fly-deploy.yml`, which builds on Fly's remote buil
 
 A deploy with no tag to cut — a rollback, or shipping a fix that is already on `main` — is the same workflow run by hand: Actions → *fly deploy (production)* → Run workflow.
 
+## SCIP indexers (issue #110 P1b)
+
+The runtime image now also carries three pinned SCIP indexers -- scip-typescript, scip-python and scip-go -- plus the Node, Go and Python runtimes they need at index time, not just to install themselves (`Dockerfile`'s `scip-tools` stage). Versions match `.github/workflows/scip-spike.yml`'s pins, the ones `docs/FINDINGS.md` finding 41 measured: scip-typescript 0.4.0, scip-python 0.6.6, scip-go v0.2.7, Go 1.26.8. `.github/workflows/scip-image-build.yml` builds the Dockerfile and smoke-tests all three inside the built image on a standard GitHub-hosted runner -- see that workflow and the P1b PR body for the resulting image-size and build-time numbers.
+
+**Env vars for P1a's ingest** (issue #110 P1a, branch `feat/scip-ingest`). These names did not exist yet when P1b was written, so P1b chose them; P1a's ingest module should read these to find the indexer binaries rather than assuming they are on `PATH`:
+
+| var | default in the image |
+|---|---|
+| `TOLMAP_SCIP_TYPESCRIPT` | `/opt/node/bin/scip-typescript` |
+| `TOLMAP_SCIP_PYTHON` | `/opt/node/bin/scip-python` |
+| `TOLMAP_SCIP_GO` | `/usr/local/bin/scip-go` |
+
+All three are also on `PATH` (`/opt/go/bin:/opt/node/bin`), so a shell or a `Command` search without the override still finds them; the env vars exist for a P1a that wants to be explicit or override with a different binary in development.
+
+**What this means for staging.** Railway's staging service builds this same Dockerfile from `main` on every commit, unfiltered (see the table at the top of this file). Once P1b merges, every staging build picks up the larger image and the added build time -- there is no way to build staging from an older, smaller Dockerfile without diverging from what production would also deploy. If Railway's current build plan has a build-time or image-size ceiling, check it against this workflow's measured numbers before merging; this document does not change Railway's plan, only flags that the image staging builds is now bigger.
+
+**Not yet decided (owner, #110 P1c):** whether the hosted worker may run indexers with dependencies installed (a sandbox is required first), and the production machine size increase the owner asked for -- both are separate from this image change and do not land here.
+
 ## Changing a limit
 
 Change it in `fly.toml` and in `deploy/railway.staging.env`, in the same PR, with the arithmetic in `fly.toml`'s comment. CI's `deploy env parity` job fails the build if only one side moves. A deliberate one-sided knob goes in `EXPECTED_ONLY_IN_*` in `scripts/check_deploy_env_parity.py` with the reason written next to it.
+
+## Worker privilege and environment model
+
+The `tolmap worker` child every index job spawns (`src/service/jobs.rs::process_worker_exe`) runs as an unprivileged `tolmap-worker` user (fixed uid/gid `10001:10001`, baked into the runtime image as `TOLMAP_WORKER_UID`/`TOLMAP_WORKER_GID` — see the Dockerfile's runtime stage), with an empty environment plus a short explicit allowlist (`PATH`, `LANG`, the `TOLMAP_NAMER_*` budget/ledger knobs, and `OPENROUTER_API_KEY` only when `TOLMAP_NAMER=model`), and its own per-job directory instead of the shared `cache_dir` — see that function's doc comments for the full reasoning. The shared clone cache under `cache_dir/repos` is still fetched/updated and still reused across jobs for the same repo, exactly as before this hardening work; the service (still at its own uid) does that clone/fetch itself and then hands the worker a fresh, non-hardlinked local-clone copy in its own job directory (`service::jobs::run_blocking`, `service::clone::local_clone_into`) rather than the shared cache directory itself. This only applies when the service itself runs as root, which is exactly the Fly.io runtime image's case (no `USER` in the Dockerfile, deliberately); locally and in CI the service is not root, so the worker still runs as the current user, unprivileged-vs-service distinction and all.
+
+Nothing here needs a migration step for an existing `/data` volume. The per-job directories this creates are dynamic — made fresh and torn down by the service on every single job, never a static layout an operator provisions — so there is nothing to pre-create, `chown`, or backfill before redeploying an existing machine onto this change.
 
 
 `TOLMAP_PRUNE_VARIANT` accepts `absolute`, `percentile`, `node-relative`, or `pre-rescale` and defaults to `node-relative` when unset or invalid. Both staging and production set the owner-approved default explicitly so a deployment cannot retain the former absolute default through stale configuration.
