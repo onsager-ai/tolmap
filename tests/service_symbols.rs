@@ -1,7 +1,11 @@
 use std::sync::Arc;
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 use axum::body::{to_bytes, Body};
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Request, StatusCode};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -70,7 +74,7 @@ async fn district_route_includes_remote_symbol_endpoint() {
         jobs: jobs::new_registry(),
         rate_limiter: RateLimiter::new(),
     });
-    let response = http::router(state)
+    let response = http::router(state.clone())
         .oneshot(
             Request::builder()
                 .uri("/api/maps/LOCAL/Example/symbols?district=0&commit=abc")
@@ -86,4 +90,61 @@ async fn district_route_includes_remote_symbol_endpoint() {
     assert_eq!(body["symbol_indices"], json!([0, 1]));
     assert_eq!(body["edges"], json!([[0, 1, 3]]));
     assert_eq!(body["module_code_lines"], json!({"0": 1}));
+
+    // New commits carry this exact serialized response. Corrupting the
+    // historical inputs proves the ordinary path never parses either one.
+    let district_dir = dir.path().join("abc.symbols");
+    std::fs::create_dir(&district_dir).unwrap();
+    let district_bytes = serde_json::to_vec(&body).unwrap();
+    std::fs::write(district_dir.join("0.json"), &district_bytes).unwrap();
+    std::fs::write(dir.path().join("abc.json"), b"invalid map").unwrap();
+    std::fs::write(dir.path().join("abc.symbols.json"), b"invalid symbols").unwrap();
+
+    let request = |gzip: bool, district: usize| {
+        let mut builder = Request::builder().uri(format!(
+            "/api/maps/local/example/symbols?district={district}"
+        ));
+        if gzip {
+            builder = builder.header(header::ACCEPT_ENCODING, "gzip");
+        }
+        builder.body(Body::empty()).unwrap()
+    };
+    let plain = http::router(state.clone())
+        .oneshot(request(false, 0))
+        .await
+        .unwrap();
+    assert_eq!(plain.status(), StatusCode::OK);
+    assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
+    let plain_bytes = to_bytes(plain.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(plain_bytes.as_ref(), district_bytes.as_slice());
+
+    let compressed = http::router(state.clone())
+        .oneshot(request(true, 0))
+        .await
+        .unwrap();
+    assert_eq!(compressed.status(), StatusCode::OK);
+    assert_eq!(compressed.headers()[header::CONTENT_ENCODING], "gzip");
+    let compressed_bytes = to_bytes(compressed.into_body(), usize::MAX).await.unwrap();
+    let mut gzip = Command::new("gzip")
+        .arg("-dc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    gzip.stdin
+        .take()
+        .unwrap()
+        .write_all(&compressed_bytes)
+        .unwrap();
+    let decoded = gzip.wait_with_output().unwrap();
+    assert!(decoded.status.success());
+    let decoded_json: serde_json::Value = serde_json::from_slice(&decoded.stdout).unwrap();
+    let plain_json: serde_json::Value = serde_json::from_slice(&plain_bytes).unwrap();
+    assert_eq!(decoded_json, plain_json);
+
+    let missing = http::router(state)
+        .oneshot(request(false, 1))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }

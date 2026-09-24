@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
 
 use tolmap::service::config::{Limits, ServeConfig};
@@ -126,6 +126,27 @@ async fn static_dir_set_serves_index_html_for_root_and_spa_routes() {
         body.contains("tolmap"),
         "expected the SPA fallback to serve index.html for an unmapped path: {body}"
     );
+}
+
+#[tokio::test]
+async fn static_map_file_uses_gzip_when_accepted() {
+    let bundle = bundle_dir();
+    std::fs::create_dir(bundle.path().join("maps")).unwrap();
+    let map = format!("{{\"files\":{:?}}}", vec!["district"; 100]);
+    std::fs::write(bundle.path().join("maps/example.json"), &map).unwrap();
+    let (_dir, state) = state_with_static_dir(Some(bundle.path().to_path_buf()));
+    let response = http::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/maps/example.json")
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
 }
 
 #[tokio::test]

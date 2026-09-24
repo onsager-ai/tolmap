@@ -23,6 +23,11 @@ JSON 404s; every other path falls back to `index.html` so the client-side
 router can own it (`GET /django/django` on a cold load, for instance) --
 see `src/service/http.rs::router`.
 
+Responses under `/api/*` and files served from `TOLMAP_STATIC_DIR` may use
+`Content-Encoding: gzip` when the request accepts gzip. Clients that do not
+send `Accept-Encoding: gzip` receive the original bytes. SSE job events stay
+uncompressed so frames can stream as they are produced.
+
 This document is the contract. It is written and committed before the
 implementation so the frontend and the service can be built in parallel
 against the same shape; the implementation must not drift from it without
@@ -109,12 +114,14 @@ The full sibling `<name>.symbols.json` also has `files`, `symbols`, `edges`,
 document small. The same sibling is copied to `/maps/<owner>/<repo>.symbols.json`
 when a static map includes one.
 `tolmap build` also writes `<name>.symbols/<district>.json` for every district.
-Each file has the same JSON object returned by this endpoint for that district,
+The service reads that file directly for commits that have the directory,
+without parsing the full map or symbols document. For older indexed commits
+without the directory, it projects from their full symbols sibling. Each
+file has the same JSON object returned by this endpoint for that district,
 including any symbols at the far ends of crossing edges. Static map collection
 copies this directory to `/maps/<owner>/<repo>.symbols/`, so a static client can
 fetch one district at `/maps/<owner>/<repo>.symbols/<district>.json`. The full
-symbols sibling remains available for the service and determinism checks.
-The API currently sends these JSON responses without gzip compression.
+symbols sibling remains available for older commits and determinism checks.
 
 ### `POST /api/index`
 

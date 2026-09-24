@@ -396,6 +396,9 @@ mod tests {
             .collect();
         for path in &paths {
             std::fs::write(path, b"{}").unwrap();
+            let district_dir = path.with_extension("symbols");
+            std::fs::create_dir(&district_dir).unwrap();
+            std::fs::write(district_dir.join("0.json"), b"{}").unwrap();
         }
         store
             .insert(&row("o/r", "c0", "2024-01-01T00:00:00Z", &paths[0]))
@@ -419,8 +422,14 @@ mod tests {
             !paths[0].exists(),
             "pruned row's map file should be removed from disk"
         );
+        assert!(
+            !paths[0].with_extension("symbols").exists(),
+            "pruned row's district symbols should be removed from disk"
+        );
         assert!(paths[1].exists());
         assert!(paths[2].exists());
+        assert!(paths[1].with_extension("symbols").exists());
+        assert!(paths[2].with_extension("symbols").exists());
     }
 
     #[test]

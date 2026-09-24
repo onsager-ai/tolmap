@@ -542,6 +542,13 @@ jobs:
           cp -f "out-compare/${STEM}.json" "artifact/${STEM}.compare.json" 2>/dev/null || true
           cp -f "out-compare/${STEM}.symbols.json" "artifact/${STEM}.compare.symbols.json" 2>/dev/null || true
 
+      - name: Measure district HTTP delivery
+        if: inputs.command == 'build' && matrix.slug == 'langgenius/dify' && steps.build_primary.outputs.exit_code == '0'
+        env:
+          STEM: ${{ matrix.stem }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+        run: python3 eval/measure_service_symbols.py bin-primary/tolmap "out-primary/${STEM}.json" artifact/service_symbols.json
+
       - name: Measure symbol card geometry
         if: always() && inputs.command == 'build'
         env:
