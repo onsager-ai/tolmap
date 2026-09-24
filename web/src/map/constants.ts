@@ -53,6 +53,21 @@ export const NEIGHBOURHOOD_LABEL_MIN_FILES = 4;
 export const NEIGHBOURHOOD_LABEL_MIN_FILES_FOCUSED = 6;
 export const NEIGHBOURHOOD_LABEL_MIN_EXTENT_PX = 120;
 
+// Issue #82 follow-up: at deep zoom, a tiny leaf symbol is compacted by
+// src/symbol_cards.rs to a small octagon raster (<=12 cells) and a small
+// container keeps its plus-shaped raster region so its child still fits
+// inside -- on screen these read as bare, meaningless squares/circles/
+// crosses, because MapRenderer.drawSymbolCardsPass only skips a label when
+// it doesn't fit, never the card underneath. 14px is the smallest box that
+// still fits a ~9px label with a couple of px of padding on each side, so
+// below it there is no useful label to withhold -- the shape carries no
+// information a viewer could read, and is worse than not drawing it (the
+// symbol stays reachable through the outline tree and its reference lines
+// roll up to the nearest drawn ancestor card or the file -- see
+// symbolCards.ts's rollReferences). The selection, its ancestors, and
+// whatever's currently hovered are drawn regardless of size.
+export const CARD_MIN_PX = 14;
+
 export type Geo = "r" | "p" | "t";
 export type Layer = "d" | "c" | "x" | "p";
 

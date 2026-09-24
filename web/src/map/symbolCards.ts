@@ -98,6 +98,23 @@ export function ringBounds(ring: WorldRing): [number, number, number, number] {
   return [x0, y0, x1, y1];
 }
 
+/** Bounding box across every ring of a multi-ring contour set (a module-
+ * level-code region can be more than one disjoint area) -- same shape as
+ * ringBounds, one level up, for the CARD_MIN_PX gate (issue #82 follow-up)
+ * to size a module region exactly the way it sizes a symbol's own exterior
+ * ring. */
+export function contoursBounds(contours: WorldContours): [number, number, number, number] {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const ring of contours) {
+    const [rx0, ry0, rx1, ry1] = ringBounds(ring);
+    if (rx0 < x0) x0 = rx0;
+    if (ry0 < y0) y0 = ry0;
+    if (rx1 > x1) x1 = rx1;
+    if (ry1 > y1) y1 = ry1;
+  }
+  return [x0, y0, x1, y1];
+}
+
 export function ringCentroid(ring: WorldRing): [number, number] {
   let sx = 0, sy = 0;
   for (const [x, y] of ring) {

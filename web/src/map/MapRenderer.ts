@@ -8,6 +8,7 @@
 import type { DistrictSymbols, MapDocument, Neighbourhood } from "@/types";
 import {
   BUILD_ZOOM,
+  CARD_MIN_PX,
   DOT_DENSITY_FLOOR,
   KCOL,
   KIND,
@@ -58,6 +59,7 @@ import {
   ancestorsOf,
   cardFillRatio,
   computeFileFootprintAreas,
+  contoursBounds,
   decodeDistrictSymbols,
   fileCrossesSymbolGate,
   isBoldKind,
@@ -2658,6 +2660,19 @@ export class MapRenderer {
         for (const a of ancestorsOf(entry.decoded, entry.local)) selAncestryGlobal.add(entry.decoded.raw.symbol_indices[a]);
       }
     }
+    // Issue #82 follow-up (CARD_MIN_PX): the currently hovered symbol is a
+    // third exception to the min-size gate below, alongside the selection
+    // and its ancestors -- same "hs:" convention renderSymbolRefs reads
+    // hoverKey with. A hover that starts or ends on a symbol the gate would
+    // otherwise hide (only reachable via the outline tree's hoverSymbol(),
+    // since a pointer can never land on a card that isn't drawn) takes
+    // effect on the NEXT repaint, same as any other hover-independent
+    // change here -- there is no separate hover-only redraw of this pass
+    // (see renderSymbolRefs' own doc comment for why hover avoids a full
+    // repaint; extending that to re-run just this pass on every hover
+    // in/out was judged not worth the added bookkeeping for a case a
+    // pointer itself can never trigger).
+    const hoverGlobal = this.hoverKey?.startsWith("hs:") ? Number(this.hoverKey.slice(3)) : null;
 
     const gCards = el("g", {});
     g.appendChild(gCards);
@@ -2688,15 +2703,23 @@ export class MapRenderer {
       const fileColor = this.tint(i);
       const moduleContours = decoded.moduleRings.get(i);
       if (moduleContours) {
-        gCards.appendChild(
-          drawContourFill(moduleContours, {
-            fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - MODULE_FILL_RATIO) * 100)}%, ${fileColor} ${Math.round(MODULE_FILL_RATIO * 100)}%)`,
-            stroke: "var(--dim)",
-            "stroke-width": 0.8,
-            "stroke-dasharray": "4 3",
-            "pointer-events": "none",
-          }),
-        );
+        const [mbx0, mby0, mbx1, mby1] = contoursBounds(moduleContours);
+        const moduleWidthPx = Math.abs(this.X(mbx1) - this.X(mbx0));
+        const moduleHeightPx = Math.abs(this.Y(mby1) - this.Y(mby0));
+        // Issue #82 follow-up: a module-level-code region follows the same
+        // CARD_MIN_PX rule as a symbol card -- below it, it's the same
+        // unlabelled, unreadable dashed sliver a tiny symbol card is.
+        if (Math.min(moduleWidthPx, moduleHeightPx) >= CARD_MIN_PX) {
+          gCards.appendChild(
+            drawContourFill(moduleContours, {
+              fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - MODULE_FILL_RATIO) * 100)}%, ${fileColor} ${Math.round(MODULE_FILL_RATIO * 100)}%)`,
+              stroke: "var(--dim)",
+              "stroke-width": 0.8,
+              "stroke-dasharray": "4 3",
+              "pointer-events": "none",
+            }),
+          );
+        }
       }
       const topLocals = decoded.topByFile.get(i) ?? [];
       // File tab candidate, from the file's own outline (its `P` polygon,
@@ -2725,16 +2748,29 @@ export class MapRenderer {
         const global = decoded.raw.symbol_indices[local];
         const row = decoded.raw.symbols[local];
         const kind = rowKind(row);
-        this.symVisible.add(global);
         const exterior = rings[0];
-        const centroid = ringCentroid(exterior);
-        this.symScreenAnchor.set(global, [this.X(centroid[0]), this.Y(centroid[1])]);
         const [bx0, by0, bx1, by1] = ringBounds(exterior);
         const sx0 = this.X(bx0), sx1 = this.X(bx1), sy0 = this.Y(by0), sy1 = this.Y(by1);
         const widthPx = Math.abs(sx1 - sx0);
         const heightPx = Math.abs(sy1 - sy0);
-        const children = decoded.children[local];
         const isSelfOrAncestorOfSelection = selAncestryGlobal.has(global);
+        const isHovered = global === hoverGlobal;
+        // Issue #82 follow-up: don't draw a card too small to carry a label
+        // -- it reads as a bare octagon/cross instead (see CARD_MIN_PX's own
+        // comment). A container caught here returns before it ever recurses
+        // into `children` below, so the whole subtree is skipped too ("a
+        // container below the threshold is not drawn, and neither are its
+        // descendants" -- deliberately unconditional: only the selection's
+        // OWN ancestor chain, via selAncestryGlobal, forces a small
+        // container open, not an unrelated hover further down it). The
+        // symbol itself stays reachable through the outline tree, and its
+        // reference lines roll up to the nearest drawn ancestor card or the
+        // file (rollReferences, driven by `symVisible` below).
+        if (Math.min(widthPx, heightPx) < CARD_MIN_PX && !isSelfOrAncestorOfSelection && !isHovered) return;
+        this.symVisible.add(global);
+        const centroid = ringCentroid(exterior);
+        this.symScreenAnchor.set(global, [this.X(centroid[0]), this.Y(centroid[1])]);
+        const children = decoded.children[local];
         const expanded = isClassExpanded(children.length > 0, Math.min(widthPx, heightPx), isSelfOrAncestorOfSelection);
         const ratio = cardFillRatio(depth);
         gCards.appendChild(
