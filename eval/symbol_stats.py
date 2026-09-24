@@ -96,17 +96,37 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         "median_within_file_pearson": statistics.median(correlations) if correlations else None,
         "document_bytes_before_geometry": compact_bytes(before),
     }
+    result.update(contour_metrics(decoded))
     result.update(audit_rings(decoded))
     if compare_file:
         raw = compare_file.read_bytes()
         result["before_precision_bytes"] = len(raw)
         result["before_precision_gzip_bytes"] = len(gzip.compress(raw, mtime=0))
         old = json.loads(raw)
+        result["main_contours"] = contour_metrics(decode_geometry(old))
         result["before_precision_collapsed_by_decimals"] = {
             str(places): collapsed_at_precision(old, places)
             for places in range(6, 12)
         }
     return result
+
+
+def contour_metrics(document):
+    cards = [card for card in document.get("symbol_rings", []) if card]
+    vertices = [sum(len(ring) for ring in card) for card in cards]
+    axis = total = 0
+    for card in cards:
+        for ring in card:
+            for a, b in zip(ring, ring[1:] + ring[:1]):
+                total += 1
+                axis += a[0] == b[0] or a[1] == b[1]
+    return {
+        "median_vertices_per_card": statistics.median(vertices) if vertices else None,
+        "mean_vertices_per_card": sum(vertices) / len(vertices) if vertices else None,
+        "axis_aligned_edge_share": axis / total if total else None,
+        "axis_aligned_edges": axis,
+        "contour_edges": total,
+    }
 
 
 def decode_ring(stream):

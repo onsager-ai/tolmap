@@ -1,5 +1,5 @@
-//! Raster card geometry inside each displayed file footprint. The masks, not
-//! the simplified output rings, are the ownership authority while recursing.
+//! Raster card ownership inside each displayed file footprint. Contours are
+//! smoothed only where the shared pixel ownership still excludes neighbours.
 use std::collections::BTreeMap;
 
 use anyhow::{ensure, Result};
@@ -26,6 +26,39 @@ struct Canvas {
 
 fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
     let mask = largest_component(mask.to_vec(), canvas.grid);
+    let cells = mask.iter().filter(|&&owned| owned).count();
+    // A one-cell seed and its few-cell cross are artifacts of connected
+    // raster growth, not meaningful card shapes. Draw a compact octagon in
+    // an owned cell; its siblings keep their original cells and cannot gain
+    // any part of this card. The minimum-area reserve remains separate.
+    if cells > 0 && cells <= 9 {
+        let center = mask
+            .iter()
+            .enumerate()
+            .find(|(_, owned)| **owned)
+            .map(|(cell, _)| {
+                [
+                    canvas.low[0] + (cell % canvas.grid) as f64 * canvas.step,
+                    canvas.low[1] + (cell / canvas.grid) as f64 * canvas.step,
+                ]
+            })?;
+        let radius = canvas.step * 0.38;
+        let bevel = radius * 0.42;
+        let [x, y] = center;
+        let mut compact = vec![vec![
+            [x - radius + bevel, y - radius],
+            [x + radius - bevel, y - radius],
+            [x + radius, y - radius + bevel],
+            [x + radius, y + radius - bevel],
+            [x + radius - bevel, y + radius],
+            [x - radius + bevel, y + radius],
+            [x - radius, y + radius - bevel],
+            [x - radius, y - radius + bevel],
+        ]];
+        if quantize_rings(&mut compact).is_ok() {
+            return Some(compact);
+        }
+    }
     let mut rings = marching_squares(&mask, canvas.grid);
     for points in &mut rings {
         let original = std::mem::take(points);
@@ -53,6 +86,31 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
             .total_cmp(&polygon_area(a))
             .then_with(|| a.len().cmp(&b.len()))
     });
+    // One corner-cutting pass suppresses grid steps. Every sibling starts
+    // from the same raster ownership, and the quarter-cell audit below
+    // rejects a rounded corner if it enters any unowned cell (including a
+    // hole). When a tight boundary has no room to round, use its original
+    // contour instead of moving ownership across the boundary.
+    let original = rings.clone();
+    let smoothed = rings.iter().map(|ring| smooth(ring)).collect::<Rings>();
+    for candidate in [&smoothed, &original] {
+        if let Some(output) = simplify(candidate, &mask, canvas) {
+            return Some(output);
+        }
+    }
+    None
+}
+
+fn smooth(ring: &Ring) -> Ring {
+    let mut output = Vec::with_capacity(ring.len() * 2);
+    for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+        output.push([a[0] * 0.8 + b[0] * 0.2, a[1] * 0.8 + b[1] * 0.2]);
+        output.push([a[0] * 0.2 + b[0] * 0.8, a[1] * 0.2 + b[1] * 0.8]);
+    }
+    output
+}
+
+fn simplify(rings: &Rings, mask: &[bool], canvas: &Canvas) -> Option<Rings> {
     let maximum = rings.iter().map(Vec::len).max()?;
     let mut limit = CARD_CONTOUR_POINTS;
     loop {
@@ -86,8 +144,11 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
             limit = (limit * 2).min(maximum);
             continue;
         }
-        if !covers_unowned_pixel(&mask, canvas, &output) || limit >= maximum {
+        if !covers_unowned_pixel(mask, canvas, &output) {
             return Some(output);
+        }
+        if limit >= maximum {
+            return None;
         }
         limit = (limit * 2).min(maximum);
     }
@@ -1041,6 +1102,29 @@ mod tests {
         let (canvas, mask) = square_canvas(60);
         let outline = ring(&mask, &canvas).unwrap();
         assert_eq!(outline.len(), 1);
-        assert_eq!(outline[0].len(), 4);
+        assert!(outline[0].len() <= 12);
+    }
+
+    #[test]
+    fn five_cell_cross_becomes_a_compact_convex_card() {
+        let (canvas, mut mask) = square_canvas(16);
+        mask.fill(false);
+        for cell in [7 * 16 + 7, 6 * 16 + 7, 8 * 16 + 7, 7 * 16 + 6, 7 * 16 + 8] {
+            mask[cell] = true;
+        }
+        let outline = ring(&mask, &canvas).unwrap();
+        assert_eq!(outline.len(), 1);
+        assert_eq!(outline[0].len(), 8);
+        let corner_signs = outline[0]
+            .iter()
+            .enumerate()
+            .map(|(i, &point)| {
+                let previous = outline[0][(i + 7) % 8];
+                let next = outline[0][(i + 1) % 8];
+                (point[0] - previous[0]) * (next[1] - point[1])
+                    - (point[1] - previous[1]) * (next[0] - point[0])
+            })
+            .collect::<Vec<_>>();
+        assert!(corner_signs.iter().all(|&cross| cross > 0.0));
     }
 }
