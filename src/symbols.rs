@@ -621,6 +621,27 @@ fn value_attribute(node: Node<'_>) -> bool {
     true
 }
 
+fn collect_superclasses(owner: usize, node: Node<'_>, bytes: &[u8], out: &mut Vec<Candidate>) {
+    for child in children(node) {
+        let mut chains = Vec::new();
+        expression_chains(child, bytes, &mut chains);
+        for chain in chains {
+            out.push(Candidate {
+                owner,
+                chain,
+                call: false,
+                value: false,
+                kind: if child.kind() == "keyword_argument" {
+                    ANNOTATION
+                } else {
+                    EXTENDS
+                },
+                unresolved_reason: None,
+            });
+        }
+    }
+}
+
 fn collect_candidates(
     node: Node<'_>,
     bytes: &[u8],
@@ -699,45 +720,31 @@ fn collect_candidates(
                     | "implements_clause"
             )
         {
-            let mut chains = Vec::new();
-            expression_chains(node, bytes, &mut chains);
-            let kind = match node.kind() {
-                "superclasses" | "extends_clause" => EXTENDS,
-                "implements_clause" => IMPLEMENTS,
-                "decorator" => DECORATOR,
-                _ => ANNOTATION,
-            };
-            for parts in chains {
-                // Python's metaclass is a keyword argument, not a base.
-                if kind == EXTENDS
-                    && parts.last().is_some_and(|part| part == "ABCMeta")
-                    && text(node, bytes).contains("metaclass=")
-                {
-                    continue;
-                }
-                out.push(Candidate {
-                    owner,
-                    chain: parts,
-                    call: false,
-                    value: false,
-                    kind,
-                    unresolved_reason: None,
-                });
-            }
-        } else if node.kind() == "class_definition" {
-            if let Some(bases) = node.child_by_field_name("superclasses") {
+            if node.kind() == "superclasses" {
+                collect_superclasses(owner, node, bytes, out);
+            } else {
                 let mut chains = Vec::new();
-                expression_chains(bases, bytes, &mut chains);
+                expression_chains(node, bytes, &mut chains);
+                let kind = match node.kind() {
+                    "superclasses" | "extends_clause" => EXTENDS,
+                    "implements_clause" => IMPLEMENTS,
+                    "decorator" => DECORATOR,
+                    _ => ANNOTATION,
+                };
                 for parts in chains {
                     out.push(Candidate {
                         owner,
                         chain: parts,
                         call: false,
                         value: false,
-                        kind: EXTENDS,
+                        kind,
                         unresolved_reason: None,
                     });
                 }
+            }
+        } else if node.kind() == "class_definition" {
+            if let Some(bases) = node.child_by_field_name("superclasses") {
+                collect_superclasses(owner, bases, bytes, out);
             }
         } else if value_attribute(node) {
             if let Some(parts) = chain(node, bytes) {
@@ -1978,6 +1985,14 @@ mod tests {
         let ts_child = id(&doc, 1, "Child");
         assert!(doc.symbols[py_base].0 .7 && doc.symbols[py_meta].0 .7);
         assert!(doc.symbols[ts_i].0 .7 && doc.symbols[ts_base].0 .7);
+        assert!(doc
+            .symbols
+            .iter()
+            .any(|s| s.0 .1 == "work" && s.0 .5 == py_base as isize && s.0 .7));
+        assert!(doc
+            .symbols
+            .iter()
+            .any(|s| s.0 .1 == "run" && s.0 .5 == ts_base as isize && s.0 .7));
         assert!(typed_edge(&doc, ts_child, ts_base, EXTENDS));
         assert!(typed_edge(&doc, ts_child, ts_i, IMPLEMENTS));
         assert!(doc
@@ -2011,6 +2026,21 @@ mod tests {
             POSSIBLE_IMPLEMENTATION
         ));
         assert_eq!(doc.coverage.possible_implementations, 1);
+    }
+
+    #[test]
+    fn old_symbol_rows_and_edges_load_as_nonabstract_and_unknown() {
+        let doc: SymbolsDocument = serde_json::from_value(serde_json::json!({
+            "files": [0],
+            "symbols": [[0, "f", 1, 1, 2, -1, 2]],
+            "edges": [[0, 0, 1]],
+            "module_code_lines": {},
+            "coverage": {"calls_total": 0, "calls_resolved": 0, "unresolved": {}}
+        }))
+        .unwrap();
+        assert!(!doc.symbols[0].0 .7);
+        assert_eq!(doc.edges, vec![[0, 0, 1, 0]]);
+        assert_eq!(doc.kinds[0], "unknown");
     }
 
     #[test]

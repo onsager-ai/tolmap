@@ -19,8 +19,10 @@ def read(path):
 
 def pairs(document):
     result = collections.Counter()
+    symbols = [tuple(row[:5]) for row in document["symbols"]]
+    assert len(symbols) == len(set(symbols)), "symbol identity is ambiguous"
     for edge in document["edges"]:
-        result[tuple(edge[:2])] += edge[2]
+        result[(symbols[edge[0]], symbols[edge[1]])] += edge[2]
     return result
 
 
