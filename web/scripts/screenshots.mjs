@@ -433,6 +433,13 @@ try {
       });
       return res.json();
     };
+    // The mock models the service's one-concurrent-job default -- a job left
+    // running (or queued) after its own screenshot is taken would otherwise
+    // sit ahead of the next theme's "mid-build" submission, so that frame
+    // could capture "queued" instead of a running build (this is the same
+    // fix check-view-stability.mjs's own job-page checks needed once several
+    // of them ran back to back).
+    const cancelJob = (jobId) => fetch(`${base}/api/jobs/${jobId}/cancel`, { method: "POST" }).catch(() => {});
     const jobStem = `${out}/job-progress`;
     const desktop = { viewport: { width: 1200, height: 800 }, isMobile: false, hasTouch: false, deviceScaleFactor: 1 };
 
@@ -449,6 +456,7 @@ try {
         await page.screenshot({ path: `${jobStem}-mid-build-${colorScheme}.png` });
         console.log(`${jobStem}-mid-build-${colorScheme}.png`);
         await context.close();
+        await cancelJob(accepted.job_id);
       }
 
       // Queued: a second submission while the first still occupies the
@@ -457,7 +465,7 @@ try {
       {
         const runningSlug = `shotorg/queue-running-${Date.now()}`;
         const queuedSlug = `shotorg/queue-behind-${Date.now()}`;
-        await postIndexJob(runningSlug);
+        const running = await postIndexJob(runningSlug);
         const queued = await postIndexJob(queuedSlug);
         const context = await browser.newContext({ ...desktop, colorScheme });
         const page = await context.newPage();
@@ -467,6 +475,8 @@ try {
         await page.screenshot({ path: `${jobStem}-queued-${colorScheme}.png` });
         console.log(`${jobStem}-queued-${colorScheme}.png`);
         await context.close();
+        await cancelJob(running.job_id);
+        await cancelJob(queued.job_id);
       }
 
       // Cancelled.
