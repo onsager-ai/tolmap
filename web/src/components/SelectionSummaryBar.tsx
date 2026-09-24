@@ -55,7 +55,7 @@ export function SelectionSummaryBar({ doc, sel, selSym, selD, adj, radj, onDetai
   return (
     <div
       data-fullscreen-summary
-      className="absolute inset-x-2.5 bottom-2.5 z-20 flex items-center gap-2.5 rounded-md border border-[var(--rule)] bg-[rgba(21,28,33,.94)] px-3 py-2 text-[var(--on)] shadow-lg"
+      className="absolute inset-x-2.5 bottom-2.5 z-20 flex items-center gap-2.5 rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] px-3 py-2 text-[var(--on)] shadow-lg"
       style={{ paddingBottom: "calc(8px + env(safe-area-inset-bottom, 0px))" }}
     >
       <div className="min-w-0 flex-1">

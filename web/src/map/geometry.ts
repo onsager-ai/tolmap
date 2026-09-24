@@ -193,6 +193,24 @@ const hx = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 const mix = (a: number[], b: number[], t: number) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
 
 let cssCache: CSSStyleDeclaration | null = null;
+
+/** Issue #82 "chrome follows the theme" (theme switch, owner decision
+ * 2026-09-24): `cssCache` above and `hueCache` below (its own doc comment)
+ * resolve CSS custom properties into plain JS values ONCE and hold onto
+ * them, on the correct assumption that a page load never changes them --
+ * true until a runtime System/Light/Dark switch, which flips `--canvas`/
+ * `--H0..--H5` etc without a reload. Without invalidating both here, every
+ * colour this module hands out (districtColor, mixTowardCanvas, ramp,
+ * neighbourhoodShadeColor) would keep painting the PREVIOUS theme's
+ * resolved values until the next full document load. lib/theme.ts calls
+ * this (alongside packageLayout.ts's own invalidatePackageColourCache) from
+ * the one place a theme change is ever applied, so no caller of the colour
+ * functions above needs to know this cache exists at all. */
+export function invalidateColourCache(): void {
+  cssCache = null;
+  hueCache = null;
+}
+
 // "the fill is the hue mixed toward the surface colour ... about 40% for
 // now" (issue #82 A2) -- the neighbourhood 3-shade scheme (the prototype's
 // lobe tints at .30/.40/.50) is the district layer's own texture, not a

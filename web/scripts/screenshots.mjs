@@ -273,6 +273,109 @@ try {
       }
     }
   }
+
+  // Issue #82 "chrome follows the theme" (owner decision, 2026-09-24):
+  // the main frames, once per Playwright `colorScheme` -- "light" and
+  // "dark" drive the OS-level prefers-color-scheme media query the app
+  // already listens to (System, the default choice; every OTHER frame in
+  // this file is taken with no colorScheme override, i.e. this runner's
+  // default, per CLAUDE.md's "keep all existing checks green, run in the
+  // default theme"). Four kinds of frame, named with a `-light`/`-dark`
+  // suffix: the opening zoom, the district rail/drawer, a selected file's
+  // card (the link-colour legend -- also where the owner's three-digit-
+  // count wrap fix lives, see LinkLegend.tsx), and a deep-zoom symbol-card
+  // frame.
+  if (slugs.includes(DIFY_SLUG)) {
+    const doc = await (await fetch(`${base}/maps/${DIFY_SLUG}.json`)).json();
+    const symbols = await (await fetch(`${base}/maps/${DIFY_SLUG}.symbols/0.json`)).json();
+    const stem = `${out}/${DIFY_SLUG.replace("/", "__")}`;
+    const workflowFile = doc.F.findIndex((p) => p === "web/app/components/workflow/types.ts");
+
+    // The same "biggest symbol-dense member file" pick the deep-zoom block
+    // above uses, restricted to district 0's own member files (not the far
+    // end of a crossing edge -- see that block's own comment for why).
+    const memberFiles = new Set(symbols.files);
+    const fileSymbolCounts = new Map();
+    for (const row of symbols.symbols) {
+      if (!memberFiles.has(row[0])) continue;
+      fileSymbolCounts.set(row[0], (fileSymbolCounts.get(row[0]) ?? 0) + 1);
+    }
+    let bigFile = null;
+    let bigFileCount = -1;
+    for (const [f, n] of fileSymbolCounts) {
+      if (n > bigFileCount) {
+        bigFile = f;
+        bigFileCount = n;
+      }
+    }
+
+    for (const colorScheme of ["light", "dark"]) {
+      for (const profile of PROFILES) {
+        const context = await browser.newContext({ ...profile, colorScheme });
+        const page = await context.newPage();
+
+        // Opening zoom.
+        await page.goto(`${base}/${DIFY_SLUG}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+        await page.waitForTimeout(500);
+        await page.screenshot({ path: `${stem}-${profile.name}-zoom0-${colorScheme}.png` });
+        console.log(`${stem}-${profile.name}-zoom0-${colorScheme}.png`);
+
+        // District rail (desktop) / drawer (phone).
+        if (profile.isMobile) {
+          await page.locator("aside button", { hasText: /districts/i }).first().click();
+          await page.waitForTimeout(400);
+          await page.screenshot({ path: `${stem}-${profile.name}-district-drawer-open-${colorScheme}.png` });
+          console.log(`${stem}-${profile.name}-district-drawer-open-${colorScheme}.png`);
+        } else {
+          await page.screenshot({ path: `${stem}-${profile.name}-district-rail-${colorScheme}.png` });
+          console.log(`${stem}-${profile.name}-district-rail-${colorScheme}.png`);
+        }
+
+        await context.close();
+      }
+    }
+
+    if (workflowFile >= 0) {
+      for (const colorScheme of ["light", "dark"]) {
+        for (const profile of PROFILES) {
+          const context = await browser.newContext({ ...profile, colorScheme });
+          const page = await context.newPage();
+
+          // File card with the link-colour legend -- the owner follow-up's
+          // own repro file (three-digit "imported by" count).
+          await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[workflowFile])}`, { waitUntil: "domcontentloaded" });
+          await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+          await page.waitForTimeout(700);
+          if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+          await page.screenshot({ path: `${stem}-${profile.name}-file-selected-${colorScheme}.png` });
+          console.log(`${stem}-${profile.name}-file-selected-${colorScheme}.png`);
+
+          await context.close();
+        }
+      }
+    }
+
+    if (bigFile != null) {
+      for (const colorScheme of ["light", "dark"]) {
+        for (const profile of PROFILES) {
+          const context = await browser.newContext({ ...profile, colorScheme });
+          const page = await context.newPage();
+
+          // Deep zoom on a large, symbol-dense file -- same target and zoom
+          // depth as the default-theme "symbol-cards-deep-zoom" frame above.
+          await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[bigFile])}`, { waitUntil: "domcontentloaded" });
+          await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+          await page.waitForTimeout(700);
+          await wheelZoomIn(page, profile.viewport.width * 0.35, profile.viewport.height * 0.4, 9);
+          await page.screenshot({ path: `${stem}-${profile.name}-symbol-cards-deep-zoom-${colorScheme}.png` });
+          console.log(`${stem}-${profile.name}-symbol-cards-deep-zoom-${colorScheme}.png`);
+
+          await context.close();
+        }
+      }
+    }
+  }
 } finally {
   await browser.close();
 }

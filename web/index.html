@@ -5,6 +5,29 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>tolmap</title>
+    <script>
+      // Issue #82 "chrome follows the theme" (owner decision, 2026-09-24):
+      // applies a saved Light/Dark override before anything paints, so a
+      // visitor who chose "dark" while their OS prefers light (or vice
+      // versa) never sees one frame of the wrong theme before React mounts.
+      // Mirrors src/lib/theme.ts's applyThemeAttribute() exactly -- same
+      // storage key, same rule ("system" = no attribute, so index.css's
+      // `@media (prefers-color-scheme)` block decides; "light"/"dark" set
+      // the attribute outright) -- duplicated here on purpose (this script
+      // runs before any bundle does, so it cannot import that module), not
+      // reimplemented from scratch. Kept deliberately tiny and dependency-
+      // free: this is the one piece of the app that must run before the
+      // stylesheet does its first paint.
+      (function () {
+        try {
+          var choice = localStorage.getItem("tolmap:theme");
+          if (choice === "light" || choice === "dark") document.documentElement.setAttribute("data-theme", choice);
+        } catch (e) {
+          // private window / blocked storage: fall through to the OS's own
+          // prefers-color-scheme, same as every other reader of this key.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

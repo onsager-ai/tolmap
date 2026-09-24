@@ -17,6 +17,7 @@ import { FooterStats } from "@/components/FooterStats";
 import { ZoomControls } from "@/components/ZoomControls";
 import { PackageLegend } from "@/components/PackageLegend";
 import { buildPackageLayout } from "@/map/packageLayout";
+import { useEffectiveTheme } from "@/lib/theme";
 import type { MapSearch } from "@/routes/search";
 
 /** The /:owner/:repo page: assembles chrome (TopBar, Sidebar, SearchBox,
@@ -81,7 +82,23 @@ export function MapView() {
   const [route, setRoute] = useState<Route | null>(null);
   const [unconnectedRepo, setUnconnectedRepo] = useState<string | null>(null);
   const [previewDirectory, setPreviewDirectory] = useState<{ repo: string; path: string } | null>(null);
-  const packageLayout = useMemo(() => (doc ? buildPackageLayout(doc) : null), [doc]);
+  // Issue #82 "chrome follows the theme": buildPackageLayout resolves every
+  // `--pN`/`--canvas` custom property it needs ONCE, into a plain colour
+  // array per depth (map/packageLayout.ts's own cssCache) -- correct for a
+  // page load, stale the moment a System/Light/Dark toggle changes those
+  // custom properties without a reload. Keying this memo on `effectiveTheme`
+  // too (lib/theme.ts already invalidates the underlying cache on every
+  // theme change) forces a fresh build, which is also what actually gets
+  // MapCanvas to repaint: its own effect already lists `packageGrouping` in
+  // its dependency array, so a new object reference here re-triggers
+  // renderer.render() for every layer, not just "p" -- geometry.ts's own
+  // districtColor/ramp caches are invalidated the same way, but nothing else
+  // in this component's props changes on a theme toggle to trigger a
+  // repaint for THEM without this.
+  const effectiveTheme = useEffectiveTheme();
+  // effectiveTheme is a deliberate cache-busting key, not a value buildPackageLayout reads directly.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const packageLayout = useMemo(() => (doc ? buildPackageLayout(doc) : null), [doc, effectiveTheme]);
 
   // Issue #82 A1 scope item 5 (fullscreen). Fullscreened element is the map
   // AREA (below), not the whole page: TopBar and Sidebar are its siblings,

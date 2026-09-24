@@ -3961,6 +3961,246 @@ async function checkMapWithoutSymbolsStillWorks(browser, base) {
   await context.close();
 }
 
+// Issue #82 "chrome follows the theme" (owner decision, AskUserQuestion
+// 2026-09-24, "Follow system + toggle"). Four checks:
+//   - checkThemeToggleCycles: the button cycles System -> Light -> Dark ->
+//     System, matching `data-theme` on <html> to the choice (absent for
+//     "system"), with no native `title`, and the choice survives a reload --
+//     applied by index.html's own inline bootstrap script before the app
+//     mounts, not just re-read by React after the fact.
+//   - checkThemeRepaintsMapColours: geometry.ts's districtColor/ramp and
+//     packageLayout.ts's packageColor each resolve `--canvas`/`--H0../--p0..`
+//     into a plain JS value ONCE and cache it (see those files' own
+//     invalidateColourCache/invalidatePackageColourCache doc comments) --
+//     correct for a page load, stale after a runtime toggle unless something
+//     forces a real repaint. Clicking the real button (not poking
+//     `data-theme` directly, the way the folder-contrast check elsewhere in
+//     this file does for a narrower purpose) is what actually exercises that
+//     whole chain, for both the district layer (geometry.ts's cache) and the
+//     package layer (packageLayout.ts's cache, invalidated the same way but
+//     only actually rebuilt because MapView keys its `packageLayout` useMemo
+//     on the effective theme too).
+//   - checkLinkLegendWrapsAtHighDegree: the owner's PR-review follow-up --
+//     LinkLegend.tsx's LinkCountsLabel used to ellipsise "imports N" off the
+//     end entirely once "imported by N files" alone pushed the joined line
+//     past the desktop file card's 230px width (three-digit counts,
+//     `langgenius__dify-desktop-file-selected.png`). `stacked` now puts each
+//     half on its own line instead.
+//   - checkChromeContrast: the light chrome palette (index.css's own
+//     --chrome/--chrome2/--on/--dim, added by this same PR) meets WCAG AA
+//     (>=4.5:1) for body text, the same as the pre-existing dark palette --
+//     a token check, not a rendering one (the repaint check above already
+//     covers "does a real toggle actually repaint").
+async function checkThemeToggleCycles(browser, base, profile) {
+  const label = `theme toggle cycles system/light/dark / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+
+  const toggle = page.locator("[data-theme-toggle]");
+  report((await toggle.count()) === 1, `${label}: exactly one theme toggle button in the top bar`);
+  report((await toggle.getAttribute("title")) === null, `${label}: no native title attribute on the toggle`);
+
+  const stateOf = () =>
+    page.evaluate(() => {
+      const el = document.querySelector("[data-theme-toggle]");
+      return {
+        attr: document.documentElement.getAttribute("data-theme"),
+        choice: el?.getAttribute("data-theme-choice") ?? null,
+        label: el?.getAttribute("aria-label") ?? null,
+      };
+    });
+
+  const start = await stateOf();
+  report(start.choice === "system" && start.attr === null, `${label}: starts on System with no data-theme attribute`, JSON.stringify(start));
+
+  await toggle.click();
+  const afterLight = await stateOf();
+  report(afterLight.choice === "light" && afterLight.attr === "light", `${label}: first click switches to Light and sets data-theme="light"`, JSON.stringify(afterLight));
+
+  await toggle.click();
+  const afterDark = await stateOf();
+  report(afterDark.choice === "dark" && afterDark.attr === "dark", `${label}: second click switches to Dark and sets data-theme="dark"`, JSON.stringify(afterDark));
+  report(
+    new Set([start.label, afterLight.label, afterDark.label]).size === 3,
+    `${label}: aria-label reflects the current choice at every step`,
+    JSON.stringify([start.label, afterLight.label, afterDark.label]),
+  );
+
+  // Persistence: reload should land back on "dark" -- BEFORE the app mounts
+  // (index.html's inline bootstrap script), not only once React re-reads
+  // localStorage a moment later. Checked immediately after
+  // "domcontentloaded", ahead of waiting for the map itself.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const immediatelyAfterReload = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+  report(immediatelyAfterReload === "dark", `${label}: the Dark choice survives a reload, applied before the app mounts`, String(immediatelyAfterReload));
+  await page.waitForSelector("svg.map-svg path.hit");
+  const afterReload = await stateOf();
+  report(afterReload.choice === "dark" && afterReload.attr === "dark", `${label}: toggle itself reflects the persisted choice after mount`, JSON.stringify(afterReload));
+
+  // Third distinct transition (dark -> system) plus a clean reset, so later
+  // checks in this run (and screenshots.mjs, which assumes the default
+  // theme unless it explicitly passes `colorScheme`) see the app's normal
+  // starting state.
+  await toggle.click();
+  const backToSystem = await stateOf();
+  report(backToSystem.choice === "system" && backToSystem.attr === null, `${label}: third click cycles back to System and removes data-theme`, JSON.stringify(backToSystem));
+
+  await context.close();
+}
+
+async function checkThemeRepaintsMapColours(browser, base, profile) {
+  const label = `theme toggle repaints map colours / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+
+  for (const [query, selector, what] of [
+    ["?geo=r&layer=d", "svg.map-svg path.hit[data-k^='d:']", "district"],
+    ["?geo=r&layer=p", "svg.map-svg path.hit[data-k^='f:']", "package"],
+  ]) {
+    await page.goto(`${base}/django/django${query}`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector(selector);
+    await page.waitForTimeout(300);
+    // getComputedStyle, not the raw `fill` attribute: the "package" layer's
+    // "other" group (packageLayout.ts's PACKAGE_OTHER_COLOR) paints its files
+    // with the literal attribute string "var(--dim)", which the browser
+    // already resolves live -- correct, but an attribute-string comparison
+    // would see the SAME literal text before and after and wrongly report no
+    // repaint for whichever file happens to be `.first()` in that group.
+    // Computed style is also the more general check regardless: it's
+    // correct whether the DOM has a literal hex/rgb() or a var() reference.
+    const before = await page.locator(selector).first().evaluate((el) => getComputedStyle(el).fill);
+    await page.locator("[data-theme-toggle]").click(); // system -> light
+    await page.locator("[data-theme-toggle]").click(); // light -> dark
+    await page.waitForTimeout(300);
+    const after = await page.locator(selector).first().evaluate((el) => getComputedStyle(el).fill);
+    report(!!before && !!after && before !== after, `${label}: ${what} layer fill changes after switching to dark`, `before=${before} after=${after}`);
+    await page.locator("[data-theme-toggle]").click(); // dark -> system, reset for the next iteration/check
+  }
+
+  await context.close();
+}
+
+async function checkLinkLegendWrapsAtHighDegree(browser, base, profile) {
+  const label = `link legend wraps at three-digit counts (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  const inDeg = new Map();
+  for (const [, b] of doc.E) inDeg.set(b, (inDeg.get(b) ?? 0) + 1);
+  let bestFile = -1;
+  let bestDeg = -1;
+  for (const [f, deg] of inDeg) {
+    if (deg > bestDeg) {
+      bestFile = f;
+      bestDeg = deg;
+    }
+  }
+  report(bestDeg >= 100, `${label}: fixture has a file with a three-digit imported-by count (setup)`, `deg=${bestDeg}`);
+
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(doc.F[bestFile])}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-selection-panel]");
+  if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap();
+  await page.waitForSelector("[data-selection-panel] [data-link-legend]");
+
+  const legend = page.locator("[data-selection-panel] [data-link-legend]").first();
+  const shape = await legend.evaluate((el) => {
+    const lines = [...el.children].map((child) => child.getBoundingClientRect());
+    return {
+      lineCount: lines.length,
+      // Two lines never share a vertical centre -- a real second row, not
+      // wrapped-but-overlapping inline content.
+      stacked: lines.length === 2 && Math.abs(lines[0].top - lines[1].top) > 2,
+      clipped: [...el.querySelectorAll("span")].some((s) => s.scrollWidth > s.clientWidth + 1),
+    };
+  });
+  report(shape.stacked, `${label}: imported-by and imports render on two separate lines`, JSON.stringify(shape));
+  report(!shape.clipped, `${label}: neither line's text is clipped`, JSON.stringify(shape));
+
+  const legendText = (await legend.innerText()).replace(/\s+/g, " ");
+  report(
+    new RegExp(`imported by ${bestDeg} files?`).test(legendText) && !legendText.includes("…"),
+    `${label}: full three-digit imported-by count is visible, not ellipsised`,
+    legendText,
+  );
+
+  await context.close();
+}
+
+async function checkChromeContrast(browser, base) {
+  const label = "chrome text contrast (rail palette)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("aside");
+
+  const ratios = await page.evaluate(() => {
+    const lum = (rgb) => {
+      const channels = rgb.match(/\d+(\.\d+)?/g).map(Number).slice(0, 3);
+      const [r, g, b] = channels.map((c) => c / 255).map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a, b) => {
+      const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const toRgb = (hex) => {
+      const h = hex.trim().replace("#", "");
+      return `rgb(${[0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)).join(",")})`;
+    };
+    const root = document.documentElement;
+    const previous = root.getAttribute("data-theme");
+    const out = {};
+    for (const theme of ["light", "dark"]) {
+      root.setAttribute("data-theme", theme);
+      const css = getComputedStyle(root);
+      const on = toRgb(css.getPropertyValue("--on"));
+      const dim = toRgb(css.getPropertyValue("--dim"));
+      const chrome = toRgb(css.getPropertyValue("--chrome"));
+      const chrome2 = toRgb(css.getPropertyValue("--chrome2"));
+      out[theme] = {
+        onChrome: ratio(on, chrome),
+        dimChrome: ratio(dim, chrome),
+        onChrome2: ratio(on, chrome2),
+        dimChrome2: ratio(dim, chrome2),
+      };
+    }
+    if (previous == null) root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", previous);
+    return out;
+  });
+
+  for (const theme of ["light", "dark"]) {
+    const r = ratios[theme];
+    report(r.onChrome >= 4.5, `${label}: --on on --chrome clears AA (4.5:1) in ${theme}`, r.onChrome.toFixed(2));
+    report(r.dimChrome >= 4.5, `${label}: --dim on --chrome clears AA (4.5:1) in ${theme}`, r.dimChrome.toFixed(2));
+    report(r.onChrome2 >= 4.5, `${label}: --on on --chrome2 clears AA (4.5:1) in ${theme}`, r.onChrome2.toFixed(2));
+    report(r.dimChrome2 >= 4.5, `${label}: --dim on --chrome2 clears AA (4.5:1) in ${theme}`, r.dimChrome2.toFixed(2));
+  }
+
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   await preflight(args.base);
@@ -4023,6 +4263,11 @@ async function main() {
     await checkStepBackThroughSymbolLevels(browser, args.base);
     await checkPhoneHubRingDeclutter(browser, args.base);
     await checkMapWithoutSymbolsStillWorks(browser, args.base);
+    // Issue #82 "chrome follows the theme"
+    for (const profile of PROFILES) await checkThemeToggleCycles(browser, args.base, profile);
+    for (const profile of PROFILES) await checkThemeRepaintsMapColours(browser, args.base, profile);
+    for (const profile of PROFILES) await checkLinkLegendWrapsAtHighDegree(browser, args.base, profile);
+    await checkChromeContrast(browser, args.base);
   } finally {
     await browser.close();
   }

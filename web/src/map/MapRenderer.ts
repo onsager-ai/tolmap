@@ -1642,8 +1642,8 @@ export class MapRenderer {
       gg.appendChild(
         el("path", {
           d: `M ${cx.toFixed(1)} ${cy.toFixed(1)} l -8 -12 a 9.5 9.5 0 1 1 16 0 z`,
-          fill: "#111A1E",
-          stroke: "#fff",
+          fill: "var(--pin-fill)",
+          stroke: "var(--pin-ink)",
           "stroke-width": 1.25,
         }),
       );
@@ -1651,7 +1651,7 @@ export class MapRenderer {
         x: cx.toFixed(1),
         y: (cy - 12.5).toFixed(1),
         "font-size": 9.5,
-        fill: "#fff",
+        fill: "var(--pin-ink)",
         "text-anchor": "middle",
         "font-family": "IBM Plex Mono, monospace",
         "font-weight": 600,
@@ -3364,7 +3364,7 @@ export class MapRenderer {
         y: (y0 + c.y).toFixed(1),
         width: Math.max(0.6, c.w - 1).toFixed(1),
         height: Math.max(0.6, c.h - 1).toFixed(1),
-        fill: c.sm ? KCOL[c.sm[1]] || "#5E626A" : dcol,
+        fill: c.sm ? KCOL[c.sm[1]] || "var(--room-fallback)" : dcol,
         "fill-opacity": faded ? 0.14 : c.sm ? (isSel ? 1 : 0.6) : 0.09,
         class: c.sm ? "hit" : "",
         "pointer-events": c.sm ? "all" : "none",
@@ -3397,7 +3397,7 @@ export class MapRenderer {
             y: (y0 + c.y + c.h / 2 + 3.2).toFixed(1),
             "font-size": 8.5,
             "text-anchor": "middle",
-            fill: "#fff",
+            fill: "var(--room-label-ink)",
             "fill-opacity": 0.95,
             "font-family": "IBM Plex Mono, monospace",
             "pointer-events": "none",

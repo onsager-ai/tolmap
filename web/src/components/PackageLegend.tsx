@@ -24,7 +24,7 @@ export function PackageLegend({ grouping, auto, minDepth, maxDepth, onDepth }: P
       aria-label="Package legend"
       data-package-legend
       data-package-expanded={expanded ? "true" : "false"}
-      className={`absolute left-2.5 top-[62px] z-10 rounded-md border border-[var(--rule)] bg-[rgba(21,28,33,.94)] text-[9.5px] text-[var(--dim)] shadow-lg min-[821px]:bottom-2.5 min-[821px]:top-auto ${expanded ? "w-[205px] px-2.5 py-2" : "w-auto p-0"}`}
+      className={`absolute left-2.5 top-[62px] z-10 rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] text-[9.5px] text-[var(--dim)] shadow-lg min-[821px]:bottom-2.5 min-[821px]:top-auto ${expanded ? "w-[205px] px-2.5 py-2" : "w-auto p-0"}`}
     >
       {!expanded ? (
         <button
