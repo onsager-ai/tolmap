@@ -4074,11 +4074,19 @@ async function checkThemeRepaintsMapColours(browser, base, profile) {
     await page.goto(`${base}/django/django${query}`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector(selector);
     await page.waitForTimeout(300);
-    const before = await page.locator(selector).first().evaluate((el) => el.getAttribute("fill"));
+    // getComputedStyle, not the raw `fill` attribute: the "package" layer's
+    // "other" group (packageLayout.ts's PACKAGE_OTHER_COLOR) paints its files
+    // with the literal attribute string "var(--dim)", which the browser
+    // already resolves live -- correct, but an attribute-string comparison
+    // would see the SAME literal text before and after and wrongly report no
+    // repaint for whichever file happens to be `.first()` in that group.
+    // Computed style is also the more general check regardless: it's
+    // correct whether the DOM has a literal hex/rgb() or a var() reference.
+    const before = await page.locator(selector).first().evaluate((el) => getComputedStyle(el).fill);
     await page.locator("[data-theme-toggle]").click(); // system -> light
     await page.locator("[data-theme-toggle]").click(); // light -> dark
     await page.waitForTimeout(300);
-    const after = await page.locator(selector).first().evaluate((el) => el.getAttribute("fill"));
+    const after = await page.locator(selector).first().evaluate((el) => getComputedStyle(el).fill);
     report(!!before && !!after && before !== after, `${label}: ${what} layer fill changes after switching to dark`, `before=${before} after=${after}`);
     await page.locator("[data-theme-toggle]").click(); // dark -> system, reset for the next iteration/check
   }
