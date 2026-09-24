@@ -141,12 +141,16 @@ function CollapsibleSection({
 export function Sidebar({ doc, packageLayout, open, onToggleOpen, onPickKeyFile, onSelectDistrict }: Props) {
   const narrow = useIsNarrow();
   const index = useMemo(() => buildDistrictIndex(doc, packageLayout), [doc, packageLayout]);
+  // Owner review (issue #82 "district index" follow-up): the title --
+  // "Districts · N files" -- is shown exactly ONCE. Desktop renders it as a
+  // plain heading above the list; the phone drawer instead puts it in the
+  // sticky handle button itself (the one thing visible whether the drawer
+  // is open or peeking its 46px collapsed strip), rather than duplicating a
+  // second "Districts" label there too.
+  const title = `Districts · ${index.totalFiles.toLocaleString("en-US")} files`;
 
-  const body = (
+  const list = (
     <>
-      <h2 className="mb-1.5 mt-3 px-3 font-sans text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--dim)]">
-        Districts · {index.totalFiles.toLocaleString("en-US")} files
-      </h2>
       <div>
         {index.mainland.map((row) => (
           <DistrictIndexRowView key={row.d} row={row} onPickKeyFile={onPickKeyFile} onSelectDistrict={onSelectDistrict} />
@@ -159,14 +163,21 @@ export function Sidebar({ doc, packageLayout, open, onToggleOpen, onPickKeyFile,
   if (!narrow) {
     return (
       <aside className="w-[250px] flex-none overflow-y-auto border-r border-[var(--rule)] bg-[var(--chrome)] pb-4 text-[var(--on)]">
-        {body}
+        <h2 className="mb-1.5 mt-3 px-3 font-sans text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--dim)]">{title}</h2>
+        {list}
       </aside>
     );
   }
 
   return (
     <aside
-      className="absolute inset-x-0 bottom-0 z-10 max-h-[68%] overflow-y-auto rounded-t-xl border-t border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-[0_-8px_26px_rgba(0,0,0,.34)] transition-transform duration-[260ms] ease-out"
+      // Owner review: the collapsed "Folders" panel (SelectionPanel, when
+      // nothing is selected) and FooterStats' "N unconnected files" chip
+      // (max-[820px]:z-20) used to render ON TOP of the open drawer,
+      // covering its rows. The open drawer now outranks both (z-40); closed,
+      // it stays at its old z-10 -- its 46px peek strip never overlapped
+      // either of them, so there's nothing to change for that state.
+      className={`absolute inset-x-0 bottom-0 ${open ? "z-40" : "z-10"} max-h-[68%] overflow-y-auto rounded-t-xl border-t border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-[0_-8px_26px_rgba(0,0,0,.34)] transition-transform duration-[260ms] ease-out`}
       style={{
         transform: open ? "translateY(0)" : "translateY(calc(100% - 46px))",
         paddingBottom: "calc(16px + env(safe-area-inset-bottom, 0px))",
@@ -174,11 +185,11 @@ export function Sidebar({ doc, packageLayout, open, onToggleOpen, onPickKeyFile,
     >
       <button
         onClick={onToggleOpen}
-        className="sticky top-0 block h-[46px] w-full bg-[var(--chrome)] text-center text-[11px] uppercase tracking-[0.1em] text-[var(--dim)]"
+        className="sticky top-0 block h-[46px] w-full bg-[var(--chrome)] px-3 text-center text-[11px] uppercase tracking-[0.1em] text-[var(--dim)]"
       >
-        districts
+        {title}
       </button>
-      {body}
+      {list}
     </aside>
   );
 }

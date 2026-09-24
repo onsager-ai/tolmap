@@ -1424,6 +1424,31 @@ async function checkDistrictIndex(browser, base, profile) {
   if (profile.isMobile) {
     await page.locator("aside button", { hasText: /districts/i }).first().click();
     await page.waitForTimeout(300);
+
+    // Owner review: the collapsed "Folders" panel (SelectionPanel, shown
+    // when nothing is selected) and FooterStats' "N unconnected files" chip
+    // used to render ON TOP of the open drawer (both had a higher z-index
+    // than the drawer's old z-10), covering its rows. Hit-tests a few row
+    // centres with elementFromPoint -- each must resolve to something
+    // inside the drawer itself, never the selection panel or the chip.
+    const rowHits = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll("[data-district-index-row]")].slice(0, 3);
+      return rows.map((row) => {
+        const r = row.getBoundingClientRect();
+        const x = r.x + r.width / 2;
+        const y = r.y + Math.min(10, r.height / 2);
+        const hit = document.elementFromPoint(x, y);
+        return {
+          insideDrawer: !!hit?.closest("aside"),
+          overlapped: !!hit?.closest("[data-selection-panel]") || !!hit?.closest("[data-unconnected-chip]"),
+        };
+      });
+    });
+    report(
+      rowHits.length > 0 && rowHits.every((h) => h.insideDrawer && !h.overlapped),
+      `${label}: nothing overlaps the open drawer's rows`,
+      JSON.stringify(rowHits),
+    );
   }
 
   const doc = await (await context.request.get(`${base}/maps/django/django.json`)).json();

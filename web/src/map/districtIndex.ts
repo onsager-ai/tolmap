@@ -193,7 +193,7 @@ export function buildDistrictIndexRow(doc: MapDocument, packageLayout: PackageLa
   // doesn't need a fourth just because one happens to also be a hazard.
   const hazardRow = landmarksInDistrict(doc, "hazard", d)[0];
   if (hazardRow && keyFiles.length < 3 && !keyFiles.some((k) => k.file === hazardRow[0])) {
-    keyFiles.push({ kind: "hazard", file: hazardRow[0], text: `hazard: ${basename(doc.F[hazardRow[0]])}` });
+    keyFiles.push({ kind: "hazard", file: hazardRow[0], text: `changes most: ${basename(doc.F[hazardRow[0]])}` });
   }
 
   const paths = packageLayout.districtPaths.get(d) ?? [];
