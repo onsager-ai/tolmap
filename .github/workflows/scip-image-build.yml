@@ -1,0 +1,201 @@
+# Builds the worker Dockerfile and smoke-tests the SCIP indexers inside it
+# (issue #110 P1b). CLAUDE.md: the maintainer's laptop cannot run `docker
+# build`, cargo, indexers or browsers -- its cooling is broken -- so this is
+# the only place this Dockerfile gets built or run before a real deploy.
+# `fly-deploy.yml` doesn't help here: it builds on Fly's own remote builder,
+# not a GitHub-hosted runner, and only on a pushed `v*` tag.
+#
+# Two full image builds, not one: `after` is this ref's Dockerfile (with the
+# `scip-tools` stage), `before` is main's (without it), built from a
+# separate worktree of the same checkout. Comparing them is the only way to
+# get real before/after image-size and build-time numbers for the PR body
+# rather than guessing at what the new stage costs -- hosting spend is the
+# owner's call (docs/DEPLOY.md), but the owner needs real numbers to make it.
+# `scip-tools` is also timed in isolation, `--no-cache`, so its own cost
+# isn't hidden inside the Rust/web build's much larger and more variable
+# wall time.
+#
+# Dispatch with `--ref <branch>` while this file lives only on a feature
+# branch (GitHub only dispatches a workflow file that's on the default
+# branch otherwise); it also runs automatically on a pull request that
+# touches the Dockerfile or these fixtures.
+
+name: SCIP worker image build (#110 P1b)
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "tests/fixtures/scip/**"
+      - "docs/DEPLOY.md"
+      - ".github/workflows/scip-image-build.yml"
+  workflow_dispatch:
+    inputs:
+      compare_main:
+        description: "Also build main's Dockerfile for a before/after size and time comparison"
+        type: boolean
+        default: true
+
+jobs:
+  build-and-smoke:
+    name: build image, measure size, smoke-test indexers
+    runs-on: ubuntu-latest
+    # Two full multi-stage builds (native + rust release + web bundle, twice)
+    # on a cold runner with no layer cache: generous on purpose, not a
+    # measured budget.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Docker version
+        run: docker version
+
+      # Two full multi-stage builds (Rust release, web bundle, Leiden C++,
+      # now also Go/Node/npm toolchains) on the same runner: the standard
+      # runner image ships ~9 GB of preinstalled tooling this workflow never
+      # touches (Android SDK, .NET, GHC, a second copy of Docker images) --
+      # freed up front rather than found out about mid-build.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          docker image prune -af || true
+          df -h /
+
+      # Timed and built --no-cache, in isolation, so its cost is not folded
+      # into (or hidden by cache reuse from) the full image build below.
+      - name: Build scip-tools stage alone (timed, no cache)
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          docker build --no-cache --target scip-tools -t scip-tools-only .
+          end=$(date +%s)
+          secs=$((end - start))
+          echo "SCIP_TOOLS_BUILD_SECONDS=$secs" >> "$GITHUB_ENV"
+          echo "scip-tools stage: ${secs}s"
+          # Drop the tag, not the underlying layers: BuildKit's content-
+          # addressed cache still lets the full build below reuse this
+          # stage's layers even though this build ran with --no-cache
+          # itself. Runner disk is finite across two full image builds.
+          docker rmi scip-tools-only
+
+      - name: Build the full image (this ref, after)
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          docker build -t tolmap:after .
+          end=$(date +%s)
+          secs=$((end - start))
+          echo "AFTER_BUILD_SECONDS=$secs" >> "$GITHUB_ENV"
+          size=$(docker image inspect tolmap:after --format='{{.Size}}')
+          echo "AFTER_SIZE_BYTES=$size" >> "$GITHUB_ENV"
+          echo "after: ${secs}s, $((size / 1024 / 1024)) MB"
+
+      - name: Build main's image for comparison (before)
+        if: github.event_name == 'pull_request' || inputs.compare_main
+        run: |
+          set -euo pipefail
+          # actions/checkout's remote is scoped to the ref it checked out,
+          # so `origin/main` is not necessarily a resolvable remote-tracking
+          # branch here -- fetch main straight into FETCH_HEAD instead of
+          # relying on one.
+          git fetch origin main --depth=1
+          git worktree add --detach /tmp/main-checkout FETCH_HEAD
+          start=$(date +%s)
+          docker build -t tolmap:before /tmp/main-checkout
+          end=$(date +%s)
+          secs=$((end - start))
+          echo "BEFORE_BUILD_SECONDS=$secs" >> "$GITHUB_ENV"
+          size=$(docker image inspect tolmap:before --format='{{.Size}}')
+          echo "BEFORE_SIZE_BYTES=$size" >> "$GITHUB_ENV"
+          echo "before: ${secs}s, $((size / 1024 / 1024)) MB"
+          # Only its size was needed; free the disk before the smoke steps
+          # below build and run more against tolmap:after.
+          docker rmi tolmap:before
+          git worktree remove --force /tmp/main-checkout
+
+      - name: Indexer and runtime versions
+        run: |
+          set -euo pipefail
+          echo "--- scip-typescript ---"
+          docker run --rm --entrypoint scip-typescript tolmap:after --version
+          echo "--- scip-python ---"
+          docker run --rm --entrypoint scip-python tolmap:after --version
+          echo "--- scip-go ---"
+          docker run --rm --entrypoint scip-go tolmap:after --version
+          echo "--- node (scip-typescript/scip-python runtime) ---"
+          docker run --rm --entrypoint node tolmap:after --version
+          echo "--- go (scip-go runtime, not just its own build) ---"
+          docker run --rm --entrypoint /opt/go/bin/go tolmap:after version
+          echo "--- python3 (scip-python/Pyright's environment discovery) ---"
+          docker run --rm --entrypoint python3 tolmap:after --version
+
+      # Each indexer runs against tests/fixtures/scip/<lang>, a tiny
+      # dependency-free source sample (not a data/ci graph -- those are
+      # pre-extracted graphs, not source). A bind mount, not files baked
+      # into the image: the fixtures are test inputs, not image contents.
+      - name: Index tiny fixtures inside the built image
+        run: |
+          set -euo pipefail
+          mkdir -p smoke/go smoke/ts smoke/py
+          cp -r tests/fixtures/scip/go/. smoke/go/
+          cp -r tests/fixtures/scip/ts/. smoke/ts/
+          cp -r tests/fixtures/scip/py/. smoke/py/
+
+          echo "--- scip-go ---"
+          docker run --rm -v "$PWD/smoke/go:/work" -w /work \
+            --entrypoint scip-go tolmap:after --quiet --output /work/index.scip
+          test -s smoke/go/index.scip
+
+          echo "--- scip-typescript ---"
+          docker run --rm -v "$PWD/smoke/ts:/work" -w /work \
+            --entrypoint scip-typescript tolmap:after index --no-progress-bar --output /work/index.scip .
+          test -s smoke/ts/index.scip
+
+          echo "--- scip-python ---"
+          # --project-version explicit: scip-python's own default is
+          # `git rev-parse HEAD`, which (a) needs the fixture to be a git
+          # repo at all and (b) trips git's "dubious ownership" guard when
+          # a root-owned container process reads a bind-mounted directory
+          # owned by the runner's non-root user -- and scip-python's error
+          # handling for either failure is an unhandled TypeError, not a
+          # clean message. Passing the flag sidesteps both, and the ingest
+          # side (P1a) will pass a real value from the indexed commit
+          # anyway, not rely on this default.
+          docker run --rm -v "$PWD/smoke/py:/work" -w /work \
+            --entrypoint scip-python tolmap:after index --project-name smoke \
+            --project-version smoke-0.0.0 --quiet --output /work/index.scip
+          test -s smoke/py/index.scip
+
+          ls -la smoke/*/index.scip
+
+      - name: Also smoke-test the product binary still starts
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /app/tolmap tolmap:after --help
+          docker run --rm --entrypoint ldd tolmap:after /app/tolmap | (grep "not found" && exit 1 || true)
+
+      - name: Size and time summary
+        if: always()
+        run: |
+          {
+            echo "## SCIP worker image (#110 P1b)"
+            echo
+            echo "| | before (main) | after (this branch) | delta |"
+            echo "|---|---:|---:|---:|"
+            if [ -n "${BEFORE_SIZE_BYTES:-}" ]; then
+              before_mb=$((BEFORE_SIZE_BYTES / 1024 / 1024))
+              after_mb=$((AFTER_SIZE_BYTES / 1024 / 1024))
+              echo "| image size | ${before_mb} MB | ${after_mb} MB | +$((after_mb - before_mb)) MB |"
+              echo "| full build time | ${BEFORE_BUILD_SECONDS}s | ${AFTER_BUILD_SECONDS}s | +$((AFTER_BUILD_SECONDS - BEFORE_BUILD_SECONDS))s |"
+            else
+              after_mb=$((AFTER_SIZE_BYTES / 1024 / 1024))
+              echo "| image size | (not built this run) | ${after_mb} MB | — |"
+              echo "| full build time | (not built this run) | ${AFTER_BUILD_SECONDS}s | — |"
+            fi
+            echo "| \`scip-tools\` stage alone, no cache | — | ${SCIP_TOOLS_BUILD_SECONDS}s | — |"
+            echo
+            echo "Cold-runner numbers, no layer cache on either side -- a measurement of the pinned stage's real cost, not of a warm incremental rebuild."
+          } >> "$GITHUB_STEP_SUMMARY"
