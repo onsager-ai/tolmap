@@ -53,6 +53,36 @@ export const NEIGHBOURHOOD_LABEL_MIN_FILES = 4;
 export const NEIGHBOURHOOD_LABEL_MIN_FILES_FOCUSED = 6;
 export const NEIGHBOURHOOD_LABEL_MIN_EXTENT_PX = 120;
 
+// Issue #82 follow-up: at deep zoom, a tiny leaf symbol is compacted by
+// src/symbol_cards.rs to a small octagon raster (<=12 cells) and a small
+// container keeps its plus-shaped raster region so its child still fits
+// inside -- on screen these read as bare, meaningless squares/circles/
+// crosses. A first pass at this gated the CARD on a fixed 14px floor, which
+// missed the actual bug: a 30-40px container with a long name is well past
+// 14px and still unlabelled, still a bare cross. CARD_MIN_PX now governs
+// only a module-level-code region (which has no label to test -- see
+// MapRenderer.drawSymbolCardsPass), where a fixed size floor is the whole
+// story. A symbol CARD's own eligibility is decided by whether it can
+// actually carry a label (symbolCards.ts's labelFitsBox) or has a drawn
+// descendant worth containing -- see CARD_HARD_FLOOR_PX below for why a
+// fixed floor is still needed underneath that.
+export const CARD_MIN_PX = 14;
+
+// Issue #82 follow-up (round 2): labelFitsBox's sqrt(area) test is
+// area-only, so a symbol with a very short name (1-3 characters --
+// loop-variable-style names are common) can satisfy it at any size down to
+// zero: "would 'x' fit in a 3x3px box" comes back true by the same formula
+// that correctly says a long name won't fit a 40px one. Without a floor
+// underneath the label-fit test, that loophole reintroduces exactly the
+// illegible-fleck problem CARD_MIN_PX was first added for, just for
+// short-named symbols instead of small ones. 8px is small enough that a
+// legitimate small-but-labelled card (14px+, the old floor) is never
+// affected, and is treated as an absolute floor -- unlike the label-fit
+// test, nothing below it is drawn even for the selection/hover/ancestor
+// exceptions (MapRenderer.drawSymbolCardsPass), since a sub-8px shape is a
+// rendering artifact regardless of why it would otherwise qualify.
+export const CARD_HARD_FLOOR_PX = 8;
+
 export type Geo = "r" | "p" | "t";
 export type Layer = "d" | "c" | "x" | "p";
 

@@ -2831,24 +2831,40 @@ function memberFileSet(symbols) {
   return new Set(symbols.files);
 }
 
-// The file with the most symbols in the bundled district -- large enough
-// that its footprint reads on screen and its cards are worth painting.
+// The file whose SINGLE LARGEST symbol has the most code_lines in the
+// bundled district -- large enough that its footprint reads on screen and
+// its cards are worth painting.
+//
+// CARD_MIN_PX follow-up (issue #82): this used to rank by raw symbol COUNT
+// ("the file with the most symbols"), which was a safe proxy for "some card
+// renders" back when every card rendered regardless of size. Under the
+// min-size gate a file can have many symbols and still have every one of
+// them individually too small to draw -- symbol_cards.rs's mass-based
+// allocation splits the file's footprint area across all of them, so more
+// symbols means a SMALLER average share, not a bigger one. Ranking by the
+// single biggest member's code_lines instead targets what every check
+// using this picker actually needs: a card guaranteed a big enough share of
+// the file's mass to clear CARD_MIN_PX at the file's own fit zoom. `count`
+// (total member symbols) is kept for the (info) log lines that already
+// print it.
 function pickBigFileTarget(symbols) {
   const members = memberFileSet(symbols);
   const counts = new Map();
+  const maxCodeLines = new Map();
   for (const row of symbols.symbols) {
     if (!members.has(row[0])) continue;
     counts.set(row[0], (counts.get(row[0]) ?? 0) + 1);
+    maxCodeLines.set(row[0], Math.max(maxCodeLines.get(row[0]) ?? -1, row[6]));
   }
   let file = null;
-  let count = -1;
-  for (const [f, n] of counts) {
-    if (n > count) {
+  let best = -1;
+  for (const [f, n] of maxCodeLines) {
+    if (n > best) {
       file = f;
-      count = n;
+      best = n;
     }
   }
-  return { file, count };
+  return { file, count: file == null ? -1 : counts.get(file), maxCodeLines: best };
 }
 
 // Every class (kind 0) with at least one member, sampled STRATIFIED across
@@ -2998,6 +3014,19 @@ async function checkNoCardsAtFitZoom(browser, base, profile) {
 // 9(b): selecting a symbol-bearing file (always gate-eligible regardless of
 // on-screen size -- symbolCards.ts's fileCrossesSymbolGate) fetches its
 // district's symbols and draws its cards.
+//
+// CARD_MIN_PX follow-up (issue #82 round 2/3): a card is no longer drawn
+// just because its FILE cleared the 40px gate -- it also needs its own
+// label to win a spot, or a drawn child, or an exception. A file with many
+// symbols (107, for the real fixture's biggest-single-member pick) can
+// still have every one of them individually too small to letter at the
+// file's own plain fit zoom, even for the single biggest one -- CI caught
+// exactly this (cardCount=0) once cards stopped drawing unconditionally.
+// A modest zoom-in after selecting (same ~1.6^6 wheel-in the deep-zoom
+// checks already use) gives every symbol in the file more room without
+// changing what this check is actually testing (that selecting the file
+// fetches its district's symbols and decodes them at all -- the file-level
+// 40px override was never about any INDIVIDUAL symbol's own size).
 async function checkCardsAppearAtSymbolGate(browser, base) {
   const label = "cards appear once a file is selected (dify) / desktop";
   console.log(`\n${label}`);
@@ -3014,6 +3043,15 @@ async function checkCardsAppearAtSymbolGate(browser, base) {
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
+  const fileBox = await page.locator(`svg.map-svg .hit[data-k="f:${target.file}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
+  const cx = fileBox ? fileBox.x + fileBox.width / 2 : 1200 * 0.5;
+  const cy = fileBox ? fileBox.y + fileBox.height / 2 : 800 * 0.5;
+  await page.mouse.move(cx, cy);
+  for (let i = 0; i < 9; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(650); // glide()/settle
   const cardCount = await page.locator('svg.map-svg [data-k^="hs:"]').count();
   report(cardCount > 0, `${label}: selecting a symbol-bearing file draws its cards`, `file=${path} symbols=${target.count} cards=${cardCount}`);
   await context.close();
@@ -3085,8 +3123,18 @@ function buildSyntheticClassResponse(mapDoc, fileIndex, multiplier) {
   const mx0 = cx0, mx1 = cx1, my0 = cy0 + (cy1 - cy0) * 0.65, my1 = cy1;
   const classGlobal = 9_000_000;
   const childGlobal = 9_000_001;
-  const className = "SyntheticClass";
-  const childName = "synthetic_method";
+  // CARD_MIN_PX round 2 (issue #82 follow-up): a card's own draw
+  // eligibility now depends on whether its LABEL fits its box
+  // (labelFitsBox), not just a fixed pixel floor -- and this class is
+  // deliberately sized to START small (comfortably under the 110px expand
+  // gate, ~80px on its own LONG side, so its short side can be
+  // considerably less for anything but a near-square file footprint). A
+  // long name ("SyntheticClass"/"synthetic_method", the original names
+  // here) risked failing labelFitsBox at that size well before the test
+  // ever got to exercise the 110px expand behaviour it's actually testing
+  // -- short names keep this test about THAT gate, not this one.
+  const className = "Cx";
+  const childName = "mx";
   const json = {
     district: 0,
     files: [fileIndex],
@@ -3106,10 +3154,15 @@ function buildSyntheticClassResponse(mapDoc, fileIndex, multiplier) {
 
 // Measures the file's OWN on-screen size at the opening fit (before any
 // symbols route is active -- a plain, unmocked navigation), then picks a
-// synthetic-class multiplier so the class starts comfortably under 110px
-// (~50px) and clears it comfortably (~2000px) at clampK's 40x zoom ceiling.
-// Decouples checkClassExpandsAtShortSide/checkCardTapSelectsSymbolAndBreadcrumb
-// from how big this PARTICULAR file happens to be on screen -- a fixed
+// synthetic-class multiplier so the class's LONG side starts comfortably
+// under 110px (~80px -- CARD_MIN_PX round 2, issue #82 follow-up: bumped up
+// from an original 50px for headroom under labelFitsBox, since the class's
+// SHORT side -- what the 110px expand gate and labelFitsBox's area both
+// actually key off -- can be considerably less than the long side for a
+// non-square file footprint) and clears 110px comfortably (~2000px) at
+// clampK's 40x zoom ceiling. Decouples
+// checkClassExpandsAtShortSide/checkCardTapSelectsSymbolAndBreadcrumb from
+// how big this PARTICULAR file happens to be on screen -- a fixed
 // multiplier would either start already-expanded (a big file) or never
 // reach 110px even at max zoom (a tiny one).
 async function pickSyntheticMultiplier(page, base, path, fileIndex) {
@@ -3118,7 +3171,7 @@ async function pickSyntheticMultiplier(page, base, path, fileIndex) {
   await page.waitForTimeout(900);
   const fileBox = await page.locator(`svg.map-svg .hit[data-k="f:${fileIndex}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   const fileWidthPx = Math.max(fileBox ? Math.max(fileBox.width, fileBox.height) : 0, 0.1);
-  return Math.max(2, 50 / fileWidthPx);
+  return Math.max(2, 80 / fileWidthPx);
 }
 
 // 9(c): a class expands (shows a member's own card) once its short side
@@ -3292,6 +3345,20 @@ async function checkReferenceLineEndpoints(browser, base) {
 
 // 9(f): hovering an outline row highlights its card (MapRenderer.hoverSymbol,
 // the SAME .hovered class toggle every other hoverable shape gets).
+//
+// CARD_MIN_PX follow-up (issue #82): the outline tree lists every symbol in
+// the file regardless of on-screen size, but a card below CARD_MIN_PX is now
+// skipped by drawSymbolCardsPass -- and hoverSymbol()/setHover() only redraw
+// the reference-line layer, not the cards themselves (see
+// drawSymbolCardsPass's own hoverGlobal comment for why: a pointer can never
+// land on a card that isn't drawn, so the one path that CAN name a hidden
+// symbol -- this outline row -- takes effect on the next repaint, not on
+// the hover itself). `.first()` used to be a safe pick because every symbol
+// always had a card; it no longer is, so read back which "hs:" cards are
+// ACTUALLY drawn first and hover the outline row that matches one of them.
+// Round 2/3 follow-up: also zoom in a bit after selecting, same reasoning
+// as checkCardsAppearAtSymbolGate's own comment -- otherwise a file with
+// many symbols can have NONE of them big enough to letter yet.
 async function checkOutlineHoverHighlightsCard(browser, base) {
   const label = "hovering an outline row highlights its card (dify) / desktop";
   console.log(`\n${label}`);
@@ -3306,10 +3373,36 @@ async function checkOutlineHoverHighlightsCard(browser, base) {
   }
   const path = mapDoc.F[target.file];
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(900);
+  const fileBox = await page.locator(`svg.map-svg .hit[data-k="f:${target.file}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
+  const cx = fileBox ? fileBox.x + fileBox.width / 2 : 1200 * 0.5;
+  const cy = fileBox ? fileBox.y + fileBox.height / 2 : 800 * 0.5;
+  await page.mouse.move(cx, cy);
+  for (let i = 0; i < 9; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(650); // glide()/settle
   await page.waitForSelector("[data-outline-tree]", { timeout: 15_000 }).catch(() => null);
-  const row = page.locator("[data-outline-row]").first();
-  if ((await row.count()) === 0) {
-    report(false, `${label}: setup`, "no outline row rendered in the sidebar");
+  const drawnGlobals = await page.evaluate(() =>
+    [...document.querySelectorAll('svg.map-svg [data-k^="hs:"]')].map((el) => el.getAttribute("data-k").slice(3)),
+  );
+  if (drawnGlobals.length === 0) {
+    report(false, `${label}: setup`, "no symbol card rendered for this file to test hover against");
+    await context.close();
+    return;
+  }
+  let row = null;
+  for (const g of drawnGlobals) {
+    const candidate = page.locator(`[data-outline-row="${g}"]`);
+    if ((await candidate.count()) > 0) {
+      row = candidate.first();
+      break;
+    }
+  }
+  if (!row) {
+    report(false, `${label}: setup`, `no outline row matched a drawn card (drawn=${JSON.stringify(drawnGlobals.slice(0, 10))})`);
     await context.close();
     return;
   }
@@ -3318,6 +3411,128 @@ async function checkOutlineHoverHighlightsCard(browser, base) {
   await page.waitForTimeout(150);
   const highlighted = await page.locator(`svg.map-svg [data-k="hs:${global}"].hovered`).count();
   report(highlighted > 0, `${label}: the outline row's card gains the hover highlight`, `global=${global} highlighted=${highlighted}`);
+  await context.close();
+}
+
+// 9(f2) (issue #82 follow-up, round 2): a symbol card too small to carry a
+// label reads as a bare, meaningless square/circle/cross -- a fixed pixel
+// floor alone doesn't answer that (a 30-40px container with a long name
+// clears any reasonable floor and is still unlabelled). MapRenderer's
+// drawSymbolCardsPass now draws a card only when its OWN label fits
+// (labelFitsBox) or it has a drawn descendant worth containing, with a hard
+// CARD_HARD_FLOOR_PX underneath and the selection/hover/ancestor exceptions
+// on top. This check makes neither exception apply (nothing here is
+// selected or hovered), so every drawn "hs:" card has to satisfy the
+// label-or-descendant rule on its own: it must either carry a visible
+// label (tagged "data-label-for" on the rendered <text>) or have at least
+// one drawn child (read back from the symbols fixture's own parent field,
+// row[5] -- a drawn grandchild implies its immediate parent was ALSO drawn,
+// by construction of the escape valve itself, so checking one level of
+// child is enough to validate the whole chain). Same view
+// screenshots.mjs's own "symbol-cards-deep-zoom" frame uses (a large,
+// symbol-dense file, several wheel notches in) -- that's where
+// symbol_cards.rs's mass-based layout spreads cards across the widest range
+// of on-screen sizes and label lengths, the view most likely to have shown
+// this bug.
+async function checkSymbolCardsCarryLabelOrChild(browser, base) {
+  const label = "symbol cards carry a label or a drawn child (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickBigFileTarget(symbols);
+  if (target.file == null) {
+    report(false, `${label}: setup`, "no file with symbols found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  // Same ~1.6^6 (9 wheel notches) zoom-in screenshots.mjs's own deep-zoom
+  // frame uses (see its wheelZoomIn call) -- deep enough that the file's
+  // cards have spread across a wide range of on-screen sizes.
+  await page.mouse.move(1200 * 0.35, 800 * 0.4);
+  for (let i = 0; i < 9; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(650); // glide()/settle
+  const drawnGlobals = await page.evaluate(() =>
+    [...document.querySelectorAll('svg.map-svg [data-k^="hs:"]')].map((el) => Number(el.getAttribute("data-sym"))),
+  );
+  const labeledGlobals = await page.evaluate(() =>
+    [...document.querySelectorAll("svg.map-svg [data-label-for]")].map((el) => Number(el.getAttribute("data-label-for"))),
+  );
+  const drawnSet = new Set(drawnGlobals);
+  const labeledSet = new Set(labeledGlobals);
+  // Parent (GLOBAL, or null) of every global this district's symbols
+  // document carries -- docs/API.md: row[5] is already a global index (or
+  // -1). Mirrors symbolCards.ts's own decode, minus the local-index
+  // bookkeeping this check doesn't need.
+  const parentOfGlobal = new Map();
+  symbols.symbols.forEach((row, local) => {
+    const global = symbols.symbol_indices[local];
+    parentOfGlobal.set(global, row[5] >= 0 ? row[5] : null);
+  });
+  const hasDrawnChild = new Set();
+  for (const g of drawnSet) {
+    const p = parentOfGlobal.get(g);
+    if (p != null && drawnSet.has(p)) hasDrawnChild.add(p);
+  }
+  const bad = [...drawnSet].filter((g) => !labeledSet.has(g) && !hasDrawnChild.has(g));
+  report(drawnSet.size > 0, `${label}: at least one card is on screen to check`, `total=${drawnSet.size}`);
+  report(
+    bad.length === 0,
+    `${label}: every drawn card (nothing selected or hovered, so no exception applies) has a label or a drawn child`,
+    JSON.stringify(bad.slice(0, 10)),
+  );
+  await context.close();
+}
+
+// 9(f3) (issue #82 follow-up, round 4): a card's rings are `[exterior,
+// hole, hole...]` (src/symbol_cards.rs, since #90/#95) -- one hole per
+// sibling card nested inside its footprint, meant to be even-odd-filled
+// around. MapRenderer used to paint the FULL ring set, so a hole for a
+// sibling that itself failed the label-fit gate (never got its own fill
+// painted over it) showed through as a bare outlined cross or square --
+// the shapes the owner kept flagging in the round-2/3 screenshots, for a
+// reason that had nothing to do with size or label length. paintOne now
+// draws `node.rings[0]` (the exterior) only, so a drawn card's path should
+// never carry more than the one "M" (SVG path moveto) its single ring
+// produces. Same deep-zoom dify view the other C2 checks use.
+async function checkSymbolCardsSingleSubpath(browser, base) {
+  const label = "drawn symbol cards have a single subpath (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickBigFileTarget(symbols);
+  if (target.file == null) {
+    report(false, `${label}: setup`, "no file with symbols found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  await page.mouse.move(1200 * 0.35, 800 * 0.4);
+  for (let i = 0; i < 9; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(650); // glide()/settle
+  const info = await page.evaluate(() =>
+    [...document.querySelectorAll('svg.map-svg [data-k^="hs:"]')].map((el) => ({
+      key: el.getAttribute("data-k"),
+      subpaths: (el.getAttribute("d").match(/M/g) ?? []).length,
+    })),
+  );
+  const multi = info.filter((c) => c.subpaths !== 1);
+  report(info.length > 0, `${label}: at least one card is on screen to check`, `total=${info.length}`);
+  report(multi.length === 0, `${label}: every drawn card path has exactly one subpath`, JSON.stringify(multi.slice(0, 10)));
   await context.close();
 }
 
@@ -3529,6 +3744,8 @@ async function main() {
     await checkCardTapSelectsSymbolAndBreadcrumb(browser, args.base);
     await checkReferenceLineEndpoints(browser, args.base);
     await checkOutlineHoverHighlightsCard(browser, args.base);
+    await checkSymbolCardsCarryLabelOrChild(browser, args.base);
+    await checkSymbolCardsSingleSubpath(browser, args.base);
     await checkStepBackThroughSymbolLevels(browser, args.base);
     await checkPhoneHubRingDeclutter(browser, args.base);
     await checkMapWithoutSymbolsStillWorks(browser, args.base);
