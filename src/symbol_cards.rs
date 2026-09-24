@@ -1068,7 +1068,16 @@ mod tests {
     #[test]
     fn one_pixel_parent_still_gives_two_hundred_children_distinct_rings() {
         use crate::schema::{HierSymbolRow, SymbolCoverage};
-        let mut symbols = vec![HierSymbolRow((0, "Parent".into(), 0, 1, 201, -1, 201))];
+        let mut symbols = vec![HierSymbolRow((
+            0,
+            "Parent".into(),
+            0,
+            1,
+            201,
+            -1,
+            201,
+            false,
+        ))];
         for i in 0..200 {
             symbols.push(HierSymbolRow((
                 0,
@@ -1078,12 +1087,14 @@ mod tests {
                 i + 2,
                 0,
                 1,
+                false,
             )));
         }
         let document = SymbolsDocument {
             files: vec![0],
             symbols,
             edges: Vec::new(),
+            kinds: crate::schema::symbol_edge_kinds(),
             module_code_lines: BTreeMap::new(),
             coverage: SymbolCoverage::default(),
             symbol_rings: None,
