@@ -1,5 +1,7 @@
-//! Raster card ownership inside each displayed file footprint. Contours are
-//! smoothed only where the shared pixel ownership still excludes neighbours.
+//! Raster card ownership inside each displayed file footprint. Keeping the
+//! raster solver preserves its connected weighted quotas and the subpixel
+//! reserve for crowded parents; a new vector power diagram would have to
+//! recover both guarantees. Contours smooth only within shared ownership.
 use std::collections::BTreeMap;
 
 use anyhow::{ensure, Result};
