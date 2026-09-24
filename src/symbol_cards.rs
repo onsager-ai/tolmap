@@ -25,6 +25,19 @@ struct Canvas {
 }
 
 fn ring(mask: &[bool], canvas: &Canvas, compact_tiny: bool) -> Option<Rings> {
+    ring_with_smoothing(mask, canvas, compact_tiny, true)
+}
+
+fn ring_raw(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
+    ring_with_smoothing(mask, canvas, false, false)
+}
+
+fn ring_with_smoothing(
+    mask: &[bool],
+    canvas: &Canvas,
+    compact_tiny: bool,
+    allow_smoothing: bool,
+) -> Option<Rings> {
     let mask = largest_component(mask.to_vec(), canvas.grid);
     let cells = mask.iter().filter(|&&owned| owned).count();
     // A one-cell seed and its few-cell cross are artifacts of connected
@@ -109,35 +122,43 @@ fn ring(mask: &[bool], canvas: &Canvas, compact_tiny: bool) -> Option<Rings> {
     // rejects a rounded corner if it enters any unowned cell (including a
     // hole). When a tight boundary has no room to round, use its original
     // contour instead of moving ownership across the boundary.
-    let original = rings.clone();
-    let smoothed = rings.iter().map(|ring| smooth(ring)).collect::<Rings>();
-    for candidate in [&smoothed, &original] {
-        if let Some(output) = simplify(candidate, &mask, canvas) {
+    if allow_smoothing {
+        let smoothed = rings.iter().map(|ring| smooth(ring)).collect::<Rings>();
+        if let Some(output) = simplify(&smoothed, &mask, canvas) {
             return Some(output);
         }
     }
-    None
+    simplify(&rings, &mask, canvas)
 }
 
 fn smooth(ring: &Ring) -> Ring {
-    let mut output = Vec::with_capacity(ring.len() * 2);
-    for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
-        let dx = b[0] - a[0];
-        let dy = b[1] - a[1];
-        let length = dx.abs().max(dy.abs());
-        if length <= 2.0 {
-            // A staircase consists of one-cell edges. Bridging each edge
-            // once makes diagonals without doubling every contour vertex.
-            output.push([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]);
-        } else {
-            // Long sides need both endpoints or a single midpoint would
-            // cut away most of a wide card. Bevel by a quarter cell only.
-            let t = 0.25 / length;
-            output.push([a[0] + dx * t, a[1] + dy * t]);
-            output.push([b[0] - dx * t, b[1] - dy * t]);
-        }
+    if signed_area(ring) <= 0.0 {
+        // Reducing a hole exposes its enclosed sibling, so keep holes on
+        // their exact raster boundary.
+        return ring.clone();
     }
-    output
+    (0..ring.len())
+        .map(|i| {
+            let previous = ring[(i + ring.len() - 1) % ring.len()];
+            let point = ring[i];
+            let next = ring[(i + 1) % ring.len()];
+            let incoming = [point[0] - previous[0], point[1] - previous[1]];
+            let outgoing = [next[0] - point[0], next[1] - point[1]];
+            let cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0];
+            if cross <= 0.0 {
+                return point;
+            }
+            let before_length = incoming[0].abs().max(incoming[1].abs());
+            let after_length = outgoing[0].abs().max(outgoing[1].abs());
+            if before_length == 0.0 || after_length == 0.0 {
+                return point;
+            }
+            [
+                point[0] - incoming[0] / before_length * 0.25 + outgoing[0] / after_length * 0.25,
+                point[1] - incoming[1] / before_length * 0.25 + outgoing[1] / after_length * 0.25,
+            ]
+        })
+        .collect()
 }
 
 fn simplify(rings: &Rings, mask: &[bool], canvas: &Canvas) -> Option<Rings> {
@@ -690,11 +711,25 @@ impl Cards<'_> {
             }
         }
         let parent = self.rings[symbol].as_ref().unwrap();
-        let missing = children
+        let mut missing = children
             .iter()
             .copied()
             .filter(|&child| !valid_ring(self.rings[child].as_ref(), parent))
             .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            // A smoothed parent can clip the centre of a child that owns a
+            // boundary cell. Restore the exact owned outline before using
+            // the subpixel reserve; most such children need no fallback.
+            let raw_display = largest_component(
+                inset(mask, canvas, depth, children.len() * 2 + 1),
+                canvas.grid,
+            );
+            if let Some(raw) = ring_raw(&raw_display, canvas) {
+                self.rings[symbol] = Some(raw);
+                let parent = self.rings[symbol].as_ref().unwrap();
+                missing.retain(|&child| !valid_ring(self.rings[child].as_ref(), parent));
+            }
+        }
         if !missing.is_empty() {
             if let Some(rect) = reserve_rect {
                 let step = (rect[2] - rect[0]) / missing.len() as f64;
@@ -1136,12 +1171,21 @@ mod tests {
     }
 
     #[test]
-    fn short_steps_smooth_without_doubling_vertices() {
-        let staircase = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [10.0, 1.0]];
+    fn convex_corners_move_inward_without_adding_vertices() {
+        let staircase = vec![
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 1.0],
+            [4.0, 1.0],
+            [4.0, 4.0],
+            [0.0, 4.0],
+        ];
         let rounded = smooth(&staircase);
-        assert_eq!(rounded.len(), staircase.len() + 2);
-        assert_eq!(rounded[0], [0.5, 0.0]);
-        assert_eq!(rounded[1], [1.0, 0.5]);
+        assert_eq!(rounded.len(), staircase.len());
+        assert!(rounded[1][0] < staircase[1][0]);
+        assert!(rounded[1][1] > staircase[1][1]);
+        assert_eq!(rounded[2], staircase[2]);
+        assert!(polygon_area(&rounded) < polygon_area(&staircase));
     }
 
     #[test]
