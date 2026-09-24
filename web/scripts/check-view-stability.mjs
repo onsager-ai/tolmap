@@ -3014,6 +3014,19 @@ async function checkNoCardsAtFitZoom(browser, base, profile) {
 // 9(b): selecting a symbol-bearing file (always gate-eligible regardless of
 // on-screen size -- symbolCards.ts's fileCrossesSymbolGate) fetches its
 // district's symbols and draws its cards.
+//
+// CARD_MIN_PX follow-up (issue #82 round 2/3): a card is no longer drawn
+// just because its FILE cleared the 40px gate -- it also needs its own
+// label to win a spot, or a drawn child, or an exception. A file with many
+// symbols (107, for the real fixture's biggest-single-member pick) can
+// still have every one of them individually too small to letter at the
+// file's own plain fit zoom, even for the single biggest one -- CI caught
+// exactly this (cardCount=0) once cards stopped drawing unconditionally.
+// A modest zoom-in after selecting (same ~1.6^6 wheel-in the deep-zoom
+// checks already use) gives every symbol in the file more room without
+// changing what this check is actually testing (that selecting the file
+// fetches its district's symbols and decodes them at all -- the file-level
+// 40px override was never about any INDIVIDUAL symbol's own size).
 async function checkCardsAppearAtSymbolGate(browser, base) {
   const label = "cards appear once a file is selected (dify) / desktop";
   console.log(`\n${label}`);
@@ -3030,6 +3043,15 @@ async function checkCardsAppearAtSymbolGate(browser, base) {
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
+  const fileBox = await page.locator(`svg.map-svg .hit[data-k="f:${target.file}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
+  const cx = fileBox ? fileBox.x + fileBox.width / 2 : 1200 * 0.5;
+  const cy = fileBox ? fileBox.y + fileBox.height / 2 : 800 * 0.5;
+  await page.mouse.move(cx, cy);
+  for (let i = 0; i < 9; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(650); // glide()/settle
   const cardCount = await page.locator('svg.map-svg [data-k^="hs:"]').count();
   report(cardCount > 0, `${label}: selecting a symbol-bearing file draws its cards`, `file=${path} symbols=${target.count} cards=${cardCount}`);
   await context.close();
@@ -3334,6 +3356,9 @@ async function checkReferenceLineEndpoints(browser, base) {
 // the hover itself). `.first()` used to be a safe pick because every symbol
 // always had a card; it no longer is, so read back which "hs:" cards are
 // ACTUALLY drawn first and hover the outline row that matches one of them.
+// Round 2/3 follow-up: also zoom in a bit after selecting, same reasoning
+// as checkCardsAppearAtSymbolGate's own comment -- otherwise a file with
+// many symbols can have NONE of them big enough to letter yet.
 async function checkOutlineHoverHighlightsCard(browser, base) {
   const label = "hovering an outline row highlights its card (dify) / desktop";
   console.log(`\n${label}`);
@@ -3350,6 +3375,15 @@ async function checkOutlineHoverHighlightsCard(browser, base) {
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
+  const fileBox = await page.locator(`svg.map-svg .hit[data-k="f:${target.file}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
+  const cx = fileBox ? fileBox.x + fileBox.width / 2 : 1200 * 0.5;
+  const cy = fileBox ? fileBox.y + fileBox.height / 2 : 800 * 0.5;
+  await page.mouse.move(cx, cy);
+  for (let i = 0; i < 9; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(650); // glide()/settle
   await page.waitForSelector("[data-outline-tree]", { timeout: 15_000 }).catch(() => null);
   const drawnGlobals = await page.evaluate(() =>
     [...document.querySelectorAll('svg.map-svg [data-k^="hs:"]')].map((el) => el.getAttribute("data-k").slice(3)),

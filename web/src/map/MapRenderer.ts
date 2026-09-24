@@ -2686,9 +2686,50 @@ export class MapRenderer {
     // passes too, each with its own budget.
     const placed: Array<[number, number, number, number]> = [];
     const hits = (b: [number, number, number, number]) => placed.some((r) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3]));
-    type LabelCandidate = { global: number; depth: number; area: number; x: number; y: number; text: string; bold: boolean; anchorTop: boolean };
+
+    // Issue #82 follow-up (round 3): a card can lose its OWN label to
+    // collision with a neighbour even when labelFitsBox says it would fit
+    // in isolation -- the greedy placement loop below is what actually
+    // decides who gets a rendered label, and CI caught cards "drawn" on the
+    // round-2 fits-in-isolation test that ended up bare anyway once a
+    // denser neighbour won the fight for the same screen space. Draw
+    // eligibility has to be decided AFTER collision is resolved, not
+    // before it -- so this pass now runs in three stages instead of one
+    // interleaved walk: (1) collect() builds the whole candidate tree per
+    // file (geometry + label text only, nothing painted yet); (2) every
+    // candidate competes in the SAME depth/area-ordered greedy label
+    // placement as before, marking `won` on whoever actually gets a
+    // rendered label; (3) decideDrawn() walks each file's tree bottom-up,
+    // so a container knows whether any child ended up drawn before
+    // deciding its own fate, and paint() finally draws exactly the nodes
+    // decideDrawn() kept. Splitting "decide" from "paint" this way still
+    // gets the DOM z-order right despite labels being DECIDED first: gCards
+    // was already appended to `g` above, gLabels only at the very end of
+    // this method, so cards land underneath labels in paint order
+    // regardless of which one this function computes first.
+    interface CardCandidate {
+      local: number;
+      global: number;
+      depth: number;
+      kind: number;
+      rings: WorldContours;
+      area: number;
+      centroid: [number, number];
+      expanded: boolean;
+      memberCount: number;
+      label: string;
+      bold: boolean;
+      isException: boolean;
+      children: CardCandidate[];
+      decoded: DecodedDistrictSymbols;
+      fileColor: string;
+      won: boolean;
+      isDrawn: boolean;
+    }
+    type LabelCandidate = { node: CardCandidate; depth: number; area: number; x: number; y: number; text: string; bold: boolean };
     const labelCandidates: LabelCandidate[] = [];
     const tabCandidates: Array<{ cx: number; y0: number; widthPx: number; name: string }> = [];
+    const fileEntries: Array<{ poly: NonNullable<MapDocument["P"]>[string] | undefined; roots: CardCandidate[] }> = [];
 
     const toScreenRing = (ring: readonly (readonly [number, number])[]): string =>
       ring.map(([x, y], n) => (n ? "L" : "M") + this.X(x).toFixed(1) + " " + this.Y(y).toFixed(1)).join("") + "Z";
@@ -2744,23 +2785,14 @@ export class MapRenderer {
         // cardedFileBBox's own doc comment for why this is recorded here.
         this.cardedFileBBox.set(i, [x0, yTop, x1, yBot]);
       }
-      // Issue #82 follow-up (round 2): a card too small to carry a label
-      // read as a bare octagon/cross even after the first pass's CARD_MIN_PX
-      // gate -- a 30-40px container with a long name clears 14px easily and
-      // was still unlabelled, still meaningless. Draw eligibility now turns
-      // on whether the card can actually carry ITS OWN label
-      // (labelFitsBox), not a fixed size -- with an escape valve for a
-      // container whose name doesn't fit but that DOES have a member drawn
-      // inside it (still worth outlining, since it's showing something).
-      // That escape valve is why `draw` returns whether it drew anything:
-      // a parent can only know if it has a drawn descendant by recursing
-      // into its children FIRST, before deciding its own fate. Below
-      // CARD_HARD_FLOOR_PX (own comment), nothing is drawn regardless --
-      // even the selection/hover/ancestor exceptions, unlike the label-fit
-      // rule they otherwise bypass.
-      const draw = (local: number, depth: number): boolean => {
+      // Stage 1 (this block's own doc comment): geometry + label text only,
+      // nothing painted yet. CARD_HARD_FLOOR_PX (own comment) is still an
+      // absolute cutoff applied here -- a sub-floor symbol never becomes a
+      // candidate for anything below, label-fit, escape valve or exception
+      // alike.
+      const collect = (local: number, depth: number): CardCandidate | null => {
         const rings = decoded.cardRings[local];
-        if (!rings || rings.length === 0) return false;
+        if (!rings || rings.length === 0) return null;
         const global = decoded.raw.symbol_indices[local];
         const row = decoded.raw.symbols[local];
         const kind = rowKind(row);
@@ -2770,76 +2802,57 @@ export class MapRenderer {
         const widthPx = Math.abs(sx1 - sx0);
         const heightPx = Math.abs(sy1 - sy0);
         const shortSidePx = Math.min(widthPx, heightPx);
-        if (shortSidePx < CARD_HARD_FLOOR_PX) return false;
+        if (shortSidePx < CARD_HARD_FLOOR_PX) return null;
         const isSelfOrAncestorOfSelection = selAncestryGlobal.has(global);
         const isHovered = global === hoverGlobal;
-        const isException = isSelfOrAncestorOfSelection || isHovered;
-        const children = decoded.children[local];
-        const expanded = isClassExpanded(children.length > 0, shortSidePx, isSelfOrAncestorOfSelection);
-        const memberCount = children.length;
+        const childrenLocal = decoded.children[local];
+        const expanded = isClassExpanded(childrenLocal.length > 0, shortSidePx, isSelfOrAncestorOfSelection);
+        const memberCount = childrenLocal.length;
         const label = symbolLabel(row, memberCount, !expanded && memberCount > 0);
-        // Recurse BEFORE deciding whether to draw self -- see this block's
-        // own doc comment for why. Only possible when `expanded` (the
-        // existing, unchanged 110px-or-forced rule): a collapsed container
-        // never shows a member's own card, so it can never inherit this
-        // exception from one either.
-        let anyChildDrawn = false;
+        const children: CardCandidate[] = [];
         if (expanded) {
-          for (const c of children) if (draw(c, depth + 1)) anyChildDrawn = true;
-        }
-        if (!isException && !anyChildDrawn && !labelFitsBox(label, isBoldKind(kind), widthPx * heightPx)) return false;
-        this.symVisible.add(global);
-        const centroid = ringCentroid(exterior);
-        this.symScreenAnchor.set(global, [this.X(centroid[0]), this.Y(centroid[1])]);
-        const ratio = cardFillRatio(depth);
-        gCards.appendChild(
-          drawContourFill(rings, {
-            fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - ratio) * 100)}%, ${fileColor} ${Math.round(ratio * 100)}%)`,
-            stroke: "var(--ink)",
-            "stroke-width": kind === 0 ? 1.1 : 0.7,
-            "stroke-opacity": 0.45,
-            ...(isDashedKind(kind) ? { "stroke-dasharray": "3 2" } : {}),
-            class: "hit",
-            "pointer-events": "all",
-            "data-k": "hs:" + global,
-            "data-sym": global,
-          }),
-        );
-        if (this.state!.selHSym === global) {
-          gCards.appendChild(el("path", { d: rings.map(toScreenRing).join(" "), "fill-rule": "evenodd", fill: "none", stroke: "var(--hot)", "stroke-width": 1.8, "pointer-events": "none" }));
-        }
-        if (expanded && children.length) {
-          const header = decoded.headerRings.get(local);
-          if (header) {
-            gCards.appendChild(
-              drawContourFill(header, {
-                fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - Math.min(1, ratio + 0.15)) * 100)}%, ${fileColor} ${Math.round(Math.min(1, ratio + 0.15) * 100)}%)`,
-                "pointer-events": "none",
-              }),
-            );
+          for (const c of childrenLocal) {
+            const child = collect(c, depth + 1);
+            if (child) children.push(child);
           }
         }
-        labelCandidates.push({
+        const centroid = ringCentroid(exterior);
+        const node: CardCandidate = {
+          local,
           global,
           depth,
+          kind,
+          rings,
           area: widthPx * heightPx,
-          x: (sx0 + sx1) / 2,
-          y: expanded ? Math.min(sy0, sy1) + 12 : (this.Y(centroid[1])),
-          text: label,
+          centroid,
+          expanded,
+          memberCount,
+          label,
           bold: isBoldKind(kind),
-          anchorTop: expanded,
+          isException: isSelfOrAncestorOfSelection || isHovered,
+          children,
+          decoded,
+          fileColor,
+          won: false,
+          isDrawn: false,
+        };
+        labelCandidates.push({
+          node,
+          depth,
+          area: node.area,
+          x: (sx0 + sx1) / 2,
+          y: expanded ? Math.min(sy0, sy1) + 12 : this.Y(centroid[1]),
+          text: label,
+          bold: node.bold,
         });
-        return true;
+        return node;
       };
-      for (const local of topLocals) draw(local, 0);
-      // File outline, re-drawn ON TOP of every card (spec: "the file outline
-      // is the strongest") -- the prototype's own `fout` re-stroke, needed
-      // because the cards above just painted fills (and, for an expanded
-      // class, a header band) that would otherwise sit visually on top of
-      // footprint()'s own thin 0.7px stroke.
-      if (poly) {
-        gCards.appendChild(el("path", { d: toScreenRing(poly), fill: "none", stroke: "var(--ink)", "stroke-width": 1.6, "stroke-opacity": 0.55, "pointer-events": "none" }));
+      const roots: CardCandidate[] = [];
+      for (const local of topLocals) {
+        const root = collect(local, 0);
+        if (root) roots.push(root);
       }
+      fileEntries.push({ poly, roots });
     }
 
     // Labels: file tabs first (by width, widest first -- prototype), then
@@ -2868,22 +2881,20 @@ export class MapRenderer {
       text.textContent = t.name;
       gLabels.appendChild(text);
     }
+
+    // Stage 2 (this method's own doc comment): every candidate's label
+    // competes for screen space -- `won` records who actually gets one
+    // rendered, independent of whether the card ITSELF ends up drawn
+    // (stage 3 below decides that, using `won`).
     labelCandidates.sort((a, b) => a.depth - b.depth || b.area - a.area);
     for (const c of labelCandidates) {
-      // labelFitsBox is the SAME test draw() already applied to decide
-      // whether this card was worth drawing at all (symbolCards.ts's own
-      // doc comment) -- kept as one implementation so the two can't drift.
-      // A card can still lose here even after passing there in one case:
-      // it was drawn on the "has a drawn descendant" escape valve with a
-      // name that doesn't fit its OWN box (draw()'s `anyChildDrawn`
-      // branch) -- correctly unlabelled, since the card is carrying its
-      // members, not a label, in that case.
       if (!labelFitsBox(c.text, c.bold, c.area)) continue;
       const fs = c.bold ? 11.5 : Math.min(11, Math.max(8.5, Math.sqrt(Math.max(c.area, 1)) / 7));
       const tw = c.text.length * fs * 0.62;
       const box: [number, number, number, number] = [c.x - tw / 2 - 2, c.y - fs * 0.85, tw + 4, fs * 1.3];
       if (hits(box)) continue;
       placed.push(box);
+      c.node.won = true;
       const text = el("text", {
         x: c.x,
         y: c.y,
@@ -2903,7 +2914,7 @@ export class MapRenderer {
         // rendered label belongs to directly, the same way every card's
         // own "data-sym" already does -- a label carries no other
         // identifying attribute otherwise.
-        "data-label-for": c.global,
+        "data-label-for": c.node.global,
         // Issue #82 C2 pitfall (prototype note in the handoff): set stroke
         // width through `style`, not the plain attribute -- a CSS
         // stroke-width rule would override the attribute here, and this
@@ -2913,6 +2924,70 @@ export class MapRenderer {
       text.style.strokeWidth = "2.6px";
       text.textContent = c.text;
       gLabels.appendChild(text);
+    }
+
+    // Stage 3 (this method's own doc comment): now that every label
+    // contest is settled, decide bottom-up whether each card is drawn at
+    // all -- exception, OR its own label won, OR at least one child is
+    // (recursively) drawn -- then paint exactly that set, per file, in the
+    // SAME pre-order (parent fill before its children's) the single-pass
+    // version used, followed by that file's outline overlay on top.
+    const decideDrawn = (node: CardCandidate): boolean => {
+      let anyChildDrawn = false;
+      for (const child of node.children) if (decideDrawn(child)) anyChildDrawn = true;
+      node.isDrawn = node.isException || node.won || anyChildDrawn;
+      return node.isDrawn;
+    };
+    const paint = (node: CardCandidate) => {
+      // isDrawn === false here guarantees no descendant is drawn either --
+      // decideDrawn() above only sets a parent true when a child was, so a
+      // false parent can never have a true child underneath it.
+      if (!node.isDrawn) return;
+      this.symVisible.add(node.global);
+      this.symScreenAnchor.set(node.global, [this.X(node.centroid[0]), this.Y(node.centroid[1])]);
+      const ratio = cardFillRatio(node.depth);
+      gCards.appendChild(
+        drawContourFill(node.rings, {
+          fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - ratio) * 100)}%, ${node.fileColor} ${Math.round(ratio * 100)}%)`,
+          stroke: "var(--ink)",
+          "stroke-width": node.kind === 0 ? 1.1 : 0.7,
+          "stroke-opacity": 0.45,
+          ...(isDashedKind(node.kind) ? { "stroke-dasharray": "3 2" } : {}),
+          class: "hit",
+          "pointer-events": "all",
+          "data-k": "hs:" + node.global,
+          "data-sym": node.global,
+        }),
+      );
+      if (this.state!.selHSym === node.global) {
+        gCards.appendChild(el("path", { d: node.rings.map(toScreenRing).join(" "), "fill-rule": "evenodd", fill: "none", stroke: "var(--hot)", "stroke-width": 1.8, "pointer-events": "none" }));
+      }
+      if (node.expanded && node.memberCount > 0) {
+        const header = node.decoded.headerRings.get(node.local);
+        if (header) {
+          gCards.appendChild(
+            drawContourFill(header, {
+              fill: `color-mix(in srgb, var(--canvas) ${Math.round((1 - Math.min(1, ratio + 0.15)) * 100)}%, ${node.fileColor} ${Math.round(Math.min(1, ratio + 0.15) * 100)}%)`,
+              "pointer-events": "none",
+            }),
+          );
+        }
+      }
+      for (const child of node.children) paint(child);
+    };
+    for (const entry of fileEntries) {
+      for (const root of entry.roots) {
+        decideDrawn(root);
+        paint(root);
+      }
+      // File outline, re-drawn ON TOP of every card (spec: "the file outline
+      // is the strongest") -- the prototype's own `fout` re-stroke, needed
+      // because the cards above just painted fills (and, for an expanded
+      // class, a header band) that would otherwise sit visually on top of
+      // footprint()'s own thin 0.7px stroke.
+      if (entry.poly) {
+        gCards.appendChild(el("path", { d: toScreenRing(entry.poly), fill: "none", stroke: "var(--ink)", "stroke-width": 1.6, "stroke-opacity": 0.55, "pointer-events": "none" }));
+      }
     }
     g.appendChild(gLabels);
   }
