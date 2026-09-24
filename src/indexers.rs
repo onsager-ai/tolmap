@@ -30,7 +30,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::extract::LanguageKind;
 use crate::progress::StageCounter;
@@ -203,14 +203,22 @@ pub fn run(
             })
         }
     };
+    let started = Instant::now();
+    let mut beats = 0u64;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
-                // `set` never lowers `done`; it only lets the throttled sink
-                // emit, which carries the elapsed time to the job.
-                stage.set(0);
-                std::thread::sleep(Duration::from_millis(250));
+                // One heartbeat a second: `set` never lowers `done`, it only
+                // lets the throttled sink emit, which carries the elapsed
+                // time to the job. Polling faster than that keeps the exit
+                // noticed promptly without a log line every 250 ms.
+                let due = started.elapsed().as_secs();
+                if due > beats {
+                    beats = due;
+                    stage.set(0);
+                }
+                std::thread::sleep(Duration::from_millis(100));
             }
             Err(error) => {
                 let _ = child.kill();
