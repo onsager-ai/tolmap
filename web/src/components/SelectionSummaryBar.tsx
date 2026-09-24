@@ -1,8 +1,10 @@
+import type { ReactNode } from "react";
 import type { MapDocument } from "@/types";
 import { symbolsOf } from "@/map/geometry";
 import { KIND } from "@/map/constants";
 import type { AdjMap } from "@/map/graph";
 import { Button } from "@/components/ui/button";
+import { LinkCountsLabel } from "@/components/LinkLegend";
 
 interface Props {
   doc: MapDocument;
@@ -28,7 +30,7 @@ export function SelectionSummaryBar({ doc, sel, selSym, selD, adj, radj, onDetai
   if (sel == null && selD == null) return null;
 
   let title: string;
-  let subtitle: string;
+  let subtitle: ReactNode;
   if (selD != null) {
     title = doc.names[selD] ?? `district ${selD}`;
     subtitle = `${doc.districts[selD].size} files`;
@@ -43,7 +45,10 @@ export function SelectionSummaryBar({ doc, sel, selSym, selD, adj, radj, onDetai
       title = doc.F[i].split("/").pop()!;
       const inDeg = radj.get(i)?.length ?? 0;
       const outDeg = adj.get(i)?.length ?? 0;
-      subtitle = `imported by ${inDeg} file${inDeg === 1 ? "" : "s"} · imports ${outDeg}`;
+      // Issue #82 "link colour legend": the fullscreen bar shows the same
+      // imported-by/imports counts SelectionPanel's FileHead does, so it
+      // gets the same colour+glyph legend rather than a plain string here.
+      subtitle = <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} />;
     }
   }
 
