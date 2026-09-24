@@ -52,8 +52,10 @@ export interface PinPlacement {
  *
  * `sel` is the one file (if any) whose pin must draw regardless of
  * establishment or collision -- "the selected file's pin ... always draws."
- * Picking a landmark from the sidebar always sets `sel` to that file
- * (MapView.tsx's onPickLandmark -> selectFile), so there's no separate
+ * Picking a key file from a district row always sets `sel` to that file
+ * (MapView.tsx's onPickKeyFile -> selectFile, issue #82 "district index" --
+ * formerly onPickLandmark/onPickHub before the sidebar's Landmarks/Hubs
+ * sections merged into one Districts list), so there's no separate
  * "sidebar pick" state to thread through here; `sel` already covers it.
  *
  * `_districtArea`/`_k`/`_zf` are kept in the signature, underscore-prefixed
