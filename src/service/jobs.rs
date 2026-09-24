@@ -474,6 +474,57 @@ fn set_commit(tx: &watch::Sender<JobSnapshot>, commit: &str) {
     });
 }
 
+/// Marks the `Clone` stage running for the service's own
+/// `clone::materialize_with_progress` call in `run_blocking`, made *before*
+/// the worker is spawned now that the clone/fetch against the shared cache
+/// happens in the service, not the child. Paired with
+/// `mark_clone_finished`. Without this, a client watching the job's
+/// `stages`/`status` would see a stale `Queued` for however long the
+/// service-side clone takes, then the worker's own (now near-instant, since
+/// it always gets a `RepoSource::Local` checkout) version of the same stage
+/// flash by -- see the PR body's observability note. This does not forward
+/// git's own object/delta/byte counters tick-by-tick the way the in-worker
+/// clone used to (that plumbing stays in `clone::run_git_with_progress`,
+/// unused here because this call passes `Progress::silent()`); it only
+/// brackets the stage as running, then done or failed.
+fn mark_clone_running(tx: &watch::Sender<JobSnapshot>, started: Instant) {
+    tx.send_modify(|snapshot| {
+        if is_terminal(snapshot) {
+            return;
+        }
+        snapshot.status = JobStatus::Cloning;
+        snapshot.stage = StageId::Clone.label().to_owned();
+        snapshot.progress = None;
+        snapshot.elapsed_s = started.elapsed().as_secs_f64();
+        let row = &mut snapshot.stages[StageId::Clone.index() - 1];
+        row.state = StageState::Running;
+        if row.started_at.is_none() {
+            row.started_at = Some(now_rfc3339());
+        }
+    });
+}
+
+/// See `mark_clone_running`. `duration_s` accumulates onto the row the same
+/// way a `WorkerEvent::StageFinished` does for a multi-pass stage -- the
+/// worker's own near-instant `Clone` stage (its `RepoSource::Local` branch
+/// just resolves HEAD) adds a second, tiny duration on top of this one
+/// rather than replacing it, so the reported total still covers the real
+/// clone/fetch time.
+fn mark_clone_finished(tx: &watch::Sender<JobSnapshot>, duration_s: f64, success: bool) {
+    tx.send_modify(|snapshot| {
+        if is_terminal(snapshot) {
+            return;
+        }
+        let row = &mut snapshot.stages[StageId::Clone.index() - 1];
+        row.state = if success {
+            StageState::Done
+        } else {
+            StageState::Failed
+        };
+        row.duration_s = Some(row.duration_s.unwrap_or(0.0) + duration_s);
+    });
+}
+
 fn finish_done(tx: &watch::Sender<JobSnapshot>) {
     tx.send_modify(|snapshot| {
         if is_terminal(snapshot) {
@@ -527,13 +578,13 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         Err(error) => return finish_failed(&tx, ApiError::internal(error.to_string()).body),
     };
     // Per-job directory, not the shared `cache_dir` -- see
-    // `harden_job_dir`'s doc comment and the PR body's clone-cache-reuse
-    // trade-off. `output/` is where the worker writes its build artifacts
-    // (unchanged from before this change); `cache/` is a *fresh* clone
-    // cache scoped to only this job, replacing what used to be the whole
-    // shared `state.config.cache_dir` handed to the worker verbatim -- a
-    // compromised worker can no longer read another repo's clone out of a
-    // cache it shares with every job, past and present.
+    // `harden_job_dir`'s doc comment. `output/` is where the worker writes
+    // its build artifacts (unchanged from before this change); `repo/` is
+    // the fresh, real (non-hardlinked) local-clone checkout materialised
+    // below, the *only* copy of the repository the worker ever sees;
+    // `cache/` is created for wire-protocol/structural consistency with the
+    // rest of this per-job layout but is otherwise unused by the worker in
+    // this flow (see the `WorkerSpec` comment below).
     let job_dir = state
         .config
         .cache_dir
@@ -543,6 +594,7 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         .join(tx.borrow().job_id.to_string());
     let output_dir = job_dir.join("output");
     let worker_cache_dir = job_dir.join("cache");
+    let job_repo_dir = job_dir.join("repo");
     if let Err(error) = std::fs::create_dir_all(&output_dir) {
         return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
@@ -550,6 +602,47 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         let _ = std::fs::remove_dir_all(&job_dir);
         return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
+    // The clone/fetch against the shared, service-owned LRU cache
+    // (`cache_dir/repos/<owner>/<repo>`) runs here, in the service, still at
+    // its own uid -- not inside the worker, and not dropped afterward. This
+    // restores real cache reuse across jobs for the same repo (the whole
+    // reason `clone::materialize_with_progress`'s cache/eviction machinery
+    // exists) without handing the worker access to it: `git
+    // clone`/`fetch --filter=blob:none` run no repository-controlled code
+    // (docs/SCIP_SANDBOX.md's threat table: "none by default"), so doing
+    // this step before the uid drop, in the trusted process, is not a
+    // security regression -- it is exactly where that doc's own §4.1 puts
+    // "the clone is copied ... into it, so the shared clone cache is never
+    // writable from a jail," just without the jail (that's `local_clone_into`,
+    // next). `Progress::silent()`: see `mark_clone_running`'s comment on the
+    // resulting observability trade-off.
+    let clone_started = Instant::now();
+    mark_clone_running(&tx, started);
+    let materialized = match clone::materialize_with_progress(
+        &state.config.cache_dir,
+        &repo_ref,
+        &state.config.limits,
+        &crate::progress::Progress::silent(),
+    ) {
+        Ok(materialized) => materialized,
+        Err(error) => {
+            mark_clone_finished(&tx, clone_started.elapsed().as_secs_f64(), false);
+            let _ = std::fs::remove_dir_all(&job_dir);
+            return finish_failed(&tx, error.body);
+        }
+    };
+    // Fast local copy of that just-materialised clone into the job's own
+    // directory -- real object copies, not hardlinks; see
+    // `clone::local_clone_into`'s doc comment for why. This is the only
+    // copy of the repository the worker's process is ever handed; the
+    // shared cache directory itself is never chowned, hardened or passed to
+    // the worker.
+    if let Err(error) = clone::local_clone_into(&materialized.path, &job_repo_dir) {
+        mark_clone_finished(&tx, clone_started.elapsed().as_secs_f64(), false);
+        let _ = std::fs::remove_dir_all(&job_dir);
+        return finish_failed(&tx, ApiError::clone_failed(error.to_string()).body);
+    }
+    mark_clone_finished(&tx, clone_started.elapsed().as_secs_f64(), true);
     let names_input = output_dir.join("worker-names-input.json");
     let names = match state.store.load_names(&repo_ref.slug) {
         Ok(names) => names,
@@ -563,24 +656,31 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
     // Chown + lock down the job's directory *before* the child that will
-    // run inside it is spawned -- see `harden_job_dir`. A no-op (aside from
-    // the 0700 permission bits, harmless either way) unless the service
-    // itself is root, which only the Fly.io runtime image is.
+    // run inside it is spawned -- see `harden_job_dir`. This now covers the
+    // fresh `repo/` checkout made above too: a real, non-hardlinked copy,
+    // so chowning it never touches the shared cache's own objects. A no-op
+    // (aside from the 0700 permission bits, harmless either way) unless the
+    // service itself is root, which only the Fly.io runtime image is.
     if let Err(error) = harden_job_dir(&job_dir, state.config.worker_uid, state.config.worker_gid) {
         let _ = std::fs::remove_dir_all(&job_dir);
         return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
-    let (source, local) = match &repo_ref.source {
-        clone::RepoSource::Local(path) => (path.to_string_lossy().into_owned(), true),
-        clone::RepoSource::Remote(url) => (url.clone(), false),
-    };
+    // Always a local, already-materialised checkout now -- see
+    // `clone::materialize_with_progress`'s `RepoSource::Local` branch: no
+    // clone, no cache_dir use, no network, nothing left for the worker to do
+    // in its own "Clone or fetch" stage but resolve HEAD. True whether the
+    // original request named a remote URL or a local fixture path; both go
+    // through the same service-side materialize + local-clone above, and
+    // the worker itself is never told which one it was. `cache_dir` below
+    // is consequently unused by the worker in this flow, kept only for
+    // structural consistency with the rest of `WorkerSpec`.
     let spec = WorkerSpec {
         v: 1,
         slug: repo_ref.slug.clone(),
         owner: repo_ref.owner.clone(),
         repo: repo_ref.repo.clone(),
-        source,
-        local,
+        source: job_repo_dir.to_string_lossy().into_owned(),
+        local: true,
         all_sources: false,
         cache_dir: worker_cache_dir.to_string_lossy().into_owned(),
         output_dir: output_dir.to_string_lossy().into_owned(),

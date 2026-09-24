@@ -244,6 +244,47 @@ pub fn materialize_with_progress(
     }
 }
 
+/// Fast, ownership-safe copy of an already-materialised clone -- the shared
+/// LRU cache's `<owner>/<repo>` directory, or (when the request itself named
+/// a local fixture) that fixture directory, untouched -- into a job-private
+/// directory the service is about to hand to an unprivileged worker. Used by
+/// `service::jobs::run_blocking`, which calls `materialize_with_progress`
+/// itself (still at the service's own uid) and then this, so the worker
+/// never touches the shared cache directory at all; see that function's own
+/// comments for the full design.
+///
+/// `--no-hardlinks`, not `--shared` and not a bare hardlinked local clone:
+/// the caller `chown`s `dest`'s whole tree to the worker's uid immediately
+/// after this returns. A hardlinked clone's object files are the *same
+/// inodes* as `materialized`'s, so chowning `dest` would silently re-own the
+/// shared cache's own objects too -- flipping the cache itself over to the
+/// worker uid and undoing the entire isolation this design exists for.
+/// `--shared` has the identical inode-sharing problem via
+/// `.git/objects/info/alternates`, plus a lifecycle hazard
+/// `docs/SCIP_SANDBOX.md` §4.1 flags on its own terms: a background LRU
+/// evict of the shared cache while a job's alternate still points into it
+/// corrupts that job's checkout. `--no-hardlinks` forces real object copies,
+/// so the chown only ever touches this job's own copy, never the cache's.
+pub fn local_clone_into(materialized: &Path, dest: &Path) -> Result<()> {
+    let status = Command::new("git")
+        .args([
+            "clone",
+            "--local",
+            "--no-hardlinks",
+            &materialized.to_string_lossy(),
+            &dest.to_string_lossy(),
+        ])
+        .status()
+        .context("run git clone --local --no-hardlinks")?;
+    ensure!(
+        status.success(),
+        "git clone --local --no-hardlinks {} -> {} failed",
+        materialized.display(),
+        dest.display()
+    );
+    Ok(())
+}
+
 fn clone_blobless(url: &str, dest: &Path, progress: &Progress) -> Result<()> {
     let mut command = Command::new("git");
     command.args([
