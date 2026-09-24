@@ -102,31 +102,51 @@ primary_region = "iad"
   #
   # Mitigation status, updated now that #123 exists (read precisely -- it
   # narrows this risk, it does not eliminate the underlying auto-stop
-  # behaviour above). #123 adds two things:
-  #   1. A keep-alive ping through Fly Proxy to this app's own public
-  #      healthz URL while a job is queued or running. Documented there,
-  #      not assumed: Fly's own docs
-  #      (docs.fly.io/blueprints/long-running-tasks/) say this exact
-  #      tactic does NOT reliably prevent autostop -- "sending a
-  #      successful HTTP request every 60 seconds from a machine to its
-  #      own <app>.fly.dev hostname does not prevent autostop," because
-  #      the proxy tracks live connections, not recency of the last
-  #      request. Treat it as a harmless best-effort nudge, not a fix.
-  #   2. A real graceful-shutdown handler (the kill_signal/kill_timeout
-  #      paragraph above): on SIGINT/SIGTERM the service stops admitting
-  #      new jobs (503 `server_stopping`) and fails every job in flight
-  #      with that same new error code before the process exits, so a
-  #      client watching (SSE or polling) sees a clean terminal failure
-  #      instead of the job silently vanishing.
-  # (2) is what actually closes the "silent" half of the original risk: a
-  # job can still be interrupted by an auto-stop mid-run (Fly Proxy's
-  # decision is still traffic-driven and still blind to job state, and (1)
-  # is not a reliable defense against that), but it is no longer invisible
-  # when that happens -- the caller gets a real failure event instead of a
-  # hang. Blast radius is further bounded by TOLMAP_MAX_CONCURRENT_JOBS =
-  # "1" below: at most one job in flight per machine, so a mid-job stop is
-  # "one job cleanly fails for its one caller," not a silent, service-wide
-  # loss of state.
+  # behaviour above, and one open question below is now an OWNER DECISION,
+  # not something either PR resolves on its own).
+  #
+  # #123 ships a real graceful-shutdown handler (the kill_signal/kill_timeout
+  # paragraph above): on SIGINT/SIGTERM the service stops admitting new jobs
+  # (503 `server_stopping`) and fails every job in flight with that same new
+  # error code before the process exits, so a client watching (SSE or
+  # polling) sees a clean terminal failure instead of the job silently
+  # vanishing. This is what actually closes the "silent" half of the
+  # original risk: a job can still be *interrupted* by an auto-stop mid-run,
+  # but it is no longer invisible when that happens -- the caller gets a
+  # real failure event instead of a hang. Blast radius is further bounded by
+  # TOLMAP_MAX_CONCURRENT_JOBS = "1" below: at most one job in flight per
+  # machine, so a mid-job stop is "one job cleanly fails for its one
+  # caller," not a silent, service-wide loss of state.
+  #
+  # #123 also investigated, but deliberately did NOT ship, an in-process fix
+  # for the *interruption itself* (as opposed to its silence). A periodic
+  # keep-alive ping was built first, then removed once Fly's own docs
+  # (docs.fly.io/blueprints/long-running-tasks/) confirmed it doesn't work:
+  # "sending a successful HTTP request every 60 seconds from a machine to
+  # its own <app>.fly.dev hostname does not prevent autostop." The natural
+  # replacement -- holding one long-lived connection open through the
+  # public proxy so Fly Proxy's own concurrency-based load measurement
+  # stays nonzero -- was investigated and NOT built either: architecturally
+  # plausible (Fly's docs say `http_service.concurrency` "configures how to
+  # measure load ... for ... autostop/autostart"), but never confirmed for
+  # this exact case, and contradicted by an unresolved community report of
+  # a Machine auto-stopping despite an open WebSocket held for 4+ hours
+  # (community.fly.io/t/server-auto-scaling-despite-websocket-connection/19900).
+  # Shipping that on unverified footing was judged worse than not shipping
+  # it. See PR #123's description for the full research trail.
+  #
+  # What remains is a real choice between two options, presented to the
+  # owner rather than picked here:
+  #   (a) don't auto-stop this app at all (`auto_stop_machines` off --
+  #       this whole section reverts) -- costs more, removes the risk
+  #       category outright; or
+  #   (b) have the service call the Fly Machines API to suspend/lift
+  #       auto-stop around a job's lifetime -- needs a Fly API token as a
+  #       new credential (owner's call, not wired up here).
+  # Until that's decided, this file keeps `auto_stop_machines = "stop"` as
+  # the owner's original 2026-09-24 decision (top-of-file citation) said,
+  # on the understanding that #123's graceful-stop handling is what makes
+  # that decision survivable rather than silent.
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0
