@@ -570,14 +570,18 @@ fn imports_go(
     result
 }
 
-pub(crate) fn collect(root: Node<'_>, bytes: &[u8], lang: LanguageKind) -> ParsedSymbols {
+pub(crate) fn collect(
+    root: Node<'_>,
+    bytes: &[u8],
+    lang: LanguageKind,
+    flags: &[bool],
+) -> ParsedSymbols {
     let mut spans = Vec::new();
     collect_spans(root, bytes, lang, 0, 0, &mut spans);
     let mut receivers = Vec::new();
     if lang == LanguageKind::Go {
         collect_go_receivers(root, bytes, &spans, 0, &mut receivers);
     }
-    let flags = extract::code_line_flags(root, bytes, lang);
     // The old pass rescanned all line flags for every span, making large
     // files quadratic in their symbol count. Inclusive row ranges become
     // two prefix lookups while the tree is still scoped to this file.
@@ -1241,7 +1245,9 @@ mod tests {
             parser.set_language(&grammar).unwrap();
             let bytes = fs::read(repo.join(&node.file)).unwrap();
             let tree = parser.parse(&bytes, None).unwrap();
-            records.insert(node.file.clone(), collect(tree.root_node(), &bytes, lang));
+            let root = tree.root_node();
+            let flags = extract::code_line_flags(root, &bytes, lang);
+            records.insert(node.file.clone(), collect(root, &bytes, lang, &flags));
         }
         build(repo, nodes, records).unwrap()
     }

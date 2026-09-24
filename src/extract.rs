@@ -401,12 +401,6 @@ fn parse_files_inner(
             continue;
         }
         let root = tree.root_node();
-        if collect_symbols {
-            symbol_records.insert(
-                file.clone(),
-                crate::symbols::collect(root, &source, language),
-            );
-        }
         let (complexity, identifiers, symbols) = match language {
             LanguageKind::Python => python_metrics(root, &source),
             LanguageKind::Go => multi_metrics(root, &source, language),
@@ -427,7 +421,19 @@ fn parse_files_inner(
             },
         };
         let loc = source.iter().filter(|&&byte| byte == b'\n').count() + 1;
-        let code_lines = count_code_lines(root, &source, language);
+        let code_lines = if collect_symbols {
+            // One syntax-leaf mask feeds both map C and symbol areas. This
+            // keeps the two line counts identical without another tree walk.
+            let flags = code_line_flags(root, &source, language);
+            let count = flags.iter().filter(|&&flag| flag).count();
+            symbol_records.insert(
+                file.clone(),
+                crate::symbols::collect(root, &source, language, &flags),
+            );
+            count
+        } else {
+            count_code_lines(root, &source, language)
+        };
         // `source` and `tree` (and `root`, which borrows `tree`) go out of
         // scope at the end of this iteration -- the tree for this file is
         // never retained past the file that produced it.
