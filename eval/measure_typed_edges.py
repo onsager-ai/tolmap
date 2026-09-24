@@ -69,6 +69,9 @@ def main():
         "map_sha256": hashlib.sha256(primary_map).hexdigest(),
         "existing_pair_count": len(before),
         "existing_pairs_preserved": True,
+        # Geometry-only changes (finding 39) must leave every edge row as is.
+        "edges_identical": previous["edges"] == current["edges"],
+        "symbols_identical": previous["symbols"] == current["symbols"],
         "before": stats(previous, previous_sizes),
         "after": stats(current, current_sizes),
     }
