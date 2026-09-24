@@ -2,7 +2,8 @@
 //! Extraction collects compact spans and candidate references while each
 //! file's parse tree is alive. This pass resolves them after map file order
 //! is known. It never changes `GraphData.symbols` or `uses`.
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -272,13 +273,51 @@ fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
     }
 }
 
-fn owner_at(spans: &[Span], offset: usize, byte: usize) -> Option<usize> {
-    spans
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.credit_begin_byte <= byte && byte < s.end_byte)
-        .min_by_key(|(_, s)| s.end_byte - s.begin_byte)
-        .map(|(i, _)| offset + i)
+struct OwnerLookup<'a> {
+    spans: &'a [Span],
+    starts: Vec<usize>,
+    next: usize,
+    active: BTreeSet<(usize, usize)>,
+    ends: BinaryHeap<Reverse<(usize, usize)>>,
+}
+
+impl<'a> OwnerLookup<'a> {
+    fn new(spans: &'a [Span]) -> Self {
+        let mut starts = (0..spans.len()).collect::<Vec<_>>();
+        starts.sort_by_key(|&i| (spans[i].credit_begin_byte, i));
+        Self {
+            spans,
+            starts,
+            next: 0,
+            active: BTreeSet::new(),
+            ends: BinaryHeap::new(),
+        }
+    }
+
+    fn at(&mut self, byte: usize) -> Option<usize> {
+        // collect_candidates walks syntax in source order. Maintain only
+        // spans covering the current byte, ordered by the same narrowest
+        // interval / first-index rule as the former full scan. This avoids
+        // visiting every symbol for every syntax node in large files.
+        while self.next < self.starts.len()
+            && self.spans[self.starts[self.next]].credit_begin_byte <= byte
+        {
+            let i = self.starts[self.next];
+            let span = &self.spans[i];
+            self.active.insert((span.end_byte - span.begin_byte, i));
+            self.ends.push(Reverse((span.end_byte, i)));
+            self.next += 1;
+        }
+        while let Some(&Reverse((end, i))) = self.ends.peek() {
+            if end > byte {
+                break;
+            }
+            self.ends.pop();
+            let span = &self.spans[i];
+            self.active.remove(&(span.end_byte - span.begin_byte, i));
+        }
+        self.active.iter().next().map(|&(_, i)| i)
+    }
 }
 
 fn expression_chains(node: Node<'_>, bytes: &[u8], out: &mut Vec<Vec<String>>) {
@@ -343,12 +382,11 @@ fn covered_by_reference_wrapper(node: Node<'_>) -> bool {
 fn collect_candidates(
     node: Node<'_>,
     bytes: &[u8],
-    offset: usize,
-    spans: &[Span],
+    owners: &mut OwnerLookup<'_>,
     out: &mut Vec<Candidate>,
     shadowed: &mut BTreeMap<usize, BTreeSet<String>>,
 ) {
-    let owner = owner_at(spans, offset, node.start_byte());
+    let owner = owners.at(node.start_byte());
     if let Some(owner) = owner {
         if matches!(node.kind(), "parameters" | "formal_parameters") {
             parameter_bindings(node, bytes, shadowed.entry(owner).or_default());
@@ -426,7 +464,7 @@ fn collect_candidates(
         }
     }
     for child in children(node) {
-        collect_candidates(child, bytes, offset, spans, out, shadowed);
+        collect_candidates(child, bytes, owners, out, shadowed);
     }
 }
 
@@ -685,7 +723,13 @@ pub(crate) fn collect(
     };
     let mut candidates = Vec::new();
     let mut shadowed = BTreeMap::new();
-    collect_candidates(root, bytes, 0, &spans, &mut candidates, &mut shadowed);
+    collect_candidates(
+        root,
+        bytes,
+        &mut OwnerLookup::new(&spans),
+        &mut candidates,
+        &mut shadowed,
+    );
     ParsedSymbols {
         spans,
         receivers,
@@ -1250,6 +1294,34 @@ mod tests {
             records.insert(node.file.clone(), collect(root, &bytes, lang, &flags));
         }
         build(repo, nodes, records).unwrap()
+    }
+
+    #[test]
+    fn owner_lookup_matches_narrowest_containing_span() {
+        let bytes = b"@wrap\nclass Outer:\n    def a(self):\n        def nested():\n            pass\n        nested()\n    def b(self):\n        pass\n";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(bytes, None).unwrap();
+        let root = tree.root_node();
+        let mut spans = Vec::new();
+        collect_spans(root, bytes, LanguageKind::Python, 0, 0, &mut spans);
+        let mut lookup = OwnerLookup::new(&spans);
+        fn check(node: Node<'_>, spans: &[Span], lookup: &mut OwnerLookup<'_>) {
+            let byte = node.start_byte();
+            let expected = spans
+                .iter()
+                .enumerate()
+                .filter(|(_, span)| span.credit_begin_byte <= byte && byte < span.end_byte)
+                .min_by_key(|(_, span)| span.end_byte - span.begin_byte)
+                .map(|(i, _)| i);
+            assert_eq!(lookup.at(byte), expected, "{} at byte {byte}", node.kind());
+            for child in children(node) {
+                check(child, spans, lookup);
+            }
+        }
+        check(root, &spans, &mut lookup);
     }
 
     #[test]
