@@ -20,8 +20,21 @@ export function ZoomControls({ onZoomIn, onZoomOut, onFit, isFullscreen, onToggl
       <button className={btn} onClick={onZoomOut} aria-label="Zoom out">
         −
       </button>
-      <button className={`${btn} text-[10px] max-[820px]:text-[11px]`} onClick={onFit} aria-label="Fit map">
-        fit
+      {/* Issue #82 "fit icon": text "fit" replaced with a corner-brackets
+          glyph (four L-shaped brackets pointing inward, the conventional
+          "fit to view" pictogram) -- visually distinct from the zoom +/−
+          glyphs above and the ⛶/✕ fullscreen glyph below it, at the same
+          size/stroke as the fullscreen icon (see its own inline svg).
+          Deliberately no `title` attribute (owner correction, issue #82):
+          it would show a second, redundant tooltip. `aria-label="Fit map"`
+          stays -- the checks key off it. */}
+      <button className={`${btn} flex items-center justify-center`} onClick={onFit} aria-label="Fit map">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+          <path d="M1 5V1.6C1 1.27 1.27 1 1.6 1H5" />
+          <path d="M10 1H13.4C13.73 1 14 1.27 14 1.6V5" />
+          <path d="M14 10V13.4C14 13.73 13.73 14 13.4 14H10" />
+          <path d="M5 14H1.6C1.27 14 1 13.73 1 13.4V10" />
+        </svg>
       </button>
       <button
         className={`${btn} border-b-0`}
