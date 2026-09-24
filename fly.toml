@@ -8,14 +8,28 @@
 # any index job running at that moment dies with it (see the
 # auto_stop_machines comment further down for the same failure mode).
 #
-# One machine, one volume, always on. The job queue, the SSE progress
-# channel and the wall-time cap all live in-process (src/service/jobs.rs,
-# an in-memory JobRegistry) -- there is no cross-machine state, so this is
-# not "one machine for now, scale out later" but a real constraint: a
-# second machine would have its own job registry and its own idea of
-# what's running, and Fly's proxy does not know to route a job's follow-up
-# requests (GET /api/jobs/{id}, the SSE stream) back to the machine that
-# accepted it.
+# Changed 2026-09-24 (issue #110, owner decision via AskUserQuestion,
+# session 16030105, transcript line 4551, 2026-09-24T06:51:34Z:
+# "performance-2x / 16 GB, stopping when idle"): the machine is now sized
+# for SCIP indexing (see the [[vm]] comment) and stops itself when idle
+# instead of running 24x7 (see the auto_stop_machines comment below). This
+# is a config-only change -- no Rust or Dockerfile changes -- and takes
+# effect only on the next `v*` tag deploy; it is not live until then.
+#
+# One machine, one volume. The job queue and the SSE progress channel both
+# live in-process (src/service/jobs.rs, an in-memory JobRegistry) -- there
+# is no cross-machine state, so this is not "one machine for now, scale
+# out later" but a real constraint: a second machine would have its own
+# job registry and its own idea of what's running, and Fly's proxy does
+# not know to route a job's follow-up requests (GET /api/jobs/{id}, the
+# SSE stream) back to the machine that accepted it. (There is also no
+# wall-time cap on a job's own runtime any more -- #97/#105 removed the
+# file-count/clone-size/history-depth/job-time admission caps that used to
+# bound this; see docs/API.md's "no admission caps" line and
+# docs/ARCHITECTURE.md's "Capacity policy." That is an owner ruling to
+# revisit there, not something reintroduced by this change -- flagged here
+# only because a stalled job now has no self-imposed ceiling either,
+# which compounds the auto-stop risk below rather than bounding it.)
 
 app = "tolmap" # Live: org core-digital, first deployed 2026-09-20.
 
@@ -38,26 +52,68 @@ primary_region = "iad"
                         # left unset below rather than duplicated.
   force_https = true
 
-  # This is the setting that matters most in this file, and it is not the
-  # default for a reason: Fly's usual cost story (auto_stop_machines = true)
-  # assumes a request-scoped process that can be resumed cold. This one
-  # cannot be. A running index job (jobs::spawn_job) lives entirely in this
-  # process's memory -- the job registry, the SSE watch::Sender, the
-  # tokio::time::timeout wall-clock budget -- and none of it is persisted
-  # anywhere a suspended-then-resumed machine could recover it from. If
-  # Fly suspended this machine between requests, any job in flight when it
-  # suspended would simply vanish: no failure event, no SSE frame, no
-  # `error`/`error_code` in the job's row, just a client stuck polling a
-  # job id that will never move again. auto_stop_machines/auto_start_machines
-  # = false and min_machines_running = 1 keep exactly one machine up at all
-  # times, which is also why this deployment is billed as an always-on
-  # provisioned machine rather than Railway's metered per-vCPU pricing (the
-  # comparison the user made when choosing Fly, 2026-09-20) -- the workload
-  # is bursty and CPU-heavy during indexing, so paying for a fixed shape
-  # beats metering every vCPU-second including idle ones.
-  auto_stop_machines = false
-  auto_start_machines = false
-  min_machines_running = 1
+  # Changed 2026-09-24 (issue #110): owner decision was explicitly
+  # "stopping when idle" (see the top-of-file comment for the citation),
+  # overriding the design doc's own recommendation (docs/SCIP_SANDBOX.md
+  # #117 S5.4, "shape B is the cheaper bridge") to keep the always-on
+  # shape. `auto_stop_machines`/`auto_start_machines` use the string form
+  # Fly's docs use today (docs.fly.io/launch/autostop-autostart/,
+  # docs.fly.io/reference/configuration/#the-http_service-section, both
+  # fetched 2026-09-24): "off"/"stop"/"suspend", not a bare boolean.
+  # "stop" (not "suspend") is used here -- suspend is Fly's own faster-
+  # resume variant of the same underlying risk below, and Fly's docs flag
+  # it with caveats of its own; there is no reason to add a second set of
+  # unverified behaviour on top of the one this comment already has to be
+  # honest about. `min_machines_running = 0` is required for
+  # `auto_stop_machines` to have any effect (Fly's docs: it "has no effect
+  # unless auto_stop_machines is stop or suspend") and is what lets the
+  # single machine actually reach zero when idle.
+  #
+  # THE UNRESOLVED RISK, stated plainly rather than papered over: a
+  # running index job (jobs::spawn_job) lives entirely in this process's
+  # memory -- the job registry and the SSE watch::Sender -- none of it
+  # persisted anywhere a stopped-then-restarted machine could recover it
+  # from. A client can `POST /api/index`, get a job id back, and never open the
+  # SSE stream (`GET /api/jobs/{id}/events`) or poll `GET
+  # /api/jobs/{id}` again until later (docs/API.md). Fly Proxy's
+  # auto-stop decision is driven by connection/request traffic to the
+  # Machine, not by anything this app knows about a job in progress
+  # (docs.fly.io/reference/fly-proxy-autostop-autostart: the proxy stops a
+  # Machine once it sees no traffic / "a load of 0"); the design doc
+  # (#117 S5.3) already flagged this in its own words: "Fly Proxy's own
+  # stop does not know about in-flight jobs." So a job that nobody is
+  # actively watching can be stopped mid-run with no client connection
+  # open at all, not only mid-stream.
+  #
+  # `kill_signal`/`kill_timeout` (docs.fly.io/reference/configuration/,
+  # fetched 2026-09-24) are the one Fly-documented lever for giving a
+  # Machine time to react before a forced stop -- default signal SIGINT,
+  # default timeout 5s, capped at 300s, and Fly's own docs call this
+  # "best-effort... your app needs to be prepared to handle shorter
+  # stopping times." Neither is set here, deliberately: this codebase
+  # installs no SIGINT/SIGTERM handler anywhere (grepped `src/` -- there
+  # is none), so the process does nothing useful with any grace window
+  # today; setting kill_timeout without that handler would document a
+  # mitigation that does not exist. And even a future handler could not
+  # fully close the gap -- 300s is the maximum, but a large repo's index
+  # job can run up to roughly 550s (dify, #117 S5.1), so the worst-case
+  # job still outlasts the longest grace period Fly allows. A working
+  # fix needs code (a shutdown hook that persists an `error`/`error_code`
+  # for any in-flight job, plus a kill_timeout raised to use it) and is
+  # out of scope for this config-only change; issue #110 is the place to
+  # track it.
+  #
+  # Net effect, accepted by the owner's decision: this is NOT mitigated.
+  # The only thing that protects a job today is a client keeping a
+  # connection open (polling, or watching the SSE stream) at whatever
+  # moment Fly's proxy evaluates idleness -- not guaranteed, and exactly
+  # the gap described above when nobody is watching. Blast radius is
+  # bounded by TOLMAP_MAX_CONCURRENT_JOBS = "1" below: at most one job in
+  # flight per machine, so a mid-job stop is "one job silently vanishes
+  # for its one caller," not a service-wide outage.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
 
   [[http_service.checks]]
     grace_period = "30s"
@@ -67,11 +123,21 @@ primary_region = "iad"
     path = "/api/healthz"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  # 1 GB remains the current machine size. With size and time admission
-  # caps removed, a very large job may exhaust it; issue #97 tracks worker
-  # classes and routing for production scaling.
-  memory = "1gb"
+  size = "performance-2x"
+  # Changed 2026-09-24 (issue #110, owner decision cited at the top of
+  # this file): up from shared-cpu-1x/1gb. Sizing is for SCIP indexing
+  # (#110's P1a/P1b), not for the current hand-written resolver alone --
+  # see docs/SCIP_SANDBOX.md (#117, design for owner review) S5.1/S5.4 for
+  # the numbers this is drawn from. performance-2x/16gb fits every P0
+  # repository's measured peak RSS under the recommended install policy,
+  # including n8n's scip-typescript at 8.84 GB and dify's scip-python
+  # rooted at api/ at 7.17-7.89 GB. Where it would still OOM is inference
+  # from two data points per indexer, not a measurement (#117 S5.4): a
+  # roughly 14 GB working budget (16 GB minus a few hundred MB for
+  # tolmap serve itself) runs out near ~5k files for a Python root or
+  # ~20-25k files for a TypeScript root. Revisit the size, not just this
+  # comment, if a real job OOMs short of those figures.
+  memory = "16gb"
 
 [[mounts]]
   source = "tolmap_data"
