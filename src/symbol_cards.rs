@@ -623,11 +623,71 @@ fn simplify_inward(ring: &[Point]) -> Ring {
     }
 }
 
+fn vertex_mean(ring: &[Point]) -> Point {
+    let n = ring.len() as f64;
+    [
+        ring.iter().map(|p| p[0]).sum::<f64>() / n,
+        ring.iter().map(|p| p[1]).sum::<f64>() / n,
+    ]
+}
+
+/// True when a card reads as one compact shape: at least 90% of its convex
+/// hull, with its vertex mean inside it. The viewer anchors labels and
+/// reference lines at the vertex mean (`ringCentroid` in symbolCards.ts),
+/// and the audit tests child containment there, so a notch that swallows
+/// the vertex mean is exactly the odd shape this pass must not emit.
+fn near_convex(ring: &[Point]) -> bool {
+    let hull_area = signed_area(&hull(ring));
+    signed_area(ring) >= 0.9 * hull_area && point_in_polygon(vertex_mean(ring), ring)
+}
+
+/// Cuts a notched piece along the line of an edge at one of its reflex
+/// vertices, keeping the largest remaining piece, until it is near-convex.
+/// Each cut keeps a subset of the piece, so the card never leaves the area
+/// its parent allocated, and each step picks the cut that loses least.
+fn convexify(ring: &[Point]) -> Ring {
+    let mut ring = ring.to_vec();
+    for _ in 0..2 * ring.len() {
+        if ring.len() < 4 || near_convex(&ring) {
+            break;
+        }
+        let n = ring.len();
+        let mut best: Option<(f64, Ring)> = None;
+        for k in 0..n {
+            let (before, after) = ((k + n - 1) % n, (k + 1) % n);
+            if cross(ring[before], ring[k], ring[after]) >= 0.0 {
+                continue;
+            }
+            for (p, q) in [(ring[before], ring[k]), (ring[k], ring[after])] {
+                let e = [q[0] - p[0], q[1] - p[1]];
+                // Keep the left of the edge: the ring's interior side.
+                let plane = Plane {
+                    point: p,
+                    normal: [e[1], -e[0]],
+                    bound: 0.0,
+                };
+                let Some(piece) = largest(&split_robust(&ring, &plane)).cloned() else {
+                    continue;
+                };
+                let area = signed_area(&piece);
+                if area < signed_area(&ring) && best.as_ref().is_none_or(|(top, _)| area > *top) {
+                    best = Some((area, piece));
+                }
+            }
+        }
+        let Some((_, piece)) = best else {
+            break;
+        };
+        ring = piece;
+    }
+    ring
+}
+
 /// The drawn card for an allocated piece: inset by the raster pass's gutter
 /// distances, halving the distance when a thin piece cannot take the full
 /// gutter, and never a ring that collapses at the wire precision.
 fn card_ring(piece: &[Point], depth: usize) -> Option<Ring> {
-    let simplified = simplify_inward(piece);
+    let simplified = convexify(&simplify_inward(piece));
     let piece = simplified.as_slice();
     let area = signed_area(piece).max(0.0);
     let mut delta = if depth == 0 {
@@ -1496,6 +1556,28 @@ mod tests {
         assert!(signed_area(&simplified) >= 0.92 * signed_area(&ring));
         let center = centroid(&simplified);
         assert!(point_in_polygon(center, &ring));
+    }
+
+    #[test]
+    fn a_notch_that_swallows_the_vertex_mean_is_cut_away() {
+        // A thin L whose vertex mean falls in the notch.
+        let ring = normalise(&[
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.1],
+            [0.1, 0.1],
+            [0.1, 1.0],
+            [0.0, 1.0],
+        ])
+        .unwrap();
+        assert!(!point_in_polygon(vertex_mean(&ring), &ring));
+        let card = convexify(&ring);
+        assert!(near_convex(&card));
+        assert!(card.iter().all(|&p| {
+            p[0] >= -1e-12 && p[1] >= -1e-12 && (p[0] <= 0.1 + 1e-12 || p[1] <= 0.1 + 1e-12)
+        }));
+        let rounded = card_ring(&ring, 1).unwrap();
+        assert!(point_in_polygon(vertex_mean(&rounded), &ring));
     }
 
     #[test]
