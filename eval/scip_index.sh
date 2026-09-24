@@ -60,11 +60,24 @@ index_cmd() {
   local output=$1
   case "$lang" in
     ts)
-      if [ -f pnpm-workspace.yaml ]; then
-        scip-typescript index --pnpm-workspaces --infer-tsconfig --no-progress-bar --output "$output"
-      else
-        scip-typescript index --infer-tsconfig --no-progress-bar --output "$output"
-      fi
+      # Every tracked tsconfig.json is a project, deepest first. The ingest
+      # keeps the first document it sees for a path, so a file covered by
+      # both a package's tsconfig and a root one is read under its nearest
+      # config, which is the one its own compiler invocation uses.
+      #
+      # Not `--pnpm-workspaces --infer-tsconfig`: the first spike run
+      # (35960017915) used that, and inferring a tsconfig for every
+      # workspace package without one replaced vue's root tsconfig (the one
+      # carrying the `@vue/*` paths) for all of its sources: 6 of 259
+      # cross-package edges survived. A project whose tsconfig cannot load
+      # (an `extends` into an uninstalled package, TS6053) is dropped by
+      # scip-typescript; the ingest reports those files as not indexed.
+      mapfile -t projects < <(git ls-files -- 'tsconfig.json' '*/tsconfig.json' \
+        | grep -v node_modules \
+        | awk -F/ '{ d = NF > 1 ? substr($0, 1, length($0) - length($NF) - 1) : "."; print NF "\t" d }' \
+        | sort -t$'\t' -k1,1nr -k2,2 | cut -f2)
+      printf 'projects:\n'; printf '  %s\n' "${projects[@]}"
+      scip-typescript index --no-progress-bar --output "$output" "${projects[@]}"
       ;;
     py)
       if [ "$variant" = "install" ] && [ -x .venv/bin/python ]; then

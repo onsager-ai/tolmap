@@ -451,6 +451,7 @@ def ingest(
     )
     lang_files = sorted(f for f in mapped if lang_of.get(f) == lang)
     indexed_lang_files = sum(1 for f in lang_files if f in seen_paths)
+    unindexed = [f for f in lang_files if f not in seen_paths]
     fingerprint = hashlib.sha256(
         json.dumps([file_edges, edges_out, relationship_rows], separators=(",", ":")).encode()
     ).hexdigest()
@@ -463,6 +464,9 @@ def ingest(
         "documents_mapped": sum(1 for p in seen_paths if p in mapped),
         "mapped_files_of_lang": len(lang_files),
         "mapped_files_of_lang_indexed": indexed_lang_files,
+        "unindexed_lang_files_by_directory": dict(
+            sorted(Counter(f.rsplit("/", 1)[0] if "/" in f else "." for f in unindexed).most_common(15))
+        ),
         "occurrences": occurrences,
         "definitions": definitions,
         "definitions_with_enclosing_range": definitions_with_enclosing,

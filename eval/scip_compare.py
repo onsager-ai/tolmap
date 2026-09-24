@@ -292,7 +292,8 @@ def compare_repo(args) -> int:
     }
 
     ingested: dict[str, dict] = {}
-    for job in sorted(path for path in args.idx.iterdir() if path.is_dir()):
+    jobs = sorted(p for p in args.idx.iterdir() if p.is_dir()) if args.idx.is_dir() else []
+    for job in jobs:
         meta_path = job / "meta.json"
         if not meta_path.exists():
             continue
@@ -339,6 +340,7 @@ def compare_repo(args) -> int:
             "documents_mapped",
             "mapped_files_of_lang",
             "mapped_files_of_lang_indexed",
+            "unindexed_lang_files_by_directory",
             "occurrences",
             "definitions",
             "definitions_with_enclosing_range",
@@ -546,8 +548,8 @@ def summary(args) -> int:
         "",
         "## Symbols and calls",
         "",
-        "| repo | index | tolmap calls resolved / total | SCIP callable refs in symbols | to mapped | to repo (unmapped) | external | tolmap pairs | SCIP pairs | both | tolmap call pairs confirmed | impl: SCIP / tolmap inh. / both / P confirmed |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| repo | index | tolmap calls resolved / total (all langs) | tolmap call-edge occurrences (this lang) | SCIP callable refs in symbols | to mapped | to repo (unmapped) | external | tolmap pairs | SCIP pairs | both | tolmap call pairs confirmed | impl: SCIP / tolmap inh. / both / P confirmed |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in results:
         cov = r["baseline"]["coverage"]
@@ -560,6 +562,7 @@ def summary(args) -> int:
             ip = e["implementation_pairs"]
             lines.append(
                 f"| {r['slug']} | {index_id} | {fmt(cov['calls_resolved'])} / {fmt(cov['calls_total'])} "
+                f"| {fmt(e.get('tolmap_call_edge_occurrences'))} "
                 f"| {fmt(c.get('callable_refs_in_symbols'))} | {fmt(c.get('to_mapped'))} "
                 f"| {fmt(c.get('to_repo_unmapped'))} | {fmt(c.get('external'))} "
                 f"| {fmt(sp['all']['hand'])} | {fmt(sp['all']['scip'])} | {fmt(sp['all']['both'])} "
