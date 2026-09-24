@@ -421,6 +421,37 @@ pub fn membership_by_file(document: &MapDocument) -> BTreeMap<String, usize> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn stage_timings_survive_store_reopen_for_online_refit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timings.sqlite3");
+        let row = TimingRow {
+            features: crate::worker::RepoFeatures {
+                clone_bytes: Some(1024),
+                commits: Some(42),
+                languages: [(
+                    "py".to_owned(),
+                    crate::worker::LanguageFeatures {
+                        files: 12,
+                        bytes: 8000,
+                    },
+                )]
+                .into(),
+            },
+            elapsed_s: 4.0,
+            stage_s: vec![Some(1.0), None, Some(2.0)],
+        };
+        Store::open(&path)
+            .unwrap()
+            .save_timing("job-1", &row)
+            .unwrap();
+        let reopened = Store::open(&path).unwrap();
+        let saved = reopened.recent_timings().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].features.languages["py"].files, 12);
+        assert_eq!(saved[0].stage_s, row.stage_s);
+    }
+
     fn temp_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("test.sqlite3")).unwrap();

@@ -277,7 +277,8 @@ A job that fails carries `error` and `error_code` in its terminal snapshot,
 with `status: "failed"`, because admission already returned `202`. A worker
 that crashes or is killed by the machine (including out-of-memory) reports
 `worker_crashed`. Very large repositories may take a long time or fail this
-way on the current worker. This is the owner's accepted MVP trade-off;
+way on the current worker; a full volume can also make cloning fail with
+`clone_failed`. This is the owner's accepted MVP trade-off;
 [issue #97](https://github.com/onsager-ai/tolmap/issues/97) tracks routing
 large reports to appropriate worker classes. Existing clients should render
 unknown error codes as a generic failure; `repo_too_large` is no longer emitted.

@@ -1369,3 +1369,22 @@ The dify worker timeline below comes from the same standard-runner run. It used 
 | `write` | 0.182 | 41.866 |
 
 The two parse passes sum to 26.913 s; symbol cards take 5.549 s and footprints 5.109 s. All named stages sum to 40.921 s of the 41.925 s job.
+
+## 38. ETA replay shows useful late estimates and an early n8n underestimate
+
+Issue [#97](https://github.com/onsager-ai/tolmap/issues/97), after [PR #98](https://github.com/onsager-ai/tolmap/pull/98), removes the hosted file-count, clone-size, history-depth and wall-time refusals. The worker spec carries only a clone-cache eviction budget; eviction never rejects or evicts the active clone. The service still limits request frequency and queue length. A large job can therefore run for a long time, fail cloning if the volume fills, or fail as `worker_crashed` if the machine kills its worker. This is the owner's 2026-09-24 MVP trade-off; issue #97 records the production worker-class and routing design. This finding uses number 38 because [open PR #104](https://github.com/onsager-ai/tolmap/pull/104) already reserves 37.
+
+The cost model starts from finding 36's 18 dify stage durations and the committed corpus build totals (django 6.14 s, dify 41.925 s, n8n 101.163 s). After clone it sees clone bytes and history count; after detection it sees file and byte totals per selected language. Each completed job stores stage durations and features in SQLite. A stage's linear file/byte prediction receives a clipped observation-to-seed ratio from at most 256 recent jobs, with three seed observations' weight, so one job can change a coefficient only within a bounded range. Current-stage progress uses done/total and an EWMA rate; parse and resolve retain the unvisited source passes in multi-source builds. The ETA interval widens beyond observed file and byte sizes. Queued start estimates sum the running job's remaining midpoint and the queued jobs ahead. Cancellation ends with `failed`/`cancelled` to preserve the status enum, and kills the worker process group before the queue advances.
+
+The [standard-runner replay](https://github.com/onsager-ai/tolmap/actions/runs/35953085187) used `eval/worker_timeline.py` on pinned `eval/corpus.toml` clones, `all_sources: true`, with one worker timeline per repository. `tolmap eta-replay` read each event in arrival order and used only features and progress available by each checkpoint. The table is **absolute error of the remaining-ETA midpoint**, in seconds, at 10%, 50% and 90% of each job's actual wall time. Displayed errors are truncated down to 0.001 s. The replay is cold-start: no learned SQLite timing rows were supplied. The service currently selects one source, so these all-sources replay numbers measure the model's multi-source path rather than a service job's exact workload.
+
+| Repository | Wall s | 10% error s | 50% error s | 90% error s |
+|---|---:|---:|---:|---:|
+| django/django | 7.076 | 2.340 | 2.400 | 0.081 |
+| langgenius/dify | 54.022 | 14.057 | 0.616 | 1.000 |
+| n8n-io/n8n | 106.564 | 42.035 | 24.734 | 4.082 |
+| prometheus/prometheus | 11.796 | 2.045 | 3.036 | 0.427 |
+| vuejs/core | 2.675 | 5.505 | 3.498 | 0.918 |
+| **Median absolute error** | — | **5.505** | **3.036** | **0.918** |
+
+N8n is the material miss: at 10% wall time the model predicted 53.872 s remaining versus 95.908 s actual, and at 50% it predicted 28.547 s versus 53.282 s. A file count and byte total do not capture its per-file extraction and symbol-card cost from a cold seed. This run does **not** establish accurate early ETAs for repositories of n8n's scale. The model will learn completed stage durations on the service machine, but that post-refit accuracy was not measured here. The [CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35953081409) passed Rust formatting, clippy, build and tests, checked-in TypeScript binding generation, offline parity and determinism, web build/lint, and deployment-environment parity; full nine-fixture parity remained skipped by the workflow's on-demand/nightly policy.

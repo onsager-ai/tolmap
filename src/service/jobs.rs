@@ -360,6 +360,8 @@ fn enqueue_job(
     };
     if registry.running < max_running {
         registry.running += 1;
+        job.tx
+            .send_modify(|snapshot| snapshot.eta_start_s = Some(0.0));
         registry.running_jobs.insert(job_id, job.tx.clone());
         tokio::spawn(worker_loop(state.clone(), job));
     } else {
