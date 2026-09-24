@@ -357,7 +357,7 @@ pub fn build_warm(
         features,
         previous_document,
     )?;
-    crate::symbols::write_sibling(&source_nodes, &output, symbol_records)?;
+    crate::symbols::write_sibling(repo, &source_nodes, &output, symbol_records)?;
     Ok(output)
 }
 
@@ -412,7 +412,7 @@ pub fn build_multi_warm(
         features,
         previous_document,
     )?;
-    crate::symbols::write_sibling(&source_nodes, &output, symbol_records)?;
+    crate::symbols::write_sibling(repo, &source_nodes, &output, symbol_records)?;
     Ok(output)
 }
 

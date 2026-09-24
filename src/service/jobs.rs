@@ -465,7 +465,12 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
             )
         }
     };
-    if let Err(err) = crate::symbols::write_sibling(&symbol_nodes, &built_path, symbol_records) {
+    if let Err(err) = crate::symbols::write_sibling(
+        &materialized.path,
+        &symbol_nodes,
+        &built_path,
+        symbol_records,
+    ) {
         return finish_failed(
             &tx,
             ErrorBody {
