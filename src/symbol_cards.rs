@@ -42,13 +42,28 @@ fn ring_with_smoothing(
 ) -> Option<Rings> {
     let mask = largest_component(mask.to_vec(), canvas.grid);
     let cells = mask.iter().filter(|&&owned| owned).count();
+    let compact_small = if compact_tiny && cells > 0 && cells <= 12 {
+        let occupied = mask
+            .iter()
+            .enumerate()
+            .filter_map(|(cell, &owned)| owned.then_some((cell % canvas.grid, cell / canvas.grid)))
+            .collect::<Vec<_>>();
+        let min_x = occupied.iter().map(|&(x, _)| x).min().unwrap();
+        let max_x = occupied.iter().map(|&(x, _)| x).max().unwrap();
+        let min_y = occupied.iter().map(|&(_, y)| y).min().unwrap();
+        let max_y = occupied.iter().map(|&(_, y)| y).max().unwrap();
+        let box_cells = (max_x - min_x + 1) * (max_y - min_y + 1);
+        cells == 1 || cells * 100 < box_cells * 85
+    } else {
+        false
+    };
     // A one-cell seed and its few-cell cross are artifacts of connected
     // raster growth, not meaningful card shapes. Draw a compact octagon in
     // an owned cell; its siblings keep their original cells and cannot gain
     // any part of this card. The minimum-area reserve remains separate.
     // A container must retain its full owned region so its descendants can
     // be drawn within it; compacting that parent would strand child cells.
-    if compact_tiny && cells > 0 && cells <= 5 {
+    if compact_small {
         let mean = mask.iter().enumerate().filter(|(_, owned)| **owned).fold(
             [0.0, 0.0],
             |mut sum, (cell, _)| {
@@ -1211,5 +1226,23 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(corner_signs.iter().all(|&cross| cross > 0.0));
+    }
+
+    #[test]
+    fn sparse_seven_cell_leaf_compacts_but_filled_square_keeps_its_area() {
+        let (canvas, mut mask) = square_canvas(16);
+        mask.fill(false);
+        for y in 6..9 {
+            for x in 6..9 {
+                mask[y * 16 + x] = true;
+            }
+        }
+        let filled = ring(&mask, &canvas, true).unwrap();
+        assert!(rings_area(&filled) > canvas.step.powi(2) * 5.0);
+        mask[6 * 16 + 6] = false;
+        mask[8 * 16 + 8] = false;
+        let sparse = ring(&mask, &canvas, true).unwrap();
+        assert_eq!(sparse[0].len(), 8);
+        assert!(rings_area(&sparse) < rings_area(&filled));
     }
 }
