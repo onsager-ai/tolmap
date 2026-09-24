@@ -207,6 +207,7 @@ impl EtaModel {
         let seen_files = self
             .rows
             .iter()
+            .filter(|row| row.stage_s.iter().any(Option::is_some))
             .filter_map(|r| Self::file_count(&r.features))
             .fold(DIFY_FILES, f64::max);
         let file_extrapolation = Self::file_count(features)
@@ -215,6 +216,7 @@ impl EtaModel {
         let seen_bytes = self
             .rows
             .iter()
+            .filter(|row| row.stage_s.iter().any(Option::is_some))
             .filter_map(|r| {
                 let bytes: u64 = r.features.languages.values().map(|lang| lang.bytes).sum();
                 (bytes > 0).then_some(bytes as f64)
@@ -463,5 +465,20 @@ mod tests {
         };
         assert_eq!(expected_passes(StageId::Parse, &input), 2);
         assert_eq!(progress_total(&progress, &input), Some(300));
+    }
+
+    #[test]
+    fn failed_job_does_not_narrow_extrapolation_interval() {
+        let input = features(100_000);
+        let mut model = EtaModel::default();
+        let before = model.predict(&input, &[false; 18], None);
+        model.record(TimingRow {
+            features: input.clone(),
+            elapsed_s: 12.0,
+            stage_s: vec![None; StageId::ALL.len()],
+        });
+        let after = model.predict(&input, &[false; 18], None);
+        assert!((before.low_s - after.low_s).abs() < 0.001);
+        assert!((before.high_s - after.high_s).abs() < 0.001);
     }
 }
