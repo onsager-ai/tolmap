@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
 use tree_sitter::Node;
@@ -577,22 +578,27 @@ pub(crate) fn collect(root: Node<'_>, bytes: &[u8], lang: LanguageKind) -> Parse
         collect_go_receivers(root, bytes, &spans, 0, &mut receivers);
     }
     let flags = extract::code_line_flags(root, bytes, lang);
+    // The old pass rescanned all line flags for every span, making large
+    // files quadratic in their symbol count. Inclusive row ranges become
+    // two prefix lookups while the tree is still scoped to this file.
+    let mut code_prefix = Vec::with_capacity(flags.len() + 1);
+    code_prefix.push(0usize);
+    for &flag in &flags {
+        code_prefix.push(code_prefix.last().copied().unwrap_or(0) + usize::from(flag));
+    }
     for span in &mut spans {
-        span.code_lines = flags
-            .iter()
-            .enumerate()
-            .filter(|(row, flag)| **flag && *row >= span.credit_start - 1 && *row < span.end)
-            .count();
+        let start = (span.credit_start - 1).min(flags.len());
+        let end = span.end.min(flags.len());
+        span.code_lines = code_prefix[end].saturating_sub(code_prefix[start]);
+    }
+    let mut covered = vec![false; flags.len()];
+    for span in spans.iter().filter(|span| span.parent == -1) {
+        covered[(span.credit_start - 1).min(flags.len())..span.end.min(flags.len())].fill(true);
     }
     let outside = flags
         .iter()
-        .enumerate()
-        .filter(|(row, flag)| {
-            **flag
-                && !spans
-                    .iter()
-                    .any(|s| s.parent == -1 && *row >= s.credit_start - 1 && *row < s.end)
-        })
+        .zip(&covered)
+        .filter(|(flag, covered)| **flag && !**covered)
         .count();
     let imports = match lang {
         LanguageKind::Python => RawImports::Python(
@@ -1068,8 +1074,15 @@ pub(crate) fn write_sibling(
                 .all(|(file, node)| file == &node.file),
         "symbol source file order differs from map F order"
     );
+    let started = Instant::now();
     let mut document = build(repo, nodes, records)?;
+    eprintln!("symbol resolution: {:.2}s", started.elapsed().as_secs_f64());
+    let cards_started = Instant::now();
     crate::symbol_cards::attach(&map, &mut document)?;
+    eprintln!(
+        "symbol cards: {:.2}s",
+        cards_started.elapsed().as_secs_f64()
+    );
     let output = map_path.with_extension("symbols.json");
     let temporary = map_path.with_extension("symbols.json.tmp");
     let district_dir = map_path.with_extension("symbols");
