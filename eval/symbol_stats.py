@@ -102,8 +102,8 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         raw = compare_file.read_bytes()
         result["before_precision_bytes"] = len(raw)
         result["before_precision_gzip_bytes"] = len(gzip.compress(raw, mtime=0))
-        old = json.loads(raw)
-        result["main_contours"] = contour_metrics(decode_geometry(old))
+        old = decode_geometry(json.loads(raw))
+        result["main_contours"] = contour_metrics(old)
         result["before_precision_collapsed_by_decimals"] = {
             str(places): collapsed_at_precision(old, places)
             for places in range(6, 12)
