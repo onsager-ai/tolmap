@@ -370,7 +370,7 @@ export function rollReferences(
 
   const out = new Map<string, number>();
   const inn = new Map<string, number>();
-  for (const [source, target, occurrences] of decoded.raw.edges) {
+  for (const [source, target, occurrences] of exactEdges(decoded.raw)) {
     const sourceInSubtree = subtreeGlobals.has(source);
     const targetInSubtree = subtreeGlobals.has(target);
     if (sourceInSubtree === targetInSubtree) continue; // internal, or touches neither
@@ -440,9 +440,19 @@ export interface OutlineRow {
   children: OutlineRow[];
 }
 
+/** Symbol edges the viewer may draw or count as references. #103 added a
+ * `kind` column; `possible_implementation` rows are Go method-set matches,
+ * not type-checked, so they must never be shown or counted as references
+ * (the map's numbers are a lower bound). Older documents have no `kinds`
+ * legend and every row is an exact reference. */
+export function exactEdges(raw: { edges: ReadonlyArray<ReadonlyArray<number>>; kinds?: ReadonlyArray<string> }): ReadonlyArray<ReadonlyArray<number>> {
+  const skip = raw.kinds ? raw.kinds.indexOf("possible_implementation") : -1;
+  return skip < 0 ? raw.edges : raw.edges.filter((edge) => edge[3] !== skip);
+}
+
 export function fileOutline(decoded: DecodedDistrictSymbols, fileIdx: number): OutlineRow[] {
   const inCounts = new Map<number, number>();
-  for (const [, target, occurrences] of decoded.raw.edges) {
+  for (const [, target, occurrences] of exactEdges(decoded.raw)) {
     inCounts.set(target, (inCounts.get(target) ?? 0) + occurrences);
   }
   const build = (local: number): OutlineRow => ({
@@ -485,7 +495,7 @@ export function externalReferences(
     const subtree = subtreeOf(decoded, topLocal);
     const subtreeGlobals = new Set([...subtree].map((i) => decoded.raw.symbol_indices[i]));
     const targets = new Map<string, { count: number; label: string }>();
-    for (const [source, target, occurrences] of decoded.raw.edges) {
+    for (const [source, target, occurrences] of exactEdges(decoded.raw)) {
       if (!subtreeGlobals.has(source) || subtreeGlobals.has(target)) continue;
       const targetLocal = decoded.globalToLocal.get(target);
       let key: string;
