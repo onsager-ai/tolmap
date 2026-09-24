@@ -1888,6 +1888,116 @@ pub fn coverage_diagnostics(
     Ok(json!({"by_language": causes, "zero_edge_files": rows}))
 }
 
+/// Bucket every non-relative TypeScript import specifier that names a
+/// declared workspace package (issue #101). Unlike [`coverage_diagnostics`],
+/// this scans every TypeScript file, not only ones left with zero kept edges
+/// -- an importer with unrelated resolved edges elsewhere would otherwise
+/// never be reparsed, and its unresolved workspace imports would never be
+/// counted.
+///
+/// Four buckets, matching what the owner asked issue #101's measurement to
+/// report:
+/// - `resolved`: the import resolves to a file already in the parsed set.
+/// - `resolved_but_excluded`: [`package_entry_candidates`] names a real file
+///   on disk that source collection never parses (e.g. under `generated/`,
+///   `MULTI_SKIP_DIR`) -- correct `exports`/`main` resolution still adds no
+///   edge here, by the lower-bound rule.
+/// - `unresolved`: the specifier names a declared workspace package, but no
+///   candidate path exists on disk at all (a typo, a missing subpath, an
+///   `exports` map that does not cover it).
+/// - `external`: the specifier does not match any declared workspace
+///   package prefix at all (an npm dependency).
+pub fn workspace_import_coverage(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+) -> Result<serde_json::Value> {
+    use serde_json::json;
+    let mut resolved = 0usize;
+    let mut resolved_but_excluded = 0usize;
+    let mut unresolved = 0usize;
+    let mut external = 0usize;
+    let mut excluded_examples = BTreeSet::new();
+
+    if sources
+        .iter()
+        .any(|(_, lang)| *lang == LanguageKind::TypeScript)
+    {
+        let modules = module_index(repo)?;
+        let mut packages = modules
+            .ts
+            .iter()
+            .filter(|entry| entry.is_package)
+            .collect::<Vec<_>>();
+        // Longest prefix first: the same determinism rule as every other
+        // prefix table here (finding 9), and it makes the scoped-package
+        // case (`@scope/pkg` vs. a shorter unscoped collision) resolve to
+        // the more specific entry first.
+        packages.sort_by(|a, b| {
+            b.prefix
+                .len()
+                .cmp(&a.prefix.len())
+                .then_with(|| a.prefix.cmp(&b.prefix))
+        });
+
+        for (pkg, lang) in sources {
+            if *lang != LanguageKind::TypeScript {
+                continue;
+            }
+            let files = source_files(repo, pkg, *lang)?;
+            let by_file = files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| (file.clone(), index as FileId))
+                .collect::<BTreeMap<_, _>>();
+            let mut parser = Parser::new();
+            for file in &files {
+                let Ok(bytes) = fs::read(repo.join(file)) else {
+                    continue;
+                };
+                parser.set_language(&grammar_for_file(*lang, file))?;
+                let Some(tree) = parser.parse(&bytes, None) else {
+                    continue;
+                };
+                for spec in typescript_imports(tree.root_node(), &bytes) {
+                    if spec.starts_with('.') {
+                        continue;
+                    }
+                    let Some((entry, rest)) = packages.iter().find_map(|entry| {
+                        strip_module_prefix(&spec, &entry.prefix).map(|rest| (*entry, rest))
+                    }) else {
+                        external += 1;
+                        continue;
+                    };
+                    let Some(manifest) = modules.packages.get(&entry.target) else {
+                        external += 1;
+                        continue;
+                    };
+                    let subpath = (!rest.is_empty()).then_some(rest);
+                    if resolve_package_entry(&entry.target, subpath, manifest, &by_file).is_some() {
+                        resolved += 1;
+                        continue;
+                    }
+                    let candidates = package_entry_candidates(&entry.target, subpath, manifest);
+                    if let Some(on_disk) = candidates.iter().find(|c| repo.join(c).exists()) {
+                        resolved_but_excluded += 1;
+                        excluded_examples.insert(on_disk.clone());
+                    } else {
+                        unresolved += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(json!({
+        "resolved": resolved,
+        "resolved_but_excluded": resolved_but_excluded,
+        "unresolved": unresolved,
+        "external": external,
+        "resolved_but_excluded_examples": excluded_examples,
+    }))
+}
+
 /// Every `object.attribute` pair in the file whose `object` is a bare
 /// identifier -- e.g. `mod.thing()` yields `("mod", "thing")` -- with no
 /// filtering against imports at all. This is the raw half of what used to be
@@ -2098,6 +2208,13 @@ struct ModuleIndex {
     /// `paths` entry and every workspace `package.json` name. Package names
     /// have the empty (global) scope.
     ts: Vec<TsPrefix>,
+    /// `package.json` fields relevant to entry-point resolution (`exports`,
+    /// `types`/`typings`, `module`, `main`), keyed by the same repo-relative
+    /// directory a `TsPrefix { is_package: true, .. }` entry names as its
+    /// `target`. Only populated for a `TsPrefix` that came from a
+    /// `package.json` name -- a tsconfig `paths` alias has no manifest to
+    /// consult and resolves through `target` alone.
+    packages: BTreeMap<String, PackageManifest>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -2105,6 +2222,24 @@ struct TsPrefix {
     prefix: String,
     target: String,
     scope: String,
+    /// `true` for a workspace `package.json` name, `false` for a tsconfig
+    /// `paths` alias. Resolution branches on this: a package name is looked
+    /// up through its manifest (`exports`, then `main`/`types`/`module`,
+    /// then `src/index.ts`), while an alias is a plain directory
+    /// substitution through the existing relative-import probe.
+    is_package: bool,
+}
+
+/// The subset of `package.json` that decides a workspace package's entry
+/// point. Read once per matched package directory in [`module_index`] and
+/// consulted by [`resolve_package_entry`] for every bare-specifier import
+/// that names this package.
+#[derive(Debug, Default, Clone)]
+struct PackageManifest {
+    exports: Option<serde_json::Value>,
+    types: Option<String>,
+    module: Option<String>,
+    main: Option<String>,
 }
 
 impl ModuleIndex {
@@ -2132,9 +2267,21 @@ impl ModuleIndex {
 /// `package.json`. The walk skips exactly the directories the Go/TypeScript
 /// source walk skips, plus dot-directories, so vendored metadata cannot add
 /// a prefix.
+///
+/// A nested `package.json` only contributes a workspace-package prefix when
+/// its directory is a declared workspace member (`workspace_globs_from_root`)
+/// or is the repository root itself. Earlier this repository treated *any*
+/// nested `package.json` as fair game for bare-specifier resolution; a repo
+/// with many unrelated nested manifests (a vendored example, a test fixture,
+/// an editor extension) can name-collide with an external npm dependency of
+/// the same name, and the lower-bound rule (a wrong local file is worse than
+/// no edge) argues for scoping to what the package manager itself would
+/// resolve locally.
 fn module_index(repo: &Path) -> Result<ModuleIndex> {
+    let workspace_globs = workspace_globs_from_root(repo);
     let mut go = Vec::new();
     let mut ts = Vec::new();
+    let mut packages = BTreeMap::new();
     let mut stack = vec![repo.to_path_buf()];
     while let Some(directory) = stack.pop() {
         let Ok(entries) = fs::read_dir(&directory) else {
@@ -2164,12 +2311,16 @@ fn module_index(repo: &Path) -> Result<ModuleIndex> {
                     ts.extend(tsconfig_aliases(&path, &here));
                 }
                 "package.json" => {
-                    if let Some(package) = package_name(&path) {
-                        ts.push(TsPrefix {
-                            prefix: package,
-                            target: here,
-                            scope: String::new(),
-                        });
+                    if here == "." || is_workspace_member(&workspace_globs, &here) {
+                        if let Some((name, manifest)) = package_manifest(&path) {
+                            ts.push(TsPrefix {
+                                prefix: name,
+                                target: here.clone(),
+                                scope: String::new(),
+                                is_package: true,
+                            });
+                            packages.insert(here, manifest);
+                        }
                     }
                 }
                 _ => {}
@@ -2179,7 +2330,147 @@ fn module_index(repo: &Path) -> Result<ModuleIndex> {
     Ok(ModuleIndex {
         go: ModuleIndex::sorted(go),
         ts: ModuleIndex::sorted_ts(ts),
+        packages,
     })
+}
+
+/// Workspace-member globs from the repository root only: `pnpm-workspace.yaml`
+/// `packages:`, root `package.json` `workspaces` (array or `{packages:[]}`),
+/// and root `lerna.json` `packages`. Read directly rather than during the
+/// tree walk -- these three files only matter at the root, so there is
+/// nothing to gain from discovering them mid-walk, and reading them upfront
+/// means every subsequent `package.json` can be gated against a complete
+/// list.
+fn workspace_globs_from_root(repo: &Path) -> Vec<String> {
+    let mut patterns = Vec::new();
+    if let Ok(text) = fs::read_to_string(repo.join("package.json")) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            match value.get("workspaces") {
+                Some(serde_json::Value::Array(items)) => {
+                    patterns.extend(items.iter().filter_map(|v| v.as_str()).map(str::to_owned));
+                }
+                Some(serde_json::Value::Object(obj)) => {
+                    if let Some(serde_json::Value::Array(items)) = obj.get("packages") {
+                        patterns.extend(items.iter().filter_map(|v| v.as_str()).map(str::to_owned));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Ok(text) = fs::read_to_string(repo.join("pnpm-workspace.yaml")) {
+        patterns.extend(pnpm_workspace_packages(&text));
+    }
+    if let Ok(text) = fs::read_to_string(repo.join("lerna.json")) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(serde_json::Value::Array(items)) = value.get("packages") {
+                patterns.extend(items.iter().filter_map(|v| v.as_str()).map(str::to_owned));
+            }
+        }
+    }
+    patterns
+}
+
+/// Narrow, hand-written reader for exactly `pnpm-workspace.yaml`'s top-level
+/// `packages:` block-sequence -- not a YAML parser (no dependency change).
+/// Tolerates blank lines and `#`-comment lines between list items (n8n's
+/// `pnpm-workspace.yaml` has one), and stops at the first line that is
+/// neither, which is always either the next top-level key or end of file.
+fn pnpm_workspace_packages(text: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut in_list = false;
+    for line in text.lines() {
+        if !in_list {
+            if line.trim_end() == "packages:" {
+                in_list = true;
+            }
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix('-') else {
+            break;
+        };
+        let mut item = rest.trim();
+        if let Some(hash) = item.find(" #") {
+            item = item[..hash].trim();
+        }
+        let item = item.trim_matches(['\'', '"']);
+        if !item.is_empty() {
+            result.push(item.to_owned());
+        }
+    }
+    result
+}
+
+/// Whether `dir` (repo-relative, no leading/trailing slash) is included by
+/// `globs`, applying `!`-negation entries in order the way `.gitignore` and
+/// pnpm's own package-filter both do: the last matching entry wins.
+fn is_workspace_member(globs: &[String], dir: &str) -> bool {
+    let mut included = false;
+    for pattern in globs {
+        if let Some(negated) = pattern.strip_prefix('!') {
+            if glob_matches(negated, dir) {
+                included = false;
+            }
+        } else if glob_matches(pattern, dir) {
+            included = true;
+        }
+    }
+    included
+}
+
+/// A restricted glob: `*` matches one path segment, `**` matches zero or
+/// more segments, anything else must match literally. Covers every pattern
+/// form seen in the corpus (`packages/*`, `packages/@n8n/*`,
+/// `packages/frontend/**`, a literal path with no wildcard at all).
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    let pattern = pattern.trim_end_matches('/');
+    let pattern_segs = pattern.split('/').collect::<Vec<_>>();
+    let path_segs = path.split('/').collect::<Vec<_>>();
+    glob_match_segments(&pattern_segs, &path_segs)
+}
+
+fn glob_match_segments(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern.first() {
+        None => path.is_empty(),
+        Some(&"**") => {
+            (0..=path.len()).any(|skip| glob_match_segments(&pattern[1..], &path[skip..]))
+        }
+        Some(seg) => {
+            !path.is_empty()
+                && segment_matches(seg, path[0])
+                && glob_match_segments(&pattern[1..], &path[1..])
+        }
+    }
+}
+
+fn segment_matches(pattern: &str, text: &str) -> bool {
+    if pattern == "*" {
+        return !text.is_empty();
+    }
+    if !pattern.contains('*') {
+        return pattern == text;
+    }
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    let Some(mut rest) = text.strip_prefix(parts[0]) else {
+        return false;
+    };
+    for (index, part) in parts.iter().enumerate().skip(1) {
+        if index == parts.len() - 1 {
+            return rest.ends_with(part);
+        }
+        if part.is_empty() {
+            continue;
+        }
+        let Some(pos) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[pos + part.len()..];
+    }
+    true
 }
 
 fn go_module_line(path: &Path) -> Option<String> {
@@ -2192,13 +2483,21 @@ fn go_module_line(path: &Path) -> Option<String> {
         .filter(|module| !module.is_empty())
 }
 
-fn package_name(path: &Path) -> Option<String> {
+fn package_manifest(path: &Path) -> Option<(String, PackageManifest)> {
     let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    value
+    let name = value
         .get("name")?
         .as_str()
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
+        .filter(|name| !name.is_empty())?
+        .to_owned();
+    let string_field = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+    let manifest = PackageManifest {
+        exports: value.get("exports").cloned(),
+        types: string_field("types").or_else(|| string_field("typings")),
+        module: string_field("module"),
+        main: string_field("main"),
+    };
+    Some((name, manifest))
 }
 
 /// Return `compilerOptions.paths` from one tsconfig as repo-relative roots.
@@ -2242,6 +2541,7 @@ fn tsconfig_aliases(path: &Path, here: &str) -> Vec<TsPrefix> {
                 prefix: prefix.to_owned(),
                 target: join_slash(&root, target),
                 scope: here.to_owned(),
+                is_package: false,
             });
         }
     }
@@ -2536,18 +2836,189 @@ fn resolve_multi<'a>(
                 // depth zero. Non-ancestors remain last but stay available as a
                 // fallback when no nearer entry resolves to a parsed file.
                 entries.sort_by(|a, b| ts_prefix_order(a, b, source_directory));
-                let target = entries
-                    .into_iter()
-                    .filter_map(|entry| {
-                        let rest = strip_module_prefix(import, &entry.prefix)?;
-                        Some(join_slash(&entry.target, rest))
-                    })
-                    .find_map(|base| ts_candidate(&base, by_file));
+                let target = entries.into_iter().find_map(|entry| {
+                    let rest = strip_module_prefix(import, &entry.prefix)?;
+                    if entry.is_package {
+                        let manifest = modules.packages.get(&entry.target)?;
+                        let subpath = (!rest.is_empty()).then_some(rest);
+                        resolve_package_entry(&entry.target, subpath, manifest, by_file)
+                    } else {
+                        ts_candidate(&join_slash(&entry.target, rest), by_file)
+                    }
+                });
                 return target.map_or(ResolvedTargets::Empty, ResolvedTargets::One);
             };
             ts_candidate(&base, by_file).map_or(ResolvedTargets::Empty, ResolvedTargets::One)
         }
         LanguageKind::Python => ResolvedTargets::Empty,
+    }
+}
+
+/// Resolve one workspace-package import (bare `@scope/pkg` or `pkg`, plus an
+/// optional `/subpath`) against its manifest. Every candidate this tries is
+/// repo-relative and only accepted if it names a file the parsed set already
+/// has -- the lower-bound rule applies here exactly as it does to a tsconfig
+/// alias or a relative import.
+fn resolve_package_entry(
+    pkg_dir: &str,
+    subpath: Option<&str>,
+    manifest: &PackageManifest,
+    by_file: &BTreeMap<String, FileId>,
+) -> Option<FileId> {
+    package_entry_candidates(pkg_dir, subpath, manifest)
+        .into_iter()
+        .find_map(|candidate| by_file.get(&candidate).copied())
+}
+
+/// The ordered candidate paths [`resolve_package_entry`] tries, kept separate
+/// and pure (no filesystem or parsed-set access) so a diagnostic can also
+/// see what was attempted when nothing resolved.
+///
+/// Precedence: `exports` first when the manifest declares one at all --
+/// Node's own resolution stops there and never falls back to `main` once
+/// `exports` exists, so this does not either. Otherwise `types`/`typings`,
+/// then `module`, then `main` (with a `main` pointing at built output, e.g.
+/// `dist/index.js`, additionally trying the same stem under `src/`), then
+/// `src/index.ts(x)` and `index.ts(x)`. A subpath with no `exports` field
+/// falls back to the plain `<dir>/<subpath>` extension/index probe used for
+/// relative imports.
+fn package_entry_candidates(
+    pkg_dir: &str,
+    subpath: Option<&str>,
+    manifest: &PackageManifest,
+) -> Vec<String> {
+    if let Some(exports) = &manifest.exports {
+        return exports_candidates(pkg_dir, subpath, exports);
+    }
+    match subpath {
+        None => {
+            let mut candidates = Vec::new();
+            for field in [manifest.types.as_deref(), manifest.module.as_deref()] {
+                if let Some(value) = field {
+                    candidates.push(join_slash(pkg_dir, value));
+                }
+            }
+            if let Some(main) = &manifest.main {
+                candidates.push(join_slash(pkg_dir, main));
+                // A `main` that points at built output (`dist/index.js`) has
+                // no source counterpart at that path -- `dist` is itself
+                // excluded from source collection (MULTI_SKIP_DIR), so it
+                // can never be in the parsed set. Try the same stem under
+                // `src/` instead, and only that exact file: this is not a
+                // general rule that a package's source always lives under
+                // `src/`, just the one substitution finding 101 measured as
+                // worth making.
+                if let Some(stem) = Path::new(main).file_stem().and_then(|s| s.to_str()) {
+                    candidates.push(join_slash(pkg_dir, &format!("src/{stem}.ts")));
+                    candidates.push(join_slash(pkg_dir, &format!("src/{stem}.tsx")));
+                }
+            }
+            candidates.push(join_slash(pkg_dir, "src/index.ts"));
+            candidates.push(join_slash(pkg_dir, "src/index.tsx"));
+            candidates.push(join_slash(pkg_dir, "index.ts"));
+            candidates.push(join_slash(pkg_dir, "index.tsx"));
+            candidates
+        }
+        Some(sub) => {
+            let target = join_slash(pkg_dir, sub);
+            vec![
+                format!("{target}.ts"),
+                format!("{target}/index.ts"),
+                format!("{target}.tsx"),
+                format!("{target}/index.tsx"),
+                target,
+            ]
+        }
+    }
+}
+
+/// `exports` resolution for the `"."` entry (`subpath` is `None`) or a
+/// `"./subpath"` entry, handling the wildcard subpath pattern form
+/// (`"./api/*"`) and the condition keys `types`, `import`, `default`,
+/// `require` in that order. Returns at most one candidate: `exports` either
+/// names an exact file or it does not apply, unlike the plain relative-import
+/// probe this deliberately does not extension-probe or index-probe further.
+fn exports_candidates(
+    pkg_dir: &str,
+    subpath: Option<&str>,
+    exports: &serde_json::Value,
+) -> Vec<String> {
+    let key = subpath.map_or_else(|| ".".to_owned(), |s| format!("./{s}"));
+    let resolved = match exports {
+        serde_json::Value::String(value) => (key == ".").then(|| value.clone()),
+        serde_json::Value::Object(map) => {
+            if map.keys().any(|k| k.starts_with('.')) {
+                match_export_key(map, &key)
+                    .and_then(|(value, capture)| pick_condition(value).map(|t| (t, capture)))
+                    .map(|(template, capture)| substitute_wildcard(template, &capture))
+            } else if key == "." {
+                pick_condition(exports).map(str::to_owned)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    resolved
+        .into_iter()
+        .map(|relative| join_slash(pkg_dir, &relative))
+        .collect()
+}
+
+/// Exact key first (covers both `"."` and a literal `"./subpath"`), else the
+/// wildcard subpath pattern (`"./api/*"`) with the longest matched prefix --
+/// Node's own tie-break when more than one pattern could apply. Returns the
+/// matched value and the text `*` captured (empty for an exact match).
+fn match_export_key<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<(&'a serde_json::Value, String)> {
+    if let Some(value) = map.get(key) {
+        return Some((value, String::new()));
+    }
+    let mut candidates = Vec::new();
+    for (pattern, value) in map {
+        let Some(star) = pattern.find('*') else {
+            continue;
+        };
+        let (prefix, suffix) = (&pattern[..star], &pattern[star + 1..]);
+        if key.starts_with(prefix)
+            && key.ends_with(suffix)
+            && key.len() >= prefix.len() + suffix.len()
+        {
+            candidates.push((prefix, suffix, value));
+        }
+    }
+    candidates.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(b.0)));
+    candidates
+        .into_iter()
+        .next()
+        .map(|(prefix, suffix, value)| {
+            (
+                value,
+                key[prefix.len()..key.len() - suffix.len()].to_owned(),
+            )
+        })
+}
+
+/// Depth-first search for the first present condition, in the fixed order
+/// `types`, `import`, `default`, `require`. A plain string value is itself
+/// the target (no conditions to pick between).
+fn pick_condition(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::String(s) => Some(s.as_str()),
+        serde_json::Value::Object(map) => ["types", "import", "default", "require"]
+            .into_iter()
+            .find_map(|cond| map.get(cond).and_then(pick_condition)),
+        _ => None,
+    }
+}
+
+fn substitute_wildcard(template: &str, capture: &str) -> String {
+    if template.contains('*') {
+        template.replacen('*', capture, 1)
+    } else {
+        template.to_owned()
     }
 }
 
@@ -3405,6 +3876,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         write(
             dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
             "packages/core/package.json",
             r#"{"name":"@scope/core"}"#,
         );
@@ -3418,6 +3894,284 @@ mod tests {
         assert_eq!(
             resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
             1
+        );
+    }
+
+    /// A nested `package.json` outside every discovered workspace glob does
+    /// not become a bare-specifier target. Before this, any nested manifest
+    /// anywhere in the tree was fair game -- a name collision with an
+    /// external npm dependency (e.g. a fixtures directory's own
+    /// `package.json` named the same as a real published package) would
+    /// silently resolve to the wrong local file instead of staying
+    /// unresolved.
+    #[test]
+    fn package_json_outside_declared_workspace_globs_is_not_a_resolution_target() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "tools/left-pad/package.json",
+            r#"{"name":"left-pad"}"#,
+        );
+        write(
+            dir.path(),
+            "tools/left-pad/src/index.ts",
+            "export const leftPad = 1;\n",
+        );
+        write(dir.path(), "apps/site/main.ts", "import 'left-pad';\n");
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            0
+        );
+    }
+
+    #[test]
+    fn pnpm_workspace_yaml_discovers_a_package_with_no_root_package_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "pnpm-workspace.yaml",
+            "packages:\n  - packages/*\n",
+        );
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/src/index.ts",
+            "export const core = 1;\n",
+        );
+        write(dir.path(), "apps/site/main.ts", "import '@scope/core';\n");
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            1
+        );
+    }
+
+    #[test]
+    fn npm_workspaces_object_form_discovers_a_package() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":{"packages":["packages/*"]}}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/src/index.ts",
+            "export const core = 1;\n",
+        );
+        write(dir.path(), "apps/site/main.ts", "import '@scope/core';\n");
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            1
+        );
+    }
+
+    #[test]
+    fn exports_condition_precedence_prefers_import_over_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core","exports":{".":{"import":"./esm.ts","default":"./cjs.ts"}}}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/esm.ts",
+            "export const esm = 1;\n",
+        );
+        write(
+            dir.path(),
+            "packages/core/cjs.ts",
+            "export const cjs = 1;\n",
+        );
+        write(dir.path(), "apps/site/main.ts", "import '@scope/core';\n");
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/core/esm.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn exports_subpath_wildcard_resolves_to_a_parsed_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core","exports":{"./api/*":"./src/api/*.ts"}}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/src/api/foo.ts",
+            "export const foo = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/core/api/foo';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/core/src/api/foo.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// Issue #101's actual dify shape: `exports` maps a subpath to a
+    /// generated file that source collection never parses (`generated` is in
+    /// `MULTI_SKIP_DIR`). Correct `exports` resolution still adds zero edges
+    /// here -- the lower-bound rule cares whether the file was parsed, not
+    /// whether the manifest technically names it.
+    #[test]
+    fn exports_subpath_pointing_at_an_excluded_directory_adds_no_edge() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/contracts/package.json",
+            r#"{"name":"@scope/contracts","exports":{"./api/*":"./generated/api/*.ts"}}"#,
+        );
+        write(
+            dir.path(),
+            "packages/contracts/generated/api/foo.ts",
+            "export const foo = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/contracts/api/foo';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            0
+        );
+    }
+
+    #[test]
+    fn main_pointing_at_dist_falls_back_to_the_same_stem_under_src() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core","main":"./dist/index.js"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/src/index.ts",
+            "export const core = 1;\n",
+        );
+        write(dir.path(), "apps/site/main.ts", "import '@scope/core';\n");
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/core/src/index.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn main_pointing_at_dist_with_no_matching_src_file_is_left_unresolved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core","main":"./dist/bundle.js"}"#,
+        );
+        write(dir.path(), "apps/site/main.ts", "import '@scope/core';\n");
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            0
+        );
+    }
+
+    #[test]
+    fn external_package_with_no_workspace_or_alias_match_adds_no_edge() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/package.json",
+            r#"{"name":"@scope/core"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/core/src/index.ts",
+            "export const core = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/core';\nimport 'left-pad';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/core/src/index.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
         );
     }
 
@@ -3512,6 +4266,7 @@ mod tests {
             prefix: "@/".to_owned(),
             target: "src".to_owned(),
             scope: String::new(),
+            is_package: false,
         }));
         assert_eq!(
             resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
@@ -3578,6 +4333,11 @@ mod tests {
     #[test]
     fn nearer_alias_beats_a_global_workspace_package_name() {
         let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
         write(
             dir.path(),
             "packages/core/package.json",

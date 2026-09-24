@@ -592,6 +592,20 @@ jobs:
           ARTIFACT: artifact
         run: python3 eval/measure_typed_edges.py
 
+      # Issue #101: workspace-package import resolution. This PR's own maps
+      # legitimately differ from main on these four repos (more import
+      # edges), so it always runs on `always()` rather than after the
+      # "Measure typed edges and map parity" step above -- that step's own
+      # byte-identical assertion is expected to fail here for exactly that
+      # reason (it was written for a same-map PR) and must not skip this one.
+      - name: Measure workspace-package import resolution
+        if: always() && inputs.command == 'build' && needs.setup.outputs.has_compare == 'true' && contains(fromJSON('["langgenius/dify","n8n-io/n8n","microsoft/vscode","twentyhq/twenty"]'), matrix.slug) && steps.build_primary.outputs.exit_code == '0'
+        env:
+          STEM: ${{ matrix.stem }}
+          SLUG: ${{ matrix.slug }}
+          OUTPUT: artifact/module_resolution_measure.json
+        run: python3 eval/measure_module_resolution.py
+
       - name: Upload result artifact
         if: always()
         uses: actions/upload-artifact@v4

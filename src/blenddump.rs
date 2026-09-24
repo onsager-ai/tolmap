@@ -116,6 +116,16 @@ fn dump_data(
         })
         .transpose()?;
 
+    // Issue #101: bucket every workspace-package import specifier
+    // (resolved / resolved-but-excluded / unresolved / external), across
+    // every TypeScript file -- not just the zero-edge ones `coverage`
+    // reparses. An importer with other real edges elsewhere would never be
+    // revisited by `coverage_diagnostics`, and its unresolved workspace
+    // imports would otherwise go uncounted.
+    let workspace_imports = diagnostic_source
+        .map(|(repo, sources)| extract::workspace_import_coverage(repo, sources))
+        .transpose()?;
+
     let document = json!({
         "repo": data.repo,
         "tolerance": TOLERANCE,
@@ -136,6 +146,7 @@ fn dump_data(
         "node_order": data.nodes.iter().map(|n| n.file.clone()).collect::<Vec<_>>(),
         "edges": edges,
         "coverage": coverage,
+        "workspace_imports": workspace_imports,
     });
     std::fs::write(out, serde_json::to_string_pretty(&document)?)?;
     println!(
@@ -152,5 +163,8 @@ fn dump_data(
         stats.floor,
         stats.floor_basis,
     );
+    if let Some(workspace_imports) = &workspace_imports {
+        println!("workspace imports (issue #101): {workspace_imports}");
+    }
     Ok(())
 }
