@@ -20,8 +20,27 @@ export function ZoomControls({ onZoomIn, onZoomOut, onFit, isFullscreen, onToggl
       <button className={btn} onClick={onZoomOut} aria-label="Zoom out">
         −
       </button>
-      <button className={`${btn} text-[10px] max-[820px]:text-[11px]`} onClick={onFit} aria-label="Fit map">
-        fit
+      {/* Issue #82 "fit icon", owner review follow-up: the FIRST version of
+          this glyph (four brackets sitting flush at the box's own corners)
+          read as visually identical to the fullscreen glyph below it ("⛶" is
+          exactly that same "four corner marks on a square" shape) -- not
+          distinct at all, per the owner's screenshot review. This version
+          instead draws two short arrows converging INWARD from opposite
+          corners toward the centre (the conventional "compress to fit"
+          pictogram, e.g. Lucide's Minimize2) -- diagonal lines through the
+          middle of the glyph, the opposite silhouette from a square's own
+          corner marks, so it can't be confused with "⛶"/"✕" at a glance.
+          Same size/stroke as the other glyphs. Deliberately no `title`
+          attribute (owner correction, issue #82): it would show a second,
+          redundant tooltip. `aria-label="Fit map"` stays -- the checks key
+          off it. */}
+      <button className={`${btn} flex items-center justify-center`} onClick={onFit} aria-label="Fit map">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="11 5.5 7.7 5.5 7.7 2.2" />
+          <line x1="7.7" y1="5.5" x2="11.6" y2="1.7" />
+          <polyline points="2.2 7.7 5.5 7.7 5.5 11" />
+          <line x1="1.7" y1="11.6" x2="5.5" y2="7.7" />
+        </svg>
       </button>
       <button
         className={`${btn} border-b-0`}
