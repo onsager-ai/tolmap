@@ -16,7 +16,8 @@ use tree_sitter::Node;
 
 use crate::extract::{self, LanguageKind};
 use crate::schema::{
-    DistrictSymbols, HierSymbolRow, MapDocument, SourceNode, SymbolCoverage, SymbolsDocument,
+    symbol_edge_kinds, DistrictSymbols, HierSymbolRow, MapDocument, SourceNode, SymbolCoverage,
+    SymbolsDocument,
 };
 
 const CLASS: usize = 0;
@@ -26,6 +27,14 @@ const NESTED_FUNCTION: usize = 3;
 const INTERFACE: usize = 4;
 const TYPE: usize = 5;
 const CONST: usize = 6;
+const CALL: usize = 1;
+const EXTENDS: usize = 2;
+const IMPLEMENTS: usize = 3;
+const OVERRIDES: usize = 4;
+const ANNOTATION: usize = 5;
+const DECORATOR: usize = 6;
+const VALUE: usize = 7;
+const POSSIBLE_IMPLEMENTATION: usize = 8;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Span {
@@ -40,6 +49,9 @@ struct Span {
     end_byte: usize,
     code_lines: usize,
     parent: isize,
+    abstract_symbol: bool,
+    go_signature: Option<[usize; 2]>,
+    go_embeds: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -57,6 +69,7 @@ struct Candidate {
     chain: Vec<String>,
     call: bool,
     value: bool,
+    kind: usize,
     unresolved_reason: Option<UnresolvedReason>,
 }
 
@@ -243,6 +256,68 @@ fn children(node: Node<'_>) -> Vec<Node<'_>> {
     node.named_children(&mut cursor).collect()
 }
 
+fn go_parameter_count(node: Node<'_>) -> usize {
+    children(node)
+        .into_iter()
+        .filter(|n| matches!(n.kind(), "parameter_declaration" | "variadic_parameter_declaration"))
+        .map(|declaration| {
+            let names = children(declaration)
+                .into_iter()
+                .filter(|n| n.kind() == "identifier")
+                .count();
+            names.max(1)
+        })
+        .sum()
+}
+
+fn go_signature(node: Node<'_>) -> Option<[usize; 2]> {
+    if !matches!(node.kind(), "method_declaration" | "method_elem") {
+        return None;
+    }
+    let parameters = node.child_by_field_name("parameters")?;
+    let results = node.child_by_field_name("result").map_or(0, |result| {
+        if result.kind() == "parameter_list" {
+            go_parameter_count(result)
+        } else {
+            1
+        }
+    });
+    Some([go_parameter_count(parameters), results])
+}
+
+fn abstract_decl(node: Node<'_>, bytes: &[u8], lang: LanguageKind, kind: usize) -> bool {
+    match lang {
+        LanguageKind::Python => {
+            if kind == CLASS {
+                let bases = node.child_by_field_name("superclasses").map(|n| text(n, bytes)).unwrap_or("");
+                bases.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|part| matches!(part, "ABC" | "ABCMeta"))
+            } else if kind == METHOD {
+                node.parent().filter(|p| p.kind() == "decorated_definition")
+                    .is_some_and(|p| children(p).into_iter().any(|child| {
+                        child.kind() == "decorator"
+                            && matches!(text(child, bytes).trim_start_matches('@').trim(),
+                                "abstractmethod" | "abc.abstractmethod")
+                    }))
+            } else {
+                false
+            }
+        }
+        LanguageKind::TypeScript => {
+            if kind == INTERFACE {
+                return true;
+            }
+            let before_name = node.child_by_field_name("name")
+                .map_or(node.end_byte(), |name| name.start_byte());
+            std::str::from_utf8(&bytes[node.start_byte()..before_name])
+                .unwrap_or("")
+                .split_whitespace()
+                .any(|part| part == "abstract")
+        }
+        LanguageKind::Go => false,
+    }
+}
+
 fn collect_spans(
     node: Node<'_>,
     bytes: &[u8],
@@ -287,6 +362,14 @@ fn collect_spans(
                 end_byte: node.end_byte(),
                 code_lines: 0,
                 parent,
+                abstract_symbol: abstract_decl(node, bytes, lang, k)
+                    || (parent >= 0 && spans[parent as usize].kind == INTERFACE
+                        && lang == LanguageKind::TypeScript),
+                go_signature: (lang == LanguageKind::Go).then(|| go_signature(node)).flatten(),
+                go_embeds: lang == LanguageKind::Go && k == INTERFACE
+                    && node.child_by_field_name("type").is_some_and(|ty| {
+                        children(ty).into_iter().any(|child| child.kind() == "type_elem")
+                    }),
             });
         }
     }
