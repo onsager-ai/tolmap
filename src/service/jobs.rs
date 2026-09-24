@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::progress::{ProgressValue, StageId};
 use crate::service::clone::{self, RepoRef};
 use crate::service::error::{ApiError, ErrorBody};
-use crate::service::eta::{Eta, EtaModel, TimingRow};
+use crate::service::eta::{expected_passes, progress_total, Eta, EtaModel, TimingRow};
 use crate::service::store::MapRow;
 use crate::service::time::now_rfc3339;
 use crate::service::AppState;
@@ -181,10 +181,21 @@ impl JobRegistry {
             .insert(id, features);
     }
 
+    fn features(&self, id: Uuid) -> RepoFeatures {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .features
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn estimate(
         &self,
         tx: &watch::Sender<JobSnapshot>,
         running: Option<(StageId, f64, Option<f64>, Option<f64>)>,
+        completed_passes: &[usize; StageId::ALL.len()],
     ) {
         let mut registry = self.0.lock().expect("job registry mutex poisoned");
         let snapshot = tx.borrow().clone();
@@ -198,7 +209,8 @@ impl JobRegistry {
             .unwrap_or_default();
         let mut done = [false; StageId::ALL.len()];
         for stage in &snapshot.stages {
-            done[stage.id.index() - 1] = stage.state == StageState::Done;
+            done[stage.id.index() - 1] = stage.state == StageState::Done
+                && completed_passes[stage.id.index() - 1] >= expected_passes(stage.id, &features);
         }
         let eta = registry.eta_model.predict(&features, &done, running);
         tx.send_modify(|snapshot| snapshot.eta = Some(eta));
@@ -731,6 +743,7 @@ fn process_worker_exe(
     let mut last_progress: [Option<(u64, Instant)>; StageId::ALL.len()] =
         std::array::from_fn(|_| None);
     let mut ewma_rate: [Option<f64>; StageId::ALL.len()] = [None; StageId::ALL.len()];
+    let mut completed_passes = [0usize; StageId::ALL.len()];
     let mut running_eta: Option<(StageId, f64, Option<f64>, Option<f64>)> = None;
     for line in BufReader::new(stdout).lines() {
         let line = match line {
@@ -821,11 +834,14 @@ fn process_worker_exe(
                 }
                 last_progress[index] = Some((value.done, now));
                 let rate = ewma_rate[index].or(value.rate_per_s).filter(|r| *r > 0.0);
-                let remaining = value.total.and_then(|total| {
+                let features = registry
+                    .map(|registry| registry.features(id))
+                    .unwrap_or_default();
+                let effective_total = progress_total(&value, &features);
+                let remaining = effective_total.and_then(|total| {
                     rate.map(|rate| total.saturating_sub(value.done) as f64 / rate)
                 });
-                let fraction = value
-                    .total
+                let fraction = effective_total
                     .filter(|total| *total > 0)
                     .map(|total| value.done as f64 / total as f64);
                 let eta_stage = if matches!(
@@ -858,6 +874,9 @@ fn process_worker_exe(
                 success,
                 ..
             } => {
+                if success {
+                    completed_passes[stage.index() - 1] += 1;
+                }
                 tx.send_modify(|snapshot| {
                     if is_terminal(snapshot) {
                         return;
@@ -930,6 +949,7 @@ fn process_worker_exe(
                         fraction,
                     )
                 }),
+                &completed_passes,
             );
         }
     }
@@ -1116,6 +1136,10 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_queued_job_is_idempotent_and_repositions_fifo() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
         let (_dir, state) = state(Limits::default());
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let release_rx = Arc::new(Mutex::new(release_rx));
@@ -1130,9 +1154,30 @@ mod tests {
         let third = enqueue_job(state.clone(), repo("three"), "c".to_owned(), runner).unwrap();
         assert_eq!(snapshot(&state, third).queue_position, Some(2));
         let before = snapshot(&state, third).eta_start_s.unwrap();
-        let cancelled = state.jobs.cancel(second).unwrap();
+        let cancel_request = || {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/jobs/{second}/cancel"))
+                .extension(ConnectInfo(
+                    "127.0.0.1:1".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = crate::service::http::router(state.clone())
+            .oneshot(cancel_request())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let cancelled: JobSnapshot = serde_json::from_slice(&body).unwrap();
         assert_eq!(cancelled.status, JobStatus::Failed);
         assert_eq!(cancelled.error_code.as_deref(), Some("cancelled"));
+        let repeated = crate::service::http::router(state.clone())
+            .oneshot(cancel_request())
+            .await
+            .unwrap();
+        assert_eq!(repeated.status(), StatusCode::OK);
         assert_eq!(
             state.jobs.cancel(second).unwrap().error_code.as_deref(),
             Some("cancelled")

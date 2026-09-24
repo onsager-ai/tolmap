@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::progress::StageId;
+use crate::progress::{ProgressValue, StageId};
 use crate::worker::RepoFeatures;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,6 +33,28 @@ pub struct Eta {
 impl Eta {
     pub fn midpoint(self) -> f64 {
         (self.low_s + self.high_s) / 2.0
+    }
+}
+
+pub fn expected_passes(stage: StageId, features: &RepoFeatures) -> usize {
+    if matches!(stage, StageId::Parse | StageId::Resolve) {
+        features.languages.len().max(1)
+    } else {
+        1
+    }
+}
+
+pub fn progress_total(value: &ProgressValue, features: &RepoFeatures) -> Option<u64> {
+    let source_files: u64 = features.languages.values().map(|lang| lang.files).sum();
+    if source_files > 0
+        && matches!(
+            value.stage,
+            StageId::Parse | StageId::Resolve | StageId::Symbols | StageId::SymbolCards
+        )
+    {
+        Some(value.total.unwrap_or(0).max(source_files))
+    } else {
+        value.total
     }
 }
 
@@ -232,6 +254,10 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
     let model = EtaModel::default();
     let mut features = RepoFeatures::default();
     let mut done = [false; 18];
+    let mut stage_succeeded = [false; 18];
+    let mut completed_passes = [0usize; 18];
+    let mut stage_offsets = [0u64; 18];
+    let mut stage_max = [0u64; 18];
     let mut starts = [None::<f64>; 18];
     let mut last_progress = [None::<(u64, f64)>; 18];
     let mut ewma = [None::<f64>; 18];
@@ -243,7 +269,8 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
         match event {
             WorkerEvent::Features { features: next, .. } => features = next,
             WorkerEvent::StageStarted { stage, .. } => {
-                done[stage.index() - 1] = false;
+                stage_succeeded[stage.index() - 1] = false;
+                stage_offsets[stage.index() - 1] = stage_max[stage.index() - 1];
                 starts[stage.index() - 1] = Some(at);
                 let active = if matches!(
                     stage,
@@ -260,8 +287,14 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
                     None,
                 ));
             }
-            WorkerEvent::Progress { value, .. } => {
+            WorkerEvent::Progress { mut value, .. } => {
                 let index = value.stage.index() - 1;
+                value.done = value.done.saturating_add(stage_offsets[index]);
+                value.total = value
+                    .total
+                    .map(|total| total.saturating_add(stage_offsets[index]));
+                value.done = value.done.max(stage_max[index]);
+                stage_max[index] = value.done;
                 if let Some((last_done, last_at)) = last_progress[index] {
                     let dt = at - last_at;
                     if value.done > last_done && dt > 0.0 {
@@ -274,7 +307,8 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
                 }
                 last_progress[index] = Some((value.done, at));
                 let rate = ewma[index].or(value.rate_per_s).filter(|rate| *rate > 0.0);
-                let remaining = value.total.and_then(|total| {
+                let effective_total = progress_total(&value, &features);
+                let remaining = effective_total.and_then(|total| {
                     rate.map(|rate| total.saturating_sub(value.done) as f64 / rate)
                 });
                 let active = if matches!(
@@ -285,8 +319,7 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
                 } else {
                     value.stage
                 };
-                let fraction = value
-                    .total
+                let fraction = effective_total
                     .filter(|total| *total > 0)
                     .map(|total| value.done as f64 / total as f64);
                 running = Some((
@@ -297,7 +330,10 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
                 ));
             }
             WorkerEvent::StageFinished { stage, success, .. } => {
-                done[stage.index() - 1] = success;
+                stage_succeeded[stage.index() - 1] = success;
+                if success {
+                    completed_passes[stage.index() - 1] += 1;
+                }
                 if running.is_some_and(|(active, _, _, _)| active == stage) {
                     running = None;
                 }
@@ -305,6 +341,10 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
             WorkerEvent::Result { .. } | WorkerEvent::Error { .. } | WorkerEvent::Log { .. } => {}
         }
         if at < wall && !matches!(value["type"].as_str(), Some("result" | "error")) {
+            for stage in StageId::ALL {
+                done[stage.index() - 1] = stage_succeeded[stage.index() - 1]
+                    && completed_passes[stage.index() - 1] >= expected_passes(stage, &features);
+            }
             let prediction = model.predict(
                 &features,
                 &done,
@@ -397,5 +437,31 @@ mod tests {
             Some((StageId::Parse, 5.0, Some(1.0), Some(0.8))),
         );
         assert!(blended.midpoint() < model_only.midpoint());
+    }
+
+    #[test]
+    fn repeated_parse_pass_keeps_unvisited_language_in_eta() {
+        let mut input = features(100);
+        input.languages.insert(
+            "ts".to_owned(),
+            LanguageFeatures {
+                files: 200,
+                bytes: 1_600_000,
+            },
+        );
+        let progress = ProgressValue {
+            stage: StageId::Parse,
+            stage_index: StageId::Parse.index(),
+            stage_count: 18,
+            label: "Parsing files".to_owned(),
+            unit: "files".to_owned(),
+            done: 100,
+            total: Some(100),
+            rate_per_s: Some(50.0),
+            transfer_bytes: None,
+            transfer_rate_bytes_per_s: None,
+        };
+        assert_eq!(expected_passes(StageId::Parse, &input), 2);
+        assert_eq!(progress_total(&progress, &input), Some(300));
     }
 }
