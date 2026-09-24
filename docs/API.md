@@ -186,9 +186,11 @@ one-based FIFO position while waiting, updated when jobs ahead start. It is
 when a worker starts the job, so queue waiting does not count. A timed-out
 child can continue, and holds its worker slot until it exits. `elapsed_s`
 is updated with each worker event and on completion. Progress counters never
-decrease within one stage invocation; `total` may be unknown. Stage IDs are
-stable, in pipeline order; clone sub-stages may start more than once during
-a fetch and checkout. A child that exits without a result or error event
+decrease for a stage during a job, even when a multi-source build repeats
+parsing and resolution. `total` may be unknown and can grow as another source
+starts. Stage IDs are stable, in pipeline order; clone sub-stages may start
+more than once during a fetch and checkout. Repeated stage durations are
+summed in `stages`. A child that exits without a result or error event
 fails the job with `worker_crashed`, including its exit status and last stage.
 `stage` is a short
 free-text description of what is happening right now (e.g. `"cloning

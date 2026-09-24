@@ -525,6 +525,8 @@ fn process_worker_exe(
     let mut outcome = None;
     let mut error = None;
     let mut last_stage = None;
+    // Multi-source extraction revisits parse and resolve. The worker reports
+    // each pass separately, while API counters belong to the stable stage ID.
     let mut stage_offsets = [0_u64; StageId::ALL.len()];
     let mut stage_max = [0_u64; StageId::ALL.len()];
     for line in BufReader::new(stdout).lines() {
