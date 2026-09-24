@@ -587,7 +587,7 @@ pub(crate) fn collect(
     // two prefix lookups while the tree is still scoped to this file.
     let mut code_prefix = Vec::with_capacity(flags.len() + 1);
     code_prefix.push(0usize);
-    for &flag in &flags {
+    for &flag in flags {
         code_prefix.push(code_prefix.last().copied().unwrap_or(0) + usize::from(flag));
     }
     for span in &mut spans {
