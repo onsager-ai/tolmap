@@ -192,7 +192,7 @@ async fn get_job(
 async fn get_job_events(
     State(state): State<Arc<AppState>>,
     AxPath(job_id): AxPath<Uuid>,
-) -> Result<Sse<ReceiverStream<Result<Event, Infallible>>>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     let mut rx = state
         .jobs
         .subscribe(job_id)

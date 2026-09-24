@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use tolmap::schema::{DistrictSymbols, MapDocument, SymbolsDocument};
+use tolmap::worker::{WorkerEvent, WorkerSpec};
 use ts_rs::{Config, TS};
 
 #[derive(Debug, Parser)]
@@ -44,6 +45,8 @@ fn export_to(directory: &Path) -> Result<()> {
     MapDocument::export_all(&Config::default().with_out_dir(directory))?;
     SymbolsDocument::export_all(&Config::default().with_out_dir(directory))?;
     DistrictSymbols::export_all(&Config::default().with_out_dir(directory))?;
+    WorkerSpec::export_all(&Config::default().with_out_dir(directory))?;
+    WorkerEvent::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 
@@ -65,6 +68,15 @@ fn main() -> Result<()> {
         let expected = typescript_files(&temporary)?;
         let actual = typescript_files(&args.output)?;
         if expected != actual {
+            for (path, bytes) in &expected {
+                if actual.get(path) != Some(bytes) {
+                    eprintln!(
+                        "expected {}:\n{}",
+                        path.display(),
+                        String::from_utf8_lossy(bytes)
+                    );
+                }
+            }
             bail!("{} is stale; regenerate it", args.output.display());
         }
         Ok(())

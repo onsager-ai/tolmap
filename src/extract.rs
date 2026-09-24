@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::BufRead;
 use std::path::{Component, Path};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, ensure, Context, Result};
 use tree_sitter::{Language, Node, Parser};
@@ -280,8 +281,10 @@ pub fn build_multi_source_with_progress(
         let resolve_stage =
             progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
         let intermediate = match language {
-            LanguageKind::Python => parse_python(repo, pkg, parsed, raw)?,
-            LanguageKind::Go | LanguageKind::TypeScript => parse_multi(
+            LanguageKind::Python => {
+                parse_python_with_progress(repo, pkg, parsed, raw, &resolve_stage)?
+            }
+            LanguageKind::Go | LanguageKind::TypeScript => parse_multi_with_progress(
                 pkg,
                 *language,
                 parsed,
@@ -289,6 +292,7 @@ pub fn build_multi_source_with_progress(
                 modules
                     .as_ref()
                     .expect("multi-language source has an index"),
+                &resolve_stage,
             )?,
         };
         resolve_stage.set(intermediate.parsed.len() as u64);
@@ -1276,6 +1280,22 @@ fn parse_python(
     parsed: BTreeMap<String, ParsedFile>,
     raw: BTreeMap<String, FileRaw>,
 ) -> Result<SourceIntermediate> {
+    let progress = crate::progress::Progress::silent();
+    let stage = progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
+    let result = parse_python_with_progress(repo, pkg, parsed, raw, &stage);
+    if result.is_ok() {
+        stage.finish();
+    }
+    result
+}
+
+fn parse_python_with_progress(
+    repo: &Path,
+    pkg: &str,
+    parsed: BTreeMap<String, ParsedFile>,
+    raw: BTreeMap<String, FileRaw>,
+    progress: &crate::progress::StageCounter,
+) -> Result<SourceIntermediate> {
     let (files, ids) = file_ids(parsed.keys().cloned())?;
     let mut modules = BTreeMap::<String, String>::new();
     for file in parsed.keys() {
@@ -1382,6 +1402,7 @@ fn parse_python(
         for (target_file, name) in resolved_uses {
             uses.insert((file_id, ids[&target_file], name));
         }
+        progress.advance(1);
     }
 
     let module_for = parsed
@@ -1867,6 +1888,23 @@ fn parse_multi(
     raw: BTreeMap<String, FileRaw>,
     modules: &ModuleIndex,
 ) -> Result<SourceIntermediate> {
+    let progress = crate::progress::Progress::silent();
+    let stage = progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
+    let result = parse_multi_with_progress(pkg, language, parsed, raw, modules, &stage);
+    if result.is_ok() {
+        stage.finish();
+    }
+    result
+}
+
+fn parse_multi_with_progress(
+    pkg: &str,
+    language: LanguageKind,
+    parsed: BTreeMap<String, ParsedFile>,
+    raw: BTreeMap<String, FileRaw>,
+    modules: &ModuleIndex,
+    progress: &crate::progress::StageCounter,
+) -> Result<SourceIntermediate> {
     let (files, ids) = file_ids(parsed.keys().cloned())?;
     let mut by_directory = BTreeMap::<String, Vec<FileId>>::new();
     for file in &files {
@@ -1915,6 +1953,7 @@ fn parse_multi(
                 }
             }
         }
+        progress.advance(1);
     }
 
     let module_for = parsed
@@ -2543,7 +2582,7 @@ fn finish_graph(
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
-    let history = git_history(repo, &files, 4000)?;
+    let history = git_history(repo, &files, 4000, &history_stage)?;
     history_stage.set(history.commits as u64);
     history_stage.finish();
     let semantic = semantic_vectors(&parsed);
@@ -2847,8 +2886,13 @@ struct GitHistory {
     commits: usize,
 }
 
-fn git_history(repo: &Path, files: &[String], max_commits: usize) -> Result<GitHistory> {
-    let output = Command::new("git")
+fn git_history(
+    repo: &Path,
+    files: &[String],
+    max_commits: usize,
+    progress: &crate::progress::StageCounter,
+) -> Result<GitHistory> {
+    let mut child = Command::new("git")
         .args([
             "-C",
             &repo.to_string_lossy(),
@@ -2875,18 +2919,21 @@ fn git_history(repo: &Path, files: &[String], max_commits: usize) -> Result<GitH
             // that does (or does not) change on the nine fixtures.
             "--no-renames",
         ])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("run git log for co-change")?;
-    ensure!(
-        output.status.success(),
-        "git log failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let stdout = child.stdout.take().expect("piped git log stdout");
+    let mut reader = std::io::BufReader::new(stdout);
     let file_set = files.iter().cloned().collect::<BTreeSet<_>>();
     let mut commits = Vec::<BTreeSet<String>>::new();
     let mut current = None::<BTreeSet<String>>;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    let mut bytes = Vec::new();
+    while reader.read_until(b'\n', &mut bytes)? != 0 {
+        let line = String::from_utf8_lossy(&bytes);
+        let line = line.trim_end_matches(['\r', '\n']);
         if line.starts_with('@') {
+            progress.advance(1);
             if let Some(previous) = current.take() {
                 if !previous.is_empty() {
                     commits.push(previous);
@@ -2898,7 +2945,14 @@ fn git_history(repo: &Path, files: &[String], max_commits: usize) -> Result<GitH
                 current.insert(line.to_owned());
             }
         }
+        bytes.clear();
     }
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.success(),
+        "git log failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     if let Some(previous) = current {
         if !previous.is_empty() {
             commits.push(previous);

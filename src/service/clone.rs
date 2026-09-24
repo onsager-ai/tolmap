@@ -436,7 +436,13 @@ fn parse_git_progress(line: &str) -> Option<GitProgress> {
         .map_or((None, None), |(size, rate)| {
             (
                 git_quantity(size).map(|v| v as u64),
-                git_quantity(rate.trim().trim_end_matches("/s")),
+                git_quantity(
+                    rate.split(',')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .trim_end_matches("/s"),
+                ),
             )
         });
     Some(GitProgress {
@@ -645,6 +651,27 @@ fn evict_lru(repos_root: &Path, budget_bytes: u64, keep: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_captured_git_progress() {
+        let fixture = include_str!("../../tests/fixtures/git_progress_requests.txt");
+        let rows = fixture
+            .lines()
+            .filter_map(super::parse_git_progress)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].stage, crate::progress::StageId::CloneObjects);
+        assert_eq!((rows[0].done, rows[0].total), (49, Some(49)));
+        assert_eq!(rows[0].transfer_bytes, Some((16.62_f64 * 1024.0) as u64));
+        assert_eq!(
+            rows[0].transfer_rate_bytes_per_s,
+            Some(8.31_f64 * 1024.0 * 1024.0)
+        );
+        assert_eq!(rows[1].stage, crate::progress::StageId::CloneDeltas);
+        assert_eq!((rows[1].done, rows[1].total), (15, Some(15)));
+        assert_eq!(rows[2].stage, crate::progress::StageId::CloneCheckout);
+        assert_eq!((rows[2].done, rows[2].total), (65, Some(130)));
+        assert_eq!((rows[3].done, rows[3].total), (130, Some(130)));
+    }
     use super::*;
 
     #[test]

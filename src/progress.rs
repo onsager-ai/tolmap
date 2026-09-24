@@ -79,8 +79,8 @@ impl StageId {
 
     pub fn unit(self) -> &'static str {
         match self {
-            Self::Clone | Self::CloneDeltas => "objects",
-            Self::CloneObjects | Self::Write => "bytes",
+            Self::Clone | Self::CloneObjects | Self::CloneDeltas => "objects",
+            Self::Write => "bytes",
             Self::CloneCheckout
             | Self::Parse
             | Self::Resolve

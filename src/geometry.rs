@@ -537,7 +537,8 @@ pub fn build_from_graph_warm_with_progress(
             crate::progress::StageId::Neighbourhoods,
             Some(district_count),
         );
-        let partition = neighbourhoods::partition(&layout, &partitioner)?;
+        let partition =
+            neighbourhoods::partition_with_progress(&layout, &partitioner, Some(&stage))?;
         stage.set(district_count);
         stage.finish();
         Some(partition)
@@ -579,7 +580,8 @@ pub fn build_from_graph_warm_with_progress(
         crate::progress::StageId::Regions,
         Some(layout.districts.len() as u64),
     );
-    let mut geometry = blobs::build_geometry(&layout, &partitioner)?;
+    let mut geometry =
+        blobs::build_geometry_with_progress(&layout, &partitioner, Some(&regions_stage))?;
     regions_stage.set(layout.districts.len() as u64);
     regions_stage.finish();
     // Unconnected districts get no region: they are not places (issue #34).
@@ -602,7 +604,8 @@ pub fn build_from_graph_warm_with_progress(
         let partition = neighbourhood_partition
             .as_ref()
             .expect("partitioned with parcels enabled");
-        let output = parcels::build_parcels(&document, partition);
+        let output =
+            parcels::build_parcels_with_progress(&document, partition, Some(&footprints_stage));
         footprints_stage.set(document.districts.len() as u64);
         footprints_stage.finish();
         document.parcels = Some(output.parcels);

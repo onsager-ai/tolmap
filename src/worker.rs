@@ -112,7 +112,7 @@ pub fn run_stdio() -> Result<()> {
     };
     let progress = Progress::new(emit);
     match run(spec, &progress) {
-        Ok(event) => (progress_event(&progress, event)),
+        Ok(event) => progress_event(&progress, event),
         Err(error) => progress_event(
             &progress,
             WorkerEvent::Error {
@@ -137,7 +137,7 @@ pub struct WorkerError {
 
 fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent, WorkerError> {
     use crate::service::{clone, config::Limits, store};
-    use crate::{detect, extract, geometry, naming, symbols};
+    use crate::{detect, extract, geometry, symbols};
     let fail = |code: &str, message: String| WorkerError {
         code: code.to_owned(),
         message,

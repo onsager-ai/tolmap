@@ -138,7 +138,7 @@ pub fn run<P: Partitioner>(
 }
 
 pub fn run_with_variant<P: Partitioner>(
-    mut data: GraphData,
+    data: GraphData,
     resolution: f64,
     partitioner: &P,
     initial_membership: Option<&[usize]>,

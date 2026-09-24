@@ -622,6 +622,14 @@ impl Cards<'_> {
 }
 
 pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
+    attach_with_progress(map, document, None)
+}
+
+pub fn attach_with_progress(
+    map: &MapDocument,
+    document: &mut SymbolsDocument,
+    progress: Option<&crate::progress::StageCounter>,
+) -> Result<()> {
     let Some(parcels) = &map.parcels else {
         return Ok(());
     };
@@ -642,6 +650,9 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
     };
     for (file, symbols) in by_file.iter().enumerate() {
         let Some(polygon) = parcels.get(&file.to_string()) else {
+            if let Some(progress) = progress {
+                progress.advance(1);
+            }
             continue;
         };
         let file_outline = vec![polygon.clone()];
@@ -652,6 +663,9 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
             .collect::<Vec<_>>();
         let module_lines = document.module_code_lines.get(&file).copied().unwrap_or(0);
         if top.is_empty() && module_lines == 0 {
+            if let Some(progress) = progress {
+                progress.advance(1);
+            }
             continue;
         }
         let mut low = [f64::INFINITY; 2];
@@ -744,6 +758,9 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
                 "missing card in file {file} at maximum raster resolution"
             );
             grid = (grid * 2).min(1024);
+        }
+        if let Some(progress) = progress {
+            progress.advance(1);
         }
     }
     for (i, row) in document.symbols.iter().enumerate() {

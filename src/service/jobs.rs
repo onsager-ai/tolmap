@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::progress::{ProgressValue, StageId};
 use crate::service::clone::{self, RepoRef};
 use crate::service::error::{ApiError, ErrorBody};
-use crate::service::store::{self, MapRow};
+use crate::service::store::MapRow;
 use crate::service::time::now_rfc3339;
 use crate::service::AppState;
 use crate::worker::{PreviousMap, WorkerEvent, WorkerSpec};
@@ -447,6 +447,15 @@ fn process_worker(
 ) -> Result<WorkerOutput, ErrorBody> {
     let exe =
         std::env::current_exe().map_err(|error| ApiError::internal(error.to_string()).body)?;
+    process_worker_exe(tx, spec, started, &exe)
+}
+
+fn process_worker_exe(
+    tx: &watch::Sender<JobSnapshot>,
+    spec: WorkerSpec,
+    started: Instant,
+    exe: &std::path::Path,
+) -> Result<WorkerOutput, ErrorBody> {
     let mut child = Command::new(exe)
         .arg("worker")
         .stdin(Stdio::piped())
@@ -460,9 +469,16 @@ fn process_worker(
     let stderr = child.stderr.take().expect("piped worker stderr");
     let stderr_reader = std::thread::spawn(move || {
         let mut text = String::new();
-        let _ = BufReader::new(stderr)
-            .take(1024 * 1024)
-            .read_to_string(&mut text);
+        let mut reader = BufReader::new(stderr);
+        let mut chunk = [0u8; 4096];
+        while let Ok(count) = reader.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            if text.len() < 1024 * 1024 {
+                text.push_str(&String::from_utf8_lossy(&chunk[..count]));
+            }
+        }
         text
     });
     let write_spec = (|| -> anyhow::Result<()> {
@@ -793,5 +809,133 @@ mod tests {
         until(|| started.lock().unwrap().len() == 2).await;
         assert_eq!(snapshot(&state, first).status, JobStatus::Failed);
         release_tx.send(()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn killed_worker_fails_one_job_and_queue_accepts_the_next() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, state) = state(Limits::default());
+        let fake_worker = dir.path().join("killed-worker");
+        std::fs::write(&fake_worker,
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"stage_started\",\"v\":1,\"stage\":\"parse\"}'\nsleep 0.3\nkill -9 $$\n"
+        ).unwrap();
+        std::fs::set_permissions(&fake_worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner: JobRunner = Arc::new(move |_, repo, tx| {
+            if repo.repo == "first" {
+                let spec = WorkerSpec {
+                    v: 1,
+                    slug: repo.slug,
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    source: "unused".to_owned(),
+                    local: false,
+                    cache_dir: String::new(),
+                    output_dir: String::new(),
+                    max_clone_bytes: 1,
+                    max_history_commits: 1,
+                    max_files: 1,
+                    prune_variant: "node-relative".to_owned(),
+                    namer: "idf".to_owned(),
+                    namer_model: String::new(),
+                    previous_maps: vec![],
+                    names_cache: None,
+                };
+                let error = process_worker_exe(&tx, spec, Instant::now(), &fake_worker)
+                    .err()
+                    .expect("killed child fails");
+                finish_failed(&tx, error);
+            } else {
+                finish_done(&tx);
+            }
+        });
+        let first =
+            enqueue_job(state.clone(), repo("first"), "a".to_owned(), runner.clone()).unwrap();
+        until(|| snapshot(&state, first).status == JobStatus::Failed).await;
+        let failed = snapshot(&state, first);
+        assert_eq!(failed.error_code.as_deref(), Some("worker_crashed"));
+        assert!(failed.error.unwrap().contains("Parsing files"));
+        let second = enqueue_job(state.clone(), repo("second"), "b".to_owned(), runner).unwrap();
+        until(|| snapshot(&state, second).status == JobStatus::Done).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sse_progress_done_never_decreases_within_a_stage() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use std::os::unix::fs::PermissionsExt;
+        use tower::ServiceExt;
+        let (dir, state) = state(Limits::default());
+        let fake_worker = dir.path().join("regressing-worker");
+        let value = |done| {
+            format!(
+            "{{\"type\":\"progress\",\"v\":1,\"value\":{{\"stage\":\"parse\",\"stage_index\":7,\"stage_count\":17,\"label\":\"Parsing files\",\"unit\":\"files\",\"done\":{done},\"total\":3,\"rate_per_s\":null}}}}"
+        )
+        };
+        let script = format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{}'\nsleep 0.35\nprintf '%s\\n' '{{\"type\":\"error\",\"v\":1,\"code\":\"index_failed\",\"message\":\"test\"}}'\n",
+            value(1), value(3), value(2),
+        );
+        std::fs::write(&fake_worker, script).unwrap();
+        std::fs::set_permissions(&fake_worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner: JobRunner = Arc::new(move |_, repo, tx| {
+            let spec = WorkerSpec {
+                v: 1,
+                slug: repo.slug,
+                owner: repo.owner,
+                repo: repo.repo,
+                source: "unused".to_owned(),
+                local: false,
+                cache_dir: String::new(),
+                output_dir: String::new(),
+                max_clone_bytes: 1,
+                max_history_commits: 1,
+                max_files: 1,
+                prune_variant: "node-relative".to_owned(),
+                namer: "idf".to_owned(),
+                namer_model: String::new(),
+                previous_maps: vec![],
+                names_cache: None,
+            };
+            let error = process_worker_exe(&tx, spec, Instant::now(), &fake_worker)
+                .err()
+                .expect("worker terminal error");
+            finish_failed(&tx, error);
+        });
+        let id = enqueue_job(state.clone(), repo("sse"), "a".to_owned(), runner).unwrap();
+        let response = crate::service::http::router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/jobs/{id}/events"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = tokio::time::timeout(
+            Duration::from_secs(3),
+            to_bytes(response.into_body(), 1024 * 1024),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let frames = String::from_utf8(body.to_vec()).unwrap();
+        let mut seen = Vec::new();
+        for line in frames
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+        {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            if value["progress"]["stage"] == "parse" {
+                seen.push(value["progress"]["done"].as_u64().unwrap());
+            }
+        }
+        assert!(
+            seen.len() >= 2,
+            "expected multiple progress frames: {frames}"
+        );
+        assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "{seen:?}");
     }
 }

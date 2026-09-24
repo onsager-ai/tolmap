@@ -753,6 +753,14 @@ fn resolve(
 }
 
 pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
+    build_with_progress(repo, nodes, None)
+}
+
+pub fn build_with_progress(
+    repo: &Path,
+    nodes: &[SourceNode],
+    progress: Option<&crate::progress::StageCounter>,
+) -> Result<SymbolsDocument> {
     let mut modules = BTreeMap::new();
     let mut ambiguous_modules = BTreeSet::new();
     let mut packages: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -813,6 +821,9 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
                 candidates: Vec::new(),
                 shadowed: BTreeMap::new(),
             });
+            if let Some(progress) = progress {
+                progress.advance(1);
+            }
             continue;
         };
         if lang == LanguageKind::Python && tree.root_node().has_error() {
@@ -824,6 +835,9 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
                 candidates: Vec::new(),
                 shadowed: BTreeMap::new(),
             });
+            if let Some(progress) = progress {
+                progress.advance(1);
+            }
             continue;
         }
         let root = tree.root_node();
@@ -881,6 +895,9 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
             candidates,
             shadowed,
         });
+        if let Some(progress) = progress {
+            progress.advance(1);
+        }
     }
     let mut go_types: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (i, span) in spans.iter().enumerate() {
@@ -1036,14 +1053,14 @@ pub fn write_sibling_with_progress(
         "symbol source file order differs from map F order"
     );
     let symbols_stage = progress.stage(crate::progress::StageId::Symbols, Some(nodes.len() as u64));
-    let mut document = build(repo, nodes)?;
+    let mut document = build_with_progress(repo, nodes, Some(&symbols_stage))?;
     symbols_stage.set(nodes.len() as u64);
     symbols_stage.finish();
     let cards_stage = progress.stage(
         crate::progress::StageId::SymbolCards,
         Some(nodes.len() as u64),
     );
-    crate::symbol_cards::attach(&map, &mut document)?;
+    crate::symbol_cards::attach_with_progress(&map, &mut document, Some(&cards_stage))?;
     cards_stage.set(nodes.len() as u64);
     cards_stage.finish();
     let output = map_path.with_extension("symbols.json");

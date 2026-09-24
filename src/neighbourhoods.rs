@@ -20,6 +20,14 @@ pub struct Partition {
 }
 
 pub fn partition<P: Partitioner>(layout: &PipelineOutput, partitioner: &P) -> Result<Partition> {
+    partition_with_progress(layout, partitioner, None)
+}
+
+pub fn partition_with_progress<P: Partitioner>(
+    layout: &PipelineOutput,
+    partitioner: &P,
+    progress: Option<&crate::progress::StageCounter>,
+) -> Result<Partition> {
     let mut adjacency = vec![Vec::<(usize, f64)>::new(); layout.membership.len()];
     for edge in &layout.graph.edges {
         adjacency[edge.a].push((edge.b, edge.weight));
@@ -49,6 +57,9 @@ pub fn partition<P: Partitioner>(layout: &PipelineOutput, partitioner: &P) -> Re
                 file_ids[file] = id.clone();
             }
             groups.insert(id, (district, part, label));
+        }
+        if let Some(progress) = progress {
+            progress.advance(1);
         }
     }
     Ok(Partition { groups, file_ids })
