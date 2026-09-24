@@ -10,9 +10,11 @@ pub mod parity;
 pub mod partition;
 pub mod pipeline;
 pub mod polyglot;
+pub mod progress;
 pub mod schema;
 pub mod service;
 pub mod symbol_cards;
 pub mod symbols;
+pub mod worker;
 
 pub const SEED: u64 = 7;
