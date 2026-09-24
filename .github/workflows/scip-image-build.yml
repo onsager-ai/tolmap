@@ -144,19 +144,6 @@ jobs:
           cp -r tests/fixtures/scip/ts/. smoke/ts/
           cp -r tests/fixtures/scip/py/. smoke/py/
 
-          # scip-python's --project-version defaults to `git rev-parse
-          # HEAD` when not passed explicitly, and crashes (not a clean
-          # error) if that fails -- so each fixture copy needs to be a real
-          # git repo, which also matches production: tolmap always indexes
-          # an actual clone (docs/ARCHITECTURE.md), never a bare directory.
-          for d in smoke/go smoke/ts smoke/py; do
-            git -C "$d" init -q
-            git -C "$d" -c user.email=fixture@tolmap.invalid -c user.name=tolmap-fixture \
-              add -A
-            git -C "$d" -c user.email=fixture@tolmap.invalid -c user.name=tolmap-fixture \
-              commit -q -m "scip smoke fixture"
-          done
-
           echo "--- scip-go ---"
           docker run --rm -v "$PWD/smoke/go:/work" -w /work \
             --entrypoint scip-go tolmap:after --quiet --output /work/index.scip
@@ -168,8 +155,18 @@ jobs:
           test -s smoke/ts/index.scip
 
           echo "--- scip-python ---"
+          # --project-version explicit: scip-python's own default is
+          # `git rev-parse HEAD`, which (a) needs the fixture to be a git
+          # repo at all and (b) trips git's "dubious ownership" guard when
+          # a root-owned container process reads a bind-mounted directory
+          # owned by the runner's non-root user -- and scip-python's error
+          # handling for either failure is an unhandled TypeError, not a
+          # clean message. Passing the flag sidesteps both, and the ingest
+          # side (P1a) will pass a real value from the indexed commit
+          # anyway, not rely on this default.
           docker run --rm -v "$PWD/smoke/py:/work" -w /work \
-            --entrypoint scip-python tolmap:after index --project-name smoke --quiet --output /work/index.scip
+            --entrypoint scip-python tolmap:after index --project-name smoke \
+            --project-version smoke-0.0.0 --quiet --output /work/index.scip
           test -s smoke/py/index.scip
 
           ls -la smoke/*/index.scip
