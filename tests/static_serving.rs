@@ -51,6 +51,9 @@ fn state_with_static_dir(
         namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),
         limits: Limits::default(),
         retain_commits_per_repo: 20,
+        // Unused here -- this suite never spawns a worker.
+        worker_uid: 0,
+        worker_gid: 0,
     };
     let state = Arc::new(AppState {
         store,
