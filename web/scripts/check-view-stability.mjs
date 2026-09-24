@@ -1565,62 +1565,62 @@ async function checkFitButtonIcon(browser, base, profile) {
 // swatches and this file's own churn/complexity ramps used to reach a
 // file's fill at full strength, while the district layer's hues were
 // already mixed toward `--canvas` (geometry.ts's LAYER_SURFACE_MIX, née
-// DISTRICT_HUE_MIX). The fix (packageLayout.ts's packageColor() and
-// geometry.ts's ramp() both now route through mixTowardCanvas()) is checked
-// two ways: the average rendered luminance of file fills in each layer is
-// close, and no file's fill is ever the raw, unmixed `--p1` token verbatim
-// (the single swatch the owner's own report named, dark mode's
-// `#ffc247`).
+// DISTRICT_HUE_MIX). This checks the fix precisely rather than by averaging
+// every rendered file fill on screen: a district's small-footprint files are
+// drawn in one BATCHED path per (district, shade) that always uses the
+// district colour regardless of layer (MapRenderer's flushFootprintBatches,
+// pre-existing and out of this PR's scope), and the "other" package bucket
+// is deliberately left unmixed (PACKAGE_OTHER_COLOR = var(--dim), already a
+// muted grey) -- either one dominating an aggregate average would produce a
+// false pass or a false fail that has nothing to do with packageColor()
+// itself. The package legend's own swatch (PackageLegend.tsx: `style={{
+// background: group.color }}`) IS packageColor()'s output verbatim, so
+// reproducing the exact mixTowardCanvas() formula against the SAME
+// `--canvas`/`--p0` the page itself resolves is a direct, deterministic
+// check of the one function this PR changed.
 async function checkLayerBrightnessParity(browser, base) {
   const label = "layer colour brightness parity (dify) / desktop";
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
 
-  async function fileFillLuminances(layer) {
-    await page.goto(`${base}/langgenius/dify?geo=r&layer=${layer}`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("svg.map-svg path.hit");
-    await page.waitForTimeout(1200);
-    return page.evaluate(() => {
-      const els = [...document.querySelectorAll("svg.map-svg .hit[data-k^='f:']")];
-      return els.map((el) => getComputedStyle(el).fill).filter((c) => c && c.startsWith("rgb"));
-    });
-  }
-  const luminance = (rgbStr) => {
-    const m = rgbStr.match(/[\d.]+/g);
-    if (!m || m.length < 3) return null;
-    const [r, g, b] = m.map(Number);
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  };
-  const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+  await page.goto(`${base}/langgenius/dify?geo=r&layer=p`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForSelector("[data-package-legend]");
+  await page.waitForTimeout(1000);
 
-  const districtFills = await fileFillLuminances("d");
-  const packageFills = await fileFillLuminances("p");
-  const districtLum = avg(districtFills.map(luminance).filter((v) => v != null));
-  const packageLum = avg(packageFills.map(luminance).filter((v) => v != null));
-  report(districtLum != null && packageLum != null, `${label}: both layers rendered file fills to compare`);
-  if (districtLum != null && packageLum != null) {
+  const info = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const canvas = root.getPropertyValue("--canvas").trim();
+    const p0 = root.getPropertyValue("--p0").trim();
+    const swatch = document.querySelector("[data-package-groups] [style*='background']");
+    return { canvas, p0, swatchColor: swatch ? getComputedStyle(swatch).backgroundColor : null };
+  });
+  report(!!info.swatchColor, `${label}: package legend renders a swatch to check`, JSON.stringify(info));
+  if (info.swatchColor) {
+    const hx = (h) => [1, 3, 5].map((i) => Number.parseInt(h.slice(i, i + 2), 16));
+    const [cr, cg, cb] = hx(info.canvas);
+    const [pr, pg, pb] = hx(info.p0);
+    const ratio = 0.4; // geometry.ts's LAYER_SURFACE_MIX
+    const expected = [
+      Math.round(cr + (pr - cr) * ratio),
+      Math.round(cg + (pg - cg) * ratio),
+      Math.round(cb + (pb - cb) * ratio),
+    ];
+    const actual = info.swatchColor.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [];
+    const rawMatches = actual.length === 3 && actual.every((v, i) => v === [pr, pg, pb][i]);
+    const closeToExpected = actual.length === 3 && actual.every((v, i) => Math.abs(v - expected[i]) <= 3);
     report(
-      Math.abs(districtLum - packageLum) < 30,
-      `${label}: district and package layers render at comparable average brightness`,
-      JSON.stringify({ districtLum, packageLum }),
+      !rawMatches,
+      `${label}: package swatch is not the raw, unmixed --p0 colour`,
+      JSON.stringify({ actual, raw: [pr, pg, pb] }),
+    );
+    report(
+      closeToExpected,
+      `${label}: package swatch matches the district layer's own canvas-mix formula (ratio 0.4)`,
+      JSON.stringify({ actual, expected, canvas: info.canvas, p0: info.p0 }),
     );
   }
-
-  const rawP1 = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--p1").trim());
-  const rawP1Rgb = await page.evaluate((hex) => {
-    const el = document.createElement("div");
-    el.style.color = hex;
-    document.body.appendChild(el);
-    const rgb = getComputedStyle(el).color;
-    el.remove();
-    return rgb;
-  }, rawP1);
-  report(
-    !packageFills.includes(rawP1Rgb),
-    `${label}: no file renders the raw, unmixed --p1 swatch`,
-    JSON.stringify({ rawP1, rawP1Rgb }),
-  );
 
   await context.close();
 }

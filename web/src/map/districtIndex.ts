@@ -102,17 +102,63 @@ function landmarksInDistrict(doc: MapDocument, why: LandmarkRow[1], d: number): 
   return doc.L.filter((row) => row[1] === why && D_(doc, row[0]) === d);
 }
 
+/** A package `__init__` (or a project-wide `exceptions`/`errors` module)
+ * always scores high on fan-in, because every sibling module touches it --
+ * pipeline.py's own landmarks() excludes exactly these basenames from hub
+ * selection for that reason ("namespace artefacts, not architectural
+ * landmarks"). A plain highest-FI scan over a district's files, with no such
+ * exclusion, can therefore surface an `__init__.py` as "most imported"
+ * instead of the file that's actually informative -- and, when that
+ * district also holds a real hub landmark, silently fails CLAUDE.md's
+ * "landmarks listed" contract for the hub kind (caught by
+ * checkDistrictIndex in check-view-stability.mjs). */
+function isNamespaceArtifact(path: string): boolean {
+  const base = path.split("/").pop() ?? path;
+  return base === "__init__.py" || base === "exceptions.py" || base === "errors.py";
+}
+
+/** The district's own "most imported" file: its hub landmark's file when it
+ * has one (authoritative -- pipeline.py already ranked it against the same
+ * namespace-artifact exclusion, so this can never disagree with the hub
+ * kind's own reachability), otherwise the highest-fan-in file among its
+ * non-namespace-artifact files, falling back to ANY file (including a
+ * namespace artifact) only if the district has nothing else -- a district
+ * of nothing but `__init__.py` files still gets a "most imported" line, just
+ * not a very informative one. Ties broken by lowest file index, per
+ * CLAUDE.md's determinism rule. */
+function mostImportedFile(doc: MapDocument, d: number): { file: number; fi: number } {
+  const hubRow = landmarksInDistrict(doc, "hub", d)[0];
+  if (hubRow) return { file: hubRow[0], fi: FI(doc, hubRow[0]) };
+
+  const pick = (excludeArtifacts: boolean) => {
+    let file = -1;
+    let fi = -1;
+    for (let i = 0; i < doc.N.length; i++) {
+      if (D_(doc, i) !== d) continue;
+      if (excludeArtifacts && isNamespaceArtifact(doc.F[i])) continue;
+      const candidateFi = FI(doc, i);
+      if (candidateFi > fi || (candidateFi === fi && (file === -1 || i < file))) {
+        fi = candidateFi;
+        file = i;
+      }
+    }
+    return { file, fi };
+  };
+  const withoutArtifacts = pick(true);
+  return withoutArtifacts.file !== -1 ? withoutArtifacts : pick(false);
+}
+
 /** One district's row: header (name, size -- rendered by the caller),
  * "mostly <folder>", and up to a few tappable key files. Every landmark KIND
  * the old rail surfaced (Sidebar.tsx pre-#82-district-index: entry, bridge,
  * hub, capital, hazard) must still be reachable from *some* row -- capital
  * is the one exception (dropped from the map entirely in A4/A5, not needed
  * here either). The other three map onto this row's own vocabulary:
- *   - hub: the global top-fan-in file is, by construction, also the
- *     highest-fan-in file within ITS OWN district (it's the max over every
- *     file, so it's certainly the max over the subset that shares its
- *     district) -- "most imported" already reaches it with no separate hub
- *     line needed.
+ *   - hub: reached directly, PREFERRING the district's own hub landmark's
+ *     file for the "most imported" slot when it has one (see the
+ *     mostImportedFile() helper's own doc comment for why a plain highest-
+ *     FI scan isn't good enough on its own -- a package `__init__.py` often
+ *     outranks the real hub on raw fan-in alone).
  *   - entry, bridge: reached directly, when this district has one.
  *   - hazard: NOT one of the three templates the spec calls out ("most
  *     imported" / "entry" / "links"), so it only fills a slot this district
@@ -123,16 +169,7 @@ function landmarksInDistrict(doc: MapDocument, why: LandmarkRow[1], d: number): 
  *     check now verifies file-by-file (checkDistrictIndex in
  *     check-view-stability.mjs) rather than assuming. */
 export function buildDistrictIndexRow(doc: MapDocument, packageLayout: PackageLayout, d: number): DistrictIndexRow {
-  let mostFile = -1;
-  let mostFi = -1;
-  for (let i = 0; i < doc.N.length; i++) {
-    if (D_(doc, i) !== d) continue;
-    const fi = FI(doc, i);
-    if (fi > mostFi || (fi === mostFi && (mostFile === -1 || i < mostFile))) {
-      mostFi = fi;
-      mostFile = i;
-    }
-  }
+  const { file: mostFile, fi: mostFi } = mostImportedFile(doc, d);
 
   const keyFiles: DistrictKeyFile[] = [];
   if (mostFile !== -1 && mostFi > 0) {
