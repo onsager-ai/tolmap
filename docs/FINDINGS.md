@@ -1245,3 +1245,18 @@ A read-only audit of the four Actions artifacts found **zero** child centroid-ou
 The baseline artifacts show that rounding to six decimals collapses **40** dify and **12** django exteriors; ten decimals still collapses **3** and **2**; eleven collapses **zero**. The port rounds all card coordinates at one quantizer to 10⁻¹¹ world units, removes duplicate and collinear points, and writes each contour as an absolute first integer pair followed by integer deltas. This preserves the narrow fallback cards while avoiding the larger 11-decimal float document (39.807 MB raw for dify). On the decoded packed artifacts, the Actions audit found **zero** collapsed contours, duplicate consecutive points, collinear points, child centroids outside parents, or child areas larger than parents; eligible cards remain **48,161 / 48,161** for dify and **10,542 / 10,542** for django. Every static district JSON was compared with the API's district projection, including crossing-edge endpoints, and each paired map hash stayed byte-identical. Build wall times were **52.25 / 51.56 s** (packed / pre-precision) for dify and **5.98 / 5.90 s** for django; these are whole-build observations, not isolated encoding costs.
 
 The service still reads the full sibling document and sends the district API response **uncompressed**. Static map collection copies the generated `<name>.symbols/<district>.json` files, letting the next viewer PR request one district instead of the whole sibling. Enabling gzip on the API needs tower-http's `compression-gzip` feature and was left for a separate dependency decision. The [CI gate on the packed revision](https://github.com/onsager-ai/tolmap/actions/runs/35899513756) verifies formatting, clippy, tests, generated bindings, offline parity, the static-copy check, and three-build determinism; the full nine-fixture parity job was not dispatched.
+
+## 32. The service sends pre-split district symbols with gzip
+
+The owner chose to enable gzip in session `16030105`, transcript line 1874, 2026-09-24T00:24:36Z. The service now reads `<commit>.symbols/<district>.json` directly for current commits. An older commit without that directory still projects from its map and full symbols document. The same gzip layer covers `/api/*` and the hosted static files, while tower-http's default predicate excludes SSE.
+
+The [standard-runner remote build and HTTP measurement](https://github.com/onsager-ai/tolmap/actions/runs/35938706461) built dify at pinned commit `9a0961a4a9a305cfc6971cb3a8969b69b4ef66f2`. `eval/measure_service_symbols.py` chose the largest district by the size of its pre-split file, then requested district 0 through the running service. A second store row pointed to the same map and full symbols sibling without a pre-split directory to exercise the legacy path. The script checked that the direct bytes matched the file, that the legacy JSON matched the direct JSON, and that gzip decoded to the raw response. Requests used one persistent localhost HTTP connection; 20 warm samples per path alternated order. Thus the timings include HTTP transfer and are not isolated CPU time inside the handler.
+
+| dify district 0 | measured result |
+|---|---:|
+| Raw HTTP response | 2,845,209 bytes |
+| Gzip HTTP response | 530,283 bytes (18.6% of raw) |
+| Legacy projection median response time | 122.36 ms |
+| Pre-split file median response time | 1.32 ms |
+
+The measurement is one standard-runner build with warm filesystem cache, not a latency guarantee across machines or concurrency levels. The response is byte-identical to the stored district file before transport compression; no map geometry, `S`, or `U` changed.

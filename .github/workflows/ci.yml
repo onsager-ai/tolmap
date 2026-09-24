@@ -257,15 +257,6 @@ jobs:
       - name: Audit symbol cards and static district files
         run: python3 eval/symbol_stats.py islands-out/synthetic_islands.json islands-out/synthetic_islands.symbols.json
 
-      # Temporary handoff for the dependency-feature lockfile update. The
-      # maintainer machine cannot run Cargo resolution; remove after importing.
-      - name: Upload resolved Cargo.lock
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: resolved-cargo-lock
-          path: Cargo.lock
-
   # Cheap, no toolchain: prod (fly.toml) and staging
   # (deploy/railway.staging.env) must describe the same set of TOLMAP_*
   # knobs, or staging stops being evidence about prod. See the script's
