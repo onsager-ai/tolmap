@@ -316,12 +316,19 @@ fn build_multi_source_inner(
     let merged = union_sources(intermediates)?;
     let graph = finish_graph(repo, merged)?;
     graph_time += graph_started.elapsed();
-    eprintln!("phase extract: {:.3}s", started.elapsed().as_secs_f64());
+    let total = started.elapsed();
+    // These three durations are disjoint so a build log can account for
+    // extraction time without double-counting symbol collection or graph
+    // resolution. Metadata discovery and the ordinary file walks are the
+    // remainder labelled `extract`.
+    let extract_time = total.saturating_sub(symbol_collection + graph_time);
+    eprintln!("phase extract: {:.3}s", extract_time.as_secs_f64());
     eprintln!(
         "phase symbol_collection: {:.3}s",
         symbol_collection.as_secs_f64()
     );
     eprintln!("phase graph: {:.3}s", graph_time.as_secs_f64());
+    eprintln!("phase extract_total: {:.3}s", total.as_secs_f64());
     Ok((graph, spool))
 }
 
