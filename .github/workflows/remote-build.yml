@@ -563,6 +563,13 @@ jobs:
             cat artifact/symbol_stats.json
           fi
 
+      - name: Measure method value references against main
+        if: inputs.command == 'build' && inputs.compare_ref != '' && steps.build_primary.outputs.exit_code == '0' && steps.build_compare.outputs.exit_code == '0'
+        env:
+          STEM: ${{ matrix.stem }}
+          SLUG: ${{ matrix.slug }}
+        run: python3 eval/measure_method_values.py --artifact artifact --stem "$STEM" --slug "$SLUG"
+
       - name: Upload result artifact
         if: always()
         uses: actions/upload-artifact@v4
