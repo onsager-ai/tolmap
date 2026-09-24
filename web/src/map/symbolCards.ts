@@ -418,6 +418,16 @@ export function fileOutline(decoded: DecodedDistrictSymbols, fileIdx: number): O
   return (decoded.topByFile.get(fileIdx) ?? []).map(build);
 }
 
+/** Total symbol count across a file's outline -- every top-level row plus
+ * every nested descendant. Issue #82 C2 follow-up: SelectionPanel's
+ * "symbols" count switches to this the moment hierarchical data has loaded
+ * for the file, replacing the old flat, truncated `S`-based count. */
+export function countOutlineSymbols(rows: readonly OutlineRow[]): number {
+  let n = 0;
+  for (const r of rows) n += 1 + countOutlineSymbols(r.children);
+  return n;
+}
+
 /** External references for the sidebar, grouped by top-level class/function
  * (spec item 5) -- every out-edge from any symbol in the file, keyed by the
  * ancestor-or-self top-level symbol on THIS side, rolled to the target's own
