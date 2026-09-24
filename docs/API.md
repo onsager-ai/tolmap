@@ -90,10 +90,17 @@ the map's `N` rows. Unknown maps, commits, districts and older commits
 without a symbols sibling return 404. The
 response contains `district`, its `files` (indices into the map's `F`),
 `symbol_indices`, `symbols`, `edges`, and `module_code_lines`. Each symbol row
-is `[file, name, kind, start_line, end_line, parent, code_lines]`; `parent`
+is `[file, name, kind, start_line, end_line, parent, code_lines, abstract]`; `parent`
 and every edge endpoint are **global symbol indices**. Kinds are 0 class,
 1 function, 2 method, 3 nested function, 4 interface, 5 type, 6 constant.
-An edge is `[source, target, occurrences]`. An edge crossing districts is
+An edge is `[source, target, occurrences, kind]`. `kind` indexes the response's
+`kinds` legend: 0 unknown, 1 call, 2 extends, 3 implements, 4 overrides,
+5 annotation, 6 decorator, 7 value, 8 possible_implementation. One pair can
+have several rows, with occurrence counts kept separately. The unknown kind
+is used when loading an older three-column edge. An older seven-column
+symbol row loads with `abstract = false`. Go `possible_implementation` means
+names and parameter/result counts match; without type checking, it does not
+prove Go interface satisfaction. An edge crossing districts is
 included from both sides, with both endpoint rows and their global indices
 so a client can place the far endpoint without fetching another district.
 `module_code_lines` maps file index to code lines outside top-level symbols.
@@ -104,7 +111,8 @@ it. A card's first contour is its exterior; later contours are holes under
 even-odd fill. The same encoding appears in static district files.
 The full sibling `<name>.symbols.json` also has `files`, `symbols`, `edges`,
 `module_code_lines` and `coverage` (`calls_total` inside symbols,
-`calls_resolved`, and `unresolved` counts by reason). Coverage lives there to keep the initial map
+`calls_resolved`, `inherited_calls_resolved`, `possible_implementations`,
+and `unresolved` counts by reason). Coverage lives there to keep the initial map
 document small. The same sibling is copied to `/maps/<owner>/<repo>.symbols.json`
 when a static map includes one.
 `tolmap build` also writes `<name>.symbols/<district>.json` for every district.

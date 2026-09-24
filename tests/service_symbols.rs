@@ -88,7 +88,9 @@ async fn district_route_includes_remote_symbol_endpoint() {
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(body["files"], json!([0]));
     assert_eq!(body["symbol_indices"], json!([0, 1]));
-    assert_eq!(body["edges"], json!([[0, 1, 3]]));
+    assert_eq!(body["edges"], json!([[0, 1, 3, 0]]));
+    assert_eq!(body["kinds"][0], "unknown");
+    assert_eq!(body["symbols"][0][7], false);
     assert_eq!(body["module_code_lines"], json!({"0": 1}));
 
     // New commits carry this exact serialized response. Corrupting the

@@ -15,7 +15,8 @@ use tree_sitter::Node;
 
 use crate::extract::{self, LanguageKind};
 use crate::schema::{
-    DistrictSymbols, HierSymbolRow, MapDocument, SourceNode, SymbolCoverage, SymbolsDocument,
+    symbol_edge_kinds, DistrictSymbols, HierSymbolRow, MapDocument, SourceNode, SymbolCoverage,
+    SymbolsDocument,
 };
 
 const CLASS: usize = 0;
@@ -25,6 +26,14 @@ const NESTED_FUNCTION: usize = 3;
 const INTERFACE: usize = 4;
 const TYPE: usize = 5;
 const CONST: usize = 6;
+const CALL: usize = 1;
+const EXTENDS: usize = 2;
+const IMPLEMENTS: usize = 3;
+const OVERRIDES: usize = 4;
+const ANNOTATION: usize = 5;
+const DECORATOR: usize = 6;
+const VALUE: usize = 7;
+const POSSIBLE_IMPLEMENTATION: usize = 8;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Span {
@@ -39,6 +48,10 @@ struct Span {
     end_byte: usize,
     code_lines: usize,
     parent: isize,
+    abstract_symbol: bool,
+    go_signature: Option<[usize; 2]>,
+    go_embeds: bool,
+    reference_owner: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -56,6 +69,7 @@ struct Candidate {
     chain: Vec<String>,
     call: bool,
     value: bool,
+    kind: usize,
     unresolved_reason: Option<UnresolvedReason>,
 }
 
@@ -207,9 +221,9 @@ fn kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
             _ => None,
         },
         LanguageKind::TypeScript => match node.kind() {
-            "class_declaration" | "class" => Some(CLASS),
+            "class_declaration" | "abstract_class_declaration" | "class" => Some(CLASS),
             "function_declaration" => Some(FUNCTION),
-            "method_definition" | "method_signature" => Some(METHOD),
+            "method_definition" | "method_signature" | "abstract_method_signature" => Some(METHOD),
             "interface_declaration" => Some(INTERFACE),
             "type_alias_declaration" => Some(TYPE),
             "variable_declarator" => {
@@ -240,6 +254,83 @@ fn kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
 fn children(node: Node<'_>) -> Vec<Node<'_>> {
     let mut cursor = node.walk();
     node.named_children(&mut cursor).collect()
+}
+
+fn go_parameter_count(node: Node<'_>) -> usize {
+    children(node)
+        .into_iter()
+        .filter(|n| {
+            matches!(
+                n.kind(),
+                "parameter_declaration" | "variadic_parameter_declaration"
+            )
+        })
+        .map(|declaration| {
+            let names = children(declaration)
+                .into_iter()
+                .filter(|n| n.kind() == "identifier")
+                .count();
+            names.max(1)
+        })
+        .sum()
+}
+
+fn go_signature(node: Node<'_>) -> Option<[usize; 2]> {
+    if !matches!(node.kind(), "method_declaration" | "method_elem") {
+        return None;
+    }
+    let parameters = node.child_by_field_name("parameters")?;
+    let results = node.child_by_field_name("result").map_or(0, |result| {
+        if result.kind() == "parameter_list" {
+            go_parameter_count(result)
+        } else {
+            1
+        }
+    });
+    Some([go_parameter_count(parameters), results])
+}
+
+fn abstract_decl(node: Node<'_>, bytes: &[u8], lang: LanguageKind, kind: usize) -> bool {
+    match lang {
+        LanguageKind::Python => {
+            if kind == CLASS {
+                let bases = node
+                    .child_by_field_name("superclasses")
+                    .map(|n| text(n, bytes))
+                    .unwrap_or("");
+                bases
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|part| matches!(part, "ABC" | "ABCMeta"))
+            } else if kind == METHOD {
+                node.parent()
+                    .filter(|p| p.kind() == "decorated_definition")
+                    .is_some_and(|p| {
+                        children(p).into_iter().any(|child| {
+                            child.kind() == "decorator"
+                                && matches!(
+                                    text(child, bytes).trim_start_matches('@').trim(),
+                                    "abstractmethod" | "abc.abstractmethod"
+                                )
+                        })
+                    })
+            } else {
+                false
+            }
+        }
+        LanguageKind::TypeScript => {
+            if kind == INTERFACE || node.kind().starts_with("abstract_") {
+                return true;
+            }
+            let before_name = node
+                .child_by_field_name("name")
+                .map_or(node.end_byte(), |name| name.start_byte());
+            std::str::from_utf8(&bytes[node.start_byte()..before_name])
+                .unwrap_or("")
+                .split_whitespace()
+                .any(|part| part == "abstract")
+        }
+        LanguageKind::Go => false,
+    }
 }
 
 fn collect_spans(
@@ -286,6 +377,23 @@ fn collect_spans(
                 end_byte: node.end_byte(),
                 code_lines: 0,
                 parent,
+                abstract_symbol: abstract_decl(node, bytes, lang, k)
+                    || (parent >= 0
+                        && spans[parent as usize].kind == INTERFACE
+                        && lang == LanguageKind::TypeScript),
+                go_signature: (lang == LanguageKind::Go)
+                    .then(|| go_signature(node))
+                    .flatten(),
+                go_embeds: lang == LanguageKind::Go
+                    && k == INTERFACE
+                    && node.child_by_field_name("type").is_some_and(|ty| {
+                        children(ty)
+                            .into_iter()
+                            .any(|child| child.kind() == "type_elem")
+                    }),
+                // This signature was not a symbol before, so annotation
+                // references inside it retain their enclosing owner.
+                reference_owner: node.kind() != "abstract_method_signature",
             });
         }
     }
@@ -340,7 +448,7 @@ fn collect_go_receivers(
 
 fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
     match node.kind() {
-        "identifier" | "type_identifier" | "package_identifier" | "this" => {
+        "identifier" | "type_identifier" | "package_identifier" | "this" | "super" => {
             Some(vec![text(node, bytes).to_owned()])
         }
         "attribute" | "member_expression" | "selector_expression" => {
@@ -369,7 +477,9 @@ struct OwnerLookup<'a> {
 
 impl<'a> OwnerLookup<'a> {
     fn new(spans: &'a [Span]) -> Self {
-        let mut starts = (0..spans.len()).collect::<Vec<_>>();
+        let mut starts = (0..spans.len())
+            .filter(|&i| spans[i].reference_owner)
+            .collect::<Vec<_>>();
         starts.sort_by_key(|&i| (spans[i].credit_begin_byte, i));
         Self {
             spans,
@@ -515,6 +625,27 @@ fn value_attribute(node: Node<'_>) -> bool {
     true
 }
 
+fn collect_superclasses(owner: usize, node: Node<'_>, bytes: &[u8], out: &mut Vec<Candidate>) {
+    for child in children(node) {
+        let mut chains = Vec::new();
+        expression_chains(child, bytes, &mut chains);
+        for chain in chains {
+            out.push(Candidate {
+                owner,
+                chain,
+                call: false,
+                value: false,
+                kind: if child.kind() == "keyword_argument" {
+                    ANNOTATION
+                } else {
+                    EXTENDS
+                },
+                unresolved_reason: None,
+            });
+        }
+    }
+}
+
 fn collect_candidates(
     node: Node<'_>,
     bytes: &[u8],
@@ -543,7 +674,24 @@ fn collect_candidates(
             let callee = node
                 .child_by_field_name("function")
                 .or_else(|| node.child_by_field_name("method"));
-            let resolved = callee.and_then(|n| chain(n, bytes));
+            let resolved = callee.and_then(|n| {
+                if n.kind() == "attribute" {
+                    let base = n.child_by_field_name("object")?;
+                    if base.kind() == "call"
+                        && base
+                            .child_by_field_name("function")
+                            .is_some_and(|function| text(function, bytes) == "super")
+                        && base
+                            .child_by_field_name("arguments")
+                            .is_some_and(|args| children(args).is_empty())
+                    {
+                        return n
+                            .child_by_field_name("attribute")
+                            .map(|attr| vec!["super".to_owned(), text(attr, bytes).to_owned()]);
+                    }
+                }
+                chain(n, bytes)
+            });
             let parent_class_method = callee.is_some_and(|n| {
                 n.kind() == "attribute"
                     && n.child_by_field_name("object").is_some_and(|object| {
@@ -558,6 +706,7 @@ fn collect_candidates(
                 chain: resolved.clone().unwrap_or_default(),
                 call: true,
                 value: false,
+                kind: CALL,
                 unresolved_reason: resolved.is_none().then_some(if parent_class_method {
                     UnresolvedReason::ParentClassMethod
                 } else {
@@ -575,30 +724,31 @@ fn collect_candidates(
                     | "implements_clause"
             )
         {
-            let mut chains = Vec::new();
-            expression_chains(node, bytes, &mut chains);
-            for parts in chains {
-                out.push(Candidate {
-                    owner,
-                    chain: parts,
-                    call: false,
-                    value: false,
-                    unresolved_reason: None,
-                });
-            }
-        } else if node.kind() == "class_definition" {
-            if let Some(bases) = node.child_by_field_name("superclasses") {
+            if node.kind() == "superclasses" {
+                collect_superclasses(owner, node, bytes, out);
+            } else {
                 let mut chains = Vec::new();
-                expression_chains(bases, bytes, &mut chains);
+                expression_chains(node, bytes, &mut chains);
+                let kind = match node.kind() {
+                    "superclasses" | "extends_clause" => EXTENDS,
+                    "implements_clause" => IMPLEMENTS,
+                    "decorator" => DECORATOR,
+                    _ => ANNOTATION,
+                };
                 for parts in chains {
                     out.push(Candidate {
                         owner,
                         chain: parts,
                         call: false,
                         value: false,
+                        kind,
                         unresolved_reason: None,
                     });
                 }
+            }
+        } else if node.kind() == "class_definition" {
+            if let Some(bases) = node.child_by_field_name("superclasses") {
+                collect_superclasses(owner, bases, bytes, out);
             }
         } else if value_attribute(node) {
             if let Some(parts) = chain(node, bytes) {
@@ -607,6 +757,7 @@ fn collect_candidates(
                     chain: parts,
                     call: false,
                     value: true,
+                    kind: VALUE,
                     unresolved_reason: None,
                 });
             }
@@ -933,6 +1084,77 @@ enum BindingOrSymbol {
     External,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MroItem {
+    Known(usize),
+    Unknown(usize),
+}
+
+fn class_mro(
+    class: usize,
+    bases: &BTreeMap<usize, Vec<MroItem>>,
+    cache: &mut BTreeMap<usize, Option<Vec<MroItem>>>,
+    visiting: &mut BTreeSet<usize>,
+) -> Option<Vec<MroItem>> {
+    if let Some(mro) = cache.get(&class) {
+        return mro.clone();
+    }
+    if !visiting.insert(class) {
+        return None;
+    }
+    let direct = bases.get(&class).cloned().unwrap_or_default();
+    let mut sequences = Vec::new();
+    for base in &direct {
+        sequences.push(match base {
+            MroItem::Known(base) => class_mro(*base, bases, cache, visiting)?,
+            MroItem::Unknown(_) => vec![*base],
+        });
+    }
+    sequences.push(direct);
+    let mut result = vec![MroItem::Known(class)];
+    while sequences.iter().any(|sequence| !sequence.is_empty()) {
+        // C3 chooses the first head absent from every other sequence's
+        // tail. A conflicting or cyclic hierarchy has no safe call target.
+        let head = sequences
+            .iter()
+            .filter_map(|s| s.first().copied())
+            .find(|head| {
+                sequences
+                    .iter()
+                    .all(|s| !s.iter().skip(1).any(|item| item == head))
+            })?;
+        result.push(head);
+        for sequence in &mut sequences {
+            if sequence.first() == Some(&head) {
+                sequence.remove(0);
+            }
+        }
+    }
+    visiting.remove(&class);
+    cache.insert(class, Some(result.clone()));
+    Some(result)
+}
+
+fn inherited_member(
+    class: usize,
+    name: &str,
+    mros: &BTreeMap<usize, Option<Vec<MroItem>>>,
+    members: &BTreeMap<usize, BTreeMap<String, usize>>,
+) -> Option<usize> {
+    let mro = mros.get(&class)?.as_ref()?;
+    for item in mro.iter().skip(1) {
+        match item {
+            MroItem::Unknown(_) => return None,
+            MroItem::Known(base) => {
+                if let Some(&method) = members.get(base).and_then(|items| items.get(name)) {
+                    return Some(method);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn resolve(
     candidate: &Candidate,
     spans: &[Span],
@@ -941,7 +1163,8 @@ fn resolve(
     modules: &BTreeMap<String, usize>,
     packages: &BTreeMap<String, Vec<usize>>,
     members: &BTreeMap<usize, BTreeMap<String, usize>>,
-) -> Result<usize, &'static str> {
+    mros: &BTreeMap<usize, Option<Vec<MroItem>>>,
+) -> Result<(usize, bool), &'static str> {
     let source = &spans[candidate.owner];
     let parts = &candidate.chain;
     if let Some(reason) = candidate.unresolved_reason {
@@ -951,18 +1174,30 @@ fn resolve(
         return Err("dynamic");
     }
     let head = parts[0].as_str();
-    if (head == "self" || head == "cls" || head == "this") && parts.len() >= 2 {
+    if (head == "self" || head == "cls" || head == "this" || head == "super") && parts.len() >= 2 {
         let mut p = Some(candidate.owner);
         while let Some(i) = p {
             if spans[i].kind == CLASS {
-                return members
-                    .get(&i)
-                    .and_then(|m| m.get(&parts[1]).copied())
-                    .ok_or("instance_or_untyped");
+                if head != "super" {
+                    if let Some(&direct) = members.get(&i).and_then(|m| m.get(&parts[1])) {
+                        return Ok((direct, false));
+                    }
+                }
+                return inherited_member(i, &parts[1], mros, members)
+                    .map(|target| (target, true))
+                    .ok_or(if head == "super" {
+                        "parent_class_method"
+                    } else {
+                        "instance_or_untyped"
+                    });
             }
             p = (spans[i].parent >= 0).then_some(spans[i].parent as usize);
         }
-        return Err("instance_or_untyped");
+        return Err(if head == "super" {
+            "parent_class_method"
+        } else {
+            "instance_or_untyped"
+        });
     }
     if infos[source.file]
         .shadowed
@@ -1021,7 +1256,7 @@ fn resolve(
         };
     }
     match value {
-        BindingOrSymbol::Symbol(i) => Ok(i),
+        BindingOrSymbol::Symbol(i) => Ok((i, false)),
         BindingOrSymbol::Module(_) | BindingOrSymbol::Package(_) => Err("module_only"),
         BindingOrSymbol::Prefix(_, _) | BindingOrSymbol::External => Err("external"),
     }
@@ -1185,7 +1420,49 @@ pub(crate) fn build_with_progress(
                 .insert(name, ids[0]);
         }
     }
-    let mut edges = BTreeMap::<(usize, usize), usize>::new();
+    let mut bases = BTreeMap::<usize, Vec<MroItem>>::new();
+    let no_mros = BTreeMap::new();
+    let mut unknown_base = 0;
+    let mut seen_bases = BTreeSet::new();
+    for info in &infos {
+        for candidate in info
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.kind == EXTENDS)
+        {
+            if !matches!(spans[candidate.owner].kind, CLASS | INTERFACE) {
+                continue;
+            }
+            if !seen_bases.insert((candidate.owner, candidate.chain.clone())) {
+                continue;
+            }
+            let resolved = resolve(
+                candidate, &spans, &infos, &tops, &modules, &packages, &members, &no_mros,
+            )
+            .ok()
+            .map(|(target, _)| target)
+            .filter(|&target| {
+                matches!(spans[target].kind, CLASS | INTERFACE)
+                    && nodes[spans[target].file].lang == nodes[spans[candidate.owner].file].lang
+            });
+            let item = resolved.map_or_else(
+                || {
+                    unknown_base += 1;
+                    MroItem::Unknown(unknown_base)
+                },
+                MroItem::Known,
+            );
+            bases.entry(candidate.owner).or_default().push(item);
+        }
+    }
+    let mut mros = BTreeMap::new();
+    for (i, span) in spans.iter().enumerate() {
+        if matches!(span.kind, CLASS | INTERFACE) {
+            let mro = class_mro(i, &bases, &mut mros, &mut BTreeSet::new());
+            mros.insert(i, mro);
+        }
+    }
+    let mut edges = BTreeMap::<(usize, usize, usize), usize>::new();
     let mut coverage = SymbolCoverage::default();
     for info in &infos {
         for candidate in &info.candidates {
@@ -1193,11 +1470,14 @@ pub(crate) fn build_with_progress(
                 coverage.calls_total += 1;
             }
             match resolve(
-                candidate, &spans, &infos, &tops, &modules, &packages, &members,
+                candidate, &spans, &infos, &tops, &modules, &packages, &members, &mros,
             ) {
-                Ok(target) => {
+                Ok((target, inherited)) => {
                     if candidate.call {
                         coverage.calls_resolved += 1;
+                        if inherited {
+                            coverage.inherited_calls_resolved += 1;
+                        }
                     }
                     if candidate.value
                         && !matches!(spans[target].kind, FUNCTION | METHOD | NESTED_FUNCTION)
@@ -1213,7 +1493,9 @@ pub(crate) fn build_with_progress(
                         }
                     };
                     if !ancestor {
-                        *edges.entry((candidate.owner, target)).or_default() += 1;
+                        *edges
+                            .entry((candidate.owner, target, candidate.kind))
+                            .or_default() += 1;
                     }
                 }
                 Err(reason) => {
@@ -1222,6 +1504,61 @@ pub(crate) fn build_with_progress(
                     }
                 }
             }
+        }
+    }
+    for (i, span) in spans.iter().enumerate() {
+        if span.kind != METHOD || span.parent < 0 || nodes[span.file].lang == "go" {
+            continue;
+        }
+        let class = span.parent as usize;
+        if !matches!(spans[class].kind, CLASS | INTERFACE) {
+            continue;
+        }
+        if let Some(base_method) = inherited_member(class, &span.name, &mros, &members) {
+            *edges.entry((i, base_method, OVERRIDES)).or_default() += 1;
+        }
+    }
+    // Go's implicit implementation is reported separately because matching
+    // names and arity cannot establish parameter/result type identity.
+    let go_structs = spans
+        .iter()
+        .enumerate()
+        .filter(|(_, span)| span.kind == CLASS && nodes[span.file].lang == "go")
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    let go_interfaces = spans
+        .iter()
+        .enumerate()
+        .filter(|(_, span)| {
+            span.kind == INTERFACE && nodes[span.file].lang == "go" && !span.go_embeds
+        })
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    for &structure in &go_structs {
+        for &interface in &go_interfaces {
+            let required = members
+                .get(&interface)
+                .into_iter()
+                .flat_map(|m| m.values())
+                .filter(|&&member| spans[member].kind == METHOD)
+                .collect::<Vec<_>>();
+            if required.is_empty()
+                || required.iter().any(|&&member| {
+                    members
+                        .get(&structure)
+                        .and_then(|m| m.get(&spans[member].name))
+                        .is_none_or(|&found| {
+                            spans[found].go_signature != spans[member].go_signature
+                                || spans[found].go_signature.is_none()
+                        })
+                })
+            {
+                continue;
+            }
+            *edges
+                .entry((structure, interface, POSSIBLE_IMPLEMENTATION))
+                .or_default() += 1;
+            coverage.possible_implementations += 1;
         }
     }
     // The traversal order is source order for each file. The explicit sort
@@ -1255,18 +1592,20 @@ pub(crate) fn build_with_progress(
                     index[s.parent as usize] as isize
                 },
                 s.code_lines,
+                s.abstract_symbol,
             ))
         })
         .collect();
     let mut edges = edges
         .into_iter()
-        .map(|((a, b), count)| [index[a], index[b], count])
+        .map(|((a, b, kind), count)| [index[a], index[b], count, kind])
         .collect::<Vec<_>>();
     edges.sort_unstable();
     Ok(SymbolsDocument {
         files: (0..nodes.len()).collect(),
         symbols,
         edges,
+        kinds: symbol_edge_kinds(),
         module_code_lines,
         coverage,
         symbol_rings: None,
@@ -1415,6 +1754,7 @@ impl SymbolsDocument {
             symbol_indices,
             symbols,
             edges,
+            kinds: self.kinds.clone(),
             module_code_lines,
             symbol_rings,
             module_rings,
@@ -1462,6 +1802,12 @@ mod tests {
 
     fn edge(doc: &SymbolsDocument, from: usize, to: usize) -> bool {
         doc.edges.iter().any(|e| e[0] == from && e[1] == to)
+    }
+
+    fn typed_edge(doc: &SymbolsDocument, from: usize, to: usize, kind: usize) -> bool {
+        doc.edges
+            .iter()
+            .any(|e| e[0] == from && e[1] == to && e[3] == kind)
     }
 
     fn build_fixture(repo: &Path, nodes: &[SourceNode]) -> SymbolsDocument {
@@ -1572,7 +1918,10 @@ mod tests {
             2
         );
         assert!(doc.coverage.calls_resolved > 0);
-        assert_eq!(doc.coverage.unresolved["parent_class_method"], 1);
+        assert!(typed_edge(&doc, caller, target, EXTENDS));
+        assert!(typed_edge(&doc, method, target_method, CALL));
+        assert!(typed_edge(&doc, method, target_method, OVERRIDES));
+        assert!(doc.coverage.inherited_calls_resolved >= 1);
     }
 
     #[test]
@@ -1605,6 +1954,140 @@ mod tests {
         );
         assert!(edge(&doc, load, id(&doc, 0, "callback")));
         assert!(!edge(&doc, id(&doc, 1, "store"), sync));
+    }
+
+    #[test]
+    fn python_diamond_uses_c3_and_external_base_blocks_later_methods() {
+        let (dir, nodes) = fixture(&[(
+            "m.py", "m",
+            "class A:\n    def hit(self): pass\nclass B(A):\n    def hit(self): pass\nclass C(A):\n    def hit(self): pass\nclass D(B, C):\n    def use(self):\n        self.hit()\n        super().hit()\nclass Blocked(External, B):\n    def use(self): self.hit()\nclass Safe(B, External):\n    def use(self): self.hit()\n",
+        )]);
+        let doc = build_fixture(dir.path(), &nodes);
+        let b = id(&doc, 0, "B");
+        let b_hit = doc
+            .symbols
+            .iter()
+            .position(|s| s.0 .1 == "hit" && s.0 .5 == b as isize)
+            .unwrap();
+        let d = id(&doc, 0, "D");
+        let d_use = doc
+            .symbols
+            .iter()
+            .position(|s| s.0 .1 == "use" && s.0 .5 == d as isize)
+            .unwrap();
+        let blocked = id(&doc, 0, "Blocked");
+        let blocked_use = doc
+            .symbols
+            .iter()
+            .position(|s| s.0 .1 == "use" && s.0 .5 == blocked as isize)
+            .unwrap();
+        let safe = id(&doc, 0, "Safe");
+        let safe_use = doc
+            .symbols
+            .iter()
+            .position(|s| s.0 .1 == "use" && s.0 .5 == safe as isize)
+            .unwrap();
+        assert!(typed_edge(&doc, d_use, b_hit, CALL));
+        assert_eq!(
+            doc.edges
+                .iter()
+                .find(|e| e[0] == d_use && e[1] == b_hit && e[3] == CALL)
+                .unwrap()[2],
+            2
+        );
+        assert!(!typed_edge(&doc, blocked_use, b_hit, CALL));
+        assert!(typed_edge(&doc, safe_use, b_hit, CALL));
+        assert!(doc.coverage.unresolved["instance_or_untyped"] >= 1);
+        assert_eq!(doc.coverage.inherited_calls_resolved, 3);
+    }
+
+    #[test]
+    fn python_and_typescript_abstract_inheritance_and_implements() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.py"), "from abc import ABC, abstractmethod\nclass Base(ABC):\n    @abstractmethod\n    def work(self): pass\nclass Child(Base):\n    def work(self): pass\n    def use(self): super().work()\nclass Meta(metaclass=ABCMeta): pass\n").unwrap();
+        fs::write(dir.path().join("a.ts"), "interface I { run(): void; value: number }\nabstract class Base { abstract run(): void; base() {} }\nclass Child extends Base implements I { value = 1; run() {} use() { this.base(); super.base(); } }\n").unwrap();
+        let nodes = vec![source("a.py", "a", "py"), source("a.ts", "a.ts", "ts")];
+        let doc = build_fixture(dir.path(), &nodes);
+        let py_base = id(&doc, 0, "Base");
+        let py_meta = id(&doc, 0, "Meta");
+        let ts_i = id(&doc, 1, "I");
+        let ts_base = id(&doc, 1, "Base");
+        let ts_child = id(&doc, 1, "Child");
+        assert!(doc.symbols[py_base].0 .7 && doc.symbols[py_meta].0 .7);
+        assert!(doc.symbols[ts_i].0 .7 && doc.symbols[ts_base].0 .7);
+        assert!(doc
+            .symbols
+            .iter()
+            .any(|s| s.0 .1 == "work" && s.0 .5 == py_base as isize && s.0 .7));
+        assert!(doc
+            .symbols
+            .iter()
+            .any(|s| s.0 .1 == "run" && s.0 .5 == ts_base as isize && s.0 .7));
+        assert!(typed_edge(&doc, ts_child, ts_base, EXTENDS));
+        assert!(typed_edge(&doc, ts_child, ts_i, IMPLEMENTS));
+        let ts_base_method = doc
+            .symbols
+            .iter()
+            .position(|s| s.0 .1 == "base" && s.0 .5 == ts_base as isize)
+            .unwrap();
+        let ts_use = doc
+            .symbols
+            .iter()
+            .position(|s| s.0 .1 == "use" && s.0 .5 == ts_child as isize)
+            .unwrap();
+        assert_eq!(
+            doc.edges
+                .iter()
+                .find(|e| e[0] == ts_use && e[1] == ts_base_method && e[3] == CALL)
+                .unwrap()[2],
+            2
+        );
+        assert!(doc
+            .symbols
+            .iter()
+            .any(|s| s.0 .1 == "run" && s.0 .5 == ts_i as isize && s.0 .7));
+    }
+
+    #[test]
+    fn go_possible_implementation_requires_every_method_and_arity() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.go"), "package p\ntype Need interface { Run(x int) int; Stop() }\ntype Good struct{}\nfunc (Good) Run(x int) int { return x }\nfunc (Good) Stop() {}\ntype Missing struct{}\nfunc (Missing) Run(x int) int { return x }\ntype Wrong struct{}\nfunc (Wrong) Run() int { return 0 }\nfunc (Wrong) Stop() {}\n").unwrap();
+        let doc = build_fixture(dir.path(), &[source("a.go", "a.go", "go")]);
+        let need = id(&doc, 0, "Need");
+        assert!(typed_edge(
+            &doc,
+            id(&doc, 0, "Good"),
+            need,
+            POSSIBLE_IMPLEMENTATION
+        ));
+        assert!(!typed_edge(
+            &doc,
+            id(&doc, 0, "Missing"),
+            need,
+            POSSIBLE_IMPLEMENTATION
+        ));
+        assert!(!typed_edge(
+            &doc,
+            id(&doc, 0, "Wrong"),
+            need,
+            POSSIBLE_IMPLEMENTATION
+        ));
+        assert_eq!(doc.coverage.possible_implementations, 1);
+    }
+
+    #[test]
+    fn old_symbol_rows_and_edges_load_as_nonabstract_and_unknown() {
+        let doc: SymbolsDocument = serde_json::from_value(serde_json::json!({
+            "files": [0],
+            "symbols": [[0, "f", 1, 1, 2, -1, 2]],
+            "edges": [[0, 0, 1]],
+            "module_code_lines": {},
+            "coverage": {"calls_total": 0, "calls_resolved": 0, "unresolved": {}}
+        }))
+        .unwrap();
+        assert!(!doc.symbols[0].0 .7);
+        assert_eq!(doc.edges, vec![[0, 0, 1, 0]]);
+        assert_eq!(doc.kinds[0], "unknown");
     }
 
     #[test]

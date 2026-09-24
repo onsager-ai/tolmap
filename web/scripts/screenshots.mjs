@@ -116,6 +116,66 @@ try {
     }
   }
 
+  // Issue #82 "district index": explicit rail (desktop) and opened drawer
+  // (phone) frames for dify -- the new Districts list replacing the old
+  // Landmarks/Hubs sections is the main subject of this PR, not just an
+  // incidental part of the plain zoom-step frames the STEPS loop above
+  // already takes for every slug (those show the rail closed on phone, the
+  // default collapsed peek).
+  if (slugs.includes(DIFY_SLUG)) {
+    const stem = `${out}/${DIFY_SLUG.replace("/", "__")}`;
+    for (const profile of PROFILES) {
+      const context = await browser.newContext(profile);
+      const page = await context.newPage();
+      await page.goto(`${base}/${DIFY_SLUG}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(500);
+      if (profile.isMobile) {
+        await page.locator("aside button", { hasText: /districts/i }).first().click();
+        await page.waitForTimeout(400);
+        await page.screenshot({ path: `${stem}-${profile.name}-district-drawer-open.png` });
+        console.log(`${stem}-${profile.name}-district-drawer-open.png`);
+      } else {
+        await page.screenshot({ path: `${stem}-${profile.name}-district-rail.png` });
+        console.log(`${stem}-${profile.name}-district-rail.png`);
+      }
+      await context.close();
+    }
+  }
+
+  // Owner feedback (issue #82, "layer brightness"): "package layer seems to
+  // have larger brightness against others". The fix (geometry.ts's
+  // LAYER_SURFACE_MIX, now applied to package colours and the churn/
+  // complexity ramps via mixTowardCanvas(), not just district hues) needs a
+  // side-by-side of the SAME view in both colour layers to judge -- desktop
+  // forced into dark theme (the owner's own report named `--p1: #ffc247`,
+  // dark mode's own package swatch) and phone, since brightness is a
+  // per-theme, per-viewport question. `geo=r` (footprint mode) on both so
+  // the comparison is about colour alone, not dot-vs-footprint rendering.
+  if (slugs.includes(DIFY_SLUG)) {
+    const stem = `${out}/${DIFY_SLUG.replace("/", "__")}`;
+    const desktopProfile = PROFILES.find((p) => p.name === "desktop");
+    const phoneProfile = PROFILES.find((p) => p.name === "phone");
+    const layerFrames = [
+      { profile: desktopProfile, label: "desktop-dark", dark: true },
+      { profile: phoneProfile, label: "phone", dark: false },
+    ];
+    for (const { profile, label, dark } of layerFrames) {
+      for (const layer of ["d", "p"]) {
+        const context = await browser.newContext(profile);
+        const page = await context.newPage();
+        await page.goto(`${base}/${DIFY_SLUG}?geo=r&layer=${layer}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+        if (dark) await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+        await page.waitForTimeout(400);
+        await wheelZoomIn(page, profile.viewport.width * 0.35, profile.viewport.height * 0.4, 3);
+        await page.screenshot({ path: `${stem}-${label}-layer-${layer}.png` });
+        console.log(`${stem}-${label}-layer-${layer}.png`);
+        await context.close();
+      }
+    }
+  }
+
   // Issue #82 C2 scope item 10: three more dify frames per profile -- a deep
   // zoom showing cards inside a large file, a selected class with its
   // reference lines, and the file card's outline tree. Targets are picked
