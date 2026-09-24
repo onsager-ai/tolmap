@@ -1273,13 +1273,27 @@ async function checkViewerCards(browser, base, profile) {
     return {
       doc,
       firstDistrictName: doc.names[Object.keys(doc.districts)[0]],
-      firstLandmarkPath: doc.F[doc.L[0][0]],
+      firstLandmark: doc.L[0],
     };
   });
   const sidebarText = await page.locator("aside").first().textContent();
+  // Issue #82 "district index": the old rail's flat Landmarks list (every
+  // doc.L row shown by basename) is gone -- a landmark's file now surfaces
+  // through whichever district-row key-file line fits its kind ("most
+  // imported"/"entry" show the basename directly; "links A <-> B" for a
+  // bridge names the two districts instead, since the whole point of that
+  // line is the connection, not the file). Checked kind-aware here so this
+  // stays true regardless of which kind django's own first landmark happens
+  // to be; checkDistrictIndex below is the thorough version that checks
+  // EVERY kind present in the fixture, not just the first.
+  const [firstFile, firstWhy] = fixture.firstLandmark;
+  const firstLandmarkReachable =
+    firstWhy === "bridge"
+      ? /links .+ ↔ .+/.test(sidebarText ?? "")
+      : !!sidebarText?.includes(fixture.doc.F[firstFile].split("/").pop());
   report(
-    sidebarText?.includes(fixture.firstDistrictName) && sidebarText?.includes(fixture.firstLandmarkPath.split("/").pop()),
-    `${label}: districts are named and landmarks are listed`,
+    sidebarText?.includes(fixture.firstDistrictName) && firstLandmarkReachable,
+    `${label}: districts are named and the district index surfaces the first landmark (${firstWhy})`,
   );
 
   // Perf follow-up: always the district's NAME LABEL now -- see
@@ -1378,6 +1392,236 @@ async function checkViewerCards(browser, base, profile) {
     report(false, `${label}: tapping a file produces its card`, "no on-screen file with symbols found");
     report(false, `${label}: tapping a symbol produces its card`, "no file card to tap from");
   }
+  await context.close();
+}
+
+// Issue #82 "district index" (owner decision, AskUserQuestion 2026-09-24):
+// the left rail's Landmarks list, separate Hubs list and colour-chipped
+// district rows collapse into one "Districts" list (Sidebar.tsx,
+// map/districtIndex.ts). This is the thorough landmark-reachability check
+// CLAUDE.md's "landmarks listed" now means: every landmark KIND the old
+// rail could show (entry, bridge, hub, hazard -- capital was dropped from
+// the map entirely in A4/A5 and needs no row here) must be reachable from
+// SOME district row's key files, checked against the fixture's own doc.L
+// rather than a second reimplementation of districtIndex.ts's ranking --
+// only the DOM's own [data-district-index-key-file] file indices are
+// compared against doc.L, so this fails for real if the rendering ever
+// stops surfacing a kind, and never for a reason internal to this script's
+// own copy of the algorithm.
+async function checkDistrictIndex(browser, base, profile) {
+  const label = `district index (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  if (profile.isMobile) {
+    await page.locator("aside button", { hasText: /districts/i }).first().click();
+    await page.waitForTimeout(300);
+  }
+
+  const doc = await (await context.request.get(`${base}/maps/django/django.json`)).json();
+  const asideText = await page.locator("aside").first().innerText();
+
+  report(!/capital/i.test(asideText), `${label}: no "capital" jargon in the district index`);
+  report(!/betweenness/i.test(asideText), `${label}: no "betweenness" jargon in the district index`);
+  report(
+    (await page.locator("aside [style*='background']").count()) === 0,
+    `${label}: no colour chips in the district index`,
+  );
+  report(asideText.includes("files"), `${label}: header is titled with the repository's file count`, asideText.slice(0, 80));
+
+  const keyFileEls = page.locator("[data-district-index-key-file]");
+  const keyFileIndices = await keyFileEls.evaluateAll((els) => els.map((el) => Number(el.getAttribute("data-district-index-key-file"))));
+  const keyFileSet = new Set(keyFileIndices);
+  report(keyFileIndices.length > 0, `${label}: district rows render at least one key file`, `count=${keyFileIndices.length}`);
+  report(/most imported: /.test(asideText), `${label}: "most imported" line present in plain words`);
+
+  // Kind-level reachability: capital excluded (dropped from the map
+  // entirely, per A4/A5 -- see this function's own doc comment). A kind
+  // absent from this fixture's own doc.L is skipped rather than failed --
+  // django may not have a bridge or a hazard pick at all, and that's not a
+  // regression this check can meaningfully assert against.
+  for (const kind of ["entry", "bridge", "hub", "hazard"]) {
+    const files = doc.L.filter((row) => row[1] === kind).map((row) => row[0]);
+    if (files.length === 0) continue;
+    const reachable = files.some((f) => keyFileSet.has(f));
+    report(reachable, `${label}: "${kind}" landmark kind is reachable from a district row`, JSON.stringify(files));
+  }
+
+  // The explicit new check: tapping a key-file line selects that file.
+  const first = keyFileEls.first();
+  const firstFileIndex = Number(await first.getAttribute("data-district-index-key-file"));
+  const expectedFile = doc.F[firstFileIndex];
+  if (profile.hasTouch) await first.tap();
+  else await first.click();
+  await page.waitForTimeout(300);
+  report(
+    new URL(page.url()).searchParams.get("file") === expectedFile,
+    `${label}: tapping a district row's key-file line selects that file`,
+    `expected=${expectedFile} url=${page.url()}`,
+  );
+  report((await page.locator("[data-selection-panel]").count()) === 1, `${label}: selecting a key file produces its card`);
+
+  await context.close();
+}
+
+// Issue #82 "link colour legend" (owner feedback: "what's the colored
+// circles?"). The file card's "imported by N"/"imports M" line now doubles
+// as the legend for the map's own selection rings/lines -- colour-coded to
+// match (var(--cold) dashed for imported-by, var(--hot) solid for imports)
+// with a tiny line glyph per half. Checked on the file card (desktop panel /
+// phone sheet -- same markup, SelectionPanel's FileHead) and the fullscreen
+// summary bar (SelectionSummaryBar), both of which render the shared
+// LinkCountsLabel component.
+async function checkLinkColourLegend(browser, base, profile) {
+  const label = `link colour legend (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const doc = await (await context.request.get(`${base}/maps/django/django.json`)).json();
+  // Any file with at least one edge each way makes the legend's two counts
+  // both nonzero, which is a slightly stronger rendering exercise than a
+  // file with zero imports/importers (the legend still renders then, just
+  // with "0"s) -- prefer one, fall back to file 0 if the fixture has none.
+  const outDeg = new Map();
+  const inDeg = new Map();
+  for (const [a, b] of doc.E) {
+    outDeg.set(a, (outDeg.get(a) || 0) + 1);
+    inDeg.set(b, (inDeg.get(b) || 0) + 1);
+  }
+  const withBoth = [...outDeg.keys()].find((i) => (inDeg.get(i) || 0) > 0);
+  const file = doc.F[withBoth ?? 0];
+
+  await page.goto(`${base}/django/django?file=${encodeURIComponent(file)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-selection-panel]");
+  if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap();
+  await page.waitForSelector("[data-selection-panel] [data-link-legend]");
+
+  const legend = page.locator("[data-selection-panel] [data-link-legend]").first();
+  const legendText = (await legend.innerText()).replace(/\s+/g, " ");
+  report(
+    /imported by \d+ files?/.test(legendText) && /imports \d+/.test(legendText),
+    `${label}: file card states imported-by and imports counts in plain words`,
+    legendText,
+  );
+  const glyphs = await legend.locator("svg line").evaluateAll((els) =>
+    els.map((el) => ({ dashed: !!el.getAttribute("stroke-dasharray"), stroke: el.getAttribute("stroke") })),
+  );
+  report(
+    glyphs.length === 2 && glyphs.some((g) => g.dashed) && glyphs.some((g) => !g.dashed),
+    `${label}: legend shows one dashed and one solid line glyph`,
+    JSON.stringify(glyphs),
+  );
+  const colours = await legend.evaluate((el) => [...el.querySelectorAll("span")].map((s) => getComputedStyle(s).color));
+  report(new Set(colours).size >= 2, `${label}: imported-by and imports halves use two different colours`, JSON.stringify(colours));
+
+  await context.close();
+}
+
+// Issue #82 "fit icon": the ZoomControls "fit" button is now an inline SVG
+// glyph, not the text "fit" -- checked/kept distinguishable from a
+// regression that silently reintroduces the text node (or drops the
+// aria-label the other checks in this file already click through).
+async function checkFitButtonIcon(browser, base, profile) {
+  const label = `fit button is an icon (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(500);
+
+  const fit = page.locator('button[aria-label="Fit map"]');
+  const text = (await fit.innerText()).trim();
+  report(text === "", `${label}: fit button has no text content`, JSON.stringify(text));
+  report((await fit.locator("svg").count()) > 0, `${label}: fit button renders an icon`);
+  report((await fit.getAttribute("title")) === null, `${label}: fit button has no title attribute (no duplicate tooltip)`);
+  report(
+    (await fit.getAttribute("aria-label")) === "Fit map",
+    `${label}: fit button keeps its aria-label`,
+  );
+  await context.close();
+}
+
+// Owner feedback (issue #82, "layer brightness"): "package layer seems to
+// have larger brightness against others" -- the package layer's `--p0..--p9`
+// swatches and this file's own churn/complexity ramps used to reach a
+// file's fill at full strength, while the district layer's hues were
+// already mixed toward `--canvas` (geometry.ts's LAYER_SURFACE_MIX, née
+// DISTRICT_HUE_MIX). The fix (packageLayout.ts's packageColor() and
+// geometry.ts's ramp() both now route through mixTowardCanvas()) is checked
+// two ways: the average rendered luminance of file fills in each layer is
+// close, and no file's fill is ever the raw, unmixed `--p1` token verbatim
+// (the single swatch the owner's own report named, dark mode's
+// `#ffc247`).
+async function checkLayerBrightnessParity(browser, base) {
+  const label = "layer colour brightness parity (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+
+  async function fileFillLuminances(layer) {
+    await page.goto(`${base}/langgenius/dify?geo=r&layer=${layer}`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("svg.map-svg path.hit");
+    await page.waitForTimeout(1200);
+    return page.evaluate(() => {
+      const els = [...document.querySelectorAll("svg.map-svg .hit[data-k^='f:']")];
+      return els.map((el) => getComputedStyle(el).fill).filter((c) => c && c.startsWith("rgb"));
+    });
+  }
+  const luminance = (rgbStr) => {
+    const m = rgbStr.match(/[\d.]+/g);
+    if (!m || m.length < 3) return null;
+    const [r, g, b] = m.map(Number);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+
+  const districtFills = await fileFillLuminances("d");
+  const packageFills = await fileFillLuminances("p");
+  const districtLum = avg(districtFills.map(luminance).filter((v) => v != null));
+  const packageLum = avg(packageFills.map(luminance).filter((v) => v != null));
+  report(districtLum != null && packageLum != null, `${label}: both layers rendered file fills to compare`);
+  if (districtLum != null && packageLum != null) {
+    report(
+      Math.abs(districtLum - packageLum) < 30,
+      `${label}: district and package layers render at comparable average brightness`,
+      JSON.stringify({ districtLum, packageLum }),
+    );
+  }
+
+  const rawP1 = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--p1").trim());
+  const rawP1Rgb = await page.evaluate((hex) => {
+    const el = document.createElement("div");
+    el.style.color = hex;
+    document.body.appendChild(el);
+    const rgb = getComputedStyle(el).color;
+    el.remove();
+    return rgb;
+  }, rawP1);
+  report(
+    !packageFills.includes(rawP1Rgb),
+    `${label}: no file renders the raw, unmixed --p1 swatch`,
+    JSON.stringify({ rawP1, rawP1Rgb }),
+  );
+
   await context.close();
 }
 
@@ -3503,6 +3747,11 @@ async function main() {
     for (const profile of PROFILES) await checkDifyDistrictSummary(browser, args.base, profile);
     for (const profile of PROFILES) await checkFolderIslandFade(browser, args.base, profile);
     for (const profile of PROFILES) await checkViewerCards(browser, args.base, profile);
+    // Issue #82 "district index"/"link colour legend"/"fit icon"
+    for (const profile of PROFILES) await checkDistrictIndex(browser, args.base, profile);
+    for (const profile of PROFILES) await checkLinkColourLegend(browser, args.base, profile);
+    for (const profile of PROFILES) await checkFitButtonIcon(browser, args.base, profile);
+    await checkLayerBrightnessParity(browser, args.base);
     for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
     // Issue #82 A1
     await checkEmptyTapStepBack(browser, args.base);
