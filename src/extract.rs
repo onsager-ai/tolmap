@@ -237,6 +237,29 @@ pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData
 /// upstream of it) -- this fixes both the merge order below and,
 /// transitively, which source wins a file-path collision.
 pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Result<GraphData> {
+    Ok(build_multi_source_inner(repo, sources, false)?.0)
+}
+
+pub(crate) fn build_with_symbols(
+    repo: &Path,
+    pkg: &str,
+    language: LanguageKind,
+) -> Result<(GraphData, BTreeMap<String, crate::symbols::ParsedSymbols>)> {
+    build_multi_source_inner(repo, &[(pkg.to_owned(), language)], true)
+}
+
+pub(crate) fn build_multi_source_with_symbols(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+) -> Result<(GraphData, BTreeMap<String, crate::symbols::ParsedSymbols>)> {
+    build_multi_source_inner(repo, sources, true)
+}
+
+fn build_multi_source_inner(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    collect_symbols: bool,
+) -> Result<(GraphData, BTreeMap<String, crate::symbols::ParsedSymbols>)> {
     ensure!(
         repo.is_dir(),
         "repository {} is not a directory",
@@ -258,8 +281,15 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
         .transpose()?;
 
     let mut intermediates = Vec::with_capacity(sorted_sources.len());
+    let mut symbol_records = BTreeMap::new();
     for (pkg, language) in &sorted_sources {
-        let (parsed, raw) = parse_files(repo, pkg, *language)?;
+        let (parsed, raw, records) = parse_files_inner(repo, pkg, *language, collect_symbols)?;
+        // The same sorted source order controls ownership in union_sources.
+        // A later source must not replace a file's symbols after losing its
+        // graph file-path collision.
+        for (file, record) in records {
+            symbol_records.entry(file).or_insert(record);
+        }
         let intermediate = match language {
             LanguageKind::Python => parse_python(repo, pkg, parsed, raw)?,
             LanguageKind::Go | LanguageKind::TypeScript => parse_multi(
@@ -276,7 +306,14 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
     }
 
     let merged = union_sources(intermediates)?;
-    finish_graph(repo, merged)
+    let graph = finish_graph(repo, merged)?;
+    let mapped = graph
+        .nodes
+        .iter()
+        .map(|node| node.file.as_str())
+        .collect::<BTreeSet<_>>();
+    symbol_records.retain(|file, _| mapped.contains(file.as_str()));
+    Ok((graph, symbol_records))
 }
 
 /// Parses every source file `source_files` finds for `(pkg, language)` under
@@ -294,16 +331,32 @@ pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Re
 /// tree` in a later pass (import extraction, and the selector/attribute walk
 /// behind `uses`) run here instead, against the same tree, before it is
 /// dropped.
+#[cfg(test)]
 fn parse_files(
     repo: &Path,
     pkg: &str,
     language: LanguageKind,
 ) -> Result<(BTreeMap<String, ParsedFile>, BTreeMap<String, FileRaw>)> {
+    let (parsed, raw, _) = parse_files_inner(repo, pkg, language, false)?;
+    Ok((parsed, raw))
+}
+
+fn parse_files_inner(
+    repo: &Path,
+    pkg: &str,
+    language: LanguageKind,
+    collect_symbols: bool,
+) -> Result<(
+    BTreeMap<String, ParsedFile>,
+    BTreeMap<String, FileRaw>,
+    BTreeMap<String, crate::symbols::ParsedSymbols>,
+)> {
     let files = source_files(repo, pkg, language)?;
     let mut parser = Parser::new();
 
     let mut parsed = BTreeMap::new();
     let mut raw = BTreeMap::new();
+    let mut symbol_records = BTreeMap::new();
     for file in &files {
         // Set per file, not once before the loop: a `.tsx` file needs the
         // TSX grammar while a sibling `.ts` file in the same source needs
@@ -348,6 +401,12 @@ fn parse_files(
             continue;
         }
         let root = tree.root_node();
+        if collect_symbols {
+            symbol_records.insert(
+                file.clone(),
+                crate::symbols::collect(root, &source, language),
+            );
+        }
         let (complexity, identifiers, symbols) = match language {
             LanguageKind::Python => python_metrics(root, &source),
             LanguageKind::Go => multi_metrics(root, &source, language),
@@ -384,7 +443,7 @@ fn parse_files(
         );
         raw.insert(file.clone(), file_raw);
     }
-    Ok((parsed, raw))
+    Ok((parsed, raw, symbol_records))
 }
 
 fn nonblank_lines(source: &[u8]) -> usize {

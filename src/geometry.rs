@@ -346,7 +346,7 @@ pub fn build_warm(
             .into_owned()
     });
     eprintln!("[1/5] extract   {}/{}  ({lang})", repo.display(), pkg);
-    let graph = extract::build(repo, pkg, language)?;
+    let (graph, symbol_records) = extract::build_with_symbols(repo, pkg, language)?;
     let source_nodes = graph.nodes.clone();
     let output = build_from_graph_warm(
         graph,
@@ -356,7 +356,7 @@ pub fn build_warm(
         features,
         previous_document,
     )?;
-    crate::symbols::write_sibling(repo, &source_nodes, &output)?;
+    crate::symbols::write_sibling(repo, &source_nodes, &output, symbol_records)?;
     Ok(output)
 }
 
@@ -401,7 +401,7 @@ pub fn build_multi_warm(
         repo.display(),
         sources.len()
     );
-    let graph = extract::build_multi_source(repo, sources)?;
+    let (graph, symbol_records) = extract::build_multi_source_with_symbols(repo, sources)?;
     let source_nodes = graph.nodes.clone();
     let output = build_from_graph_warm(
         graph,
@@ -411,7 +411,7 @@ pub fn build_multi_warm(
         features,
         previous_document,
     )?;
-    crate::symbols::write_sibling(repo, &source_nodes, &output)?;
+    crate::symbols::write_sibling(repo, &source_nodes, &output, symbol_records)?;
     Ok(output)
 }
 

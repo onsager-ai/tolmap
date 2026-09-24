@@ -1,12 +1,13 @@
 //! Complete symbol data lives beside the parity-constrained map document.
-//! This pass reparses one mapped file at a time, retaining only compact spans
-//! and candidate references. It never changes `GraphData.symbols` or `uses`.
+//! Extraction collects compact spans and candidate references while each
+//! file's parse tree is alive. This pass resolves them after map file order
+//! is known. It never changes `GraphData.symbols` or `uses`.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
 use anyhow::{ensure, Context, Result};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::extract::{self, LanguageKind};
 use crate::schema::{
@@ -58,6 +59,21 @@ struct FileInfo {
     imports: BTreeMap<String, Binding>,
     candidates: Vec<Candidate>,
     shadowed: BTreeMap<usize, BTreeSet<String>>,
+}
+
+pub(crate) struct ParsedSymbols {
+    spans: Vec<Span>,
+    receivers: Vec<(usize, String)>,
+    candidates: Vec<Candidate>,
+    shadowed: BTreeMap<usize, BTreeSet<String>>,
+    imports: RawImports,
+    outside: usize,
+}
+
+enum RawImports {
+    Python(Vec<extract::PythonImport>),
+    Go(Vec<(String, String)>),
+    TypeScript(Vec<(String, Vec<(String, Option<String>)>)>),
 }
 
 fn text<'a>(node: Node<'_>, bytes: &'a [u8]) -> &'a str {
@@ -414,8 +430,7 @@ fn collect_candidates(
 }
 
 fn imports_python(
-    root: Node<'_>,
-    bytes: &[u8],
+    imports: &[extract::PythonImport],
     module: &str,
     is_pkg: bool,
     modules: &BTreeMap<String, usize>,
@@ -425,17 +440,8 @@ fn imports_python(
     // A function-local import must not create a file-wide binding. Direct
     // module imports are certain; conditional imports need control-flow
     // analysis and are left unresolved here.
-    for imp in children(root)
-        .into_iter()
-        .filter(|n| {
-            matches!(
-                n.kind(),
-                "import_statement" | "import_from_statement" | "future_import_statement"
-            )
-        })
-        .flat_map(|n| extract::python_imports(n, bytes))
-    {
-        let head = extract::python_head(&imp, module, is_pkg);
+    for imp in imports {
+        let head = extract::python_head(imp, module, is_pkg);
         for (n, alias) in &imp.names {
             if n == "*" {
                 continue;
@@ -489,80 +495,49 @@ fn imports_python(
 }
 
 fn imports_multi(
-    root: Node<'_>,
-    bytes: &[u8],
+    imports: &[(String, Vec<(String, Option<String>)>)],
     file: &str,
     modules: &BTreeMap<String, usize>,
 ) -> BTreeMap<String, Binding> {
     let mut result = BTreeMap::new();
-    for node in children(root) {
-        if node.kind() != "import_statement" {
-            continue;
-        }
-        if let Some(source) = node.child_by_field_name("source") {
-            let path = text(source, bytes).trim_matches(['\'', '"']);
-            let dir = file.rsplit_once('/').map_or("", |v| v.0);
-            let joined = format!("{dir}/{path}");
-            let mut pieces = Vec::new();
-            for part in joined.split('/') {
-                match part {
-                    "" | "." => {}
-                    ".." => {
-                        pieces.pop();
-                    }
-                    _ => pieces.push(part),
+    for (path, clauses) in imports {
+        let dir = file.rsplit_once('/').map_or("", |v| v.0);
+        let joined = format!("{dir}/{path}");
+        let mut pieces = Vec::new();
+        for part in joined.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    pieces.pop();
                 }
+                _ => pieces.push(part),
             }
-            let stem = pieces.join("/");
-            // NodeNext emits `.js` specifiers for TypeScript source. The
-            // existing file resolver accepts this same substitution (finding
-            // 20), and only an actually mapped target is credited here.
-            let source_stem = stem
-                .strip_suffix(".js")
-                .or_else(|| stem.strip_suffix(".jsx"))
-                .unwrap_or(&stem);
-            let target = [
-                stem.clone(),
-                format!("{source_stem}.ts"),
-                format!("{source_stem}.tsx"),
-                format!("{source_stem}/index.ts"),
-            ]
-            .into_iter()
-            .find_map(|p| modules.get(&p).copied());
-            if let Some(target) = target {
-                for clause in children(node)
-                    .into_iter()
-                    .filter(|n| n.kind() == "import_clause")
-                {
-                    for item in children(clause) {
-                        match item.kind() {
-                            "named_imports" => {
-                                for spec in children(item) {
-                                    if spec.kind() == "import_specifier" {
-                                        if let Some(original) = spec.child_by_field_name("name") {
-                                            let imported = text(original, bytes).to_owned();
-                                            let local = spec
-                                                .child_by_field_name("alias")
-                                                .map_or(imported.clone(), |n| {
-                                                    text(n, bytes).to_owned()
-                                                });
-                                            result.insert(local, Binding::From(target, imported));
-                                        }
-                                    }
-                                }
-                            }
-                            "namespace_import" => {
-                                if let Some(alias) = children(item).first() {
-                                    result.insert(
-                                        text(*alias, bytes).to_owned(),
-                                        Binding::Module(target),
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+        }
+        let stem = pieces.join("/");
+        // NodeNext emits `.js` specifiers for TypeScript source. The
+        // existing file resolver accepts this same substitution (finding
+        // 20), and only an actually mapped target is credited here.
+        let source_stem = stem
+            .strip_suffix(".js")
+            .or_else(|| stem.strip_suffix(".jsx"))
+            .unwrap_or(&stem);
+        let target = [
+            stem.clone(),
+            format!("{source_stem}.ts"),
+            format!("{source_stem}.tsx"),
+            format!("{source_stem}/index.ts"),
+        ]
+        .into_iter()
+        .find_map(|p| modules.get(&p).copied());
+        if let Some(target) = target {
+            for (local, original) in clauses {
+                result.insert(
+                    local.clone(),
+                    match original {
+                        Some(original) => Binding::From(target, original.clone()),
+                        None => Binding::Module(target),
+                    },
+                );
             }
         }
     }
@@ -570,8 +545,7 @@ fn imports_multi(
 }
 
 fn imports_go(
-    root: Node<'_>,
-    bytes: &[u8],
+    imports: &[(String, String)],
     module: Option<&str>,
     packages: &BTreeMap<String, Vec<usize>>,
 ) -> BTreeMap<String, Binding> {
@@ -579,39 +553,137 @@ fn imports_go(
     let Some(module) = module else {
         return result;
     };
-    fn visit(
-        node: Node<'_>,
-        bytes: &[u8],
-        module: &str,
-        packages: &BTreeMap<String, Vec<usize>>,
-        result: &mut BTreeMap<String, Binding>,
-    ) {
-        if node.kind() == "import_spec" {
-            if let Some(path_node) = node.child_by_field_name("path") {
-                let path = text(path_node, bytes).trim_matches(['\'', '"', '`']);
-                let directory = if path == module {
-                    Some("")
-                } else {
-                    path.strip_prefix(module)
-                        .and_then(|rest| rest.strip_prefix('/'))
-                };
-                if let Some(directory) = directory.filter(|dir| packages.contains_key(*dir)) {
-                    let alias = node
-                        .child_by_field_name("name")
-                        .map(|n| text(n, bytes).to_owned())
-                        .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_owned());
-                    if alias != "_" && alias != "." {
-                        result.insert(alias, Binding::Package(directory.to_owned()));
-                    }
-                }
+    for (path, alias) in imports {
+        let directory = if path.as_str() == module {
+            Some("")
+        } else {
+            path.strip_prefix(module)
+                .and_then(|rest| rest.strip_prefix('/'))
+        };
+        if let Some(directory) = directory.filter(|dir| packages.contains_key(*dir)) {
+            if alias != "_" && alias != "." {
+                result.insert(alias.clone(), Binding::Package(directory.to_owned()));
             }
         }
-        for child in children(node) {
-            visit(child, bytes, module, packages, result);
-        }
     }
-    visit(root, bytes, module, packages, &mut result);
     result
+}
+
+pub(crate) fn collect(root: Node<'_>, bytes: &[u8], lang: LanguageKind) -> ParsedSymbols {
+    let mut spans = Vec::new();
+    collect_spans(root, bytes, lang, 0, 0, &mut spans);
+    let mut receivers = Vec::new();
+    if lang == LanguageKind::Go {
+        collect_go_receivers(root, bytes, &spans, 0, &mut receivers);
+    }
+    let flags = extract::code_line_flags(root, bytes, lang);
+    for span in &mut spans {
+        span.code_lines = flags
+            .iter()
+            .enumerate()
+            .filter(|(row, flag)| **flag && *row >= span.credit_start - 1 && *row < span.end)
+            .count();
+    }
+    let outside = flags
+        .iter()
+        .enumerate()
+        .filter(|(row, flag)| {
+            **flag
+                && !spans
+                    .iter()
+                    .any(|s| s.parent == -1 && *row >= s.credit_start - 1 && *row < s.end)
+        })
+        .count();
+    let imports = match lang {
+        LanguageKind::Python => RawImports::Python(
+            children(root)
+                .into_iter()
+                .filter(|n| {
+                    matches!(
+                        n.kind(),
+                        "import_statement" | "import_from_statement" | "future_import_statement"
+                    )
+                })
+                .flat_map(|n| extract::python_imports(n, bytes))
+                .collect(),
+        ),
+        LanguageKind::Go => {
+            fn visit(node: Node<'_>, bytes: &[u8], out: &mut Vec<(String, String)>) {
+                if node.kind() == "import_spec" {
+                    if let Some(path_node) = node.child_by_field_name("path") {
+                        let path = text(path_node, bytes).trim_matches(['\'', '"', '`']);
+                        let alias = node
+                            .child_by_field_name("name")
+                            .map(|n| text(n, bytes).to_owned())
+                            .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_owned());
+                        out.push((path.to_owned(), alias));
+                    }
+                }
+                for child in children(node) {
+                    visit(child, bytes, out);
+                }
+            }
+            let mut imports = Vec::new();
+            visit(root, bytes, &mut imports);
+            RawImports::Go(imports)
+        }
+        LanguageKind::TypeScript => {
+            let mut imports = Vec::new();
+            for node in children(root) {
+                if node.kind() != "import_statement" {
+                    continue;
+                }
+                if let Some(source) = node.child_by_field_name("source") {
+                    let path = text(source, bytes).trim_matches(['\'', '"']).to_owned();
+                    let mut clauses = Vec::new();
+                    for clause in children(node)
+                        .into_iter()
+                        .filter(|n| n.kind() == "import_clause")
+                    {
+                        for item in children(clause) {
+                            match item.kind() {
+                                "named_imports" => {
+                                    for spec in children(item) {
+                                        if spec.kind() == "import_specifier" {
+                                            if let Some(original) = spec.child_by_field_name("name")
+                                            {
+                                                let imported = text(original, bytes).to_owned();
+                                                let local = spec
+                                                    .child_by_field_name("alias")
+                                                    .map_or(imported.clone(), |n| {
+                                                        text(n, bytes).to_owned()
+                                                    });
+                                                clauses.push((local, Some(imported)));
+                                            }
+                                        }
+                                    }
+                                }
+                                "namespace_import" => {
+                                    if let Some(alias) = children(item).first() {
+                                        clauses.push((text(*alias, bytes).to_owned(), None));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    imports.push((path, clauses));
+                }
+            }
+            RawImports::TypeScript(imports)
+        }
+    };
+    let mut candidates = Vec::new();
+    let mut shadowed = BTreeMap::new();
+    collect_candidates(root, bytes, 0, &spans, &mut candidates, &mut shadowed);
+    ParsedSymbols {
+        spans,
+        receivers,
+        candidates,
+        shadowed,
+        imports,
+        outside,
+    }
 }
 
 fn lookup(
@@ -752,7 +824,11 @@ fn resolve(
     }
 }
 
-pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
+pub(crate) fn build(
+    repo: &Path,
+    nodes: &[SourceNode],
+    mut records: BTreeMap<String, ParsedSymbols>,
+) -> Result<SymbolsDocument> {
     let mut modules = BTreeMap::new();
     let mut ambiguous_modules = BTreeSet::new();
     let mut packages: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -789,22 +865,9 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
     let mut module_code_lines = BTreeMap::new();
     for (fi, entry) in nodes.iter().enumerate() {
         let lang = LanguageKind::parse(&entry.lang)?;
-        let bytes =
-            fs::read(repo.join(&entry.file)).with_context(|| format!("read {}", entry.file))?;
-        let grammar = match lang {
-            LanguageKind::Python => tree_sitter_python::LANGUAGE.into(),
-            LanguageKind::Go => tree_sitter_go::LANGUAGE.into(),
-            LanguageKind::TypeScript if entry.file.ends_with(".tsx") => {
-                tree_sitter_typescript::LANGUAGE_TSX.into()
-            }
-            LanguageKind::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        };
-        let mut parser = Parser::new();
-        parser.set_language(&grammar)?;
-        // A parse failure still occupies its map file index. Keeping an
-        // empty slot prevents a later file's imports from reading the wrong
-        // binding table, which would fabricate cross-file references.
-        let Some(tree) = parser.parse(&bytes, None) else {
+        // A rejected Python parse or a tree-sitter cancellation leaves the
+        // same empty slot that the former second parse left in this array.
+        let Some(mut record) = records.remove(&entry.file) else {
             module_code_lines.insert(fi, entry.code_lines.unwrap_or(0));
             infos.push(FileInfo {
                 lang,
@@ -815,70 +878,44 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
             });
             continue;
         };
-        if lang == LanguageKind::Python && tree.root_node().has_error() {
-            module_code_lines.insert(fi, entry.code_lines.unwrap_or(0));
-            infos.push(FileInfo {
-                lang,
-                directory: entry.file.rsplit_once('/').map_or("", |v| v.0).to_owned(),
-                imports: BTreeMap::new(),
-                candidates: Vec::new(),
-                shadowed: BTreeMap::new(),
-            });
-            continue;
-        }
-        let root = tree.root_node();
         let first = spans.len();
-        collect_spans(root, &bytes, lang, fi, first, &mut spans);
-        if lang == LanguageKind::Go {
-            collect_go_receivers(root, &bytes, &spans[first..], first, &mut go_receivers);
+        for span in &mut record.spans {
+            span.file = fi;
+            if span.parent >= 0 {
+                span.parent += first as isize;
+            }
         }
-        let flags = extract::code_line_flags(root, &bytes, lang);
-        for span in &mut spans[first..] {
-            span.code_lines = flags
-                .iter()
-                .enumerate()
-                .filter(|(row, flag)| **flag && *row >= span.credit_start - 1 && *row < span.end)
-                .count();
+        go_receivers.extend(
+            record
+                .receivers
+                .into_iter()
+                .map(|(i, name)| (first + i, name)),
+        );
+        for candidate in &mut record.candidates {
+            candidate.owner += first;
         }
-        let outside = flags
-            .iter()
-            .enumerate()
-            .filter(|(row, flag)| {
-                **flag
-                    && !spans[first..]
-                        .iter()
-                        .any(|s| s.parent == -1 && *row >= s.credit_start - 1 && *row < s.end)
-            })
-            .count();
-        module_code_lines.insert(fi, outside);
-        let imports = if lang == LanguageKind::Python {
-            imports_python(
-                root,
-                &bytes,
+        let shadowed = record
+            .shadowed
+            .into_iter()
+            .map(|(owner, names)| (first + owner, names))
+            .collect();
+        spans.extend(record.spans);
+        module_code_lines.insert(fi, record.outside);
+        let imports = match record.imports {
+            RawImports::Python(imports) => imports_python(
+                &imports,
                 &entry.module,
                 entry.file.ends_with("__init__.py"),
                 &modules,
-            )
-        } else if lang == LanguageKind::Go {
-            imports_go(root, &bytes, go_module.as_deref(), &packages)
-        } else {
-            imports_multi(root, &bytes, &entry.file, &modules)
+            ),
+            RawImports::Go(imports) => imports_go(&imports, go_module.as_deref(), &packages),
+            RawImports::TypeScript(imports) => imports_multi(&imports, &entry.file, &modules),
         };
-        let mut candidates = Vec::new();
-        let mut shadowed = BTreeMap::new();
-        collect_candidates(
-            root,
-            &bytes,
-            first,
-            &spans[first..],
-            &mut candidates,
-            &mut shadowed,
-        );
         infos.push(FileInfo {
             lang,
             directory: entry.file.rsplit_once('/').map_or("", |v| v.0).to_owned(),
             imports,
-            candidates,
+            candidates: record.candidates,
             shadowed,
         });
     }
@@ -1015,7 +1052,12 @@ pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
     })
 }
 
-pub fn write_sibling(repo: &Path, nodes: &[SourceNode], map_path: &Path) -> Result<()> {
+pub(crate) fn write_sibling(
+    repo: &Path,
+    nodes: &[SourceNode],
+    map_path: &Path,
+    records: BTreeMap<String, ParsedSymbols>,
+) -> Result<()> {
     let map: MapDocument = serde_json::from_slice(&fs::read(map_path)?)?;
     ensure!(
         map.files.len() == nodes.len()
@@ -1026,7 +1068,7 @@ pub fn write_sibling(repo: &Path, nodes: &[SourceNode], map_path: &Path) -> Resu
                 .all(|(file, node)| file == &node.file),
         "symbol source file order differs from map F order"
     );
-    let mut document = build(repo, nodes)?;
+    let mut document = build(repo, nodes, records)?;
     crate::symbol_cards::attach(&map, &mut document)?;
     let output = map_path.with_extension("symbols.json");
     let temporary = map_path.with_extension("symbols.json.tmp");
