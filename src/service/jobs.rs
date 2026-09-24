@@ -1106,9 +1106,15 @@ fn process_worker_exe(
         "TOLMAP_NAMER_INPUT_USD_PER_TOKEN",
         "TOLMAP_NAMER_OUTPUT_USD_PER_TOKEN",
         "TOLMAP_NAMER_LEDGER",
+        // Issue #110: where the worker image puts the SCIP indexers
+        // (docs/DEPLOY.md). A `--refs scip` job without them would record a
+        // fallback for every language instead of indexing.
+        "TOLMAP_SCIP_TYPESCRIPT",
+        "TOLMAP_SCIP_PYTHON",
+        "TOLMAP_SCIP_GO",
     ] {
-        // Pricing/budget knobs and a ledger path -- operator config set at
-        // service startup, not secrets (naming.rs's `reserve`/`name_districts`).
+        // Pricing/budget knobs, a ledger path and indexer locations --
+        // operator config set at service startup, not secrets.
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);
         }
@@ -2117,6 +2123,7 @@ mod tests {
                 namer_model: String::new(),
                 previous_maps: vec![],
                 names_cache: None,
+                refs: None,
             };
             let error = process_worker_exe(
                 &tx,
@@ -2286,6 +2293,7 @@ mod tests {
                 namer_model: String::new(),
                 previous_maps: vec![],
                 names_cache: None,
+                refs: None,
             };
             let error = process_worker_exe(
                 &tx,
@@ -2391,6 +2399,7 @@ mod tests {
                 namer_model: String::new(),
                 previous_maps: vec![],
                 names_cache: None,
+                refs: None,
             };
             let hardening = WorkerHardening {
                 job_dir: job_dir.clone(),
