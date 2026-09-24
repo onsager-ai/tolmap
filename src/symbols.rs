@@ -4,11 +4,14 @@
 //! is known. It never changes `GraphData.symbols` or `uses`.
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use crate::extract::{self, LanguageKind};
@@ -24,7 +27,7 @@ const INTERFACE: usize = 4;
 const TYPE: usize = 5;
 const CONST: usize = 6;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Span {
     file: usize,
     name: String,
@@ -48,11 +51,27 @@ enum Binding {
     External,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Candidate {
     owner: usize,
     chain: Vec<String>,
     call: bool,
-    unresolved_reason: Option<&'static str>,
+    unresolved_reason: Option<UnresolvedReason>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum UnresolvedReason {
+    Dynamic,
+    ParentClassMethod,
+}
+
+impl UnresolvedReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dynamic => "dynamic",
+            Self::ParentClassMethod => "parent_class_method",
+        }
+    }
 }
 
 struct FileInfo {
@@ -63,6 +82,7 @@ struct FileInfo {
     shadowed: BTreeMap<usize, BTreeSet<String>>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub(crate) struct ParsedSymbols {
     spans: Vec<Span>,
     receivers: Vec<(usize, String)>,
@@ -72,10 +92,72 @@ pub(crate) struct ParsedSymbols {
     outside: usize,
 }
 
+#[derive(Serialize, Deserialize)]
 enum RawImports {
     Python(Vec<extract::PythonImport>),
     Go(Vec<(String, String)>),
     TypeScript(Vec<(String, Vec<(String, Option<String>)>)>),
+}
+
+/// A file-backed index keeps collected records out of the graph and geometry
+/// high-water marks. Only the current file's record is materialized at either
+/// end; Drop removes the temporary stream on success and on error.
+pub(crate) struct SymbolSpool {
+    path: PathBuf,
+    file: File,
+    index: BTreeMap<String, (u64, u64)>,
+}
+
+impl SymbolSpool {
+    pub(crate) fn new() -> Result<Self> {
+        let path = std::env::temp_dir().join(format!(
+            "tolmap-symbols-{}-{}.jsonl",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("create symbol spool {}", path.display()))?;
+        Ok(Self {
+            path,
+            file,
+            index: BTreeMap::new(),
+        })
+    }
+
+    pub(crate) fn insert(&mut self, name: &str, record: &ParsedSymbols) -> Result<()> {
+        if self.index.contains_key(name) {
+            return Ok(()); // First sorted source owns a file-path collision.
+        }
+        // One write per file avoids a syscall for every JSON token. The
+        // temporary byte buffer drops before the next source file is parsed.
+        let bytes = serde_json::to_vec(record)?;
+        let start = self.file.stream_position()?;
+        self.file.write_all(&bytes)?;
+        self.index
+            .insert(name.to_owned(), (start, bytes.len() as u64));
+        Ok(())
+    }
+
+    fn take(&mut self, name: &str) -> Result<Option<ParsedSymbols>> {
+        let Some((start, len)) = self.index.remove(name) else {
+            return Ok(None);
+        };
+        self.file.seek(SeekFrom::Start(start))?;
+        let mut slice = (&mut self.file).take(len);
+        Ok(Some(serde_json::from_reader(&mut slice).with_context(
+            || format!("decode symbol record for {name}"),
+        )?))
+    }
+}
+
+impl Drop for SymbolSpool {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn text<'a>(node: Node<'_>, bytes: &'a [u8]) -> &'a str {
@@ -422,9 +504,9 @@ fn collect_candidates(
                 chain: resolved.clone().unwrap_or_default(),
                 call: true,
                 unresolved_reason: resolved.is_none().then_some(if parent_class_method {
-                    "parent_class_method"
+                    UnresolvedReason::ParentClassMethod
                 } else {
-                    "dynamic"
+                    UnresolvedReason::Dynamic
                 }),
             });
         } else if !covered_by_reference_wrapper(node)
@@ -796,7 +878,7 @@ fn resolve(
     let source = &spans[candidate.owner];
     let parts = &candidate.chain;
     if let Some(reason) = candidate.unresolved_reason {
-        return Err(reason);
+        return Err(reason.as_str());
     }
     if parts.is_empty() {
         return Err("dynamic");
@@ -881,7 +963,7 @@ fn resolve(
 pub(crate) fn build(
     repo: &Path,
     nodes: &[SourceNode],
-    mut records: BTreeMap<String, ParsedSymbols>,
+    mut spool: SymbolSpool,
 ) -> Result<SymbolsDocument> {
     let mut modules = BTreeMap::new();
     let mut ambiguous_modules = BTreeSet::new();
@@ -921,7 +1003,7 @@ pub(crate) fn build(
         let lang = LanguageKind::parse(&entry.lang)?;
         // A rejected Python parse or a tree-sitter cancellation leaves the
         // same empty slot that the former second parse left in this array.
-        let Some(mut record) = records.remove(&entry.file) else {
+        let Some(mut record) = spool.take(&entry.file)? else {
             module_code_lines.insert(fi, entry.code_lines.unwrap_or(0));
             infos.push(FileInfo {
                 lang,
@@ -1110,7 +1192,7 @@ pub(crate) fn write_sibling(
     repo: &Path,
     nodes: &[SourceNode],
     map_path: &Path,
-    records: BTreeMap<String, ParsedSymbols>,
+    spool: SymbolSpool,
 ) -> Result<()> {
     let map: MapDocument = serde_json::from_slice(&fs::read(map_path)?)?;
     ensure!(
@@ -1123,14 +1205,15 @@ pub(crate) fn write_sibling(
         "symbol source file order differs from map F order"
     );
     let started = Instant::now();
-    let mut document = build(repo, nodes, records)?;
-    eprintln!("symbol resolution: {:.2}s", started.elapsed().as_secs_f64());
+    let mut document = build(repo, nodes, spool)?;
+    eprintln!(
+        "phase symbol_resolution: {:.3}s",
+        started.elapsed().as_secs_f64()
+    );
     let cards_started = Instant::now();
     crate::symbol_cards::attach(&map, &mut document)?;
-    eprintln!(
-        "symbol cards: {:.2}s",
-        cards_started.elapsed().as_secs_f64()
-    );
+    eprintln!("phase cards: {:.3}s", cards_started.elapsed().as_secs_f64());
+    let symbols_write_started = Instant::now();
     let output = map_path.with_extension("symbols.json");
     let temporary = map_path.with_extension("symbols.json.tmp");
     let district_dir = map_path.with_extension("symbols");
@@ -1157,6 +1240,10 @@ pub(crate) fn write_sibling(
         fs::remove_dir_all(&district_dir)?;
     }
     fs::rename(&temporary_dir, &district_dir)?;
+    eprintln!(
+        "phase symbols_write: {:.3}s",
+        symbols_write_started.elapsed().as_secs_f64()
+    );
     eprintln!("wrote {}", output.display());
     Ok(())
 }
@@ -1274,7 +1361,7 @@ mod tests {
     }
 
     fn build_fixture(repo: &Path, nodes: &[SourceNode]) -> SymbolsDocument {
-        let mut records = BTreeMap::new();
+        let mut spool = SymbolSpool::new().unwrap();
         let mut parser = Parser::new();
         for node in nodes {
             let lang = LanguageKind::parse(&node.lang).unwrap();
@@ -1291,9 +1378,11 @@ mod tests {
             let tree = parser.parse(&bytes, None).unwrap();
             let root = tree.root_node();
             let flags = extract::code_line_flags(root, &bytes, lang);
-            records.insert(node.file.clone(), collect(root, &bytes, lang, &flags));
+            spool
+                .insert(&node.file, &collect(root, &bytes, lang, &flags))
+                .unwrap();
         }
-        build(repo, nodes, records).unwrap()
+        build(repo, nodes, spool).unwrap()
     }
 
     #[test]

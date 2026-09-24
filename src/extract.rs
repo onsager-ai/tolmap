@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context, Result};
+use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Node, Parser};
 
 use crate::schema::{FileId, GraphData, SignalEdge, SourceNode, SymbolRow};
@@ -211,7 +213,7 @@ enum FileRaw {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PythonImport {
     pub(crate) from: bool,
     pub(crate) level: usize,
@@ -244,22 +246,27 @@ pub(crate) fn build_with_symbols(
     repo: &Path,
     pkg: &str,
     language: LanguageKind,
-) -> Result<(GraphData, BTreeMap<String, crate::symbols::ParsedSymbols>)> {
-    build_multi_source_inner(repo, &[(pkg.to_owned(), language)], true)
+) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
+    let (graph, spool) = build_multi_source_inner(repo, &[(pkg.to_owned(), language)], true)?;
+    Ok((graph, spool.expect("symbol collection requested")))
 }
 
 pub(crate) fn build_multi_source_with_symbols(
     repo: &Path,
     sources: &[(String, LanguageKind)],
-) -> Result<(GraphData, BTreeMap<String, crate::symbols::ParsedSymbols>)> {
-    build_multi_source_inner(repo, sources, true)
+) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
+    let (graph, spool) = build_multi_source_inner(repo, sources, true)?;
+    Ok((graph, spool.expect("symbol collection requested")))
 }
 
 fn build_multi_source_inner(
     repo: &Path,
     sources: &[(String, LanguageKind)],
     collect_symbols: bool,
-) -> Result<(GraphData, BTreeMap<String, crate::symbols::ParsedSymbols>)> {
+) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
+    let started = Instant::now();
+    let mut symbol_collection = Duration::ZERO;
+    let mut graph_time = Duration::ZERO;
     ensure!(
         repo.is_dir(),
         "repository {} is not a directory",
@@ -281,15 +288,14 @@ fn build_multi_source_inner(
         .transpose()?;
 
     let mut intermediates = Vec::with_capacity(sorted_sources.len());
-    let mut symbol_records = BTreeMap::new();
+    let mut spool = collect_symbols
+        .then(crate::symbols::SymbolSpool::new)
+        .transpose()?;
     for (pkg, language) in &sorted_sources {
-        let (parsed, raw, records) = parse_files_inner(repo, pkg, *language, collect_symbols)?;
-        // The same sorted source order controls ownership in union_sources.
-        // A later source must not replace a file's symbols after losing its
-        // graph file-path collision.
-        for (file, record) in records {
-            symbol_records.entry(file).or_insert(record);
-        }
+        let (parsed, raw, collection_time) =
+            parse_files_inner(repo, pkg, *language, spool.as_mut())?;
+        symbol_collection += collection_time;
+        let graph_started = Instant::now();
         let intermediate = match language {
             LanguageKind::Python => parse_python(repo, pkg, parsed, raw)?,
             LanguageKind::Go | LanguageKind::TypeScript => parse_multi(
@@ -303,17 +309,20 @@ fn build_multi_source_inner(
             )?,
         };
         intermediates.push(intermediate);
+        graph_time += graph_started.elapsed();
     }
 
+    let graph_started = Instant::now();
     let merged = union_sources(intermediates)?;
     let graph = finish_graph(repo, merged)?;
-    let mapped = graph
-        .nodes
-        .iter()
-        .map(|node| node.file.as_str())
-        .collect::<BTreeSet<_>>();
-    symbol_records.retain(|file, _| mapped.contains(file.as_str()));
-    Ok((graph, symbol_records))
+    graph_time += graph_started.elapsed();
+    eprintln!("phase extract: {:.3}s", started.elapsed().as_secs_f64());
+    eprintln!(
+        "phase symbol_collection: {:.3}s",
+        symbol_collection.as_secs_f64()
+    );
+    eprintln!("phase graph: {:.3}s", graph_time.as_secs_f64());
+    Ok((graph, spool))
 }
 
 /// Parses every source file `source_files` finds for `(pkg, language)` under
@@ -337,7 +346,7 @@ fn parse_files(
     pkg: &str,
     language: LanguageKind,
 ) -> Result<(BTreeMap<String, ParsedFile>, BTreeMap<String, FileRaw>)> {
-    let (parsed, raw, _) = parse_files_inner(repo, pkg, language, false)?;
+    let (parsed, raw, _) = parse_files_inner(repo, pkg, language, None)?;
     Ok((parsed, raw))
 }
 
@@ -345,18 +354,18 @@ fn parse_files_inner(
     repo: &Path,
     pkg: &str,
     language: LanguageKind,
-    collect_symbols: bool,
+    mut spool: Option<&mut crate::symbols::SymbolSpool>,
 ) -> Result<(
     BTreeMap<String, ParsedFile>,
     BTreeMap<String, FileRaw>,
-    BTreeMap<String, crate::symbols::ParsedSymbols>,
+    Duration,
 )> {
     let files = source_files(repo, pkg, language)?;
     let mut parser = Parser::new();
 
     let mut parsed = BTreeMap::new();
     let mut raw = BTreeMap::new();
-    let mut symbol_records = BTreeMap::new();
+    let mut symbol_collection = Duration::ZERO;
     for file in &files {
         // Set per file, not once before the loop: a `.tsx` file needs the
         // TSX grammar while a sibling `.ts` file in the same source needs
@@ -421,15 +430,15 @@ fn parse_files_inner(
             },
         };
         let loc = source.iter().filter(|&&byte| byte == b'\n').count() + 1;
-        let code_lines = if collect_symbols {
+        let code_lines = if let Some(spool) = spool.as_deref_mut() {
             // One syntax-leaf mask feeds both map C and symbol areas. This
             // keeps the two line counts identical without another tree walk.
             let flags = code_line_flags(root, &source, language);
             let count = flags.iter().filter(|&&flag| flag).count();
-            symbol_records.insert(
-                file.clone(),
-                crate::symbols::collect(root, &source, language, &flags),
-            );
+            let started = Instant::now();
+            let record = crate::symbols::collect(root, &source, language, &flags);
+            spool.insert(file, &record)?;
+            symbol_collection += started.elapsed();
             count
         } else {
             count_code_lines(root, &source, language)
@@ -449,7 +458,7 @@ fn parse_files_inner(
         );
         raw.insert(file.clone(), file_raw);
     }
-    Ok((parsed, raw, symbol_records))
+    Ok((parsed, raw, symbol_collection))
 }
 
 fn nonblank_lines(source: &[u8]) -> usize {

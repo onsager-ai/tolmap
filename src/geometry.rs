@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 
@@ -445,6 +446,7 @@ pub fn build_from_graph_warm(
     previous_document: Option<&MapDocument>,
 ) -> Result<PathBuf> {
     eprintln!("[2/5] partition resolution={resolution}");
+    let partition_started = Instant::now();
     let partitioner = LeidenFfi;
     let previous_membership = previous_document.map(|document| {
         document
@@ -472,14 +474,24 @@ pub fn build_from_graph_warm(
     // not a normal one followed by a patch-up.
     let classes = classify_districts(&layout.membership, &layout.weighted.imports);
     relocate_offshore(&mut layout.districts, &classes);
+    eprintln!(
+        "phase partition: {:.3}s",
+        partition_started.elapsed().as_secs_f64()
+    );
     // This second partition only reads the kept graph. The top-level
     // membership, modularity and district layout are already fixed.
+    let neighbourhood_started = Instant::now();
     let neighbourhood_partition = if features.parcels {
         Some(neighbourhoods::partition(&layout, &partitioner)?)
     } else {
         None
     };
+    eprintln!(
+        "phase neighbourhoods: {:.3}s",
+        neighbourhood_started.elapsed().as_secs_f64()
+    );
     eprintln!("[3/5] name     districts");
+    let naming_started = Instant::now();
     // Same convention `cli.py::build` uses: the cache lives next to the map
     // it names, `<out>/<name>.names.json`, so a rerun into the same --out
     // finds it with no extra flag. `eval/seed_names.py` writes this same
@@ -513,7 +525,12 @@ pub fn build_from_graph_warm(
             .count();
         eprintln!("        d{district:<2} {count:4} files  {district_name}");
     }
+    eprintln!(
+        "phase naming: {:.3}s",
+        naming_started.elapsed().as_secs_f64()
+    );
     eprintln!("[4/5] geometry regions");
+    let geometry_started = Instant::now();
     let mut geometry = blobs::build_geometry(&layout, &partitioner)?;
     // Unconnected districts get no region: they are not places (issue #34).
     // Their files already have a defined, deterministic point from the
@@ -527,8 +544,13 @@ pub fn build_from_graph_warm(
         }
     }
     let mut document = compact(map_name, layout, geometry, names, &classes);
+    eprintln!(
+        "phase geometry: {:.3}s",
+        geometry_started.elapsed().as_secs_f64()
+    );
     if features.parcels {
         eprintln!("[5/5] geometry weighted-voronoi plots");
+        let parcels_started = Instant::now();
         let partition = neighbourhood_partition
             .as_ref()
             .expect("partitioned with parcels enabled");
@@ -544,13 +566,22 @@ pub fn build_from_graph_warm(
                 document.files.len()
             );
         }
+        eprintln!(
+            "phase parcels: {:.3}s",
+            parcels_started.elapsed().as_secs_f64()
+        );
     }
+    let map_write_started = Instant::now();
     fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
     let output = out.join(format!("{}.json", document.repo));
     let bytes = serde_json::to_vec(&document)?;
     let temporary = output.with_extension("json.tmp");
     fs::write(&temporary, bytes)?;
     fs::rename(&temporary, &output)?;
+    eprintln!(
+        "phase map_write: {:.3}s",
+        map_write_started.elapsed().as_secs_f64()
+    );
     eprintln!("\nwrote {}", output.display());
     Ok(output)
 }
