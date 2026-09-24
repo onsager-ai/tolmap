@@ -417,6 +417,76 @@ try {
       }
     }
   }
+
+  // Issue #97 (live job progress, ETA and cancel): the job progress page,
+  // mid-build/queued/cancelled, in both themes -- against the same mock API
+  // server (scripts/mock-api-server.mjs) check-view-stability.mjs's own
+  // job-page checks use (viewer-check.yml starts it before Vite for both
+  // scripts to share). Each slug is timestamped so a re-run never collides
+  // with a job from a previous run still sitting in the mock's registry.
+  {
+    const postIndexJob = async (slug) => {
+      const res = await fetch(`${base}/api/index`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo: slug }),
+      });
+      return res.json();
+    };
+    const jobStem = `${out}/job-progress`;
+    const desktop = { viewport: { width: 1200, height: 800 }, isMobile: false, hasTouch: false, deviceScaleFactor: 1 };
+
+    for (const colorScheme of ["light", "dark"]) {
+      // Mid-build.
+      {
+        const slug = `shotorg/mid-build-${Date.now()}`;
+        const accepted = await postIndexJob(slug);
+        const context = await browser.newContext({ ...desktop, colorScheme });
+        const page = await context.newPage();
+        await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
+        await page.waitForSelector("[data-progress-fill][data-progress-pct]", { timeout: 20_000 }).catch(() => {});
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: `${jobStem}-mid-build-${colorScheme}.png` });
+        console.log(`${jobStem}-mid-build-${colorScheme}.png`);
+        await context.close();
+      }
+
+      // Queued: a second submission while the first still occupies the
+      // mock's one concurrency slot (docs/API.md: TOLMAP_MAX_CONCURRENT_JOBS
+      // defaults to 1).
+      {
+        const runningSlug = `shotorg/queue-running-${Date.now()}`;
+        const queuedSlug = `shotorg/queue-behind-${Date.now()}`;
+        await postIndexJob(runningSlug);
+        const queued = await postIndexJob(queuedSlug);
+        const context = await browser.newContext({ ...desktop, colorScheme });
+        const page = await context.newPage();
+        await page.goto(`${base}/new?job=${queued.job_id}&slug=${encodeURIComponent(queuedSlug)}`, { waitUntil: "domcontentloaded" });
+        await page.waitForSelector("[data-queued-text]", { timeout: 15_000 }).catch(() => {});
+        await page.waitForTimeout(200);
+        await page.screenshot({ path: `${jobStem}-queued-${colorScheme}.png` });
+        console.log(`${jobStem}-queued-${colorScheme}.png`);
+        await context.close();
+      }
+
+      // Cancelled.
+      {
+        const slug = `shotorg/cancel-${Date.now()}`;
+        const accepted = await postIndexJob(slug);
+        const context = await browser.newContext({ ...desktop, colorScheme });
+        const page = await context.newPage();
+        await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
+        await page.getByRole("button", { name: "cancel", exact: true }).waitFor({ timeout: 15_000 }).catch(() => {});
+        await page.getByRole("button", { name: "cancel", exact: true }).click().catch(() => {});
+        await page.getByRole("button", { name: "yes, cancel" }).click().catch(() => {});
+        await page.waitForSelector("[data-job-failure]", { timeout: 15_000 }).catch(() => {});
+        await page.waitForTimeout(200);
+        await page.screenshot({ path: `${jobStem}-cancelled-${colorScheme}.png` });
+        console.log(`${jobStem}-cancelled-${colorScheme}.png`);
+        await context.close();
+      }
+    }
+  }
 } finally {
   await browser.close();
 }
