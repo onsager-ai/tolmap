@@ -1,0 +1,225 @@
+# Issue #110, phase P1a: measure `tolmap build --refs scip` -- the product's
+# Rust ingest -- on real repositories. Called from remote-build.yml with
+# `command=scip-ingest`, after that workflow's `setup` job has built the
+# binary from inputs.ref (the P1a branch) and its Leiden runtime libraries.
+#
+# A reusable workflow behind remote-build.yml for the reason scip-spike.yml
+# gives: only a file on the default branch can be dispatched on its own, and
+# dispatching remote-build.yml with `--ref <branch>` runs that branch's copy
+# of both files.
+#
+# Same runner budget as remote-build.yml and scip-spike.yml: standard
+# GitHub-hosted runners, no new spend. The indexers are P0's pinned
+# versions, and nothing is installed from the indexed repositories: the
+# build runs the indexers under src/indexers.rs's no-install policy.
+#
+# One job per repository (eval/scip_plan.py's five pins), each on its own
+# checkout, all with the one branch binary:
+#   hand       --refs hand (the default), plus dump-graph for file languages
+#   scip1..3   three cold --refs scip builds; scip1 keeps its indexes
+#              (TOLMAP_SCIP_INDEX_DIR) for the oracle
+#   scipwarm   --refs scip warm-started from the hand map, as the product
+#              would switch an existing map
+# then eval/scip_ingest_measure.py compares the Rust ingest with P0's Python
+# oracle (eval/scip_ingest.py) on the same indexes, and SCIP with hand.
+
+name: SCIP ingest (#110 P1a)
+
+on:
+  workflow_call: {}
+
+env:
+  CLONE_DEPTH: "4000"
+  SCIP_TYPESCRIPT_VERSION: "0.4.0"
+  SCIP_PYTHON_VERSION: "0.6.6"
+  SCIP_GO_VERSION: "v0.2.7"
+  SCIP_PROTO_TAG: "v0.10.0"
+  PROTOBUF_VERSION: "5.29.3"
+  GRPCIO_TOOLS_VERSION: "1.70.0"
+
+jobs:
+  plan:
+    name: plan scip-ingest matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      repos: ${{ steps.plan.outputs.repos }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: plan
+        run: |
+          set -euo pipefail
+          plan="$(python3 eval/scip_plan.py)"
+          echo "repos=$(jq -c .baseline <<<"$plan")" >> "$GITHUB_OUTPUT"
+          jq .baseline <<<"$plan"
+
+  measure:
+    name: measure ${{ matrix.slug }}
+    needs: plan
+    runs-on: ubuntu-latest
+    # Four builds with indexing on n8n are about half an hour on a standard
+    # runner (finding 41: 315 s per scip-typescript run); generous so a slow
+    # runner still finishes, bounded so a hung indexer cannot hold the job
+    # to the 6-hour ceiling.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.repos) }}
+    env:
+      LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+      # V8's default heap would turn n8n's index into an OOM; 13 GiB stays
+      # inside the runner's 16 GB (as in scip-spike.yml).
+      NODE_OPTIONS: --max-old-space-size=13312
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+      - run: chmod +x bin/tolmap
+      - name: Install /usr/bin/time
+        run: command -v /usr/bin/time || { sudo apt-get update && sudo apt-get install -y time; }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Install pinned indexers
+        run: |
+          set -euo pipefail
+          npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
+            "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
+          go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Generate scip_pb2 for the P0 oracle
+        run: |
+          set -euo pipefail
+          pip install "protobuf==${PROTOBUF_VERSION}" "grpcio-tools==${GRPCIO_TOOLS_VERSION}"
+          mkdir -p "$RUNNER_TEMP/scippb"
+          curl -fsSL --retry 3 \
+            "https://raw.githubusercontent.com/scip-code/scip/${SCIP_PROTO_TAG}/scip.proto" \
+            -o "$RUNNER_TEMP/scippb/scip.proto"
+          python -m grpc_tools.protoc -I "$RUNNER_TEMP/scippb" \
+            --python_out="$RUNNER_TEMP/scippb" "$RUNNER_TEMP/scippb/scip.proto"
+          echo "PYTHONPATH=$RUNNER_TEMP/scippb:$PWD/eval" >> "$GITHUB_ENV"
+      - name: Oracle self-test
+        run: python eval/scip_ingest.py --self-test
+      - name: Clone at pinned commit
+        env:
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p clone
+          git -C clone init --quiet
+          git -C clone remote add origin "https://github.com/${SLUG}.git"
+          git -C clone fetch --quiet --filter=blob:none --depth="$CLONE_DEPTH" origin "$COMMIT"
+          git -C clone checkout --quiet --detach FETCH_HEAD
+      - name: Build hand, three cold SCIP maps, one warm SCIP map
+        env:
+          STEM: ${{ matrix.stem }}
+          ARGS: ${{ join(matrix.args, ' ') }}
+        run: |
+          set -uo pipefail
+          mkdir -p work
+          scip-typescript --version; scip-python --version; command -v scip-go
+          timed() {
+            name=$1; shift
+            /usr/bin/time -v -o "work/$name.time.txt" "$@" > "work/$name.log" 2>&1
+            echo "$name: exit $?"
+            grep -E '^references |Indexing .*: done in|scip-typescript:' "work/$name.log" || true
+          }
+          timed hand bin/tolmap build "$PWD/clone" $ARGS --name "$STEM" --out work/hand
+          bin/tolmap dump-graph "$PWD/clone" $ARGS --out work/hand.graph.json > work/dump.log 2>&1
+          TOLMAP_SCIP_INDEX_DIR="$PWD/work/idx" \
+            timed scip1 bin/tolmap build "$PWD/clone" $ARGS --refs scip --name "$STEM" --out work/scip1
+          timed scip2 bin/tolmap build "$PWD/clone" $ARGS --refs scip --name "$STEM" --out work/scip2
+          timed scip3 bin/tolmap build "$PWD/clone" $ARGS --refs scip --name "$STEM" --out work/scip3
+          timed scipwarm bin/tolmap build "$PWD/clone" $ARGS --refs scip \
+            --previous-map "work/hand/${STEM}.json" --name "$STEM" --out work/scipwarm
+          ls -la work work/idx || true
+      - name: Delete clone
+        if: always()
+        run: rm -rf clone
+      - name: Compare with the oracle and with --refs hand
+        env:
+          STEM: ${{ matrix.stem }}
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          python eval/scip_ingest_measure.py repo --stem "$STEM" --slug "$SLUG" \
+            --commit "$COMMIT" --work work --tolmap bin/tolmap --out result/measure.json
+      - name: Stage artifact
+        if: always()
+        env:
+          STEM: ${{ matrix.stem }}
+        run: |
+          set -uo pipefail
+          mkdir -p result
+          cp work/*.log work/*.time.txt result/ 2>/dev/null || true
+          for run in hand scip1 scipwarm; do
+            cp "work/$run/${STEM}.json" "result/${STEM}.${run}.json" 2>/dev/null || true
+            cp "work/$run/${STEM}.symbols.json" "result/${STEM}.${run}.symbols.json" 2>/dev/null || true
+          done
+          ls -la result
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scip-ingest-${{ matrix.stem }}
+          path: result
+          retention-days: 30
+
+  summary:
+    name: scip-ingest summary
+    needs: measure
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scip-ingest-*
+          path: results
+      - name: Summarize
+        run: |
+          set -euo pipefail
+          # The summary never decodes an index; a stub scip_pb2 satisfies
+          # scip_ingest's import.
+          mkdir -p "$RUNNER_TEMP/stub" && echo "" > "$RUNNER_TEMP/stub/scip_pb2.py"
+          PYTHONPATH="$RUNNER_TEMP/stub:$PWD/eval" python eval/scip_ingest_measure.py summary \
+            --results results --out scip_ingest_summary.json --markdown scip_ingest_summary.md
+          cat scip_ingest_summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scip-ingest-summary
+          path: |
+            scip_ingest_summary.json
+            scip_ingest_summary.md
+          retention-days: 30
