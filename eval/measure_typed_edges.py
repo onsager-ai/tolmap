@@ -17,11 +17,13 @@ def read(path):
     }
 
 
-def pairs(document):
+def pairs(document, original_only=False):
     result = collections.Counter()
     symbols = [tuple(row[:5]) for row in document["symbols"]]
     assert len(symbols) == len(set(symbols)), "symbol identity is ambiguous"
     for edge in document["edges"]:
+        if original_only and len(edge) > 3 and edge[3] in (4, 8):
+            continue
         result[(symbols[edge[0]], symbols[edge[1]])] += edge[2]
     return result
 
@@ -55,7 +57,7 @@ def main():
     current, current_sizes = read(artifact / f"{stem}.symbols.json")
     previous, previous_sizes = read(artifact / f"{stem}.compare.symbols.json")
     before = pairs(previous)
-    after = pairs(current)
+    after = pairs(current, original_only=True)
     losses = {pair: count - after[pair] for pair, count in before.items()
               if after[pair] < count}
     assert not losses, f"existing edge occurrences lost: {len(losses)} pairs; first {list(losses.items())[:5]}"

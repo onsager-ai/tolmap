@@ -1975,7 +1975,7 @@ mod tests {
     fn python_and_typescript_abstract_inheritance_and_implements() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.py"), "from abc import ABC, abstractmethod\nclass Base(ABC):\n    @abstractmethod\n    def work(self): pass\nclass Child(Base):\n    def work(self): pass\n    def use(self): super().work()\nclass Meta(metaclass=ABCMeta): pass\n").unwrap();
-        fs::write(dir.path().join("a.ts"), "interface I { run(): void; value: number }\nabstract class Base { abstract run(): void; }\nclass Child extends Base implements I { value = 1; run() {} use() { this.run(); super.run(); } }\n").unwrap();
+        fs::write(dir.path().join("a.ts"), "interface I { run(): void; value: number }\nabstract class Base { abstract run(): void; base() {} }\nclass Child extends Base implements I { value = 1; run() {} use() { this.base(); super.base(); } }\n").unwrap();
         let nodes = vec![source("a.py", "a", "py"), source("a.ts", "a.ts", "ts")];
         let doc = build_fixture(dir.path(), &nodes);
         let py_base = id(&doc, 0, "Base");
@@ -1995,6 +1995,23 @@ mod tests {
             .any(|s| s.0 .1 == "run" && s.0 .5 == ts_base as isize && s.0 .7));
         assert!(typed_edge(&doc, ts_child, ts_base, EXTENDS));
         assert!(typed_edge(&doc, ts_child, ts_i, IMPLEMENTS));
+        let ts_base_method = doc
+            .symbols
+            .iter()
+            .position(|s| s.0 .1 == "base" && s.0 .5 == ts_base as isize)
+            .unwrap();
+        let ts_use = doc
+            .symbols
+            .iter()
+            .position(|s| s.0 .1 == "use" && s.0 .5 == ts_child as isize)
+            .unwrap();
+        assert_eq!(
+            doc.edges
+                .iter()
+                .find(|e| e[0] == ts_use && e[1] == ts_base_method && e[3] == CALL)
+                .unwrap()[2],
+            2
+        );
         assert!(doc
             .symbols
             .iter()
