@@ -47,14 +47,29 @@ export function TopBar({ catalogue, owner, repo, layer, onLayer }: Props) {
       style={{ paddingTop: "calc(8px + env(safe-area-inset-top, 0px))" }}
     >
       {!narrow && <span className="font-sans text-[15px] font-semibold">tolmap</span>}
+      {/* Bug (reported 09-21, fixed 09-24): on a phone, the fixed-width
+          theme toggle and layer-cycle button left this <select> squeezed to
+          a width that clipped its text mid-word ("langgenius/d") with no
+          indication anything was cut off. `min-w-0` removed the native
+          min-content floor so flexbox could shrink it that far in the first
+          place; a `min-w-[]` floor plus `text-ellipsis` (Chromium renders
+          this on a closed <select>, which is what every phone profile here
+          runs) fixes both halves at once: it still shrinks to fit, but
+          never past a legibly-truncated width, and truncation now reads as
+          "langgenius/d…" instead of an abrupt cut. Kept as one control
+          (not moved into the phone drawer) -- the drawer is for the
+          district/landmark list (useIsNarrow's own doc comment), and a
+          second navigation surface there would be a bigger change than this
+          truncation bug calls for. */}
       <select
         aria-label="Repository"
+        title={slug}
         value={slug}
         onChange={(e) => {
           const [o, r] = e.target.value.split("/");
           navigate({ to: "/$owner/$repo", params: { owner: o, repo: r }, search: { geo: "r", layer: "d" } });
         }}
-        className={`rounded-md border border-[var(--rule)] bg-[var(--chrome2)] px-2 py-1.5 text-[11.5px] text-[var(--on)] ${narrow ? "min-w-0 flex-1 py-1.5 text-xs" : ""}`}
+        className={`overflow-hidden rounded-md border border-[var(--rule)] bg-[var(--chrome2)] px-2 py-1.5 text-[11.5px] text-ellipsis whitespace-nowrap text-[var(--on)] ${narrow ? "min-w-[84px] flex-1 py-1.5 text-xs" : ""}`}
       >
         {withCurrent.map((m) => (
           <option key={m.slug} value={m.slug}>
