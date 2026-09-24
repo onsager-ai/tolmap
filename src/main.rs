@@ -180,7 +180,7 @@ fn cli_progress() -> tolmap::progress::Progress {
             WorkerEvent::StageFinished {
                 stage, duration_s, ..
             } => format!("{}: done in {duration_s:.2}s", stage.label()),
-            WorkerEvent::Log { message, .. } => message,
+            WorkerEvent::Log { message, .. } => message.clone(),
             _ => return,
         };
         if tty {

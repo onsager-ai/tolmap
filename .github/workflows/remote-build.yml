@@ -492,6 +492,12 @@ jobs:
       # The clone (working tree + fetched history) is this job's biggest
       # disk user on a 14 GB SSD; delete it as soon as both builds that
       # need it are done, before writing/uploading anything else.
+      - name: Capture dify worker event timeline
+        if: inputs.command == 'build' && matrix.slug == 'langgenius/dify' && steps.build_primary.outputs.exit_code == '0'
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+        run: python3 eval/worker_timeline.py bin-primary/tolmap clone worker_timeline.json
+
       - name: Delete clone
         if: always()
         run: rm -rf clone
@@ -530,6 +536,8 @@ jobs:
           cp -f result.json artifact/result.json 2>/dev/null || true
           cp -f primary.log artifact/primary.log 2>/dev/null || true
           cp -f primary.time.txt artifact/primary.time.txt 2>/dev/null || true
+          cp -f worker_timeline.json artifact/worker_timeline.json 2>/dev/null || true
+          cp -f worker-timeline.stderr artifact/worker-timeline.stderr 2>/dev/null || true
           cp -f "out-primary/${STEM}.json" "artifact/${STEM}.json" 2>/dev/null || true
           cp -f "out-primary/${STEM}.symbols.json" "artifact/${STEM}.symbols.json" 2>/dev/null || true
           if [ -d "out-primary/${STEM}.symbols" ]; then
