@@ -1443,3 +1443,83 @@ The dify worker stages from the final run are below, in seconds. Only the two pa
 | write map + symbols | 0.21 | 0.22 |
 
 After this change, dify's symbol collection (2.53 s) is smaller than extraction's parsing and metrics (8.75 s), symbol cards (6.78 s) and footprints (6.61 s). Those three are now the large phases, and this change does not touch them. The remaining collection time is mostly candidates (1.61 s) and spans (0.61 s). The span walk still scans earlier spans linearly to find each symbol's parent. That scan is kept for exactness because the step is no longer material. The ETA model in `src/service/eta.rs` is still seeded from finding 36's timeline, which had a 26.9 s dify parse. A cold-start ETA will therefore overestimate the parse stage until learned rows move it, and each learned ratio is clipped. This was not re-measured here. The [CI gate on `94f11fb`](https://github.com/onsager-ai/tolmap/actions/runs/35959226248) passed Rust formatting, clippy, release build and tests (including both equivalence tests), generated TypeScript bindings, offline parity and three-build map-plus-symbol determinism. The full nine-fixture parity job was skipped by its on-demand/nightly policy.
+
+## 41. SCIP gives exact references where a project's configuration loads without installs, and fails exactly where the hand-written resolver fails when it does not
+
+Owner decision 2026-09-24 (AskUserQuestion, session `16030105`, transcript line 3770, 05:07:45Z): **"Go to SCIP now."** This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s P0: CI only, no product change. This finding uses number 41 because main has 40 and [open PR #112](https://github.com/onsager-ai/tolmap/pull/112) cites 39.
+
+**What ran.** `remote-build.yml` with `command=scip-spike` calls `scip-spike.yml`, a reusable workflow. Standalone `workflow_dispatch` only works once a file is on the default branch. The indexers were scip-typescript 0.4.0, scip-python 0.6.6 and scip-go v0.2.7, on standard runners, for the five `eval/corpus.toml` pins. **Default mode installs nothing.** TypeScript gets no `pnpm install`, Python gets no pip/uv, and Go runs with `GOPROXY=off` and an empty module cache. That is the only mode the hosted worker could run without a sandbox (#110, risk 1). Dify's TypeScript and Python and prometheus's Go also ran with the lockfile install first, on the throwaway runner. TypeScript is indexed per tracked `tsconfig.json`, deepest first. Python runs at the repository root, and for dify also at `api/`, the nested root from finding 25. `eval/scip_ingest.py` walks the index document by document and derives four things, restricted to the map's `F`:
+- file→file pairs: an occurrence in A of a non-local symbol whose definition occurrence is in B;
+- symbol→symbol pairs, credited to the innermost span in tolmap's own symbols document, on both ends;
+- relationship pairs;
+- references that resolve into repository files outside the map.
+
+`eval/scip_compare.py` compares these with the map's `E` (the resolved imports) and the symbols document, both built by `tolmap` from main at `840e531` on the same checkout. It then re-partitions: SCIP pairs replace `static_signal` in the `dump-graph` graph, computed as `finish_graph` does (undirected sum, per-language maximum floored at 1.0, 0.02 raw-weight floor). `tolmap build --graph` then runs the unchanged mass-normalised blend (finding 1), prune and Leiden. `tolmap parity` scores the result against a control map built from the unmodified graph. A SCIP pair that was not a candidate before gets exact proximity and zero cochange and semantic. finish_graph had dropped such a pair only below 0.02, so both values are small, though not provably zero. The same construction run on the hand-written imports (`hand-rebuilt`) reproduces the control at 100% placement on four repositories. On prometheus it gives 97.8%, because `dump-graph` rounds Go's 1/|D| import shares to three decimals. That is this construction's noise floor.
+
+Runs: [index + analysis 35960792519](https://github.com/onsager-ai/tolmap/actions/runs/35960792519) and its [final analysis 35962203018](https://github.com/onsager-ai/tolmap/actions/runs/35962203018), which reused that run's indexes. [Run 35960017915](https://github.com/onsager-ai/tolmap/actions/runs/35960017915) ([reanalysed](https://github.com/onsager-ai/tolmap/actions/runs/35960796138)) used `--pnpm-workspaces --infer-tsconfig` for TypeScript, recorded below as a failed method.
+
+### Cost and file edges
+
+Hand-written pairs are the map's `E`, restricted to that language. Recall is the share of hand-written pairs SCIP also finds. At directory granularity, the target is its directory, which is the fair unit for Go: `resolve_multi` spreads a Go import over every file of the package. For comparison, today's whole `tolmap build` takes 7.0 s / 46 MB on django, 42.0 s / 202 MB on dify, 11.0 s / 46 MB on prometheus, 2.7 s / 32 MB on vue and 75.8 s / 297 MB on n8n.
+
+| repo | index | wall s | peak RSS GB | index MB | files indexed / mapped | hand | SCIP | both | recall | SCIP-only share | dir recall |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| django | py | 79.2 | 5.39 | 103.7 | 851 / 851 | 3,173 | 4,018 | 3,141 | 0.990 | 21.8% | 0.998 |
+| dify | py at root | 246.4 | 7.89 | 171.3 | 1,987 / 1,989 | 7,611 | 10,961 | 6,806 | 0.894 | 37.9% | 0.961 |
+| dify | py at `api/` | 236.1 | 7.17 | 155.6 | 1,815 / 1,989 | 7,611 | 11,453 | 7,383 | 0.970 | 35.5% | 0.990 |
+| dify | py at `api/`, installed (+24.5 s) | 285.5 | 10.53 | 165.9 | 1,815 / 1,989 | 7,611 | 11,486 | 7,381 | 0.970 | 35.7% | 0.989 |
+| dify | ts | **failed** (exit 1, 0.4 s) | — | — | 0 / 4,358 | 16,546 | — | — | — | — | — |
+| dify | ts, installed (+23.0 s) | 251.7 | 5.67 | 230.5 | 4,350 / 4,358 | 16,546 | 22,285 | 16,539 | **1.000** | 25.8% | 1.000 |
+| n8n | ts | 314.5 | 8.84 | 582.7 | 11,991 / 11,991 | 39,402 | 23,840 | 20,263 | **0.514** | 15.0% | 0.420 |
+| prometheus | go | 3.0 | 0.80 | 53.5 | 409 / 444 | 5,574 | 5,436 | 4,842 | 0.869 | 10.9% | 0.997 |
+| prometheus | go, installed (+25.9 s) | 299.2 | 2.98 | 61.5 | 409 / 444 | 5,574 | 5,438 | 4,842 | 0.869 | 11.0% | 0.997 |
+| prometheus | ts at `web/ui` | 6.7 | 0.54 | 4.9 | 186 / 187 | 518 | 530 | 514 | 0.992 | 3.0% | 0.989 |
+| vue | ts | 20.0 | 0.77 | 16.9 | 233 / 239 | 1,186 | 1,911 | 1,183 | **0.998** | 38.1% | 0.995 |
+
+**Where a project's configuration loads, SCIP is a near-superset of today's graph.** Django keeps 99.0% of hand-written pairs. Vue keeps 99.8%, and all 259 of its cross-package pairs through the root tsconfig's `@vue/*` paths. Prometheus's UI keeps 99.2%, and dify installed keeps 16,539 of 16,546. Each adds 3–38% more pairs, for example `django/contrib/admin/sites.py → django/apps/registry.py` and `packages/compiler-dom/src/transforms/vText.ts → packages/compiler-core/src/ast.ts`. The hand-only residue is small and explicable. In django it is `gis/geos/*.py → prototypes/__init__.py`, where Pyright credits the re-exported name to its defining submodule. In vue it is benchmark files outside every tsconfig.
+
+**Without installs, the TypeScript monorepos fail, in two different ways.** Every dify tsconfig `extends` `@dify/tsconfig/*`, a workspace package that exists only after install. scip-typescript reports TS6053 and exits with *"no files got indexed"*. n8n's configs load, but its `@n8n/*` workspace imports resolve through `node_modules`. The hand-written resolver finds 11,690 cross-package pairs in n8n; SCIP finds 85. Overall recall is 0.514. Installed, dify finds 3,622 cross-package pairs against the hand-written 45. That is #101's class of import (`web/… → packages/dify-ui/src/…`). #101's own example, `cli/ → packages/contracts`, resolves 284 references under SCIP, but into `packages/contracts/generated/`, which tolmap's source collection excludes. So an exact index alone would not draw that edge. The map would also have to admit generated files. The first run's `--pnpm-workspaces --infer-tsconfig` method was worse. It inferred a tsconfig for each package without one, which displaced vue's root config: 6 of 259 cross-package pairs. Installed dify stayed at recall 0.420, because the root inferred config claimed every file first.
+
+**Python and Go do not need installs for in-repo edges.** Installing dify's API dependencies changes its in-repo pairs by 33 (11,453 → 11,486), and prometheus's Go by 2. What installs change is external references: dify Python 15,867 → 42,183, and prometheus Go 8,579 → 13,730. They also cost time and memory: Go goes from 3.0 s to 299 s and 0.8 to 3.0 GB, and dify Python peaks at 10.5 GB. Rooting Pyright at `api/` raises dify's recall from 0.894 to 0.970. That is finding 25's nested root again, and an indexer needs it as much as the resolver does. Go's file-level recall of 0.869 is the resolver's package fan-out: directory-level recall is 0.997. The 35 unindexed Go files sit in `tsdb/fileutil` (17), `util/runtime` (7), `model/labels` (4) and nested-module tool directories. By their directories these look like platform- and build-tag variants plus modules outside the root `go.mod`, but that is inferred from the directories and was not checked file by file.
+
+### Symbols, calls and relationships
+
+tolmap's call edges are nearly all confirmed. SCIP has the same symbol pair for 97.4% of django's call pairs (8,311 / 8,529), 99.4% of dify Python's at the root, 96.5% of prometheus Go's, 89.4% of vue's, 86.8% of n8n's and 76.4% of installed dify TypeScript's. SCIP credits many more in-repository references. Callable references inside symbols that reach a mapped definition number 11,408 for django, against 10,178 tolmap call-edge occurrences. The other pairs are 3,722 against 3,036 for vue, 12,493 against 5,245 for prometheus Go, 28,310 against 11,565 for dify Python, and 60,601 against 43,752 for n8n. Finding 30's share for the two single-language repositories is resolved calls over call sites: django 10,313 / 32,639 (31.6%) and vue 3,188 / 7,877 (40.5%). The SCIP numerator over the same denominator would be 35.0% and 47.3%. **That is an estimate, not a like-for-like share.** SCIP has no notion of a call site. Its callable references include methods taken as values and exclude class instantiation (a type reference) and calls on untyped receivers, which produce no occurrence at all. Symbol pairs overall are 18,453 SCIP against 12,382 tolmap on django, and 19,952 against 4,616 on prometheus Go.
+
+Relationships are exact where tolmap's are heuristic. scip-python's `is_implementation` pairs match 3,016 of django's 3,544 extends/implements/overrides pairs. For prometheus, scip-go emits 1,630 in-repo implementation pairs; they confirm **334 of the 902** `possible_implementation` edges finding 37 warned were candidates, not proven satisfaction. TypeScript relationships are sparse (vue 16, dify installed 117). Definition occurrences carry an enclosing range for 38% of django's definitions and 14% of installed dify TypeScript's. P1 cannot rely on enclosing ranges alone to find the innermost symbol, so it will need spans, as this ingest does with tolmap's.
+
+### Re-partition
+
+Primary weighting: each directed pair weighs its distinct referenced symbols. `binary` weighs every pair at 1. `uses` drops pairs that only a module or package symbol supports: import-only module references, and Go package clauses. Warm-started builds seed Leiden from the control map, as finding 4's production path would. The `hand-rebuilt` warm-start floor is 98.9–100%.
+
+| repo | static signal | districts | q | placement vs control | warm: districts / q / placement |
+|---|---|---:|---:|---:|---:|
+| django | today | 12 | 0.5092 | — | — |
+| django | SCIP py | 13 | 0.4968 | 71.1% | 12 / 0.4980 / **91.3%** |
+| django | SCIP py, binary | 12 | 0.5095 | 73.4% | 11 / 0.5106 / 93.7% |
+| dify | today | 78 | 0.7374 | — | — |
+| dify | SCIP py (root) + hand TS (fallback) | 43 | 0.7279 | 91.4% | 41 / 0.7259 / 96.6% |
+| dify | SCIP py + TS, installed | 47 | 0.7035 | 68.1% | 47 / 0.7143 / **87.9%** |
+| n8n | today | 80 | 0.7793 | — | — |
+| n8n | SCIP ts (no installs) | **250** | 0.8891 | 46.7% | 245 / 0.8968 / **56.0%** |
+| prometheus | today | 11 | 0.6281 | — | — |
+| prometheus | SCIP go + ts | 15 | 0.6717 | 83.0% | 11 / 0.6741 / **95.2%** |
+| prometheus | SCIP go + ts, binary | 13 | 0.6372 | 92.6% | 11 / 0.6421 / 96.5% |
+| vue | today | 8 | 0.5389 | — | — |
+| vue | SCIP ts | 7 | 0.4844 | 77.8% | 7 / 0.4854 / **85.8%** |
+
+The partition moves more than the edge overlap suggests. Django's graph keeps 99% of its hand-written pairs and gains 22%, yet a cold re-partition places only 71.1% of files in the matched district. Warm-started, it places 91.3% with the same twelve districts. Dify's installed graph is exact on both languages and consolidates 78 districts to 47, and Python alone to 43. The `uses` variant is not consistently better. It is worse on django (59.9% cold, 87.3% warm) and prometheus (79.6% cold), and better only for dify's `api/`-rooted Python (89.6% against 84.4% cold). n8n without installs is the regression. Losing the cross-package pairs fragments the map from 80 districts to 250, which raises q (0.78 → 0.89) exactly as finding 15 predicts for a graph that lost its bridges. Q is computed on each variant's own graph, so a q difference is not a quality ranking.
+
+### Determinism
+
+scip-python (django) and scip-typescript (vue) wrote byte-identical indexes on the same runner. django's hash also matched across the first and final runs. **scip-go did not.** Both of prometheus's runs differed in bytes in each dispatch, but every derived file, symbol and relationship pair was identical: the nondeterminism is document or occurrence order. A P1 ingest must sort everything it reads, as this one does, and must not cache by index hash.
+
+### What this settles and what it does not
+
+It settles four things:
+- SCIP is exact and a near-superset of today's graph when the project's own configuration loads.
+- Python and Go get their in-repo edges without installs.
+- scip-go's relationships replace the Go `possible_implementation` heuristic.
+- The default no-install mode loses exactly the edges #101 is about: a TypeScript monorepo whose tsconfigs or workspace imports live in uninstalled packages indexes nothing (dify) or loses its cross-package graph (n8n).
+
+It does not settle whether the hosted worker may install. That needs a sandbox, which is an owner decision (#110 risk 1). Cost is minutes and GB: peak RSS reaches 5–10.5 GB for Pyright on django/dify and 8.8 GB for scip-typescript on n8n, against today's 46–297 MB builds. That bears on the worker class and hosting spend, both reserved to the owner. The runners' timings vary; the first run measured django at 133 s against 79 s here. Kotlin, Java, C#, Rust and C/C++ were not attempted. The parity oracle's fixtures would move under any SCIP default: vue's cold placement is 77.8% against today's map. #110 risk 4's re-derivation stands.
