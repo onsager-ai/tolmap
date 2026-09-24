@@ -122,8 +122,20 @@ fn ring(mask: &[bool], canvas: &Canvas, compact_tiny: bool) -> Option<Rings> {
 fn smooth(ring: &Ring) -> Ring {
     let mut output = Vec::with_capacity(ring.len() * 2);
     for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
-        output.push([a[0] * 0.8 + b[0] * 0.2, a[1] * 0.8 + b[1] * 0.2]);
-        output.push([a[0] * 0.2 + b[0] * 0.8, a[1] * 0.2 + b[1] * 0.8]);
+        let dx = b[0] - a[0];
+        let dy = b[1] - a[1];
+        let length = dx.abs().max(dy.abs());
+        if length <= 2.0 {
+            // A staircase consists of one-cell edges. Bridging each edge
+            // once makes diagonals without doubling every contour vertex.
+            output.push([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]);
+        } else {
+            // Long sides need both endpoints or a single midpoint would
+            // cut away most of a wide card. Bevel by a quarter cell only.
+            let t = 0.25 / length;
+            output.push([a[0] + dx * t, a[1] + dy * t]);
+            output.push([b[0] - dx * t, b[1] - dy * t]);
+        }
     }
     output
 }
@@ -1121,6 +1133,15 @@ mod tests {
         let outline = ring(&mask, &canvas, true).unwrap();
         assert_eq!(outline.len(), 1);
         assert!(outline[0].len() <= 12);
+    }
+
+    #[test]
+    fn short_steps_smooth_without_doubling_vertices() {
+        let staircase = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [10.0, 1.0]];
+        let rounded = smooth(&staircase);
+        assert_eq!(rounded.len(), staircase.len() + 2);
+        assert_eq!(rounded[0], [0.5, 0.0]);
+        assert_eq!(rounded[1], [1.0, 0.5]);
     }
 
     #[test]
