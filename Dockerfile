@@ -148,6 +148,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
+# Worker hardening (src/service/jobs.rs::process_worker_exe, docs/SCIP_SANDBOX.md
+# #4.1 point 4): a dedicated, unprivileged system user the `tolmap worker`
+# child is dropped to, distinct from the service process itself. No `USER`
+# directive follows this -- the service (`tolmap serve`, this image's `CMD`)
+# deliberately keeps running as root, which is what lets it drop the worker
+# child's privilege (`CommandExt::uid()/gid()`) and `chown` each job's
+# directory to this uid before handing it to the child in the first place;
+# a root-owned service that spawns a non-root worker is the whole point,
+# not an oversight of one.
+#
+# Fixed, pinned uid/gid (10001:10001) rather than a dynamically-allocated
+# one from `useradd`'s default range, so it is a stable value the service
+# can bake in as `ENV` and read back (`service::config::env_var_or`, the
+# same pattern as `TOLMAP_STATIC_DIR` below) instead of doing a
+# passwd/getpwnam lookup at runtime. 10001 does not collide with anything
+# else this `debian:bookworm-slim` base or the packages above create.
+# `--no-create-home` (no home directory needed -- the worker's own
+# directory is a fresh, chowned-to-this-uid per-job dir, not $HOME) and
+# `--shell /usr/sbin/nologin` (this account is exec'd into directly by
+# `Command::uid()/gid()`, never logged into).
+RUN groupadd --system --gid 10001 tolmap-worker \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin \
+        --uid 10001 --gid 10001 tolmap-worker
+
+# Baked-in image-layout constants (same pattern as TOLMAP_STATIC_DIR
+# below): the uid/gid above is fixed at image build time, not a
+# deployment-tunable fly.toml value, so the running service reads it back
+# from here rather than fly.toml's [env]. See
+# `service::config::ServeConfig::worker_uid`/`worker_gid`.
+ENV TOLMAP_WORKER_UID=10001
+ENV TOLMAP_WORKER_GID=10001
+
 # The exact path the rust stage's build.rs baked into the binary's rpath
 # (`-Wl,-rpath,/opt/leiden/lib`, since LEIDEN_PREFIX=/opt/leiden there) --
 # copied from `native` directly rather than `rust-builder` only because

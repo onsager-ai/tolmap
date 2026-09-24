@@ -65,5 +65,11 @@ A deploy with no tag to cut — a rollback, or shipping a fix that is already on
 
 Change it in `fly.toml` and in `deploy/railway.staging.env`, in the same PR, with the arithmetic in `fly.toml`'s comment. CI's `deploy env parity` job fails the build if only one side moves. A deliberate one-sided knob goes in `EXPECTED_ONLY_IN_*` in `scripts/check_deploy_env_parity.py` with the reason written next to it.
 
+## Worker privilege and environment model
+
+The `tolmap worker` child every index job spawns (`src/service/jobs.rs::process_worker_exe`) runs as an unprivileged `tolmap-worker` user (fixed uid/gid `10001:10001`, baked into the runtime image as `TOLMAP_WORKER_UID`/`TOLMAP_WORKER_GID` — see the Dockerfile's runtime stage), with an empty environment plus a short explicit allowlist (`PATH`, `LANG`, the `TOLMAP_NAMER_*` budget/ledger knobs, and `OPENROUTER_API_KEY` only when `TOLMAP_NAMER=model`), and its own per-job directory instead of the shared `cache_dir` — see that function's doc comments for the full reasoning. This only applies when the service itself runs as root, which is exactly the Fly.io runtime image's case (no `USER` in the Dockerfile, deliberately); locally and in CI the service is not root, so the worker still runs as the current user, unprivileged-vs-service distinction and all.
+
+Nothing here needs a migration step for an existing `/data` volume. The per-job directories this creates are dynamic — made fresh and torn down by the service on every single job, never a static layout an operator provisions — so there is nothing to pre-create, `chown`, or backfill before redeploying an existing machine onto this change.
+
 
 `TOLMAP_PRUNE_VARIANT` accepts `absolute`, `percentile`, `node-relative`, or `pre-rescale` and defaults to `node-relative` when unset or invalid. Both staging and production set the owner-approved default explicitly so a deployment cannot retain the former absolute default through stale configuration.

@@ -9,6 +9,13 @@ build = "build.rs"
 [dependencies]
 anyhow = "=1.0.104"
 clap = { version = "=4.6.7", features = ["derive"] }
+# `libc::geteuid()` -- std has no safe way to ask "am I root", and dropping
+# the worker child to an unprivileged uid/gid (service::jobs::process_worker_exe)
+# needs to know that before deciding whether CommandExt::uid()/gid() is even
+# callable (it errors under a non-root caller). Already in Cargo.lock as a
+# transitive dependency at this exact version; pinned explicitly here rather
+# than left implicit now that this crate calls into it directly.
+libc = "=0.2.189"
 libm = "=0.2.15"
 rand = "=0.9.2"
 rand_mt = "=6.0.3"

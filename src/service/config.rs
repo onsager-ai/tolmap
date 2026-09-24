@@ -151,6 +151,23 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_RETAIN_COMMITS_PER_REPO`.
     pub retain_commits_per_repo: usize,
+    /// Uid/gid the worker child (`service::jobs::process_worker_exe`) is
+    /// dropped to when the service itself is running as root -- the
+    /// Dockerfile runtime stage's case, and the only one where dropping
+    /// privilege is even possible (`CommandExt::uid()/gid()` fails if the
+    /// caller isn't root). Baked into the image as `TOLMAP_WORKER_UID` /
+    /// `TOLMAP_WORKER_GID` `ENV`, the same image-layout-constant pattern as
+    /// `TOLMAP_STATIC_DIR` -- not a fly.toml deployment tunable, since the
+    /// uid is fixed at image build time (`useradd --uid 10001` in the
+    /// Dockerfile) and there is nothing an operator would ever want to
+    /// retune per-deployment. Defaults below (10001/10001) only matter for
+    /// local dev/CI, where the image's `ENV` is absent and the service is
+    /// not root anyway, so no uid drop is attempted regardless of what
+    /// these default to.
+    ///
+    /// Env: `TOLMAP_WORKER_UID` / `TOLMAP_WORKER_GID`.
+    pub worker_uid: u32,
+    pub worker_gid: u32,
 }
 
 impl ServeConfig {
@@ -194,6 +211,12 @@ impl ServeConfig {
         // looked like what) while still being a bound instead of the
         // unbounded growth issue #23 gap 2 reported -- see store::prune.
         let retain_commits_per_repo = env_var_or("TOLMAP_RETAIN_COMMITS_PER_REPO", 20usize);
+        // 10001 is arbitrary but fixed -- it just has to not collide with
+        // anything else the runtime image's base (debian:bookworm-slim)
+        // creates. See the Dockerfile's `useradd` line, which is where the
+        // value that actually matters in production is baked in.
+        let worker_uid = env_var_or("TOLMAP_WORKER_UID", 10001u32);
+        let worker_gid = env_var_or("TOLMAP_WORKER_GID", 10001u32);
         ServeConfig {
             bind: SocketAddr::new(bind_ip, port),
             db_path,
@@ -204,6 +227,8 @@ impl ServeConfig {
             namer_model,
             limits: Limits::from_env(),
             retain_commits_per_repo,
+            worker_uid,
+            worker_gid,
         }
     }
 }

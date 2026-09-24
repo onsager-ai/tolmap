@@ -155,6 +155,28 @@ impl Store {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("open sqlite store {}", path.display()))?;
+        // Worker hardening (docs/SCIP_SANDBOX.md #4.1 point 4): lock the
+        // file itself down to the service's own uid, not its *directory*.
+        // The directory is deliberately left alone here -- in today's
+        // `fly.toml` layout the store's directory (`/data`, from
+        // `TOLMAP_DB_PATH=/data/tolmap.sqlite3`) is an *ancestor* of
+        // `TOLMAP_CACHE_DIR=/data/cache`, and a `0700`-root-owned `/data`
+        // would deny the dropped-uid worker child even search permission
+        // into `/data/cache/work/.../job_dir`, breaking every job outright
+        // -- see `jobs::harden_persistent_dir`'s doc comment for the fuller
+        // version of this. Locking the file (not an ancestor of anything
+        // the worker needs to reach) gets the same "even a bug that points
+        // the worker here can't read it" guarantee without that collateral
+        // breakage. Does not cover the `-wal`/`-shm` sidecar files WAL mode
+        // below creates lazily on first write -- they inherit the
+        // process's umask instead; a real gap, but a narrow one (they hold
+        // only recent, not-yet-checkpointed writes, not the whole store).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("harden store file {}", path.display()))?;
+        }
         // WAL so a long-running index build's occasional store write does
         // not block concurrent GET /api/maps reads behind it.
         conn.pragma_update(None, "journal_mode", "WAL")?;
