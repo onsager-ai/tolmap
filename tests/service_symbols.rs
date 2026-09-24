@@ -51,6 +51,12 @@ async fn district_route_includes_remote_symbol_endpoint() {
         namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),
         limits: Limits::default(),
         retain_commits_per_repo: 20,
+        // Unused by this test -- it never spawns a worker -- so the
+        // literal value doesn't matter, unlike `service::jobs`'s own test
+        // helper, which needs the *current* uid/gid so its uid-drop tests
+        // behave correctly whether or not the test runner is root.
+        worker_uid: 0,
+        worker_gid: 0,
     };
     let store = Store::open(&config.db_path).unwrap();
     store
