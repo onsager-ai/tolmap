@@ -226,7 +226,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
     for source in &sources {
         let files = extract::source_files(&materialized.path, &source.pkg, source.language)
             .map_err(|error| fail("detection_failed", error.to_string()))?;
-        let bytes = files
+        let bytes: u64 = files
             .iter()
             .filter_map(|path| {
                 std::fs::metadata(materialized.path.join(path))
