@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::progress::{ProgressValue, StageId};
@@ -21,7 +22,7 @@ use crate::service::time::now_rfc3339;
 use crate::service::AppState;
 use crate::worker::{PreviousMap, RepoFeatures, WorkerEvent, WorkerSpec};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
     Queued,
@@ -32,8 +33,9 @@ pub enum JobStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct JobSnapshot {
+    #[ts(type = "string")]
     pub job_id: Uuid,
     pub slug: String,
     pub commit: Option<String>,
@@ -59,7 +61,7 @@ pub struct JobSnapshot {
     pub stages: Vec<StageSnapshot>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum StageState {
     Pending,
@@ -68,7 +70,7 @@ pub enum StageState {
     Failed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct StageSnapshot {
     pub id: StageId,
     pub label: String,

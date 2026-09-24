@@ -3,6 +3,7 @@
 //! run cannot replace the seed or make another repository's ETA collapse.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::progress::{ProgressValue, StageId};
 use crate::worker::RepoFeatures;
@@ -15,7 +16,7 @@ pub struct TimingRow {
     pub stage_s: Vec<Option<f64>>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum EtaBasis {
     Model,
@@ -23,7 +24,7 @@ pub enum EtaBasis {
     Blend,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS)]
 pub struct Eta {
     pub low_s: f64,
     pub high_s: f64,
