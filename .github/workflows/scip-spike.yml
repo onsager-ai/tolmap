@@ -1,0 +1,360 @@
+# Issue #110, phase P0: measure what SCIP indexes would change, in CI only,
+# with no product change. Called from remote-build.yml with
+# `command=scip-spike`, after that workflow's `setup` job has built main's
+# `tolmap` binary (inputs.ref) and its Leiden runtime libraries.
+#
+# Why a reusable workflow behind remote-build.yml rather than its own
+# `workflow_dispatch`: GitHub only dispatches a workflow whose file is on the
+# default branch, and this spike has to run from its own branch before it is
+# reviewed. remote-build.yml is already on main, dispatching it with
+# `--ref spike/scip-p0` runs that ref's copy of both files, and the spike
+# reuses the binary its `setup` job builds instead of building another.
+#
+# Same runner budget as remote-build.yml (read its header): standard
+# GitHub-hosted runners only, no new spend. Indexers are type checkers and
+# the maintainer's laptop cannot run them (CLAUDE.md); every heavy step here
+# is on a runner.
+#
+# Jobs:
+#   plan      -- matrices from eval/scip_plan.py (pins from eval/corpus.toml)
+#   baseline  -- today's pipeline on each pinned checkout: `tolmap build`
+#                (map + symbols), `tolmap dump-graph`, and a control map from
+#                `build --graph` on the unmodified graph
+#   index     -- one job per (repository, language, variant): pinned
+#                indexer, /usr/bin/time -v, byte-stability where runs=2
+#   analyze   -- eval/scip_compare.py per repository: ingest, compare,
+#                re-partition through the existing blend/partition
+#   summary   -- one JSON and a markdown step summary
+#
+# `reuse_run` skips baseline and index and analyzes the artifacts of an
+# earlier run instead, so the analysis can be iterated without re-indexing.
+
+name: SCIP spike (#110 P0)
+
+on:
+  workflow_call:
+    inputs:
+      reuse_run:
+        description: "run id whose scip-base-*/scip-idx-* artifacts to analyze instead of rebuilding them"
+        required: false
+        type: string
+        default: ""
+
+env:
+  CLONE_DEPTH: "4000"
+  # Pinned indexer versions (issue #110: pin every indexer).
+  SCIP_TYPESCRIPT_VERSION: "0.4.0"
+  SCIP_PYTHON_VERSION: "0.6.6"
+  SCIP_GO_VERSION: "v0.2.7"
+  SCIP_PROTO_TAG: "v0.10.0"
+  PROTOBUF_VERSION: "5.29.3"
+  GRPCIO_TOOLS_VERSION: "1.70.0"
+
+jobs:
+  plan:
+    name: plan scip matrices
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      baseline: ${{ steps.plan.outputs.baseline }}
+      index: ${{ steps.plan.outputs.index }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: plan
+        run: |
+          set -euo pipefail
+          plan="$(python3 eval/scip_plan.py)"
+          echo "baseline=$(jq -c .baseline <<<"$plan")" >> "$GITHUB_OUTPUT"
+          echo "index=$(jq -c .index <<<"$plan")" >> "$GITHUB_OUTPUT"
+          jq . <<<"$plan"
+
+  baseline:
+    name: baseline ${{ matrix.slug }}
+    needs: plan
+    if: inputs.reuse_run == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.baseline) }}
+    env:
+      LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+      - run: chmod +x bin/tolmap
+      - name: Install /usr/bin/time
+        run: command -v /usr/bin/time || { sudo apt-get update && sudo apt-get install -y time; }
+      # Same clone as remote-build.yml: co-change needs history.
+      - name: Clone at pinned commit
+        env:
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p clone
+          git -C clone init --quiet
+          git -C clone remote add origin "https://github.com/${SLUG}.git"
+          git -C clone fetch --quiet --filter=blob:none --depth="$CLONE_DEPTH" origin "$COMMIT"
+          git -C clone checkout --quiet --detach FETCH_HEAD
+      - name: Today's map, symbols, graph and control map
+        env:
+          STEM: ${{ matrix.stem }}
+          ARGS: ${{ join(matrix.args, ' ') }}
+        run: |
+          set -euo pipefail
+          mkdir -p base
+          /usr/bin/time -v -o base/build.time.txt \
+            bin/tolmap build "$PWD/clone" $ARGS --name "$STEM" --out base > base/build.log 2>&1
+          rm -rf "base/${STEM}.symbols"
+          bin/tolmap dump-graph "$PWD/clone" $ARGS --out "base/${STEM}.graph.json" > base/dump.log 2>&1
+          bin/tolmap build --graph "base/${STEM}.graph.json" --name "${STEM}.control" \
+            --out base --no-parcels > base/control.log 2>&1
+          git -C clone ls-files -- '*package.json' | grep -v node_modules > base/package_roots.txt || true
+          tail -n 5 base/build.log
+          ls -la base
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scip-base-${{ matrix.stem }}
+          path: base
+          retention-days: 14
+
+  index:
+    name: index ${{ matrix.slug }} ${{ matrix.id }}
+    needs: plan
+    if: inputs.reuse_run == ''
+    runs-on: ubuntu-latest
+    # Generous, not a cap on the measurement: long enough for n8n's
+    # TypeScript to finish on a standard runner, short enough that a hung
+    # indexer does not burn the 6-hour job ceiling.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.index) }}
+    env:
+      # V8's default heap would turn a large index into an OOM that says
+      # nothing about the runner; 13 GiB stays inside its 16 GB.
+      NODE_OPTIONS: --max-old-space-size=13312
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      COREPACK_ENABLE_STRICT: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - name: Install /usr/bin/time
+        run: command -v /usr/bin/time || { sudo apt-get update && sudo apt-get install -y time; }
+      # No history needed: indexers read the working tree only.
+      - name: Clone at pinned commit
+        env:
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p clone
+          git -C clone init --quiet
+          git -C clone remote add origin "https://github.com/${SLUG}.git"
+          git -C clone fetch --quiet --depth=1 origin "$COMMIT"
+          git -C clone checkout --quiet --detach FETCH_HEAD
+
+      - uses: actions/setup-node@v4
+        if: matrix.lang != 'go'
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        if: matrix.lang == 'py'
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        if: matrix.lang == 'go'
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Install scip-typescript
+        if: matrix.lang == 'ts'
+        run: |
+          npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}"
+          corepack enable
+          scip-typescript --version
+      - name: Install scip-python
+        if: matrix.lang == 'py'
+        run: |
+          npm install -g "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
+          scip-python --version
+      - name: Install uv (Python install variant)
+        if: matrix.lang == 'py' && matrix.variant == 'install'
+        run: pip install uv==0.12.18
+      # Installs scip-go's own dependencies into the default module cache.
+      # The index step below points GOMODCACHE somewhere else, so none of
+      # them can leak into a no-install index.
+      - name: Install scip-go
+        if: matrix.lang == 'go'
+        run: |
+          go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Index
+        env:
+          LANG_CODE: ${{ matrix.lang }}
+          VARIANT: ${{ matrix.variant }}
+          ROOT: ${{ matrix.root }}
+          RUNS: ${{ matrix.runs }}
+        run: |
+          set -uo pipefail
+          if [ "$LANG_CODE" = "go" ]; then
+            export GOMODCACHE="$RUNNER_TEMP/gomodcache"
+            export GOTOOLCHAIN=local
+            mkdir -p "$GOMODCACHE"
+            if [ "$VARIANT" = "default" ]; then
+              # No dependency install: nothing may be fetched while indexing.
+              export GOPROXY=off
+            fi
+          fi
+          bash eval/scip_index.sh "$LANG_CODE" "$VARIANT" "$ROOT" "$RUNS" clone out
+          du -sh out/* || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scip-idx-${{ matrix.stem }}-${{ matrix.id }}
+          path: out
+          retention-days: 14
+
+  analyze:
+    name: analyze ${{ matrix.slug }}
+    needs: [plan, baseline, index]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.baseline) }}
+    env:
+      LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate scip_pb2 from the pinned scip.proto
+        run: |
+          set -euo pipefail
+          pip install "protobuf==${PROTOBUF_VERSION}" "grpcio-tools==${GRPCIO_TOOLS_VERSION}"
+          mkdir -p "$RUNNER_TEMP/scippb"
+          curl -fsSL --retry 3 \
+            "https://raw.githubusercontent.com/scip-code/scip/${SCIP_PROTO_TAG}/scip.proto" \
+            -o "$RUNNER_TEMP/scippb/scip.proto"
+          python -m grpc_tools.protoc -I "$RUNNER_TEMP/scippb" \
+            --python_out="$RUNNER_TEMP/scippb" "$RUNNER_TEMP/scippb/scip.proto"
+          echo "PYTHONPATH=$RUNNER_TEMP/scippb:$PWD/eval" >> "$GITHUB_ENV"
+      - name: Ingest self-test
+        run: python eval/scip_ingest.py --self-test
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+      - run: chmod +x bin/tolmap
+      - name: Install /usr/bin/time
+        run: command -v /usr/bin/time || { sudo apt-get update && sudo apt-get install -y time; }
+      - uses: actions/download-artifact@v4
+        if: inputs.reuse_run == ''
+        with:
+          name: scip-base-${{ matrix.stem }}
+          path: base
+      - uses: actions/download-artifact@v4
+        if: inputs.reuse_run == ''
+        with:
+          pattern: scip-idx-${{ matrix.stem }}-*
+          path: idx
+      - uses: actions/download-artifact@v4
+        if: inputs.reuse_run != ''
+        with:
+          name: scip-base-${{ matrix.stem }}
+          path: base
+          run-id: ${{ inputs.reuse_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: inputs.reuse_run != ''
+        with:
+          pattern: scip-idx-${{ matrix.stem }}-*
+          path: idx
+          run-id: ${{ inputs.reuse_run }}
+          github-token: ${{ github.token }}
+      - name: Compare and re-partition
+        env:
+          STEM: ${{ matrix.stem }}
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v -o analyze.time.txt python eval/scip_compare.py repo \
+            --stem "$STEM" --slug "$SLUG" --commit "$COMMIT" \
+            --base base --idx idx --tolmap bin/tolmap --out result
+          cp analyze.time.txt result/
+          rm -f result/*.graph.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scip-result-${{ matrix.stem }}
+          path: result
+          retention-days: 30
+
+  summary:
+    name: scip summary
+    needs: analyze
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scip-result-*
+          path: results
+      - name: Summarize
+        run: |
+          set -euo pipefail
+          # scip_compare imports scip_ingest, which imports scip_pb2; the
+          # summary never decodes an index, so a stub module is enough.
+          mkdir -p "$RUNNER_TEMP/stub" && echo "" > "$RUNNER_TEMP/stub/scip_pb2.py"
+          PYTHONPATH="$RUNNER_TEMP/stub:$PWD/eval" python eval/scip_compare.py summary \
+            --results results --out scip_summary.json --markdown scip_summary.md
+          cat scip_summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scip-summary
+          path: |
+            scip_summary.json
+            scip_summary.md
+          retention-days: 30
