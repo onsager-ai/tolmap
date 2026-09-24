@@ -37,6 +37,7 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
             "symbol_indices": all_ids,
             "symbols": [symbols[i] for i in all_ids],
             "edges": touching,
+            "kinds": document.get("kinds", ["unknown"]),
             "module_code_lines": {key: value for key, value in document["module_code_lines"].items() if int(key) in files},
         }
         if "symbol_rings" in document:
@@ -79,6 +80,10 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         "symbols": len(symbols),
         "by_kind": by_kind,
         "edges": len(edges),
+        "edge_counts_by_kind": dict(sorted(collections.Counter(document.get("kinds", ["unknown"])[edge[3] if len(edge) > 3 else 0] for edge in edges).items())),
+        "abstract_symbols": sum(bool(row[7]) for row in symbols if len(row) > 7),
+        "inherited_calls_resolved": coverage.get("inherited_calls_resolved", 0),
+        "possible_implementations": coverage.get("possible_implementations", 0),
         "calls_total": total,
         "calls_resolved": coverage["calls_resolved"],
         "resolution_rate": coverage["calls_resolved"] / total if total else 0,

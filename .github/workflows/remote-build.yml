@@ -499,7 +499,16 @@ jobs:
           REPO_ARGS_JSON: ${{ toJSON(matrix.args) }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
-        run: python3 eval/measure_progress_overhead.py "$STEM"
+        run: |
+          # Balanced progress timing is only comparable when both binaries
+          # emit the same artifacts. Feature comparisons may intentionally
+          # change symbols; their own paired audit below still runs.
+          if cmp -s "out-primary/${STEM}.json" "out-compare/${STEM}.json" && \
+             cmp -s "out-primary/${STEM}.symbols.json" "out-compare/${STEM}.symbols.json"; then
+            python3 eval/measure_progress_overhead.py "$STEM"
+          else
+            echo "Skip progress overhead: paired outputs differ"
+          fi
 
       - name: Capture dify worker event timeline
         if: inputs.command == 'build' && matrix.slug == 'langgenius/dify' && steps.build_primary.outputs.exit_code == '0'
@@ -581,12 +590,13 @@ jobs:
             cat artifact/symbol_stats.json
           fi
 
-      - name: Measure method value references against main
+      - name: Measure typed edges and map parity against main
         if: inputs.command == 'build' && inputs.compare_ref != '' && steps.build_primary.outputs.exit_code == '0' && steps.build_compare.outputs.exit_code == '0'
         env:
           STEM: ${{ matrix.stem }}
           SLUG: ${{ matrix.slug }}
-        run: python3 eval/measure_method_values.py --artifact artifact --stem "$STEM" --slug "$SLUG"
+          ARTIFACT: artifact
+        run: python3 eval/measure_typed_edges.py
 
       - name: Upload result artifact
         if: always()

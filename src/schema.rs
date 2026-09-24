@@ -104,15 +104,72 @@ pub struct CoverageReport {
 }
 
 /// Indices in this document are global and stable across district responses.
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
-#[ts(type = "[number, string, number, number, number, number, number]")]
-pub struct HierSymbolRow(pub (usize, String, usize, usize, usize, isize, usize));
+#[derive(Clone, Debug, Serialize, TS, PartialEq, Eq)]
+#[ts(type = "[number, string, number, number, number, number, number, boolean]")]
+pub struct HierSymbolRow(pub (usize, String, usize, usize, usize, isize, usize, bool));
+
+impl<'de> Deserialize<'de> for HierSymbolRow {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Current((usize, String, usize, usize, usize, isize, usize, bool)),
+            Legacy((usize, String, usize, usize, usize, isize, usize)),
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Current(row) => Self(row),
+            Wire::Legacy((a, b, c, d, e, f, g)) => Self((a, b, c, d, e, f, g, false)),
+        })
+    }
+}
+
+/// Four columns: source, target, occurrences, kind index. Legacy triples
+/// receive the "unknown" index so an old document remains readable.
+fn deserialize_symbol_edges<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<[usize; 4]>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Current([usize; 4]),
+        Legacy([usize; 3]),
+    }
+    let rows = Vec::<Wire>::deserialize(deserializer)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| match row {
+            Wire::Current(row) => row,
+            Wire::Legacy([a, b, count]) => [a, b, count, 0],
+        })
+        .collect())
+}
+
+pub fn symbol_edge_kinds() -> Vec<String> {
+    [
+        "unknown",
+        "call",
+        "extends",
+        "implements",
+        "overrides",
+        "annotation",
+        "decorator",
+        "value",
+        "possible_implementation",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
 pub struct SymbolCoverage {
     pub calls_total: usize,
     pub calls_resolved: usize,
+    #[serde(default)]
+    pub inherited_calls_resolved: usize,
+    #[serde(default)]
+    pub possible_implementations: usize,
     pub unresolved: BTreeMap<String, usize>,
 }
 
@@ -121,8 +178,11 @@ pub struct SymbolCoverage {
 pub struct SymbolsDocument {
     pub files: Vec<usize>,
     pub symbols: Vec<HierSymbolRow>,
-    /// [source symbol, target symbol, occurrence count].
-    pub edges: Vec<[usize; 3]>,
+    /// [source symbol, target symbol, occurrence count, kind index].
+    #[serde(deserialize_with = "deserialize_symbol_edges")]
+    pub edges: Vec<[usize; 4]>,
+    #[serde(default = "symbol_edge_kinds")]
+    pub kinds: Vec<String>,
     /// Per-file code lines outside every top-level symbol.
     pub module_code_lines: BTreeMap<usize, usize>,
     pub coverage: SymbolCoverage,
@@ -145,7 +205,10 @@ pub struct DistrictSymbols {
     /// Global symbol indices, including remote endpoints of touching edges.
     pub symbol_indices: Vec<usize>,
     pub symbols: Vec<HierSymbolRow>,
-    pub edges: Vec<[usize; 3]>,
+    #[serde(deserialize_with = "deserialize_symbol_edges")]
+    pub edges: Vec<[usize; 4]>,
+    #[serde(default = "symbol_edge_kinds")]
+    pub kinds: Vec<String>,
     pub module_code_lines: BTreeMap<usize, usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol_rings: Option<Vec<Option<Vec<Vec<i64>>>>>,

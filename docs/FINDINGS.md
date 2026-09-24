@@ -1369,3 +1369,20 @@ The dify worker timeline below comes from the same standard-runner run. It used 
 | `write` | 0.182 | 41.866 |
 
 The two parse passes sum to 26.913 s; symbol cards take 5.549 s and footprints 5.109 s. All named stages sum to 40.921 s of the 41.925 s job.
+
+## 37. Typed references resolve inherited calls without changing the map
+
+Owner decision 2026-09-24 (AskUserQuestion, session 16030105, [issue #103](https://github.com/onsager-ai/tolmap/issues/103)): **“Typed edges + viewer.”** This Rust PR supplies the data; a later PR draws it. The separate symbol document now carries a four-column `[source, target, occurrences, kind]` edge, with a document and district `kinds` legend. A pair can have several kind rows. Existing seven-column symbol and three-column edge documents load with `abstract = false` and kind `unknown`. The in-repository Python MRO uses C3 order and stops at an unknown base; TypeScript follows its resolved `extends` chain. `self`, `cls`, `this` and `super` calls only gain a target when no unknown base precedes the definition. Override edges point to the nearest resolved base method.
+
+[Paired standard-runner Actions builds](https://github.com/onsager-ai/tolmap/actions/runs/35951389954) built this branch and `main` from the same four pinned `eval/corpus.toml` commits. The measurement asserts byte equality of each **entire map document**, including `F`/`N`/`E`/`L`/`S`/`U` and every other field. It matches old symbol identities by file, name, kind and line span, and asserts that every old edge pair retains at least its old occurrence count after excluding new `overrides` and `possible_implementation` rows. All four builds and those assertions passed. Counts below are edge **rows** by kind, not occurrences. `P` is `possible_implementation`; all new documents have zero `unknown` rows. Raw and gzip are bytes for the complete symbols JSON, including card geometry.
+
+| repository | call | extends | implements | overrides | annotation | decorator | value | P | abstract symbols | inherited calls resolved | symbols raw / gzip bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| django/django | 8,529 | 1,507 | 0 | 2,037 | 14 | 385 | 764 | 0 | 2 | 1,691 | 4,630,844 / 764,617 |
+| langgenius/dify | 19,483 | 1,155 | 13 | 150 | 12,896 | 598 | 227 | 0 | 136 | 85 | 24,806,260 / 4,459,001 |
+| prometheus/prometheus | 4,164 | 12 | 4 | 0 | 431 | 0 | 30 | 902 | 191 | 0 | 3,812,783 / 638,820 |
+| vuejs/core | 2,320 | 4 | 4 | 3 | 2,075 | 0 | 2 | 0 | 376 | 0 | 1,393,529 / 237,247 |
+
+Dify's prior `parent_class_method` count was 273 and is **239** after the change; **85** calls resolved through an inherited lookup, while total resolved calls rose from **23,584 to 23,685** out of the same 176,252 sites. Django's inherited count is 1,691; its `parent_class_method` unresolved count fell from 1,180 to 323 and total resolved calls rose by 1,691. Calls through an unresolved external base remain uncredited. Go's 902 `possible_implementation` edges in prometheus match declared method names and parameter/result **counts** for in-repo structs and interfaces. This is a candidate relationship, not exact `implements`: the resolver does not type-check parameter/result types, pointer method sets, or generic constraints, and it skips interfaces with embedded methods it cannot enumerate. The count therefore must never be presented as proven interface satisfaction.
+
+The [CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35951387619) ran Rust formatting, clippy, release build and tests, generated binding comparison, offline parity and three-build map-plus-symbol determinism; web build/lint and deploy-environment parity ran as well. The full nine-fixture parity job was not dispatched by this push/PR event. The viewer remains for the follow-up PR.
