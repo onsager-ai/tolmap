@@ -1156,18 +1156,6 @@ fn inherited_member(
     None
 }
 
-fn enclosing_class(mut symbol: usize, spans: &[Span]) -> Option<usize> {
-    loop {
-        if spans[symbol].kind == CLASS {
-            return Some(symbol);
-        }
-        if spans[symbol].parent < 0 {
-            return None;
-        }
-        symbol = spans[symbol].parent as usize;
-    }
-}
-
 fn resolve(
     candidate: &Candidate,
     spans: &[Span],
@@ -1177,7 +1165,7 @@ fn resolve(
     packages: &BTreeMap<String, Vec<usize>>,
     members: &BTreeMap<usize, BTreeMap<String, usize>>,
     mros: &BTreeMap<usize, Option<Vec<MroItem>>>,
-) -> Result<usize, &'static str> {
+) -> Result<(usize, bool), &'static str> {
     let source = &spans[candidate.owner];
     let parts = &candidate.chain;
     if let Some(reason) = candidate.unresolved_reason {
@@ -1193,14 +1181,24 @@ fn resolve(
             if spans[i].kind == CLASS {
                 if head != "super" {
                     if let Some(&direct) = members.get(&i).and_then(|m| m.get(&parts[1])) {
-                        return Ok(direct);
+                        return Ok((direct, false));
                     }
                 }
-                return inherited_member(i, &parts[1], mros, members).ok_or("parent_class_method");
+                return inherited_member(i, &parts[1], mros, members)
+                    .map(|target| (target, true))
+                    .ok_or(if head == "super" {
+                        "parent_class_method"
+                    } else {
+                        "instance_or_untyped"
+                    });
             }
             p = (spans[i].parent >= 0).then_some(spans[i].parent as usize);
         }
-        return Err("instance_or_untyped");
+        return Err(if head == "super" {
+            "parent_class_method"
+        } else {
+            "instance_or_untyped"
+        });
     }
     if infos[source.file]
         .shadowed
@@ -1259,7 +1257,7 @@ fn resolve(
         };
     }
     match value {
-        BindingOrSymbol::Symbol(i) => Ok(i),
+        BindingOrSymbol::Symbol(i) => Ok((i, false)),
         BindingOrSymbol::Module(_) | BindingOrSymbol::Package(_) => Err("module_only"),
         BindingOrSymbol::Prefix(_, _) | BindingOrSymbol::External => Err("external"),
     }
@@ -1428,6 +1426,7 @@ pub(crate) fn build(
                 candidate, &spans, &infos, &tops, &modules, &packages, &members, &no_mros,
             )
             .ok()
+            .map(|(target, _)| target)
             .filter(|&target| {
                 matches!(spans[target].kind, CLASS | INTERFACE)
                     && nodes[spans[target].file].lang == nodes[spans[candidate.owner].file].lang
@@ -1459,15 +1458,10 @@ pub(crate) fn build(
             match resolve(
                 candidate, &spans, &infos, &tops, &modules, &packages, &members, &mros,
             ) {
-                Ok(target) => {
+                Ok((target, inherited)) => {
                     if candidate.call {
                         coverage.calls_resolved += 1;
-                        if matches!(
-                            candidate.chain.first().map(String::as_str),
-                            Some("self" | "cls" | "this" | "super")
-                        ) && enclosing_class(candidate.owner, &spans)
-                            != enclosing_class(target, &spans)
-                        {
+                        if inherited {
                             coverage.inherited_calls_resolved += 1;
                         }
                     }
@@ -1972,7 +1966,7 @@ mod tests {
         );
         assert!(!typed_edge(&doc, blocked_use, b_hit, CALL));
         assert!(typed_edge(&doc, safe_use, b_hit, CALL));
-        assert!(doc.coverage.unresolved["parent_class_method"] >= 1);
+        assert!(doc.coverage.unresolved["instance_or_untyped"] >= 1);
         assert_eq!(doc.coverage.inherited_calls_resolved, 3);
     }
 
