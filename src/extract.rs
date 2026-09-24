@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context, Result};
@@ -225,6 +226,15 @@ pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData
     build_multi_source(repo, &[(pkg.to_owned(), language)])
 }
 
+pub fn build_with_progress(
+    repo: &Path,
+    pkg: &str,
+    language: LanguageKind,
+    progress: &crate::progress::Progress,
+) -> Result<GraphData> {
+    build_multi_source_with_progress(repo, &[(pkg.to_owned(), language)], progress)
+}
+
 /// Unions any number of `(pkg, language)` sources into one graph, extracted
 /// before `finish_graph` runs co-change, semantic and proximity over the
 /// combined file set (see the module comment on [`finish_graph`] for why the
@@ -239,7 +249,15 @@ pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData
 /// upstream of it) -- this fixes both the merge order below and,
 /// transitively, which source wins a file-path collision.
 pub fn build_multi_source(repo: &Path, sources: &[(String, LanguageKind)]) -> Result<GraphData> {
-    Ok(build_multi_source_inner(repo, sources, false)?.0)
+    build_multi_source_with_progress(repo, sources, &crate::progress::Progress::silent())
+}
+
+pub fn build_multi_source_with_progress(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    progress: &crate::progress::Progress,
+) -> Result<GraphData> {
+    Ok(build_multi_source_inner(repo, sources, false, progress)?.0)
 }
 
 pub(crate) fn build_with_symbols(
@@ -247,7 +265,23 @@ pub(crate) fn build_with_symbols(
     pkg: &str,
     language: LanguageKind,
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
-    let (graph, spool) = build_multi_source_inner(repo, &[(pkg.to_owned(), language)], true)?;
+    let (graph, spool) = build_multi_source_inner(
+        repo,
+        &[(pkg.to_owned(), language)],
+        true,
+        &crate::progress::Progress::silent(),
+    )?;
+    Ok((graph, spool.expect("symbol collection requested")))
+}
+
+pub(crate) fn build_with_symbols_progress(
+    repo: &Path,
+    pkg: &str,
+    language: LanguageKind,
+    progress: &crate::progress::Progress,
+) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
+    let (graph, spool) =
+        build_multi_source_inner(repo, &[(pkg.to_owned(), language)], true, progress)?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
@@ -255,7 +289,17 @@ pub(crate) fn build_multi_source_with_symbols(
     repo: &Path,
     sources: &[(String, LanguageKind)],
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
-    let (graph, spool) = build_multi_source_inner(repo, sources, true)?;
+    let (graph, spool) =
+        build_multi_source_inner(repo, sources, true, &crate::progress::Progress::silent())?;
+    Ok((graph, spool.expect("symbol collection requested")))
+}
+
+pub(crate) fn build_multi_source_with_symbols_progress(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    progress: &crate::progress::Progress,
+) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
+    let (graph, spool) = build_multi_source_inner(repo, sources, true, progress)?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
@@ -263,6 +307,7 @@ fn build_multi_source_inner(
     repo: &Path,
     sources: &[(String, LanguageKind)],
     collect_symbols: bool,
+    progress: &crate::progress::Progress,
 ) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
     let started = Instant::now();
     let mut symbol_collection = Duration::ZERO;
@@ -293,12 +338,16 @@ fn build_multi_source_inner(
         .transpose()?;
     for (pkg, language) in &sorted_sources {
         let (parsed, raw, collection_time) =
-            parse_files_inner(repo, pkg, *language, spool.as_mut())?;
+            parse_files_inner(repo, pkg, *language, spool.as_mut(), progress)?;
         symbol_collection += collection_time;
         let graph_started = Instant::now();
+        let resolve_stage =
+            progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
         let intermediate = match language {
-            LanguageKind::Python => parse_python(repo, pkg, parsed, raw)?,
-            LanguageKind::Go | LanguageKind::TypeScript => parse_multi(
+            LanguageKind::Python => {
+                parse_python_with_progress(repo, pkg, parsed, raw, &resolve_stage)?
+            }
+            LanguageKind::Go | LanguageKind::TypeScript => parse_multi_with_progress(
                 pkg,
                 *language,
                 parsed,
@@ -306,15 +355,18 @@ fn build_multi_source_inner(
                 modules
                     .as_ref()
                     .expect("multi-language source has an index"),
+                &resolve_stage,
             )?,
         };
+        resolve_stage.set(intermediate.parsed.len() as u64);
+        resolve_stage.finish();
         intermediates.push(intermediate);
         graph_time += graph_started.elapsed();
     }
 
     let graph_started = Instant::now();
     let merged = union_sources(intermediates)?;
-    let graph = finish_graph(repo, merged)?;
+    let graph = finish_graph(repo, merged, progress)?;
     graph_time += graph_started.elapsed();
     let total = started.elapsed();
     // These three durations are disjoint so a build log can account for
@@ -322,13 +374,13 @@ fn build_multi_source_inner(
     // resolution. Metadata discovery and the ordinary file walks are the
     // remainder labelled `extract`.
     let extract_time = total.saturating_sub(symbol_collection + graph_time);
-    eprintln!("phase extract: {:.3}s", extract_time.as_secs_f64());
-    eprintln!(
+    progress.log(format!("phase extract: {:.3}s", extract_time.as_secs_f64()));
+    progress.log(format!(
         "phase symbol_collection: {:.3}s",
         symbol_collection.as_secs_f64()
-    );
-    eprintln!("phase graph: {:.3}s", graph_time.as_secs_f64());
-    eprintln!("phase extract_total: {:.3}s", total.as_secs_f64());
+    ));
+    progress.log(format!("phase graph: {:.3}s", graph_time.as_secs_f64()));
+    progress.log(format!("phase extract_total: {:.3}s", total.as_secs_f64()));
     Ok((graph, spool))
 }
 
@@ -353,7 +405,13 @@ fn parse_files(
     pkg: &str,
     language: LanguageKind,
 ) -> Result<(BTreeMap<String, ParsedFile>, BTreeMap<String, FileRaw>)> {
-    let (parsed, raw, _) = parse_files_inner(repo, pkg, language, None)?;
+    let (parsed, raw, _) = parse_files_inner(
+        repo,
+        pkg,
+        language,
+        None,
+        &crate::progress::Progress::silent(),
+    )?;
     Ok((parsed, raw))
 }
 
@@ -362,12 +420,14 @@ fn parse_files_inner(
     pkg: &str,
     language: LanguageKind,
     mut spool: Option<&mut crate::symbols::SymbolSpool>,
+    progress: &crate::progress::Progress,
 ) -> Result<(
     BTreeMap<String, ParsedFile>,
     BTreeMap<String, FileRaw>,
     Duration,
 )> {
     let files = source_files(repo, pkg, language)?;
+    let parse_stage = progress.stage(crate::progress::StageId::Parse, Some(files.len() as u64));
     let mut parser = Parser::new();
 
     let mut parsed = BTreeMap::new();
@@ -409,11 +469,13 @@ fn parse_files_inner(
                     },
                 },
             );
+            parse_stage.advance(1);
             continue;
         };
         // ast.parse rejects a Python file as a unit. Matching that behavior is
         // important: accepting the valid half would guess edges upward.
         if language == LanguageKind::Python && tree.root_node().has_error() {
+            parse_stage.advance(1);
             continue;
         }
         let root = tree.root_node();
@@ -464,7 +526,9 @@ fn parse_files_inner(
             },
         );
         raw.insert(file.clone(), file_raw);
+        parse_stage.advance(1);
     }
+    parse_stage.finish();
     Ok((parsed, raw, symbol_collection))
 }
 
@@ -1322,6 +1386,22 @@ fn parse_python(
     parsed: BTreeMap<String, ParsedFile>,
     raw: BTreeMap<String, FileRaw>,
 ) -> Result<SourceIntermediate> {
+    let progress = crate::progress::Progress::silent();
+    let stage = progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
+    let result = parse_python_with_progress(repo, pkg, parsed, raw, &stage);
+    if result.is_ok() {
+        stage.finish();
+    }
+    result
+}
+
+fn parse_python_with_progress(
+    repo: &Path,
+    pkg: &str,
+    parsed: BTreeMap<String, ParsedFile>,
+    raw: BTreeMap<String, FileRaw>,
+    progress: &crate::progress::StageCounter,
+) -> Result<SourceIntermediate> {
     let (files, ids) = file_ids(parsed.keys().cloned())?;
     let mut modules = BTreeMap::<String, String>::new();
     for file in parsed.keys() {
@@ -1428,6 +1508,7 @@ fn parse_python(
         for (target_file, name) in resolved_uses {
             uses.insert((file_id, ids[&target_file], name));
         }
+        progress.advance(1);
     }
 
     let module_for = parsed
@@ -1913,6 +1994,23 @@ fn parse_multi(
     raw: BTreeMap<String, FileRaw>,
     modules: &ModuleIndex,
 ) -> Result<SourceIntermediate> {
+    let progress = crate::progress::Progress::silent();
+    let stage = progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
+    let result = parse_multi_with_progress(pkg, language, parsed, raw, modules, &stage);
+    if result.is_ok() {
+        stage.finish();
+    }
+    result
+}
+
+fn parse_multi_with_progress(
+    pkg: &str,
+    language: LanguageKind,
+    parsed: BTreeMap<String, ParsedFile>,
+    raw: BTreeMap<String, FileRaw>,
+    modules: &ModuleIndex,
+    progress: &crate::progress::StageCounter,
+) -> Result<SourceIntermediate> {
     let (files, ids) = file_ids(parsed.keys().cloned())?;
     let mut by_directory = BTreeMap::<String, Vec<FileId>>::new();
     for file in &files {
@@ -1961,6 +2059,7 @@ fn parse_multi(
                 }
             }
         }
+        progress.advance(1);
     }
 
     let module_for = parsed
@@ -2569,7 +2668,11 @@ fn normalize_relative(directory: &str, import: &str) -> String {
 /// the first place. `build_multi_source` therefore merges at the *parsed
 /// file + resolved static edge* stage (see [`union_sources`]) and calls this
 /// function exactly once, over the combined set.
-fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
+fn finish_graph(
+    repo: &Path,
+    merged: MergedSources,
+    progress: &crate::progress::Progress,
+) -> Result<GraphData> {
     let MergedSources {
         parsed,
         files,
@@ -2584,7 +2687,10 @@ fn finish_graph(repo: &Path, merged: MergedSources) -> Result<GraphData> {
         dominant_lang,
     } = merged;
 
-    let history = git_history(repo, &files, 4000)?;
+    let history_stage = progress.stage(crate::progress::StageId::History, None);
+    let history = git_history(repo, &files, 4000, &history_stage)?;
+    history_stage.set(history.commits as u64);
+    history_stage.finish();
     let semantic = semantic_vectors(&parsed);
     let file_ids = files
         .iter()
@@ -2886,8 +2992,13 @@ struct GitHistory {
     commits: usize,
 }
 
-fn git_history(repo: &Path, files: &[String], max_commits: usize) -> Result<GitHistory> {
-    let output = Command::new("git")
+fn git_history(
+    repo: &Path,
+    files: &[String],
+    max_commits: usize,
+    progress: &crate::progress::StageCounter,
+) -> Result<GitHistory> {
+    let mut child = Command::new("git")
         .args([
             "-C",
             &repo.to_string_lossy(),
@@ -2914,8 +3025,30 @@ fn git_history(repo: &Path, files: &[String], max_commits: usize) -> Result<GitH
             // that does (or does not) change on the nine fixtures.
             "--no-renames",
         ])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("run git log for co-change")?;
+    let mut stdout = child.stdout.take().expect("piped git log stdout");
+    let mut output_bytes = Vec::new();
+    let mut chunk = [0u8; 65536];
+    let mut at_line_start = true;
+    loop {
+        let count = stdout.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        let mut commits = 0;
+        for &byte in &chunk[..count] {
+            commits += usize::from(at_line_start && byte == b'@');
+            at_line_start = byte == b'\n';
+        }
+        if commits > 0 {
+            progress.advance(commits as u64);
+        }
+        output_bytes.extend_from_slice(&chunk[..count]);
+    }
+    let output = child.wait_with_output()?;
     ensure!(
         output.status.success(),
         "git log failed: {}",
@@ -2924,7 +3057,7 @@ fn git_history(repo: &Path, files: &[String], max_commits: usize) -> Result<GitH
     let file_set = files.iter().cloned().collect::<BTreeSet<_>>();
     let mut commits = Vec::<BTreeSet<String>>::new();
     let mut current = None::<BTreeSet<String>>;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    for line in String::from_utf8_lossy(&output_bytes).lines() {
         if line.starts_with('@') {
             if let Some(previous) = current.take() {
                 if !previous.is_empty() {

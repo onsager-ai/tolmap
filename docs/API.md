@@ -164,7 +164,19 @@ be answered in the same request rather than always queuing a job.
   "started_at": "<RFC3339>",
   "finished_at": "<RFC3339>" | null,
   "error": "<human text>" | null,          // rendered directly by clients
-  "error_code": "<machine code>" | null    // branch on this, not on the text
+  "error_code": "<machine code>" | null,   // branch on this, not on the text
+  "progress": {
+    "stage": "parse", "stage_index": 6, "stage_count": 18,
+    "label": "Parsing files", "unit": "files", "done": 123,
+    "total": 500 | null, "rate_per_s": 23.5 | null,
+    "transfer_bytes": 1048576,             // optional, git transfer only
+    "transfer_rate_bytes_per_s": 524288.0 // optional, git transfer only
+  } | null,
+  "elapsed_s": 12.3,
+  "stages": [
+    {"id": "parse", "label": "Parsing files", "state": "pending" | "running" | "done" | "failed",
+     "started_at": "<RFC3339>" | null, "duration_s": 1.5 | null}
+  ]
 }
 ```
 
@@ -172,7 +184,14 @@ be answered in the same request rather than always queuing a job.
 one-based FIFO position while waiting, updated when jobs ahead start. It is
 `null` once running and in terminal states. The 900-second job clock starts
 when a worker starts the job, so queue waiting does not count. A timed-out
-blocking thread can continue, and holds its worker slot until it exits.
+child can continue, and holds its worker slot until it exits. `elapsed_s`
+is updated with each worker event and on completion. Progress counters never
+decrease for a stage during a job, even when a multi-source build repeats
+parsing and resolution. `total` may be unknown and can grow as another source
+starts. Stage IDs are stable, in pipeline order; clone sub-stages may start
+more than once during a fetch and checkout. Repeated stage durations are
+summed in `stages`. A child that exits without a result or error event
+fails the job with `worker_crashed`, including its exit status and last stage.
 `stage` is a short
 free-text description of what is happening right now (e.g. `"cloning
 github.com/django/django"`, `"indexing (partition)"`) -- it is for display,
@@ -180,12 +199,34 @@ not for matching on; only `status` is a stable enum.
 
 ### `GET /api/jobs/{job_id}/events`
 
-Server-Sent Events. One `data:` frame per status change, each frame the same
+Server-Sent Events. The current snapshot is sent immediately, then changed
+snapshots are sent at most about four times per second, each frame the same
 JSON shape as `GET /api/jobs/{job_id}` above. The stream ends (the
 connection closes) after the frame carrying `status: "done"` or
 `status: "failed"` is sent. A client that reconnects after a drop should
 `GET /api/jobs/{job_id}` first to catch up, since SSE here does not replay
-frames sent before the connection opened.
+frames sent before the connection opened. During quiet stages, an SSE
+heartbeat comment is sent every 15 seconds.
+
+## Worker protocol (v1)
+
+`tolmap worker` reads one JSON `WorkerSpec` line from stdin and writes one
+JSON event per stdout line. Events carry `v: 1` and a `type` of
+`stage_started`, `progress`, `stage_finished`, `log`, `result`, or `error`.
+`stage_finished` has `duration_s` and `success`. `result` carries the map,
+symbols sibling, district symbols directory, names cache paths, commit and
+branch, plus language, file count, district count and modularity. `error`
+carries a machine `code` and human `message`. The Rust definitions in
+`src/worker.rs` and generated `bindings/WorkerEvent.ts` are authoritative.
+
+The service owns its SQLite store and queue. It gives the child clone source,
+limits, output directory, previous map candidates and a names cache file.
+The child chooses the newest previous map on the cloned branch, falling back
+to the newest overall, then clones, detects and builds. The service registers
+the returned artifacts only after a successful terminal result. The job spec
+also accepts `all_sources: true` to union every detected source that clears
+the detector's floor; the service currently sends `false` and retains its
+existing single-source confidence check.
 
 ### `GET /api/maps`
 

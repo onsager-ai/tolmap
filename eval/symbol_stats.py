@@ -184,6 +184,8 @@ def sample_sibling_overlaps(document):
 
 
 def decode_ring(stream):
+    if stream and isinstance(stream[0], list):
+        return stream  # older float-coordinate sibling
     assert len(stream) >= 6 and len(stream) % 2 == 0
     x = y = 0
     ring = []

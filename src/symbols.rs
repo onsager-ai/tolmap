@@ -8,7 +8,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -1031,7 +1030,16 @@ fn resolve(
 pub(crate) fn build(
     repo: &Path,
     nodes: &[SourceNode],
+    spool: SymbolSpool,
+) -> Result<SymbolsDocument> {
+    build_with_progress(repo, nodes, spool, None)
+}
+
+pub(crate) fn build_with_progress(
+    repo: &Path,
+    nodes: &[SourceNode],
     mut spool: SymbolSpool,
+    progress: Option<&crate::progress::StageCounter>,
 ) -> Result<SymbolsDocument> {
     let mut modules = BTreeMap::new();
     let mut ambiguous_modules = BTreeSet::new();
@@ -1080,6 +1088,9 @@ pub(crate) fn build(
                 candidates: Vec::new(),
                 shadowed: BTreeMap::new(),
             });
+            if let Some(progress) = progress {
+                progress.advance(1);
+            }
             continue;
         };
         let first = spans.len();
@@ -1122,6 +1133,9 @@ pub(crate) fn build(
             candidates: record.candidates,
             shadowed,
         });
+        if let Some(progress) = progress {
+            progress.advance(1);
+        }
     }
     let mut go_types: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (i, span) in spans.iter().enumerate() {
@@ -1267,6 +1281,22 @@ pub(crate) fn write_sibling(
     map_path: &Path,
     spool: SymbolSpool,
 ) -> Result<()> {
+    write_sibling_with_progress(
+        repo,
+        nodes,
+        map_path,
+        spool,
+        &crate::progress::Progress::silent(),
+    )
+}
+
+pub(crate) fn write_sibling_with_progress(
+    repo: &Path,
+    nodes: &[SourceNode],
+    map_path: &Path,
+    spool: SymbolSpool,
+    progress: &crate::progress::Progress,
+) -> Result<()> {
     let map: MapDocument = serde_json::from_slice(&fs::read(map_path)?)?;
     ensure!(
         map.files.len() == nodes.len()
@@ -1277,17 +1307,19 @@ pub(crate) fn write_sibling(
                 .all(|(file, node)| file == &node.file),
         "symbol source file order differs from map F order"
     );
-    let started = Instant::now();
-    let mut document = build(repo, nodes, spool)?;
-    eprintln!(
-        "phase symbol_resolution: {:.3}s",
-        started.elapsed().as_secs_f64()
+    let symbols_stage = progress.stage(crate::progress::StageId::Symbols, Some(nodes.len() as u64));
+    let mut document = build_with_progress(repo, nodes, spool, Some(&symbols_stage))?;
+    symbols_stage.set(nodes.len() as u64);
+    symbols_stage.finish();
+    let cards_stage = progress.stage(
+        crate::progress::StageId::SymbolCards,
+        Some(nodes.len() as u64),
     );
-    let cards_started = Instant::now();
-    crate::symbol_cards::attach(&map, &mut document)?;
-    eprintln!("phase cards: {:.3}s", cards_started.elapsed().as_secs_f64());
-    let symbols_write_started = Instant::now();
+    crate::symbol_cards::attach_with_progress(&map, &mut document, Some(&cards_stage))?;
+    cards_stage.set(nodes.len() as u64);
+    cards_stage.finish();
     let output = map_path.with_extension("symbols.json");
+    let write_stage = progress.stage(crate::progress::StageId::Write, None);
     let temporary = map_path.with_extension("symbols.json.tmp");
     let district_dir = map_path.with_extension("symbols");
     let temporary_dir = map_path.with_extension("symbols.tmp");
@@ -1302,22 +1334,21 @@ pub(crate) fn write_sibling(
         let response = document
             .district(&map, id)
             .with_context(|| format!("missing district {id}"))?;
-        fs::write(
-            temporary_dir.join(format!("{id}.json")),
-            serde_json::to_vec(&response)?,
-        )?;
+        let bytes = serde_json::to_vec(&response)?;
+        let byte_count = bytes.len() as u64;
+        fs::write(temporary_dir.join(format!("{id}.json")), bytes)?;
+        write_stage.advance(byte_count);
     }
-    fs::write(&temporary, serde_json::to_vec(&document)?)?;
+    let bytes = serde_json::to_vec(&document)?;
+    let byte_count = bytes.len() as u64;
+    fs::write(&temporary, bytes)?;
+    write_stage.advance(byte_count);
     fs::rename(&temporary, &output)?;
     if district_dir.exists() {
         fs::remove_dir_all(&district_dir)?;
     }
     fs::rename(&temporary_dir, &district_dir)?;
-    eprintln!(
-        "phase symbols_write: {:.3}s",
-        symbols_write_started.elapsed().as_secs_f64()
-    );
-    eprintln!("wrote {}", output.display());
+    write_stage.finish();
     Ok(())
 }
 

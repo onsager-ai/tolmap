@@ -27,6 +27,14 @@ pub fn footprint_weight(document: &MapDocument, index: usize) -> usize {
 }
 
 pub fn build_parcels(document: &MapDocument, partition: &Partition) -> Footprints {
+    build_parcels_with_progress(document, partition, None)
+}
+
+pub fn build_parcels_with_progress(
+    document: &MapDocument,
+    partition: &Partition,
+    progress: Option<&crate::progress::StageCounter>,
+) -> Footprints {
     let mut parcels = BTreeMap::new();
     let mut centroids = document
         .nodes
@@ -218,6 +226,9 @@ pub fn build_parcels(document: &MapDocument, partition: &Partition) -> Footprint
                 centroids[file] = polygon_centroid(&polygon);
                 parcels.insert(file.to_string(), polygon);
             }
+        }
+        if let Some(progress) = progress {
+            progress.advance(1);
         }
     }
     Footprints {

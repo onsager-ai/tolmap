@@ -1,0 +1,5 @@
+# Captured from git clone --progress --depth=10 --filter=blob:none https://github.com/psf/requests.git (2026-09-24); CR updates split to lines.
+Receiving objects: 100% (49/49), 16.62 KiB | 8.31 MiB/s, done.
+Resolving deltas: 100% (15/15)
+Updating files:  50% (65/130)
+Updating files: 100% (130/130)
