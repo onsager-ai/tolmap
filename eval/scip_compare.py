@@ -455,21 +455,26 @@ def compare_repo(args) -> int:
             if entry is None or index_id not in ingested:
                 continue
             chosen.setdefault(entry["lang"], index_id)
-        for weighting in ("symbols", "binary"):
+        # symbols: every SCIP pair, weighted by distinct referenced symbols
+        # (the primary); binary: every pair at 1.0; uses: pairs with at
+        # least one non-namespace symbol, i.e. without import-only module
+        # references and Go package clauses.
+        for weighting in ("symbols", "binary", "uses"):
             directed = {}
             sources = {}
             for lang in languages:
                 if lang in chosen:
                     sources[lang] = chosen[lang]
                     for a, b, distinct, _, uses in ingested[chosen[lang]]["file_edges"]:
-                        if uses and lang_of[a] == lang:
-                            directed[(a, b)] = float(distinct) if weighting == "symbols" else 1.0
+                        if lang_of[a] != lang or (weighting == "uses" and not uses):
+                            continue
+                        directed[(a, b)] = 1.0 if weighting == "binary" else float(distinct)
                 else:
                     sources[lang] = "hand-written (fallback)"
                     for (a, b), value in hand_directed.items():
                         if lang_of[a] == lang:
                             directed[(a, b)] = value
-            key = name if weighting == "symbols" else f"{name}/binary"
+            key = name if weighting == "symbols" else f"{name}/{weighting}"
             variants[key] = {"directed": directed, "sources": sources}
 
     result["repartition"] = {}
