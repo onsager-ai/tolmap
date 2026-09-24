@@ -57,9 +57,22 @@ jobs:
             mkdir -p "public/maps/${slug%%__*}"
             tar -xzf "$f" -C "public/maps/${slug%%__*}"
           done
+      # Issue #97: the job-page checks below need a running job service --
+      # there is no Rust `tolmap serve` in this job, so scripts/mock-api-
+      # server.mjs stands in for it (docs/API.md's contract, scripted
+      # stages/progress/eta/cancel; see that file's own header comment).
+      # Started before Vite so TOLMAP_API_PROXY_TARGET points the dev
+      # server's /api proxy (vite.config.ts) at it from the first request.
+      - name: Start mock API server
+        run: |
+          nohup node scripts/mock-api-server.mjs 8787 > mock-api.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/api/healthz >/dev/null && exit 0; sleep 1; done
+          cat mock-api.log; exit 1
       # --host 127.0.0.1: Vite binds "localhost", which resolves to ::1 on
       # the runner, so a probe of 127.0.0.1 never connects.
       - name: Start Vite
+        env:
+          TOLMAP_API_PROXY_TARGET: "http://127.0.0.1:8787"
         run: |
           nohup pnpm exec vite --host 127.0.0.1 --port 5176 --strictPort > vite.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:5176/ >/dev/null && exit 0; sleep 1; done
