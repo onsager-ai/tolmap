@@ -3666,6 +3666,7 @@ mod tests {
                 &ModuleIndex {
                     go: vec![("example".to_owned(), String::new())],
                     ts: Vec::new(),
+                    packages: BTreeMap::new(),
                 },
                 &directories,
                 &files
@@ -3682,6 +3683,7 @@ mod tests {
                 &ModuleIndex {
                     go: vec![("example".to_owned(), String::new())],
                     ts: Vec::new(),
+                    packages: BTreeMap::new(),
                 },
                 &directories,
                 &files
