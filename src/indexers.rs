@@ -90,6 +90,24 @@ pub fn binary(language: LanguageKind) -> String {
         .unwrap_or_else(|| name.to_owned())
 }
 
+/// The checkout's commit SHA for scip-python's `--project-version`, read
+/// with `safe.directory=*` so a clone owned by another uid still answers;
+/// `unknown` when there is no commit to read.
+pub fn project_version(repo: &Path) -> String {
+    Command::new("git")
+        .args(["-c", "safe.directory=*", "-C"])
+        .arg(repo)
+        .args(["rev-parse", "HEAD"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|sha| sha.trim().to_owned())
+        .filter(|sha| !sha.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 /// Every tracked `tsconfig.json` directory, deepest first and then by path,
 /// as P0's `scip_index.sh` ordered them (`git ls-files`, drop anything under
 /// `node_modules`, sort by component count descending then path). A file
@@ -99,6 +117,7 @@ pub fn typescript_projects(repo: &Path) -> Result<Vec<String>, IndexFailure> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
+        .args(["-c", "safe.directory=*"])
         .args(["ls-files", "-z", "--", "tsconfig.json", "*/tsconfig.json"])
         .stderr(Stdio::null())
         .output()
@@ -154,8 +173,18 @@ pub fn run(
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "repository".to_owned());
+            // Without --project-version, scip-python runs `git rev-parse
+            // HEAD` itself and dies on an unhandled TypeError when that
+            // fails: outside a git checkout, or on git's "dubious
+            // ownership" refusal when the worker's uid differs from the
+            // clone's owner (the hardened worker's case). The version only
+            // enters SCIP symbol strings, never a map, so the fallback
+            // value cannot change output.
+            let version = project_version(repo);
             command
-                .args(["index", "--project-name", &name, "--quiet", "--output"])
+                .args(["index", "--project-name", &name])
+                .args(["--project-version", &version])
+                .args(["--quiet", "--output"])
                 .arg(output);
         }
         LanguageKind::Go => {
@@ -308,6 +337,30 @@ mod tests {
             typescript_projects(repo).unwrap(),
             vec!["packages/a/deep/x", "packages/a", "packages/b", "."]
         );
+    }
+
+    #[test]
+    fn project_version_is_the_commit_or_unknown() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(project_version(directory.path()), "unknown");
+        git(directory.path(), &["init", "--quiet"]);
+        fs::write(directory.path().join("a.py"), "x = 1\n").unwrap();
+        git(directory.path(), &["add", "a.py"]);
+        git(
+            directory.path(),
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "one",
+            ],
+        );
+        let version = project_version(directory.path());
+        assert_eq!(version.len(), 40, "{version}");
     }
 
     #[test]
