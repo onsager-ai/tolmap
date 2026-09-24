@@ -1706,7 +1706,7 @@ pub(crate) fn build_with_progress(
     for (new, old) in order.iter().enumerate() {
         index[*old] = new;
     }
-    let symbols = order
+    let symbols: Vec<HierSymbolRow> = order
         .into_iter()
         .map(|old| {
             let s = &spans[old];
@@ -2556,6 +2556,78 @@ mod tests {
         assert!(edge(&doc, id(&doc, 2, "Caller"), id(&doc, 0, "Target")));
         assert!(edge(&doc, id(&doc, 4, "use"), id(&doc, 3, "run")));
     }
+
+    /// P0's self-test crediting (eval/scip_ingest.py `self_test`): the two
+    /// calls of `f` inside `g` credit g -> f twice, the import and the
+    /// module-level use of `C` credit nothing, and C's implementation of
+    /// Base is an `extends` row. A hand-written pair SCIP confirms keeps its
+    /// syntactic kind with SCIP's count; one SCIP does not confirm is
+    /// dropped; a hand-written extends row stays.
+    #[test]
+    fn scip_references_credit_innermost_spans_like_the_p0_oracle() {
+        let row = |file: usize, name: &str, kind: usize, start: usize, end: usize| {
+            HierSymbolRow((file, name.to_owned(), kind, start, end, -1, 1, false))
+        };
+        let symbols = vec![
+            row(0, "f", FUNCTION, 2, 3),
+            row(0, "C", CLASS, 5, 8),
+            row(1, "Base", CLASS, 3, 4),
+            row(1, "g", FUNCTION, 6, 9),
+        ];
+        let nodes = ["pkg/a.py", "pkg/b.py", "pkg/c.py"]
+            .map(|file| source(file, file, "py"))
+            .to_vec();
+        let scip = ScipSymbolRefs {
+            languages: BTreeSet::from(["py".to_owned()]),
+            files: nodes.iter().map(|node| node.file.clone()).collect(),
+            refs: vec![([1, 1, 0, 1], 1), ([1, 7, 0, 2], 2), ([1, 10, 0, 5], 1)],
+            implementations: vec![[0, 5, 1, 3]],
+        };
+
+        let mut edges = BTreeMap::new();
+        apply_scip(&symbols, &nodes, &scip, &mut edges);
+        assert_eq!(
+            edges,
+            BTreeMap::from([((1, 2, EXTENDS), 1), ((3, 0, REFERENCE), 2)])
+        );
+
+        let mut edges = BTreeMap::from([
+            ((3, 0, CALL), 1),
+            ((3, 0, VALUE), 1),
+            ((3, 2, CALL), 5),
+            ((1, 2, EXTENDS), 1),
+        ]);
+        apply_scip(&symbols, &nodes, &scip, &mut edges);
+        assert_eq!(
+            edges,
+            BTreeMap::from([((1, 2, EXTENDS), 1), ((3, 0, CALL), 2)])
+        );
+    }
+
+    #[test]
+    fn scip_go_implements_replaces_possible_implementation() {
+        let symbols = vec![
+            HierSymbolRow((0, "Store".to_owned(), CLASS, 1, 3, -1, 1, false)),
+            HierSymbolRow((0, "Get".to_owned(), METHOD, 5, 7, 0, 1, false)),
+            HierSymbolRow((1, "Getter".to_owned(), INTERFACE, 1, 3, -1, 1, false)),
+            HierSymbolRow((1, "Get".to_owned(), METHOD, 2, 2, 2, 1, false)),
+        ];
+        let nodes = ["store.go", "api/getter.go"]
+            .map(|file| source(file, file, "go"))
+            .to_vec();
+        let scip = ScipSymbolRefs {
+            languages: BTreeSet::from(["go".to_owned()]),
+            files: nodes.iter().map(|node| node.file.clone()).collect(),
+            refs: Vec::new(),
+            implementations: vec![[0, 1, 1, 1], [0, 5, 1, 2]],
+        };
+        let mut edges = BTreeMap::from([((0, 2, POSSIBLE_IMPLEMENTATION), 1)]);
+        apply_scip(&symbols, &nodes, &scip, &mut edges);
+        assert_eq!(
+            edges,
+            BTreeMap::from([((0, 2, IMPLEMENTS), 1), ((1, 3, OVERRIDES), 1)])
+        );
+    }
 }
 
 /// The recursive `parent()`-based walks replaced in finding 40, kept verbatim
@@ -3209,77 +3281,5 @@ func main() {
             };
             assert_same(lang, &name, &bytes);
         }
-    }
-
-    /// P0's self-test crediting (eval/scip_ingest.py `self_test`): the two
-    /// calls of `f` inside `g` credit g -> f twice, the import and the
-    /// module-level use of `C` credit nothing, and C's implementation of
-    /// Base is an `extends` row. A hand-written pair SCIP confirms keeps its
-    /// syntactic kind with SCIP's count; one SCIP does not confirm is
-    /// dropped; a hand-written extends row stays.
-    #[test]
-    fn scip_references_credit_innermost_spans_like_the_p0_oracle() {
-        let row = |file: usize, name: &str, kind: usize, start: usize, end: usize| {
-            HierSymbolRow((file, name.to_owned(), kind, start, end, -1, 1, false))
-        };
-        let symbols = vec![
-            row(0, "f", FUNCTION, 2, 3),
-            row(0, "C", CLASS, 5, 8),
-            row(1, "Base", CLASS, 3, 4),
-            row(1, "g", FUNCTION, 6, 9),
-        ];
-        let nodes = ["pkg/a.py", "pkg/b.py", "pkg/c.py"]
-            .map(|file| source(file, file, "py"))
-            .to_vec();
-        let scip = ScipSymbolRefs {
-            languages: BTreeSet::from(["py".to_owned()]),
-            files: nodes.iter().map(|node| node.file.clone()).collect(),
-            refs: vec![([1, 1, 0, 1], 1), ([1, 7, 0, 2], 2), ([1, 10, 0, 5], 1)],
-            implementations: vec![[0, 5, 1, 3]],
-        };
-
-        let mut edges = BTreeMap::new();
-        apply_scip(&symbols, &nodes, &scip, &mut edges);
-        assert_eq!(
-            edges,
-            BTreeMap::from([((1, 2, EXTENDS), 1), ((3, 0, REFERENCE), 2)])
-        );
-
-        let mut edges = BTreeMap::from([
-            ((3, 0, CALL), 1),
-            ((3, 0, VALUE), 1),
-            ((3, 2, CALL), 5),
-            ((1, 2, EXTENDS), 1),
-        ]);
-        apply_scip(&symbols, &nodes, &scip, &mut edges);
-        assert_eq!(
-            edges,
-            BTreeMap::from([((1, 2, EXTENDS), 1), ((3, 0, CALL), 2)])
-        );
-    }
-
-    #[test]
-    fn scip_go_implements_replaces_possible_implementation() {
-        let symbols = vec![
-            HierSymbolRow((0, "Store".to_owned(), CLASS, 1, 3, -1, 1, false)),
-            HierSymbolRow((0, "Get".to_owned(), METHOD, 5, 7, 0, 1, false)),
-            HierSymbolRow((1, "Getter".to_owned(), INTERFACE, 1, 3, -1, 1, false)),
-            HierSymbolRow((1, "Get".to_owned(), METHOD, 2, 2, 2, 1, false)),
-        ];
-        let nodes = ["store.go", "api/getter.go"]
-            .map(|file| source(file, file, "go"))
-            .to_vec();
-        let scip = ScipSymbolRefs {
-            languages: BTreeSet::from(["go".to_owned()]),
-            files: nodes.iter().map(|node| node.file.clone()).collect(),
-            refs: Vec::new(),
-            implementations: vec![[0, 1, 1, 1], [0, 5, 1, 2]],
-        };
-        let mut edges = BTreeMap::from([((0, 2, POSSIBLE_IMPLEMENTATION), 1)]);
-        apply_scip(&symbols, &nodes, &scip, &mut edges);
-        assert_eq!(
-            edges,
-            BTreeMap::from([((0, 2, IMPLEMENTS), 1), ((1, 3, OVERRIDES), 1)])
-        );
     }
 }
