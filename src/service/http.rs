@@ -30,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         .route("/api/index", post(post_index))
         .route("/api/jobs/{job_id}", get(get_job))
+        .route("/api/jobs/{job_id}/cancel", post(post_cancel_job))
         .route("/api/jobs/{job_id}/events", get(get_job_events))
         .route("/api/maps", get(get_maps))
         .route("/api/maps/{owner}/{repo}", get(get_map))
@@ -185,6 +186,36 @@ async fn get_job(
         current
     };
     Ok(Json(snapshot))
+}
+
+async fn post_cancel_job(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    AxPath(job_id): AxPath<Uuid>,
+) -> Result<Json<JobSnapshot>, ApiError> {
+    let limits = &state.config.limits;
+    if let Verdict::Denied { message } = state.rate_limiter.check_ip(
+        addr.ip(),
+        limits.rate_limit_per_ip,
+        Duration::from_secs(limits.rate_limit_window_seconds),
+    ) {
+        return Err(ApiError::rate_limited(message));
+    }
+    let slug = state
+        .jobs
+        .subscribe(job_id)
+        .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?
+        .borrow()
+        .slug
+        .clone();
+    if let Verdict::Denied { message } = state.rate_limiter.check_repo(
+        &slug,
+        limits.rate_limit_per_repo,
+        Duration::from_secs(limits.rate_limit_per_repo_window_seconds),
+    ) {
+        return Err(ApiError::rate_limited(message));
+    }
+    Ok(Json(state.jobs.cancel(job_id)?))
 }
 
 // ---- GET /api/jobs/{job_id}/events ---------------------------------------

@@ -156,6 +156,8 @@ enum Command {
     Serve,
     /// One JSON job spec on stdin; versioned JSON events on stdout.
     Worker,
+    #[command(hide = true)]
+    EtaReplay { timeline: PathBuf },
 }
 
 fn cli_progress() -> tolmap::progress::Progress {
@@ -581,5 +583,10 @@ fn main() -> Result<()> {
             runtime.block_on(tolmap::service::serve(config))
         }
         Command::Worker => tolmap::worker::run_stdio(),
+        Command::EtaReplay { timeline } => {
+            let report = tolmap::service::eta::replay_timeline(&timeline)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
     }
 }

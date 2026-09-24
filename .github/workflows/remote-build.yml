@@ -78,19 +78,9 @@ env:
   # killed out from under the job -- issue #59 is exactly a repository
   # (microsoftgraph/msgraph-sdk-go) that is expected to hit this.
   BUILD_MEM_BYTES: "15032385536"
-  # src/extract.rs's git_history() reads at most 4000 commits for co-change
-  # (`let history = git_history(repo, &files, 4000)?;`), regardless of
-  # TOLMAP_MAX_HISTORY_COMMITS -- that env var is a pre-clone/post-clone
-  # admission ceiling on service::clone::materialize (default 200000; see
-  # docs/API.md), not a bound on how much history extraction itself reads
-  # (src/service/config.rs's doc comment on Limits::max_history_commits
-  # says so explicitly, and eval/build_corpus.py's own clone comment
-  # repeats it). A commit beyond 4000 back from the pinned commit can never
-  # affect co-change, so `--depth=4000` on the fetch below is not a
-  # heuristic guess at "enough history" -- it is the exact horizon the
-  # indexer itself reads, on a public GitHub remote that (unlike the
-  # dev-machine corpus cache) is used exactly once per job and then
-  # deleted, so there is no reason to fetch more than that horizon.
+  # Extraction's co-change signal reads at most 4000 commits. This is
+  # an algorithmic horizon, not a job admission limit; the service no longer
+  # refuses repositories with longer histories.
   CLONE_DEPTH: "4000"
   LEIDEN_PREFIX: ${{ github.workspace }}/.native/leiden
 
@@ -501,11 +491,14 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
         run: python3 eval/measure_progress_overhead.py "$STEM"
 
-      - name: Capture dify worker event timeline
-        if: inputs.command == 'build' && matrix.slug == 'langgenius/dify' && steps.build_primary.outputs.exit_code == '0'
+      - name: Capture worker timeline and replay ETA
+        if: inputs.command == 'build' && contains(fromJSON('["django/django","langgenius/dify","n8n-io/n8n","prometheus/prometheus","vuejs/core"]'), matrix.slug) && steps.build_primary.outputs.exit_code == '0'
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
-        run: python3 eval/worker_timeline.py bin-primary/tolmap clone worker_timeline.json
+          SLUG: ${{ matrix.slug }}
+        run: |
+          python3 eval/worker_timeline.py bin-primary/tolmap clone worker_timeline.json "$SLUG"
+          bin-primary/tolmap eta-replay worker_timeline.json > eta_replay.json
 
       - name: Delete clone
         if: always()
@@ -546,6 +539,7 @@ jobs:
           cp -f primary.log artifact/primary.log 2>/dev/null || true
           cp -f primary.time.txt artifact/primary.time.txt 2>/dev/null || true
           cp -f worker_timeline.json artifact/worker_timeline.json 2>/dev/null || true
+          cp -f eta_replay.json artifact/eta_replay.json 2>/dev/null || true
           cp -f worker-timeline.stderr artifact/worker-timeline.stderr 2>/dev/null || true
           cp -f progress_overhead.json artifact/progress_overhead.json 2>/dev/null || true
           cp -f "out-primary/${STEM}.json" "artifact/${STEM}.json" 2>/dev/null || true
@@ -616,10 +610,15 @@ jobs:
       - name: Build combined results.json and step summary
         run: python3 eval/remote_build_summary.py --results-dir results --out results.json --summary "$GITHUB_STEP_SUMMARY"
 
+      - name: Summarize ETA replay accuracy
+        run: python3 eval/eta_accuracy_summary.py results eta_accuracy.json "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: results-combined
-          path: results.json
+          path: |
+            results.json
+            eta_accuracy.json
 
   name-eval:
     name: sequential name evaluation (20 repos, $5 reserved cap)

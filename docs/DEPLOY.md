@@ -44,7 +44,7 @@ Optionally create a `production` environment in the repo's settings with yoursel
    Every commit on `main` deploys, including docs-only ones. That is deliberate — a staging environment that skips commits is a staging environment you cannot reason about. Railway's **Watch Paths** could filter them and should be left empty.
 
    Leave **Wait for CI** off unless you want staging gated on the Rust gate finishing (~minutes). Off means staging reflects `main` immediately and can briefly run a commit CI later calls red; that is the correct trade for a box whose job is to be looked at, but it is a choice, so make it knowingly.
-2. Add a volume mounted at `/data` (5 GB is ample — the clone cache is capped at 1 GiB by `TOLMAP_MAX_CLONE_BYTES`, and maps are small). Do this **before** the first successful deploy, or the healthcheck passes against a store that a redeploy then throws away.
+2. Add a volume mounted at `/data` (5 GB is ample — the clone cache evicts older clones above 1 GiB via `TOLMAP_CLONE_CACHE_BYTES`, while the active clone is retained). Do this **before** the first successful deploy, or the healthcheck passes against a store that a redeploy then throws away.
 3. Apply the variables: `railway variables --set-from-file deploy/railway.staging.env`, or paste that file into the dashboard's raw editor.
 4. Note that the generated `*.up.railway.app` URL is public. This service clones and indexes arbitrary public repositories on request; the rate limits in the env file are the only thing in front of it. If staging should not be an open compute endpoint, put Railway's access protection in front of it at this point.
 

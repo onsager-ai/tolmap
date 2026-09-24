@@ -82,7 +82,7 @@ DeepWiki answers *what is this code*. tolmap answers *where is it and what does 
 
 **Clone strategy.** Co-change needs commit history, so a depth-1 clone is not enough. `--filter=blob:none` gives the full commit graph without file contents, then the working tree is materialised once — that is what the prototype used and it is the right default. Budget disk and evict.
 
-**Limits, because it is a public endpoint that clones and burns CPU on demand.** Caps on file count, clone size, history depth and wall time, with a clear "this repository is too large for the hosted index" rather than a timeout. Rate limit per IP and per repo.
+**Capacity policy (owner decision, 2026-09-24; issue #97).** No file-count, clone-size, history-depth or wall-time admission caps. Large jobs may take a long time or fail if the current worker runs out of memory. Keep per-IP and per-repo request rate limits, a bounded queue, and LRU clone-cache eviction. The worker/master scaling design is tracked in issue #97.
 
 ### MVP scope, explicitly
 

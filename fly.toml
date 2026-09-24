@@ -68,30 +68,15 @@ primary_region = "iad"
 
 [[vm]]
   size = "shared-cpu-1x"
-  # 1 GB. Indexing django (851 files, full history for co-change, the
-  # tree-sitter parse + Leiden partition, docs/ARCHITECTURE.md's own
-  # description of the pipeline's cost) is the memory high-water mark
-  # among the fixture corpus, and it is also the largest repository this
-  # deployment's own limits admit by design (TOLMAP_MAX_FILES below).
-  # 1 GB is the ~$5-10/month shape the user approved (2026-09-20) for
-  # shared-cpu-1x on Fly's current pricing. This was NOT measured against
-  # a real peak-RSS number for a django index run -- this machine has no
-  # `docker` to run the container and profile it, and the reference
-  # Python pipeline's memory shape is not a reliable proxy for the Rust
-  # port's (different allocator, no CPython object overhead, the FFI
-  # Leiden call holds the graph in igraph's own C structures rather than
-  # Python objects). If a django-sized index OOMs at 1 GB in practice, the
-  # fix is either to raise this to 2 GB or to lower TOLMAP_MAX_FILES so
-  # the largest admitted repo actually fits -- flagged here rather than
-  # silently bought as 2 GB up front.
+  # 1 GB remains the current machine size. With size and time admission
+  # caps removed, a very large job may exhaust it; issue #97 tracks worker
+  # classes and routing for production scaling.
   memory = "1gb"
 
 [[mounts]]
   source = "tolmap_data"
   destination = "/data"
-  # 10 GB, matching the volume size this file's [env] arithmetic (below)
-  # was computed against -- see the comment on TOLMAP_MAX_CLONE_BYTES.
-
+  # 10 GB volume for SQLite, maps and the evicting clone cache.
   initial_size = "10gb"
 
 [env]
@@ -112,46 +97,9 @@ primary_region = "iad"
   # cannot retain the old absolute floor through configuration drift.
   TOLMAP_PRUNE_VARIANT = "node-relative"
 
-  # ---- Limits sized for a 1 GB machine + 10 GB volume (issue: Fly.io
-  # deployment, 2026-09-20) -- arithmetic in the PR body; summary here.
-  #
-  # TOLMAP_MAX_CLONE_BYTES doubles as both a single-clone cap
-  # (service::clone::check_clone_size) AND the LRU cache's total eviction
-  # budget (service::clone::evict_lru is called with this same value) --
-  # so this is the number that actually bounds the clone cache's disk
-  # footprint, not just one repo's size. 1 GiB, down from the 2 GiB
-  # developer-machine default: the real largest fixture (django, measured
-  # via a live TOLMAP_FIXTURE_REPOS clone during this change) is 157 MB
-  # working tree + .git combined, so 1 GiB keeps ~6.5x headroom over the
-  # largest known-real repository -- comparable to TOLMAP_MAX_FILES's own
-  # ~5.9x headroom over django's file count, not an arbitrary round number.
-  TOLMAP_MAX_CLONE_BYTES = "1073741824" # 1 GiB
-
-  # File count doesn't consume volume directly (a rejected-for-file-count
-  # repo has already been cloned and measured by this point -- see
-  # service::jobs -- so this is a memory/CPU proxy, covered by the VM
-  # memory choice above, not a disk one). Left at the developer default:
-  # django (851 files) is comfortably under it, and there is no volume
-  # argument for lowering it independently of the clone-size cap above.
-  TOLMAP_MAX_FILES = "5000"
-
-  # Matches Limits::default() (service/config.rs) -- see that field's doc
-  # comment for why 200000, not 20000: the old default rejected django's
-  # real history (34,942 commits) outright, and this check bounds clone
-  # cost, not indexing cost (extract.rs's git_history only ever reads the
-  # most recent 4000 commits regardless of total depth). Set explicitly
-  # here too, not left to the compiled-in default, so it is visible and
-  # changeable without a redeploy if it needs adjusting for this specific
-  # box.
-  TOLMAP_MAX_HISTORY_COMMITS = "200000"
-
-  # Left at the developer default (900s = 15 minutes). Not adjusted for
-  # shared-cpu-1x being slower than a developer's machine, because there
-  # is no benchmark here to adjust it *by* -- this machine cannot build or
-  # run the container to time an actual django index on Fly's hardware.
-  # If real jobs are timing out near this budget in practice, raise it;
-  # do not treat this number as validated.
-  TOLMAP_MAX_JOB_SECONDS = "900"
+  # Clone cache eviction is a disk budget, not a single-repository cap.
+  # The active clone is retained even when it exceeds this budget.
+  TOLMAP_CLONE_CACHE_BYTES = "1073741824" # 1 GiB
   TOLMAP_MAX_CONCURRENT_JOBS = "1"
   TOLMAP_MAX_QUEUED_JOBS = "16"
 

@@ -1,8 +1,10 @@
 //! The versioned one-job process protocol. The child never opens the master
 //! database; it receives inputs and returns paths to files in shared storage.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -21,9 +23,7 @@ pub struct WorkerSpec {
     pub all_sources: bool,
     pub cache_dir: String,
     pub output_dir: String,
-    pub max_clone_bytes: u64,
-    pub max_history_commits: usize,
-    pub max_files: usize,
+    pub clone_cache_bytes: u64,
     pub prune_variant: String,
     pub namer: String,
     pub namer_model: String,
@@ -35,6 +35,19 @@ pub struct WorkerSpec {
 pub struct PreviousMap {
     pub branch: Option<String>,
     pub path: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
+pub struct RepoFeatures {
+    pub clone_bytes: Option<u64>,
+    pub commits: Option<u64>,
+    pub languages: BTreeMap<String, LanguageFeatures>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
+pub struct LanguageFeatures {
+    pub files: u64,
+    pub bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -53,6 +66,10 @@ pub enum WorkerEvent {
         stage: StageId,
         duration_s: f64,
         success: bool,
+    },
+    Features {
+        v: u8,
+        features: RepoFeatures,
     },
     Log {
         v: u8,
@@ -84,6 +101,7 @@ impl WorkerEvent {
             Self::StageStarted { v, .. }
             | Self::Progress { v, .. }
             | Self::StageFinished { v, .. }
+            | Self::Features { v, .. }
             | Self::Log { v, .. }
             | Self::Result { v, .. }
             | Self::Error { v, .. } => *v,
@@ -154,9 +172,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         },
     };
     let limits = Limits {
-        max_clone_bytes: spec.max_clone_bytes,
-        max_history_commits: spec.max_history_commits,
-        max_files: spec.max_files,
+        clone_cache_bytes: spec.clone_cache_bytes,
         ..Limits::default()
     };
     let clone_stage = progress.stage(StageId::Clone, None);
@@ -171,6 +187,23 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         message: error.body.message,
     })?;
     clone_stage.finish();
+    let mut features = RepoFeatures {
+        clone_bytes: clone::directory_size(&materialized.path).ok(),
+        commits: Command::new("git")
+            .arg("-C")
+            .arg(&materialized.path)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|count| count.trim().parse().ok()),
+        languages: BTreeMap::new(),
+    };
+    progress.emit_event(WorkerEvent::Features {
+        v: 1,
+        features: features.clone(),
+    });
     let detect_stage = progress.stage(StageId::Detect, Some(1));
     let sources = if spec.all_sources {
         detect::all_sources(&materialized.path)
@@ -190,21 +223,27 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
             "no source cleared the all-sources floor".to_owned(),
         ));
     }
-    let file_count = sources
-        .iter()
-        .map(|source| source.file_count)
-        .sum::<usize>();
-    if file_count > limits.max_files {
-        return Err(fail(
-            "repo_too_large",
-            format!(
-                "file count {} exceeds the configured limit of {}",
-                file_count, limits.max_files
-            ),
-        ));
+    for source in &sources {
+        let files = extract::source_files(&materialized.path, &source.pkg, source.language)
+            .map_err(|error| fail("detection_failed", error.to_string()))?;
+        let bytes = files
+            .iter()
+            .filter_map(|path| {
+                std::fs::metadata(materialized.path.join(path))
+                    .ok()
+                    .map(|meta| meta.len())
+            })
+            .sum();
+        let row = features
+            .languages
+            .entry(source.language.as_str().to_owned())
+            .or_default();
+        row.files += files.len() as u64;
+        row.bytes += bytes;
     }
     detect_stage.set(1);
     detect_stage.finish();
+    progress.emit_event(WorkerEvent::Features { v: 1, features });
 
     let source_pairs = sources
         .into_iter()
