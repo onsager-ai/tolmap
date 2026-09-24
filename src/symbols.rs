@@ -1174,6 +1174,7 @@ impl SymbolsDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tree_sitter::Parser;
 
     fn source(file: &str, module: &str, lang: &str) -> SourceNode {
         SourceNode {
@@ -1211,6 +1212,27 @@ mod tests {
         doc.edges.iter().any(|e| e[0] == from && e[1] == to)
     }
 
+    fn build_fixture(repo: &Path, nodes: &[SourceNode]) -> SymbolsDocument {
+        let mut records = BTreeMap::new();
+        let mut parser = Parser::new();
+        for node in nodes {
+            let lang = LanguageKind::parse(&node.lang).unwrap();
+            let grammar = match lang {
+                LanguageKind::Python => tree_sitter_python::LANGUAGE.into(),
+                LanguageKind::Go => tree_sitter_go::LANGUAGE.into(),
+                LanguageKind::TypeScript if node.file.ends_with(".tsx") => {
+                    tree_sitter_typescript::LANGUAGE_TSX.into()
+                }
+                LanguageKind::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            };
+            parser.set_language(&grammar).unwrap();
+            let bytes = fs::read(repo.join(&node.file)).unwrap();
+            let tree = parser.parse(&bytes, None).unwrap();
+            records.insert(node.file.clone(), collect(tree.root_node(), &bytes, lang));
+        }
+        build(repo, nodes, records).unwrap()
+    }
+
     #[test]
     fn complete_hierarchy_keeps_dunders_and_more_than_sixty() {
         let mut body = "class Outer:\n    def __init__(self):\n        def inner():\n            pass\n    class Nested:\n        def work(self):\n            pass\n".to_owned();
@@ -1218,7 +1240,7 @@ mod tests {
             body.push_str(&format!("\ndef f{n}():\n    pass\n"));
         }
         let (dir, nodes) = fixture(&[("mod.py", "mod", &body)]);
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert!(doc.symbols.len() > 60);
         let outer = id(&doc, 0, "Outer");
         let init = id(&doc, 0, "__init__");
@@ -1242,7 +1264,7 @@ mod tests {
             ("pkg/core.py", "pkg.core", "class Target:\n    def method(self):\n        pass\n"),
             ("caller.py", "caller", "from pkg import Target\nimport pkg.core as core\n\nclass Caller(Target):\n    def method(self):\n        self.helper()\n        Target.method()\n        core.Target.method()\n        super().method()\n        Target()\n    def helper(self):\n        pass\n\ndef outer():\n    def inner():\n        outer()\n    inner()\n\ndef typed(x: Target) -> Target:\n    return x\n\n@Target\ndef decorated():\n    pass\n"),
         ]);
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         let target = id(&doc, 1, "Target");
         let target_method = id(&doc, 1, "method");
         let caller = id(&doc, 2, "Caller");
@@ -1272,7 +1294,7 @@ mod tests {
     #[test]
     fn module_lines_and_unknown_calls_are_lower_bounds() {
         let (dir, nodes) = fixture(&[("m.py", "m", "# comment\nVALUE = 1\n\ndef known():\n    \"\"\"doc\"\"\"\n    missing()\n    (factory())()\n")]);
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert_eq!(doc.module_code_lines[&0], 1);
         assert!(doc.coverage.calls_total >= 3);
         assert_eq!(doc.coverage.calls_resolved, 0);
@@ -1289,7 +1311,7 @@ mod tests {
             ("p/c.py", "p.c", "class X:\n    pass\n"),
             ("use.py", "use", "from p import X\ndef f():\n    X()\n"),
         ]);
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert!(edge(&doc, id(&doc, 4, "f"), id(&doc, 3, "X")));
     }
 
@@ -1303,7 +1325,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("a.ts"), "class Box { method() { function nested() {} } }\ninterface Shape {}\ntype Name = string;\nconst f = () => 1;\n").unwrap();
         let nodes = vec![source("a.go", "a.go", "go"), source("a.ts", "a.ts", "ts")];
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert_eq!(doc.symbols[id(&doc, 0, "Thing")].0 .2, CLASS);
         assert_eq!(doc.symbols[id(&doc, 0, "Work")].0 .2, METHOD);
         assert_eq!(
@@ -1358,7 +1380,7 @@ mod tests {
             source("thing.ts", "thing.ts", "ts"),
             source("use.ts", "use.ts", "ts"),
         ];
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert_eq!(
             doc.symbols[id(&doc, 1, "Work")].0 .5,
             id(&doc, 0, "Thing") as isize
