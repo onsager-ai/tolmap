@@ -292,6 +292,26 @@ export function isDashedKind(kind: number): boolean {
   return kind === KIND_NESTED_FUNCTION;
 }
 
+/** Whether `text` could fit inside a box of the given on-screen `areaPx2`
+ * (width * height) -- the SAME sqrt(area) test MapRenderer's own label pass
+ * already applied to decide whether to draw a label once its card was
+ * already up (font size grows with sqrt(area), capped at 11/11.5,
+ * `tw = text.length * fontSize * 0.62`, fits if `sqrt(area) >= tw - 6`).
+ * Issue #82 follow-up (round 2): pulled out into its own function because a
+ * card's own eligibility to be DRAWN is now decided by this same test, not
+ * just whether its label gets drawn once it's already on screen -- keeping
+ * one implementation means the two can't drift apart. This is deliberately
+ * collision-agnostic (whether some OTHER label wins the greedy placement
+ * fight over this one is a separate, later concern, the same as it always
+ * was for the label-drawing pass itself) -- "fits" means "could this label
+ * ever fit here," not "will it definitely render." */
+export function labelFitsBox(text: string, bold: boolean, areaPx2: number): boolean {
+  const area = Math.max(areaPx2, 1);
+  const fs = bold ? 11.5 : Math.min(11, Math.max(8.5, Math.sqrt(area) / 7));
+  const tw = text.length * fs * 0.62;
+  return Math.sqrt(area) >= tw - 6;
+}
+
 /** Fills: "each depth gets lighter... roughly 0.55, 0.85 and 0.6 by depth"
  * (spec item 2), lifted directly from the prototype's own ternary
  * (`depth===0?.55:depth===1?.85:.6`) -- depth 0 is a top-level symbol,

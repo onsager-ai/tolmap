@@ -3101,8 +3101,18 @@ function buildSyntheticClassResponse(mapDoc, fileIndex, multiplier) {
   const mx0 = cx0, mx1 = cx1, my0 = cy0 + (cy1 - cy0) * 0.65, my1 = cy1;
   const classGlobal = 9_000_000;
   const childGlobal = 9_000_001;
-  const className = "SyntheticClass";
-  const childName = "synthetic_method";
+  // CARD_MIN_PX round 2 (issue #82 follow-up): a card's own draw
+  // eligibility now depends on whether its LABEL fits its box
+  // (labelFitsBox), not just a fixed pixel floor -- and this class is
+  // deliberately sized to START small (comfortably under the 110px expand
+  // gate, ~80px on its own LONG side, so its short side can be
+  // considerably less for anything but a near-square file footprint). A
+  // long name ("SyntheticClass"/"synthetic_method", the original names
+  // here) risked failing labelFitsBox at that size well before the test
+  // ever got to exercise the 110px expand behaviour it's actually testing
+  // -- short names keep this test about THAT gate, not this one.
+  const className = "Cx";
+  const childName = "mx";
   const json = {
     district: 0,
     files: [fileIndex],
@@ -3122,10 +3132,15 @@ function buildSyntheticClassResponse(mapDoc, fileIndex, multiplier) {
 
 // Measures the file's OWN on-screen size at the opening fit (before any
 // symbols route is active -- a plain, unmocked navigation), then picks a
-// synthetic-class multiplier so the class starts comfortably under 110px
-// (~50px) and clears it comfortably (~2000px) at clampK's 40x zoom ceiling.
-// Decouples checkClassExpandsAtShortSide/checkCardTapSelectsSymbolAndBreadcrumb
-// from how big this PARTICULAR file happens to be on screen -- a fixed
+// synthetic-class multiplier so the class's LONG side starts comfortably
+// under 110px (~80px -- CARD_MIN_PX round 2, issue #82 follow-up: bumped up
+// from an original 50px for headroom under labelFitsBox, since the class's
+// SHORT side -- what the 110px expand gate and labelFitsBox's area both
+// actually key off -- can be considerably less than the long side for a
+// non-square file footprint) and clears 110px comfortably (~2000px) at
+// clampK's 40x zoom ceiling. Decouples
+// checkClassExpandsAtShortSide/checkCardTapSelectsSymbolAndBreadcrumb from
+// how big this PARTICULAR file happens to be on screen -- a fixed
 // multiplier would either start already-expanded (a big file) or never
 // reach 110px even at max zoom (a tiny one).
 async function pickSyntheticMultiplier(page, base, path, fileIndex) {
@@ -3134,7 +3149,7 @@ async function pickSyntheticMultiplier(page, base, path, fileIndex) {
   await page.waitForTimeout(900);
   const fileBox = await page.locator(`svg.map-svg .hit[data-k="f:${fileIndex}"]`).first().boundingBox({ timeout: 2000 }).catch(() => null);
   const fileWidthPx = Math.max(fileBox ? Math.max(fileBox.width, fileBox.height) : 0, 0.1);
-  return Math.max(2, 50 / fileWidthPx);
+  return Math.max(2, 80 / fileWidthPx);
 }
 
 // 9(c): a class expands (shows a member's own card) once its short side
@@ -3365,20 +3380,28 @@ async function checkOutlineHoverHighlightsCard(browser, base) {
   await context.close();
 }
 
-// 9(f2) (issue #82 follow-up): a symbol card too small to carry a label
-// reads as a bare, meaningless square/circle/cross instead of not being
-// drawn at all -- MapRenderer's drawSymbolCardsPass now skips one below
-// CARD_MIN_PX (constants.ts) unless it's the selection, an ancestor of the
-// selection, or the current hover. This check makes neither: nothing here
-// is selected or hovered, so every "hs:" card the gate lets through has to
-// clear the floor on its own merit -- no exception can apply, so the
-// assertion doesn't need to reconstruct the ancestor/hover rules from the
-// DOM. Same view screenshots.mjs's own "symbol-cards-deep-zoom" frame uses
-// (a large, symbol-dense file, several wheel notches in) -- that's where
+// 9(f2) (issue #82 follow-up, round 2): a symbol card too small to carry a
+// label reads as a bare, meaningless square/circle/cross -- a fixed pixel
+// floor alone doesn't answer that (a 30-40px container with a long name
+// clears any reasonable floor and is still unlabelled). MapRenderer's
+// drawSymbolCardsPass now draws a card only when its OWN label fits
+// (labelFitsBox) or it has a drawn descendant worth containing, with a hard
+// CARD_HARD_FLOOR_PX underneath and the selection/hover/ancestor exceptions
+// on top. This check makes neither exception apply (nothing here is
+// selected or hovered), so every drawn "hs:" card has to satisfy the
+// label-or-descendant rule on its own: it must either carry a visible
+// label (tagged "data-label-for" on the rendered <text>) or have at least
+// one drawn child (read back from the symbols fixture's own parent field,
+// row[5] -- a drawn grandchild implies its immediate parent was ALSO drawn,
+// by construction of the escape valve itself, so checking one level of
+// child is enough to validate the whole chain). Same view
+// screenshots.mjs's own "symbol-cards-deep-zoom" frame uses (a large,
+// symbol-dense file, several wheel notches in) -- that's where
 // symbol_cards.rs's mass-based layout spreads cards across the widest range
-// of on-screen sizes, the view most likely to have shown this bug.
-async function checkSymbolCardsClearMinSize(browser, base) {
-  const label = "symbol cards clear the CARD_MIN_PX floor (dify) / desktop";
+// of on-screen sizes and label lengths, the view most likely to have shown
+// this bug.
+async function checkSymbolCardsCarryLabelOrChild(browser, base) {
+  const label = "symbol cards carry a label or a drawn child (dify) / desktop";
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
@@ -3402,26 +3425,34 @@ async function checkSymbolCardsClearMinSize(browser, base) {
     await page.waitForTimeout(30);
   }
   await page.waitForTimeout(650); // glide()/settle
-  // constants.ts's CARD_MIN_PX, kept as a literal here the same way
-  // checkClassExpandsAtShortSide names "110px" in its own label rather than
-  // importing isClassExpanded's threshold -- this script runs as plain
-  // Node, outside Vite's TS pipeline.
-  const CARD_MIN_PX = 14;
-  const info = await page.evaluate((minPx) => {
-    const cards = [...document.querySelectorAll('svg.map-svg [data-k^="hs:"]')];
-    const undersized = cards
-      .map((el) => {
-        const box = el.getBoundingClientRect();
-        return { key: el.getAttribute("data-k"), shortSide: Math.min(box.width, box.height) };
-      })
-      .filter((c) => c.shortSide + 0.5 < minPx); // +0.5: sub-pixel rounding slack
-    return { total: cards.length, undersized };
-  }, CARD_MIN_PX);
-  report(info.total > 0, `${label}: at least one card is on screen to check`, `total=${info.total}`);
+  const drawnGlobals = await page.evaluate(() =>
+    [...document.querySelectorAll('svg.map-svg [data-k^="hs:"]')].map((el) => Number(el.getAttribute("data-sym"))),
+  );
+  const labeledGlobals = await page.evaluate(() =>
+    [...document.querySelectorAll("svg.map-svg [data-label-for]")].map((el) => Number(el.getAttribute("data-label-for"))),
+  );
+  const drawnSet = new Set(drawnGlobals);
+  const labeledSet = new Set(labeledGlobals);
+  // Parent (GLOBAL, or null) of every global this district's symbols
+  // document carries -- docs/API.md: row[5] is already a global index (or
+  // -1). Mirrors symbolCards.ts's own decode, minus the local-index
+  // bookkeeping this check doesn't need.
+  const parentOfGlobal = new Map();
+  symbols.symbols.forEach((row, local) => {
+    const global = symbols.symbol_indices[local];
+    parentOfGlobal.set(global, row[5] >= 0 ? row[5] : null);
+  });
+  const hasDrawnChild = new Set();
+  for (const g of drawnSet) {
+    const p = parentOfGlobal.get(g);
+    if (p != null && drawnSet.has(p)) hasDrawnChild.add(p);
+  }
+  const bad = [...drawnSet].filter((g) => !labeledSet.has(g) && !hasDrawnChild.has(g));
+  report(drawnSet.size > 0, `${label}: at least one card is on screen to check`, `total=${drawnSet.size}`);
   report(
-    info.undersized.length === 0,
-    `${label}: every drawn card (nothing selected or hovered, so no exception applies) clears ${CARD_MIN_PX}px`,
-    JSON.stringify(info.undersized.slice(0, 10)),
+    bad.length === 0,
+    `${label}: every drawn card (nothing selected or hovered, so no exception applies) has a label or a drawn child`,
+    JSON.stringify(bad.slice(0, 10)),
   );
   await context.close();
 }
@@ -3634,7 +3665,7 @@ async function main() {
     await checkCardTapSelectsSymbolAndBreadcrumb(browser, args.base);
     await checkReferenceLineEndpoints(browser, args.base);
     await checkOutlineHoverHighlightsCard(browser, args.base);
-    await checkSymbolCardsClearMinSize(browser, args.base);
+    await checkSymbolCardsCarryLabelOrChild(browser, args.base);
     await checkStepBackThroughSymbolLevels(browser, args.base);
     await checkPhoneHubRingDeclutter(browser, args.base);
     await checkMapWithoutSymbolsStillWorks(browser, args.base);

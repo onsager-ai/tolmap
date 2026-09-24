@@ -8,6 +8,7 @@
 import type { DistrictSymbols, MapDocument, Neighbourhood } from "@/types";
 import {
   BUILD_ZOOM,
+  CARD_HARD_FLOOR_PX,
   CARD_MIN_PX,
   DOT_DENSITY_FLOOR,
   KCOL,
@@ -66,6 +67,7 @@ import {
   isClassExpanded,
   isDashedKind,
   KIND_NAMES,
+  labelFitsBox,
   MODULE_FILL_RATIO,
   referenceLineWidth,
   ringBounds,
@@ -2660,18 +2662,18 @@ export class MapRenderer {
         for (const a of ancestorsOf(entry.decoded, entry.local)) selAncestryGlobal.add(entry.decoded.raw.symbol_indices[a]);
       }
     }
-    // Issue #82 follow-up (CARD_MIN_PX): the currently hovered symbol is a
-    // third exception to the min-size gate below, alongside the selection
-    // and its ancestors -- same "hs:" convention renderSymbolRefs reads
-    // hoverKey with. A hover that starts or ends on a symbol the gate would
-    // otherwise hide (only reachable via the outline tree's hoverSymbol(),
-    // since a pointer can never land on a card that isn't drawn) takes
-    // effect on the NEXT repaint, same as any other hover-independent
-    // change here -- there is no separate hover-only redraw of this pass
-    // (see renderSymbolRefs' own doc comment for why hover avoids a full
-    // repaint; extending that to re-run just this pass on every hover
-    // in/out was judged not worth the added bookkeeping for a case a
-    // pointer itself can never trigger).
+    // Issue #82 follow-up: the currently hovered symbol is a third exception
+    // to the draw-eligibility rule below (labelFitsBox/CARD_HARD_FLOOR_PX),
+    // alongside the selection and its ancestors -- same "hs:" convention
+    // renderSymbolRefs reads hoverKey with. A hover that starts or ends on a
+    // symbol the rule would otherwise hide (only reachable via the outline
+    // tree's hoverSymbol(), since a pointer can never land on a card that
+    // isn't drawn) takes effect on the NEXT repaint, same as any other
+    // hover-independent change here -- there is no separate hover-only
+    // redraw of this pass (see renderSymbolRefs' own doc comment for why
+    // hover avoids a full repaint; extending that to re-run just this pass
+    // on every hover in/out was judged not worth the added bookkeeping for
+    // a case a pointer itself can never trigger).
     const hoverGlobal = this.hoverKey?.startsWith("hs:") ? Number(this.hoverKey.slice(3)) : null;
 
     const gCards = el("g", {});
@@ -2684,7 +2686,7 @@ export class MapRenderer {
     // passes too, each with its own budget.
     const placed: Array<[number, number, number, number]> = [];
     const hits = (b: [number, number, number, number]) => placed.some((r) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3]));
-    type LabelCandidate = { depth: number; area: number; x: number; y: number; text: string; bold: boolean; anchorTop: boolean };
+    type LabelCandidate = { global: number; depth: number; area: number; x: number; y: number; text: string; bold: boolean; anchorTop: boolean };
     const labelCandidates: LabelCandidate[] = [];
     const tabCandidates: Array<{ cx: number; y0: number; widthPx: number; name: string }> = [];
 
@@ -2742,9 +2744,23 @@ export class MapRenderer {
         // cardedFileBBox's own doc comment for why this is recorded here.
         this.cardedFileBBox.set(i, [x0, yTop, x1, yBot]);
       }
-      const draw = (local: number, depth: number) => {
+      // Issue #82 follow-up (round 2): a card too small to carry a label
+      // read as a bare octagon/cross even after the first pass's CARD_MIN_PX
+      // gate -- a 30-40px container with a long name clears 14px easily and
+      // was still unlabelled, still meaningless. Draw eligibility now turns
+      // on whether the card can actually carry ITS OWN label
+      // (labelFitsBox), not a fixed size -- with an escape valve for a
+      // container whose name doesn't fit but that DOES have a member drawn
+      // inside it (still worth outlining, since it's showing something).
+      // That escape valve is why `draw` returns whether it drew anything:
+      // a parent can only know if it has a drawn descendant by recursing
+      // into its children FIRST, before deciding its own fate. Below
+      // CARD_HARD_FLOOR_PX (own comment), nothing is drawn regardless --
+      // even the selection/hover/ancestor exceptions, unlike the label-fit
+      // rule they otherwise bypass.
+      const draw = (local: number, depth: number): boolean => {
         const rings = decoded.cardRings[local];
-        if (!rings || rings.length === 0) return;
+        if (!rings || rings.length === 0) return false;
         const global = decoded.raw.symbol_indices[local];
         const row = decoded.raw.symbols[local];
         const kind = rowKind(row);
@@ -2753,25 +2769,28 @@ export class MapRenderer {
         const sx0 = this.X(bx0), sx1 = this.X(bx1), sy0 = this.Y(by0), sy1 = this.Y(by1);
         const widthPx = Math.abs(sx1 - sx0);
         const heightPx = Math.abs(sy1 - sy0);
+        const shortSidePx = Math.min(widthPx, heightPx);
+        if (shortSidePx < CARD_HARD_FLOOR_PX) return false;
         const isSelfOrAncestorOfSelection = selAncestryGlobal.has(global);
         const isHovered = global === hoverGlobal;
-        // Issue #82 follow-up: don't draw a card too small to carry a label
-        // -- it reads as a bare octagon/cross instead (see CARD_MIN_PX's own
-        // comment). A container caught here returns before it ever recurses
-        // into `children` below, so the whole subtree is skipped too ("a
-        // container below the threshold is not drawn, and neither are its
-        // descendants" -- deliberately unconditional: only the selection's
-        // OWN ancestor chain, via selAncestryGlobal, forces a small
-        // container open, not an unrelated hover further down it). The
-        // symbol itself stays reachable through the outline tree, and its
-        // reference lines roll up to the nearest drawn ancestor card or the
-        // file (rollReferences, driven by `symVisible` below).
-        if (Math.min(widthPx, heightPx) < CARD_MIN_PX && !isSelfOrAncestorOfSelection && !isHovered) return;
+        const isException = isSelfOrAncestorOfSelection || isHovered;
+        const children = decoded.children[local];
+        const expanded = isClassExpanded(children.length > 0, shortSidePx, isSelfOrAncestorOfSelection);
+        const memberCount = children.length;
+        const label = symbolLabel(row, memberCount, !expanded && memberCount > 0);
+        // Recurse BEFORE deciding whether to draw self -- see this block's
+        // own doc comment for why. Only possible when `expanded` (the
+        // existing, unchanged 110px-or-forced rule): a collapsed container
+        // never shows a member's own card, so it can never inherit this
+        // exception from one either.
+        let anyChildDrawn = false;
+        if (expanded) {
+          for (const c of children) if (draw(c, depth + 1)) anyChildDrawn = true;
+        }
+        if (!isException && !anyChildDrawn && !labelFitsBox(label, isBoldKind(kind), widthPx * heightPx)) return false;
         this.symVisible.add(global);
         const centroid = ringCentroid(exterior);
         this.symScreenAnchor.set(global, [this.X(centroid[0]), this.Y(centroid[1])]);
-        const children = decoded.children[local];
-        const expanded = isClassExpanded(children.length > 0, Math.min(widthPx, heightPx), isSelfOrAncestorOfSelection);
         const ratio = cardFillRatio(depth);
         gCards.appendChild(
           drawContourFill(rings, {
@@ -2800,9 +2819,8 @@ export class MapRenderer {
             );
           }
         }
-        const memberCount = children.length;
-        const label = symbolLabel(row, memberCount, !expanded && memberCount > 0);
         labelCandidates.push({
+          global,
           depth,
           area: widthPx * heightPx,
           x: (sx0 + sx1) / 2,
@@ -2811,7 +2829,7 @@ export class MapRenderer {
           bold: isBoldKind(kind),
           anchorTop: expanded,
         });
-        if (expanded) for (const c of children) draw(c, depth + 1);
+        return true;
       };
       for (const local of topLocals) draw(local, 0);
       // File outline, re-drawn ON TOP of every card (spec: "the file outline
@@ -2852,9 +2870,17 @@ export class MapRenderer {
     }
     labelCandidates.sort((a, b) => a.depth - b.depth || b.area - a.area);
     for (const c of labelCandidates) {
+      // labelFitsBox is the SAME test draw() already applied to decide
+      // whether this card was worth drawing at all (symbolCards.ts's own
+      // doc comment) -- kept as one implementation so the two can't drift.
+      // A card can still lose here even after passing there in one case:
+      // it was drawn on the "has a drawn descendant" escape valve with a
+      // name that doesn't fit its OWN box (draw()'s `anyChildDrawn`
+      // branch) -- correctly unlabelled, since the card is carrying its
+      // members, not a label, in that case.
+      if (!labelFitsBox(c.text, c.bold, c.area)) continue;
       const fs = c.bold ? 11.5 : Math.min(11, Math.max(8.5, Math.sqrt(Math.max(c.area, 1)) / 7));
       const tw = c.text.length * fs * 0.62;
-      if (Math.sqrt(Math.max(c.area, 1)) < tw - 6) continue; // spec: "a label must fit inside its box"
       const box: [number, number, number, number] = [c.x - tw / 2 - 2, c.y - fs * 0.85, tw + 4, fs * 1.3];
       if (hits(box)) continue;
       placed.push(box);
@@ -2872,6 +2898,12 @@ export class MapRenderer {
         // its own card (usually at/near its centroid), so it must not
         // intercept the tap meant for the card underneath.
         "pointer-events": "none",
+        // Issue #82 follow-up (round 2): lets check-view-stability.mjs's
+        // checkSymbolCardsCarryLabelOrChild read back which symbol a
+        // rendered label belongs to directly, the same way every card's
+        // own "data-sym" already does -- a label carries no other
+        // identifying attribute otherwise.
+        "data-label-for": c.global,
         // Issue #82 C2 pitfall (prototype note in the handoff): set stroke
         // width through `style`, not the plain attribute -- a CSS
         // stroke-width rule would override the attribute here, and this
