@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
-import type { MapDocument } from "@/types";
+import type { DistrictSymbols, MapDocument } from "@/types";
 import { MapRenderer, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
 import type { Geo, Layer } from "./constants";
 import type { Route } from "./graph";
@@ -17,6 +17,10 @@ export interface MapCanvasHandle {
    * because it's the user explicitly asking via the ⤢ button. */
   zoomDistrict(d: number): void;
   zoomBy(f: number): void;
+  /** Issue #82 C2 scope item 5: SelectionPanel's outline tree hovers a row ->
+   * highlight its card on the map, without a full repaint (see
+   * MapRenderer.hoverSymbol's own doc comment). `null` clears it. */
+  hoverSymbol(global: number | null): void;
 }
 
 interface MapCanvasProps {
@@ -32,6 +36,10 @@ interface MapCanvasProps {
   folderOnlyIslands: boolean;
   folderLabels: readonly FolderLabel[];
   activeDirectory?: string;
+  /** Issue #82 C2: every district's symbols document React currently has --
+   * see data/queries.ts's useDistrictSymbolsMap. */
+  districtSymbols: ReadonlyMap<number, DistrictSymbols>;
+  selHSym: number | null;
   callbacks: MapRendererCallbacks;
   handleRef?: React.Ref<MapCanvasHandle>;
 }
@@ -55,6 +63,8 @@ export function MapCanvas({
   folderOnlyIslands,
   folderLabels,
   activeDirectory,
+  districtSymbols,
+  selHSym,
   callbacks,
   handleRef,
 }: MapCanvasProps) {
@@ -73,9 +83,11 @@ export function MapCanvas({
       onSelectDistrict: (d) => callbacksRef.current.onSelectDistrict(d),
       onSelectFile: (i) => callbacksRef.current.onSelectFile(i),
       onSelectSymbol: (i, s) => callbacksRef.current.onSelectSymbol(i, s),
+      onSelectHierSymbol: (g) => callbacksRef.current.onSelectHierSymbol(g),
       onClearSelection: () => callbacksRef.current.onClearSelection(),
       onSelectDirectory: (path) => callbacksRef.current.onSelectDirectory(path),
       onPreviewDirectory: (path) => callbacksRef.current.onPreviewDirectory(path),
+      onNeedSymbols: (d) => callbacksRef.current.onNeedSymbols(d),
       onDragStart: () => callbacksRef.current.onDragStart?.(),
     };
     const renderer = new MapRenderer(svgRef.current, stableCallbacks);
@@ -94,6 +106,7 @@ export function MapCanvas({
       panToDistrict: (d, anim = true) => rendererRef.current?.panToDistrict(d, anim),
       zoomDistrict: (d) => rendererRef.current?.zoomDistrict(d),
       zoomBy: (f) => rendererRef.current?.zoomBy(f),
+      hoverSymbol: (g) => rendererRef.current?.hoverSymbol(g),
     }),
     [],
   );
@@ -142,6 +155,8 @@ export function MapCanvas({
       folderOnlyIslands,
       folderLabels,
       activeDirectory,
+      districtSymbols,
+      selHSym,
     };
     renderer.fit(false, state);
     // Issue #82 A1: a `?file=`/`?d=` deep link must land with its target
@@ -179,9 +194,11 @@ export function MapCanvas({
       folderOnlyIslands,
       folderLabels,
       activeDirectory,
+      districtSymbols,
+      selHSym,
     };
     renderer.render(state);
-  }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, folderFiles, folderOnlyIslands, folderLabels, activeDirectory]);
+  }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
 
   // The wrapper's box, watched once for the component's life. Selection,
   // layer, geo and route changes must never touch this subscription: the

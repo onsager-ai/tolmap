@@ -25,6 +25,24 @@ const PROFILES = [
 // person gets from the same control rather than an internal zoom value.
 const STEPS = [0, 2, 4];
 
+// Issue #82 C2 CI review finding: clicking the "Zoom in" button repeatedly
+// while a symbol-dense file (a full outline tree, external references) is
+// selected timed out on desktop -- that file's card grows the selection
+// panel tall enough to cover the corner the zoom button sits in, and
+// Playwright's click retries for 30s against an intercepted target before
+// giving up, aborting the whole script. Wheel-zooming at a point away from
+// the panel (left of centre; the panel is anchored top-right on desktop,
+// a bottom sheet on phone) sidesteps the button entirely -- the same
+// technique check-view-stability.mjs's own zoomIn() already uses.
+async function wheelZoomIn(page, cx, cy, notches) {
+  await page.mouse.move(cx, cy);
+  for (let i = 0; i < notches; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(50);
+  }
+  await page.waitForTimeout(650);
+}
+
 await mkdir(out, { recursive: true });
 const browser = await chromium.launch();
 try {
@@ -95,6 +113,104 @@ try {
       console.log(`${stem}-${profile.name}-neighbourhood-labels.png`);
 
       await context.close();
+    }
+  }
+
+  // Issue #82 C2 scope item 10: three more dify frames per profile -- a deep
+  // zoom showing cards inside a large file, a selected class with its
+  // reference lines, and the file card's outline tree. Targets are picked
+  // dynamically off the bundled district-0 symbols fixture (the same
+  // approach check-view-stability.mjs's new C2 checks use), never hardcoded.
+  if (slugs.includes(DIFY_SLUG)) {
+    const doc = await (await fetch(`${base}/maps/${DIFY_SLUG}.json`)).json();
+    const symbols = await (await fetch(`${base}/maps/${DIFY_SLUG}.symbols/0.json`)).json();
+    const stem = `${out}/${DIFY_SLUG.replace("/", "__")}`;
+
+    // CI review finding (issue #82 C2): a district's symbols response also
+    // carries the FAR END of every crossing edge, whose own file sits in
+    // some other, unbundled district (docs/API.md) -- picking one of those
+    // as a screenshot target lands on a file that can never decode any
+    // cards. Both scans below are restricted to `symbols.files`, this
+    // district's actual member files.
+    const memberFiles = new Set(symbols.files);
+    const fileSymbolCounts = new Map();
+    for (const row of symbols.symbols) {
+      if (!memberFiles.has(row[0])) continue;
+      fileSymbolCounts.set(row[0], (fileSymbolCounts.get(row[0]) ?? 0) + 1);
+    }
+    let bigFile = null;
+    let bigFileCount = -1;
+    for (const [f, n] of fileSymbolCounts) {
+      if (n > bigFileCount) {
+        bigFile = f;
+        bigFileCount = n;
+      }
+    }
+
+    // Ranked by code_lines, not member count -- see check-view-stability.mjs's
+    // pickExpandableClasses for why (a class's allocated area follows its
+    // code-line "mass", which a raw member count can badly under-predict for
+    // a class full of one-line members).
+    const childCount = new Map();
+    symbols.symbols.forEach((row) => {
+      if (row[5] >= 0) childCount.set(row[5], (childCount.get(row[5]) ?? 0) + 1);
+    });
+    let classGlobal = null;
+    let classLocal = -1;
+    let classCodeLines = -1;
+    symbols.symbols.forEach((row, local) => {
+      if (row[2] !== 0) return;
+      if (!memberFiles.has(row[0])) return;
+      const global = symbols.symbol_indices[local];
+      const n = childCount.get(global) ?? 0;
+      if (n === 0) return;
+      if (row[6] > classCodeLines) {
+        classCodeLines = row[6];
+        classGlobal = global;
+        classLocal = local;
+      }
+    });
+    const classFile = classLocal >= 0 ? symbols.symbols[classLocal][0] : null;
+
+    if (bigFile != null) {
+      for (const profile of PROFILES) {
+        const context = await browser.newContext(profile);
+        const page = await context.newPage();
+        // Deep zoom on a large, symbol-dense file -- selecting it makes it
+        // gate-eligible regardless of on-screen size, then zooming in grows
+        // its (and its neighbours') footprints past the 40px card gate.
+        await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[bigFile])}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+        await page.waitForTimeout(700);
+        // ~1.6^6 via wheel notches (~1.377x each) -- see wheelZoomIn's doc
+        // comment for why this isn't the "Zoom in" button.
+        await wheelZoomIn(page, profile.viewport.width * 0.35, profile.viewport.height * 0.4, 9);
+        await page.screenshot({ path: `${stem}-${profile.name}-symbol-cards-deep-zoom.png` });
+        console.log(`${stem}-${profile.name}-symbol-cards-deep-zoom.png`);
+
+        if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+        await page.screenshot({ path: `${stem}-${profile.name}-outline-tree.png` });
+        console.log(`${stem}-${profile.name}-outline-tree.png`);
+
+        await context.close();
+      }
+    }
+
+    if (classGlobal != null && classFile != null) {
+      for (const profile of PROFILES) {
+        const context = await browser.newContext(profile);
+        const page = await context.newPage();
+        // A selected class with its rolled-up reference lines (scope item 4)
+        // -- set directly via hsym, since a card tap is exercised by the
+        // check script, not needed again here just to reach this state.
+        await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[classFile])}&hsym=${classGlobal}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+        await page.waitForTimeout(700);
+        await wheelZoomIn(page, profile.viewport.width * 0.35, profile.viewport.height * 0.4, 6); // ~1.6^4
+        await page.screenshot({ path: `${stem}-${profile.name}-symbol-references.png` });
+        console.log(`${stem}-${profile.name}-symbol-references.png`);
+        await context.close();
+      }
     }
   }
 } finally {

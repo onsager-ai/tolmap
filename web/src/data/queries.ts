@@ -1,7 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
-import type { CatalogueEntry, MapDocument } from "@/types";
+import { useMemo } from "react";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import type { CatalogueEntry, DistrictSymbols, MapDocument } from "@/types";
 import {
   getServiceCatalogue,
+  getServiceDistrictSymbols,
   getServiceMapDocument,
   pingService,
   type ServiceCatalogueEntry,
@@ -19,6 +21,13 @@ function fetchStaticCatalogue(): Promise<CatalogueEntry[]> {
 
 function fetchStaticMap(owner: string, repo: string): Promise<MapDocument> {
   return fetchJson<MapDocument>(`/maps/${owner}/${repo}.json`);
+}
+
+/** docs/API.md: "Static map collection copies this directory to
+ * /maps/<owner>/<repo>.symbols/, so a static client can fetch one district
+ * at /maps/<owner>/<repo>.symbols/<district>.json." */
+function fetchStaticDistrictSymbols(owner: string, repo: string, district: number): Promise<DistrictSymbols> {
+  return fetchJson<DistrictSymbols>(`/maps/${owner}/${repo}.symbols/${district}.json`);
 }
 
 function toCatalogueEntry(m: ServiceCatalogueEntry): CatalogueEntry {
@@ -130,4 +139,51 @@ export function useMapDocument(owner: string, repo: string) {
     error: staticQuery.error ?? serviceQuery.error,
     source: serviceQuery.data ? ("service" as const) : staticQuery.data ? ("static" as const) : undefined,
   };
+}
+
+/** Issue #82 C2 scope item 1: "Fetch a district only when one of its files
+ * crosses the symbol gate, or when a file in it is selected." `districts` is
+ * the caller's (MapView's) `wantedDistricts` set -- MapRenderer decides WHEN
+ * a district becomes wanted (it alone knows the current zoom/viewport) and
+ * reports it up through `onNeedSymbols`; this hook only fetches and caches
+ * whatever it's told. `useQueries` (a dynamic-length array, unlike
+ * `useQuery`) is the one hook in this file that can do that without calling
+ * a hook conditionally.
+ *
+ * `staleTime: Infinity` + `retry: false`: a district's symbols never change
+ * within one loaded map (same doc, same commit), and a map with NO symbols
+ * sibling at all (any repo built before #85, or one still without the
+ * static `.symbols/` collection) 404s once per requested district and
+ * degrades silently rather than retrying a request that will 404 the same
+ * way three more times (same reasoning as useMapDocument's own retry:false). */
+export function useDistrictSymbolsMap(
+  owner: string,
+  repo: string,
+  source: "static" | "service" | undefined,
+  districts: readonly number[],
+): Map<number, DistrictSymbols> {
+  const queries = useQueries({
+    queries: districts.map((d) => ({
+      queryKey: ["symbols", source, owner, repo, d],
+      queryFn: () =>
+        source === "service" ? getServiceDistrictSymbols(owner, repo, d) : fetchStaticDistrictSymbols(owner, repo, d),
+      enabled: !!source && !!owner && !!repo,
+      staleTime: Infinity,
+      retry: false,
+    })),
+  });
+  // Recomputed only when what's actually LOADED changes (not on every
+  // unrelated re-render, which would hand MapCanvas a new Map identity and
+  // trigger a full repaint for nothing -- see MapCanvas.tsx's state-render
+  // effect, keyed on prop identity).
+  const signature = districts.map((d, i) => `${d}:${queries[i]?.dataUpdatedAt ?? 0}`).join(",");
+  return useMemo(() => {
+    const map = new Map<number, DistrictSymbols>();
+    districts.forEach((d, i) => {
+      const data = queries[i]?.data;
+      if (data) map.set(d, data);
+    });
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature]);
 }

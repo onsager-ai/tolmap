@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { useCatalogue, useMapDocument } from "@/data/queries";
+import { useCatalogue, useMapDocument, useDistrictSymbolsMap } from "@/data/queries";
 import { MapCanvas, type MapCanvasHandle } from "@/map/MapCanvas";
 import type { MapRendererCallbacks } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
 import { D_, districtClass } from "@/map/geometry";
+import { decodeDistrictSymbols, parentGlobalOf } from "@/map/symbolCards";
 import type { SearchHit } from "@/map/search";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
@@ -28,7 +29,47 @@ export function MapView() {
   const search = useSearch({ strict: false }) as MapSearch;
   const navigate = useNavigate();
   const { data: catalogue } = useCatalogue();
-  const { data: doc, isLoading, isError, error } = useMapDocument(owner, repo);
+  const { data: doc, isLoading, isError, error, source } = useMapDocument(owner, repo);
+
+  // Issue #82 C2 scope item 1: districts whose symbols the map/sidebar
+  // currently want. Two sources add to this set and it only ever grows for
+  // the life of one loaded document (TanStack Query's own staleTime:
+  // Infinity cache means asking again is free) -- MapRenderer reports a
+  // newly-gated file's district through onNeedSymbols (debounced below), and
+  // the effect right after this state declaration adds the SELECTED file's
+  // district unconditionally and immediately (spec: "or when a file in it is
+  // selected" -- that's a deliberate, synchronous action, not something to
+  // wait 200ms on).
+  const [wantedDistricts, setWantedDistricts] = useState<Set<number>>(new Set());
+  const pendingDistrictsRef = useRef<Set<number>>(new Set());
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onNeedSymbols = (d: number) => {
+    pendingDistrictsRef.current.add(d);
+    if (flushTimerRef.current == null) {
+      flushTimerRef.current = setTimeout(() => {
+        flushTimerRef.current = null;
+        const toAdd = pendingDistrictsRef.current;
+        pendingDistrictsRef.current = new Set();
+        setWantedDistricts((prev) => {
+          let changed = false;
+          const next = new Set(prev);
+          for (const d2 of toAdd) {
+            if (!next.has(d2)) {
+              next.add(d2);
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }, 200); // debounced (spec item 7): a burst of pan/zoom frames collapses to one flush
+    }
+  };
+  useEffect(() => {
+    return () => {
+      if (flushTimerRef.current != null) clearTimeout(flushTimerRef.current);
+    };
+  }, []);
+  const districtSymbolsMap = useDistrictSymbolsMap(owner, repo, source, [...wantedDistricts]);
 
   const canvasRef = useRef<MapCanvasHandle>(null);
   const mapAreaRef = useRef<HTMLDivElement>(null);
@@ -133,7 +174,58 @@ export function MapView() {
   // the correct, requested behaviour for one.
   const sel = doc && search.file ? (() => { const i = doc.F.indexOf(search.file!); return i >= 0 ? i : null; })() : null;
   const selSym = sel != null && search.sym != null ? search.sym : null;
+  // Issue #82 C2: `hsym`, a GLOBAL hierarchical-symbol index -- a separate
+  // URL param and index space from `sym` above (search.ts's own doc
+  // comment). Both can be present in the URL at once only transiently (a
+  // stale link); selHSym is read independently and a card selection always
+  // clears `sym` (selectHierSymbol below), so the two never compete for
+  // what the breadcrumb/sidebar actually show.
+  const selHSym = sel != null && search.hsym != null ? search.hsym : null;
   const selD = sel == null && search.d != null ? search.d : null;
+
+  // The selected FILE's district symbols, decoded once per fetch -- what
+  // SelectionPanel's outline tree/external references and the breadcrumb's
+  // class/method chain both read. `undefined` (not yet fetched, or this map
+  // has no symbols sibling at all) degrades silently: every reader below
+  // just sees `null` and renders what it would have before this feature.
+  const selFileDistrict = doc && sel != null ? D_(doc, sel) : null;
+  const selSymbolsDoc = selFileDistrict != null ? districtSymbolsMap.get(selFileDistrict) : undefined;
+  const selDecoded = useMemo(() => (selSymbolsDoc ? decodeDistrictSymbols(selSymbolsDoc) : null), [selSymbolsDoc]);
+
+  // Spec item 1's other trigger ("or when a file in it is selected"): add
+  // the selected file's district to `wantedDistricts` immediately, not on
+  // the renderer's own 200ms-debounced onNeedSymbols path -- a deliberate
+  // file selection deserves its outline tree right away, not after whatever
+  // zoom-driven bursts happen to be in flight.
+  useEffect(() => {
+    if (selFileDistrict == null) return;
+    setWantedDistricts((prev) => (prev.has(selFileDistrict) ? prev : new Set(prev).add(selFileDistrict)));
+  }, [selFileDistrict]);
+
+  // Resolves a card tap's GLOBAL symbol index back to its file, across every
+  // district currently loaded -- the renderer only ever reports a symbol it
+  // just decoded and drew, so this always has an answer for it.
+  const globalSymbolFile = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const raw of districtSymbolsMap.values()) {
+      raw.symbol_indices.forEach((g, idx) => m.set(g, raw.symbols[idx][0]));
+    }
+    return m;
+  }, [districtSymbolsMap]);
+
+  function selectHierSymbol(global: number) {
+    if (!doc) return;
+    const fileIdx = globalSymbolFile.get(global);
+    if (fileIdx == null) return;
+    setUnconnectedRepo(null);
+    // Scope item 3: "setting all levels" -- file, symbol, and dropping
+    // whatever else (a bare district, a directory highlight, the old `sym`)
+    // was selected, in one URL update.
+    updateSearch({ file: doc.F[fileIdx], sym: undefined, hsym: global, d: undefined, dir: undefined });
+    setPanelOpen(true);
+    setSideOpen(false);
+    if (districtClass(doc.districts[String(D_(doc, fileIdx))]) !== "unconnected") canvasRef.current?.panTo(fileIdx);
+  }
 
   function updateSearch(patch: Partial<typeof search>) {
     navigate({
@@ -156,7 +248,7 @@ export function MapView() {
   function selectFile(i: number, opts: { symbol?: number } = {}) {
     if (!doc) return;
     setUnconnectedRepo(null);
-    updateSearch({ file: doc.F[i], sym: opts.symbol, d: undefined, dir: undefined });
+    updateSearch({ file: doc.F[i], sym: opts.symbol, hsym: undefined, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
     if (districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.panTo(i);
@@ -199,6 +291,16 @@ export function MapView() {
   // can reach.
   function stepBackSelection() {
     if (!doc) return;
+    // Issue #82 C2 scope item 3: "symbol -> parent symbol -> file -> district
+    // -> none" -- one level of NESTING at a time for a card selection,
+    // unlike the flat `sym` list just below (the map's own `S`, which has no
+    // parent to step through). Checked first (deepest), same priority `sym`
+    // already had.
+    if (selHSym != null) {
+      const parent = selDecoded ? parentGlobalOf(selDecoded, selHSym) : null;
+      updateSearch({ hsym: parent ?? undefined });
+      return;
+    }
     if (selSym != null) {
       updateSearch({ sym: undefined });
       return;
@@ -239,10 +341,12 @@ export function MapView() {
   const rendererCallbacks: MapRendererCallbacks = {
     onSelectFile: (i) => selectFile(i),
     onSelectSymbol: (i, s) => selectFile(i, { symbol: s }),
+    onSelectHierSymbol: (g) => selectHierSymbol(g),
     onSelectDistrict: (d) => selectDistrict(d),
     onClearSelection: () => stepBackSelection(),
     onSelectDirectory: (path) => selectDirectory(path),
     onPreviewDirectory: (path) => setPreviewDirectory(path && doc ? { repo: doc.repo, path } : null),
+    onNeedSymbols: (d) => onNeedSymbols(d),
   };
 
   if (isLoading) {
@@ -338,6 +442,8 @@ export function MapView() {
             folderOnlyIslands={folderOnlyIslands}
             folderLabels={packageLayout.folderLabels}
             activeDirectory={activeDirectory}
+            districtSymbols={districtSymbolsMap}
+            selHSym={selHSym}
             callbacks={rendererCallbacks}
             handleRef={canvasRef}
           />
@@ -364,6 +470,8 @@ export function MapView() {
               sel={sel}
               selSym={selSym}
               selD={selD}
+              selHSym={selHSym}
+              symbolsDoc={selSymbolsDoc}
               adj={adj}
               radj={radj}
               packageLayout={packageLayout}
@@ -373,6 +481,8 @@ export function MapView() {
               onToggleOpen={() => setPanelOpen((v) => !v)}
               onSelectFile={(i) => selectFile(i)}
               onSelectSymbol={(i, s) => selectFile(i, { symbol: s })}
+              onSelectHierSymbol={selectHierSymbol}
+              onHoverHierSymbol={(g) => canvasRef.current?.hoverSymbol(g)}
               onSelectDistrict={selectDistrict}
               onZoomDistrict={(d) => canvasRef.current?.zoomDistrict(d)}
               onRouteFrom={(i) => setRouteFrom(i)}
@@ -385,7 +495,7 @@ export function MapView() {
               }}
               onSelectDirectory={selectDirectory}
               onBreadcrumbRepo={clearAll}
-              onBreadcrumbFile={(i) => updateSearch({ file: doc.F[i], sym: undefined, d: undefined, dir: undefined })}
+              onBreadcrumbFile={(i) => updateSearch({ file: doc.F[i], sym: undefined, hsym: undefined, d: undefined, dir: undefined })}
             />
           )}
           {!isFullscreen && search.layer === "p" && (

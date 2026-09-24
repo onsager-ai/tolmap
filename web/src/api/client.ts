@@ -6,7 +6,7 @@
 // same-origin `/api`, with the dev server proxying that to the service on
 // 127.0.0.1 (vite.config.ts). Nothing here ever points at a public origin —
 // there is no third option.
-import type { MapDocument } from "@/types";
+import type { DistrictSymbols, MapDocument } from "@/types";
 
 export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "/api";
 
@@ -133,6 +133,22 @@ export function getServiceCatalogue(): Promise<ServiceCatalogueEntry[]> {
 export function getServiceMapDocument(owner: string, repo: string, commit?: string): Promise<MapDocument> {
   const qs = commit ? `?commit=${encodeURIComponent(commit)}` : "";
   return request<MapDocument>(`/maps/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${qs}`);
+}
+
+/** GET /api/maps/{owner}/{repo}/symbols?district=<id> (docs/API.md) -- one
+ * district's slice of the hierarchical symbols sibling document, fetched
+ * lazily per district (issue #82 C2 scope item 1). `commit` is threaded
+ * through for parity with getServiceMapDocument, though the viewer only
+ * ever requests the latest commit today. */
+export function getServiceDistrictSymbols(
+  owner: string,
+  repo: string,
+  district: number,
+  commit?: string,
+): Promise<DistrictSymbols> {
+  const qs = new URLSearchParams({ district: String(district) });
+  if (commit) qs.set("commit", commit);
+  return request<DistrictSymbols>(`/maps/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/symbols?${qs}`);
 }
 
 /** Reachability probe used to pick a data source (see src/data/queries.ts).

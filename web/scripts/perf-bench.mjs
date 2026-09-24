@@ -419,6 +419,83 @@ function frameStats(frames) {
   return { p50: s.p50, p95: s.p95, over50: frames.filter((f) => f > 50).length, n: frames.length };
 }
 
+// Issue #82 C2 scope item 7: "Add to CI's perf step a dify deep-zoom paint
+// measurement with cards on." Picks the file with the most symbols in the
+// bundled district-0 symbols fixture (web/check-fixtures/langgenius__
+// dify.symbols.tar.gz) -- the same file the CI workflow's other symbol
+// checks/screenshots use, a large real-world class-and-function file that
+// exercises the card pass under real load. Reads it off the SERVED fixtures
+// (never hardcodes a path or index) so a fixture regeneration can't silently
+// desync this from what's actually being measured. Returns null (not a
+// thrown error) for anything short of a clean answer -- a map/symbols
+// fixture that isn't being served (a plain perf-bench run against some OTHER
+// map set, or a fixture temporarily missing) skips this one measurement
+// rather than failing the whole bench.
+async function pickDeepZoomCardsTarget(base) {
+  try {
+    const [mapDoc, symbols] = await Promise.all([
+      fetch(`${base}/maps/langgenius/dify.json`).then((r) => (r.ok ? r.json() : null)),
+      fetch(`${base}/maps/langgenius/dify.symbols/0.json`).then((r) => (r.ok ? r.json() : null)),
+    ]);
+    if (!mapDoc || !symbols) return null;
+    const counts = new Map();
+    for (const row of symbols.symbols) counts.set(row[0], (counts.get(row[0]) ?? 0) + 1);
+    let bestFile = null;
+    let bestCount = -1;
+    for (const [file, count] of counts) {
+      if (count > bestCount) {
+        bestFile = file;
+        bestCount = count;
+      }
+    }
+    if (bestFile == null) return null;
+    return { path: mapDoc.F[bestFile], symbolCount: bestCount };
+  } catch (err) {
+    console.warn(`perf-bench: could not pick a deep-zoom-cards target (${err.message}); skipping that measurement`);
+    return null;
+  }
+}
+
+/** Reuses runOneConfig unmodified: navigating with `?file=<path>` selects
+ * and (via MapCanvas's own panTo-on-load) CENTRES that file, so symbol cards
+ * are already drawn at load (a selected file is always symbol-gate-eligible,
+ * regardless of on-screen size -- symbolCards.ts's fileCrossesSymbolGate).
+ * The desktop zoom phase's 20 wheel-steps-in then centre on that already-
+ * centred file, growing its (and its neighbours') footprints past the 40px
+ * card gate -- exactly the "deep zoom, cards on" scenario, with zero new
+ * gesture-scripting code. Target: desktop draw.zoom.p50 <= 150ms (spec);
+ * reported plainly either way, never asserted (this script has no failing
+ * exit code for a perf number, only --check-single-paint does, and that's a
+ * different check). */
+async function benchDeepZoomCards(browser, base, args) {
+  const target = await pickDeepZoomCardsTarget(base);
+  if (!target) return null;
+  const slug = `langgenius/dify?file=${encodeURIComponent(target.path)}`;
+  const out = await runOneConfig({ browser, base, slug, profile: PROFILES.desktop, timeCapMs: args.gestureCapMs });
+  const result = {
+    map: "langgenius/dify (deep zoom, cards on)",
+    files: null,
+    profile: "desktop",
+    runs: 1,
+    capped: true,
+    firstMapMs: round2(out.firstMapMs),
+    drawsOnLoad: out.drawsOnLoad,
+    pinchMode: undefined,
+    draw: { drag: summarize(out.drag.draws), zoom: summarize(out.zoom.draws) },
+    frames: { drag: frameStats(out.drag.frames), zoom: frameStats(out.zoom.frames) },
+    steps: {
+      drag: { completed: out.drag.completed, of: out.drag.steps, capped: out.drag.capped },
+      zoom: { completed: out.zoom.completed, of: out.zoom.steps, capped: out.zoom.capped },
+    },
+    note: `target: ${target.path} (${target.symbolCount} symbols in district 0)`,
+  };
+  const meets = result.draw.zoom.p50 <= 150;
+  console.log(
+    `${result.map}: draw zoom p50/p95 ${result.draw.zoom.p50}/${result.draw.zoom.p95}ms (target <=150ms desktop p50: ${meets ? "MEETS" : "MISSES"}) -- ${result.note}`,
+  );
+  return result;
+}
+
 async function bench(args) {
   const browser = await chromium.launch();
   const fileCounts = await loadMapFileCounts();
@@ -472,6 +549,10 @@ async function bench(args) {
         `${slug} / ${profileName}: firstMap ${p.firstMapMs}ms, drawsOnLoad ${p.drawsOnLoad}, draw drag p50/p95 ${p.draw.drag.p50}/${p.draw.drag.p95}ms, draw zoom p50/p95 ${p.draw.zoom.p50}/${p.draw.zoom.p95}ms, drag frames>50ms ${p.frames.drag.over50}/${p.frames.drag.n}, zoom frames>50ms ${p.frames.zoom.over50}/${p.frames.zoom.n}${capNote}`,
       );
     }
+  }
+  if (args.maps.includes("langgenius/dify")) {
+    const deepZoomCards = await benchDeepZoomCards(browser, args.base, args);
+    if (deepZoomCards) results.push(deepZoomCards);
   }
   await browser.close();
   return results;
