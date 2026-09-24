@@ -14,7 +14,6 @@ pub mod store;
 mod time;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -48,37 +47,53 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
         rate_limiter: RateLimiter::new(),
     });
 
-    // Fly keep-alive (issue: PR #120 turns on `auto_stop_machines = "stop"`
-    // / `min_machines_running = 0`). `FLY_APP_NAME` is set automatically
-    // inside a running Fly Machine (docs.fly.io/reference/runtime-
-    // environment/: "Each app running on Fly.io has a unique app name...")
-    // and absent everywhere else (local dev, Railway staging), so this is a
-    // complete no-op off Fly with no separate feature flag needed.
+    // Fly keep-alive: investigated for PR #120 (`auto_stop_machines =
+    // "stop"` / `min_machines_running = 0`), and deliberately NOT shipped as
+    // in-process code -- see this PR's description for the full research
+    // trail; summary below for whoever reads this next.
     //
-    // IMPORTANT CAVEAT, found while implementing this and not assumed: Fly's
-    // own docs (docs.fly.io/blueprints/long-running-tasks/) say plainly that
-    // this exact tactic does not reliably work --
-    // "Empirically, sending a successful HTTP request every 60 seconds from
-    // a machine to its own `<app>.fly.dev` hostname does not prevent
-    // autostop" -- because Fly Proxy's autostop loop looks at whether the
-    // Machine currently has any traffic (a live, open connection), not at
-    // when it last saw a request; a periodic GET that completes in
-    // milliseconds is at "zero load" the rest of the time, same as no ping
-    // at all. The two mechanisms Fly documents as actually working --
-    // `auto_stop_machines = "off"` entirely, or moving background work into
-    // a process group with no `[http_service]` -- are both incompatible
-    // with what #120 wants (an idle *and* auto-stoppable single web+worker
-    // machine). So this loop is kept as a cheap, harmless best-effort nudge
-    // (it costs nothing and is what was asked for), but it is NOT the fix
-    // for the underlying risk; `jobs::JobRegistry::shutdown` below (wired
-    // through `shutdown_signal`) is what actually closes it: whether or not
-    // this ping keeps the Machine up, a Machine that Fly stops mid-job now
-    // fails that job cleanly with `server_stopping` instead of the job
-    // silently vanishing. See this PR's description for the full citation
-    // trail.
-    if let Ok(app_name) = std::env::var("FLY_APP_NAME") {
-        tokio::spawn(fly_keepalive(state.clone(), app_name));
-    }
+    // Attempt 1 (built, then removed): a periodic GET to this service's own
+    // public `/api/healthz` through Fly Proxy while a job was queued or
+    // running. Removed once Fly's own docs
+    // (docs.fly.io/blueprints/long-running-tasks/) confirmed it does not
+    // work: "Empirically, sending a successful HTTP request every 60
+    // seconds from a machine to its own `<app>.fly.dev` hostname does not
+    // prevent autostop."
+    //
+    // Attempt 2 (investigated, not built): holding one long-lived
+    // connection open through the public proxy (SSE, or a dedicated
+    // streaming endpoint) for as long as a job is active, on the theory
+    // that Fly Proxy's `http_service.concurrency` setting -- which the docs
+    // say directly "configures how to measure load for an application to
+    // inform Fly Proxy load balancing and autostop/autostart"
+    // (docs.fly.io/apps/concurrency/) -- would keep the Machine's measured
+    // load above zero for as long as the connection stayed open, unlike a
+    // request that completes in milliseconds. NOT built: this is
+    // architecturally plausible but Fly's own docs never confirm it for the
+    // autostop case specifically, and there is an unresolved, unrebutted
+    // community report of exactly this failing -- a Machine auto-stopped
+    // despite an open WebSocket connection that had already been running
+    // for 4+ hours
+    // (community.fly.io/t/server-auto-scaling-despite-websocket-connection/19900),
+    // with no Fly staff reply explaining why. Shipping a new streaming
+    // endpoint plus a dedicated reconnect-with-backoff thread on that
+    // footing would be an unverified guess dressed up as a fix, so it
+    // wasn't built.
+    //
+    // What's actually needed is an owner decision between two real options,
+    // neither of which this code can pick for itself:
+    //   (a) don't auto-stop this app at all (`auto_stop_machines` off --
+    //       Fly's own "shape A" from the long-running-tasks blueprint):
+    //       costs more (the machine runs continuously) but removes this
+    //       whole risk category outright; or
+    //   (b) have this service call the Fly Machines API directly to
+    //       suspend/lift auto-stop around a job's lifetime: needs a Fly API
+    //       token as a new credential, which is a security decision, not
+    //       something to wire up unilaterally.
+    // Whichever way that goes, the graceful-shutdown handling below is
+    // unconditionally correct and does not depend on the answer -- it is
+    // what turns "Fly stops the Machine mid-job anyway" from a silent loss
+    // into a clean, observable failure.
 
     let app = http::router(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
@@ -139,40 +154,5 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {}
         _ = terminate => {}
-    }
-}
-
-/// While any job is queued or running, pings this service's own public URL
-/// through Fly Proxy every ~30s so Fly sees live traffic during a job --
-/// see `serve`'s doc comment for the citation and the caveat that this is
-/// best-effort, not a guarantee. Only spawned when `FLY_APP_NAME` is set.
-/// `ureq` (already a dependency -- see `naming::ModelNamer` for the same
-/// blocking-HTTPS-call-from-async pattern) does the request on a blocking
-/// thread via `spawn_blocking`, never on the async runtime; a failed ping
-/// (DNS hiccup, transient network error, whatever) only logs and retries
-/// next tick -- it must never be worse than a no-op for real request
-/// handling.
-async fn fly_keepalive(state: Arc<AppState>, app_name: String) {
-    let url = format!("https://{app_name}.fly.dev/api/healthz");
-    let mut tick = tokio::time::interval(Duration::from_secs(30));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tick.tick().await;
-        if !state.jobs.has_active_jobs() {
-            continue;
-        }
-        let ping_url = url.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            let config = ureq::Agent::config_builder()
-                .timeout_global(Some(Duration::from_secs(5)))
-                .build();
-            ureq::Agent::new_with_config(config).get(&ping_url).call()
-        })
-        .await;
-        match outcome {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => eprintln!("fly keep-alive ping to {url} failed: {error}"),
-            Err(join_error) => eprintln!("fly keep-alive ping task panicked: {join_error}"),
-        }
     }
 }

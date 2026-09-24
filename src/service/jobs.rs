@@ -231,15 +231,6 @@ impl JobRegistry {
             .map(watch::Sender::subscribe)
     }
 
-    /// True while at least one job is queued or running. The Fly keep-alive
-    /// loop in `service::serve` polls this to decide whether it still needs
-    /// to nudge Fly Proxy with a self-request -- see that function's doc
-    /// comment for why the nudge is only a partial mitigation.
-    pub fn has_active_jobs(&self) -> bool {
-        let registry = self.0.lock().expect("job registry mutex poisoned");
-        !registry.queue.is_empty() || registry.running > 0
-    }
-
     /// Stops admission (`enqueue_job` starts rejecting with
     /// `server_stopping`) and fails every job currently queued or running,
     /// with the same error, killing any worker child already spawned. This
