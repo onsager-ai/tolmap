@@ -18,6 +18,7 @@ pub struct WorkerSpec {
     pub repo: String,
     pub source: String,
     pub local: bool,
+    pub all_sources: bool,
     pub cache_dir: String,
     pub output_dir: String,
     pub max_clone_bytes: u64,
@@ -171,26 +172,46 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
     })?;
     clone_stage.finish();
     let detect_stage = progress.stage(StageId::Detect, Some(1));
-    let detection = detect::detect(&materialized.path)
-        .map_err(|error| fail("detection_failed", error.to_string()))?;
-    let chosen = detection.chosen;
-    if chosen.confidence == detect::Confidence::Low {
-        return Err(fail("detection_uncertain", chosen.describe()));
+    let sources = if spec.all_sources {
+        detect::all_sources(&materialized.path)
+            .map_err(|error| fail("detection_failed", error.to_string()))?
+    } else {
+        let detection = detect::detect(&materialized.path)
+            .map_err(|error| fail("detection_failed", error.to_string()))?;
+        let chosen = detection.chosen;
+        if chosen.confidence == detect::Confidence::Low {
+            return Err(fail("detection_uncertain", chosen.describe()));
+        }
+        vec![chosen]
+    };
+    if sources.is_empty() {
+        return Err(fail(
+            "detection_failed",
+            "no source cleared the all-sources floor".to_owned(),
+        ));
     }
-    if chosen.file_count > limits.max_files {
+    let file_count = sources
+        .iter()
+        .map(|source| source.file_count)
+        .sum::<usize>();
+    if file_count > limits.max_files {
         return Err(fail(
             "repo_too_large",
             format!(
                 "file count {} exceeds the configured limit of {}",
-                chosen.file_count, limits.max_files
+                file_count, limits.max_files
             ),
         ));
     }
     detect_stage.set(1);
     detect_stage.finish();
 
+    let source_pairs = sources
+        .into_iter()
+        .map(|source| (source.pkg, source.language))
+        .collect::<Vec<_>>();
     let graph =
-        extract::build_with_progress(&materialized.path, &chosen.pkg, chosen.language, progress)
+        extract::build_multi_source_with_progress(&materialized.path, &source_pairs, progress)
             .map_err(|error| fail("index_failed", format!("{error:#}")))?;
     let nodes = graph.nodes.clone();
     let previous_path = spec

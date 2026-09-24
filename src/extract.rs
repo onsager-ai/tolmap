@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::BufRead;
+use std::io::Read;
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 
@@ -2923,17 +2923,36 @@ fn git_history(
         .stderr(Stdio::piped())
         .spawn()
         .context("run git log for co-change")?;
-    let stdout = child.stdout.take().expect("piped git log stdout");
-    let mut reader = std::io::BufReader::new(stdout);
+    let mut stdout = child.stdout.take().expect("piped git log stdout");
+    let mut output_bytes = Vec::new();
+    let mut chunk = [0u8; 65536];
+    let mut at_line_start = true;
+    loop {
+        let count = stdout.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        let mut commits = 0;
+        for &byte in &chunk[..count] {
+            commits += usize::from(at_line_start && byte == b'@');
+            at_line_start = byte == b'\n';
+        }
+        if commits > 0 {
+            progress.advance(commits as u64);
+        }
+        output_bytes.extend_from_slice(&chunk[..count]);
+    }
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.success(),
+        "git log failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let file_set = files.iter().cloned().collect::<BTreeSet<_>>();
     let mut commits = Vec::<BTreeSet<String>>::new();
     let mut current = None::<BTreeSet<String>>;
-    let mut bytes = Vec::new();
-    while reader.read_until(b'\n', &mut bytes)? != 0 {
-        let line = String::from_utf8_lossy(&bytes);
-        let line = line.trim_end_matches(['\r', '\n']);
+    for line in String::from_utf8_lossy(&output_bytes).lines() {
         if line.starts_with('@') {
-            progress.advance(1);
             if let Some(previous) = current.take() {
                 if !previous.is_empty() {
                     commits.push(previous);
@@ -2945,14 +2964,7 @@ fn git_history(
                 current.insert(line.to_owned());
             }
         }
-        bytes.clear();
     }
-    let output = child.wait_with_output()?;
-    ensure!(
-        output.status.success(),
-        "git log failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     if let Some(previous) = current {
         if !previous.is_empty() {
             commits.push(previous);

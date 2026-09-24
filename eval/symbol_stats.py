@@ -101,7 +101,9 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         raw = compare_file.read_bytes()
         result["before_precision_bytes"] = len(raw)
         result["before_precision_gzip_bytes"] = len(gzip.compress(raw, mtime=0))
-        old = json.loads(raw)
+        # A comparison ref may already use packed integer-delta rings. The
+        # precision audit works on coordinates, regardless of wire encoding.
+        old = decode_geometry(json.loads(raw))
         result["before_precision_collapsed_by_decimals"] = {
             str(places): collapsed_at_precision(old, places)
             for places in range(6, 12)
@@ -110,6 +112,8 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
 
 
 def decode_ring(stream):
+    if stream and isinstance(stream[0], list):
+        return stream  # older float-coordinate sibling
     assert len(stream) >= 6 and len(stream) % 2 == 0
     x = y = 0
     ring = []

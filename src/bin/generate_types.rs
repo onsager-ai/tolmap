@@ -101,13 +101,18 @@ mod tests {
             expected.keys().collect::<Vec<_>>(),
             committed.keys().collect::<Vec<_>>()
         );
-        for (path, expected_bytes) in expected {
-            assert_eq!(
-                String::from_utf8(expected_bytes).unwrap(),
-                String::from_utf8(committed[&path].clone()).unwrap(),
-                "binding {} differs from the Rust schema",
-                path.display()
-            );
-        }
+        let mismatches = expected
+            .into_iter()
+            .filter_map(|(path, expected_bytes)| {
+                (expected_bytes != committed[&path]).then(|| {
+                    format!(
+                        "binding {} differs; expected:\n{}",
+                        path.display(),
+                        String::from_utf8_lossy(&expected_bytes)
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     }
 }

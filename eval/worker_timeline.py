@@ -26,6 +26,7 @@ def main() -> None:
         "repo": "dify",
         "source": str(clone),
         "local": True,
+        "all_sources": True,
         "cache_dir": str(root / "cache"),
         "output_dir": str(output_dir),
         "max_clone_bytes": 2147483648,

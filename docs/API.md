@@ -221,7 +221,10 @@ The service owns its SQLite store and queue. It gives the child clone source,
 limits, output directory, previous map candidates and a names cache file.
 The child chooses the newest previous map on the cloned branch, falling back
 to the newest overall, then clones, detects and builds. The service registers
-the returned artifacts only after a successful terminal result.
+the returned artifacts only after a successful terminal result. The job spec
+also accepts `all_sources: true` to union every detected source that clears
+the detector's floor; the service currently sends `false` and retains its
+existing single-source confidence check.
 
 ### `GET /api/maps`
 
