@@ -109,6 +109,10 @@ struct RegistryInner {
     cancelled: HashSet<Uuid>,
     features: HashMap<Uuid, RepoFeatures>,
     eta_model: EtaModel,
+    /// Set once by [`JobRegistry::shutdown`] and never cleared -- the
+    /// process is exiting, not pausing. Checked by `enqueue_job` so no job
+    /// is admitted after a shutdown signal starts draining the registry.
+    stopping: bool,
 }
 
 pub struct JobRegistry(Mutex<RegistryInner>);
@@ -226,6 +230,49 @@ impl JobRegistry {
             .get(&id)
             .map(watch::Sender::subscribe)
     }
+
+    /// Stops admission (`enqueue_job` starts rejecting with
+    /// `server_stopping`) and fails every job currently queued or running,
+    /// with the same error, killing any worker child already spawned. This
+    /// is the "drain" half of graceful shutdown -- see `service::serve`'s
+    /// `shutdown_signal` for why it must run, and finish, before axum's
+    /// `with_graceful_shutdown` future resolves: that ordering is what lets
+    /// an open SSE stream deliver the resulting terminal frame before its
+    /// connection is torn down.
+    ///
+    /// One lock acquisition covers the flag flip and both sweeps, so no job
+    /// can be dequeued into "running" (see `worker_loop`) or admitted (see
+    /// `enqueue_job`) in between: a job is exactly "not yet seen" (still
+    /// invisible to this function, and about to be rejected by the flag),
+    /// "queued", or "running" at every instant this holds the lock.
+    pub fn shutdown(&self) {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        registry.stopping = true;
+        while let Some(job) = registry.queue.pop_front() {
+            registry.active.remove(&job.key);
+            finish_failed(&job.tx, server_stopping_error());
+        }
+        let running: Vec<(Uuid, watch::Sender<JobSnapshot>)> = registry
+            .running_jobs
+            .iter()
+            .map(|(id, tx)| (*id, tx.clone()))
+            .collect();
+        for (id, tx) in running {
+            // Mirrors `cancel`'s running-job branch: mark cancelled (so the
+            // worker thread's own exit path attributes the kill correctly
+            // rather than reporting `worker_crashed`), fail the job with the
+            // shutdown-specific error, then kill the child. `finish_failed`
+            // is a no-op if a terminal state already landed, which is what
+            // makes the ordering here safe rather than merely convenient.
+            registry.cancelled.insert(id);
+            registry.active.retain(|_, active_id| *active_id != id);
+            finish_failed(&tx, server_stopping_error());
+            if let Some(&pid) = registry.children.get(&id) {
+                kill_worker_group(pid);
+            }
+        }
+        refresh_queue_etas(&mut registry);
+    }
 }
 
 pub fn new_registry() -> JobRegistry {
@@ -236,6 +283,18 @@ fn cancelled_error() -> ErrorBody {
     ErrorBody {
         error: "cancelled".to_owned(),
         message: "job cancelled".to_owned(),
+    }
+}
+
+/// Terminal error for every job still queued or running when the service
+/// receives a shutdown signal -- see [`JobRegistry::shutdown`] and
+/// docs/API.md. Same shape as `cancelled_error`, distinct code: a client
+/// that branches on `error_code` needs to tell "you (or another caller)
+/// cancelled this" apart from "the service went away out from under this".
+fn server_stopping_error() -> ErrorBody {
+    ErrorBody {
+        error: "server_stopping".to_owned(),
+        message: "the service is shutting down".to_owned(),
     }
 }
 
@@ -308,6 +367,11 @@ fn enqueue_job(
 ) -> Result<Uuid, ApiError> {
     let key = (repo_ref.slug.clone(), commit.clone());
     let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+    if registry.stopping {
+        return Err(ApiError::server_stopping(
+            "the service is shutting down and is not accepting new jobs",
+        ));
+    }
     if let Some(id) = registry.active.get(&key) {
         return Ok(*id);
     }
@@ -1927,6 +1991,164 @@ mod tests {
         assert_eq!(snapshot(&state, first).status, JobStatus::Failed);
         assert!(snapshot(&state, first).eta.is_none());
         assert_eq!(snapshot(&state, second).queue_position, None);
+    }
+
+    /// Direct-logic coverage for graceful shutdown's "stop admitting + fail
+    /// everything" step (`JobRegistry::shutdown`), independent of the
+    /// SIGINT/SIGTERM wiring in `service::serve` -- see this PR's
+    /// description for which half is covered where. Uses the same
+    /// block-until-released fake runner as `bounded_fifo_deduplicates_...`
+    /// above, so both a queued and a running job exist at once.
+    #[tokio::test]
+    async fn shutdown_fails_queued_and_running_jobs_and_blocks_new_admission() {
+        let limits = Limits {
+            max_concurrent_jobs: 1,
+            max_queued_jobs: 2,
+            ..Limits::default()
+        };
+        let (_dir, state) = state(limits);
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let runner: JobRunner = Arc::new({
+            let release_rx = release_rx.clone();
+            let started = started.clone();
+            move |_, repo, tx| {
+                started.lock().unwrap().push(repo.slug);
+                release_rx.lock().unwrap().recv().unwrap();
+                finish_done(&tx);
+            }
+        });
+
+        let running = enqueue_job(
+            state.clone(),
+            repo("running"),
+            "a".to_owned(),
+            runner.clone(),
+        )
+        .unwrap();
+        until(|| started.lock().unwrap().len() == 1).await;
+        let queued = enqueue_job(
+            state.clone(),
+            repo("queued"),
+            "b".to_owned(),
+            runner.clone(),
+        )
+        .unwrap();
+        assert_eq!(snapshot(&state, queued).queue_position, Some(1));
+
+        state.jobs.shutdown();
+
+        let running_snapshot = snapshot(&state, running);
+        assert_eq!(running_snapshot.status, JobStatus::Failed);
+        assert_eq!(
+            running_snapshot.error_code.as_deref(),
+            Some("server_stopping")
+        );
+        let queued_snapshot = snapshot(&state, queued);
+        assert_eq!(queued_snapshot.status, JobStatus::Failed);
+        assert_eq!(
+            queued_snapshot.error_code.as_deref(),
+            Some("server_stopping")
+        );
+
+        let rejected = enqueue_job(
+            state.clone(),
+            repo("after-shutdown"),
+            "c".to_owned(),
+            runner.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(rejected.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(rejected.body.error, "server_stopping");
+
+        // The "running" job's fake runner closure is still blocked on
+        // `release_rx.recv()` in its own spawn_blocking thread --
+        // `shutdown` only updates the snapshot and kills a registered *OS*
+        // child (there is none here, this runner is a plain closure), it
+        // does not and cannot force an arbitrary Rust closure to return.
+        // Release it so the thread winds down instead of outliving the test.
+        release_tx.send(()).unwrap();
+    }
+
+    /// Wiring-adjacent coverage for the other half of shutdown: a real
+    /// worker child (with its own descendant process, standing in for git)
+    /// actually gets killed, not just marked failed in the registry. Copied
+    /// from `cancelling_running_worker_kills_git_child_and_starts_next_job`
+    /// above, substituting `JobRegistry::shutdown` for `cancel`. A real
+    /// SIGTERM reaching `service::serve`'s signal handler and calling this
+    /// is not exercised here -- that end-to-end wiring is covered by code
+    /// inspection only, per this PR's description.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn shutdown_kills_running_worker_child_and_fails_it_with_server_stopping() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, state) = state(Limits::default());
+        let fake_worker = dir.path().join("sleeping-worker-shutdown");
+        let child_pid_file = dir.path().join("descendant-shutdown.pid");
+        let script = format!(
+            "#!/bin/sh\ncat >/dev/null\nsleep 30 &\necho $! > '{}'\nprintf '%s\\n' '{{\"type\":\"stage_started\",\"v\":1,\"stage\":\"parse\"}}'\nwait\n",
+            child_pid_file.display()
+        );
+        std::fs::write(&fake_worker, script).unwrap();
+        std::fs::set_permissions(&fake_worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner: JobRunner = Arc::new(move |state, repo, tx| {
+            let spec = WorkerSpec {
+                v: 1,
+                slug: repo.slug,
+                owner: repo.owner,
+                repo: repo.repo,
+                source: "unused".to_owned(),
+                local: false,
+                all_sources: false,
+                cache_dir: String::new(),
+                output_dir: String::new(),
+                clone_cache_bytes: 1,
+                prune_variant: "node-relative".to_owned(),
+                namer: "idf".to_owned(),
+                namer_model: String::new(),
+                previous_maps: vec![],
+                names_cache: None,
+            };
+            let error = process_worker_exe(
+                &tx,
+                spec,
+                Instant::now(),
+                &fake_worker,
+                Some(&state.jobs),
+                &WorkerHardening::for_test(dir.path()),
+            )
+            .err()
+            .expect("shutdown must fail the running child");
+            finish_failed(&tx, error);
+        });
+        let id = enqueue_job(state.clone(), repo("solo"), "a".to_owned(), runner).unwrap();
+        until(|| child_pid_file.exists() && snapshot(&state, id).status == JobStatus::Indexing)
+            .await;
+        let child_pid: u32 = std::fs::read_to_string(&child_pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+
+        state.jobs.shutdown();
+
+        until(|| {
+            let stat = std::fs::read_to_string(format!("/proc/{child_pid}/stat"));
+            stat.is_err()
+                || stat
+                    .unwrap()
+                    .split(") ")
+                    .nth(1)
+                    .is_some_and(|tail| tail.starts_with('Z'))
+        })
+        .await;
+        let final_snapshot = snapshot(&state, id);
+        assert_eq!(final_snapshot.status, JobStatus::Failed);
+        assert_eq!(
+            final_snapshot.error_code.as_deref(),
+            Some("server_stopping")
+        );
     }
 
     #[cfg(unix)]

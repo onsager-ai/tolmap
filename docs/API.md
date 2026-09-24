@@ -141,6 +141,19 @@ that job's id with the same `202` body. The per-repo rate limit still applies.
 When all workers and pending slots are occupied, a new job gets `503 busy`
 with `Retry-After: 30` (seconds). A duplicate can still join a full queue.
 
+While the service is shutting down (a SIGINT/SIGTERM graceful-stop is in
+progress -- see "Graceful shutdown" below), every `POST /api/index` is
+rejected with:
+
+```
+503 Service Unavailable
+{"error": "server_stopping", "message": "the service is shutting down and is not accepting new jobs"}
+```
+
+instead of being queued. This is permanent for the life of the process --
+unlike `busy`, no `Retry-After` is sent, since the caller should retry
+against a different instance or later, not against this one.
+
 The commit already has a cached map (see "Store" below):
 
 ```
@@ -202,6 +215,20 @@ not for matching on; only `status` is a stable enum.
 ### `POST /api/jobs/{job_id}/cancel`
 
 Returns the current `JobSnapshot` with `200 OK`. Cancelling a queued job removes it from the FIFO queue and updates later positions and start estimates. Cancelling a running job kills the worker process group, including git children, and releases the slot only after the child exits. Both finish as `status: "failed"` with `error_code: "cancelled"`; the existing status enum stays compatible with older clients. Repeating the request returns the same terminal snapshot. Unknown IDs return 404. The endpoint has the same per-IP and per-repo request rate limits as `POST /api/index`.
+
+### Graceful shutdown
+
+On SIGINT or SIGTERM, `tolmap serve` stops admitting new jobs (see
+`POST /api/index` above) and fails every job currently queued or running --
+killing any worker process group already started, the same way cancelling
+that job would -- with `status: "failed"` and `error_code: "server_stopping"`
+(`error: "the service is shutting down"`), before the process exits. This is
+what makes an operator-initiated stop (a deploy, a resize, a platform
+auto-stop -- see `fly.toml`) observable rather than silent: a client
+watching `GET /api/jobs/{job_id}/events` gets a final SSE frame carrying the
+terminal snapshot before its connection closes, and a client that only
+polls `GET /api/jobs/{job_id}` sees the same terminal state on its next
+request instead of the job hanging forever.
 
 ### `GET /api/jobs/{job_id}/events`
 
@@ -275,6 +302,7 @@ Every non-2xx response is JSON:
 | 404 | `not_found` | unknown job id, or unknown slug/commit for `GET /api/maps/{owner}/{repo}` |
 | 429 | `rate_limited` | per-IP or per-repo rate limit tripped -- `message` says which |
 | 503 | `busy` | all workers and pending queue slots are occupied; `Retry-After: 30` seconds |
+| 503 | `server_stopping` | the service received a shutdown signal and is not accepting new jobs (see "Graceful shutdown" above); no `Retry-After` |
 | 422 | `detection_failed` | `detect::detect` (issue #4) found no supported source at all -- an empty or non-source repository, not a size or confidence problem |
 | 422 | `detection_uncertain` | detection succeeded but at `Confidence::Low` -- `message` is the chosen candidate's evidence text. Never indexed silently: a wrong source root produces a plausible-looking wrong map (finding 7) |
 | 502 | `clone_failed` | git clone/fetch failed (bad URL, network, repo does not exist) |
