@@ -257,7 +257,7 @@ fn name(node: Node<'_>, bytes: &[u8]) -> Option<String> {
         })
 }
 
-fn kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
+fn kind(node: Node<'_>, parent: Option<Node<'_>>, lang: LanguageKind) -> Option<usize> {
     match lang {
         LanguageKind::Python => match node.kind() {
             "class_definition" => Some(CLASS),
@@ -286,9 +286,7 @@ fn kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
                     .is_some_and(|n| matches!(n.kind(), "arrow_function" | "function_expression"))
                 {
                     Some(FUNCTION)
-                } else if node
-                    .parent()
-                    .is_some_and(|n| n.kind() == "lexical_declaration")
+                } else if parent.is_some_and(|n| n.kind() == "lexical_declaration")
                     && node
                         .end_position()
                         .row
@@ -344,7 +342,13 @@ fn go_signature(node: Node<'_>) -> Option<[usize; 2]> {
     Some([go_parameter_count(parameters), results])
 }
 
-fn abstract_decl(node: Node<'_>, bytes: &[u8], lang: LanguageKind, kind: usize) -> bool {
+fn abstract_decl(
+    node: Node<'_>,
+    parent: Option<Node<'_>>,
+    bytes: &[u8],
+    lang: LanguageKind,
+    kind: usize,
+) -> bool {
     match lang {
         LanguageKind::Python => {
             if kind == CLASS {
@@ -356,7 +360,7 @@ fn abstract_decl(node: Node<'_>, bytes: &[u8], lang: LanguageKind, kind: usize) 
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .any(|part| matches!(part, "ABC" | "ABCMeta"))
             } else if kind == METHOD {
-                node.parent()
+                parent
                     .filter(|p| p.kind() == "decorated_definition")
                     .is_some_and(|p| {
                         children(p).into_iter().any(|child| {
@@ -387,73 +391,116 @@ fn abstract_decl(node: Node<'_>, bytes: &[u8], lang: LanguageKind, kind: usize) 
     }
 }
 
+/// Pre-order walk over `root` and its named descendants, reusing one cursor.
+/// `enter` sees each node with its named ancestors (root first) and the
+/// state each ancestor returned, and returns the node's own state.
+///
+/// The symbol walks were recursive over `named_children`, allocating a cursor
+/// and a `Vec` per node, and asked `Node::parent()` for ancestors. In
+/// tree-sitter 0.25 `ts_node_parent` has no parent pointer: it descends from
+/// the tree root through `ts_node_child_with_descendant`, scanning siblings
+/// at every level. An ancestor chain therefore cost O(depth² × fan-out) per
+/// node, and the reference-wrapper check ran it for every node (finding 39).
+/// The ancestors are the same nodes `parent()` returns: only named nodes are
+/// entered, and an unnamed node's subtree was never visited before either.
+fn preorder<'t, S, F>(root: Node<'t>, mut enter: F)
+where
+    F: FnMut(Node<'t>, &[(Node<'t>, S)]) -> S,
+{
+    let mut path: Vec<(Node<'t>, S)> = Vec::new();
+    let state = enter(root, &path);
+    path.push((root, state));
+    let mut cursor = root.walk();
+    if !cursor.goto_first_child() {
+        return;
+    }
+    loop {
+        let node = cursor.node();
+        if node.is_named() {
+            let state = enter(node, &path);
+            if cursor.goto_first_child() {
+                path.push((node, state));
+                continue;
+            }
+        }
+        while !cursor.goto_next_sibling() {
+            // `path` mirrors the cursor's named ancestors; climbing out of
+            // the root's last child empties it and ends the walk.
+            if !cursor.goto_parent() {
+                return;
+            }
+            path.pop();
+            if path.is_empty() {
+                return;
+            }
+        }
+    }
+}
+
 fn collect_spans(
-    node: Node<'_>,
+    root: Node<'_>,
     bytes: &[u8],
     lang: LanguageKind,
     file: usize,
     first: usize,
     spans: &mut Vec<Span>,
 ) {
-    if let Some(mut k) = kind(node, lang) {
-        if let Some(n) = name(node, bytes) {
-            let parent = spans[first..]
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, s)| s.begin_byte <= node.start_byte() && node.end_byte() <= s.end_byte)
-                .map(|(i, _)| (first + i) as isize)
-                .unwrap_or(-1);
-            if k == FUNCTION && parent >= 0 {
-                k = if spans[parent as usize].kind == CLASS {
-                    METHOD
-                } else {
-                    NESTED_FUNCTION
-                };
-            }
-            spans.push(Span {
-                file,
-                name: n,
-                kind: k,
-                start: node.start_position().row + 1,
-                credit_start: node
-                    .parent()
-                    .filter(|p| p.kind() == "decorated_definition")
-                    .map_or(node.start_position().row + 1, |p| {
-                        p.start_position().row + 1
-                    }),
-                end: node.end_position().row + 1,
-                begin_byte: node.start_byte(),
-                credit_begin_byte: node
-                    .parent()
-                    .filter(|p| p.kind() == "decorated_definition")
-                    .map_or(node.start_byte(), |p| p.start_byte()),
-                end_byte: node.end_byte(),
-                code_lines: 0,
-                parent,
-                abstract_symbol: abstract_decl(node, bytes, lang, k)
-                    || (parent >= 0
-                        && spans[parent as usize].kind == INTERFACE
-                        && lang == LanguageKind::TypeScript),
-                go_signature: (lang == LanguageKind::Go)
-                    .then(|| go_signature(node))
-                    .flatten(),
-                go_embeds: lang == LanguageKind::Go
-                    && k == INTERFACE
-                    && node.child_by_field_name("type").is_some_and(|ty| {
-                        children(ty)
-                            .into_iter()
-                            .any(|child| child.kind() == "type_elem")
-                    }),
-                // This signature was not a symbol before, so annotation
-                // references inside it retain their enclosing owner.
-                reference_owner: node.kind() != "abstract_method_signature",
-            });
+    preorder(root, |node, ancestors| {
+        let parent_node = ancestors.last().map(|entry| entry.0);
+        let Some(mut k) = kind(node, parent_node, lang) else {
+            return;
+        };
+        let Some(n) = name(node, bytes) else {
+            return;
+        };
+        let parent = spans[first..]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, s)| s.begin_byte <= node.start_byte() && node.end_byte() <= s.end_byte)
+            .map(|(i, _)| (first + i) as isize)
+            .unwrap_or(-1);
+        if k == FUNCTION && parent >= 0 {
+            k = if spans[parent as usize].kind == CLASS {
+                METHOD
+            } else {
+                NESTED_FUNCTION
+            };
         }
-    }
-    for child in children(node) {
-        collect_spans(child, bytes, lang, file, first, spans);
-    }
+        let decorated = parent_node.filter(|p| p.kind() == "decorated_definition");
+        spans.push(Span {
+            file,
+            name: n,
+            kind: k,
+            start: node.start_position().row + 1,
+            credit_start: decorated.map_or(node.start_position().row + 1, |p| {
+                p.start_position().row + 1
+            }),
+            end: node.end_position().row + 1,
+            begin_byte: node.start_byte(),
+            credit_begin_byte: decorated.map_or(node.start_byte(), |p| p.start_byte()),
+            end_byte: node.end_byte(),
+            code_lines: 0,
+            parent,
+            abstract_symbol: abstract_decl(node, parent_node, bytes, lang, k)
+                || (parent >= 0
+                    && spans[parent as usize].kind == INTERFACE
+                    && lang == LanguageKind::TypeScript),
+            go_signature: (lang == LanguageKind::Go)
+                .then(|| go_signature(node))
+                .flatten(),
+            go_embeds: lang == LanguageKind::Go
+                && k == INTERFACE
+                && node.child_by_field_name("type").is_some_and(|ty| {
+                    children(ty)
+                        .into_iter()
+                        .any(|child| child.kind() == "type_elem")
+                }),
+            // This signature was not a symbol before, so annotation
+            // references inside it retain their enclosing owner.
+            reference_owner: node.kind() != "abstract_method_signature",
+        });
+    });
 }
 
 fn receiver_type(node: Node<'_>, bytes: &[u8]) -> Option<String> {
@@ -472,13 +519,7 @@ fn collect_go_receivers(
     offset: usize,
     out: &mut Vec<(usize, String)>,
 ) {
-    fn visit(
-        node: Node<'_>,
-        bytes: &[u8],
-        spans: &[Span],
-        offset: usize,
-        out: &mut Vec<(usize, String)>,
-    ) {
+    preorder(root, |node, _| {
         if node.kind() == "method_declaration" {
             if let Some(type_name) = node
                 .child_by_field_name("receiver")
@@ -493,11 +534,7 @@ fn collect_go_receivers(
                 }
             }
         }
-        for child in children(node) {
-            visit(child, bytes, spans, offset, out);
-        }
-    }
-    visit(root, bytes, spans, offset, out);
+    });
 }
 
 fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
@@ -604,41 +641,42 @@ fn parameter_bindings(node: Node<'_>, bytes: &[u8], out: &mut BTreeSet<String>) 
     }
 }
 
-fn covered_by_reference_wrapper(node: Node<'_>) -> bool {
-    let mut parent = node.parent();
-    while let Some(p) = parent {
-        if matches!(
-            p.kind(),
-            "decorator"
-                | "superclasses"
-                | "type"
-                | "type_annotation"
-                | "extends_clause"
-                | "implements_clause"
-        ) {
-            return true;
-        }
-        if matches!(
-            p.kind(),
-            "class_definition" | "function_definition" | "method_definition" | "method_declaration"
-        ) {
-            break;
-        }
-        parent = p.parent();
-    }
-    false
+/// Kinds whose subtree is credited by one typed reference (decorator,
+/// base class, annotation). A node below one is not collected again.
+fn reference_wrapper(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "decorator"
+            | "superclasses"
+            | "type"
+            | "type_annotation"
+            | "extends_clause"
+            | "implements_clause"
+    )
 }
 
-fn value_attribute(node: Node<'_>) -> bool {
+/// Definitions end the upward search for a reference wrapper: a decorator
+/// on a class does not cover the class body.
+fn wrapper_boundary(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "class_definition" | "function_definition" | "method_definition" | "method_declaration"
+    )
+}
+
+/// `covered` is whether a reference wrapper lies between `node` and its
+/// nearest enclosing definition; `ancestors` are its named ancestors, root
+/// first.
+fn value_attribute(node: Node<'_>, covered: bool, ancestors: &[(Node<'_>, bool)]) -> bool {
     if !matches!(
         node.kind(),
         "attribute" | "member_expression" | "selector_expression"
-    ) || covered_by_reference_wrapper(node)
+    ) || covered
     {
         return false;
     }
     let mut child = node;
-    while let Some(parent) = child.parent() {
+    for &(parent, _) in ancestors.iter().rev() {
         // A selector inside a longer selector is credited at the outermost
         // lexical site, if that full chain resolves. A store target does
         // not read the method it happens to name.
@@ -701,125 +739,121 @@ fn collect_superclasses(owner: usize, node: Node<'_>, bytes: &[u8], out: &mut Ve
 }
 
 fn collect_candidates(
-    node: Node<'_>,
+    root: Node<'_>,
     bytes: &[u8],
     owners: &mut OwnerLookup<'_>,
     out: &mut Vec<Candidate>,
     shadowed: &mut BTreeMap<usize, BTreeSet<String>>,
 ) {
-    let owner = owners.at(node.start_byte());
-    if let Some(owner) = owner {
-        if matches!(node.kind(), "parameters" | "formal_parameters") {
-            parameter_bindings(node, bytes, shadowed.entry(owner).or_default());
-        }
-        if matches!(
-            node.kind(),
-            "assignment" | "augmented_assignment" | "variable_declarator" | "short_var_declaration"
-        ) {
-            if let Some(left) = node
-                .child_by_field_name("left")
-                .or_else(|| node.child_by_field_name("name"))
-            {
-                parameter_bindings(left, bytes, shadowed.entry(owner).or_default());
+    // Each node's state is whether its children sit below a reference
+    // wrapper, so the old upward `parent()` search is one lookup here.
+    preorder(root, |node, ancestors| {
+        let covered: bool = ancestors.last().is_some_and(|entry| entry.1);
+        let owner = owners.at(node.start_byte());
+        if let Some(owner) = owner {
+            if matches!(node.kind(), "parameters" | "formal_parameters") {
+                parameter_bindings(node, bytes, shadowed.entry(owner).or_default());
             }
-        }
-        let call = matches!(node.kind(), "call" | "call_expression");
-        if call {
-            let callee = node
-                .child_by_field_name("function")
-                .or_else(|| node.child_by_field_name("method"));
-            let resolved = callee.and_then(|n| {
-                if n.kind() == "attribute" {
-                    let base = n.child_by_field_name("object")?;
-                    if base.kind() == "call"
-                        && base
-                            .child_by_field_name("function")
-                            .is_some_and(|function| text(function, bytes) == "super")
-                        && base
-                            .child_by_field_name("arguments")
-                            .is_some_and(|args| children(args).is_empty())
-                    {
-                        return n
-                            .child_by_field_name("attribute")
-                            .map(|attr| vec!["super".to_owned(), text(attr, bytes).to_owned()]);
-                    }
+            if matches!(
+                node.kind(),
+                "assignment"
+                    | "augmented_assignment"
+                    | "variable_declarator"
+                    | "short_var_declaration"
+            ) {
+                if let Some(left) = node
+                    .child_by_field_name("left")
+                    .or_else(|| node.child_by_field_name("name"))
+                {
+                    parameter_bindings(left, bytes, shadowed.entry(owner).or_default());
                 }
-                chain(n, bytes)
-            });
-            let parent_class_method = callee.is_some_and(|n| {
-                n.kind() == "attribute"
-                    && n.child_by_field_name("object").is_some_and(|object| {
-                        object.kind() == "call"
-                            && object
+            }
+            let call = matches!(node.kind(), "call" | "call_expression");
+            if call {
+                let callee = node
+                    .child_by_field_name("function")
+                    .or_else(|| node.child_by_field_name("method"));
+                let resolved = callee.and_then(|n| {
+                    if n.kind() == "attribute" {
+                        let base = n.child_by_field_name("object")?;
+                        if base.kind() == "call"
+                            && base
                                 .child_by_field_name("function")
                                 .is_some_and(|function| text(function, bytes) == "super")
-                    })
-            });
-            out.push(Candidate {
-                owner,
-                chain: resolved.clone().unwrap_or_default(),
-                call: true,
-                value: false,
-                kind: CALL,
-                unresolved_reason: resolved.is_none().then_some(if parent_class_method {
-                    UnresolvedReason::ParentClassMethod
+                            && base
+                                .child_by_field_name("arguments")
+                                .is_some_and(|args| children(args).is_empty())
+                        {
+                            return n.child_by_field_name("attribute").map(|attr| {
+                                vec!["super".to_owned(), text(attr, bytes).to_owned()]
+                            });
+                        }
+                    }
+                    chain(n, bytes)
+                });
+                let parent_class_method = callee.is_some_and(|n| {
+                    n.kind() == "attribute"
+                        && n.child_by_field_name("object").is_some_and(|object| {
+                            object.kind() == "call"
+                                && object
+                                    .child_by_field_name("function")
+                                    .is_some_and(|function| text(function, bytes) == "super")
+                        })
+                });
+                out.push(Candidate {
+                    owner,
+                    chain: resolved.clone().unwrap_or_default(),
+                    call: true,
+                    value: false,
+                    kind: CALL,
+                    unresolved_reason: resolved.is_none().then_some(if parent_class_method {
+                        UnresolvedReason::ParentClassMethod
+                    } else {
+                        UnresolvedReason::Dynamic
+                    }),
+                });
+            } else if !covered && reference_wrapper(node) {
+                if node.kind() == "superclasses" {
+                    collect_superclasses(owner, node, bytes, out);
                 } else {
-                    UnresolvedReason::Dynamic
-                }),
-            });
-        } else if !covered_by_reference_wrapper(node)
-            && matches!(
-                node.kind(),
-                "decorator"
-                    | "superclasses"
-                    | "type"
-                    | "type_annotation"
-                    | "extends_clause"
-                    | "implements_clause"
-            )
-        {
-            if node.kind() == "superclasses" {
-                collect_superclasses(owner, node, bytes, out);
-            } else {
-                let mut chains = Vec::new();
-                expression_chains(node, bytes, &mut chains);
-                let kind = match node.kind() {
-                    "superclasses" | "extends_clause" => EXTENDS,
-                    "implements_clause" => IMPLEMENTS,
-                    "decorator" => DECORATOR,
-                    _ => ANNOTATION,
-                };
-                for parts in chains {
+                    let mut chains = Vec::new();
+                    expression_chains(node, bytes, &mut chains);
+                    let kind = match node.kind() {
+                        "superclasses" | "extends_clause" => EXTENDS,
+                        "implements_clause" => IMPLEMENTS,
+                        "decorator" => DECORATOR,
+                        _ => ANNOTATION,
+                    };
+                    for parts in chains {
+                        out.push(Candidate {
+                            owner,
+                            chain: parts,
+                            call: false,
+                            value: false,
+                            kind,
+                            unresolved_reason: None,
+                        });
+                    }
+                }
+            } else if node.kind() == "class_definition" {
+                if let Some(bases) = node.child_by_field_name("superclasses") {
+                    collect_superclasses(owner, bases, bytes, out);
+                }
+            } else if value_attribute(node, covered, ancestors) {
+                if let Some(parts) = chain(node, bytes) {
                     out.push(Candidate {
                         owner,
                         chain: parts,
                         call: false,
-                        value: false,
-                        kind,
+                        value: true,
+                        kind: VALUE,
                         unresolved_reason: None,
                     });
                 }
             }
-        } else if node.kind() == "class_definition" {
-            if let Some(bases) = node.child_by_field_name("superclasses") {
-                collect_superclasses(owner, bases, bytes, out);
-            }
-        } else if value_attribute(node) {
-            if let Some(parts) = chain(node, bytes) {
-                out.push(Candidate {
-                    owner,
-                    chain: parts,
-                    call: false,
-                    value: true,
-                    kind: VALUE,
-                    unresolved_reason: None,
-                });
-            }
         }
-    }
-    for child in children(node) {
-        collect_candidates(child, bytes, owners, out, shadowed);
-    }
+        reference_wrapper(node) || (!wrapper_boundary(node) && covered)
+    });
 }
 
 fn imports_python(
@@ -1028,7 +1062,8 @@ pub(crate) fn collect_timed(
                 .collect(),
         ),
         LanguageKind::Go => {
-            fn visit(node: Node<'_>, bytes: &[u8], out: &mut Vec<(String, String)>) {
+            let mut imports = Vec::new();
+            preorder(root, |node, _| {
                 if node.kind() == "import_spec" {
                     if let Some(path_node) = node.child_by_field_name("path") {
                         let path = text(path_node, bytes).trim_matches(['\'', '"', '`']);
@@ -1036,15 +1071,10 @@ pub(crate) fn collect_timed(
                             .child_by_field_name("name")
                             .map(|n| text(n, bytes).to_owned())
                             .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_owned());
-                        out.push((path.to_owned(), alias));
+                        imports.push((path.to_owned(), alias));
                     }
                 }
-                for child in children(node) {
-                    visit(child, bytes, out);
-                }
-            }
-            let mut imports = Vec::new();
-            visit(root, bytes, &mut imports);
+            });
             RawImports::Go(imports)
         }
         LanguageKind::TypeScript => {
@@ -2293,5 +2323,659 @@ mod tests {
         assert!(edge(&doc, id(&doc, 1, "Local"), id(&doc, 0, "Target")));
         assert!(edge(&doc, id(&doc, 2, "Caller"), id(&doc, 0, "Target")));
         assert!(edge(&doc, id(&doc, 4, "use"), id(&doc, 3, "run")));
+    }
+}
+
+/// The recursive `parent()`-based walks replaced in finding 39, kept verbatim
+/// (renamed `old_*`) so a test can assert the cursor walks collect exactly
+/// the same spans, receivers, imports and candidates.
+#[cfg(test)]
+mod parent_walk_reference {
+    use super::*;
+    use tree_sitter::Parser;
+
+    fn old_kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
+        match lang {
+            LanguageKind::Python => match node.kind() {
+                "class_definition" => Some(CLASS),
+                "function_definition" => Some(FUNCTION),
+                _ => None,
+            },
+            LanguageKind::Go => match node.kind() {
+                "function_declaration" => Some(FUNCTION),
+                "method_declaration" | "method_elem" => Some(METHOD),
+                "type_spec" => Some(match node.child_by_field_name("type").map(|n| n.kind()) {
+                    Some("struct_type") => CLASS,
+                    Some("interface_type") => INTERFACE,
+                    _ => TYPE,
+                }),
+                _ => None,
+            },
+            LanguageKind::TypeScript => match node.kind() {
+                "class_declaration" | "abstract_class_declaration" | "class" => Some(CLASS),
+                "function_declaration" => Some(FUNCTION),
+                "method_definition" | "method_signature" | "abstract_method_signature" => {
+                    Some(METHOD)
+                }
+                "interface_declaration" => Some(INTERFACE),
+                "type_alias_declaration" => Some(TYPE),
+                "variable_declarator" => {
+                    let value = node.child_by_field_name("value");
+                    if value.is_some_and(|n| {
+                        matches!(n.kind(), "arrow_function" | "function_expression")
+                    }) {
+                        Some(FUNCTION)
+                    } else if node
+                        .parent()
+                        .is_some_and(|n| n.kind() == "lexical_declaration")
+                        && node
+                            .end_position()
+                            .row
+                            .saturating_sub(node.start_position().row)
+                            >= 2
+                    {
+                        Some(CONST)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        }
+    }
+
+    fn old_abstract_decl(node: Node<'_>, bytes: &[u8], lang: LanguageKind, kind: usize) -> bool {
+        match lang {
+            LanguageKind::Python => {
+                if kind == CLASS {
+                    let bases = node
+                        .child_by_field_name("superclasses")
+                        .map(|n| text(n, bytes))
+                        .unwrap_or("");
+                    bases
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .any(|part| matches!(part, "ABC" | "ABCMeta"))
+                } else if kind == METHOD {
+                    node.parent()
+                        .filter(|p| p.kind() == "decorated_definition")
+                        .is_some_and(|p| {
+                            children(p).into_iter().any(|child| {
+                                child.kind() == "decorator"
+                                    && matches!(
+                                        text(child, bytes).trim_start_matches('@').trim(),
+                                        "abstractmethod" | "abc.abstractmethod"
+                                    )
+                            })
+                        })
+                } else {
+                    false
+                }
+            }
+            LanguageKind::TypeScript => {
+                if kind == INTERFACE || node.kind().starts_with("abstract_") {
+                    return true;
+                }
+                let before_name = node
+                    .child_by_field_name("name")
+                    .map_or(node.end_byte(), |name| name.start_byte());
+                std::str::from_utf8(&bytes[node.start_byte()..before_name])
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .any(|part| part == "abstract")
+            }
+            LanguageKind::Go => false,
+        }
+    }
+
+    fn old_collect_spans(
+        node: Node<'_>,
+        bytes: &[u8],
+        lang: LanguageKind,
+        file: usize,
+        first: usize,
+        spans: &mut Vec<Span>,
+    ) {
+        if let Some(mut k) = old_kind(node, lang) {
+            if let Some(n) = name(node, bytes) {
+                let parent = spans[first..]
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, s)| {
+                        s.begin_byte <= node.start_byte() && node.end_byte() <= s.end_byte
+                    })
+                    .map(|(i, _)| (first + i) as isize)
+                    .unwrap_or(-1);
+                if k == FUNCTION && parent >= 0 {
+                    k = if spans[parent as usize].kind == CLASS {
+                        METHOD
+                    } else {
+                        NESTED_FUNCTION
+                    };
+                }
+                spans.push(Span {
+                    file,
+                    name: n,
+                    kind: k,
+                    start: node.start_position().row + 1,
+                    credit_start: node
+                        .parent()
+                        .filter(|p| p.kind() == "decorated_definition")
+                        .map_or(node.start_position().row + 1, |p| {
+                            p.start_position().row + 1
+                        }),
+                    end: node.end_position().row + 1,
+                    begin_byte: node.start_byte(),
+                    credit_begin_byte: node
+                        .parent()
+                        .filter(|p| p.kind() == "decorated_definition")
+                        .map_or(node.start_byte(), |p| p.start_byte()),
+                    end_byte: node.end_byte(),
+                    code_lines: 0,
+                    parent,
+                    abstract_symbol: old_abstract_decl(node, bytes, lang, k)
+                        || (parent >= 0
+                            && spans[parent as usize].kind == INTERFACE
+                            && lang == LanguageKind::TypeScript),
+                    go_signature: (lang == LanguageKind::Go)
+                        .then(|| go_signature(node))
+                        .flatten(),
+                    go_embeds: lang == LanguageKind::Go
+                        && k == INTERFACE
+                        && node.child_by_field_name("type").is_some_and(|ty| {
+                            children(ty)
+                                .into_iter()
+                                .any(|child| child.kind() == "type_elem")
+                        }),
+                    // This signature was not a symbol before, so annotation
+                    // references inside it retain their enclosing owner.
+                    reference_owner: node.kind() != "abstract_method_signature",
+                });
+            }
+        }
+        for child in children(node) {
+            old_collect_spans(child, bytes, lang, file, first, spans);
+        }
+    }
+
+    fn old_collect_go_receivers(
+        root: Node<'_>,
+        bytes: &[u8],
+        spans: &[Span],
+        offset: usize,
+        out: &mut Vec<(usize, String)>,
+    ) {
+        fn visit(
+            node: Node<'_>,
+            bytes: &[u8],
+            spans: &[Span],
+            offset: usize,
+            out: &mut Vec<(usize, String)>,
+        ) {
+            if node.kind() == "method_declaration" {
+                if let Some(type_name) = node
+                    .child_by_field_name("receiver")
+                    .and_then(|n| receiver_type(n, bytes))
+                {
+                    if let Some((i, _)) = spans
+                        .iter()
+                        .enumerate()
+                        .find(|(_, s)| s.begin_byte == node.start_byte() && s.kind == METHOD)
+                    {
+                        out.push((offset + i, type_name));
+                    }
+                }
+            }
+            for child in children(node) {
+                visit(child, bytes, spans, offset, out);
+            }
+        }
+        visit(root, bytes, spans, offset, out);
+    }
+
+    fn old_covered_by_reference_wrapper(node: Node<'_>) -> bool {
+        let mut parent = node.parent();
+        while let Some(p) = parent {
+            if matches!(
+                p.kind(),
+                "decorator"
+                    | "superclasses"
+                    | "type"
+                    | "type_annotation"
+                    | "extends_clause"
+                    | "implements_clause"
+            ) {
+                return true;
+            }
+            if matches!(
+                p.kind(),
+                "class_definition"
+                    | "function_definition"
+                    | "method_definition"
+                    | "method_declaration"
+            ) {
+                break;
+            }
+            parent = p.parent();
+        }
+        false
+    }
+
+    fn old_value_attribute(node: Node<'_>) -> bool {
+        if !matches!(
+            node.kind(),
+            "attribute" | "member_expression" | "selector_expression"
+        ) || old_covered_by_reference_wrapper(node)
+        {
+            return false;
+        }
+        let mut child = node;
+        while let Some(parent) = child.parent() {
+            // A selector inside a longer selector is credited at the outermost
+            // lexical site, if that full chain resolves. A store target does
+            // not read the method it happens to name.
+            if matches!(
+                parent.kind(),
+                "attribute" | "member_expression" | "selector_expression"
+            ) && parent
+                .child_by_field_name("object")
+                .or_else(|| parent.child_by_field_name("operand"))
+                .is_some_and(|base| base.id() == child.id())
+            {
+                return false;
+            }
+            if matches!(parent.kind(), "call" | "call_expression")
+                && parent
+                    .child_by_field_name("function")
+                    .or_else(|| parent.child_by_field_name("method"))
+                    .is_some_and(|callee| callee.id() == child.id())
+            {
+                return false;
+            }
+            if matches!(
+                parent.kind(),
+                "assignment"
+                    | "augmented_assignment"
+                    | "assignment_expression"
+                    | "augmented_assignment_expression"
+                    | "short_var_declaration"
+            ) && parent
+                .child_by_field_name("left")
+                .or_else(|| parent.child_by_field_name("name"))
+                .is_some_and(|left| left.id() == child.id())
+            {
+                return false;
+            }
+            child = parent;
+        }
+        true
+    }
+
+    fn old_collect_candidates(
+        node: Node<'_>,
+        bytes: &[u8],
+        owners: &mut OwnerLookup<'_>,
+        out: &mut Vec<Candidate>,
+        shadowed: &mut BTreeMap<usize, BTreeSet<String>>,
+    ) {
+        let owner = owners.at(node.start_byte());
+        if let Some(owner) = owner {
+            if matches!(node.kind(), "parameters" | "formal_parameters") {
+                parameter_bindings(node, bytes, shadowed.entry(owner).or_default());
+            }
+            if matches!(
+                node.kind(),
+                "assignment"
+                    | "augmented_assignment"
+                    | "variable_declarator"
+                    | "short_var_declaration"
+            ) {
+                if let Some(left) = node
+                    .child_by_field_name("left")
+                    .or_else(|| node.child_by_field_name("name"))
+                {
+                    parameter_bindings(left, bytes, shadowed.entry(owner).or_default());
+                }
+            }
+            let call = matches!(node.kind(), "call" | "call_expression");
+            if call {
+                let callee = node
+                    .child_by_field_name("function")
+                    .or_else(|| node.child_by_field_name("method"));
+                let resolved = callee.and_then(|n| {
+                    if n.kind() == "attribute" {
+                        let base = n.child_by_field_name("object")?;
+                        if base.kind() == "call"
+                            && base
+                                .child_by_field_name("function")
+                                .is_some_and(|function| text(function, bytes) == "super")
+                            && base
+                                .child_by_field_name("arguments")
+                                .is_some_and(|args| children(args).is_empty())
+                        {
+                            return n.child_by_field_name("attribute").map(|attr| {
+                                vec!["super".to_owned(), text(attr, bytes).to_owned()]
+                            });
+                        }
+                    }
+                    chain(n, bytes)
+                });
+                let parent_class_method = callee.is_some_and(|n| {
+                    n.kind() == "attribute"
+                        && n.child_by_field_name("object").is_some_and(|object| {
+                            object.kind() == "call"
+                                && object
+                                    .child_by_field_name("function")
+                                    .is_some_and(|function| text(function, bytes) == "super")
+                        })
+                });
+                out.push(Candidate {
+                    owner,
+                    chain: resolved.clone().unwrap_or_default(),
+                    call: true,
+                    value: false,
+                    kind: CALL,
+                    unresolved_reason: resolved.is_none().then_some(if parent_class_method {
+                        UnresolvedReason::ParentClassMethod
+                    } else {
+                        UnresolvedReason::Dynamic
+                    }),
+                });
+            } else if !old_covered_by_reference_wrapper(node)
+                && matches!(
+                    node.kind(),
+                    "decorator"
+                        | "superclasses"
+                        | "type"
+                        | "type_annotation"
+                        | "extends_clause"
+                        | "implements_clause"
+                )
+            {
+                if node.kind() == "superclasses" {
+                    collect_superclasses(owner, node, bytes, out);
+                } else {
+                    let mut chains = Vec::new();
+                    expression_chains(node, bytes, &mut chains);
+                    let kind = match node.kind() {
+                        "superclasses" | "extends_clause" => EXTENDS,
+                        "implements_clause" => IMPLEMENTS,
+                        "decorator" => DECORATOR,
+                        _ => ANNOTATION,
+                    };
+                    for parts in chains {
+                        out.push(Candidate {
+                            owner,
+                            chain: parts,
+                            call: false,
+                            value: false,
+                            kind,
+                            unresolved_reason: None,
+                        });
+                    }
+                }
+            } else if node.kind() == "class_definition" {
+                if let Some(bases) = node.child_by_field_name("superclasses") {
+                    collect_superclasses(owner, bases, bytes, out);
+                }
+            } else if old_value_attribute(node) {
+                if let Some(parts) = chain(node, bytes) {
+                    out.push(Candidate {
+                        owner,
+                        chain: parts,
+                        call: false,
+                        value: true,
+                        kind: VALUE,
+                        unresolved_reason: None,
+                    });
+                }
+            }
+        }
+        for child in children(node) {
+            old_collect_candidates(child, bytes, owners, out, shadowed);
+        }
+    }
+
+    fn old_go_imports(node: Node<'_>, bytes: &[u8], out: &mut Vec<(String, String)>) {
+        if node.kind() == "import_spec" {
+            if let Some(path_node) = node.child_by_field_name("path") {
+                let path = text(path_node, bytes).trim_matches(['\'', '"', '`']);
+                let alias = node
+                    .child_by_field_name("name")
+                    .map(|n| text(n, bytes).to_owned())
+                    .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_owned());
+                out.push((path.to_owned(), alias));
+            }
+        }
+        for child in children(node) {
+            old_go_imports(child, bytes, out);
+        }
+    }
+
+    fn grammar(lang: LanguageKind, path: &str) -> tree_sitter::Language {
+        match lang {
+            LanguageKind::Python => tree_sitter_python::LANGUAGE.into(),
+            LanguageKind::Go => tree_sitter_go::LANGUAGE.into(),
+            LanguageKind::TypeScript if path.ends_with(".tsx") => {
+                tree_sitter_typescript::LANGUAGE_TSX.into()
+            }
+            LanguageKind::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        }
+    }
+
+    fn assert_same(lang: LanguageKind, path: &str, bytes: &[u8]) {
+        let mut parser = Parser::new();
+        parser.set_language(&grammar(lang, path)).unwrap();
+        let tree = parser.parse(bytes, None).unwrap();
+        let root = tree.root_node();
+
+        let mut old_spans = Vec::new();
+        old_collect_spans(root, bytes, lang, 0, 0, &mut old_spans);
+        let mut new_spans = Vec::new();
+        collect_spans(root, bytes, lang, 0, 0, &mut new_spans);
+        assert_eq!(
+            serde_json::to_string(&old_spans).unwrap(),
+            serde_json::to_string(&new_spans).unwrap(),
+            "spans differ in {path}"
+        );
+
+        let mut old_receivers = Vec::new();
+        old_collect_go_receivers(root, bytes, &old_spans, 0, &mut old_receivers);
+        let mut new_receivers = Vec::new();
+        collect_go_receivers(root, bytes, &new_spans, 0, &mut new_receivers);
+        assert_eq!(old_receivers, new_receivers, "receivers differ in {path}");
+
+        if lang == LanguageKind::Go {
+            let mut old_imports = Vec::new();
+            old_go_imports(root, bytes, &mut old_imports);
+            let flags = extract::code_line_flags(root, bytes, lang);
+            let RawImports::Go(new_imports) = collect(root, bytes, lang, &flags).imports else {
+                panic!("Go record without Go imports");
+            };
+            assert_eq!(old_imports, new_imports, "Go imports differ in {path}");
+        }
+
+        let mut old_candidates = Vec::new();
+        let mut old_shadowed = BTreeMap::new();
+        old_collect_candidates(
+            root,
+            bytes,
+            &mut OwnerLookup::new(&old_spans),
+            &mut old_candidates,
+            &mut old_shadowed,
+        );
+        let mut new_candidates = Vec::new();
+        let mut new_shadowed = BTreeMap::new();
+        collect_candidates(
+            root,
+            bytes,
+            &mut OwnerLookup::new(&new_spans),
+            &mut new_candidates,
+            &mut new_shadowed,
+        );
+        assert_eq!(
+            serde_json::to_string(&old_candidates).unwrap(),
+            serde_json::to_string(&new_candidates).unwrap(),
+            "candidates differ in {path}"
+        );
+        assert_eq!(
+            old_shadowed, new_shadowed,
+            "shadowed names differ in {path}"
+        );
+    }
+
+    const PYTHON: &str = r#"
+import abc
+from typing import Optional as Opt
+
+@decorate(helper.make)
+class Base(abc.ABC, metaclass=Meta):
+    field: Opt[int] = None
+
+    @abc.abstractmethod
+    def run(self, x: pkg.Type = default.value) -> other.Result:
+        callback = self.handler
+        self.slot = self.other
+        obj.attr.chain = value.read
+        return super().run(fn=self.fallback, *args)
+
+    def handler(self):
+        def inner(y: typing.Any):
+            return y.attr if cond else self.handler
+        items = [self.run(i) for i in range(3)]
+        return functools.partial(self.run, inner)
+
+class Child(Base):
+    @property
+    def value(self) -> "Base":
+        return Base.run(self) or module.func
+
+def top(a, b: int, *rest, **kw):
+    x = lambda q: q.attr
+    return a.b.c(x)
+"#;
+
+    const TYPESCRIPT: &str = r#"
+import { Thing as Alias, other } from "./thing";
+import * as ns from "../ns";
+
+export abstract class Shape<T extends Base> extends Base implements ns.Face, Other {
+  private readonly field: ns.Type<T> = this.make;
+  abstract area(): number;
+  constructor(private readonly dep: Alias) { super(dep.value); }
+  method(arg: Foo.Bar): Result {
+    const handler = this.other;
+    this.slot = this.other;
+    return this.helper(arg.field, () => this.method);
+  }
+}
+
+export interface Face extends Base { run(x: number): void; name: string }
+type Pair = { a: ns.A; b: B };
+const table = {
+  a: 1,
+  b: other.value,
+};
+export const arrow = async (x: Alias): Promise<void> => { await ns.go(x.y); };
+function plain(this: Window, a = defaults.a) { return plain.call(this, a); }
+const Comp = () => <div onClick={this.handle} data={props.item.value}>{items.map((i) => <Item key={i.id} />)}</div>;
+"#;
+
+    const GO: &str = r#"
+package main
+
+import (
+	"fmt"
+	alias "example.com/mod/pkg"
+	_ "example.com/mod/side"
+)
+
+type Shape interface {
+	Area() float64
+	Perimeter(scale float64, extra ...int) (float64, error)
+}
+
+type Embeds interface {
+	Shape
+	~int | ~float64
+}
+
+type Square struct {
+	side float64
+	inner alias.Thing
+}
+
+func (s *Square) Area() float64 { return s.side * s.side }
+
+func (s Square) Perimeter(scale float64, extra ...int) (float64, error) {
+	f := s.Area
+	s.side = alias.Value
+	return fmt.Sprint(s.inner.Method(f)), nil
+}
+
+func main() {
+	sq := &Square{side: 2}
+	handler := sq.Area
+	fmt.Println(handler(), Square.Area, alias.Func)
+}
+"#;
+
+    #[test]
+    fn cursor_walks_match_parent_walks_on_samples() {
+        assert_same(LanguageKind::Python, "sample.py", PYTHON.as_bytes());
+        assert_same(LanguageKind::TypeScript, "sample.ts", TYPESCRIPT.as_bytes());
+        assert_same(
+            LanguageKind::TypeScript,
+            "sample.tsx",
+            TYPESCRIPT.as_bytes(),
+        );
+        assert_same(LanguageKind::Go, "sample.go", GO.as_bytes());
+    }
+
+    fn visit_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries = entries
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                if !path.ends_with("node_modules") {
+                    visit_sources(&path, out);
+                }
+            } else if matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("py" | "ts" | "tsx")
+            ) {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The frozen Python reference and the web client are real code with
+    /// deep expression nesting, decorators and JSX.
+    #[test]
+    fn cursor_walks_match_parent_walks_on_repository_sources() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        visit_sources(&root.join("src/tolmap"), &mut files);
+        visit_sources(&root.join("web/src"), &mut files);
+        assert!(
+            files.len() > 20,
+            "expected repository sources, found {}",
+            files.len()
+        );
+        for path in files {
+            let bytes = fs::read(&path).unwrap();
+            let name = path.display().to_string();
+            let lang = if name.ends_with(".py") {
+                LanguageKind::Python
+            } else {
+                LanguageKind::TypeScript
+            };
+            assert_same(lang, &name, &bytes);
+        }
     }
 }
