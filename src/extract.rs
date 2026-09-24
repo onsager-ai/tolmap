@@ -350,6 +350,7 @@ fn build_multi_source_inner(
                 parse_python_with_progress(repo, pkg, parsed, raw, &resolve_stage)?
             }
             LanguageKind::Go | LanguageKind::TypeScript => parse_multi_with_progress(
+                repo,
                 pkg,
                 *language,
                 parsed,
@@ -1869,6 +1870,7 @@ pub fn coverage_diagnostics(
                     };
                     for spec in specs {
                         let targets = resolve_multi(
+                            repo,
                             *lang,
                             &spec,
                             &node.file,
@@ -1910,13 +1912,20 @@ pub fn coverage_diagnostics(
 /// never be reparsed, and its unresolved workspace imports would never be
 /// counted.
 ///
-/// Four buckets, matching what the owner asked issue #101's measurement to
+/// Five buckets, matching what the owner asked issue #101's measurement to
 /// report:
 /// - `resolved`: the import resolves to a file already in the parsed set.
 /// - `resolved_but_excluded`: [`package_entry_candidates`] names a real file
 ///   on disk that source collection never parses (e.g. under `generated/`,
-///   `MULTI_SKIP_DIR`) -- correct `exports`/`main` resolution still adds no
-///   edge here, by the lower-bound rule.
+///   `MULTI_SKIP_DIR`). This is the raw specifier-level classification and is
+///   reported unchanged from before issue #101's redirect rule shipped.
+/// - `redirected_from_excluded`: the subset of `resolved_but_excluded` where
+///   [`redirect_excluded_workspace_import`] actually found a package entry or
+///   fallback file to redirect the edge to (issue #101, "count as edge
+///   targets only") -- these are the ones that turned into a real edge in
+///   the map, not just a diagnostic count. `resolved_but_excluded` minus this
+///   is what stayed unresolved because the package had no parsed file at
+///   all to redirect to.
 /// - `unresolved`: the specifier names a declared workspace package, but no
 ///   candidate path exists on disk at all (a typo, a missing subpath, an
 ///   `exports` map that does not cover it).
@@ -1929,6 +1938,7 @@ pub fn workspace_import_coverage(
     use serde_json::json;
     let mut resolved = 0usize;
     let mut resolved_but_excluded = 0usize;
+    let mut redirected_from_excluded = 0usize;
     let mut unresolved = 0usize;
     let mut external = 0usize;
     let mut excluded_examples = BTreeSet::new();
@@ -1996,6 +2006,17 @@ pub fn workspace_import_coverage(
                     if let Some(on_disk) = candidates.iter().find(|c| repo.join(c).exists()) {
                         resolved_but_excluded += 1;
                         excluded_examples.insert(on_disk.clone());
+                        if redirect_excluded_workspace_import(
+                            repo,
+                            &entry.target,
+                            subpath,
+                            manifest,
+                            &by_file,
+                        )
+                        .is_some()
+                        {
+                            redirected_from_excluded += 1;
+                        }
                     } else {
                         unresolved += 1;
                     }
@@ -2007,6 +2028,7 @@ pub fn workspace_import_coverage(
     Ok(json!({
         "resolved": resolved,
         "resolved_but_excluded": resolved_but_excluded,
+        "redirected_from_excluded": redirected_from_excluded,
         "unresolved": unresolved,
         "external": external,
         "resolved_but_excluded_examples": excluded_examples,
@@ -2113,6 +2135,7 @@ fn python_uses_from_raw(
 }
 
 fn parse_multi(
+    repo: &Path,
     pkg: &str,
     language: LanguageKind,
     parsed: BTreeMap<String, ParsedFile>,
@@ -2121,7 +2144,7 @@ fn parse_multi(
 ) -> Result<SourceIntermediate> {
     let progress = crate::progress::Progress::silent();
     let stage = progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
-    let result = parse_multi_with_progress(pkg, language, parsed, raw, modules, &stage);
+    let result = parse_multi_with_progress(repo, pkg, language, parsed, raw, modules, &stage);
     if result.is_ok() {
         stage.finish();
     }
@@ -2129,6 +2152,7 @@ fn parse_multi(
 }
 
 fn parse_multi_with_progress(
+    repo: &Path,
     pkg: &str,
     language: LanguageKind,
     parsed: BTreeMap<String, ParsedFile>,
@@ -2158,7 +2182,7 @@ fn parse_multi_with_progress(
             unreachable!("parse_multi only ever stores FileRaw::Multi");
         };
         for path in imports {
-            let targets = resolve_multi(language, path, file, modules, &by_directory, &ids);
+            let targets = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
             let targets = targets.as_slice();
             if targets.is_empty() {
                 continue;
@@ -2176,7 +2200,7 @@ fn parse_multi_with_progress(
             }
         }
         for (path, name) in named_candidates {
-            let targets = resolve_multi(language, path, file, modules, &by_directory, &ids);
+            let targets = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
             let targets = targets.as_slice();
             for &target in targets {
                 if target != source_id {
@@ -2806,6 +2830,7 @@ impl ResolvedTargets<'_> {
 }
 
 fn resolve_multi<'a>(
+    repo: &Path,
     language: LanguageKind,
     import: &str,
     source_file: &str,
@@ -2856,7 +2881,17 @@ fn resolve_multi<'a>(
                     if entry.is_package {
                         let manifest = modules.packages.get(&entry.target)?;
                         let subpath = (!rest.is_empty()).then_some(rest);
-                        resolve_package_entry(&entry.target, subpath, manifest, by_file)
+                        resolve_package_entry(&entry.target, subpath, manifest, by_file).or_else(
+                            || {
+                                redirect_excluded_workspace_import(
+                                    repo,
+                                    &entry.target,
+                                    subpath,
+                                    manifest,
+                                    by_file,
+                                )
+                            },
+                        )
                     } else {
                         ts_candidate(&join_slash(&entry.target, rest), by_file)
                     }
@@ -2883,6 +2918,81 @@ fn resolve_package_entry(
     package_entry_candidates(pkg_dir, subpath, manifest)
         .into_iter()
         .find_map(|candidate| by_file.get(&candidate).copied())
+}
+
+/// Issue #101's owner decision ("count as edge targets only"): a workspace
+/// import that resolves to a real file on disk under an excluded directory
+/// (e.g. `generated/`, `MULTI_SKIP_DIR`) -- a file [`resolve_package_entry`]
+/// already rejected because it was never parsed -- becomes an edge to the
+/// *package's* nearest non-generated file instead of staying unresolved.
+/// Generated files still gain no node, footprint or district of their own;
+/// only the edge target moves.
+///
+/// Returns `None` (leave the import unresolved, as before) unless the
+/// failed candidate chain first names a real on-disk file. An import that
+/// matches no file at all -- a typo, an `exports` subpath the manifest never
+/// declares -- is a different, pre-existing kind of miss and must not gain
+/// an edge it did not earn.
+///
+/// Redirect target, in order:
+/// 1. The package's own entry, resolved by the same candidate chain as
+///    `import "<pkg>"` (subpath `None`) -- used only if that entry itself
+///    was parsed.
+/// 2. Otherwise, [`shallowest_parsed_file_in_package`]: the lexicographically
+///    first parsed `.ts`/`.tsx` file at the shallowest depth in the package
+///    directory. Every path in `by_file` already excludes `MULTI_SKIP_DIR`
+///    directories -- source collection never walks into them -- so no
+///    exclusion check is needed here.
+/// 3. If the package has no parsed file at all, `None`: the import stays
+///    unresolved rather than pointing at a file outside the package.
+fn redirect_excluded_workspace_import(
+    repo: &Path,
+    pkg_dir: &str,
+    subpath: Option<&str>,
+    manifest: &PackageManifest,
+    by_file: &BTreeMap<String, FileId>,
+) -> Option<FileId> {
+    package_entry_candidates(pkg_dir, subpath, manifest)
+        .iter()
+        .any(|candidate| repo.join(candidate).exists())
+        .then(|| {
+            resolve_package_entry(pkg_dir, None, manifest, by_file)
+                .or_else(|| shallowest_parsed_file_in_package(pkg_dir, by_file))
+        })
+        .flatten()
+}
+
+/// The lexicographically first parsed `.ts`/`.tsx` file at the shallowest
+/// depth inside `pkg_dir`, used by [`redirect_excluded_workspace_import`]
+/// when a package's declared entry point does not itself resolve to a
+/// parsed file. Deterministic by construction: `by_file` is a `BTreeMap`
+/// (sorted by path already) and the comparison below breaks every tie on
+/// the full path, so no `Hash*` iteration or directory-walk order can move
+/// the result (finding 9).
+fn shallowest_parsed_file_in_package(
+    pkg_dir: &str,
+    by_file: &BTreeMap<String, FileId>,
+) -> Option<FileId> {
+    by_file
+        .iter()
+        .filter_map(|(path, id)| {
+            let rest = package_relative_suffix(path, pkg_dir)?;
+            let is_ts = rest.ends_with(".ts") || rest.ends_with(".tsx");
+            is_ts.then_some((rest.matches('/').count(), path, *id))
+        })
+        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
+        .map(|(_, _, id)| id)
+}
+
+/// `path` relative to `pkg_dir`, or `None` if `path` is not inside it.
+/// Mirrors [`join_slash`]'s treatment of `.` as the repository root, so a
+/// root-level workspace package (an uncommon but legal shape) is handled
+/// the same way every other prefix in this file treats it.
+fn package_relative_suffix<'a>(path: &'a str, pkg_dir: &str) -> Option<&'a str> {
+    if pkg_dir.is_empty() || pkg_dir == "." {
+        return Some(path);
+    }
+    path.strip_prefix(pkg_dir)?.strip_prefix('/')
 }
 
 /// The ordered candidate paths [`resolve_package_entry`] tries, kept separate
@@ -3700,6 +3810,7 @@ mod tests {
         let directories = [("x".to_owned(), vec![0, 1])].into_iter().collect();
         assert_eq!(
             resolve_multi(
+                Path::new("."),
                 LanguageKind::Go,
                 "example/x",
                 "main.go",
@@ -3717,6 +3828,7 @@ mod tests {
         );
         assert_eq!(
             resolve_multi(
+                Path::new("."),
                 LanguageKind::Go,
                 "example/x",
                 "main.go",
@@ -3784,7 +3896,7 @@ mod tests {
     ) -> BTreeSet<(String, String)> {
         let modules = module_index(root).unwrap();
         let (parsed, raw) = parse_files(root, pkg, language).unwrap();
-        let intermediate = parse_multi(pkg, language, parsed, raw, &modules).unwrap();
+        let intermediate = parse_multi(root, pkg, language, parsed, raw, &modules).unwrap();
         intermediate
             .directed
             .keys()
@@ -3813,6 +3925,7 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         let directories = BTreeMap::new();
         resolve_multi(
+            Path::new("."),
             LanguageKind::TypeScript,
             import,
             source_file,
@@ -4097,11 +4210,13 @@ mod tests {
 
     /// Issue #101's actual dify shape: `exports` maps a subpath to a
     /// generated file that source collection never parses (`generated` is in
-    /// `MULTI_SKIP_DIR`). Correct `exports` resolution still adds zero edges
-    /// here -- the lower-bound rule cares whether the file was parsed, not
-    /// whether the manifest technically names it.
+    /// `MULTI_SKIP_DIR`), and the package has no other parsed file at all --
+    /// not even an entry point -- for the redirect rule to fall back to.
+    /// Correct `exports` resolution still adds zero edges here: the
+    /// lower-bound rule cares whether some file was parsed, not whether the
+    /// manifest technically names one.
     #[test]
-    fn exports_subpath_pointing_at_an_excluded_directory_adds_no_edge() {
+    fn exports_subpath_pointing_at_an_excluded_directory_with_no_parsed_file_stays_unresolved() {
         let dir = tempfile::TempDir::new().unwrap();
         write(
             dir.path(),
@@ -4127,6 +4242,126 @@ mod tests {
         assert_eq!(
             resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
             0
+        );
+    }
+
+    /// Issue #101's owner decision ("count as edge targets only"), dify's
+    /// exact shape: `@dify/contracts`'s `exports` maps `./api/*` to a
+    /// `generated/` file source collection never parses, but the package
+    /// also has ordinary parsed files (`console.ts`, `marketplace.ts`) and a
+    /// real entry point (`main`). The import must redirect to the package's
+    /// *entry* file, not to whichever other parsed file happens to sort
+    /// first -- `console.ts` sorts before `index.ts` lexicographically, so a
+    /// fallback-first implementation would wrongly land here instead.
+    #[test]
+    fn generated_import_redirects_to_the_package_entry_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/contracts/package.json",
+            r#"{"name":"@dify/contracts","main":"./index.ts","exports":{"./api/*":"./generated/api/*.ts"}}"#,
+        );
+        write(
+            dir.path(),
+            "packages/contracts/generated/api/openapi/types.gen.ts",
+            "export type Foo = {};\n",
+        );
+        write(
+            dir.path(),
+            "packages/contracts/index.ts",
+            "export * from './console';\n",
+        );
+        write(
+            dir.path(),
+            "packages/contracts/console.ts",
+            "export const console_ = 1;\n",
+        );
+        write(
+            dir.path(),
+            "packages/contracts/marketplace.ts",
+            "export const marketplace = 1;\n",
+        );
+        write(
+            dir.path(),
+            "cli/main.ts",
+            "import '@dify/contracts/api/openapi/types.gen';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "cli/main.ts".to_owned(),
+                "packages/contracts/index.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+    }
+
+    /// Issue #101's redirect rule, second tier: the package's own entry point
+    /// (`main`) also points at a generated, unparsed file, so the redirect
+    /// cannot land on a declared entry at all. It falls back to the
+    /// lexicographically first parsed `.ts`/`.tsx` file at the shallowest
+    /// depth in the package directory -- shallow `a_file.ts` beats both a
+    /// lexicographically earlier but deeper `nested/deep.ts` and a
+    /// lexicographically later sibling `b_file.ts`.
+    #[test]
+    fn generated_import_falls_back_to_shallowest_parsed_file_when_entry_is_also_generated() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/contracts/package.json",
+            r#"{"name":"@scope/contracts","main":"./generated/index.js","exports":{"./api/*":"./generated/api/*.ts"}}"#,
+        );
+        write(
+            dir.path(),
+            "packages/contracts/generated/index.js",
+            "module.exports = {};\n",
+        );
+        write(
+            dir.path(),
+            "packages/contracts/generated/api/foo.ts",
+            "export const foo = 1;\n",
+        );
+        write(
+            dir.path(),
+            "packages/contracts/nested/deep.ts",
+            "export const deep = 1;\n",
+        );
+        write(
+            dir.path(),
+            "packages/contracts/b_file.ts",
+            "export const b = 1;\n",
+        );
+        write(
+            dir.path(),
+            "packages/contracts/a_file.ts",
+            "export const a = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/contracts/api/foo';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/contracts/a_file.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect(),
         );
     }
 
@@ -4320,7 +4555,8 @@ mod tests {
 
         let modules = module_index(dir.path()).unwrap();
         let (parsed, raw) = parse_files(dir.path(), ".", LanguageKind::Go).unwrap();
-        let intermediate = parse_multi(".", LanguageKind::Go, parsed, raw, &modules).unwrap();
+        let intermediate =
+            parse_multi(dir.path(), ".", LanguageKind::Go, parsed, raw, &modules).unwrap();
 
         let expected = [((0, 2), 0.5), ((0, 3), 0.5), ((1, 2), 0.5), ((1, 3), 0.5)]
             .into_iter()
@@ -4538,6 +4774,7 @@ mod tests {
             .collect();
         let directories = BTreeMap::new();
         let targets = resolve_multi(
+            Path::new("."),
             LanguageKind::TypeScript,
             "./Foo",
             "a.ts",
