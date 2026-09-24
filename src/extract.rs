@@ -311,6 +311,7 @@ fn build_multi_source_inner(
 ) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
     let started = Instant::now();
     let mut symbol_collection = Duration::ZERO;
+    let mut collect_steps = crate::symbols::CollectTimings::default();
     let mut graph_time = Duration::ZERO;
     ensure!(
         repo.is_dir(),
@@ -337,9 +338,10 @@ fn build_multi_source_inner(
         .then(crate::symbols::SymbolSpool::new)
         .transpose()?;
     for (pkg, language) in &sorted_sources {
-        let (parsed, raw, collection_time) =
+        let (parsed, raw, collection_time, steps) =
             parse_files_inner(repo, pkg, *language, spool.as_mut(), progress)?;
         symbol_collection += collection_time;
+        collect_steps.add(&steps);
         let graph_started = Instant::now();
         let resolve_stage =
             progress.stage(crate::progress::StageId::Resolve, Some(parsed.len() as u64));
@@ -379,6 +381,16 @@ fn build_multi_source_inner(
         "phase symbol_collection: {:.3}s",
         symbol_collection.as_secs_f64()
     ));
+    if spool.is_some() {
+        // Disjoint steps inside `symbol_collection`; they sum to it up to
+        // timer overhead. Finding 40 reads these before and after.
+        for (label, duration) in collect_steps.rows() {
+            progress.log(format!(
+                "phase symbol_collection.{label}: {:.3}s",
+                duration.as_secs_f64()
+            ));
+        }
+    }
     progress.log(format!("phase graph: {:.3}s", graph_time.as_secs_f64()));
     progress.log(format!("phase extract_total: {:.3}s", total.as_secs_f64()));
     Ok((graph, spool))
@@ -405,7 +417,7 @@ fn parse_files(
     pkg: &str,
     language: LanguageKind,
 ) -> Result<(BTreeMap<String, ParsedFile>, BTreeMap<String, FileRaw>)> {
-    let (parsed, raw, _) = parse_files_inner(
+    let (parsed, raw, _, _) = parse_files_inner(
         repo,
         pkg,
         language,
@@ -425,6 +437,7 @@ fn parse_files_inner(
     BTreeMap<String, ParsedFile>,
     BTreeMap<String, FileRaw>,
     Duration,
+    crate::symbols::CollectTimings,
 )> {
     let files = source_files(repo, pkg, language)?;
     let parse_stage = progress.stage(crate::progress::StageId::Parse, Some(files.len() as u64));
@@ -433,6 +446,7 @@ fn parse_files_inner(
     let mut parsed = BTreeMap::new();
     let mut raw = BTreeMap::new();
     let mut symbol_collection = Duration::ZERO;
+    let mut collect_steps = crate::symbols::CollectTimings::default();
     for file in &files {
         // Set per file, not once before the loop: a `.tsx` file needs the
         // TSX grammar while a sibling `.ts` file in the same source needs
@@ -505,8 +519,9 @@ fn parse_files_inner(
             let flags = code_line_flags(root, &source, language);
             let count = flags.iter().filter(|&&flag| flag).count();
             let started = Instant::now();
-            let record = crate::symbols::collect(root, &source, language, &flags);
-            spool.insert(file, &record)?;
+            let record =
+                crate::symbols::collect_timed(root, &source, language, &flags, &mut collect_steps);
+            spool.insert_timed(file, &record, &mut collect_steps)?;
             symbol_collection += started.elapsed();
             count
         } else {
@@ -529,7 +544,7 @@ fn parse_files_inner(
         parse_stage.advance(1);
     }
     parse_stage.finish();
-    Ok((parsed, raw, symbol_collection))
+    Ok((parsed, raw, symbol_collection, collect_steps))
 }
 
 fn nonblank_lines(source: &[u8]) -> usize {

@@ -56,7 +56,9 @@ def main():
     assert primary_map == compare_map, "map document differs from main"
     current, current_sizes = read(artifact / f"{stem}.symbols.json")
     previous, previous_sizes = read(artifact / f"{stem}.compare.symbols.json")
-    before = pairs(previous)
+    # Both sides exclude override and possible-implementation rows: once
+    # main carries typed edges (#104) they are not "existing" pairs either.
+    before = pairs(previous, original_only=True)
     after = pairs(current, original_only=True)
     losses = {pair: count - after[pair] for pair, count in before.items()
               if after[pair] < count}
