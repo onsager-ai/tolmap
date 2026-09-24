@@ -16,6 +16,7 @@ import { RouteBox } from "@/components/RouteBox";
 import { FooterStats } from "@/components/FooterStats";
 import { ZoomControls } from "@/components/ZoomControls";
 import { PackageLegend } from "@/components/PackageLegend";
+import { LoadProgressIndicator } from "@/components/LoadProgressIndicator";
 import { buildPackageLayout } from "@/map/packageLayout";
 import { useEffectiveTheme } from "@/lib/theme";
 import type { MapSearch } from "@/routes/search";
@@ -384,7 +385,7 @@ export function MapView() {
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center bg-[var(--chrome)] text-sm text-[var(--dim)]">
-        loading {owner}/{repo}…
+        <LoadProgressIndicator progressKey={`map:${owner}/${repo}`} label={`${owner}/${repo}`} />
       </div>
     );
   }
