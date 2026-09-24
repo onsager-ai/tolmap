@@ -3491,6 +3491,51 @@ async function checkSymbolCardsCarryLabelOrChild(browser, base) {
   await context.close();
 }
 
+// 9(f3) (issue #82 follow-up, round 4): a card's rings are `[exterior,
+// hole, hole...]` (src/symbol_cards.rs, since #90/#95) -- one hole per
+// sibling card nested inside its footprint, meant to be even-odd-filled
+// around. MapRenderer used to paint the FULL ring set, so a hole for a
+// sibling that itself failed the label-fit gate (never got its own fill
+// painted over it) showed through as a bare outlined cross or square --
+// the shapes the owner kept flagging in the round-2/3 screenshots, for a
+// reason that had nothing to do with size or label length. paintOne now
+// draws `node.rings[0]` (the exterior) only, so a drawn card's path should
+// never carry more than the one "M" (SVG path moveto) its single ring
+// produces. Same deep-zoom dify view the other C2 checks use.
+async function checkSymbolCardsSingleSubpath(browser, base) {
+  const label = "drawn symbol cards have a single subpath (dify) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const { mapDoc, symbols } = await loadDifySymbolsFixture(context, base);
+  const target = pickBigFileTarget(symbols);
+  if (target.file == null) {
+    report(false, `${label}: setup`, "no file with symbols found in the bundled district");
+    await context.close();
+    return;
+  }
+  const path = mapDoc.F[target.file];
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  await page.mouse.move(1200 * 0.35, 800 * 0.4);
+  for (let i = 0; i < 9; i++) {
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(650); // glide()/settle
+  const info = await page.evaluate(() =>
+    [...document.querySelectorAll('svg.map-svg [data-k^="hs:"]')].map((el) => ({
+      key: el.getAttribute("data-k"),
+      subpaths: (el.getAttribute("d").match(/M/g) ?? []).length,
+    })),
+  );
+  const multi = info.filter((c) => c.subpaths !== 1);
+  report(info.length > 0, `${label}: at least one card is on screen to check`, `total=${info.length}`);
+  report(multi.length === 0, `${label}: every drawn card path has exactly one subpath`, JSON.stringify(multi.slice(0, 10)));
+  await context.close();
+}
+
 // 9(g): step-back goes symbol -> parent symbol -> file -> district -> none.
 async function checkStepBackThroughSymbolLevels(browser, base) {
   const label = "step-back walks symbol -> parent symbol -> file -> district -> none (dify)";
@@ -3700,6 +3745,7 @@ async function main() {
     await checkReferenceLineEndpoints(browser, args.base);
     await checkOutlineHoverHighlightsCard(browser, args.base);
     await checkSymbolCardsCarryLabelOrChild(browser, args.base);
+    await checkSymbolCardsSingleSubpath(browser, args.base);
     await checkStepBackThroughSymbolLevels(browser, args.base);
     await checkPhoneHubRingDeclutter(browser, args.base);
     await checkMapWithoutSymbolsStillWorks(browser, args.base);
