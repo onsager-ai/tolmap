@@ -415,10 +415,6 @@ fn parse_git_progress(line: &str) -> Option<GitProgress> {
         (StageId::CloneDeltas, tail)
     } else if let Some(tail) = line.strip_prefix("Updating files:") {
         (StageId::CloneCheckout, tail)
-    } else if let Some(tail) = line.strip_prefix("remote: Counting objects:") {
-        (StageId::CloneObjects, tail)
-    } else if let Some(tail) = line.strip_prefix("remote: Compressing objects:") {
-        (StageId::CloneObjects, tail)
     } else {
         return None;
     };

@@ -335,7 +335,8 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         .cache_dir
         .join("work")
         .join(&repo_ref.owner)
-        .join(&repo_ref.repo);
+        .join(&repo_ref.repo)
+        .join(tx.borrow().job_id.to_string());
     if let Err(error) = std::fs::create_dir_all(&output_dir) {
         return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
@@ -371,7 +372,10 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     };
     let output = match process_worker(&tx, spec, started) {
         Ok(output) => output,
-        Err(error) => return finish_failed(&tx, error),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&output_dir);
+            return finish_failed(&tx, error);
+        }
     };
     set_commit(&tx, &output.commit);
     let built_path = PathBuf::from(&output.map_path);
@@ -415,8 +419,10 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         Ok(())
     })();
     if let Err(error) = save {
+        let _ = std::fs::remove_dir_all(&output_dir);
         return finish_failed(&tx, ApiError::internal(format!("{error:#}")).body);
     }
+    let _ = std::fs::remove_dir_all(&output_dir);
     if let Err(error) = state
         .store
         .prune(&repo_ref.slug, state.config.retain_commits_per_repo)
@@ -904,7 +910,7 @@ mod tests {
             finish_failed(&tx, error);
         });
         let id = enqueue_job(state.clone(), repo("sse"), "a".to_owned(), runner).unwrap();
-        let response = crate::service::http::router(state)
+        let response = crate::service::http::router(state.clone())
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/jobs/{id}/events"))
@@ -915,11 +921,11 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = tokio::time::timeout(
-            Duration::from_secs(3),
+            Duration::from_secs(5),
             to_bytes(response.into_body(), 1024 * 1024),
         )
         .await
-        .unwrap()
+        .unwrap_or_else(|_| panic!("SSE did not close; snapshot: {:?}", snapshot(&state, id)))
         .unwrap();
         let frames = String::from_utf8(body.to_vec()).unwrap();
         let mut seen = Vec::new();

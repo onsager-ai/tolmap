@@ -103,9 +103,9 @@ pub struct ProgressValue {
     pub done: u64,
     pub total: Option<u64>,
     pub rate_per_s: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_rate_bytes_per_s: Option<f64>,
 }
 
