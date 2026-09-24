@@ -24,18 +24,36 @@ struct Canvas {
     step: f64,
 }
 
-fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
+fn ring(mask: &[bool], canvas: &Canvas, compact_tiny: bool) -> Option<Rings> {
     let mask = largest_component(mask.to_vec(), canvas.grid);
     let cells = mask.iter().filter(|&&owned| owned).count();
     // A one-cell seed and its few-cell cross are artifacts of connected
     // raster growth, not meaningful card shapes. Draw a compact octagon in
     // an owned cell; its siblings keep their original cells and cannot gain
     // any part of this card. The minimum-area reserve remains separate.
-    if cells > 0 && cells <= 9 {
+    // A container must retain its full owned region so its descendants can
+    // be drawn within it; compacting that parent would strand child cells.
+    if compact_tiny && cells > 0 && cells <= 5 {
+        let mean = mask.iter().enumerate().filter(|(_, owned)| **owned).fold(
+            [0.0, 0.0],
+            |mut sum, (cell, _)| {
+                sum[0] += (cell % canvas.grid) as f64;
+                sum[1] += (cell / canvas.grid) as f64;
+                sum
+            },
+        );
+        let mean = [mean[0] / cells as f64, mean[1] / cells as f64];
         let center = mask
             .iter()
             .enumerate()
-            .find(|(_, owned)| **owned)
+            .filter(|(_, owned)| **owned)
+            .min_by(|(a, _), (b, _)| {
+                let distance = |cell: usize| {
+                    ((cell % canvas.grid) as f64 - mean[0]).powi(2)
+                        + ((cell / canvas.grid) as f64 - mean[1]).powi(2)
+                };
+                distance(*a).total_cmp(&distance(*b)).then_with(|| a.cmp(b))
+            })
             .map(|(cell, _)| {
                 [
                     canvas.low[0] + (cell % canvas.grid) as f64 * canvas.step,
@@ -585,7 +603,7 @@ impl Cards<'_> {
             inset(mask, canvas, depth, children.len() * 2 + 1),
             canvas.grid,
         );
-        self.rings[symbol] = ring(&display, canvas);
+        self.rings[symbol] = ring(&display, canvas, children.is_empty());
         if self.rings[symbol].is_none() {
             if let Some(pixel) = display.iter().position(|&yes| yes) {
                 let center = [
@@ -626,7 +644,7 @@ impl Cards<'_> {
             header[pixel] = true;
             body[pixel] = false;
         }
-        if let Some(outline) = ring(&header, canvas) {
+        if let Some(outline) = ring(&header, canvas, true) {
             self.headers.insert(symbol, outline);
         }
         let reserve_rect = self.rings[symbol]
@@ -760,7 +778,7 @@ pub fn attach(map: &MapDocument, document: &mut SymbolsDocument) -> Result<()> {
                 let regions = allocate(&mask, &canvas, &weights);
                 let mut offset = 0;
                 if has_module {
-                    if let Some(outline) = ring(&inset(&regions[0], &canvas, 0, 1), &canvas) {
+                    if let Some(outline) = ring(&inset(&regions[0], &canvas, 0, 1), &canvas, true) {
                         cards.modules.insert(file, outline);
                     }
                     offset = 1;
@@ -914,7 +932,7 @@ mod tests {
             let mut claimed = vec![false; mask.len()];
             for region in &regions {
                 assert!(region.contains(&true));
-                let outline = ring(region, &canvas).expect("every owner has an outline");
+                let outline = ring(region, &canvas, true).expect("every owner has an outline");
                 assert!(rings_area(&outline) > 0.0);
                 let orientation = signed_area(&outline[0]).signum();
                 assert_eq!(
@@ -938,10 +956,10 @@ mod tests {
     #[test]
     fn child_card_centroid_and_area_stay_inside_parent() {
         let (canvas, mask) = square_canvas(80);
-        let parent = ring(&inset(&mask, &canvas, 0, 1), &canvas).unwrap();
+        let parent = ring(&inset(&mask, &canvas, 0, 1), &canvas, false).unwrap();
         let body = inset(&mask, &canvas, 0, 1);
         for child in allocate(&body, &canvas, &[1.0, 3.0, 2.0]) {
-            let child = ring(&inset(&child, &canvas, 1, 1), &canvas).unwrap();
+            let child = ring(&inset(&child, &canvas, 1, 1), &canvas, true).unwrap();
             let outer = &child[0];
             let center = [
                 outer.iter().map(|p| p[0]).sum::<f64>() / outer.len() as f64,
@@ -1063,7 +1081,7 @@ mod tests {
                 mask[y * canvas.grid + x] = false;
             }
         }
-        let outline = ring(&mask, &canvas).unwrap();
+        let outline = ring(&mask, &canvas, false).unwrap();
         assert_eq!(outline.len(), 2);
         assert!(point_in_rings([0.1, 0.1], &outline));
         assert!(!point_in_rings([0.5, 0.5], &outline));
@@ -1075,7 +1093,7 @@ mod tests {
         let (canvas, mask) = square_canvas(60);
         let regions = allocate(&mask, &canvas, &[1.0, 3.0, 9.0, 2.0]);
         for (owner, region) in regions.iter().enumerate() {
-            let outline = ring(region, &canvas).unwrap();
+            let outline = ring(region, &canvas, true).unwrap();
             for (pixel, &claimed) in mask.iter().enumerate() {
                 if claimed && !region[pixel] {
                     let center = [
@@ -1100,7 +1118,7 @@ mod tests {
     #[test]
     fn straight_raster_edges_need_only_corner_vertices() {
         let (canvas, mask) = square_canvas(60);
-        let outline = ring(&mask, &canvas).unwrap();
+        let outline = ring(&mask, &canvas, true).unwrap();
         assert_eq!(outline.len(), 1);
         assert!(outline[0].len() <= 12);
     }
@@ -1112,7 +1130,7 @@ mod tests {
         for cell in [7 * 16 + 7, 6 * 16 + 7, 8 * 16 + 7, 7 * 16 + 6, 7 * 16 + 8] {
             mask[cell] = true;
         }
-        let outline = ring(&mask, &canvas).unwrap();
+        let outline = ring(&mask, &canvas, true).unwrap();
         assert_eq!(outline.len(), 1);
         assert_eq!(outline[0].len(), 8);
         let corner_signs = outline[0]
