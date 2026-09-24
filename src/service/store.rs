@@ -189,6 +189,20 @@ impl Store {
         self.latest(slug)
     }
 
+    /// Sent to the child in newest-first order so it can choose the same
+    /// branch after clone without giving the child database access.
+    pub fn warm_start_candidates(&self, slug: &str) -> Result<Vec<MapRow>> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        let mut statement = conn.prepare(
+            "SELECT slug, owner, repo, commit_sha, branch, lang, files, districts, modularity, map_path, indexed_at
+             FROM maps WHERE slug = ?1 ORDER BY indexed_at DESC"
+        )?;
+        let rows = statement
+            .query_map(params![slug], row_to_map)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// One row per slug (its most recently indexed commit) -- `GET /api/maps`.
     pub fn list_latest(&self) -> Result<Vec<MapRow>> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");

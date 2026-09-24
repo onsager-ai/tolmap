@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use tolmap::schema::{DistrictSymbols, MapDocument, SymbolsDocument};
+use tolmap::worker::{WorkerEvent, WorkerSpec};
 use ts_rs::{Config, TS};
 
 #[derive(Debug, Parser)]
@@ -44,6 +45,8 @@ fn export_to(directory: &Path) -> Result<()> {
     MapDocument::export_all(&Config::default().with_out_dir(directory))?;
     SymbolsDocument::export_all(&Config::default().with_out_dir(directory))?;
     DistrictSymbols::export_all(&Config::default().with_out_dir(directory))?;
+    WorkerSpec::export_all(&Config::default().with_out_dir(directory))?;
+    WorkerEvent::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 
@@ -65,6 +68,15 @@ fn main() -> Result<()> {
         let expected = typescript_files(&temporary)?;
         let actual = typescript_files(&args.output)?;
         if expected != actual {
+            for (path, bytes) in &expected {
+                if actual.get(path) != Some(bytes) {
+                    eprintln!(
+                        "expected {}:\n{}",
+                        path.display(),
+                        String::from_utf8_lossy(bytes)
+                    );
+                }
+            }
             bail!("{} is stale; regenerate it", args.output.display());
         }
         Ok(())
@@ -89,13 +101,18 @@ mod tests {
             expected.keys().collect::<Vec<_>>(),
             committed.keys().collect::<Vec<_>>()
         );
-        for (path, expected_bytes) in expected {
-            assert_eq!(
-                String::from_utf8(expected_bytes).unwrap(),
-                String::from_utf8(committed[&path].clone()).unwrap(),
-                "binding {} differs from the Rust schema",
-                path.display()
-            );
-        }
+        let mismatches = expected
+            .into_iter()
+            .filter_map(|(path, expected_bytes)| {
+                (expected_bytes != committed[&path]).then(|| {
+                    format!(
+                        "binding {} differs; expected:\n{}",
+                        path.display(),
+                        String::from_utf8_lossy(&expected_bytes)
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     }
 }

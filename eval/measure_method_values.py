@@ -66,7 +66,13 @@ def main() -> None:
         after = django_edges(primary_map, current)
         before = django_edges(compare_map, previous)
         assert all(count > 0 for count in after.values()), after
-        assert all(count == 0 for count in before.values()), before
+        # The original measurement compared the fix to a pre-#99 binary.
+        # Once #99 is on main, a paired progress build must retain its edges.
+        if all(count == 0 for count in before.values()):
+            result["baseline"] = "before_method_values"
+        else:
+            assert after == before, {"after": after, "before": before}
+            result["baseline"] = "method_values_present"
         result["django_load_middleware"] = {"after": after, "before": before}
     output = args.artifact / "method_value_measure.json"
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

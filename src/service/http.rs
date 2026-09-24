@@ -192,7 +192,7 @@ async fn get_job(
 async fn get_job_events(
     State(state): State<Arc<AppState>>,
     AxPath(job_id): AxPath<Uuid>,
-) -> Result<Sse<ReceiverStream<Result<Event, Infallible>>>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     let mut rx = state
         .jobs
         .subscribe(job_id)
@@ -206,7 +206,15 @@ async fn get_job_events(
     // failed"). `WatchStream` alone has no such stopping rule.
     let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(8);
     tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut first = true;
         loop {
+            tick.tick().await;
+            if !first && !rx.has_changed().unwrap_or(false) {
+                continue;
+            }
+            first = false;
             let snapshot = rx.borrow_and_update().clone();
             let terminal = matches!(snapshot.status, JobStatus::Done | JobStatus::Failed);
             let event = match Event::default().json_data(&snapshot) {
@@ -219,13 +227,14 @@ async fn get_job_events(
             if terminal {
                 return;
             }
-            if rx.changed().await.is_err() {
-                return; // sender (the job) dropped without a terminal frame -- should not happen
-            }
         }
     });
 
-    Ok(Sse::new(ReceiverStream::new(out_rx)))
+    Ok(Sse::new(ReceiverStream::new(out_rx)).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text(""),
+    ))
 }
 
 // ---- GET /api/maps --------------------------------------------------------

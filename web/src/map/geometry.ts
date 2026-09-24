@@ -192,17 +192,54 @@ export function fullFitScale(doc: MapDocument, geo: Geo, vw: number, vh: number)
 const hx = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 const mix = (a: number[], b: number[], t: number) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
 
-/** Churn/complexity ramp: cool → warm, three fixed stops. Same palette as the
- * reference so screenshots and colour-blind-safe review stay comparable. */
+let cssCache: CSSStyleDeclaration | null = null;
+// "the fill is the hue mixed toward the surface colour ... about 40% for
+// now" (issue #82 A2) -- the neighbourhood 3-shade scheme (the prototype's
+// lobe tints at .30/.40/.50) is the district layer's own texture, not a
+// second ratio for other layers to pick from.
+//
+// Owner feedback (issue #82, "layer brightness"): this ratio used to be
+// DISTRICT_HUE_MIX, and only districtColor()/neighbourhoodShadeColor()
+// (the district layer) ever applied it -- the package layer's own
+// `--p0..--p9` swatches (map/packageLayout.ts's packageColor()) and this
+// file's own churn/complexity `ramp()` below were drawn at FULL strength, so
+// layer p (and, in dark mode specifically, `--p1: #ffc247`) read
+// measurably brighter against the same `--canvas` than layer d ever did.
+// Renamed and reused by every layer's own top colour via mixTowardCanvas()
+// below, so every layer sits at the brightness layer d always has, in both
+// themes -- not just the district layer's.
+export const LAYER_SURFACE_MIX = 0.4;
+
+/** Mixes an already-resolved colour toward `--canvas` at `ratio` (default
+ * LAYER_SURFACE_MIX) -- the exact blend districtColor() gives district
+ * hues, factored out so every OTHER layer's colours (package swatches,
+ * churn/complexity ramps) get the identical treatment rather than a second,
+ * possibly-drifting copy of the same three lines. `color` is either an
+ * already-resolved "#rrggbb" hex string or an [r,g,b] triple (ramp() below
+ * already has one from its own A/B/C interpolation and shouldn't have to
+ * round-trip it through hex first). */
+export function mixTowardCanvas(color: string | number[], ratio: number = LAYER_SURFACE_MIX): string {
+  if (!cssCache) cssCache = getComputedStyle(document.documentElement);
+  const surface = hx(cssCache.getPropertyValue("--canvas").trim());
+  const rgb = Array.isArray(color) ? color : hx(color);
+  return `rgb(${mix(surface, rgb, ratio).join(",")})`;
+}
+
+/** Churn/complexity ramp: cool → warm, three fixed stops, mixed toward the
+ * canvas the same as every other layer (see LAYER_SURFACE_MIX's own doc
+ * comment) -- affine mixing toward one fixed target preserves both the
+ * ramp's ordering and the gap between its stops, so "cool → warm" still
+ * reads correctly, just at the same brightness the district layer already
+ * has. Same source palette as the reference so screenshots and
+ * colour-blind-safe review stay comparable. */
 export function ramp(t: number): string {
   const A = hx("#3E6E88");
   const B = hx("#B8B06A");
   const C = hx("#C0472F");
   const r = t < 0.5 ? mix(A, B, t * 2) : mix(B, C, (t - 0.5) * 2);
-  return `rgb(${r.join(",")})`;
+  return mixTowardCanvas(r);
 }
 
-let cssCache: CSSStyleDeclaration | null = null;
 // A2 (issue #82): district colour used to be a pure function of `district id
 // % 12` against a 12-colour wheel with no idea which districts actually
 // touch on the map. It is now a greedy colouring of the district ADJACENCY
@@ -216,11 +253,6 @@ let cssCache: CSSStyleDeclaration | null = null;
 // the adjacency scan per call.
 let hueCache: { doc: MapDocument; mixed: Map<number, string>; assigned: Map<number, number> } | null = null;
 const HUE_VARS = ["--H0", "--H1", "--H2", "--H3", "--H4", "--H5"];
-// "the fill is the hue mixed toward the surface colour ... about 40% for
-// now" (issue #82 A2) -- the neighbourhood 3-shade scheme (the prototype's
-// lobe tints at .30/.40/.50) arrives later; one flat ratio is this PR's
-// whole scope here.
-const DISTRICT_HUE_MIX = 0.4;
 
 function districtHueCache(doc: MapDocument): { mixed: Map<number, string>; assigned: Map<number, number> } {
   if (hueCache?.doc === doc) return hueCache;
@@ -230,7 +262,7 @@ function districtHueCache(doc: MapDocument): { mixed: Map<number, string>; assig
   const assigned = assignDistrictHues(doc);
   const mixed = new Map<number, string>();
   for (const [d, h] of assigned) {
-    const rgb = mix(surface, hues[h] ?? hues[0], DISTRICT_HUE_MIX);
+    const rgb = mix(surface, hues[h] ?? hues[0], LAYER_SURFACE_MIX);
     mixed.set(d, `rgb(${rgb.join(",")})`);
   }
   hueCache = { doc, mixed, assigned };
@@ -246,7 +278,7 @@ function districtHueCache(doc: MapDocument): { mixed: Map<number, string>; assig
 
 /** A district's fill/stroke colour: the hue map/colour.ts's greedy
  * colouring assigned it, mixed toward the surface colour (~40% hue -- see
- * DISTRICT_HUE_MIX). Falls back to hue 0's mix for a district id the
+ * LAYER_SURFACE_MIX). Falls back to hue 0's mix for a district id the
  * current document doesn't actually have (shouldn't happen; defensive only,
  * matching the old function's total-for-any-integer contract). */
 export function districtColor(doc: MapDocument, d: number): string {
@@ -256,7 +288,7 @@ export function districtColor(doc: MapDocument, d: number): string {
 
 // B4 (nested footprints, issue #82, owner decision D3): the three
 // "alternating shades" a neighbourhood's footprints are filled with -- the
-// exact ratios DISTRICT_HUE_MIX's own comment already named as the plan
+// exact ratios LAYER_SURFACE_MIX's own comment already named as the plan
 // ("the prototype's lobe tints at .30/.40/.50"). Deliberately close together
 // (a 20-point spread) so the three shades read as one district's texture,
 // never as three different districts -- distinguishing ADJACENT
@@ -267,7 +299,7 @@ const NEIGHBOURHOOD_SHADE_MIX = [0.3, 0.4, 0.5];
 /** A file's footprint fill: its district's hue, mixed at the strength its
  * neighbourhood's shade index picked (map/neighbourhoods.ts). `shade` is
  * `null` for a document with no neighbourhood data at all (pre-#85 maps),
- * which falls back to DISTRICT_HUE_MIX's plain district colour -- identical
+ * which falls back to LAYER_SURFACE_MIX's plain district colour -- identical
  * to `districtColor` for every document this can't apply to. */
 export function neighbourhoodShadeColor(doc: MapDocument, d: number, shade: number | null): string {
   if (shade == null) return districtColor(doc, d);

@@ -98,6 +98,23 @@ export function ringBounds(ring: WorldRing): [number, number, number, number] {
   return [x0, y0, x1, y1];
 }
 
+/** Bounding box across every ring of a multi-ring contour set (a module-
+ * level-code region can be more than one disjoint area) -- same shape as
+ * ringBounds, one level up, for the CARD_MIN_PX gate (issue #82 follow-up)
+ * to size a module region exactly the way it sizes a symbol's own exterior
+ * ring. */
+export function contoursBounds(contours: WorldContours): [number, number, number, number] {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const ring of contours) {
+    const [rx0, ry0, rx1, ry1] = ringBounds(ring);
+    if (rx0 < x0) x0 = rx0;
+    if (ry0 < y0) y0 = ry0;
+    if (rx1 > x1) x1 = rx1;
+    if (ry1 > y1) y1 = ry1;
+  }
+  return [x0, y0, x1, y1];
+}
+
 export function ringCentroid(ring: WorldRing): [number, number] {
   let sx = 0, sy = 0;
   for (const [x, y] of ring) {
@@ -273,6 +290,26 @@ export function isBoldKind(kind: number): boolean {
 
 export function isDashedKind(kind: number): boolean {
   return kind === KIND_NESTED_FUNCTION;
+}
+
+/** Whether `text` could fit inside a box of the given on-screen `areaPx2`
+ * (width * height) -- the SAME sqrt(area) test MapRenderer's own label pass
+ * already applied to decide whether to draw a label once its card was
+ * already up (font size grows with sqrt(area), capped at 11/11.5,
+ * `tw = text.length * fontSize * 0.62`, fits if `sqrt(area) >= tw - 6`).
+ * Issue #82 follow-up (round 2): pulled out into its own function because a
+ * card's own eligibility to be DRAWN is now decided by this same test, not
+ * just whether its label gets drawn once it's already on screen -- keeping
+ * one implementation means the two can't drift apart. This is deliberately
+ * collision-agnostic (whether some OTHER label wins the greedy placement
+ * fight over this one is a separate, later concern, the same as it always
+ * was for the label-drawing pass itself) -- "fits" means "could this label
+ * ever fit here," not "will it definitely render." */
+export function labelFitsBox(text: string, bold: boolean, areaPx2: number): boolean {
+  const area = Math.max(areaPx2, 1);
+  const fs = bold ? 11.5 : Math.min(11, Math.max(8.5, Math.sqrt(area) / 7));
+  const tw = text.length * fs * 0.62;
+  return Math.sqrt(area) >= tw - 6;
 }
 
 /** Fills: "each depth gets lighter... roughly 0.55, 0.85 and 0.6 by depth"

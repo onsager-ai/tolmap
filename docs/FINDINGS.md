@@ -1330,7 +1330,47 @@ The [paired standard-runner Actions build](https://github.com/onsager-ai/tolmap/
 
 In django's `django/core/handlers/base.py`, `load_middleware → _get_response` and `load_middleware → _get_response_async` each change from zero to **one** occurrence. The unit fixture covers that exact conditional-expression pattern, a callback argument, `functools.partial(self.m)`, a qualified method, an imported function, and a method-named store target that must produce no reference. The [PR CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35946590199) passed Rust formatting, clippy, release build and tests, generated TypeScript bindings, offline parity and three-build map-plus-symbol determinism, along with web build/lint and deploy-environment parity. Full nine-fixture parity was skipped by its on-demand/nightly trigger.
 
-## 36. Typed references resolve inherited calls without changing the map
+
+## 36. Worker progress is observable without changing map or symbol bytes
+
+Issue [#97](https://github.com/onsager-ai/tolmap/issues/97), PR 1, moves clone, detection and indexing into a `tolmap worker` child and reports versioned stages. Progress counters are observational: they do not feed partitioning, geometry, symbols or serialization. The service keeps admission, queueing, SQLite and artifact registration. Its existing file, history, clone-size and timeout limits still apply. A worker crash reports `worker_crashed` with exit status or signal and the last stage; the next job remains admissible.
+
+The [paired standard-runner run](https://github.com/onsager-ai/tolmap/actions/runs/35947936989) used pinned `eval/corpus.toml` revisions with `main` after #99 as the comparator. Both map JSON and full symbols JSON matched byte for byte on dify and n8n; the [django validation run](https://github.com/onsager-ai/tolmap/actions/runs/35948343291) also matched both files and passed the method-value reference audit after its baseline assertion was updated to handle #99 on both sides. The branch's [CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35948332422) passed fmt, clippy, release build and tests, generated TypeScript bindings, offline parity, synthetic polyglot determinism, footprint targets, symbol-card and static district audits, web build/lint and deploy-environment parity. The full nine-fixture parity job was skipped by its on-demand/nightly policy.
+
+| Repository | Files | Paired map / symbols identity | Warm main median s | Warm progress median s | Measured change |
+|---|---:|---|---:|---:|---:|
+| django/django | 851 | yes / yes | — | — | paired 6.11 → 6.14 s |
+| langgenius/dify | 6,347 | yes / yes | 41.741 | 42.065 | +0.776% |
+| n8n-io/n8n | 11,991 | yes / yes | 58.404 | 59.245 | +1.440% |
+| n8n-io/n8n, independent repeat | 11,991 | yes / yes | 101.0445 | 101.163 | +0.117% |
+
+The warm timing script built each repo on one runner in `main → progress → progress → main` order, with the same clone, options and output hashing on all four builds. The two dify samples were 41.762 and 42.368 s for progress versus 41.646 and 41.836 s for main. The first two n8n samples were 59.341 and 59.149 s for progress versus 58.221 and 58.587 s for main. Dify met the under-1% target in that run; n8n did not. An [independent post-#99 n8n repeat](https://github.com/onsager-ai/tolmap/actions/runs/35948788520) measured progress at 101.314 and 101.012 s versus main at 101.007 and 101.082 s, giving +0.117%. The runners have different absolute speeds, so only within-run ratios are comparable. Both n8n runs preserved map and symbols bytes; the 0.117–1.440% range does not establish a stable under-1% bound.
+
+The dify worker timeline below comes from the same standard-runner run. It used the pinned clone, `all_sources: true` and a measurement-only `max_files: 20000` so both detected sources are represented; the service still sends `all_sources: false` and its configured limit. The worker emitted 172 progress events, finished successfully in 41.925 s, and reported the following `stage_finished` events in arrival order. Durations are measured in the child and include only each named stage; the gap between events plus setup explains why their sum is less than wall time. This timeline is the first input for PR 2's cost model.
+
+| Stage | Duration s | Finished at s |
+|---|---:|---:|
+| `clone` | 0.032 | 0.035 |
+| `detect` | 0.103 | 0.139 |
+| `parse` | 9.713 | 9.908 |
+| `resolve` | 0.103 | 10.011 |
+| `parse` | 17.200 | 27.239 |
+| `resolve` | 0.120 | 27.360 |
+| `history` | 0.382 | 27.803 |
+| `blend_prune` | 0.044 | 28.352 |
+| `partition` | 0.219 | 28.579 |
+| `neighbourhoods` | 0.131 | 28.893 |
+| `naming` | 0.010 | 28.903 |
+| `regions` | 1.613 | 30.516 |
+| `footprints` | 5.109 | 35.690 |
+| `write_map` | 0.021 | 35.712 |
+| `symbols` | 0.390 | 36.135 |
+| `symbol_cards` | 5.549 | 41.684 |
+| `write` | 0.182 | 41.866 |
+
+The two parse passes sum to 26.913 s; symbol cards take 5.549 s and footprints 5.109 s. All named stages sum to 40.921 s of the 41.925 s job.
+
+## 37. Typed references resolve inherited calls without changing the map
 
 Owner decision 2026-09-24 (AskUserQuestion, session 16030105, [issue #103](https://github.com/onsager-ai/tolmap/issues/103)): **“Typed edges + viewer.”** This Rust PR supplies the data; a later PR draws it. The separate symbol document now carries a four-column `[source, target, occurrences, kind]` edge, with a document and district `kinds` legend. A pair can have several kind rows. Existing seven-column symbol and three-column edge documents load with `abstract = false` and kind `unknown`. The in-repository Python MRO uses C3 order and stops at an unknown base; TypeScript follows its resolved `extends` chain. `self`, `cls`, `this` and `super` calls only gain a target when no unknown base precedes the definition. Override edges point to the nearest resolved base method.
 

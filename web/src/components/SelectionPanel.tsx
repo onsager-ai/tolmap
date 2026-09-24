@@ -21,6 +21,7 @@ import { Breadcrumb } from "@/components/Breadcrumb";
 import type { DirectoryNode, DistrictPathRow, PackageLayout } from "@/map/packageLayout";
 import { formatDirectory } from "@/map/packageLayout";
 import { Input } from "@/components/ui/input";
+import { LinkCountsLabel } from "@/components/LinkLegend";
 
 interface Props {
   doc: MapDocument;
@@ -549,9 +550,7 @@ function FileHead({ doc, i, selSym, adj, radj }: { doc: MapDocument; i: number; 
     <>
       <h3 className="truncate font-sans text-[13px] font-semibold">{sm ? sm[0] : doc.F[i].split("/").pop()}</h3>
       <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">
-        {sm
-          ? `${doc.F[i].split("/").pop()}:${sm[2]} · ${KIND[sm[1]]}`
-          : `imported by ${inDeg} file${inDeg === 1 ? "" : "s"} · imports ${outDeg}`}
+        {sm ? `${doc.F[i].split("/").pop()}:${sm[2]} · ${KIND[sm[1]]}` : <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} />}
       </p>
     </>
   );

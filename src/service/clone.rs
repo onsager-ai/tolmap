@@ -11,14 +11,17 @@
 //! dir, never inside a mapped repository -- nothing derived belongs there,
 //! per docs/ARCHITECTURE.md's "what lives where").
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::SystemTime;
+use std::process::{Command, Stdio};
+use std::time::{Instant, SystemTime};
 
 use anyhow::{bail, ensure, Context, Result};
 
+use crate::progress::{Progress, ProgressValue, StageId};
 use crate::service::config::Limits;
 use crate::service::error::ApiError;
+use crate::worker::WorkerEvent;
 
 #[derive(Clone, Debug)]
 pub enum RepoSource {
@@ -191,6 +194,15 @@ pub fn materialize(
     repo_ref: &RepoRef,
     limits: &Limits,
 ) -> Result<Materialized, ApiError> {
+    materialize_with_progress(cache_dir, repo_ref, limits, &Progress::silent())
+}
+
+pub fn materialize_with_progress(
+    cache_dir: &Path,
+    repo_ref: &RepoRef,
+    limits: &Limits,
+    progress: &Progress,
+) -> Result<Materialized, ApiError> {
     match &repo_ref.source {
         RepoSource::Local(path) => {
             let commit =
@@ -209,11 +221,13 @@ pub fn materialize(
                 .join(&repo_ref.owner)
                 .join(&repo_ref.repo);
             if dest.join(".git").is_dir() {
-                fetch_and_fast_forward(&dest).map_err(|e| ApiError::clone_failed(e.to_string()))?;
+                fetch_and_fast_forward(&dest, progress)
+                    .map_err(|e| ApiError::clone_failed(e.to_string()))?;
             } else {
                 std::fs::create_dir_all(dest.parent().unwrap())
                     .map_err(|e| ApiError::internal(e.to_string()))?;
-                clone_blobless(url, &dest).map_err(|e| ApiError::clone_failed(e.to_string()))?;
+                clone_blobless(url, &dest, progress)
+                    .map_err(|e| ApiError::clone_failed(e.to_string()))?;
             }
             touch(&dest);
             let size = directory_size(&dest).unwrap_or(0);
@@ -282,37 +296,41 @@ fn check_history_depth(repo: &Path, limits: &Limits) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn clone_blobless(url: &str, dest: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args(["clone", "--filter=blob:none", url, &dest.to_string_lossy()])
-        .output()
-        .context("run git clone")?;
-    if !output.status.success() {
-        bail!(
-            "git clone {url} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+fn clone_blobless(url: &str, dest: &Path, progress: &Progress) -> Result<()> {
+    let mut command = Command::new("git");
+    command.args([
+        "clone",
+        "--progress",
+        "--filter=blob:none",
+        url,
+        &dest.to_string_lossy(),
+    ]);
+    let (status, stderr) =
+        run_git_with_progress(&mut command, progress).context("run git clone")?;
+    if !status.success() {
+        bail!("git clone {url} failed: {}", stderr.trim());
     }
     Ok(())
 }
 
-fn fetch_and_fast_forward(dest: &Path) -> Result<()> {
+fn fetch_and_fast_forward(dest: &Path, progress: &Progress) -> Result<()> {
     let dest_str = dest.to_string_lossy();
-    let fetch = Command::new("git")
-        .args([
-            "-C",
-            &dest_str,
-            "fetch",
-            "--filter=blob:none",
-            "--prune",
-            "origin",
-        ])
-        .output()
-        .context("run git fetch")?;
+    let mut fetch = Command::new("git");
+    fetch.args([
+        "-C",
+        &dest_str,
+        "fetch",
+        "--progress",
+        "--filter=blob:none",
+        "--prune",
+        "origin",
+    ]);
+    let (fetch_status, fetch_stderr) =
+        run_git_with_progress(&mut fetch, progress).context("run git fetch")?;
     ensure!(
-        fetch.status.success(),
+        fetch_status.success(),
         "git fetch failed: {}",
-        String::from_utf8_lossy(&fetch.stderr).trim()
+        fetch_stderr.trim()
     );
     // `git clone` records the remote's default branch at
     // refs/remotes/origin/HEAD; reuse it so an update tracks the same
@@ -340,31 +358,182 @@ fn fetch_and_fast_forward(dest: &Path) -> Result<()> {
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("unexpected symbolic-ref output"))?
         .to_owned();
-    let checkout = Command::new("git")
-        .args(["-C", &dest_str, "checkout", &branch])
-        .output()
-        .context("run git checkout")?;
+    let mut checkout = Command::new("git");
+    checkout.args(["-C", &dest_str, "checkout", "--progress", &branch]);
+    let (checkout_status, checkout_stderr) =
+        run_git_with_progress(&mut checkout, progress).context("run git checkout")?;
     ensure!(
-        checkout.status.success(),
+        checkout_status.success(),
         "git checkout {branch} failed: {}",
-        String::from_utf8_lossy(&checkout.stderr).trim()
+        checkout_stderr.trim()
     );
-    let reset = Command::new("git")
-        .args([
-            "-C",
-            &dest_str,
-            "reset",
-            "--hard",
-            &format!("origin/{branch}"),
-        ])
-        .output()
-        .context("run git reset")?;
+    let mut reset = Command::new("git");
+    reset.args([
+        "-C",
+        &dest_str,
+        "reset",
+        "--hard",
+        &format!("origin/{branch}"),
+    ]);
+    let (reset_status, reset_stderr) =
+        run_git_with_progress(&mut reset, progress).context("run git reset")?;
     ensure!(
-        reset.status.success(),
+        reset_status.success(),
         "git reset --hard failed: {}",
-        String::from_utf8_lossy(&reset.stderr).trim()
+        reset_stderr.trim()
     );
     Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+struct GitProgress {
+    stage: StageId,
+    done: u64,
+    total: Option<u64>,
+    transfer_bytes: Option<u64>,
+    transfer_rate_bytes_per_s: Option<f64>,
+}
+
+fn git_quantity(text: &str) -> Option<f64> {
+    let (amount, unit) = text.trim().split_once(' ')?;
+    let scale = match unit.trim() {
+        "bytes" | "B" => 1.0,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    Some(amount.parse::<f64>().ok()? * scale)
+}
+
+/// Git writes progress with carriage returns, not one newline per update.
+/// Parse only the stable counter portions; the free-text prefix remains Git's.
+fn parse_git_progress(line: &str) -> Option<GitProgress> {
+    let (stage, tail) = if let Some(tail) = line.strip_prefix("Receiving objects:") {
+        (StageId::CloneObjects, tail)
+    } else if let Some(tail) = line.strip_prefix("Resolving deltas:") {
+        (StageId::CloneDeltas, tail)
+    } else if let Some(tail) = line.strip_prefix("Updating files:") {
+        (StageId::CloneCheckout, tail)
+    } else {
+        return None;
+    };
+    let pair = tail.split_once('(')?.1.split_once(')')?.0;
+    let (done, total) = pair.split_once('/')?;
+    let done = done.trim().parse().ok()?;
+    let total = total.trim().parse().ok()?;
+    let transfer = tail
+        .split_once(')')?
+        .1
+        .split_once(',')
+        .map(|(_, rest)| rest.trim());
+    let (transfer_bytes, transfer_rate_bytes_per_s) = transfer
+        .and_then(|value| value.split_once('|'))
+        .map_or((None, None), |(size, rate)| {
+            (
+                git_quantity(size).map(|v| v as u64),
+                git_quantity(
+                    rate.split(',')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .trim_end_matches("/s"),
+                ),
+            )
+        });
+    Some(GitProgress {
+        stage,
+        done,
+        total: Some(total),
+        transfer_bytes,
+        transfer_rate_bytes_per_s,
+    })
+}
+
+fn run_git_with_progress(
+    command: &mut Command,
+    progress: &Progress,
+) -> Result<(std::process::ExitStatus, String)> {
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let mut bytes = Vec::new();
+    let mut pending = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut active: Option<(StageId, Instant, Instant)> = None;
+    loop {
+        let count = stderr.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        for &byte in &chunk[..count] {
+            if byte != b'\r' && byte != b'\n' {
+                pending.push(byte);
+                continue;
+            }
+            if pending.is_empty() {
+                continue;
+            }
+            let line = String::from_utf8_lossy(&pending);
+            if let Some(value) = parse_git_progress(line.trim()) {
+                let changing = active
+                    .as_ref()
+                    .is_none_or(|(stage, _, _)| *stage != value.stage);
+                if changing {
+                    if let Some((stage, started, _)) = active.take() {
+                        progress.emit_event(WorkerEvent::StageFinished {
+                            v: 1,
+                            stage,
+                            duration_s: started.elapsed().as_secs_f64(),
+                            success: true,
+                        });
+                    }
+                    progress.emit_event(WorkerEvent::StageStarted {
+                        v: 1,
+                        stage: value.stage,
+                    });
+                    active = Some((value.stage, Instant::now(), Instant::now()));
+                }
+                if let Some((_, started, last)) = active.as_mut() {
+                    if last.elapsed().as_millis() >= 250
+                        || value.done == value.total.unwrap_or(u64::MAX)
+                    {
+                        progress.emit_event(WorkerEvent::Progress {
+                            v: 1,
+                            value: ProgressValue {
+                                stage: value.stage,
+                                stage_index: value.stage.index(),
+                                stage_count: StageId::ALL.len(),
+                                label: value.stage.label().to_owned(),
+                                unit: value.stage.unit().to_owned(),
+                                done: value.done,
+                                total: value.total,
+                                rate_per_s: (started.elapsed().as_secs_f64() > 0.0)
+                                    .then_some(value.done as f64 / started.elapsed().as_secs_f64()),
+                                transfer_bytes: value.transfer_bytes,
+                                transfer_rate_bytes_per_s: value.transfer_rate_bytes_per_s,
+                            },
+                        });
+                        *last = Instant::now();
+                    }
+                }
+            }
+            pending.clear();
+        }
+    }
+    let status = child.wait()?;
+    if let Some((stage, started, _)) = active {
+        progress.emit_event(WorkerEvent::StageFinished {
+            v: 1,
+            stage,
+            duration_s: started.elapsed().as_secs_f64(),
+            success: status.success(),
+        });
+    }
+    Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
@@ -478,6 +647,27 @@ fn evict_lru(repos_root: &Path, budget_bytes: u64, keep: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_captured_git_progress() {
+        let fixture = include_str!("../../tests/fixtures/git_progress_requests.txt");
+        let rows = fixture
+            .lines()
+            .filter_map(super::parse_git_progress)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].stage, crate::progress::StageId::CloneObjects);
+        assert_eq!((rows[0].done, rows[0].total), (49, Some(49)));
+        assert_eq!(rows[0].transfer_bytes, Some((16.62_f64 * 1024.0) as u64));
+        assert_eq!(
+            rows[0].transfer_rate_bytes_per_s,
+            Some(8.31_f64 * 1024.0 * 1024.0)
+        );
+        assert_eq!(rows[1].stage, crate::progress::StageId::CloneDeltas);
+        assert_eq!((rows[1].done, rows[1].total), (15, Some(15)));
+        assert_eq!(rows[2].stage, crate::progress::StageId::CloneCheckout);
+        assert_eq!((rows[2].done, rows[2].total), (65, Some(130)));
+        assert_eq!((rows[3].done, rows[3].total), (130, Some(130)));
+    }
     use super::*;
 
     #[test]

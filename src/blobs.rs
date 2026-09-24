@@ -23,9 +23,17 @@ pub fn build_geometry<P: Partitioner>(
     layout: &PipelineOutput,
     partitioner: &P,
 ) -> Result<BlobGeometry> {
+    build_geometry_with_progress(layout, partitioner, None)
+}
+
+pub fn build_geometry_with_progress<P: Partitioner>(
+    layout: &PipelineOutput,
+    partitioner: &P,
+    progress: Option<&crate::progress::StageCounter>,
+) -> Result<BlobGeometry> {
     let mut points = place(layout, partitioner)?;
     relax(&mut points, &layout.membership);
-    let blobs = contours(&points, &layout.membership);
+    let blobs = contours_with_progress(&points, &layout.membership, progress);
     let centroids = district_members(&layout.membership)
         .into_iter()
         .map(|(district, members)| (district, mean_points(&points, &members)))
@@ -375,6 +383,14 @@ fn relax(points: &mut [[f64; 2]], membership: &[usize]) {
 }
 
 fn contours(points: &[[f64; 2]], membership: &[usize]) -> BTreeMap<usize, Vec<Vec<[f64; 2]>>> {
+    contours_with_progress(points, membership, None)
+}
+
+fn contours_with_progress(
+    points: &[[f64; 2]],
+    membership: &[usize],
+    progress: Option<&crate::progress::StageCounter>,
+) -> BTreeMap<usize, Vec<Vec<[f64; 2]>>> {
     let groups = district_members(membership);
     let mut low = [f64::INFINITY; 2];
     let mut high = [f64::NEG_INFINITY; 2];
@@ -480,6 +496,9 @@ fn contours(points: &[[f64; 2]], membership: &[usize]) -> BTreeMap<usize, Vec<Ve
         }
         if !polygons.is_empty() {
             result.insert(*district, polygons);
+        }
+        if let Some(progress) = progress {
+            progress.advance(1);
         }
     }
     result

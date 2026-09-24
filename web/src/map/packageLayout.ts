@@ -1,5 +1,5 @@
 import type { MapDocument } from "@/types";
-import { D_, districtClass, districtWorldArea } from "./geometry";
+import { D_, districtClass, districtWorldArea, mixTowardCanvas } from "./geometry";
 
 export const PACKAGE_GROUP_LIMIT = 10;
 export const PACKAGE_OTHER_COLOR = "var(--dim)";
@@ -86,11 +86,27 @@ function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+let cssCache: CSSStyleDeclaration | null = null;
+
 function packageColor(index: number): string {
   // Package groups have their own categorical palette: district hues carry
   // spatial meaning and reusing them made unrelated package ranks look the
   // same. Groups are ranked deterministically by count then path.
-  return `var(--p${index % PACKAGE_GROUP_LIMIT})`;
+  //
+  // Owner feedback (issue #82, "layer brightness"): this used to be the raw
+  // `var(--pN)` custom property, applied at full strength -- unlike the
+  // district layer's own hues, which districtColor() already mixes toward
+  // `--canvas` at LAYER_SURFACE_MIX (geometry.ts). That made layer p read
+  // measurably brighter than every other layer on the same canvas (most
+  // visibly `--p1: #ffc247` in dark mode). Resolving the custom property
+  // here and mixing it through the exact same geometry.ts helper gives every
+  // layer's top colour the same brightness, in both themes -- this file
+  // still owns which path gets which INDEX (the categorical assignment,
+  // ranked by count then path), geometry.ts still owns the one "how bright
+  // does a map colour get to be" rule.
+  if (!cssCache) cssCache = getComputedStyle(document.documentElement);
+  const token = cssCache.getPropertyValue(`--p${index % PACKAGE_GROUP_LIMIT}`).trim();
+  return mixTowardCanvas(token);
 }
 
 function packagePath(parts: readonly string[], depth: number): string {

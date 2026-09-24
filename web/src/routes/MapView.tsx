@@ -406,20 +406,16 @@ export function MapView() {
         {!isFullscreen && (
           <Sidebar
             doc={doc}
+            packageLayout={packageLayout}
             open={sideOpen}
             onToggleOpen={() => setSideOpen((v) => !v)}
-            onPickLandmark={(i) => {
+            onPickKeyFile={(i) => {
+              // Issue #82 "district index": a district row's key-file line
+              // (most imported / entry / links a bridge) selects the file
+              // with no view move -- the same pan-free contract the old
+              // onPickLandmark/onPickHub handlers had (selectFile() itself
+              // is pan-only for every caller, per A1).
               setSideOpen(false);
-              selectFile(i);
-            }}
-            onPickHub={(i) => {
-              setSideOpen(false);
-              // A4 (hubs, issue #82): "tapping a row selects the file (no view
-              // change)". Post-A1, selectFile() itself is now pan-only for
-              // EVERY caller (search, landmarks, hubs alike) -- the old
-              // per-caller `fly`/no-fly distinction this comment used to
-              // describe was A1's own unification target, so this is just
-              // the same call onPickLandmark makes above.
               selectFile(i);
             }}
             onSelectDistrict={(d) => {
