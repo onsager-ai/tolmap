@@ -6,28 +6,10 @@
 // same-origin `/api`, with the dev server proxying that to the service on
 // 127.0.0.1 (vite.config.ts). Nothing here ever points at a public origin —
 // there is no third option.
-import type { DistrictSymbols, MapDocument } from "@/types";
+import type { DistrictSymbols, JobSnapshot, MapDocument } from "@/types";
+import { fetchJsonTracked } from "./streaming";
 
 export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "/api";
-
-export type JobStage = "queued" | "cloning" | "detecting" | "indexing" | "done" | "failed";
-
-export interface JobStatus {
-  job_id: string;
-  slug: string;
-  commit: string | null;
-  status: JobStage;
-  stage: string;
-  queue_position: number | null;
-  started_at: string;
-  finished_at: string | null;
-  /** Human-readable failure text. Flat, not an object — it is rendered
-   * directly, and an object here crashes React. */
-  error: string | null;
-  /** Machine-readable failure code (`repo_too_large`, `detection_failed`, …).
-   * Branch on this rather than on `error`'s wording. */
-  error_code: string | null;
-}
 
 export interface IndexAccepted {
   job_id: string;
@@ -111,6 +93,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Same non-2xx handling as `request`, but for the two big documents
+ * (map, district symbols) that are worth streaming + parsing off the main
+ * thread instead of one `res.json()` (src/api/streaming.ts). */
+async function requestTracked<T>(path: string, progressKey: string): Promise<T> {
+  return fetchJsonTracked<T>(`${API_BASE}${path}`, progressKey, async (res) => {
+    if (!res.ok) {
+      const body = await parseErrorBody(res);
+      throw new ApiRequestError(res.status, body, `${path}: ${res.status} ${res.statusText}`);
+    }
+  });
+}
+
 /** POST /api/index. `input` is exactly the contract's union — a bare
  * `owner/name`, an https URL, or (unused by this client; service-local
  * only) a filesystem path. */
@@ -122,8 +116,17 @@ export function postIndexJob(input: { repo: string }): Promise<IndexResponse> {
   });
 }
 
-export function getJob(jobId: string): Promise<JobStatus> {
-  return request<JobStatus>(`/jobs/${encodeURIComponent(jobId)}`);
+export function getJob(jobId: string): Promise<JobSnapshot> {
+  return request<JobSnapshot>(`/jobs/${encodeURIComponent(jobId)}`);
+}
+
+/** POST /api/jobs/{id}/cancel (docs/API.md). Returns the job's current
+ * (now-terminal, or already-terminal if this races the job finishing on its
+ * own) snapshot -- the caller doesn't need to do anything with the return
+ * value beyond that; useJobProgress's SSE/poll loop delivers the same
+ * terminal snapshot right behind it either way. */
+export function cancelJob(jobId: string): Promise<JobSnapshot> {
+  return request<JobSnapshot>(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
 }
 
 export function getServiceCatalogue(): Promise<ServiceCatalogueEntry[]> {
@@ -132,7 +135,10 @@ export function getServiceCatalogue(): Promise<ServiceCatalogueEntry[]> {
 
 export function getServiceMapDocument(owner: string, repo: string, commit?: string): Promise<MapDocument> {
   const qs = commit ? `?commit=${encodeURIComponent(commit)}` : "";
-  return request<MapDocument>(`/maps/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${qs}`);
+  return requestTracked<MapDocument>(
+    `/maps/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${qs}`,
+    `map:${owner}/${repo}`,
+  );
 }
 
 /** GET /api/maps/{owner}/{repo}/symbols?district=<id> (docs/API.md) -- one
@@ -148,7 +154,10 @@ export function getServiceDistrictSymbols(
 ): Promise<DistrictSymbols> {
   const qs = new URLSearchParams({ district: String(district) });
   if (commit) qs.set("commit", commit);
-  return request<DistrictSymbols>(`/maps/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/symbols?${qs}`);
+  return requestTracked<DistrictSymbols>(
+    `/maps/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/symbols?${qs}`,
+    `symbols:${owner}/${repo}:${district}`,
+  );
 }
 
 /** Reachability probe used to pick a data source (see src/data/queries.ts).
