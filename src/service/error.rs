@@ -53,6 +53,17 @@ impl ApiError {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "busy", message)
     }
 
+    /// The service is draining for a graceful shutdown (`JobRegistry::
+    /// shutdown` already flipped the admission flag) -- see
+    /// `service::serve`'s signal handler and docs/API.md. Same status as
+    /// `busy` (a caller should retry elsewhere or later either way) but a
+    /// distinct code: "come back later, this specific queue is full" and
+    /// "this process is going away" are different situations for a caller
+    /// to reason about, even though both are `503`s today.
+    pub fn server_stopping(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, "server_stopping", message)
+    }
+
     pub fn detection_failed(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNPROCESSABLE_ENTITY,
