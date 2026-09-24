@@ -166,7 +166,7 @@ be answered in the same request rather than always queuing a job.
   "error": "<human text>" | null,          // rendered directly by clients
   "error_code": "<machine code>" | null,   // branch on this, not on the text
   "progress": {
-    "stage": "<stable stage id>", "stage_index": 1, "stage_count": 18,
+    "stage": "parse", "stage_index": 6, "stage_count": 18,
     "label": "Parsing files", "unit": "files", "done": 123,
     "total": 500 | null, "rate_per_s": 23.5 | null,
     "transfer_bytes": 1048576,             // optional, git transfer only
