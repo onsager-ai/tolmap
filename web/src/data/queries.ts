@@ -156,12 +156,22 @@ export function useMapDocument(owner: string, repo: string) {
  * static `.symbols/` collection) 404s once per requested district and
  * degrades silently rather than retrying a request that will 404 the same
  * way three more times (same reasoning as useMapDocument's own retry:false). */
+export interface DistrictSymbolsMap {
+  map: Map<number, DistrictSymbols>;
+  /** Districts whose symbols fetch is currently in flight (query enabled,
+   * no data or error settled yet). Issue #82 C2 follow-up: SelectionPanel's
+   * file card uses this to show a single "loading symbols…" line instead of
+   * flashing its old flat list while the hierarchical outline is still on
+   * the way. */
+  loading: Set<number>;
+}
+
 export function useDistrictSymbolsMap(
   owner: string,
   repo: string,
   source: "static" | "service" | undefined,
   districts: readonly number[],
-): Map<number, DistrictSymbols> {
+): DistrictSymbolsMap {
   const queries = useQueries({
     queries: districts.map((d) => ({
       queryKey: ["symbols", source, owner, repo, d],
@@ -172,18 +182,24 @@ export function useDistrictSymbolsMap(
       retry: false,
     })),
   });
-  // Recomputed only when what's actually LOADED changes (not on every
-  // unrelated re-render, which would hand MapCanvas a new Map identity and
-  // trigger a full repaint for nothing -- see MapCanvas.tsx's state-render
-  // effect, keyed on prop identity).
-  const signature = districts.map((d, i) => `${d}:${queries[i]?.dataUpdatedAt ?? 0}`).join(",");
+  // Recomputed only when what's actually LOADED or its LOADING state
+  // changes (not on every unrelated re-render, which would hand MapCanvas a
+  // new Map identity and trigger a full repaint for nothing -- see
+  // MapCanvas.tsx's state-render effect, keyed on prop identity). `isLoading`
+  // is folded into the signature too, so a fetch settling into a 404 (no
+  // `dataUpdatedAt` change) still produces a fresh loading Set.
+  const signature = districts
+    .map((d, i) => `${d}:${queries[i]?.dataUpdatedAt ?? 0}:${queries[i]?.isLoading ? 1 : 0}`)
+    .join(",");
   return useMemo(() => {
     const map = new Map<number, DistrictSymbols>();
+    const loading = new Set<number>();
     districts.forEach((d, i) => {
       const data = queries[i]?.data;
       if (data) map.set(d, data);
+      else if (queries[i]?.isLoading) loading.add(d);
     });
-    return map;
+    return { map, loading };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signature]);
 }

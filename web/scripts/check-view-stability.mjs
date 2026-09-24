@@ -1353,18 +1353,26 @@ async function checkViewerCards(browser, base, profile) {
       `${label}: tapping a file produces its card (one or two taps, two-step tap #82 C2)`,
       `expected=${fileTarget.file} url=${page.url()}`,
     );
-    const symbol = page.locator("button[data-symbol-row]").first();
-    if ((await symbol.count()) > 0) {
-      const key = await symbol.getAttribute("data-symbol-row");
-      if (profile.hasTouch) await symbol.tap();
-      else await symbol.click();
+    // CHANGED (issue #82 C2 follow-up): django's bundled symbols fixture
+    // covers every district (check-fixtures/README.md), so selecting a file
+    // here always has hierarchical data on the way -- the outline tree
+    // replaces the old flat SymbolDirectory/`data-symbol-row` list entirely
+    // once it loads, rather than the two coexisting. Wait for the district's
+    // symbols fetch (there may be a beat of "loading symbols…" first) and
+    // tap the outline row instead.
+    await page.waitForSelector("[data-outline-row]", { timeout: 15_000 }).catch(() => null);
+    const outlineRow = page.locator("button[data-outline-row]").first();
+    if ((await outlineRow.count()) > 0) {
+      const global = await outlineRow.getAttribute("data-outline-row");
+      if (profile.hasTouch) await outlineRow.tap();
+      else await outlineRow.click();
       await page.waitForTimeout(400);
       report(
-        !!key && new URL(page.url()).searchParams.get("sym") === key.split(":")[1],
-        `${label}: tapping a symbol produces its card`,
+        !!global && new URL(page.url()).searchParams.get("hsym") === global,
+        `${label}: tapping an outline row produces its card`,
       );
     } else {
-      report(false, `${label}: tapping a symbol produces its card`, "selected file has no visible symbol row");
+      report(false, `${label}: tapping an outline row produces its card`, "selected file has no visible outline row");
     }
   } else {
     report(false, `${label}: tapping a file produces its card`, "no on-screen file with symbols found");

@@ -5,11 +5,13 @@ import { neighbourhoodOf } from "@/map/neighbourhoods";
 import { KCOL, KIND, LINK_PREVIEW_MAX } from "@/map/constants";
 import { computeBlast, type AdjMap } from "@/map/graph";
 import {
+  countOutlineSymbols,
   decodeDistrictSymbols,
   externalReferences,
   fileOutline,
   isBoldKind,
   symbolLabel,
+  type ExternalRefGroup,
   type OutlineRow,
 } from "@/map/symbolCards";
 import { useIsNarrow } from "@/hooks/useIsNarrow";
@@ -33,6 +35,13 @@ interface Props {
    * showed before this feature. */
   selHSym?: number | null;
   symbolsDoc?: DistrictSymbols;
+  /** Issue #82 C2 follow-up: true while `symbolsDoc` for the selected
+   * file's district is being fetched (or is about to be) -- lets the file
+   * card show "loading symbols…" instead of flashing the old flat list
+   * before the outline tree is ready. `undefined`/`false` otherwise,
+   * including when nothing is selected or the map has no symbols sibling
+   * at all. */
+  symbolsLoading?: boolean;
   adj: AdjMap;
   radj: AdjMap;
   packageLayout: PackageLayout;
@@ -75,6 +84,7 @@ export function SelectionPanel({
   selD,
   selHSym,
   symbolsDoc,
+  symbolsLoading,
   adj,
   radj,
   packageLayout,
@@ -179,6 +189,7 @@ export function SelectionPanel({
               selSym={selSym}
               selHSym={selHSym}
               symbolsDoc={symbolsDoc}
+              symbolsLoading={symbolsLoading}
               adj={adj}
               radj={radj}
               onSelectSymbol={onSelectSymbol}
@@ -552,6 +563,7 @@ function FileBody({
   selSym,
   selHSym,
   symbolsDoc,
+  symbolsLoading,
   adj,
   radj,
   onSelectSymbol,
@@ -565,6 +577,7 @@ function FileBody({
   selSym: number | null;
   selHSym?: number | null;
   symbolsDoc?: DistrictSymbols;
+  symbolsLoading?: boolean;
   adj: AdjMap;
   radj: AdjMap;
   onSelectSymbol: Props["onSelectSymbol"];
@@ -584,6 +597,22 @@ function FileBody({
   // states a fact about exactly what's currently drawn, never something
   // the map isn't showing.
   const linkTotal = blast ? 0 : (adj.get(i)?.length ?? 0) + (radj.get(i)?.length ?? 0);
+  // Issue #82 C2 follow-up: the file card used to show BOTH the old flat,
+  // span-sorted SymbolDirectory (built from the map's truncated `S`) and the
+  // new hierarchical outline tree at once. Once a district's symbols have
+  // loaded, the outline is strictly the richer view of the SAME
+  // information (source order, real nesting, real reference counts), so it
+  // replaces the flat list entirely rather than sitting below it. The flat
+  // list stays only as the fallback: a map with no symbols sibling at all,
+  // or a fetch that's genuinely settled with nothing for this district.
+  const decoded = useMemo(() => (symbolsDoc ? decodeDistrictSymbols(symbolsDoc) : null), [symbolsDoc]);
+  const outline = useMemo(() => (decoded ? fileOutline(decoded, i) : []), [decoded, i]);
+  const external = useMemo(() => (decoded ? externalReferences(decoded, doc, i) : []), [decoded, doc, i]);
+  // The "symbols" count below switches to this hierarchical total the
+  // moment `decoded` exists -- "where a count is still shown, it should be
+  // the hierarchical count." `sy.length` only backs it while there's no
+  // hierarchical data to ask instead (including while it's still loading).
+  const symbolCount = decoded ? countOutlineSymbols(outline) : sy.length;
   return (
     <div>
       {districtClass(doc.districts[String(D_(doc, i))]) === "unconnected" &&
@@ -629,9 +658,9 @@ function FileBody({
         <Row label="file lines">
           <b>{LOC(doc, i)} lines · {CODE_LINES(doc, i)} code</b>
         </Row>
-        {sy.length > 0 && (
+        {symbolCount > 0 && (
           <Row label="symbols">
-            <b>{sy.length}</b>
+            <b>{symbolCount}</b>
           </Row>
         )}
       </div>
@@ -641,15 +670,21 @@ function FileBody({
           links: showing <b className="text-[var(--on)]">{LINK_PREVIEW_MAX}</b> of {linkTotal}
         </p>
       )}
-      <SymbolDirectory doc={doc} i={i} sy={sy} cur={selSym} onSelectSymbol={onSelectSymbol} />
-      <HierOutline
-        doc={doc}
-        i={i}
-        symbolsDoc={symbolsDoc}
-        selHSym={selHSym ?? null}
-        onSelectHierSymbol={onSelectHierSymbol}
-        onHoverHierSymbol={onHoverHierSymbol}
-      />
+      {decoded ? (
+        <HierOutline
+          outline={outline}
+          external={external}
+          selHSym={selHSym ?? null}
+          onSelectHierSymbol={onSelectHierSymbol}
+          onHoverHierSymbol={onHoverHierSymbol}
+        />
+      ) : symbolsLoading ? (
+        <p className="my-2 text-[10px] text-[var(--dim)]" data-symbols-loading>
+          loading symbols…
+        </p>
+      ) : (
+        <SymbolDirectory doc={doc} i={i} sy={sy} cur={selSym} onSelectSymbol={onSelectSymbol} />
+      )}
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
         <Row label="commits">
           <b>{CH(doc, i)}</b>
@@ -769,28 +804,25 @@ function SymbolDirectory({
 // nested -- classes contain their methods, unlike SymbolDirectory above's
 // flat bar-chart list of the map's older, non-nested `S`), external
 // references grouped by top-level class/function, and finding 30's
-// under-count note. Renders nothing at all for a document with no symbols
-// sibling, or no symbol data for THIS file specifically -- degrades
-// silently, same as the map (spec item 1).
+// under-count note. FileBody only renders this once `symbolsDoc` has
+// decoded -- once it has, this replaces SymbolDirectory entirely (issue #82
+// C2 follow-up) rather than sitting alongside it. Still renders nothing for
+// a file with no top-level symbols AND no external references of its own
+// (a config file, say), the same silent degrade the map itself uses.
 function HierOutline({
-  doc,
-  i,
-  symbolsDoc,
+  outline,
+  external,
   selHSym,
   onSelectHierSymbol,
   onHoverHierSymbol,
 }: {
-  doc: MapDocument;
-  i: number;
-  symbolsDoc?: DistrictSymbols;
+  outline: OutlineRow[];
+  external: ExternalRefGroup[];
   selHSym: number | null;
   onSelectHierSymbol: Props["onSelectHierSymbol"];
   onHoverHierSymbol: Props["onHoverHierSymbol"];
 }) {
-  const decoded = useMemo(() => (symbolsDoc ? decodeDistrictSymbols(symbolsDoc) : null), [symbolsDoc]);
-  const outline = useMemo(() => (decoded ? fileOutline(decoded, i) : []), [decoded, i]);
-  const external = useMemo(() => (decoded ? externalReferences(decoded, doc, i) : []), [decoded, doc, i]);
-  if (!decoded || (outline.length === 0 && external.length === 0)) return null;
+  if (outline.length === 0 && external.length === 0) return null;
 
   const row = (r: OutlineRow, depth: number) => (
     <div key={r.global}>

@@ -69,7 +69,9 @@ export function MapView() {
       if (flushTimerRef.current != null) clearTimeout(flushTimerRef.current);
     };
   }, []);
-  const districtSymbolsMap = useDistrictSymbolsMap(owner, repo, source, [...wantedDistricts]);
+  const { map: districtSymbolsMap, loading: symbolsLoadingDistricts } = useDistrictSymbolsMap(owner, repo, source, [
+    ...wantedDistricts,
+  ]);
 
   const canvasRef = useRef<MapCanvasHandle>(null);
   const mapAreaRef = useRef<HTMLDivElement>(null);
@@ -191,6 +193,19 @@ export function MapView() {
   const selFileDistrict = doc && sel != null ? D_(doc, sel) : null;
   const selSymbolsDoc = selFileDistrict != null ? districtSymbolsMap.get(selFileDistrict) : undefined;
   const selDecoded = useMemo(() => (selSymbolsDoc ? decodeDistrictSymbols(selSymbolsDoc) : null), [selSymbolsDoc]);
+
+  // Issue #82 C2 follow-up: true while this file's district symbols are
+  // still fetching, OR haven't been added to `wantedDistricts` yet -- the
+  // effect right below adds it synchronously, but the render in between has
+  // no query for it at all yet, which would otherwise read as "definitely no
+  // symbols" for one frame. SelectionPanel shows a single "loading
+  // symbols…" line for either case rather than flashing its old flat list,
+  // falling back to that list only once the district is confirmed to have
+  // none (query settled, still no data).
+  const selSymbolsLoading =
+    selFileDistrict != null &&
+    !selSymbolsDoc &&
+    (!wantedDistricts.has(selFileDistrict) || symbolsLoadingDistricts.has(selFileDistrict));
 
   // Spec item 1's other trigger ("or when a file in it is selected"): add
   // the selected file's district to `wantedDistricts` immediately, not on
@@ -472,6 +487,7 @@ export function MapView() {
               selD={selD}
               selHSym={selHSym}
               symbolsDoc={selSymbolsDoc}
+              symbolsLoading={selSymbolsLoading}
               adj={adj}
               radj={radj}
               packageLayout={packageLayout}
