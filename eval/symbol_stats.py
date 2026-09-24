@@ -217,6 +217,7 @@ def containment_metrics(document, parcels):
     rings = document.get("symbol_rings", [])
     child_vertices = child_outside = child_cards_outside = 0
     top_vertices = top_outside = top_cards_outside = 0
+    examples = []
     for i, row in enumerate(symbols):
         card = rings[i] if i < len(rings) else None
         if not card:
@@ -238,6 +239,9 @@ def containment_metrics(document, parcels):
             top_vertices += len(card[0])
             top_outside += outside
             top_cards_outside += outside > 0
+            if outside and len(examples) < 3:
+                examples.append({"symbol": i, "file": row[0], "card": card[0], "footprint": footprint,
+                                 "footprint_simple": simple(footprint)})
     for file, card in document.get("module_rings", {}).items():
         footprint = parcels.get(str(file))
         if footprint and card:
@@ -252,7 +256,26 @@ def containment_metrics(document, parcels):
         "top_vertices_checked": top_vertices,
         "top_vertices_outside_footprint": top_outside,
         "top_cards_with_vertex_outside_footprint": top_cards_outside,
+        "top_outside_examples": examples,
     }
+
+
+def simple(ring):
+    """No two non-adjacent edges properly cross."""
+    n = len(ring)
+
+    def turn(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    for i in range(n):
+        p1, p2 = ring[i], ring[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            q1, q2 = ring[j], ring[(j + 1) % n]
+            if turn(q1, q2, p1) * turn(q1, q2, p2) < 0 and turn(p1, p2, q1) * turn(p1, p2, q2) < 0:
+                return False
+    return True
 
 
 def card_pass_seconds(log_file):

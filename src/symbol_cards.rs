@@ -561,11 +561,47 @@ fn inset_mitred(ring: &[Point], delta: f64) -> Option<Ring> {
     valid.then(|| clean(&out)).filter(|out| out.len() >= 3)
 }
 
+/// Shrinks a ring towards its vertex mean when every edge faces that point
+/// (the ring is star-shaped about it), so the scaled ring stays inside. The
+/// nearest edge moves in by `delta` and further edges by proportionally
+/// more. This catches near-convex pieces whose short raster edges or sharp
+/// corners stop the mitred offset before its first event.
+fn inset_star(ring: &[Point], delta: f64) -> Option<Ring> {
+    let center = vertex_mean(ring);
+    let n = ring.len();
+    let mut nearest = f64::INFINITY;
+    for k in 0..n {
+        let (p, q) = (ring[k], ring[(k + 1) % n]);
+        let length = distance2(p, q).sqrt();
+        let height = cross(p, q, center);
+        if length == 0.0 || height <= 0.0 {
+            return None;
+        }
+        nearest = nearest.min(height / length);
+    }
+    let scale = 1.0 - delta / nearest;
+    if !(0.5..1.0).contains(&scale) {
+        return None;
+    }
+    let out = clean(
+        &ring
+            .iter()
+            .map(|p| {
+                [
+                    center[0] + (p[0] - center[0]) * scale,
+                    center[1] + (p[1] - center[1]) * scale,
+                ]
+            })
+            .collect::<Ring>(),
+    );
+    (out.len() >= 3 && signed_area(&out) > 0.0).then_some(out)
+}
+
 fn inset(ring: &[Point], delta: f64) -> Option<Ring> {
     if is_convex(ring) {
         inset_convex(ring, delta)
     } else {
-        inset_mitred(ring, delta)
+        inset_mitred(ring, delta).or_else(|| inset_star(ring, delta))
     }
 }
 
@@ -1578,6 +1614,26 @@ mod tests {
         }));
         let rounded = card_ring(&ring, 1).unwrap();
         assert!(point_in_polygon(vertex_mean(&rounded), &ring));
+    }
+
+    #[test]
+    fn star_inset_shrinks_a_notched_piece_inside_itself() {
+        // A shallow notch keeps the piece non-convex, and a 0.0007 chamfer
+        // between two convex corners flips under a 0.003 mitred offset; the
+        // star fallback still gives the full gutter.
+        let ring = normalise(&[
+            [0.0, 0.0],
+            [0.05, 0.002],
+            [0.1, 0.0],
+            [0.1, 0.0995],
+            [0.0995, 0.1],
+            [0.0, 0.1],
+        ])
+        .unwrap();
+        assert!(inset_mitred(&ring, 0.003).is_none());
+        let card = inset(&ring, 0.003).unwrap();
+        assert!(card.iter().all(|&p| point_in_polygon(p, &ring)));
+        assert!(signed_area(&card) < signed_area(&ring));
     }
 
     #[test]
