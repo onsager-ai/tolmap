@@ -525,6 +525,85 @@ fn mark_clone_finished(tx: &watch::Sender<JobSnapshot>, duration_s: f64, success
     });
 }
 
+/// Materializes the shared cache for `repo_ref` and copies it into
+/// `job_repo_dir` as a fast, non-hardlinked local clone -- everything
+/// `run_blocking` needs before it can build a `WorkerSpec` and spawn the
+/// worker. Split out into its own function so this cache-reuse behaviour
+/// (a second call for the same `owner`/`repo` fetches/fast-forwards the
+/// existing `cache_dir/repos/<owner>/<repo>` clone rather than re-cloning
+/// it) is directly unit-testable without spawning a real `tolmap worker`
+/// child process -- `run_blocking`'s own worker-spawn step needs
+/// `std::env::current_exe()` to be an actual `tolmap` binary, which a
+/// `cargo test` test binary is not, so no test in this file exercises
+/// `run_blocking` end to end. See this file's
+/// `materialize_job_repo_reuses_the_shared_clone_cache_on_a_second_call`
+/// test.
+///
+/// The clone/fetch against the shared, service-owned LRU cache
+/// (`cache_dir/repos/<owner>/<repo>`) runs here, in the service, still at
+/// its own uid -- not inside the worker, and not dropped afterward. This
+/// restores real cache reuse across jobs for the same repo (the whole
+/// reason `clone::materialize_with_progress`'s cache/eviction machinery
+/// exists) without handing the worker access to it: `git
+/// clone`/`fetch --filter=blob:none` run no repository-controlled code
+/// (docs/SCIP_SANDBOX.md's threat table: "none by default"), so doing this
+/// step before the uid drop, in the trusted process, is not a security
+/// regression -- it is exactly where that doc's own §4.1 puts "the clone is
+/// copied ... into it, so the shared clone cache is never writable from a
+/// jail," just without the jail (that's `local_clone_into`, next).
+/// `Progress::silent()`: see `mark_clone_running`'s comment on the
+/// resulting observability trade-off.
+///
+/// Known gap, not fixed here: the git child processes spawned inside
+/// `clone::materialize_with_progress` are not registered with the job
+/// registry the way the worker child is (`register_child`/
+/// `kill_worker_group`), so a cancellation that arrives while this function
+/// is still running does not kill them -- they run to completion before
+/// `run_blocking` can notice the cancellation and return. Fixing that
+/// properly means threading a cancellation hook through
+/// `run_git_with_progress` (called from `clone_blobless` and three separate
+/// call sites inside `fetch_and_fast_forward`) and every existing caller of
+/// `materialize`/`materialize_with_progress` (`worker.rs`, two test
+/// suites) -- a real shape change to `clone.rs`'s git-invocation plumbing,
+/// not a small addition, and not verifiable without a local `cargo build`
+/// this repo's rules don't allow here. Left as a documented gap rather than
+/// forced through unverified.
+fn materialize_job_repo(
+    cache_dir: &Path,
+    repo_ref: &RepoRef,
+    limits: &crate::service::config::Limits,
+    job_repo_dir: &Path,
+    tx: &watch::Sender<JobSnapshot>,
+    started: Instant,
+) -> Result<(), ErrorBody> {
+    let clone_started = Instant::now();
+    mark_clone_running(tx, started);
+    let materialized = match clone::materialize_with_progress(
+        cache_dir,
+        repo_ref,
+        limits,
+        &crate::progress::Progress::silent(),
+    ) {
+        Ok(materialized) => materialized,
+        Err(error) => {
+            mark_clone_finished(tx, clone_started.elapsed().as_secs_f64(), false);
+            return Err(error.body);
+        }
+    };
+    // Fast local copy of that just-materialised clone into the job's own
+    // directory -- real object copies, not hardlinks; see
+    // `clone::local_clone_into`'s doc comment for why. This is the only
+    // copy of the repository the worker's process is ever handed; the
+    // shared cache directory itself is never chowned, hardened or passed to
+    // the worker.
+    if let Err(error) = clone::local_clone_into(&materialized.path, job_repo_dir) {
+        mark_clone_finished(tx, clone_started.elapsed().as_secs_f64(), false);
+        return Err(ApiError::clone_failed(error.to_string()).body);
+    }
+    mark_clone_finished(tx, clone_started.elapsed().as_secs_f64(), true);
+    Ok(())
+}
+
 fn finish_done(tx: &watch::Sender<JobSnapshot>) {
     tx.send_modify(|snapshot| {
         if is_terminal(snapshot) {
@@ -602,47 +681,20 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         let _ = std::fs::remove_dir_all(&job_dir);
         return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
-    // The clone/fetch against the shared, service-owned LRU cache
-    // (`cache_dir/repos/<owner>/<repo>`) runs here, in the service, still at
-    // its own uid -- not inside the worker, and not dropped afterward. This
-    // restores real cache reuse across jobs for the same repo (the whole
-    // reason `clone::materialize_with_progress`'s cache/eviction machinery
-    // exists) without handing the worker access to it: `git
-    // clone`/`fetch --filter=blob:none` run no repository-controlled code
-    // (docs/SCIP_SANDBOX.md's threat table: "none by default"), so doing
-    // this step before the uid drop, in the trusted process, is not a
-    // security regression -- it is exactly where that doc's own §4.1 puts
-    // "the clone is copied ... into it, so the shared clone cache is never
-    // writable from a jail," just without the jail (that's `local_clone_into`,
-    // next). `Progress::silent()`: see `mark_clone_running`'s comment on the
-    // resulting observability trade-off.
-    let clone_started = Instant::now();
-    mark_clone_running(&tx, started);
-    let materialized = match clone::materialize_with_progress(
+    // See `materialize_job_repo`'s doc comment for the full design (why
+    // this runs in the service rather than the worker, the `--no-hardlinks`
+    // reasoning, and the cancellation-during-clone gap this doesn't cover).
+    if let Err(error) = materialize_job_repo(
         &state.config.cache_dir,
         &repo_ref,
         &state.config.limits,
-        &crate::progress::Progress::silent(),
+        &job_repo_dir,
+        &tx,
+        started,
     ) {
-        Ok(materialized) => materialized,
-        Err(error) => {
-            mark_clone_finished(&tx, clone_started.elapsed().as_secs_f64(), false);
-            let _ = std::fs::remove_dir_all(&job_dir);
-            return finish_failed(&tx, error.body);
-        }
-    };
-    // Fast local copy of that just-materialised clone into the job's own
-    // directory -- real object copies, not hardlinks; see
-    // `clone::local_clone_into`'s doc comment for why. This is the only
-    // copy of the repository the worker's process is ever handed; the
-    // shared cache directory itself is never chowned, hardened or passed to
-    // the worker.
-    if let Err(error) = clone::local_clone_into(&materialized.path, &job_repo_dir) {
-        mark_clone_finished(&tx, clone_started.elapsed().as_secs_f64(), false);
         let _ = std::fs::remove_dir_all(&job_dir);
-        return finish_failed(&tx, ApiError::clone_failed(error.to_string()).body);
+        return finish_failed(&tx, error);
     }
-    mark_clone_finished(&tx, clone_started.elapsed().as_secs_f64(), true);
     let names_input = output_dir.join("worker-names-input.json");
     let names = match state.store.load_names(&repo_ref.slug) {
         Ok(names) => names,
@@ -1391,6 +1443,220 @@ mod tests {
 
     fn snapshot(state: &AppState, id: Uuid) -> JobSnapshot {
         state.jobs.subscribe(id).unwrap().borrow().clone()
+    }
+
+    /// A fresh, non-terminal snapshot with every stage `Pending` -- the same
+    /// shape `enqueue_job` builds, minus the registry bookkeeping a real job
+    /// needs. Lets a test drive `mark_clone_running`/`mark_clone_finished`
+    /// (and anything that calls them, like `materialize_job_repo`) without
+    /// going through the full job-admission path.
+    fn blank_snapshot(slug: &str) -> JobSnapshot {
+        JobSnapshot {
+            job_id: Uuid::new_v4(),
+            slug: slug.to_owned(),
+            commit: None,
+            status: JobStatus::Queued,
+            stage: "queued".to_owned(),
+            queue_position: None,
+            started_at: now_rfc3339(),
+            finished_at: None,
+            error: None,
+            error_code: None,
+            progress: None,
+            eta: None,
+            eta_start_s: None,
+            elapsed_s: 0.0,
+            stages: StageId::ALL
+                .iter()
+                .map(|&id| StageSnapshot {
+                    id,
+                    label: id.label().to_owned(),
+                    state: StageState::Pending,
+                    started_at: None,
+                    duration_s: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Initialises a one-commit git fixture repo at `dir` -- the same
+    /// init/commit sequence `tests/service_hardening.rs` already uses.
+    fn init_git_fixture(dir: &Path) {
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        assert!(Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "add",
+                "-A"
+            ])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    /// The first relative path (under `objects/`, loose or packed alike --
+    /// a local clone copies whichever form the source has, no repack) that
+    /// exists under both `a_objects` and `b_objects`. `git clone --local`
+    /// copies the object store by filename, so a job's local-clone copy and
+    /// the shared cache it was copied from are expected to share at least
+    /// one identically-named file; the test uses this to find one to
+    /// compare inodes on.
+    fn first_common_object_relpath(a_objects: &Path, b_objects: &Path) -> PathBuf {
+        fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    walk(&path, base, out);
+                } else {
+                    out.push(path.strip_prefix(base).unwrap().to_path_buf());
+                }
+            }
+        }
+        let mut a_files = Vec::new();
+        walk(a_objects, a_objects, &mut a_files);
+        a_files
+            .into_iter()
+            .find(|rel| b_objects.join(rel).is_file())
+            .expect("shared cache and job local-clone should share at least one object file")
+    }
+
+    /// Exercises exactly the sequence `run_blocking` runs before spawning
+    /// the worker (materialize into the shared cache, then a local-clone
+    /// copy into a job directory) -- the mechanism PR #121's clone-cache-
+    /// reuse redesign depends on, and which no `remote-build.yml` dispatch
+    /// exercises (that workflow's `tolmap build`/`tolmap worker` steps take
+    /// an already-cloned local directory directly, never through
+    /// `service::jobs`). Runs entirely offline against a real local git
+    /// fixture repo: `RepoSource::Remote` accepts a local filesystem path
+    /// as a clone/fetch source exactly as well as an `https://` URL, so
+    /// this takes the same `clone_blobless`/`fetch_and_fast_forward` branch
+    /// a real remote clone would -- not the `RepoSource::Local` "read in
+    /// place" shortcut this file's other fixtures use.
+    #[test]
+    fn materialize_job_repo_reuses_the_shared_clone_cache_on_a_second_call() {
+        let (_dir, state) = state(Limits::default());
+        let source = tempfile::tempdir().unwrap();
+        init_git_fixture(source.path());
+        // `file://` rather than a bare path: a bare local path makes `git
+        // clone` prefer its own hardlink-based "local optimization"
+        // transport, which git silently drops `--filter` support for.
+        // `file://` forces the smart (upload-pack) transport, which is what
+        // a real `https://` remote uses too and is what partial clone
+        // (`--filter=blob:none`) actually requires -- this is the same
+        // transport git's own test suite uses to exercise partial clone
+        // locally.
+        let repo_ref = RepoRef {
+            slug: "acme/widgets".to_owned(),
+            owner: "acme".to_owned(),
+            repo: "widgets".to_owned(),
+            source: RepoSource::Remote(format!("file://{}", source.path().display())),
+        };
+        let cached = state
+            .config
+            .cache_dir
+            .join("repos")
+            .join("acme")
+            .join("widgets");
+        let job_root = tempfile::tempdir().unwrap();
+        let job_repo_one = job_root.path().join("one").join("repo");
+        let job_repo_two = job_root.path().join("two").join("repo");
+        std::fs::create_dir_all(job_repo_one.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(job_repo_two.parent().unwrap()).unwrap();
+
+        let (tx, _rx) = watch::channel(blank_snapshot(&repo_ref.slug));
+        materialize_job_repo(
+            &state.config.cache_dir,
+            &repo_ref,
+            &state.config.limits,
+            &job_repo_one,
+            &tx,
+            Instant::now(),
+        )
+        .unwrap();
+        assert!(
+            cached.join(".git").is_dir(),
+            "first call clones into the shared cache"
+        );
+        assert!(job_repo_one.join(".git").is_dir());
+        assert_eq!(
+            snapshot_stage_state(&tx),
+            StageState::Done,
+            "the Clone stage must be marked done once materialize_job_repo succeeds"
+        );
+
+        // A file only a *fetch* (not a fresh `git clone`, which would first
+        // remove/recreate the destination) would leave in place across the
+        // second call.
+        let sentinel = cached.join("only-a-fetch-keeps-this");
+        std::fs::write(&sentinel, b"x").unwrap();
+
+        let (tx2, _rx2) = watch::channel(blank_snapshot(&repo_ref.slug));
+        materialize_job_repo(
+            &state.config.cache_dir,
+            &repo_ref,
+            &state.config.limits,
+            &job_repo_two,
+            &tx2,
+            Instant::now(),
+        )
+        .unwrap();
+        assert!(
+            sentinel.exists(),
+            "second materialize for the same owner/repo must fetch/fast-forward \
+             the existing shared-cache clone, not delete and re-clone it"
+        );
+        assert!(job_repo_two.join(".git").is_dir());
+
+        // `--no-hardlinks`: the job's own copy must not share inodes with
+        // the shared cache's own objects -- see `clone::local_clone_into`'s
+        // doc comment for why sharing them would undo this PR's isolation.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let rel = first_common_object_relpath(
+                &cached.join(".git").join("objects"),
+                &job_repo_two.join(".git").join("objects"),
+            );
+            let cached_meta =
+                std::fs::metadata(cached.join(".git").join("objects").join(&rel)).unwrap();
+            let job_meta =
+                std::fs::metadata(job_repo_two.join(".git").join("objects").join(&rel)).unwrap();
+            assert_ne!(
+                cached_meta.ino(),
+                job_meta.ino(),
+                "the job's local-clone copy must be real files, not hardlinks \
+                 into the shared cache"
+            );
+        }
+    }
+
+    fn snapshot_stage_state(tx: &watch::Sender<JobSnapshot>) -> StageState {
+        tx.borrow().stages[StageId::Clone.index() - 1].state
     }
 
     #[test]
