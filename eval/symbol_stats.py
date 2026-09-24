@@ -96,7 +96,9 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         "median_within_file_pearson": statistics.median(correlations) if correlations else None,
         "document_bytes_before_geometry": compact_bytes(before),
     }
+    result.update(contour_metrics(decoded))
     result.update(audit_rings(decoded))
+    result.update(sample_sibling_overlaps(decoded))
     if compare_file:
         raw = compare_file.read_bytes()
         result["before_precision_bytes"] = len(raw)
@@ -104,11 +106,81 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         # compare_ref can now be another packed-card revision, not only the
         # pre-precision float revision this metric first compared against.
         old = decode_geometry(json.loads(raw))
+        result["main_contours"] = contour_metrics(old)
         result["before_precision_collapsed_by_decimals"] = {
             str(places): collapsed_at_precision(old, places)
             for places in range(6, 12)
         }
     return result
+
+
+def contour_metrics(document):
+    cards = [card for card in document.get("symbol_rings", []) if card]
+    vertices = [sum(len(ring) for ring in card) for card in cards]
+    axis = total = 0
+    for card in cards:
+        for ring in card:
+            for a, b in zip(ring, ring[1:] + ring[:1]):
+                total += 1
+                axis += a[0] == b[0] or a[1] == b[1]
+    return {
+        "median_vertices_per_card": statistics.median(vertices) if vertices else None,
+        "mean_vertices_per_card": sum(vertices) / len(vertices) if vertices else None,
+        "axis_aligned_edge_share": axis / total if total else None,
+        "axis_aligned_edges": axis,
+        "contour_edges": total,
+    }
+
+
+def sample_sibling_overlaps(document):
+    """5×5 diagnostic per intersecting sibling box; counts are lower bounds."""
+    symbols = document["symbols"]
+    groups = collections.defaultdict(list)
+    for i, row in enumerate(symbols):
+        card = document["symbol_rings"][i]
+        if not card:
+            continue
+        parent = row[5]
+        if parent >= 0 and symbols[parent][0] != row[0]:
+            parent = -1
+        groups[(row[0], parent)].append(card)
+    for file, card in document.get("module_rings", {}).items():
+        groups[(int(file), -1)].append(card)
+    for parent, card in document.get("header_rings", {}).items():
+        row = symbols[int(parent)]
+        groups[(row[0], int(parent))].append(card)
+
+    overlaps = 0
+    max_estimated_area = 0.0
+    for cards in groups.values():
+        boxes = []
+        for card in cards:
+            points = [point for ring in card for point in ring]
+            boxes.append((min(p[0] for p in points), max(p[0] for p in points),
+                          min(p[1] for p in points), max(p[1] for p in points), card))
+        boxes.sort(key=lambda box: box[0])
+        active = []
+        for box in boxes:
+            active = [other for other in active if other[1] > box[0]]
+            for other in active:
+                x0, x1 = box[0], min(box[1], other[1])
+                y0, y1 = max(box[2], other[2]), min(box[3], other[3])
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                hits = sum(
+                    contains([x0 + (ix + 0.5) * (x1 - x0) / 5,
+                              y0 + (iy + 0.5) * (y1 - y0) / 5], box[4])
+                    and contains([x0 + (ix + 0.5) * (x1 - x0) / 5,
+                                  y0 + (iy + 0.5) * (y1 - y0) / 5], other[4])
+                    for ix in range(5) for iy in range(5)
+                )
+                if hits:
+                    overlaps += 1
+                    max_estimated_area = max(max_estimated_area,
+                                             (x1 - x0) * (y1 - y0) * hits / 25)
+            active.append(box)
+    return {"sampled_sibling_overlap_pairs_5x5": overlaps,
+            "max_sampled_sibling_overlap_area": max_estimated_area}
 
 
 def decode_ring(stream):
