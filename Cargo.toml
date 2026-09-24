@@ -64,6 +64,18 @@ tower-http = { version = "=0.7.1", features = ["fs", "compression-gzip"] }
 # ureq keeps the client small, rustls avoids a system TLS dependency, and
 # serde_json (already above) owns both the request and untrusted response.
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
+# Issue #110 P1a: `tolmap build --refs scip` reads the index.scip files the
+# SCIP indexers write (src/scip_ingest.rs). `scip` is the protocol's own
+# generated Rust binding; 0.10.0 is generated from the same `scip.proto` tag
+# (v0.10.0) that P0's Python oracle (eval/scip_ingest.py) decodes with, so
+# the product ingest and the oracle read one schema. `scip` pins
+# `protobuf = "=3.7.2"` itself (its generated code asserts VERSION_3_7_2 at
+# compile time). tolmap names that exact version too because it calls
+# `protobuf::Message::parse_from_bytes` directly, one `Document` at a time,
+# rather than materialising a whole `Index` (n8n's is 583 MB). In the
+# default build: this is product code now, not a measurement feature.
+protobuf = "=3.7.2"
+scip = "=0.10.0"
 
 [build-dependencies]
 cc = "=1.4.7"

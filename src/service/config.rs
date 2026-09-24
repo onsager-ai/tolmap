@@ -141,6 +141,13 @@ pub struct ServeConfig {
     /// `TOLMAP_NAMER` defaults to IDF; hosting does not enable model naming.
     pub namer: NamerKind,
     pub namer_model: String,
+    /// Where job maps take their references from (issue #110): `hand` (the
+    /// default) or `scip`. `scip` needs the indexers on the worker's `PATH`
+    /// (P1b's image); without them every language records a fallback to
+    /// the hand-written graph rather than failing.
+    ///
+    /// Env: `TOLMAP_REFS`.
+    pub refs: crate::extract::RefsMode,
     pub limits: Limits,
     /// Store retention policy (issue #23 gap 2): the number of most-recently-
     /// indexed commits kept per repository slug; older `(slug, commit_sha)`
@@ -207,6 +214,7 @@ impl ServeConfig {
         let namer = env_var_or("TOLMAP_NAMER", NamerKind::Idf);
         let namer_model =
             env::var("TOLMAP_NAMER_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
+        let refs = env_var_or("TOLMAP_REFS", crate::extract::RefsMode::Hand);
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the
         // unbounded growth issue #23 gap 2 reported -- see store::prune.
@@ -225,6 +233,7 @@ impl ServeConfig {
             prune_variant,
             namer,
             namer_model,
+            refs,
             limits: Limits::from_env(),
             retain_commits_per_repo,
             worker_uid,

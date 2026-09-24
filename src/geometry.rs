@@ -21,6 +21,9 @@ pub struct BuildFeatures {
     pub prune_variant: pipeline::PruneVariant,
     pub namer: naming::NamerKind,
     pub namer_model: String,
+    /// Where extraction takes references from (issue #110). Read only by
+    /// the repository entry points; a `--graph` build already has its edges.
+    pub refs: extract::RefsMode,
 }
 
 /// A district holding at least this share of the repo's files is
@@ -370,7 +373,7 @@ pub fn build_warm_with_progress(
             .into_owned()
     });
     let (graph, symbol_records) =
-        extract::build_with_symbols_progress(repo, pkg, language, progress)?;
+        extract::build_with_symbols_progress(repo, pkg, language, features.refs, progress)?;
     let source_nodes = graph.nodes.clone();
     let output = build_from_graph_warm_with_progress(
         graph,
@@ -445,7 +448,7 @@ pub fn build_multi_warm_with_progress(
             .into_owned()
     });
     let (graph, symbol_records) =
-        extract::build_multi_source_with_symbols_progress(repo, sources, progress)?;
+        extract::build_multi_source_with_symbols_progress(repo, sources, features.refs, progress)?;
     let source_nodes = graph.nodes.clone();
     let output = build_from_graph_warm_with_progress(
         graph,
@@ -676,6 +679,7 @@ fn compact(
         zero_edge_files,
         total_files: layout.weighted.nodes.len(),
         by_language,
+        references: layout.weighted.references.clone(),
     };
     let files = layout
         .weighted

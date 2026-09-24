@@ -74,6 +74,15 @@ enum Command {
         /// name the map after.
         #[arg(long)]
         graph: Option<PathBuf>,
+        /// Reference graph source (issue #110): `hand`, the tree-sitter
+        /// resolver, or `scip`, which runs each language's SCIP indexer
+        /// (scip-python, scip-go, scip-typescript on PATH, or
+        /// TOLMAP_SCIP_PYTHON/_GO/_TYPESCRIPT) without installing any
+        /// dependency, and uses its references wherever the index keeps at
+        /// least 80% of the hand-written graph. Other languages fall back to
+        /// `hand`; the map's `coverage.references` records which and why.
+        #[arg(long, default_value_t = tolmap::extract::RefsMode::Hand)]
+        refs: tolmap::extract::RefsMode,
     },
     DumpBlend {
         repo: PathBuf,
@@ -377,6 +386,7 @@ fn main() -> Result<()> {
             namer,
             namer_model,
             graph,
+            refs,
         } => {
             let progress = cli_progress();
             let namer_model = namer_model
@@ -410,6 +420,7 @@ fn main() -> Result<()> {
                                 prune_variant,
                                 namer,
                                 namer_model,
+                                refs,
                             },
                             previous_document.as_ref(),
                             &progress,
@@ -433,6 +444,7 @@ fn main() -> Result<()> {
                                 prune_variant,
                                 namer,
                                 namer_model,
+                                refs,
                             },
                             previous_document.as_ref(),
                             &progress,
@@ -460,6 +472,7 @@ fn main() -> Result<()> {
                             prune_variant,
                             namer,
                             namer_model,
+                            refs,
                         },
                         previous_document.as_ref(),
                         &progress,

@@ -115,7 +115,7 @@ impl Store {
             let (features, stage_s, elapsed_s) = row?;
             Ok(TimingRow {
                 features: serde_json::from_str(&features)?,
-                stage_s: serde_json::from_str(&stage_s)?,
+                stage_s: crate::service::eta::upgrade_stage_layout(serde_json::from_str(&stage_s)?),
                 elapsed_s,
             })
         })
@@ -459,6 +459,7 @@ mod tests {
                     },
                 )]
                 .into(),
+                refs: None,
             },
             elapsed_s: 4.0,
             stage_s: vec![Some(1.0), None, Some(2.0)],

@@ -131,14 +131,17 @@ jobs:
       # correctness issues, and turning them into a hard gate is a separate
       # decision from standing this workflow up. cargo clippy still runs and
       # its output is visible in the log.
+      # --locked (issue #110 P1a): Cargo.lock is committed and the release
+      # binary must build from exactly it. Without the flag a stale lock is
+      # silently rewritten on the runner and the check proves nothing.
       - name: cargo clippy
-        run: cargo clippy --release --all-targets
+        run: cargo clippy --locked --release --all-targets
 
       - name: cargo build
-        run: cargo build --release --bin tolmap
+        run: cargo build --locked --release --bin tolmap
 
       - name: cargo test
-        run: cargo test --release
+        run: cargo test --locked --release
 
       - name: Generated TypeScript bindings
         run: cargo run --release --bin generate-types -- --check
