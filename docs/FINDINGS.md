@@ -1261,17 +1261,39 @@ The [standard-runner remote build and HTTP measurement](https://github.com/onsag
 
 The measurement is one standard-runner build with warm filesystem cache, not a latency guarantee across machines or concurrency levels. The response is byte-identical to the stored district file before transport compression; no map geometry, `S`, or `U` changed.
 
-## 33. Reusing the extract parse removes a second tree, but the measured wall saving is four seconds on dify
+## 33. A file-backed symbol record keeps the saved parse without raising peak RSS
 
-The owner prioritized performance follow-ups in session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 1874, 2026-09-24T00:24:36Z (tracking issue #82). The symbols pass had read and parsed every mapped file after extraction had already parsed it. Extraction now collects compact spans, raw imports, code-line counts and reference candidates while each file's existing tree is alive, then drops the tree at the end of that iteration. Once the graph fixes mapped file order, the symbols pass resolves those records without reading or parsing the source again. The same code-line mask serves map `C` and symbol areas; prefix counts replace per-symbol full-line scans. Candidate ownership uses an ordered sweep of active spans, retaining the former narrowest-containing-span rule. Graph-only extraction does not collect symbol records.
+The owner prioritized performance follow-ups in session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 1874, 2026-09-24T00:24:36Z (tracking issue #82). The symbols pass previously read and parsed every mapped file after extraction. Extraction now collects compact spans, raw imports, code-line counts and reference candidates while each file's tree is alive, then drops the tree at the end of that iteration. Each per-file record is serialized into a temporary indexed stream and released before the next file. After graph construction fixes file order, the symbols pass reads one record at a time, resolves references, and attaches cards to the same map geometry. The stream is removed on completion or error. Graph-only extraction skips this work. The map's `C` and symbol areas share one code-line mask; prefix counts and an active-span sweep avoid repeated scans within a file.
 
-[Paired standard-runner Actions builds](https://github.com/onsager-ai/tolmap/actions/runs/35940060179) used this branch at `f090445` against `main`, with each repository pinned by `eval/corpus.toml`. All four build jobs and the result summary passed. Both full JSON documents were SHA-256 hashed on the runners: the map hash and the symbols hash each matched `main` on every row. Thus the map's `F`/`N`/`E`/`L`/`S`/`U` and all other fields, the symbols hierarchy and references, and the attached card geometry are byte-identical on these inputs. The symbol audit found zero eligible cards without a ring and zero collapsed contours in all four outputs.
+The first [paired run](https://github.com/onsager-ai/tolmap/actions/runs/35940060179) kept all records in memory through graph construction: dify saved 4.02 s but its peak RSS rose from 201,624 to 301,956 KB. A [streaming JSON-spool trial](https://github.com/onsager-ai/tolmap/actions/runs/35941824692) held dify RSS at 203,012 versus 200,608 KB, but wall time regressed to 60.11 versus 53.19 s; its per-record stream decoder alone put symbol resolution at 11.23 s. An [early in-memory resolution trial](https://github.com/onsager-ai/tolmap/actions/runs/35942517196) saved 3.70 s on dify but still peaked at 290,940 versus 200,656 KB. Both trials kept map and symbols hashes equal to their paired `main` builds. The final indexed stream reads each record into a short-lived byte slice before JSON decoding; neither failed trial was retained.
 
-| repository | files | wall s branch / main | measured saving s | peak RSS KB branch / main |
-|---|---:|---:|---:|---:|
-| django/django | 851 | 6.57 / 7.38 | 0.81 | 59,232 / 45,032 |
-| langgenius/dify | 6,347 | 50.72 / 54.74 | 4.02 | 301,956 / 201,624 |
-| prometheus/prometheus | 631 | 9.82 / 10.70 | 0.88 | 58,132 / 43,736 |
-| vuejs/core | 239 | 1.48 / 1.63 | 0.15 | 36,308 / 31,592 |
+The [final paired standard-runner Actions build](https://github.com/onsager-ai/tolmap/actions/runs/35943068048) used this branch at `2ac0079` against current `main` (after #94), with each repository pinned by `eval/corpus.toml`. All four build jobs and symbol geometry audits passed. SHA-256 of the full map JSON **and** full symbols JSON matched `main` on every row, covering all map fields (`F`/`N`/`E`/`L`/`S`/`U` included), hierarchy, references and card geometry. The audits found zero eligible cards without a ring, zero collapsed contours, and matching static district projections.
 
-These are whole-build paired observations from one run, not isolated tree-sitter timings. The expected 17–26 second saving on dify did **not** materialize: the measured saving is 4.02 seconds. Keeping compact records live through graph construction increased dify's peak RSS by 100,332 KB; no parse trees or full source files are retained. The branch log separately records 0.28 seconds for symbol resolution and **6.71 seconds for symbol card attachment** on dify (django 0.03 / 1.17 seconds, prometheus 0.03 / 1.27 seconds, vue 0.00 / 0.21 seconds). Card attachment is a visible remaining cost, but this PR does not change it. The [CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35940056869) passed Rust formatting, clippy, release build and tests, generated bindings, offline parity and determinism, plus web build/lint and deploy-environment parity. The full nine-fixture parity job is an on-demand/nightly job and was skipped on this PR.
+| repository | files | wall s branch / main | saving s | peak RSS KB branch / main | RSS increase |
+|---|---:|---:|---:|---:|---:|
+| django/django | 851 | 6.66 / 7.28 | 0.62 | 45,332 / 45,096 | 0.5% |
+| langgenius/dify | 6,347 | 48.37 / 52.43 | 4.06 | 202,764 / 201,544 | 0.6% |
+| prometheus/prometheus | 631 | 10.05 / 11.10 | 1.05 | 45,648 / 43,540 | 4.8% |
+| vuejs/core | 239 | 2.52 / 2.77 | 0.25 | 31,968 / 31,316 | 2.1% |
+
+These are paired whole-build observations from one run, not isolated parse costs or a cross-run speed guarantee. The maximum observed RSS increase is 4.8%, below the review's approximately 10% ceiling on all four. Dify's saving remains roughly four seconds, well below the hoped-for 17–26 seconds; there is no evidence here for claiming the larger target.
+
+The final branch log breaks dify's 48.37 s build into disjoint measured phases (seconds, rounded to three decimals). `extract` excludes the `symbol_collection` and `graph` rows; their sum is `extract_total`. `symbol_collection` includes serializing per-file records; `symbol_resolution` includes reading them. Minor unlisted setup and timer rounding account for the gap to `/usr/bin/time` wall time.
+
+| phase | dify s |
+|---|---:|
+| extract (other parsing and metadata) | 8.394 |
+| symbol collection | 20.101 |
+| graph (resolution, history, blend) | 1.411 |
+| extract total | **29.906** |
+| partition | 0.570 |
+| neighbourhoods | 0.163 |
+| naming | 0.024 |
+| geometry | 1.837 |
+| parcels | 6.790 |
+| map JSON write | 0.027 |
+| symbol resolution | 0.384 |
+| cards | 8.262 |
+| symbols JSON and district-directory write | 0.234 |
+
+Symbol collection remains the largest individual phase, and parcels and cards are visible further costs. This PR does not change those other phases. The [CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35943050822) passed Rust formatting, clippy, release build and tests, generated TypeScript bindings, offline parity and three-build determinism, plus web build/lint and deploy-environment parity. The full nine-fixture parity job is on-demand/nightly and was skipped on this PR.
