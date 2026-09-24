@@ -52,6 +52,7 @@ struct Span {
     abstract_symbol: bool,
     go_signature: Option<[usize; 2]>,
     go_embeds: bool,
+    reference_owner: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -224,7 +225,6 @@ fn kind(node: Node<'_>, lang: LanguageKind) -> Option<usize> {
             "class_declaration" | "abstract_class_declaration" | "class" => Some(CLASS),
             "function_declaration" => Some(FUNCTION),
             "method_definition" | "method_signature" | "abstract_method_signature" => Some(METHOD),
-            "property_signature" | "public_field_definition" => Some(CONST),
             "interface_declaration" => Some(INTERFACE),
             "type_alias_declaration" => Some(TYPE),
             "variable_declarator" => {
@@ -392,6 +392,9 @@ fn collect_spans(
                             .into_iter()
                             .any(|child| child.kind() == "type_elem")
                     }),
+                // This signature was not a symbol before, so annotation
+                // references inside it retain their enclosing owner.
+                reference_owner: node.kind() != "abstract_method_signature",
             });
         }
     }
@@ -475,7 +478,9 @@ struct OwnerLookup<'a> {
 
 impl<'a> OwnerLookup<'a> {
     fn new(spans: &'a [Span]) -> Self {
-        let mut starts = (0..spans.len()).collect::<Vec<_>>();
+        let mut starts = (0..spans.len())
+            .filter(|&i| spans[i].reference_owner)
+            .collect::<Vec<_>>();
         starts.sort_by_key(|&i| (spans[i].credit_begin_byte, i));
         Self {
             spans,
@@ -2015,7 +2020,7 @@ mod tests {
         assert!(doc
             .symbols
             .iter()
-            .any(|s| s.0 .1 == "value" && s.0 .5 == ts_i as isize && s.0 .7));
+            .any(|s| s.0 .1 == "run" && s.0 .5 == ts_i as isize && s.0 .7));
     }
 
     #[test]
