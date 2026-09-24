@@ -234,6 +234,18 @@ export class MapRenderer {
   // the latter to draw a line without re-walking the whole document.
   private symVisible = new Set<number>();
   private symScreenAnchor = new Map<number, [number, number]>();
+  // CI review finding (issue #82 C2): a carded file's own basename label
+  // (placeContentLabels), a landmark pin, a hub label or a folder label
+  // could all still land ON TOP of that file's cards -- each of those is
+  // drawn in a LATER pass than drawSymbolCardsPass, and none of them knew
+  // the card region existed. A tap on a card then hit the overlay instead
+  // (`text[data-k=f:i]`, the file's own label, was the one a CI diagnostic
+  // actually caught -- selecting the file instead of the symbol underneath).
+  // Recording each carded file's screen bbox here lets paint() seed the
+  // SAME shared `placed` collision list every one of those passes already
+  // consults, so they all avoid the region for free rather than needing a
+  // bespoke check apiece.
+  private cardedFileBBox = new Map<number, [number, number, number, number]>();
   private symDecodedByDistrict = new Map<number, DecodedDistrictSymbols>();
   private symLocalByGlobal = new Map<number, { decoded: DecodedDistrictSymbols; local: number }>();
   // Persistent groups this paint() (re)creates so hover can redraw just the
@@ -1571,6 +1583,12 @@ export class MapRenderer {
     // growing `placed` array threaded through every step below is the fix.
     const placed: Array<[number, number, number, number]> = [];
     this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed);
+    // CI review finding (issue #82 C2): seed the SAME shared list with every
+    // carded file's own screen bbox (recorded by drawSymbolCardsPass, which
+    // already ran above, before pins/hub labels/folder labels/file labels
+    // are placed) -- a tap meant for a card must never land on an overlay
+    // drawn on top of it. See cardedFileBBox's own doc comment.
+    for (const [x0, y0, x1, y1] of this.cardedFileBBox.values()) placed.push([x0, y0, x1 - x0, y1 - y0]);
     // B4 scope item 5: neighbourhood labels share the SAME collision list
     // ("below district names", spec) but are placed later, inside
     // placeContentLabels (after folder labels and hub labels, before file
@@ -2629,6 +2647,7 @@ export class MapRenderer {
     this.refreshDecodedSymbols(this.state!.districtSymbols, needed);
     this.symVisible = new Set();
     this.symScreenAnchor = new Map();
+    this.cardedFileBBox = new Map();
     if (filesNeedingCards.length === 0) return;
 
     const selAncestryGlobal = new Set<number>();
@@ -2685,15 +2704,20 @@ export class MapRenderer {
       // centred on the top edge, same as the prototype's `tabs.push(...)`.
       const poly = doc.P![String(i)];
       if (poly) {
-        let x0 = Infinity, x1 = -Infinity, yTop = Infinity;
+        let x0 = Infinity, x1 = -Infinity, yTop = Infinity, yBot = -Infinity;
         for (const [wx, wy] of poly) {
           const sx = this.X(wx);
           const sy = this.Y(wy);
           if (sx < x0) x0 = sx;
           if (sx > x1) x1 = sx;
           if (sy < yTop) yTop = sy;
+          if (sy > yBot) yBot = sy;
         }
         tabCandidates.push({ cx: (x0 + x1) / 2, y0: yTop, widthPx: x1 - x0, name: doc.F[i].split("/").pop()! });
+        // CI review finding (issue #82 C2): the file's own bbox, in the same
+        // screen space paint()'s `placed` collision list uses -- see
+        // cardedFileBBox's own doc comment for why this is recorded here.
+        this.cardedFileBBox.set(i, [x0, yTop, x1, yBot]);
       }
       const draw = (local: number, depth: number) => {
         const rings = decoded.cardRings[local];
