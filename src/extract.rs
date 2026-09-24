@@ -4274,7 +4274,7 @@ mod tests {
         write(
             dir.path(),
             "packages/contracts/index.ts",
-            "export * from './console';\n",
+            "export const entry = 1;\n",
         );
         write(
             dir.path(),
