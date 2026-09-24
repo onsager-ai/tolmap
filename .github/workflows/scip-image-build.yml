@@ -144,6 +144,19 @@ jobs:
           cp -r tests/fixtures/scip/ts/. smoke/ts/
           cp -r tests/fixtures/scip/py/. smoke/py/
 
+          # scip-python's --project-version defaults to `git rev-parse
+          # HEAD` when not passed explicitly, and crashes (not a clean
+          # error) if that fails -- so each fixture copy needs to be a real
+          # git repo, which also matches production: tolmap always indexes
+          # an actual clone (docs/ARCHITECTURE.md), never a bare directory.
+          for d in smoke/go smoke/ts smoke/py; do
+            git -C "$d" init -q
+            git -C "$d" -c user.email=fixture@tolmap.invalid -c user.name=tolmap-fixture \
+              add -A
+            git -C "$d" -c user.email=fixture@tolmap.invalid -c user.name=tolmap-fixture \
+              commit -q -m "scip smoke fixture"
+          done
+
           echo "--- scip-go ---"
           docker run --rm -v "$PWD/smoke/go:/work" -w /work \
             --entrypoint scip-go tolmap:after --quiet --output /work/index.scip
