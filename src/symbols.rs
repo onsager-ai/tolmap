@@ -8,6 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -113,6 +114,45 @@ enum RawImports {
     TypeScript(Vec<(String, Vec<(String, Option<String>)>)>),
 }
 
+/// Wall time spent inside symbol collection, split by step so a build log
+/// can show where the `symbol_collection` phase goes (finding 39). Purely
+/// observational: nothing here reaches a map or a symbols document.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CollectTimings {
+    pub(crate) spans: Duration,
+    pub(crate) receivers: Duration,
+    pub(crate) lines: Duration,
+    pub(crate) imports: Duration,
+    pub(crate) candidates: Duration,
+    pub(crate) encode: Duration,
+    pub(crate) write: Duration,
+}
+
+impl CollectTimings {
+    pub(crate) fn add(&mut self, other: &Self) {
+        self.spans += other.spans;
+        self.receivers += other.receivers;
+        self.lines += other.lines;
+        self.imports += other.imports;
+        self.candidates += other.candidates;
+        self.encode += other.encode;
+        self.write += other.write;
+    }
+
+    /// `(label, duration)` rows in the order the steps run.
+    pub(crate) fn rows(&self) -> [(&'static str, Duration); 7] {
+        [
+            ("spans", self.spans),
+            ("receivers", self.receivers),
+            ("lines", self.lines),
+            ("imports", self.imports),
+            ("candidates", self.candidates),
+            ("encode", self.encode),
+            ("write", self.write),
+        ]
+    }
+}
+
 /// A file-backed index keeps collected records out of the graph and geometry
 /// high-water marks. Only the current file's record is materialized at either
 /// end; Drop removes the temporary stream on success and on error.
@@ -142,17 +182,31 @@ impl SymbolSpool {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn insert(&mut self, name: &str, record: &ParsedSymbols) -> Result<()> {
+        self.insert_timed(name, record, &mut CollectTimings::default())
+    }
+
+    pub(crate) fn insert_timed(
+        &mut self,
+        name: &str,
+        record: &ParsedSymbols,
+        timings: &mut CollectTimings,
+    ) -> Result<()> {
         if self.index.contains_key(name) {
             return Ok(()); // First sorted source owns a file-path collision.
         }
         // One write per file avoids a syscall for every JSON token. The
         // temporary byte buffer drops before the next source file is parsed.
+        let started = Instant::now();
         let bytes = serde_json::to_vec(record)?;
+        timings.encode += started.elapsed();
+        let started = Instant::now();
         let start = self.file.stream_position()?;
         self.file.write_all(&bytes)?;
         self.index
             .insert(name.to_owned(), (start, bytes.len() as u64));
+        timings.write += started.elapsed();
         Ok(())
     }
 
@@ -908,18 +962,34 @@ fn imports_go(
     result
 }
 
+#[cfg(test)]
 pub(crate) fn collect(
     root: Node<'_>,
     bytes: &[u8],
     lang: LanguageKind,
     flags: &[bool],
 ) -> ParsedSymbols {
+    collect_timed(root, bytes, lang, flags, &mut CollectTimings::default())
+}
+
+pub(crate) fn collect_timed(
+    root: Node<'_>,
+    bytes: &[u8],
+    lang: LanguageKind,
+    flags: &[bool],
+    timings: &mut CollectTimings,
+) -> ParsedSymbols {
+    let started = Instant::now();
     let mut spans = Vec::new();
     collect_spans(root, bytes, lang, 0, 0, &mut spans);
+    timings.spans += started.elapsed();
+    let started = Instant::now();
     let mut receivers = Vec::new();
     if lang == LanguageKind::Go {
         collect_go_receivers(root, bytes, &spans, 0, &mut receivers);
     }
+    timings.receivers += started.elapsed();
+    let started = Instant::now();
     // The old pass rescanned all line flags for every span, making large
     // files quadratic in their symbol count. Inclusive row ranges become
     // two prefix lookups while the tree is still scoped to this file.
@@ -942,6 +1012,8 @@ pub(crate) fn collect(
         .zip(&covered)
         .filter(|(flag, covered)| **flag && !**covered)
         .count();
+    timings.lines += started.elapsed();
+    let started = Instant::now();
     let imports = match lang {
         LanguageKind::Python => RawImports::Python(
             children(root)
@@ -1021,6 +1093,8 @@ pub(crate) fn collect(
             RawImports::TypeScript(imports)
         }
     };
+    timings.imports += started.elapsed();
+    let started = Instant::now();
     let mut candidates = Vec::new();
     let mut shadowed = BTreeMap::new();
     collect_candidates(
@@ -1030,6 +1104,7 @@ pub(crate) fn collect(
         &mut candidates,
         &mut shadowed,
     );
+    timings.candidates += started.elapsed();
     ParsedSymbols {
         spans,
         receivers,
