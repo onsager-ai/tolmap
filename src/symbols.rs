@@ -56,6 +56,7 @@ struct Candidate {
     owner: usize,
     chain: Vec<String>,
     call: bool,
+    value: bool,
     unresolved_reason: Option<UnresolvedReason>,
 }
 
@@ -465,6 +466,56 @@ fn covered_by_reference_wrapper(node: Node<'_>) -> bool {
     false
 }
 
+fn value_attribute(node: Node<'_>) -> bool {
+    if !matches!(
+        node.kind(),
+        "attribute" | "member_expression" | "selector_expression"
+    ) || covered_by_reference_wrapper(node)
+    {
+        return false;
+    }
+    let mut child = node;
+    while let Some(parent) = child.parent() {
+        // A selector inside a longer selector is credited at the outermost
+        // lexical site, if that full chain resolves. A store target does
+        // not read the method it happens to name.
+        if matches!(
+            parent.kind(),
+            "attribute" | "member_expression" | "selector_expression"
+        ) && parent
+            .child_by_field_name("object")
+            .or_else(|| parent.child_by_field_name("operand"))
+            .is_some_and(|base| base.id() == child.id())
+        {
+            return false;
+        }
+        if matches!(parent.kind(), "call" | "call_expression")
+            && parent
+                .child_by_field_name("function")
+                .or_else(|| parent.child_by_field_name("method"))
+                .is_some_and(|callee| callee.id() == child.id())
+        {
+            return false;
+        }
+        if matches!(
+            parent.kind(),
+            "assignment"
+                | "augmented_assignment"
+                | "assignment_expression"
+                | "augmented_assignment_expression"
+                | "short_var_declaration"
+        ) && parent
+            .child_by_field_name("left")
+            .or_else(|| parent.child_by_field_name("name"))
+            .is_some_and(|left| left.id() == child.id())
+        {
+            return false;
+        }
+        child = parent;
+    }
+    true
+}
+
 fn collect_candidates(
     node: Node<'_>,
     bytes: &[u8],
@@ -507,6 +558,7 @@ fn collect_candidates(
                 owner,
                 chain: resolved.clone().unwrap_or_default(),
                 call: true,
+                value: false,
                 unresolved_reason: resolved.is_none().then_some(if parent_class_method {
                     UnresolvedReason::ParentClassMethod
                 } else {
@@ -531,6 +583,7 @@ fn collect_candidates(
                     owner,
                     chain: parts,
                     call: false,
+                    value: false,
                     unresolved_reason: None,
                 });
             }
@@ -543,9 +596,20 @@ fn collect_candidates(
                         owner,
                         chain: parts,
                         call: false,
+                        value: false,
                         unresolved_reason: None,
                     });
                 }
+            }
+        } else if value_attribute(node) {
+            if let Some(parts) = chain(node, bytes) {
+                out.push(Candidate {
+                    owner,
+                    chain: parts,
+                    call: false,
+                    value: true,
+                    unresolved_reason: None,
+                });
             }
         }
     }
@@ -1121,6 +1185,11 @@ pub(crate) fn build(
                     if candidate.call {
                         coverage.calls_resolved += 1;
                     }
+                    if candidate.value
+                        && !matches!(spans[target].kind, FUNCTION | METHOD | NESTED_FUNCTION)
+                    {
+                        continue;
+                    }
                     let mut p = Some(candidate.owner);
                     let ancestor = loop {
                         match p {
@@ -1473,6 +1542,69 @@ mod tests {
         );
         assert!(doc.coverage.calls_resolved > 0);
         assert_eq!(doc.coverage.unresolved["parent_class_method"], 1);
+    }
+
+    #[test]
+    fn python_method_values_count_conditional_callbacks_and_exact_qualified_names() {
+        let (dir, nodes) = fixture(&[
+            ("helper.py", "helper", "def callback():\n    pass\n"),
+            (
+                "handler.py",
+                "handler",
+                "import helper\nfrom functools import partial\n\nclass Handler:\n    def load_middleware(self, is_async):\n        get_response = self._get_response_async if is_async else self._get_response\n        register(self._get_response)\n        partial(self._get_response_async)\n        other = Handler._get_response\n        imported = helper.callback\n    def store(self):\n        self._get_response = other\n    def _get_response(self):\n        pass\n    def _get_response_async(self):\n        pass\n",
+            ),
+        ]);
+        let doc = build_fixture(dir.path(), &nodes);
+        let load = id(&doc, 1, "load_middleware");
+        let sync = id(&doc, 1, "_get_response");
+        let asynchronous = id(&doc, 1, "_get_response_async");
+        assert_eq!(
+            doc.edges
+                .iter()
+                .find(|e| e[0] == load && e[1] == sync)
+                .unwrap()[2],
+            3
+        );
+        assert_eq!(
+            doc.edges
+                .iter()
+                .find(|e| e[0] == load && e[1] == asynchronous)
+                .unwrap()[2],
+            2
+        );
+        assert!(edge(&doc, load, id(&doc, 0, "callback")));
+        assert!(!edge(&doc, id(&doc, 1, "store"), sync));
+    }
+
+    #[test]
+    fn typescript_and_go_values_use_only_existing_type_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.ts"),
+            "class Box { method() {} use() { const cb = this.method; register(this.method); this.method = cb; } }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("a.go"),
+            "package p\ntype Thing struct{}\nfunc (t *Thing) Work() {}\nfunc Use(x Thing) { _ = Thing.Work; _ = x.Work }\n",
+        )
+        .unwrap();
+        let nodes = vec![source("a.ts", "a.ts", "ts"), source("a.go", "a.go", "go")];
+        let doc = build_fixture(dir.path(), &nodes);
+        assert_eq!(
+            doc.edges
+                .iter()
+                .find(|e| e[0] == id(&doc, 0, "use") && e[1] == id(&doc, 0, "method"))
+                .unwrap()[2],
+            2
+        );
+        assert_eq!(
+            doc.edges
+                .iter()
+                .find(|e| e[0] == id(&doc, 1, "Use") && e[1] == id(&doc, 1, "Work"))
+                .unwrap()[2],
+            1
+        );
     }
 
     #[test]
