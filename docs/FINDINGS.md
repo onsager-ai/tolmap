@@ -1260,3 +1260,57 @@ The [standard-runner remote build and HTTP measurement](https://github.com/onsag
 | Pre-split file median response time | 1.32 ms |
 
 The measurement is one standard-runner build with warm filesystem cache, not a latency guarantee across machines or concurrency levels. The response is byte-identical to the stored district file before transport compression; no map geometry, `S`, or `U` changed.
+
+## 33. A file-backed symbol record keeps the saved parse without raising peak RSS
+
+The owner prioritized performance follow-ups in session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 1874, 2026-09-24T00:24:36Z (tracking issue #82). The symbols pass previously read and parsed every mapped file after extraction. Extraction now collects compact spans, raw imports, code-line counts and reference candidates while each file's tree is alive, then drops the tree at the end of that iteration. Each per-file record is serialized into a temporary indexed stream and released before the next file. After graph construction fixes file order, the symbols pass reads one record at a time, resolves references, and attaches cards to the same map geometry. The stream is removed on completion or error. Graph-only extraction skips this work. The map's `C` and symbol areas share one code-line mask; prefix counts and an active-span sweep avoid repeated scans within a file.
+
+The first [paired run](https://github.com/onsager-ai/tolmap/actions/runs/35940060179) kept all records in memory through graph construction: dify saved 4.02 s but its peak RSS rose from 201,624 to 301,956 KB. A [streaming JSON-spool trial](https://github.com/onsager-ai/tolmap/actions/runs/35941824692) held dify RSS at 203,012 versus 200,608 KB, but wall time regressed to 60.11 versus 53.19 s; its per-record stream decoder alone put symbol resolution at 11.23 s. An [early in-memory resolution trial](https://github.com/onsager-ai/tolmap/actions/runs/35942517196) saved 3.70 s on dify but still peaked at 290,940 versus 200,656 KB. Both trials kept map and symbols hashes equal to their paired `main` builds. The final indexed stream reads each record into a short-lived byte slice before JSON decoding; neither failed trial was retained.
+
+The [final paired standard-runner Actions build](https://github.com/onsager-ai/tolmap/actions/runs/35943068048) used this branch at `2ac0079` against current `main` (after #94), with each repository pinned by `eval/corpus.toml`. All four build jobs and symbol geometry audits passed. SHA-256 of the full map JSON **and** full symbols JSON matched `main` on every row, covering all map fields (`F`/`N`/`E`/`L`/`S`/`U` included), hierarchy, references and card geometry. The audits found zero eligible cards without a ring, zero collapsed contours, and matching static district projections.
+
+| repository | files | wall s branch / main | saving s | peak RSS KB branch / main | RSS increase |
+|---|---:|---:|---:|---:|---:|
+| django/django | 851 | 6.66 / 7.28 | 0.62 | 45,332 / 45,096 | 0.5% |
+| langgenius/dify | 6,347 | 48.37 / 52.43 | 4.06 | 202,764 / 201,544 | 0.6% |
+| prometheus/prometheus | 631 | 10.05 / 11.10 | 1.05 | 45,648 / 43,540 | 4.8% |
+| vuejs/core | 239 | 2.52 / 2.77 | 0.25 | 31,968 / 31,316 | 2.1% |
+
+These are paired whole-build observations from one run, not isolated parse costs or a cross-run speed guarantee. The maximum observed RSS increase is 4.8%, below the review's approximately 10% ceiling on all four. Dify's saving remains roughly four seconds, well below the hoped-for 17–26 seconds; there is no evidence here for claiming the larger target.
+
+The final branch log breaks dify's 48.37 s build into disjoint measured phases (seconds, rounded to three decimals). `extract` excludes the `symbol_collection` and `graph` rows; their sum is `extract_total`. `symbol_collection` includes serializing per-file records; `symbol_resolution` includes reading them. Minor unlisted setup and timer rounding account for the gap to `/usr/bin/time` wall time.
+
+| phase | dify s |
+|---|---:|
+| extract (other parsing and metadata) | 8.394 |
+| symbol collection | 20.101 |
+| graph (resolution, history, blend) | 1.411 |
+| extract total | **29.906** |
+| partition | 0.570 |
+| neighbourhoods | 0.163 |
+| naming | 0.024 |
+| geometry | 1.837 |
+| parcels | 6.790 |
+| map JSON write | 0.027 |
+| symbol resolution | 0.384 |
+| cards | 8.262 |
+| symbols JSON and district-directory write | 0.234 |
+
+Symbol collection remains the largest individual phase, and parcels and cards are visible further costs. This PR does not change those other phases. The [CI gate](https://github.com/onsager-ai/tolmap/actions/runs/35943050822) passed Rust formatting, clippy, release build and tests, generated TypeScript bindings, offline parity and three-build determinism, plus web build/lint and deploy-environment parity. The full nine-fixture parity job is on-demand/nightly and was skipped on this PR.
+
+## 34. Inward corner smoothing removes card staircases while retaining raster ownership
+
+The owner prioritised smoothing the symbol cards in session `16030105`, transcript line 1874, 2026-09-24T00:24:36Z, after the #92 viewer made the #90 card outlines visible. The initial outlines exposed both raster staircases and tiny `+` shapes. A five-cell cross comes from the connected raster allocation itself, not from contour hole handling: the old contour faithfully traced those five cells. Small leaf regions now draw a compact octagon inside an owned cell. Container cards keep their full owned extent so descendants can remain inside them. Larger exteriors move convex corners inward by a quarter raster cell; holes keep their exact contour. Each candidate is checked against the raster ownership at cell centres and quarter-cell probes, and a parent restores its unsmoothed outline if smoothing excludes a child. This keeps the connected, code-line-weighted raster assignment and its reserved-child fallback; a vector power-diagram rewrite would need to reproduce both guarantees. The white gutters between cards remain intentional.
+
+The [paired standard-runner Actions run](https://github.com/onsager-ai/tolmap/actions/runs/35942382674) built this branch at `e27c489` and `main` on each pinned `eval/corpus.toml` commit. The audit reads the packed full symbols document and every static district slice. “r” is the median per-file Pearson correlation of top-level symbol card area with code lines, for files with at least three eligible symbols and variation in both values (the same definition as finding 31). The staircase measure is the share of card contour edges with an exactly horizontal or vertical endpoint pair after decoding integer deltas. Sizes are decimal MB; gzip uses `gzip.compress` with `mtime=0` on compact JSON. Wall time covers the whole build, not just cards.
+
+| repository | eligible cards with ring | files in r / median r | symbols raw MB, main → branch | symbols gzip MB, main → branch | median vertices/card, main → branch | mean vertices/card, main → branch | axis-aligned edges, main → branch | wall s, main → branch |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| django/django | 10,542 / 10,542 | 259 / .918 | 3.415 → 4.480 | .578 → .745 | 10 → 8 | 16.81 → 17.38 | 99.79% → 38.75% | 7.32 → 7.35 |
+| langgenius/dify | 48,161 / 48,161 | 2,367 / .966 | 18.643 → 24.429 | 3.322 → 4.434 | 14 → 14 | 20.29 → 21.01 | 99.74% → 37.98% | 52.49 → 52.95 |
+| prometheus/prometheus | 9,099 / 9,099 | 340 / .627 | 2.856 → 3.734 | .486 → .632 | 10 → 8 | 16.48 → 17.13 | 99.63% → 39.92% | 9.18 → 9.21 |
+| vuejs/core | 2,847 / 2,847 | 142 / .954 | 1.029 → 1.368 | .180 → .235 | 10 → 8 | 17.25 → 18.06 | 99.77% → 39.01% | 2.84 → 2.89 |
+
+All **70,649 / 70,649** eligible symbols have rings. The decoded audit found zero collapsed rings, duplicate consecutive points, collinear points, child centroids outside their parent, or child areas larger than the parent across all four repositories. A separate 5×5 probe of intersecting sibling bounding boxes found zero sampled overlap pairs in dify, prometheus and vue, and one in django, with an estimated overlap of `5.51×10⁻⁷` world units². That is a sampling diagnostic, not an exact polygon-intersection proof; the contour constructor separately rejects ownership across neighbouring raster cells at quarter-cell probes. All static district slices match the API projection, and every paired map hash, including `F`/`E`/`L`/`S`/`U`, is byte-identical to `main`. The 11-decimal integer-delta encoding and per-district split are unchanged.
+
+The packed document grows about a third in raw bytes because diagonal deltas encode nonzero values on both axes, even though mean vertices rise by less than 0.8 per card. The measured whole-build wall differences are 0.03–0.46 s and should not be read as isolated smoothing cost. The [CI gate on this geometry revision](https://github.com/onsager-ai/tolmap/actions/runs/35942380709) checks formatting, clippy, tests, generated bindings, offline parity and determinism; the full nine-fixture parity job was not dispatched for this geometry-only change. A [separate viewer check](https://github.com/onsager-ai/tolmap/actions/runs/35941887362) passed `check:view`, screenshots and the viewer performance bench.

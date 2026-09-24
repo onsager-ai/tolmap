@@ -1,5 +1,7 @@
-//! Raster card geometry inside each displayed file footprint. The masks, not
-//! the simplified output rings, are the ownership authority while recursing.
+//! Raster card ownership inside each displayed file footprint. Keeping the
+//! raster solver preserves its connected weighted quotas and the subpixel
+//! reserve for crowded parents; a new vector power diagram would have to
+//! recover both guarantees. Contours smooth only within shared ownership.
 use std::collections::BTreeMap;
 
 use anyhow::{ensure, Result};
@@ -24,8 +26,87 @@ struct Canvas {
     step: f64,
 }
 
-fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
+fn ring(mask: &[bool], canvas: &Canvas, compact_tiny: bool) -> Option<Rings> {
+    ring_with_smoothing(mask, canvas, compact_tiny, true)
+}
+
+fn ring_raw(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
+    ring_with_smoothing(mask, canvas, false, false)
+}
+
+fn ring_with_smoothing(
+    mask: &[bool],
+    canvas: &Canvas,
+    compact_tiny: bool,
+    allow_smoothing: bool,
+) -> Option<Rings> {
     let mask = largest_component(mask.to_vec(), canvas.grid);
+    let cells = mask.iter().filter(|&&owned| owned).count();
+    let compact_small = if compact_tiny && cells > 0 && cells <= 12 {
+        let occupied = mask
+            .iter()
+            .enumerate()
+            .filter_map(|(cell, &owned)| owned.then_some((cell % canvas.grid, cell / canvas.grid)))
+            .collect::<Vec<_>>();
+        let min_x = occupied.iter().map(|&(x, _)| x).min().unwrap();
+        let max_x = occupied.iter().map(|&(x, _)| x).max().unwrap();
+        let min_y = occupied.iter().map(|&(_, y)| y).min().unwrap();
+        let max_y = occupied.iter().map(|&(_, y)| y).max().unwrap();
+        let box_cells = (max_x - min_x + 1) * (max_y - min_y + 1);
+        cells == 1 || cells * 100 < box_cells * 85
+    } else {
+        false
+    };
+    // A one-cell seed and its few-cell cross are artifacts of connected
+    // raster growth, not meaningful card shapes. Draw a compact octagon in
+    // an owned cell; its siblings keep their original cells and cannot gain
+    // any part of this card. The minimum-area reserve remains separate.
+    // A container must retain its full owned region so its descendants can
+    // be drawn within it; compacting that parent would strand child cells.
+    if compact_small {
+        let mean = mask.iter().enumerate().filter(|(_, owned)| **owned).fold(
+            [0.0, 0.0],
+            |mut sum, (cell, _)| {
+                sum[0] += (cell % canvas.grid) as f64;
+                sum[1] += (cell / canvas.grid) as f64;
+                sum
+            },
+        );
+        let mean = [mean[0] / cells as f64, mean[1] / cells as f64];
+        let center = mask
+            .iter()
+            .enumerate()
+            .filter(|(_, owned)| **owned)
+            .min_by(|(a, _), (b, _)| {
+                let distance = |cell: usize| {
+                    ((cell % canvas.grid) as f64 - mean[0]).powi(2)
+                        + ((cell / canvas.grid) as f64 - mean[1]).powi(2)
+                };
+                distance(*a).total_cmp(&distance(*b)).then_with(|| a.cmp(b))
+            })
+            .map(|(cell, _)| {
+                [
+                    canvas.low[0] + (cell % canvas.grid) as f64 * canvas.step,
+                    canvas.low[1] + (cell / canvas.grid) as f64 * canvas.step,
+                ]
+            })?;
+        let radius = canvas.step * 0.38;
+        let bevel = radius * 0.42;
+        let [x, y] = center;
+        let mut compact = vec![vec![
+            [x - radius + bevel, y - radius],
+            [x + radius - bevel, y - radius],
+            [x + radius, y - radius + bevel],
+            [x + radius, y + radius - bevel],
+            [x + radius - bevel, y + radius],
+            [x - radius + bevel, y + radius],
+            [x - radius, y + radius - bevel],
+            [x - radius, y - radius + bevel],
+        ]];
+        if quantize_rings(&mut compact).is_ok() {
+            return Some(compact);
+        }
+    }
     let mut rings = marching_squares(&mask, canvas.grid);
     for points in &mut rings {
         let original = std::mem::take(points);
@@ -53,6 +134,51 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
             .total_cmp(&polygon_area(a))
             .then_with(|| a.len().cmp(&b.len()))
     });
+    // One corner-cutting pass suppresses grid steps. Every sibling starts
+    // from the same raster ownership, and the quarter-cell audit below
+    // rejects a rounded corner if it enters any unowned cell (including a
+    // hole). When a tight boundary has no room to round, use its original
+    // contour instead of moving ownership across the boundary.
+    if allow_smoothing {
+        let smoothed = rings.iter().map(|ring| smooth(ring)).collect::<Rings>();
+        if let Some(output) = simplify(&smoothed, &mask, canvas) {
+            return Some(output);
+        }
+    }
+    simplify(&rings, &mask, canvas)
+}
+
+fn smooth(ring: &Ring) -> Ring {
+    if signed_area(ring) <= 0.0 {
+        // Reducing a hole exposes its enclosed sibling, so keep holes on
+        // their exact raster boundary.
+        return ring.clone();
+    }
+    (0..ring.len())
+        .map(|i| {
+            let previous = ring[(i + ring.len() - 1) % ring.len()];
+            let point = ring[i];
+            let next = ring[(i + 1) % ring.len()];
+            let incoming = [point[0] - previous[0], point[1] - previous[1]];
+            let outgoing = [next[0] - point[0], next[1] - point[1]];
+            let cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0];
+            if cross <= 0.0 {
+                return point;
+            }
+            let before_length = incoming[0].abs().max(incoming[1].abs());
+            let after_length = outgoing[0].abs().max(outgoing[1].abs());
+            if before_length == 0.0 || after_length == 0.0 {
+                return point;
+            }
+            [
+                point[0] - incoming[0] / before_length * 0.25 + outgoing[0] / after_length * 0.25,
+                point[1] - incoming[1] / before_length * 0.25 + outgoing[1] / after_length * 0.25,
+            ]
+        })
+        .collect()
+}
+
+fn simplify(rings: &Rings, mask: &[bool], canvas: &Canvas) -> Option<Rings> {
     let maximum = rings.iter().map(Vec::len).max()?;
     let mut limit = CARD_CONTOUR_POINTS;
     loop {
@@ -86,8 +212,11 @@ fn ring(mask: &[bool], canvas: &Canvas) -> Option<Rings> {
             limit = (limit * 2).min(maximum);
             continue;
         }
-        if !covers_unowned_pixel(&mask, canvas, &output) || limit >= maximum {
+        if !covers_unowned_pixel(mask, canvas, &output) {
             return Some(output);
+        }
+        if limit >= maximum {
+            return None;
         }
         limit = (limit * 2).min(maximum);
     }
@@ -524,7 +653,7 @@ impl Cards<'_> {
             inset(mask, canvas, depth, children.len() * 2 + 1),
             canvas.grid,
         );
-        self.rings[symbol] = ring(&display, canvas);
+        self.rings[symbol] = ring(&display, canvas, children.is_empty());
         if self.rings[symbol].is_none() {
             if let Some(pixel) = display.iter().position(|&yes| yes) {
                 let center = [
@@ -565,7 +694,7 @@ impl Cards<'_> {
             header[pixel] = true;
             body[pixel] = false;
         }
-        if let Some(outline) = ring(&header, canvas) {
+        if let Some(outline) = ring(&header, canvas, true) {
             self.headers.insert(symbol, outline);
         }
         let reserve_rect = self.rings[symbol]
@@ -599,11 +728,25 @@ impl Cards<'_> {
             }
         }
         let parent = self.rings[symbol].as_ref().unwrap();
-        let missing = children
+        let mut missing = children
             .iter()
             .copied()
             .filter(|&child| !valid_ring(self.rings[child].as_ref(), parent))
             .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            // A smoothed parent can clip the centre of a child that owns a
+            // boundary cell. Restore the exact owned outline before using
+            // the subpixel reserve; most such children need no fallback.
+            let raw_display = largest_component(
+                inset(mask, canvas, depth, children.len() * 2 + 1),
+                canvas.grid,
+            );
+            if let Some(raw) = ring_raw(&raw_display, canvas) {
+                self.rings[symbol] = Some(raw);
+                let parent = self.rings[symbol].as_ref().unwrap();
+                missing.retain(|&child| !valid_ring(self.rings[child].as_ref(), parent));
+            }
+        }
         if !missing.is_empty() {
             if let Some(rect) = reserve_rect {
                 let step = (rect[2] - rect[0]) / missing.len() as f64;
@@ -713,7 +856,7 @@ pub fn attach_with_progress(
                 let regions = allocate(&mask, &canvas, &weights);
                 let mut offset = 0;
                 if has_module {
-                    if let Some(outline) = ring(&inset(&regions[0], &canvas, 0, 1), &canvas) {
+                    if let Some(outline) = ring(&inset(&regions[0], &canvas, 0, 1), &canvas, true) {
                         cards.modules.insert(file, outline);
                     }
                     offset = 1;
@@ -870,7 +1013,7 @@ mod tests {
             let mut claimed = vec![false; mask.len()];
             for region in &regions {
                 assert!(region.contains(&true));
-                let outline = ring(region, &canvas).expect("every owner has an outline");
+                let outline = ring(region, &canvas, true).expect("every owner has an outline");
                 assert!(rings_area(&outline) > 0.0);
                 let orientation = signed_area(&outline[0]).signum();
                 assert_eq!(
@@ -894,10 +1037,10 @@ mod tests {
     #[test]
     fn child_card_centroid_and_area_stay_inside_parent() {
         let (canvas, mask) = square_canvas(80);
-        let parent = ring(&inset(&mask, &canvas, 0, 1), &canvas).unwrap();
+        let parent = ring(&inset(&mask, &canvas, 0, 1), &canvas, false).unwrap();
         let body = inset(&mask, &canvas, 0, 1);
         for child in allocate(&body, &canvas, &[1.0, 3.0, 2.0]) {
-            let child = ring(&inset(&child, &canvas, 1, 1), &canvas).unwrap();
+            let child = ring(&inset(&child, &canvas, 1, 1), &canvas, true).unwrap();
             let outer = &child[0];
             let center = [
                 outer.iter().map(|p| p[0]).sum::<f64>() / outer.len() as f64,
@@ -1019,7 +1162,7 @@ mod tests {
                 mask[y * canvas.grid + x] = false;
             }
         }
-        let outline = ring(&mask, &canvas).unwrap();
+        let outline = ring(&mask, &canvas, false).unwrap();
         assert_eq!(outline.len(), 2);
         assert!(point_in_rings([0.1, 0.1], &outline));
         assert!(!point_in_rings([0.5, 0.5], &outline));
@@ -1031,7 +1174,7 @@ mod tests {
         let (canvas, mask) = square_canvas(60);
         let regions = allocate(&mask, &canvas, &[1.0, 3.0, 9.0, 2.0]);
         for (owner, region) in regions.iter().enumerate() {
-            let outline = ring(region, &canvas).unwrap();
+            let outline = ring(region, &canvas, true).unwrap();
             for (pixel, &claimed) in mask.iter().enumerate() {
                 if claimed && !region[pixel] {
                     let center = [
@@ -1056,8 +1199,67 @@ mod tests {
     #[test]
     fn straight_raster_edges_need_only_corner_vertices() {
         let (canvas, mask) = square_canvas(60);
-        let outline = ring(&mask, &canvas).unwrap();
+        let outline = ring(&mask, &canvas, true).unwrap();
         assert_eq!(outline.len(), 1);
-        assert_eq!(outline[0].len(), 4);
+        assert!(outline[0].len() <= 12);
+    }
+
+    #[test]
+    fn convex_corners_move_inward_without_adding_vertices() {
+        let staircase = vec![
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 1.0],
+            [4.0, 1.0],
+            [4.0, 4.0],
+            [0.0, 4.0],
+        ];
+        let rounded = smooth(&staircase);
+        assert_eq!(rounded.len(), staircase.len());
+        assert!(rounded[1][0] < staircase[1][0]);
+        assert!(rounded[1][1] > staircase[1][1]);
+        assert_eq!(rounded[2], staircase[2]);
+        assert!(polygon_area(&rounded) < polygon_area(&staircase));
+    }
+
+    #[test]
+    fn five_cell_cross_becomes_a_compact_convex_card() {
+        let (canvas, mut mask) = square_canvas(16);
+        mask.fill(false);
+        for cell in [7 * 16 + 7, 6 * 16 + 7, 8 * 16 + 7, 7 * 16 + 6, 7 * 16 + 8] {
+            mask[cell] = true;
+        }
+        let outline = ring(&mask, &canvas, true).unwrap();
+        assert_eq!(outline.len(), 1);
+        assert_eq!(outline[0].len(), 8);
+        let corner_signs = outline[0]
+            .iter()
+            .enumerate()
+            .map(|(i, &point)| {
+                let previous = outline[0][(i + 7) % 8];
+                let next = outline[0][(i + 1) % 8];
+                (point[0] - previous[0]) * (next[1] - point[1])
+                    - (point[1] - previous[1]) * (next[0] - point[0])
+            })
+            .collect::<Vec<_>>();
+        assert!(corner_signs.iter().all(|&cross| cross > 0.0));
+    }
+
+    #[test]
+    fn sparse_seven_cell_leaf_compacts_but_filled_square_keeps_its_area() {
+        let (canvas, mut mask) = square_canvas(16);
+        mask.fill(false);
+        for y in 6..9 {
+            for x in 6..9 {
+                mask[y * 16 + x] = true;
+            }
+        }
+        let filled = ring(&mask, &canvas, true).unwrap();
+        assert!(rings_area(&filled) > canvas.step.powi(2) * 5.0);
+        mask[6 * 16 + 6] = false;
+        mask[8 * 16 + 8] = false;
+        let sparse = ring(&mask, &canvas, true).unwrap();
+        assert_eq!(sparse[0].len(), 8);
+        assert!(rings_area(&sparse) < rings_area(&filled));
     }
 }

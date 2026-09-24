@@ -210,9 +210,12 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         .into_iter()
         .map(|source| (source.pkg, source.language))
         .collect::<Vec<_>>();
-    let graph =
-        extract::build_multi_source_with_progress(&materialized.path, &source_pairs, progress)
-            .map_err(|error| fail("index_failed", format!("{error:#}")))?;
+    let (graph, symbol_records) = extract::build_multi_source_with_symbols_progress(
+        &materialized.path,
+        &source_pairs,
+        progress,
+    )
+    .map_err(|error| fail("index_failed", format!("{error:#}")))?;
     let nodes = graph.nodes.clone();
     let previous_path = spec
         .previous_maps
@@ -251,8 +254,14 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         progress,
     )
     .map_err(|error| fail("index_failed", format!("{error:#}")))?;
-    symbols::write_sibling_with_progress(&materialized.path, &nodes, &map_path, progress)
-        .map_err(|error| fail("index_failed", format!("{error:#}")))?;
+    symbols::write_sibling_with_progress(
+        &materialized.path,
+        &nodes,
+        &map_path,
+        symbol_records,
+        progress,
+    )
+    .map_err(|error| fail("index_failed", format!("{error:#}")))?;
     let document = store::read_map_document(&map_path)
         .map_err(|error| fail("internal_error", error.to_string()))?;
     Ok(WorkerEvent::Result {

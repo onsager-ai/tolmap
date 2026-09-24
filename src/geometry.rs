@@ -369,7 +369,8 @@ pub fn build_warm_with_progress(
             .to_string_lossy()
             .into_owned()
     });
-    let graph = extract::build_with_progress(repo, pkg, language, progress)?;
+    let (graph, symbol_records) =
+        extract::build_with_symbols_progress(repo, pkg, language, progress)?;
     let source_nodes = graph.nodes.clone();
     let output = build_from_graph_warm_with_progress(
         graph,
@@ -380,7 +381,13 @@ pub fn build_warm_with_progress(
         previous_document,
         progress,
     )?;
-    crate::symbols::write_sibling_with_progress(repo, &source_nodes, &output, progress)?;
+    crate::symbols::write_sibling_with_progress(
+        repo,
+        &source_nodes,
+        &output,
+        symbol_records,
+        progress,
+    )?;
     Ok(output)
 }
 
@@ -437,7 +444,8 @@ pub fn build_multi_warm_with_progress(
             .to_string_lossy()
             .into_owned()
     });
-    let graph = extract::build_multi_source_with_progress(repo, sources, progress)?;
+    let (graph, symbol_records) =
+        extract::build_multi_source_with_symbols_progress(repo, sources, progress)?;
     let source_nodes = graph.nodes.clone();
     let output = build_from_graph_warm_with_progress(
         graph,
@@ -448,7 +456,13 @@ pub fn build_multi_warm_with_progress(
         previous_document,
         progress,
     )?;
-    crate::symbols::write_sibling_with_progress(repo, &source_nodes, &output, progress)?;
+    crate::symbols::write_sibling_with_progress(
+        repo,
+        &source_nodes,
+        &output,
+        symbol_records,
+        progress,
+    )?;
     Ok(output)
 }
 

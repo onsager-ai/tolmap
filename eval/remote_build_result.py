@@ -81,16 +81,6 @@ def failure_tail(log_path: Path, lines: int = 8) -> str:
     return " | ".join(part.strip() for part in tail if part.strip())[-1200:]
 
 
-def file_sha256(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def map_membership(doc: dict) -> dict[str, int]:
     return {file: int(node[0]) for file, node in zip(doc.get("F", []), doc.get("N", []))}
 
@@ -194,6 +184,13 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def file_sha256(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
 def main() -> int:
     slug = env("SLUG")
     stem = env("STEM")
@@ -249,10 +246,10 @@ def main() -> int:
         "compare_wall_s": None,
         "compare_map_sha256": None,
         "compare_symbols_sha256": None,
-        "symbols_identical": None,
         "compare_files": None,
         "compare_below_prune_floor": None,
         "identical": None,
+        "identical_symbols": None,
     }
 
     if command == "stability" and primary_status == "built":
@@ -287,7 +284,7 @@ def main() -> int:
         )
         if primary_status == "built" and compare_status == "built":
             result["identical"] = primary_sha == compare_sha
-            result["symbols_identical"] = (
+            result["identical_symbols"] = (
                 primary_symbols_sha == compare_symbols_sha
                 if primary_symbols_sha and compare_symbols_sha
                 else None

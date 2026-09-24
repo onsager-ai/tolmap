@@ -1,12 +1,17 @@
 //! Complete symbol data lives beside the parity-constrained map document.
-//! This pass reparses one mapped file at a time, retaining only compact spans
-//! and candidate references. It never changes `GraphData.symbols` or `uses`.
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+//! Extraction collects compact spans and candidate references while each
+//! file's parse tree is alive. This pass resolves them after map file order
+//! is known. It never changes `GraphData.symbols` or `uses`.
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{ensure, Context, Result};
-use tree_sitter::{Node, Parser};
+use serde::{Deserialize, Serialize};
+use tree_sitter::Node;
 
 use crate::extract::{self, LanguageKind};
 use crate::schema::{
@@ -21,7 +26,7 @@ const INTERFACE: usize = 4;
 const TYPE: usize = 5;
 const CONST: usize = 6;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Span {
     file: usize,
     name: String,
@@ -45,11 +50,27 @@ enum Binding {
     External,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Candidate {
     owner: usize,
     chain: Vec<String>,
     call: bool,
-    unresolved_reason: Option<&'static str>,
+    unresolved_reason: Option<UnresolvedReason>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum UnresolvedReason {
+    Dynamic,
+    ParentClassMethod,
+}
+
+impl UnresolvedReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dynamic => "dynamic",
+            Self::ParentClassMethod => "parent_class_method",
+        }
+    }
 }
 
 struct FileInfo {
@@ -58,6 +79,88 @@ struct FileInfo {
     imports: BTreeMap<String, Binding>,
     candidates: Vec<Candidate>,
     shadowed: BTreeMap<usize, BTreeSet<String>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ParsedSymbols {
+    spans: Vec<Span>,
+    receivers: Vec<(usize, String)>,
+    candidates: Vec<Candidate>,
+    shadowed: BTreeMap<usize, BTreeSet<String>>,
+    imports: RawImports,
+    outside: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+enum RawImports {
+    Python(Vec<extract::PythonImport>),
+    Go(Vec<(String, String)>),
+    TypeScript(Vec<(String, Vec<(String, Option<String>)>)>),
+}
+
+/// A file-backed index keeps collected records out of the graph and geometry
+/// high-water marks. Only the current file's record is materialized at either
+/// end; Drop removes the temporary stream on success and on error.
+pub(crate) struct SymbolSpool {
+    path: PathBuf,
+    file: File,
+    index: BTreeMap<String, (u64, u64)>,
+}
+
+impl SymbolSpool {
+    pub(crate) fn new() -> Result<Self> {
+        let path = std::env::temp_dir().join(format!(
+            "tolmap-symbols-{}-{}.spool",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("create symbol spool {}", path.display()))?;
+        Ok(Self {
+            path,
+            file,
+            index: BTreeMap::new(),
+        })
+    }
+
+    pub(crate) fn insert(&mut self, name: &str, record: &ParsedSymbols) -> Result<()> {
+        if self.index.contains_key(name) {
+            return Ok(()); // First sorted source owns a file-path collision.
+        }
+        // One write per file avoids a syscall for every JSON token. The
+        // temporary byte buffer drops before the next source file is parsed.
+        let bytes = serde_json::to_vec(record)?;
+        let start = self.file.stream_position()?;
+        self.file.write_all(&bytes)?;
+        self.index
+            .insert(name.to_owned(), (start, bytes.len() as u64));
+        Ok(())
+    }
+
+    fn take(&mut self, name: &str) -> Result<Option<ParsedSymbols>> {
+        let Some((start, len)) = self.index.remove(name) else {
+            return Ok(None);
+        };
+        self.file.seek(SeekFrom::Start(start))?;
+        // serde_json's stream parser asks the File for many tiny reads.
+        // Reading one indexed record into a short-lived buffer first avoids
+        // that cost while keeping the full record set off the heap.
+        let mut bytes = vec![0; usize::try_from(len).context("symbol record too large")?];
+        self.file.read_exact(&mut bytes)?;
+        Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+            format!("decode symbol record for {name}")
+        })?))
+    }
+}
+
+impl Drop for SymbolSpool {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn text<'a>(node: Node<'_>, bytes: &'a [u8]) -> &'a str {
@@ -255,13 +358,51 @@ fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
     }
 }
 
-fn owner_at(spans: &[Span], offset: usize, byte: usize) -> Option<usize> {
-    spans
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.credit_begin_byte <= byte && byte < s.end_byte)
-        .min_by_key(|(_, s)| s.end_byte - s.begin_byte)
-        .map(|(i, _)| offset + i)
+struct OwnerLookup<'a> {
+    spans: &'a [Span],
+    starts: Vec<usize>,
+    next: usize,
+    active: BTreeSet<(usize, usize)>,
+    ends: BinaryHeap<Reverse<(usize, usize)>>,
+}
+
+impl<'a> OwnerLookup<'a> {
+    fn new(spans: &'a [Span]) -> Self {
+        let mut starts = (0..spans.len()).collect::<Vec<_>>();
+        starts.sort_by_key(|&i| (spans[i].credit_begin_byte, i));
+        Self {
+            spans,
+            starts,
+            next: 0,
+            active: BTreeSet::new(),
+            ends: BinaryHeap::new(),
+        }
+    }
+
+    fn at(&mut self, byte: usize) -> Option<usize> {
+        // collect_candidates walks syntax in source order. Maintain only
+        // spans covering the current byte, ordered by the same narrowest
+        // interval / first-index rule as the former full scan. This avoids
+        // visiting every symbol for every syntax node in large files.
+        while self.next < self.starts.len()
+            && self.spans[self.starts[self.next]].credit_begin_byte <= byte
+        {
+            let i = self.starts[self.next];
+            let span = &self.spans[i];
+            self.active.insert((span.end_byte - span.begin_byte, i));
+            self.ends.push(Reverse((span.end_byte, i)));
+            self.next += 1;
+        }
+        while let Some(&Reverse((end, i))) = self.ends.peek() {
+            if end > byte {
+                break;
+            }
+            self.ends.pop();
+            let span = &self.spans[i];
+            self.active.remove(&(span.end_byte - span.begin_byte, i));
+        }
+        self.active.iter().next().map(|&(_, i)| i)
+    }
 }
 
 fn expression_chains(node: Node<'_>, bytes: &[u8], out: &mut Vec<Vec<String>>) {
@@ -326,12 +467,11 @@ fn covered_by_reference_wrapper(node: Node<'_>) -> bool {
 fn collect_candidates(
     node: Node<'_>,
     bytes: &[u8],
-    offset: usize,
-    spans: &[Span],
+    owners: &mut OwnerLookup<'_>,
     out: &mut Vec<Candidate>,
     shadowed: &mut BTreeMap<usize, BTreeSet<String>>,
 ) {
-    let owner = owner_at(spans, offset, node.start_byte());
+    let owner = owners.at(node.start_byte());
     if let Some(owner) = owner {
         if matches!(node.kind(), "parameters" | "formal_parameters") {
             parameter_bindings(node, bytes, shadowed.entry(owner).or_default());
@@ -367,9 +507,9 @@ fn collect_candidates(
                 chain: resolved.clone().unwrap_or_default(),
                 call: true,
                 unresolved_reason: resolved.is_none().then_some(if parent_class_method {
-                    "parent_class_method"
+                    UnresolvedReason::ParentClassMethod
                 } else {
-                    "dynamic"
+                    UnresolvedReason::Dynamic
                 }),
             });
         } else if !covered_by_reference_wrapper(node)
@@ -409,13 +549,12 @@ fn collect_candidates(
         }
     }
     for child in children(node) {
-        collect_candidates(child, bytes, offset, spans, out, shadowed);
+        collect_candidates(child, bytes, owners, out, shadowed);
     }
 }
 
 fn imports_python(
-    root: Node<'_>,
-    bytes: &[u8],
+    imports: &[extract::PythonImport],
     module: &str,
     is_pkg: bool,
     modules: &BTreeMap<String, usize>,
@@ -425,17 +564,8 @@ fn imports_python(
     // A function-local import must not create a file-wide binding. Direct
     // module imports are certain; conditional imports need control-flow
     // analysis and are left unresolved here.
-    for imp in children(root)
-        .into_iter()
-        .filter(|n| {
-            matches!(
-                n.kind(),
-                "import_statement" | "import_from_statement" | "future_import_statement"
-            )
-        })
-        .flat_map(|n| extract::python_imports(n, bytes))
-    {
-        let head = extract::python_head(&imp, module, is_pkg);
+    for imp in imports {
+        let head = extract::python_head(imp, module, is_pkg);
         for (n, alias) in &imp.names {
             if n == "*" {
                 continue;
@@ -489,80 +619,49 @@ fn imports_python(
 }
 
 fn imports_multi(
-    root: Node<'_>,
-    bytes: &[u8],
+    imports: &[(String, Vec<(String, Option<String>)>)],
     file: &str,
     modules: &BTreeMap<String, usize>,
 ) -> BTreeMap<String, Binding> {
     let mut result = BTreeMap::new();
-    for node in children(root) {
-        if node.kind() != "import_statement" {
-            continue;
-        }
-        if let Some(source) = node.child_by_field_name("source") {
-            let path = text(source, bytes).trim_matches(['\'', '"']);
-            let dir = file.rsplit_once('/').map_or("", |v| v.0);
-            let joined = format!("{dir}/{path}");
-            let mut pieces = Vec::new();
-            for part in joined.split('/') {
-                match part {
-                    "" | "." => {}
-                    ".." => {
-                        pieces.pop();
-                    }
-                    _ => pieces.push(part),
+    for (path, clauses) in imports {
+        let dir = file.rsplit_once('/').map_or("", |v| v.0);
+        let joined = format!("{dir}/{path}");
+        let mut pieces = Vec::new();
+        for part in joined.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    pieces.pop();
                 }
+                _ => pieces.push(part),
             }
-            let stem = pieces.join("/");
-            // NodeNext emits `.js` specifiers for TypeScript source. The
-            // existing file resolver accepts this same substitution (finding
-            // 20), and only an actually mapped target is credited here.
-            let source_stem = stem
-                .strip_suffix(".js")
-                .or_else(|| stem.strip_suffix(".jsx"))
-                .unwrap_or(&stem);
-            let target = [
-                stem.clone(),
-                format!("{source_stem}.ts"),
-                format!("{source_stem}.tsx"),
-                format!("{source_stem}/index.ts"),
-            ]
-            .into_iter()
-            .find_map(|p| modules.get(&p).copied());
-            if let Some(target) = target {
-                for clause in children(node)
-                    .into_iter()
-                    .filter(|n| n.kind() == "import_clause")
-                {
-                    for item in children(clause) {
-                        match item.kind() {
-                            "named_imports" => {
-                                for spec in children(item) {
-                                    if spec.kind() == "import_specifier" {
-                                        if let Some(original) = spec.child_by_field_name("name") {
-                                            let imported = text(original, bytes).to_owned();
-                                            let local = spec
-                                                .child_by_field_name("alias")
-                                                .map_or(imported.clone(), |n| {
-                                                    text(n, bytes).to_owned()
-                                                });
-                                            result.insert(local, Binding::From(target, imported));
-                                        }
-                                    }
-                                }
-                            }
-                            "namespace_import" => {
-                                if let Some(alias) = children(item).first() {
-                                    result.insert(
-                                        text(*alias, bytes).to_owned(),
-                                        Binding::Module(target),
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+        }
+        let stem = pieces.join("/");
+        // NodeNext emits `.js` specifiers for TypeScript source. The
+        // existing file resolver accepts this same substitution (finding
+        // 20), and only an actually mapped target is credited here.
+        let source_stem = stem
+            .strip_suffix(".js")
+            .or_else(|| stem.strip_suffix(".jsx"))
+            .unwrap_or(&stem);
+        let target = [
+            stem.clone(),
+            format!("{source_stem}.ts"),
+            format!("{source_stem}.tsx"),
+            format!("{source_stem}/index.ts"),
+        ]
+        .into_iter()
+        .find_map(|p| modules.get(&p).copied());
+        if let Some(target) = target {
+            for (local, original) in clauses {
+                result.insert(
+                    local.clone(),
+                    match original {
+                        Some(original) => Binding::From(target, original.clone()),
+                        None => Binding::Module(target),
+                    },
+                );
             }
         }
     }
@@ -570,8 +669,7 @@ fn imports_multi(
 }
 
 fn imports_go(
-    root: Node<'_>,
-    bytes: &[u8],
+    imports: &[(String, String)],
     module: Option<&str>,
     packages: &BTreeMap<String, Vec<usize>>,
 ) -> BTreeMap<String, Binding> {
@@ -579,39 +677,152 @@ fn imports_go(
     let Some(module) = module else {
         return result;
     };
-    fn visit(
-        node: Node<'_>,
-        bytes: &[u8],
-        module: &str,
-        packages: &BTreeMap<String, Vec<usize>>,
-        result: &mut BTreeMap<String, Binding>,
-    ) {
-        if node.kind() == "import_spec" {
-            if let Some(path_node) = node.child_by_field_name("path") {
-                let path = text(path_node, bytes).trim_matches(['\'', '"', '`']);
-                let directory = if path == module {
-                    Some("")
-                } else {
-                    path.strip_prefix(module)
-                        .and_then(|rest| rest.strip_prefix('/'))
-                };
-                if let Some(directory) = directory.filter(|dir| packages.contains_key(*dir)) {
-                    let alias = node
-                        .child_by_field_name("name")
-                        .map(|n| text(n, bytes).to_owned())
-                        .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_owned());
-                    if alias != "_" && alias != "." {
-                        result.insert(alias, Binding::Package(directory.to_owned()));
-                    }
-                }
+    for (path, alias) in imports {
+        let directory = if path.as_str() == module {
+            Some("")
+        } else {
+            path.strip_prefix(module)
+                .and_then(|rest| rest.strip_prefix('/'))
+        };
+        if let Some(directory) = directory.filter(|dir| packages.contains_key(*dir)) {
+            if alias != "_" && alias != "." {
+                result.insert(alias.clone(), Binding::Package(directory.to_owned()));
             }
         }
-        for child in children(node) {
-            visit(child, bytes, module, packages, result);
-        }
     }
-    visit(root, bytes, module, packages, &mut result);
     result
+}
+
+pub(crate) fn collect(
+    root: Node<'_>,
+    bytes: &[u8],
+    lang: LanguageKind,
+    flags: &[bool],
+) -> ParsedSymbols {
+    let mut spans = Vec::new();
+    collect_spans(root, bytes, lang, 0, 0, &mut spans);
+    let mut receivers = Vec::new();
+    if lang == LanguageKind::Go {
+        collect_go_receivers(root, bytes, &spans, 0, &mut receivers);
+    }
+    // The old pass rescanned all line flags for every span, making large
+    // files quadratic in their symbol count. Inclusive row ranges become
+    // two prefix lookups while the tree is still scoped to this file.
+    let mut code_prefix = Vec::with_capacity(flags.len() + 1);
+    code_prefix.push(0usize);
+    for &flag in flags {
+        code_prefix.push(code_prefix.last().copied().unwrap_or(0) + usize::from(flag));
+    }
+    for span in &mut spans {
+        let start = (span.credit_start - 1).min(flags.len());
+        let end = span.end.min(flags.len());
+        span.code_lines = code_prefix[end].saturating_sub(code_prefix[start]);
+    }
+    let mut covered = vec![false; flags.len()];
+    for span in spans.iter().filter(|span| span.parent == -1) {
+        covered[(span.credit_start - 1).min(flags.len())..span.end.min(flags.len())].fill(true);
+    }
+    let outside = flags
+        .iter()
+        .zip(&covered)
+        .filter(|(flag, covered)| **flag && !**covered)
+        .count();
+    let imports = match lang {
+        LanguageKind::Python => RawImports::Python(
+            children(root)
+                .into_iter()
+                .filter(|n| {
+                    matches!(
+                        n.kind(),
+                        "import_statement" | "import_from_statement" | "future_import_statement"
+                    )
+                })
+                .flat_map(|n| extract::python_imports(n, bytes))
+                .collect(),
+        ),
+        LanguageKind::Go => {
+            fn visit(node: Node<'_>, bytes: &[u8], out: &mut Vec<(String, String)>) {
+                if node.kind() == "import_spec" {
+                    if let Some(path_node) = node.child_by_field_name("path") {
+                        let path = text(path_node, bytes).trim_matches(['\'', '"', '`']);
+                        let alias = node
+                            .child_by_field_name("name")
+                            .map(|n| text(n, bytes).to_owned())
+                            .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_owned());
+                        out.push((path.to_owned(), alias));
+                    }
+                }
+                for child in children(node) {
+                    visit(child, bytes, out);
+                }
+            }
+            let mut imports = Vec::new();
+            visit(root, bytes, &mut imports);
+            RawImports::Go(imports)
+        }
+        LanguageKind::TypeScript => {
+            let mut imports = Vec::new();
+            for node in children(root) {
+                if node.kind() != "import_statement" {
+                    continue;
+                }
+                if let Some(source) = node.child_by_field_name("source") {
+                    let path = text(source, bytes).trim_matches(['\'', '"']).to_owned();
+                    let mut clauses = Vec::new();
+                    for clause in children(node)
+                        .into_iter()
+                        .filter(|n| n.kind() == "import_clause")
+                    {
+                        for item in children(clause) {
+                            match item.kind() {
+                                "named_imports" => {
+                                    for spec in children(item) {
+                                        if spec.kind() == "import_specifier" {
+                                            if let Some(original) = spec.child_by_field_name("name")
+                                            {
+                                                let imported = text(original, bytes).to_owned();
+                                                let local = spec
+                                                    .child_by_field_name("alias")
+                                                    .map_or(imported.clone(), |n| {
+                                                        text(n, bytes).to_owned()
+                                                    });
+                                                clauses.push((local, Some(imported)));
+                                            }
+                                        }
+                                    }
+                                }
+                                "namespace_import" => {
+                                    if let Some(alias) = children(item).first() {
+                                        clauses.push((text(*alias, bytes).to_owned(), None));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    imports.push((path, clauses));
+                }
+            }
+            RawImports::TypeScript(imports)
+        }
+    };
+    let mut candidates = Vec::new();
+    let mut shadowed = BTreeMap::new();
+    collect_candidates(
+        root,
+        bytes,
+        &mut OwnerLookup::new(&spans),
+        &mut candidates,
+        &mut shadowed,
+    );
+    ParsedSymbols {
+        spans,
+        receivers,
+        candidates,
+        shadowed,
+        imports,
+        outside,
+    }
 }
 
 fn lookup(
@@ -670,7 +881,7 @@ fn resolve(
     let source = &spans[candidate.owner];
     let parts = &candidate.chain;
     if let Some(reason) = candidate.unresolved_reason {
-        return Err(reason);
+        return Err(reason.as_str());
     }
     if parts.is_empty() {
         return Err("dynamic");
@@ -752,13 +963,18 @@ fn resolve(
     }
 }
 
-pub fn build(repo: &Path, nodes: &[SourceNode]) -> Result<SymbolsDocument> {
-    build_with_progress(repo, nodes, None)
-}
-
-pub fn build_with_progress(
+pub(crate) fn build(
     repo: &Path,
     nodes: &[SourceNode],
+    spool: SymbolSpool,
+) -> Result<SymbolsDocument> {
+    build_with_progress(repo, nodes, spool, None)
+}
+
+pub(crate) fn build_with_progress(
+    repo: &Path,
+    nodes: &[SourceNode],
+    mut spool: SymbolSpool,
     progress: Option<&crate::progress::StageCounter>,
 ) -> Result<SymbolsDocument> {
     let mut modules = BTreeMap::new();
@@ -797,22 +1013,9 @@ pub fn build_with_progress(
     let mut module_code_lines = BTreeMap::new();
     for (fi, entry) in nodes.iter().enumerate() {
         let lang = LanguageKind::parse(&entry.lang)?;
-        let bytes =
-            fs::read(repo.join(&entry.file)).with_context(|| format!("read {}", entry.file))?;
-        let grammar = match lang {
-            LanguageKind::Python => tree_sitter_python::LANGUAGE.into(),
-            LanguageKind::Go => tree_sitter_go::LANGUAGE.into(),
-            LanguageKind::TypeScript if entry.file.ends_with(".tsx") => {
-                tree_sitter_typescript::LANGUAGE_TSX.into()
-            }
-            LanguageKind::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        };
-        let mut parser = Parser::new();
-        parser.set_language(&grammar)?;
-        // A parse failure still occupies its map file index. Keeping an
-        // empty slot prevents a later file's imports from reading the wrong
-        // binding table, which would fabricate cross-file references.
-        let Some(tree) = parser.parse(&bytes, None) else {
+        // A rejected Python parse or a tree-sitter cancellation leaves the
+        // same empty slot that the former second parse left in this array.
+        let Some(mut record) = spool.take(&entry.file)? else {
             module_code_lines.insert(fi, entry.code_lines.unwrap_or(0));
             infos.push(FileInfo {
                 lang,
@@ -826,73 +1029,44 @@ pub fn build_with_progress(
             }
             continue;
         };
-        if lang == LanguageKind::Python && tree.root_node().has_error() {
-            module_code_lines.insert(fi, entry.code_lines.unwrap_or(0));
-            infos.push(FileInfo {
-                lang,
-                directory: entry.file.rsplit_once('/').map_or("", |v| v.0).to_owned(),
-                imports: BTreeMap::new(),
-                candidates: Vec::new(),
-                shadowed: BTreeMap::new(),
-            });
-            if let Some(progress) = progress {
-                progress.advance(1);
-            }
-            continue;
-        }
-        let root = tree.root_node();
         let first = spans.len();
-        collect_spans(root, &bytes, lang, fi, first, &mut spans);
-        if lang == LanguageKind::Go {
-            collect_go_receivers(root, &bytes, &spans[first..], first, &mut go_receivers);
+        for span in &mut record.spans {
+            span.file = fi;
+            if span.parent >= 0 {
+                span.parent += first as isize;
+            }
         }
-        let flags = extract::code_line_flags(root, &bytes, lang);
-        for span in &mut spans[first..] {
-            span.code_lines = flags
-                .iter()
-                .enumerate()
-                .filter(|(row, flag)| **flag && *row >= span.credit_start - 1 && *row < span.end)
-                .count();
+        go_receivers.extend(
+            record
+                .receivers
+                .into_iter()
+                .map(|(i, name)| (first + i, name)),
+        );
+        for candidate in &mut record.candidates {
+            candidate.owner += first;
         }
-        let outside = flags
-            .iter()
-            .enumerate()
-            .filter(|(row, flag)| {
-                **flag
-                    && !spans[first..]
-                        .iter()
-                        .any(|s| s.parent == -1 && *row >= s.credit_start - 1 && *row < s.end)
-            })
-            .count();
-        module_code_lines.insert(fi, outside);
-        let imports = if lang == LanguageKind::Python {
-            imports_python(
-                root,
-                &bytes,
+        let shadowed = record
+            .shadowed
+            .into_iter()
+            .map(|(owner, names)| (first + owner, names))
+            .collect();
+        spans.extend(record.spans);
+        module_code_lines.insert(fi, record.outside);
+        let imports = match record.imports {
+            RawImports::Python(imports) => imports_python(
+                &imports,
                 &entry.module,
                 entry.file.ends_with("__init__.py"),
                 &modules,
-            )
-        } else if lang == LanguageKind::Go {
-            imports_go(root, &bytes, go_module.as_deref(), &packages)
-        } else {
-            imports_multi(root, &bytes, &entry.file, &modules)
+            ),
+            RawImports::Go(imports) => imports_go(&imports, go_module.as_deref(), &packages),
+            RawImports::TypeScript(imports) => imports_multi(&imports, &entry.file, &modules),
         };
-        let mut candidates = Vec::new();
-        let mut shadowed = BTreeMap::new();
-        collect_candidates(
-            root,
-            &bytes,
-            first,
-            &spans[first..],
-            &mut candidates,
-            &mut shadowed,
-        );
         infos.push(FileInfo {
             lang,
             directory: entry.file.rsplit_once('/').map_or("", |v| v.0).to_owned(),
             imports,
-            candidates,
+            candidates: record.candidates,
             shadowed,
         });
         if let Some(progress) = progress {
@@ -1032,14 +1206,26 @@ pub fn build_with_progress(
     })
 }
 
-pub fn write_sibling(repo: &Path, nodes: &[SourceNode], map_path: &Path) -> Result<()> {
-    write_sibling_with_progress(repo, nodes, map_path, &crate::progress::Progress::silent())
-}
-
-pub fn write_sibling_with_progress(
+pub(crate) fn write_sibling(
     repo: &Path,
     nodes: &[SourceNode],
     map_path: &Path,
+    spool: SymbolSpool,
+) -> Result<()> {
+    write_sibling_with_progress(
+        repo,
+        nodes,
+        map_path,
+        spool,
+        &crate::progress::Progress::silent(),
+    )
+}
+
+pub(crate) fn write_sibling_with_progress(
+    repo: &Path,
+    nodes: &[SourceNode],
+    map_path: &Path,
+    spool: SymbolSpool,
     progress: &crate::progress::Progress,
 ) -> Result<()> {
     let map: MapDocument = serde_json::from_slice(&fs::read(map_path)?)?;
@@ -1053,7 +1239,7 @@ pub fn write_sibling_with_progress(
         "symbol source file order differs from map F order"
     );
     let symbols_stage = progress.stage(crate::progress::StageId::Symbols, Some(nodes.len() as u64));
-    let mut document = build_with_progress(repo, nodes, Some(&symbols_stage))?;
+    let mut document = build_with_progress(repo, nodes, spool, Some(&symbols_stage))?;
     symbols_stage.set(nodes.len() as u64);
     symbols_stage.finish();
     let cards_stage = progress.stage(
@@ -1171,6 +1357,7 @@ impl SymbolsDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tree_sitter::Parser;
 
     fn source(file: &str, module: &str, lang: &str) -> SourceNode {
         SourceNode {
@@ -1208,6 +1395,59 @@ mod tests {
         doc.edges.iter().any(|e| e[0] == from && e[1] == to)
     }
 
+    fn build_fixture(repo: &Path, nodes: &[SourceNode]) -> SymbolsDocument {
+        let mut spool = SymbolSpool::new().unwrap();
+        let mut parser = Parser::new();
+        for node in nodes {
+            let lang = LanguageKind::parse(&node.lang).unwrap();
+            let grammar = match lang {
+                LanguageKind::Python => tree_sitter_python::LANGUAGE.into(),
+                LanguageKind::Go => tree_sitter_go::LANGUAGE.into(),
+                LanguageKind::TypeScript if node.file.ends_with(".tsx") => {
+                    tree_sitter_typescript::LANGUAGE_TSX.into()
+                }
+                LanguageKind::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            };
+            parser.set_language(&grammar).unwrap();
+            let bytes = fs::read(repo.join(&node.file)).unwrap();
+            let tree = parser.parse(&bytes, None).unwrap();
+            let root = tree.root_node();
+            let flags = extract::code_line_flags(root, &bytes, lang);
+            spool
+                .insert(&node.file, &collect(root, &bytes, lang, &flags))
+                .unwrap();
+        }
+        build(repo, nodes, spool).unwrap()
+    }
+
+    #[test]
+    fn owner_lookup_matches_narrowest_containing_span() {
+        let bytes = b"@wrap\nclass Outer:\n    def a(self):\n        def nested():\n            pass\n        nested()\n    def b(self):\n        pass\n";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(bytes, None).unwrap();
+        let root = tree.root_node();
+        let mut spans = Vec::new();
+        collect_spans(root, bytes, LanguageKind::Python, 0, 0, &mut spans);
+        let mut lookup = OwnerLookup::new(&spans);
+        fn check(node: Node<'_>, spans: &[Span], lookup: &mut OwnerLookup<'_>) {
+            let byte = node.start_byte();
+            let expected = spans
+                .iter()
+                .enumerate()
+                .filter(|(_, span)| span.credit_begin_byte <= byte && byte < span.end_byte)
+                .min_by_key(|(_, span)| span.end_byte - span.begin_byte)
+                .map(|(i, _)| i);
+            assert_eq!(lookup.at(byte), expected, "{} at byte {byte}", node.kind());
+            for child in children(node) {
+                check(child, spans, lookup);
+            }
+        }
+        check(root, &spans, &mut lookup);
+    }
+
     #[test]
     fn complete_hierarchy_keeps_dunders_and_more_than_sixty() {
         let mut body = "class Outer:\n    def __init__(self):\n        def inner():\n            pass\n    class Nested:\n        def work(self):\n            pass\n".to_owned();
@@ -1215,7 +1455,7 @@ mod tests {
             body.push_str(&format!("\ndef f{n}():\n    pass\n"));
         }
         let (dir, nodes) = fixture(&[("mod.py", "mod", &body)]);
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert!(doc.symbols.len() > 60);
         let outer = id(&doc, 0, "Outer");
         let init = id(&doc, 0, "__init__");
@@ -1239,7 +1479,7 @@ mod tests {
             ("pkg/core.py", "pkg.core", "class Target:\n    def method(self):\n        pass\n"),
             ("caller.py", "caller", "from pkg import Target\nimport pkg.core as core\n\nclass Caller(Target):\n    def method(self):\n        self.helper()\n        Target.method()\n        core.Target.method()\n        super().method()\n        Target()\n    def helper(self):\n        pass\n\ndef outer():\n    def inner():\n        outer()\n    inner()\n\ndef typed(x: Target) -> Target:\n    return x\n\n@Target\ndef decorated():\n    pass\n"),
         ]);
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         let target = id(&doc, 1, "Target");
         let target_method = id(&doc, 1, "method");
         let caller = id(&doc, 2, "Caller");
@@ -1269,7 +1509,7 @@ mod tests {
     #[test]
     fn module_lines_and_unknown_calls_are_lower_bounds() {
         let (dir, nodes) = fixture(&[("m.py", "m", "# comment\nVALUE = 1\n\ndef known():\n    \"\"\"doc\"\"\"\n    missing()\n    (factory())()\n")]);
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert_eq!(doc.module_code_lines[&0], 1);
         assert!(doc.coverage.calls_total >= 3);
         assert_eq!(doc.coverage.calls_resolved, 0);
@@ -1286,7 +1526,7 @@ mod tests {
             ("p/c.py", "p.c", "class X:\n    pass\n"),
             ("use.py", "use", "from p import X\ndef f():\n    X()\n"),
         ]);
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert!(edge(&doc, id(&doc, 4, "f"), id(&doc, 3, "X")));
     }
 
@@ -1300,7 +1540,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("a.ts"), "class Box { method() { function nested() {} } }\ninterface Shape {}\ntype Name = string;\nconst f = () => 1;\n").unwrap();
         let nodes = vec![source("a.go", "a.go", "go"), source("a.ts", "a.ts", "ts")];
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert_eq!(doc.symbols[id(&doc, 0, "Thing")].0 .2, CLASS);
         assert_eq!(doc.symbols[id(&doc, 0, "Work")].0 .2, METHOD);
         assert_eq!(
@@ -1355,7 +1595,7 @@ mod tests {
             source("thing.ts", "thing.ts", "ts"),
             source("use.ts", "use.ts", "ts"),
         ];
-        let doc = build(dir.path(), &nodes).unwrap();
+        let doc = build_fixture(dir.path(), &nodes);
         assert_eq!(
             doc.symbols[id(&doc, 1, "Work")].0 .5,
             id(&doc, 0, "Thing") as isize

@@ -95,8 +95,8 @@ def write_markdown(results: list[dict], path: Path) -> None:
         header_cells += ["commits back", "warm retention"]
         sep_cells += ["---:", "---:"]
     if has_compare:
-        header_cells += ["compare status", "identical"]
-        sep_cells += ["---", "---"]
+        header_cells += ["compare status", "map identical", "symbols identical"]
+        sep_cells += ["---", "---", "---"]
     if has_reason:
         header_cells.append("reason (if failed)")
         sep_cells.append("---")
@@ -137,7 +137,11 @@ def write_markdown(results: list[dict], path: Path) -> None:
         if has_compare:
             identical = row.get("identical")
             identical_cell = "—" if identical is None else ("yes" if identical else "**no**")
-            cells += [row.get("compare_status") or "—", identical_cell]
+            identical_symbols = row.get("identical_symbols")
+            symbols_cell = (
+                "—" if identical_symbols is None else ("yes" if identical_symbols else "**no**")
+            )
+            cells += [row.get("compare_status") or "—", identical_cell, symbols_cell]
         if has_reason:
             cells.append(short_reason(row))
         lines.append("| " + " | ".join(cells) + " |")
