@@ -405,7 +405,7 @@ jobs:
       # runner exists yet -- web/README.md) but the first of the three
       # actually wired into a workflow, since this one runs from scripted
       # data rather than a Playwright session or a public/maps/ fixture.
-      - run: npx tsx scripts/check-reference-coverage.ts
+      - run: npx --yes tsx@4.23.15 scripts/check-reference-coverage.ts
       - run: pnpm build
 
   full-fixtures:
