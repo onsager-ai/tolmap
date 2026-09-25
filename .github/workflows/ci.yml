@@ -76,6 +76,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      scip_churn:
+        description: "Also run the SCIP churn diagnosis (finding 46, about 30 minutes)"
+        type: boolean
+        default: false
   schedule:
     # 03:17 UTC nightly -- off the hour to avoid the top-of-hour GitHub
     # Actions scheduling crush.
@@ -514,6 +519,200 @@ jobs:
       - name: Gate --refs scip against data/scip
         if: always()
         run: python3 eval/scip_fixtures.py gate --work scip-fx --summaries data/scip
+
+  # Finding 46: why SCIP moves the districts (issue #110 P2a). Evidence, not
+  # a gate: it never fails on a number, only on a build it could not run.
+  # For each fixture it dumps the hand and SCIP graphs (`dump-graph --refs`),
+  # rebuilds the partition from controlled variants of them through
+  # `build --graph` (eval/scip_churn.py's docstring lists them: node-order
+  # permutations as the seed proxy, random pair changes of SCIP's size as the
+  # noise baseline, and SCIP's pair set and weights applied one at a time),
+  # classifies the pairs each side has alone, and writes the owner's
+  # side-by-side district lists. sqlalchemy, which falls back at recall
+  # 0.6608 (finding 45), is re-indexed under two configuration-only changes
+  # and its missed pairs are profiled with P0's ingest on the kept index.
+  # Dispatch-only and behind an input, so neither nightly nor an ordinary
+  # dispatch pays for it.
+  scip-churn:
+    name: SCIP churn diagnosis (on demand)
+    needs: gate
+    if: github.event_name == 'workflow_dispatch' && inputs.scip_churn
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      SCIP_TYPESCRIPT_VERSION: "0.4.0"
+      SCIP_PYTHON_VERSION: "0.6.6"
+      SCIP_GO_VERSION: "v0.2.7"
+      SCIP_PROTO_TAG: "v0.10.0"
+      PROTOBUF_VERSION: "5.29.3"
+      GRPCIO_TOOLS_VERSION: "1.70.0"
+      SEEDS: "8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+      - run: chmod +x bin/tolmap
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Install pinned indexers
+        run: |
+          set -euo pipefail
+          npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
+            "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
+          go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Generate scip_pb2 for P0's ingest
+        run: |
+          set -euo pipefail
+          pip install "protobuf==${PROTOBUF_VERSION}" "grpcio-tools==${GRPCIO_TOOLS_VERSION}"
+          mkdir -p "$RUNNER_TEMP/scippb"
+          curl -fsSL --retry 3 \
+            "https://raw.githubusercontent.com/scip-code/scip/${SCIP_PROTO_TAG}/scip.proto" \
+            -o "$RUNNER_TEMP/scippb/scip.proto"
+          python -m grpc_tools.protoc -I "$RUNNER_TEMP/scippb" \
+            --python_out="$RUNNER_TEMP/scippb" "$RUNNER_TEMP/scippb/scip.proto"
+      - name: Build, dump and rebuild each fixture
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+        run: |
+          set -uo pipefail
+          mkdir -p churn/maps churn/graphs churn/variants churn/vmaps churn/pairs churn/merges churn/side clones
+          python3 eval/scip_fixtures.py list > fixtures.txt
+          while read -r name url sha pkg lang parcels; do
+            echo "::group::$name"
+            dir="clones/$name"
+            git clone --quiet --filter=blob:none "$url" "$dir"
+            git -C "$dir" checkout --quiet "$sha"
+            parcels_arg=""
+            [ "$parcels" = "true" ] || parcels_arg="--no-parcels"
+            for mode in hand scip; do
+              ./bin/tolmap build "$PWD/$dir" --pkg "$pkg" --lang "$lang" --refs "$mode" \
+                $parcels_arg --name "$name" --out "churn/maps/$mode" \
+                > "churn/maps/$name.$mode.log" 2>&1 || echo "$name build --refs $mode FAILED"
+              # sqlalchemy's index is kept for P0's ingest below.
+              keep=""
+              [ "$name" = "sqlalchemy" ] && [ "$mode" = "scip" ] && keep="$PWD/churn/index/sqlalchemy"
+              TOLMAP_SCIP_INDEX_DIR="$keep" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" --lang "$lang" \
+                --refs "$mode" --out "churn/graphs/$name.$mode.graph.json" \
+                || echo "$name dump-graph --refs $mode FAILED"
+            done
+            python3 eval/scip_churn.py variants --hand "churn/graphs/$name.hand.graph.json" \
+              --scip "churn/graphs/$name.scip.graph.json" --out "churn/variants/$name" --seeds "$SEEDS" \
+              || echo "$name variants FAILED"
+            for mode in hand scip; do
+              mkdir -p "churn/vmaps/$name/$mode-repo"
+              cp "churn/maps/$mode/$name.json" "churn/vmaps/$name/$mode-repo/" || true
+            done
+            for graph in "churn/graphs/$name.hand.graph.json" "churn/graphs/$name.scip.graph.json" \
+                churn/variants/"$name"/*.graph.json; do
+              variant="$(basename "$graph" .graph.json)"
+              case "$variant" in
+                "$name.hand") variant=hand-graph ;;
+                "$name.scip") variant=scip-graph ;;
+              esac
+              ./bin/tolmap build --graph "$graph" --name "$name" --no-parcels --refs hand \
+                --out "churn/vmaps/$name/$variant" > /dev/null 2> "churn/vmaps/$name/$variant.err" \
+                || { echo "$name $variant FAILED"; tail -5 "churn/vmaps/$name/$variant.err"; }
+            done
+            python3 eval/scip_churn.py pairs --hand "churn/graphs/$name.hand.graph.json" \
+              --scip "churn/graphs/$name.scip.graph.json" --repo "$dir" --out "churn/pairs/$name.json" \
+              || echo "$name pairs FAILED"
+            python3 eval/scip_churn.py merges --hand "churn/graphs/$name.hand.graph.json" \
+              --scip "churn/graphs/$name.scip.graph.json" --hand-map "churn/maps/hand/$name.json" \
+              --scip-map "churn/maps/scip/$name.json" --out "churn/merges/$name.json" \
+              || echo "$name merges FAILED"
+            python3 eval/scip_churn.py side-by-side --hand-map "churn/maps/hand/$name.json" \
+              --scip-map "churn/maps/scip/$name.json" --name "$name" --out "churn/side/$name.md" > /dev/null \
+              || echo "$name side-by-side FAILED"
+            # Variant graphs are rebuilt from the dumps by the script; the
+            # artifact keeps the dumps, the summaries and the maps.
+            rm -f churn/variants/"$name"/*.graph.json
+            [ "$name" = "sqlalchemy" ] || rm -rf "$dir"
+            echo "::endgroup::"
+          done < fixtures.txt
+      - name: sqlalchemy -- why scip-python keeps 0.66 of the hand pairs
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+        run: |
+          set -uo pipefail
+          dir="$PWD/clones/sqlalchemy"
+          mkdir -p churn/sqla
+          {
+            echo "## configuration in the checkout"
+            ls "$dir"/pyrightconfig.json 2>&1
+            grep -n -A12 '^\[tool.pyright\]' "$dir/pyproject.toml" || echo "no [tool.pyright] in pyproject.toml"
+            grep -n -A6 '^\[tool.setuptools' "$dir/pyproject.toml" || true
+            echo "## Cython sources under lib/"
+            find "$dir/lib" \( -name '*.pyx' -o -name '*.pxd' -o -name '*.pyi' \) | sed "s|$dir/||" | sort
+            grep -rl "cython" "$dir/lib/sqlalchemy" --include='*.py' | sed "s|$dir/||" | sort | head -40
+          } > churn/sqla/layout.txt 2>&1
+          cat churn/sqla/layout.txt
+          ingest() {  # $1 label, $2 index file
+            PYTHONPATH="$RUNNER_TEMP/scippb:$PWD/eval" python3 eval/scip_ingest.py --index "$2" \
+              --map churn/maps/hand/sqlalchemy.json --graph churn/graphs/sqlalchemy.hand.graph.json \
+              --lang py --out "churn/sqla/ingest-$1.json" \
+              && python3 eval/scip_churn.py missed --hand churn/graphs/sqlalchemy.hand.graph.json \
+                --ingest "churn/sqla/ingest-$1.json" --repo "$dir" --out "churn/sqla/missed-$1.json" \
+              || echo "ingest $1 FAILED"
+          }
+          ingest baseline churn/index/sqlalchemy/py.scip
+          variant() {  # $1 label; environment and files set by the caller
+            TOLMAP_SCIP_INDEX_DIR="$PWD/churn/index/$1" ./bin/tolmap dump-graph "$dir" \
+              --pkg lib/sqlalchemy --lang py --refs scip --out "churn/sqla/$1.graph.json" \
+              || echo "dump $1 FAILED"
+            python3 -c "import json,sys; g=json.load(open(sys.argv[1])); print(sys.argv[2], json.dumps(g.get('references')))" \
+              "churn/sqla/$1.graph.json" "$1" | tee -a churn/sqla/recall.txt
+            ingest "$1" "churn/index/$1/py.scip"
+          }
+          # 1. The interpreter's search path: pyright asks `python` for
+          #    sys.path, so PYTHONPATH reaches import resolution with no file
+          #    written into the checkout.
+          export PYTHONPATH="$dir/lib"
+          variant pythonpath
+          unset PYTHONPATH
+          # 2. pyright's own extraPaths, from a config file at the root.
+          if [ ! -e "$dir/pyrightconfig.json" ]; then
+            echo '{"extraPaths": ["lib"]}' > "$dir/pyrightconfig.json"
+            variant extrapaths
+            rm -f "$dir/pyrightconfig.json"
+          fi
+          python3 - <<'EOF' | tee churn/sqla/summary.txt
+          import json, pathlib
+          for path in sorted(pathlib.Path("churn/sqla").glob("missed-*.json")):
+              m = json.loads(path.read_text())
+              print(path.stem, "recall", round(m["recall"], 4), "missed", m["missed"],
+                    "by tag", m["missed_by_tag"], "kept by tag", m["kept_by_tag"])
+          EOF
+      - name: Score the rebuilds
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 eval/scip_churn.py score --work churn/vmaps --variants churn/variants \
+            --out churn/score.json --markdown churn/score.md
+          cat churn/score.md >> "$GITHUB_STEP_SUMMARY"
+          for name in flask httpx celery scrapy; do cat "churn/side/$name.md"; done > churn/side-by-side.md || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scip-churn
+          path: |
+            churn
+            !churn/index
+          retention-days: 30
 
   web:
     # The viewer had no CI at all: tsc ran only inside the Docker image at

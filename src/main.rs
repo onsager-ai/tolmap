@@ -122,6 +122,14 @@ enum Command {
         all_sources: bool,
         #[arg(long)]
         out: PathBuf,
+        /// Eval instrumentation only (finding 46). Which reference graph to
+        /// dump: `hand` (the default here, unlike `build`'s) keeps every
+        /// existing dump, including the checked-in `data/ci/*.graph.json`,
+        /// byte-identical. `scip` dumps exactly the graph a `build --refs
+        /// scip` partitions, so `eval/scip_churn.py` can take it apart and
+        /// rebuild variants of it through `build --graph`.
+        #[arg(long, default_value_t = tolmap::extract::RefsMode::Hand)]
+        refs: tolmap::extract::RefsMode,
     },
     Parity {
         reference: PathBuf,
@@ -507,15 +515,19 @@ fn main() -> Result<()> {
             lang,
             all_sources,
             out,
+            refs,
         } => {
             let graph = if wants_multi_source(&pkg, &lang, all_sources) {
                 let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
-                tolmap::extract::build_multi_source(&repo, &sources)?
+                tolmap::extract::build_multi_source_with_refs(&repo, &sources, refs)?
             } else {
                 let pkg = pkg.into_iter().next().unwrap_or_else(|| ".".to_owned());
                 let lang = lang.into_iter().next().unwrap_or_else(|| "py".to_owned());
                 let language = tolmap::extract::LanguageKind::parse(&lang)?;
-                tolmap::extract::build(&repo, &pkg, language)?
+                // `build` is a one-element `build_multi_source`, which is
+                // `build_multi_source_with_refs(.., Hand)`: the default
+                // dump is unchanged.
+                tolmap::extract::build_multi_source_with_refs(&repo, &[(pkg, language)], refs)?
             };
             let bytes = serde_json::to_vec(&graph)?;
             std::fs::write(&out, bytes).with_context(|| format!("write {}", out.display()))?;
