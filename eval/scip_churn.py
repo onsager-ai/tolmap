@@ -322,7 +322,7 @@ def merges(args) -> int:
     for d, parts_of in sorted(composition.items()):
         districts.append({
             "scip_district": d, "scip_name": sn.get(d, str(d)), "files": sum(parts_of.values()),
-            "from_hand": [[hn.get(x, str(x)), c] for x, c in parts_of.most_common()],
+            "from_hand": [[hn.get(x, str(x)), c] for x, c in sorted(parts_of.items(), key=lambda xc: (-xc[1], xc[0]))],
         })
     # Every pair of hand districts that share a SCIP district: how much
     # blended weight joins them in each graph, and which edges carry it.
@@ -697,7 +697,10 @@ def side_by_side(args) -> int:
 
     def scip_extra(d):
         counts = Counter(mh[f] for f in groups_s[d])
-        src = "; ".join(f"{hn.get(h, str(h))} {c}" for h, c in counts.most_common())
+        # Ties sorted by name: `groups_s` holds sets, so most_common()'s
+        # insertion order would follow string hashing and differ per run.
+        ordered = sorted(counts.items(), key=lambda hc: (-hc[1], hn.get(hc[0], str(hc[0]))))
+        src = "; ".join(f"{hn.get(h, str(h))} {c}" for h, c in ordered)
         matched = f", matches **{hn.get(match[d], str(match[d]))}**" if d in match else ", matches none"
         return f"{matched}. From hand: {src}"
 
