@@ -18,6 +18,11 @@ pub enum StageId {
     Detect,
     Parse,
     Resolve,
+    // `--refs scip` only (issue #110): one stage per indexed language, in
+    // the order extraction runs them. Hand-written builds never start them.
+    IndexGo,
+    IndexPy,
+    IndexTs,
     History,
     BlendPrune,
     Partition,
@@ -32,7 +37,7 @@ pub enum StageId {
 }
 
 impl StageId {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 21] = [
         Self::Clone,
         Self::CloneObjects,
         Self::CloneDeltas,
@@ -40,6 +45,9 @@ impl StageId {
         Self::Detect,
         Self::Parse,
         Self::Resolve,
+        Self::IndexGo,
+        Self::IndexPy,
+        Self::IndexTs,
         Self::History,
         Self::BlendPrune,
         Self::Partition,
@@ -57,6 +65,25 @@ impl StageId {
         Self::ALL.iter().position(|stage| *stage == self).unwrap() + 1
     }
 
+    /// The indexing stage for `language` under `--refs scip`.
+    pub fn index_for(language: crate::extract::LanguageKind) -> Self {
+        match language {
+            crate::extract::LanguageKind::Go => Self::IndexGo,
+            crate::extract::LanguageKind::Python => Self::IndexPy,
+            crate::extract::LanguageKind::TypeScript => Self::IndexTs,
+        }
+    }
+
+    /// The language an indexing stage indexes, as a `LanguageFeatures` key.
+    pub fn indexed_language(self) -> Option<&'static str> {
+        match self {
+            Self::IndexGo => Some("go"),
+            Self::IndexPy => Some("py"),
+            Self::IndexTs => Some("ts"),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Clone => "Clone or fetch",
@@ -67,6 +94,9 @@ impl StageId {
             Self::History => "Reading history",
             Self::Parse => "Parsing files",
             Self::Resolve => "Resolving imports",
+            Self::IndexGo => "Indexing Go",
+            Self::IndexPy => "Indexing Python",
+            Self::IndexTs => "Indexing TypeScript",
             Self::BlendPrune => "Blending and pruning",
             Self::Partition => "Partitioning districts",
             Self::Neighbourhoods => "Partitioning neighbourhoods",
@@ -87,6 +117,9 @@ impl StageId {
             Self::CloneCheckout
             | Self::Parse
             | Self::Resolve
+            | Self::IndexGo
+            | Self::IndexPy
+            | Self::IndexTs
             | Self::Symbols
             | Self::SymbolCards => "files",
             Self::History => "commits",

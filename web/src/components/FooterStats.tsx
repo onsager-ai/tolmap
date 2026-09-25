@@ -12,6 +12,27 @@ interface Props {
   mobileHidden: boolean;
 }
 
+const LANGUAGE_NAMES: Record<string, string> = { py: "Python", go: "Go", ts: "TypeScript" };
+
+/** Issue #110: a `--refs scip` map records per language whether its edges
+ * came from the SCIP index or fell back to the hand-written resolver
+ * (`coverage.references`). Null for a hand-written map, which has no such
+ * record, so its footer reads exactly as before. */
+function referencesSentence(doc: MapDocument): string | null {
+  const references = doc.coverage?.references;
+  if (!references) return null;
+  const exact: string[] = [];
+  const hand: string[] = [];
+  for (const [lang, row] of Object.entries(references).sort(([a], [b]) => a.localeCompare(b))) {
+    (row.path === "scip" ? exact : hand).push(LANGUAGE_NAMES[lang] ?? lang);
+  }
+  const parts = [
+    exact.length ? `exact (SCIP) for ${exact.join(", ")}` : null,
+    hand.length ? `hand-written for ${hand.join(", ")}` : null,
+  ].filter((part): part is string => part != null);
+  return `References: ${parts.join("; ")}.`;
+}
+
 /** Desktop keeps the compact stats footer. Phones show only the
  * unconnected-file chip above the collapsed selection panel. */
 export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpenUnconnected, mobileHidden }: Props) {
@@ -28,6 +49,7 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
     if (cls === "mainland") mainlandCount++;
     else if (cls === "island") islandCount++;
   }
+  const references = referencesSentence(doc);
   return (
     <div className={`pointer-events-none absolute bottom-2.5 left-2.5 max-w-[min(440px,calc(100%-22px))] rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] px-2.5 py-2 text-[9.5px] leading-relaxed text-[var(--dim)] max-[820px]:bottom-[calc(112px+env(safe-area-inset-bottom,0px))] max-[820px]:z-20 max-[820px]:border-0 max-[820px]:bg-transparent max-[820px]:p-0 ${layer === "p" ? "min-[821px]:left-[225px]" : ""}`}>
       {layer !== "p" && <span className="max-[820px]:hidden">
@@ -37,7 +59,7 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
           <b className="font-medium text-[var(--on)]">{mainlandCount} districts</b>
           {islandCount > 0 ? ` · ${islandCount} islands` : ""}
           {" · modularity "}
-          <b className="font-medium text-[var(--on)]">{doc.q}</b> · {doc.E.length} import edges. Scroll to zoom, drag to
+          <b className="font-medium text-[var(--on)]">{doc.q}</b> · {doc.E.length} {references ? "reference" : "import"} edges.{references ? ` ${references}` : ""} Scroll to zoom, drag to
           pan, search a file <i className="not-italic">or a symbol</i> to jump to it without changing the zoom.{" "}
           {doc.P
             ? "Footprint area is proportional to code lines and comparable only within one district."

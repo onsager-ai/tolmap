@@ -46,6 +46,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_BIND_ADDR` | `127.0.0.1` | listen host -- loopback unless explicitly widened (2026-09-20) |
 | `TOLMAP_STATIC_DIR` | unset | serve the built web bundle from this directory alongside the API when set (see above) |
 | `TOLMAP_PRUNE_VARIANT` | `node-relative` | blend/prune route: `absolute`, `percentile`, `node-relative`, or `pre-rescale`; unset or invalid uses `node-relative` |
+| `TOLMAP_REFS` | `hand` | reference graph for job maps: `hand` (tree-sitter resolver) or `scip` (issue #110: SCIP indexers on the worker's `PATH`, per-language fallback to `hand`, recorded in the map's `coverage.references`); unset or invalid uses `hand` |
 | `TOLMAP_DB_PATH` | `<TOLMAP_CACHE_DIR>/tolmap.sqlite3` | the SQLite store |
 | `TOLMAP_CACHE_DIR` | system temp dir `/tolmap-cache` | clone cache + indexed map files |
 | `TOLMAP_CLONE_CACHE_BYTES` | `2147483648` (2 GiB) | total clone-cache LRU eviction budget; never rejects or evicts the active clone |

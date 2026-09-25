@@ -320,9 +320,10 @@ fn kill_worker_group(pid: u32) {
 }
 
 fn refresh_queue_etas(registry: &mut RegistryInner) {
-    let prior = registry
-        .eta_model
-        .predict(&RepoFeatures::default(), &[false; 18], None);
+    let prior =
+        registry
+            .eta_model
+            .predict(&RepoFeatures::default(), &[false; StageId::ALL.len()], None);
     let mut wait_s: f64 = registry
         .running_jobs
         .values()
@@ -337,7 +338,9 @@ fn refresh_queue_etas(registry: &mut RegistryInner) {
         .sum();
     for (index, job) in registry.queue.iter().enumerate() {
         let features = registry.features.get(&job.id).cloned().unwrap_or_default();
-        let eta = registry.eta_model.predict(&features, &[false; 18], None);
+        let eta = registry
+            .eta_model
+            .predict(&features, &[false; StageId::ALL.len()], None);
         job.tx.send_modify(|snapshot| {
             snapshot.queue_position = Some(index + 1);
             snapshot.eta_start_s = Some(wait_s);
@@ -411,9 +414,10 @@ fn enqueue_job(
             .collect(),
     };
     let (tx, _rx) = watch::channel(snapshot);
-    let initial_eta = registry
-        .eta_model
-        .predict(&RepoFeatures::default(), &[false; 18], None);
+    let initial_eta =
+        registry
+            .eta_model
+            .predict(&RepoFeatures::default(), &[false; StageId::ALL.len()], None);
     tx.send_modify(|snapshot| snapshot.eta = Some(initial_eta));
     registry.jobs.insert(job_id, tx.clone());
     registry.active.insert(key.clone(), job_id);
@@ -806,6 +810,7 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         namer_model: state.config.namer_model.clone(),
         previous_maps,
         names_cache: Some(names_input.to_string_lossy().into_owned()),
+        refs: Some(state.config.refs.to_string()),
     };
     let output = match process_worker(&state, &tx, spec, started, &job_dir) {
         Ok(output) => output,
@@ -1101,9 +1106,15 @@ fn process_worker_exe(
         "TOLMAP_NAMER_INPUT_USD_PER_TOKEN",
         "TOLMAP_NAMER_OUTPUT_USD_PER_TOKEN",
         "TOLMAP_NAMER_LEDGER",
+        // Issue #110: where the worker image puts the SCIP indexers
+        // (docs/DEPLOY.md). A `--refs scip` job without them would record a
+        // fallback for every language instead of indexing.
+        "TOLMAP_SCIP_TYPESCRIPT",
+        "TOLMAP_SCIP_PYTHON",
+        "TOLMAP_SCIP_GO",
     ] {
-        // Pricing/budget knobs and a ledger path -- operator config set at
-        // service startup, not secrets (naming.rs's `reserve`/`name_districts`).
+        // Pricing/budget knobs, a ledger path and indexer locations --
+        // operator config set at service startup, not secrets.
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);
         }
@@ -1472,6 +1483,7 @@ mod tests {
             prune_variant: PruneVariant::NodeRelative,
             namer: crate::naming::NamerKind::Idf,
             namer_model: crate::naming::DEFAULT_MODEL.to_owned(),
+            refs: crate::extract::RefsMode::Hand,
             limits,
             retain_commits_per_repo: 20,
             worker_uid: current_uid(),
@@ -1888,6 +1900,7 @@ mod tests {
                     namer_model: String::new(),
                     previous_maps: vec![],
                     names_cache: None,
+                    refs: None,
                 };
                 let error = process_worker_exe(
                     &tx,
@@ -1949,6 +1962,7 @@ mod tests {
                     namer_model: String::new(),
                     previous_maps: vec![],
                     names_cache: None,
+                    refs: None,
                 };
                 let error = process_worker_exe(
                     &tx,
@@ -2109,6 +2123,7 @@ mod tests {
                 namer_model: String::new(),
                 previous_maps: vec![],
                 names_cache: None,
+                refs: None,
             };
             let error = process_worker_exe(
                 &tx,
@@ -2188,6 +2203,7 @@ mod tests {
                 namer_model: String::new(),
                 previous_maps: vec![],
                 names_cache: None,
+                refs: None,
             };
             let error = process_worker_exe(
                 &tx,
@@ -2277,6 +2293,7 @@ mod tests {
                 namer_model: String::new(),
                 previous_maps: vec![],
                 names_cache: None,
+                refs: None,
             };
             let error = process_worker_exe(
                 &tx,
@@ -2382,6 +2399,7 @@ mod tests {
                 namer_model: String::new(),
                 previous_maps: vec![],
                 names_cache: None,
+                refs: None,
             };
             let hardening = WorkerHardening {
                 job_dir: job_dir.clone(),

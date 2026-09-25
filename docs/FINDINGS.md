@@ -1611,3 +1611,76 @@ District count and modularity move for dify and n8n the way finding 12 already d
 The [full-corpus `build` run](https://github.com/onsager-ai/tolmap/actions/runs/35966535603) (dispatched without a `repos` filter, so it built the whole default corpus rather than only the four repos this fix concerns) shows dify's and n8n's own jobs as failed: both hit the pre-existing `eval/measure_typed_edges.py` `assert primary_map == compare_map` at the top of that script, which finding 42's PR (`#113`) already documented as expected to misfire on these exact four repos once their maps legitimately differ from main -- `remote-build.yml`'s own inline comment on the following step says so directly. The four repos' own `Measure workspace-package import resolution`/`measure_module_resolution.py` steps, which do not assume a byte-identical map, ran and passed regardless (`if: always()`). Several unrelated repos in that same full-corpus run also failed for reasons this PR did not investigate, since they are outside its four-repo measurement scope.
 
 No dependency changes. Only `src/extract.rs` changed: `redirect_excluded_workspace_import` and `shallowest_parsed_file_in_package` added to the TypeScript resolution chain, plus one new `redirected_from_excluded` counter in `workspace_import_coverage`.
+
+## 44. The product's SCIP ingest reproduces P0's oracle exactly; where an index is admitted, districts move, and where it falls back, nothing does
+
+Owner decisions, session `16030105`, AskUserQuestion: line 3770 (2026-09-24T05:07:45Z) **"Go to SCIP now"**; line 4359 (06:15:43Z) **"Bigger production machine"**, **"Installs in a sandbox"**; line 4376 (06:26:42Z) **"Go: P1a+P1b now, P1c design first"**. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s P1a, [PR #119](https://github.com/onsager-ai/tolmap/pull/119). It uses number 44 because main has 43 (#118).
+
+**What ships.** `tolmap build --refs scip` (default `hand`; also `WorkerSpec.refs` and `TOLMAP_REFS`) runs scip-python and scip-go at the repository root and scip-typescript once over every tracked `tsconfig.json`, deepest first (finding 41's method), from `src/indexers.rs`. Nothing is installed: Go runs with `GOPROXY=off`, `GOTOOLCHAIN=local` and an empty module cache. `src/scip_ingest.rs` streams each index one `Document` at a time and derives what P0's `eval/scip_ingest.py` derives. In-repo file pairs weighted by distinct referenced symbols replace the `static` signal ahead of the unchanged mass-normalised blend (finding 1). Reference occurrences are credited to the innermost span of the finished symbols document on both ends. `is_implementation` rows become `implements` (type → interface), `extends` (other type → type) or `overrides` (callable → callable), and Go's `possible_implementation` rows are dropped. A language takes the SCIP path only if its indexer exits 0 and the index keeps at least `MIN_RECALL` = 0.80 of the hand-written graph's intra-language pairs, compared by file for Python and TypeScript and by target directory for Go, because `resolve_multi` spreads a Go import over the whole package. The map's `coverage.references` records the path, a reason code, the indexer version, recall and pair counts for each language.
+
+**Why 0.80.** Finding 41's no-install table puts every configuration that loaded at 0.894 or more: dify's Python at the root is the lowest, then django 0.990, vue 0.998, and prometheus's Go 0.997 by directory. n8n's TypeScript lost its `@n8n/*` graph and kept 0.514. On today's main, which has #113 and #118, n8n keeps 0.5003 and dify's Python 0.8942, so the margins are 0.30 below and 0.09 above.
+
+[Remote-build run 35980662134](https://github.com/onsager-ai/tolmap/actions/runs/35980662134) (`command=scip-ingest`) built the branch at `257b74e`, rebased on main `0c56429`, on standard runners with P0's pinned indexers (scip-typescript 0.4.0, scip-python 0.6.6, scip-go v0.2.7). It built the five `eval/corpus.toml` pins with `--refs hand` once, `--refs scip` three times cold (the first keeping its indexes in `TOLMAP_SCIP_INDEX_DIR`), and `--refs scip` once warm-started from the hand map. `eval/scip_ingest_measure.py` then ran P0's Python ingest on the very indexes the Rust build read.
+
+### The Rust ingest against the oracle
+
+| repo | language | path (reason) | recall, Rust = oracle | hand pairs | SCIP pairs, Rust = oracle | map `E` = oracle pairs | symbol reference pairs / occurrences, Rust = oracle | implementations typed / oracle |
+|---|---|---|---:|---:|---:|---|---|---:|
+| django | py | scip (indexed) | 0.9899 | 3,173 | 4,018 | yes | 18,453 / 28,689 | 3,219 / 3,219 |
+| dify | py | scip (indexed) | 0.8942 | 7,611 | 10,961 | yes | 62,900 / 139,239 | 3,439 / 3,439 |
+| dify | ts | hand (indexer_failed, exit 1) | — | 20,257 | — | — | — | — |
+| n8n | ts | hand (below_min_recall) | 0.5003 | 40,505 | 23,840 | — | — | — |
+| prometheus | go | scip (indexed) | 0.9969 (directory) | 956 | 5,436 | yes | 19,952 / 47,072 | 1,630 / 1,630 |
+| prometheus | ts | scip (indexed) | 1.0000 | 514 | 530 | yes | 1,598 / 3,988 | 21 / 21 |
+| vue | ts | scip (indexed) | 0.9975 | 1,186 | 1,911 | yes | 9,367 / 17,257 | 16 / 16 |
+
+**Every number agrees with the oracle exactly.** For every admitted language, the map's `E` is the oracle's file-pair set with no pair on either side alone. Every credited symbol pair has the oracle's occurrence count, with zero pairs differing. Every oracle implementation pair is in the map as an inheritance row. For the two fallbacks, the gate's pair count and recall equal the oracle's. The SCIP pair counts also equal finding 41's P0 table (4,018; 10,961; 5,436; 530; 1,911; 23,840). Rust and Python decode the same `scip.proto` (v0.10.0) independently, so this is two implementations agreeing, not one checking itself.
+
+### Against `--refs hand`
+
+Placement is `tolmap parity` of the SCIP map against the hand map. "Warm" seeds Leiden from the hand map, as the product would when a repository switches. Peak RSS is the largest single process, which is the indexer.
+
+| repo | hand districts / q | SCIP districts / q | cold placement | warm districts / q / placement | zero-edge files hand → SCIP | `E` hand → SCIP | build s hand → SCIP | peak RSS MB hand → SCIP |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| django | 12 / 0.5092 | 14 / 0.5004 | 70.5% | 12 / 0.5024 / 89.8% | 215 → 216 | 3,173 → 4,018 | 5.2 → 130.1 | 45 → 4,904 |
+| dify | 71 / 0.6868 | 36 / 0.6875 | 73.1% | 34 / 0.6826 / 94.6% | 292 → 231 | 27,868 → 31,218 | 30.8 → 297.6 | 191 → 6,914 |
+| n8n | 78 / 0.7775 | 78 / 0.7775 | 100.0% | 78 / 0.7776 / 99.9% | 134 → 134 | 40,505 → 40,505 | 65.8 → 371.4 | 273 → 9,123 |
+| prometheus | 11 / 0.6266 | 16 / 0.6693 | 80.7% | 14 / 0.6804 / 89.5% | 8 → 35 | 6,088 → 5,966 | 5.7 → 17.3 | 44 → 738 |
+| vue | 8 / 0.5389 | 7 / 0.4739 | 74.5% | 8 / 0.4806 / 83.7% | 0 → 0 | 1,186 → 1,911 | 1.9 → 24.2 | 32 → 739 |
+
+**A fallback costs time, not bytes.** n8n's TypeScript falls back. Its SCIP map places 100% of files as the hand map does, with the same districts, `q` and `E`; the only differences are the recorded `coverage.references` and 5.1 minutes of scip-typescript at 9.1 GB. The 99.9% warm figure is Leiden seeded from the hand map on an identical graph, not a change in edges. dify's TypeScript fails in 0.5 s (TS6053, finding 41) and keeps its hand-written graph, while dify's Python is admitted. That consolidates dify from 71 districts to 36 and cuts its zero-edge files from 292 to 231.
+
+**Where an index is admitted, the partition moves more than the pair overlap suggests**, as finding 41 found with its approximate construction. Cold placement is 70.5–80.7%, and warm-starting brings it to 83.7–94.6%. The product's numbers differ slightly from P0's re-partition (django 71.1% → 70.5%, prometheus 83.0% → 80.7%) because the product computes co-change, proximity and semantic exactly for pairs that are new to the candidate set, where P0 zeroed co-change and semantic. Also, #113 and #118 changed the hand-written TypeScript graph in between.
+
+**Determinism.** Three cold `--refs scip` builds wrote byte-identical map and symbols documents on all five repositories. That includes prometheus, whose scip-go index bytes differ between runs (finding 41): the ingest sorts everything it derives. CI's new `scip` job repeats the three-build check on every push, on the synthetic polyglot fixture (scip-go, scip-typescript) and the synthetic islands fixture (scip-python). It also asserts that each language actually took the SCIP path and that a missing indexer falls back rather than failing.
+
+### Symbols
+
+Rows by kind for SCIP-path languages, hand → SCIP. `reference` is a SCIP pair the tree-sitter pass did not resolve, so no syntactic kind is known. Pairs it did resolve keep their hand-written kind with SCIP's occurrence count, and hand pairs SCIP does not confirm are dropped.
+
+| repo | language | call | annotation | decorator | value | reference | extends | implements | overrides | possible_implementation |
+|---|---|---|---|---|---|---|---|---|---|---|
+| django | py | 8,529 → 8,311 | 14 → 14 | 385 → 4 | 764 → 717 | 0 → 9,407 | 1,507 → 1,574 | 0 → 0 | 2,037 → 2,173 | 0 → 0 |
+| dify | py | 9,790 → 9,734 | 3,808 → 3,360 | 598 → 54 | 224 → 220 | 0 → 49,532 | 1,138 → 2,519 | 0 → 0 | 136 → 1,116 | 0 → 0 |
+| prometheus | go | 3,685 → 3,555 | — | — | 30 → 29 | 0 → 16,368 | 0 → 0 | 0 → 517 | 0 → 1,113 | 902 → 0 |
+| prometheus | ts | 479 → 438 | 431 → 431 | — | — | 0 → 729 | 12 → 12 | 4 → 4 | 0 → 17 | — |
+| vue | ts | 2,320 → 2,073 | 2,075 → 2,063 | — | 2 → 2 | 0 → 5,229 | 4 → 4 | 4 → 7 | 3 → 11 | — |
+
+Go's 902 `possible_implementation` candidates (finding 37) are replaced by 517 exact `implements` rows (struct → interface) and 1,113 `overrides` rows (method → interface method). Inheritance rows are the union of the hand-written rows and SCIP's, because hand rows are resolved declarations rather than guesses. dify's `overrides` go from 136 to 1,116 and its `extends` from 1,138 to 2,519.
+
+### What this costs, and three effects that are real
+
+- **Cost is minutes and gigabytes.** Indexing took 125 s for django's Python, 266 s for dify's Python, 305 s for n8n's TypeScript, 22 s for vue, and 5 + 7 s for prometheus. Peak RSS was 4.9–9.1 GB against 32–273 MB for the hand-written build. This is why the owner chose a bigger production machine; hosted jobs stay `hand` until P1b's image and that machine are live.
+- **Unindexed files lose their edges.** The fallback is per language, not per file. prometheus has 35 of 444 Go files that scip-go does not document (platform and build-tag variants plus nested modules, finding 41), and they lose every static edge: zero-edge files go from 8 to 35. A per-file fallback, which would keep hand-written edges for files the index does not document, is a design question for P2, not a tuning change.
+- **Decorators no longer credit their function.** A decorator sits above the line where its function's span starts, so crediting on the span, as P0 does, gives the decorator reference to the enclosing class or module. Decorator rows fall from 385 to 4 on django and from 598 to 54 on dify. Crediting from the tree-sitter pass's `credit_start` would restore them, but it breaks exact agreement with the oracle, so it is left for P2 together with re-deriving the fixtures.
+- **Go package clauses are edges.** P0's primary weighting counts each file's `package x` clause as a reference to the package symbol, whose definition sits in one file of the package. Every file in a package therefore links to that file. On the synthetic polyglot fixture this turns 3 hand-written Go pairs (by directory) into 36 SCIP pairs. P0 measured the `uses` variant, which drops these pairs, and found it not consistently better (finding 41), so the weighting stays P0's.
+
+### `--refs hand` is unchanged
+
+- **Nine fixtures:** [remote-build run 35980673775](https://github.com/onsager-ai/tolmap/actions/runs/35980673775) built `257b74e` and main on the nine fixture pins. Map and symbols documents are byte-identical on all nine. The run's red status is its `eval/symbol_stats.py` step. That step fails with `KeyError: 'symbol_rings'` in `sample_sibling_overlaps` on maps without card geometry, reading outputs that are byte-identical to main's, so it would fail the same way on main.
+- **Corpus:** [remote-build run 35980684177](https://github.com/onsager-ai/tolmap/actions/runs/35980684177) built `257b74e` and main on all 132 `eval/corpus.toml` pins. 128 are byte-identical in both the map and the symbols document. The other 4 failed identically on both binaries: sveltejs/svelte and withastro/astro clear no `--all-sources` floor, axios/axios has no supported source, and microsoftgraph/msgraph-sdk-go stops during region drawing with no build output.
+- **CI:** the offline flask/httpx parity and the three-build `--all-sources` determinism check pass unchanged.
+
+### Not settled here
+
+Whether SCIP becomes the default is P2. That means re-deriving the fixtures, since the oracle's membership moves (vue cold 74.5%), deciding the per-file fallback and decorator crediting above, and showing the viewer which references are exact. Dependency installs, which would admit dify's and n8n's TypeScript (finding 41: dify installed keeps 16,539 of 16,546 pairs), wait for P1c's sandbox. Rooting Python per project, which finding 41 measured at 0.970 for dify's `api/`, is not done.

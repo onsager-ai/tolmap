@@ -35,6 +35,13 @@ const ANNOTATION: usize = 5;
 const DECORATOR: usize = 6;
 const VALUE: usize = 7;
 const POSSIBLE_IMPLEMENTATION: usize = 8;
+/// Issue #110 P1a: a SCIP reference whose syntactic kind the hand-written
+/// pass did not establish. SCIP knows which symbol a name refers to, not
+/// whether the occurrence was a call, an annotation or a value. Appended to
+/// a document's `kinds` legend only when a language took the SCIP path; the
+/// viewer draws any kind outside extends/implements/overrides as an
+/// ordinary reference line.
+const REFERENCE: usize = 9;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Span {
@@ -160,6 +167,23 @@ pub(crate) struct SymbolSpool {
     path: PathBuf,
     file: File,
     index: BTreeMap<String, (u64, u64)>,
+    /// `--refs scip` reference data for the languages that took the SCIP
+    /// path, set by extraction once the fallback gate has run.
+    pub(crate) scip: Option<ScipSymbolRefs>,
+}
+
+/// SCIP reference occurrences and implementation relationships, in
+/// `scip_ingest`'s `(file, line)` form. They are credited to symbols only
+/// in [`build_with_progress`], after the final symbol order is fixed,
+/// because P0's oracle credits against the finished symbols document.
+#[derive(Default)]
+pub(crate) struct ScipSymbolRefs {
+    /// Language codes (`py`, `go`, `ts`) whose references come from SCIP.
+    pub(crate) languages: BTreeSet<String>,
+    /// File id -> path for the ids below (extraction's lexical order).
+    pub(crate) files: Vec<String>,
+    pub(crate) refs: Vec<([u32; 4], u32)>,
+    pub(crate) implementations: Vec<[u32; 4]>,
 }
 
 impl SymbolSpool {
@@ -179,6 +203,7 @@ impl SymbolSpool {
             path,
             file,
             index: BTreeMap::new(),
+            scip: None,
         })
     }
 
@@ -1681,7 +1706,7 @@ pub(crate) fn build_with_progress(
     for (new, old) in order.iter().enumerate() {
         index[*old] = new;
     }
-    let symbols = order
+    let symbols: Vec<HierSymbolRow> = order
         .into_iter()
         .map(|old| {
             let s = &spans[old];
@@ -1703,20 +1728,227 @@ pub(crate) fn build_with_progress(
         .collect();
     let mut edges = edges
         .into_iter()
-        .map(|((a, b, kind), count)| [index[a], index[b], count, kind])
+        .map(|((a, b, kind), count)| ((index[a], index[b], kind), count))
+        .collect::<BTreeMap<_, _>>();
+    let mut kinds = symbol_edge_kinds();
+    if let Some(scip) = spool.scip.take().filter(|scip| !scip.languages.is_empty()) {
+        apply_scip(&symbols, nodes, &scip, &mut edges);
+        coverage.possible_implementations = edges
+            .keys()
+            .filter(|(_, _, kind)| *kind == POSSIBLE_IMPLEMENTATION)
+            .count();
+        kinds.push("reference".to_owned());
+    }
+    let mut edges = edges
+        .into_iter()
+        .map(|((a, b, kind), count)| [a, b, count, kind])
         .collect::<Vec<_>>();
     edges.sort_unstable();
     Ok(SymbolsDocument {
         files: (0..nodes.len()).collect(),
         symbols,
         edges,
-        kinds: symbol_edge_kinds(),
+        kinds,
         module_code_lines,
         coverage,
         symbol_rings: None,
         module_rings: None,
         header_rings: None,
     })
+}
+
+/// The innermost symbol span containing a 1-based line of a file, over the
+/// finished symbols document -- P0's `Spans` (eval/scip_ingest.py) exactly:
+/// per file, a line -> symbol table filled largest span first (then by
+/// depth, then by index), so a nested symbol overwrites its container.
+struct Innermost<'a> {
+    symbols: &'a [HierSymbolRow],
+    by_file: BTreeMap<usize, Vec<usize>>,
+    depth: Vec<usize>,
+    tables: BTreeMap<usize, Vec<isize>>,
+}
+
+impl<'a> Innermost<'a> {
+    fn new(symbols: &'a [HierSymbolRow]) -> Self {
+        let mut by_file = BTreeMap::<usize, Vec<usize>>::new();
+        let mut depth = vec![0; symbols.len()];
+        for (i, row) in symbols.iter().enumerate() {
+            by_file.entry(row.0 .0).or_default().push(i);
+            let mut parent = row.0 .5;
+            while parent >= 0 {
+                depth[i] += 1;
+                parent = symbols[parent as usize].0 .5;
+            }
+        }
+        Self {
+            symbols,
+            by_file,
+            depth,
+            tables: BTreeMap::new(),
+        }
+    }
+
+    fn at(&mut self, file: usize, line: usize) -> Option<usize> {
+        if !self.tables.contains_key(&file) {
+            let ids = self.by_file.get(&file)?;
+            let last = ids.iter().map(|&i| self.symbols[i].0 .4).max().unwrap_or(0);
+            let mut table = vec![-1isize; last + 2];
+            let mut order = ids.clone();
+            order.sort_by_key(|&i| {
+                let row = &self.symbols[i].0;
+                (Reverse(row.4.saturating_sub(row.3)), self.depth[i], i)
+            });
+            for i in order {
+                let row = &self.symbols[i].0;
+                if row.3 > row.4 {
+                    continue;
+                }
+                for slot in &mut table[row.3..=row.4] {
+                    *slot = i as isize;
+                }
+            }
+            self.tables.insert(file, table);
+        }
+        let table = &self.tables[&file];
+        table
+            .get(line)
+            .copied()
+            .filter(|&owner| owner >= 0)
+            .map(|owner| owner as usize)
+    }
+
+    fn is_self_or_ancestor(&self, target: usize, owner: usize) -> bool {
+        let mut current = owner as isize;
+        while current >= 0 {
+            if current as usize == target {
+                return true;
+            }
+            current = self.symbols[current as usize].0 .5;
+        }
+        false
+    }
+}
+
+fn is_type(kind: usize) -> bool {
+    matches!(kind, CLASS | INTERFACE | TYPE)
+}
+
+fn is_callable(kind: usize) -> bool {
+    matches!(kind, FUNCTION | METHOD | NESTED_FUNCTION)
+}
+
+/// `--refs scip`: replace the hand-written reference edges of every symbol
+/// in a SCIP-path language with SCIP's, in the finished symbols document's
+/// index space (`edges` is keyed `(source, target, kind)`).
+///
+/// - **References** (call, annotation, decorator, value): the hand-written
+///   rows whose source is in a SCIP language are dropped, and every SCIP
+///   occurrence is credited as P0 credits it -- source and target are the
+///   innermost spans containing the reference line and the definition line;
+///   module-level references (no enclosing span) and references to the
+///   enclosing symbol or one of its ancestors are not credited. A pair keeps
+///   the hand-written kind when the tree-sitter pass resolved the same pair
+///   (the smallest kind index if several: call before annotation), since
+///   only syntax knows which it was; otherwise it is `reference`. Counts are
+///   SCIP's occurrences. A hand pair SCIP does not confirm is dropped: SCIP
+///   is the type checker's resolution, and finding 41 confirmed 86.8-99.4%
+///   of hand call pairs.
+/// - **Inheritance**: SCIP `is_implementation` relationships are added to
+///   the hand-written extends/implements/overrides rows, which stay: they
+///   are resolved declarations, not guesses, and finding 41 found SCIP's
+///   relationships covering 3,016 of django's 3,544 of them, not all. A
+///   type -> interface relationship from a non-interface is `implements`;
+///   any other type -> type relationship is `extends` (a TypeScript or Go
+///   interface -> interface one included); callable -> callable is
+///   `overrides`, which for Go is a method satisfying an interface method.
+/// - **Go's `possible_implementation`** rows are dropped: scip-go proves
+///   satisfaction exactly, so its `implements` rows replace the name-and-
+///   arity candidates finding 37 warned about.
+fn apply_scip(
+    symbols: &[HierSymbolRow],
+    nodes: &[SourceNode],
+    scip: &ScipSymbolRefs,
+    edges: &mut BTreeMap<(usize, usize, usize), usize>,
+) {
+    let on_scip = |symbol: usize| scip.languages.contains(&nodes[symbols[symbol].0 .0].lang);
+    let reference_kind = |kind: usize| matches!(kind, CALL | ANNOTATION | DECORATOR | VALUE);
+    let mut hand_kind = BTreeMap::<(usize, usize), usize>::new();
+    for &(a, b, kind) in edges.keys() {
+        if reference_kind(kind) && on_scip(a) {
+            hand_kind
+                .entry((a, b))
+                .and_modify(|known| *known = (*known).min(kind))
+                .or_insert(kind);
+        }
+    }
+    edges.retain(|&(a, _, kind), _| {
+        !(on_scip(a) && (reference_kind(kind) || kind == POSSIBLE_IMPLEMENTATION))
+    });
+
+    let file_of = nodes
+        .iter()
+        .enumerate()
+        .map(|(fi, node)| (node.file.as_str(), fi))
+        .collect::<BTreeMap<_, _>>();
+    let remap = scip
+        .files
+        .iter()
+        .map(|file| file_of.get(file.as_str()).copied())
+        .collect::<Vec<_>>();
+    let mut spans = Innermost::new(symbols);
+    let mut credited = BTreeMap::<(usize, usize), usize>::new();
+    for &([from_file, from_line, to_file, to_line], count) in &scip.refs {
+        let (Some(from), Some(to)) = (remap[from_file as usize], remap[to_file as usize]) else {
+            continue;
+        };
+        let Some(owner) = spans.at(from, from_line as usize) else {
+            continue;
+        };
+        let Some(target) = spans.at(to, to_line as usize) else {
+            continue;
+        };
+        if !on_scip(owner) || spans.is_self_or_ancestor(target, owner) {
+            continue;
+        }
+        *credited.entry((owner, target)).or_default() += count as usize;
+    }
+    for ((owner, target), count) in credited {
+        let kind = hand_kind
+            .get(&(owner, target))
+            .copied()
+            .unwrap_or(REFERENCE);
+        *edges.entry((owner, target, kind)).or_default() += count;
+    }
+
+    for &[source_file, source_line, target_file, target_line] in &scip.implementations {
+        let (Some(source_fi), Some(target_fi)) =
+            (remap[source_file as usize], remap[target_file as usize])
+        else {
+            continue;
+        };
+        let (Some(source), Some(target)) = (
+            spans.at(source_fi, source_line as usize),
+            spans.at(target_fi, target_line as usize),
+        ) else {
+            continue;
+        };
+        if source == target || !on_scip(source) {
+            continue;
+        }
+        let (source_kind, target_kind) = (symbols[source].0 .2, symbols[target].0 .2);
+        let kind = if is_type(source_kind) && is_type(target_kind) {
+            if target_kind == INTERFACE && source_kind != INTERFACE {
+                IMPLEMENTS
+            } else {
+                EXTENDS
+            }
+        } else if is_callable(source_kind) && is_callable(target_kind) {
+            OVERRIDES
+        } else {
+            continue;
+        };
+        edges.entry((source, target, kind)).or_insert(1);
+    }
 }
 
 pub(crate) fn write_sibling(
@@ -2323,6 +2555,78 @@ mod tests {
         assert!(edge(&doc, id(&doc, 1, "Local"), id(&doc, 0, "Target")));
         assert!(edge(&doc, id(&doc, 2, "Caller"), id(&doc, 0, "Target")));
         assert!(edge(&doc, id(&doc, 4, "use"), id(&doc, 3, "run")));
+    }
+
+    /// P0's self-test crediting (eval/scip_ingest.py `self_test`): the two
+    /// calls of `f` inside `g` credit g -> f twice, the import and the
+    /// module-level use of `C` credit nothing, and C's implementation of
+    /// Base is an `extends` row. A hand-written pair SCIP confirms keeps its
+    /// syntactic kind with SCIP's count; one SCIP does not confirm is
+    /// dropped; a hand-written extends row stays.
+    #[test]
+    fn scip_references_credit_innermost_spans_like_the_p0_oracle() {
+        let row = |file: usize, name: &str, kind: usize, start: usize, end: usize| {
+            HierSymbolRow((file, name.to_owned(), kind, start, end, -1, 1, false))
+        };
+        let symbols = vec![
+            row(0, "f", FUNCTION, 2, 3),
+            row(0, "C", CLASS, 5, 8),
+            row(1, "Base", CLASS, 3, 4),
+            row(1, "g", FUNCTION, 6, 9),
+        ];
+        let nodes = ["pkg/a.py", "pkg/b.py", "pkg/c.py"]
+            .map(|file| source(file, file, "py"))
+            .to_vec();
+        let scip = ScipSymbolRefs {
+            languages: BTreeSet::from(["py".to_owned()]),
+            files: nodes.iter().map(|node| node.file.clone()).collect(),
+            refs: vec![([1, 1, 0, 1], 1), ([1, 7, 0, 2], 2), ([1, 10, 0, 5], 1)],
+            implementations: vec![[0, 5, 1, 3]],
+        };
+
+        let mut edges = BTreeMap::new();
+        apply_scip(&symbols, &nodes, &scip, &mut edges);
+        assert_eq!(
+            edges,
+            BTreeMap::from([((1, 2, EXTENDS), 1), ((3, 0, REFERENCE), 2)])
+        );
+
+        let mut edges = BTreeMap::from([
+            ((3, 0, CALL), 1),
+            ((3, 0, VALUE), 1),
+            ((3, 2, CALL), 5),
+            ((1, 2, EXTENDS), 1),
+        ]);
+        apply_scip(&symbols, &nodes, &scip, &mut edges);
+        assert_eq!(
+            edges,
+            BTreeMap::from([((1, 2, EXTENDS), 1), ((3, 0, CALL), 2)])
+        );
+    }
+
+    #[test]
+    fn scip_go_implements_replaces_possible_implementation() {
+        let symbols = vec![
+            HierSymbolRow((0, "Store".to_owned(), CLASS, 1, 3, -1, 1, false)),
+            HierSymbolRow((0, "Get".to_owned(), METHOD, 5, 7, 0, 1, false)),
+            HierSymbolRow((1, "Getter".to_owned(), INTERFACE, 1, 3, -1, 1, false)),
+            HierSymbolRow((1, "Get".to_owned(), METHOD, 2, 2, 2, 1, false)),
+        ];
+        let nodes = ["store.go", "api/getter.go"]
+            .map(|file| source(file, file, "go"))
+            .to_vec();
+        let scip = ScipSymbolRefs {
+            languages: BTreeSet::from(["go".to_owned()]),
+            files: nodes.iter().map(|node| node.file.clone()).collect(),
+            refs: Vec::new(),
+            implementations: vec![[0, 1, 1, 1], [0, 5, 1, 2]],
+        };
+        let mut edges = BTreeMap::from([((0, 2, POSSIBLE_IMPLEMENTATION), 1)]);
+        apply_scip(&symbols, &nodes, &scip, &mut edges);
+        assert_eq!(
+            edges,
+            BTreeMap::from([((0, 2, IMPLEMENTS), 1), ((1, 3, OVERRIDES), 1)])
+        );
     }
 }
 

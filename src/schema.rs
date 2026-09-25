@@ -101,6 +101,44 @@ pub struct CoverageReport {
     pub zero_edge_files: usize,
     pub total_files: usize,
     pub by_language: BTreeMap<String, CoverageLanguage>,
+    // Issue #110 P1a: which reference graph each language's static signal
+    // and symbol references came from, and why. Written only by
+    // `tolmap build --refs scip`; absent means every language used the
+    // hand-written resolver, so a `--refs hand` map stays byte-identical to
+    // one built before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references: Option<BTreeMap<String, ReferenceCoverage>>,
+}
+
+// One language's reference path under `--refs scip`. Plain `//` comments
+// here, not doc comments: ts-rs copies doc comments into the hand-checked
+// bindings.
+//
+// `path` is "scip" when the language's SCIP index passed the fallback gate
+// (`scip_ingest::gate`), "hand" otherwise. `reason` is a stable code, never
+// indexer output: "indexed" (admitted), "below_min_recall",
+// "indexer_not_found", "indexer_failed", "indexer_spawn_failed",
+// "no_index_written", "no_tsconfig", "no_documents" or "ingest_failed".
+// Nothing here is a timing, so the map stays byte-identical across runs.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+#[ts(export)]
+pub struct ReferenceCoverage {
+    pub path: String,
+    pub reason: String,
+    // `tool_info` name and version from the index metadata.
+    pub indexer: Option<String>,
+    pub exit_code: Option<i32>,
+    // Mapped files of this language, and how many the index documented.
+    pub files: usize,
+    pub files_indexed: Option<usize>,
+    // Distinct pairs at `granularity` in the hand-written graph, directed
+    // file pairs in the SCIP graph, and the share of the former the latter
+    // keeps (rounded to 4 places; the gate compares the unrounded value).
+    pub hand_pairs: usize,
+    pub scip_pairs: Option<usize>,
+    pub recall: Option<f64>,
+    pub min_recall: f64,
+    pub granularity: String,
 }
 
 /// Indices in this document are global and stable across district responses.
@@ -332,6 +370,10 @@ pub struct GraphData {
     pub commits_scanned: usize,
     pub nodes: Vec<SourceNode>,
     pub edges: Vec<SignalEdge>,
+    /// `--refs scip` only: the per-language reference paths, carried to the
+    /// map's `coverage.references`. Serialized only when present, so a
+    /// hand-written graph dumps byte-identically.
+    pub references: Option<BTreeMap<String, ReferenceCoverage>>,
 }
 
 #[derive(Deserialize)]
@@ -347,6 +389,8 @@ struct GraphDataWire {
     commits_scanned: usize,
     nodes: Vec<SourceNode>,
     edges: Vec<SignalEdge>,
+    #[serde(default)]
+    references: Option<BTreeMap<String, ReferenceCoverage>>,
 }
 
 struct GraphImports<'a>(&'a GraphData);
@@ -390,7 +434,8 @@ impl Serialize for GraphData {
     {
         // Keep the derived serializer's established field order so
         // `tolmap dump-graph` remains byte-identical.
-        let mut state = serializer.serialize_struct("GraphData", 10)?;
+        let fields = if self.references.is_some() { 11 } else { 10 };
+        let mut state = serializer.serialize_struct("GraphData", fields)?;
         state.serialize_field("repo", &self.repo)?;
         state.serialize_field("pkg", &self.pkg)?;
         state.serialize_field("lang", &self.lang)?;
@@ -401,6 +446,9 @@ impl Serialize for GraphData {
         state.serialize_field("commits_scanned", &self.commits_scanned)?;
         state.serialize_field("nodes", &self.nodes)?;
         state.serialize_field("edges", &self.edges)?;
+        if let Some(references) = &self.references {
+            state.serialize_field("references", references)?;
+        }
         state.end()
     }
 }
@@ -460,6 +508,7 @@ impl<'de> Deserialize<'de> for GraphData {
             commits_scanned: wire.commits_scanned,
             nodes: wire.nodes,
             edges: wire.edges,
+            references: wire.references,
         })
     }
 }
@@ -528,6 +577,7 @@ mod tests {
                 })
                 .collect(),
             edges: Vec::new(),
+            references: None,
         };
 
         let bytes = serde_json::to_vec(&data).unwrap();
