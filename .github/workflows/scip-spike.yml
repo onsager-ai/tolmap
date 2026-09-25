@@ -120,8 +120,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p base
+          # --refs hand: "today's map" is the hand-written baseline P0
+          # measures SCIP against; scip became the default in P2a.
           /usr/bin/time -v -o base/build.time.txt \
-            bin/tolmap build "$PWD/clone" $ARGS --name "$STEM" --out base > base/build.log 2>&1
+            bin/tolmap build "$PWD/clone" $ARGS --refs hand --name "$STEM" --out base > base/build.log 2>&1
           rm -rf "base/${STEM}.symbols"
           bin/tolmap dump-graph "$PWD/clone" $ARGS --out "base/${STEM}.graph.json" > base/dump.log 2>&1
           bin/tolmap build --graph "base/${STEM}.graph.json" --name "${STEM}.control" \

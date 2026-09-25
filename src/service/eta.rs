@@ -278,8 +278,21 @@ impl EtaModel {
         let mut low_s = (seconds * (1.0 - width).max(0.15)).max(0.0);
         let mut high_s = seconds * (1.0 + width);
         if features.languages.is_empty() && features.clone_bytes.is_none() {
-            low_s = low_s.min(6.14);
-            high_s = high_s.max(101.163);
+            // Nothing is known about the repository yet (a queued job). The
+            // indexing stages seed per language, so with no languages they
+            // cost nothing, and a `--refs scip` job -- the default since
+            // #110 P2a -- would be quoted a hand-written build's range. Use
+            // the whole-build range each path was measured at instead:
+            // finding 36's hand corpus (django 6.14 s .. n8n 101.163 s), or
+            // finding 44's `--refs scip` builds (prometheus 17.3 s .. n8n
+            // 371.4 s, indexing included).
+            let (fastest, slowest) = if features.refs.as_deref() == Some("scip") {
+                (17.3, 371.4)
+            } else {
+                (6.14, 101.163)
+            };
+            low_s = low_s.min(fastest);
+            high_s = high_s.max(slowest);
         }
         Eta {
             low_s,
@@ -474,6 +487,26 @@ mod tests {
         let python = model.stage(StageId::IndexPy, &input);
         assert!(python > 60.0 && python < 120.0, "{python}");
         assert_eq!(model.stage(StageId::IndexGo, &input), 0.0);
+    }
+
+    // #110 P2a: a queued job knows only the service's reference mode. Under
+    // the SCIP default its prior must cover finding 44's indexing-inclusive
+    // build times, not the hand-written range.
+    #[test]
+    fn unknown_repository_prior_covers_scip_indexing() {
+        let model = EtaModel::default();
+        let hand = model.predict(&RepoFeatures::default(), &[false; STAGE_COUNT], None);
+        let scip = model.predict(
+            &RepoFeatures {
+                refs: Some("scip".to_owned()),
+                ..RepoFeatures::default()
+            },
+            &[false; STAGE_COUNT],
+            None,
+        );
+        assert!(hand.high_s >= 101.163 && hand.high_s < 371.4, "{hand:?}");
+        assert!(scip.high_s >= 371.4, "{scip:?}");
+        assert!(scip.midpoint() > hand.midpoint());
     }
 
     #[test]

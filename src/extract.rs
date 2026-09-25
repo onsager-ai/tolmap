@@ -216,17 +216,23 @@ enum FileRaw {
 
 /// Where the static signal and symbol references come from (issue #110).
 ///
-/// `Hand` is today's tree-sitter resolver and the default: a `--refs hand`
-/// map is byte-identical to one built before this option existed. `Scip`
-/// runs each detected language's SCIP indexer (`indexers`), reads the index
-/// (`scip_ingest`) and uses it per language wherever it passes the fallback
-/// gate (`scip_ingest::gate`); every other language keeps the hand-written
-/// graph, and the map's `coverage.references` records which path each
-/// language took and why.
+/// `Scip`, the default since issue #110 P2a, runs each detected language's
+/// SCIP indexer (`indexers`), reads the index (`scip_ingest`) and uses it
+/// per language wherever it passes the fallback gate (`scip_ingest::gate`);
+/// every other language -- including one whose indexer is not installed --
+/// keeps the hand-written graph, and the map's `coverage.references`
+/// records which path each language took and why. `Hand` is the tree-sitter
+/// resolver alone: a `--refs hand` map is byte-identical to one built
+/// before this option existed, which is why every gate that compares with
+/// the frozen Python reference (which only knows the hand resolver) passes
+/// `--refs hand` explicitly rather than relying on this default.
+///
+/// Both the CLI (`tolmap build --refs`) and the service (`TOLMAP_REFS`)
+/// take their default from here, so the two cannot drift apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RefsMode {
-    #[default]
     Hand,
+    #[default]
     Scip,
 }
 

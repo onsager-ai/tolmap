@@ -141,10 +141,12 @@ pub struct ServeConfig {
     /// `TOLMAP_NAMER` defaults to IDF; hosting does not enable model naming.
     pub namer: NamerKind,
     pub namer_model: String,
-    /// Where job maps take their references from (issue #110): `hand` (the
-    /// default) or `scip`. `scip` needs the indexers on the worker's `PATH`
-    /// (P1b's image); without them every language records a fallback to
-    /// the hand-written graph rather than failing.
+    /// Where job maps take their references from (issue #110): `scip` (the
+    /// default since P2a, shared with `tolmap build --refs` through
+    /// `RefsMode::default`) or `hand`. `scip` needs the indexers on the
+    /// worker's `PATH` or in `TOLMAP_SCIP_*` (P1b's image); without them
+    /// every language records a fallback to the hand-written graph rather
+    /// than failing.
     ///
     /// Env: `TOLMAP_REFS`.
     pub refs: crate::extract::RefsMode,
@@ -214,7 +216,7 @@ impl ServeConfig {
         let namer = env_var_or("TOLMAP_NAMER", NamerKind::Idf);
         let namer_model =
             env::var("TOLMAP_NAMER_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
-        let refs = env_var_or("TOLMAP_REFS", crate::extract::RefsMode::Hand);
+        let refs = env_var_or("TOLMAP_REFS", crate::extract::RefsMode::default());
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the
         // unbounded growth issue #23 gap 2 reported -- see store::prune.
@@ -411,5 +413,23 @@ mod tests {
             PruneVariant::NodeRelative
         );
         env::remove_var("TOLMAP_PRUNE_VARIANT");
+    }
+
+    // Issue #110 P2a: SCIP is the default, `hand` stays selectable, and an
+    // unparsable value falls back to the default like every other variable
+    // here rather than taking the service down.
+    #[test]
+    fn refs_defaults_to_scip_and_hand_stays_selectable() {
+        use crate::extract::RefsMode;
+        let _guard = lock_env();
+        env::remove_var("TOLMAP_REFS");
+        assert_eq!(ServeConfig::from_env().refs, RefsMode::Scip);
+        env::set_var("TOLMAP_REFS", "hand");
+        assert_eq!(ServeConfig::from_env().refs, RefsMode::Hand);
+        env::set_var("TOLMAP_REFS", "scip");
+        assert_eq!(ServeConfig::from_env().refs, RefsMode::Scip);
+        env::set_var("TOLMAP_REFS", "exact");
+        assert_eq!(ServeConfig::from_env().refs, RefsMode::Scip);
+        env::remove_var("TOLMAP_REFS");
     }
 }

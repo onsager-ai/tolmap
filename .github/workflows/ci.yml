@@ -146,6 +146,14 @@ jobs:
       - name: Generated TypeScript bindings
         run: cargo run --release --bin generate-types -- --check
 
+      # `--refs hand` on every build in this job (issue #110 P2a): the
+      # default is now `scip`, but these gates test the hand-written
+      # resolver -- the only one the frozen Python reference knows -- and
+      # this job installs no indexer. Relying on the default would make each
+      # one a silent all-fallback SCIP build instead. A `--graph` build
+      # ignores `--refs` (its edges are already extracted); it is pinned
+      # anyway so no gate here depends on what the default is. The `scip`
+      # job below is where the SCIP path and the default are tested.
       - name: Offline parity gate (flask, httpx)
         run: |
           set -euo pipefail
@@ -155,6 +163,7 @@ jobs:
               --graph "data/ci/${name}.graph.json" \
               --name "$name" \
               --out ci-out \
+              --refs hand \
               --resolution 1.1
             ./target/release/tolmap parity "data/${name}.json" "ci-out/${name}.json"
           done
@@ -174,6 +183,7 @@ jobs:
             --graph data/ci/synthetic_polyglot.graph.json \
             --name synthetic_polyglot \
             --out ci-out \
+            --refs hand \
             --resolution 1.1
 
       # Issue #41's resolver regressions: the original 51-file package keeps
@@ -189,7 +199,7 @@ jobs:
         run: |
           set -euo pipefail
           ./target/release/tolmap build "$PWD/module-resolution-fixture" \
-            --pkg . --lang ts --name module_resolution --out ci-out
+            --pkg . --lang ts --refs hand --name module_resolution --out ci-out
 
       # docs/FINDINGS.md finding 13, step 2 of the polyglot work: materialise
       # the synthetic fixture fresh (pure local git + Python, no network),
@@ -208,7 +218,7 @@ jobs:
           hashes=""
           for i in 1 2 3; do
             mkdir -p "polyglot-det-$i"
-            ./target/release/tolmap build "$PWD/polyglot-fixture" --all-sources \
+            ./target/release/tolmap build "$PWD/polyglot-fixture" --all-sources --refs hand \
               --name synthetic_polyglot --out "polyglot-det-$i" >/dev/null
             hash=$(sha256sum "polyglot-det-$i/synthetic_polyglot.json" "polyglot-det-$i/synthetic_polyglot.symbols.json" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1)
             echo "run $i: $hash"
@@ -241,7 +251,7 @@ jobs:
       - name: Islands classification (finding 17)
         run: |
           set -euo pipefail
-          ./target/release/tolmap build "$PWD/islands-fixture" --pkg . --lang py \
+          ./target/release/tolmap build "$PWD/islands-fixture" --pkg . --lang py --refs hand \
             --name synthetic_islands --out islands-out >/dev/null
           python3 eval/check_islands_fixture.py islands-out/synthetic_islands.json
 
@@ -366,16 +376,144 @@ jobs:
           python3 eval/check_scip_references.py scip-det-synthetic_islands-1/synthetic_islands.json \
             --symbols scip-det-synthetic_islands-1/synthetic_islands.symbols.json \
             --expect py=scip
+      # Issue #110 P2a: `--refs scip` is the default. A build that names no
+      # `--refs` must be byte-identical to the explicit `--refs scip` builds
+      # above, so the default cannot quietly drift back to `hand`.
+      - name: The default build is --refs scip
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+        run: |
+          set -euo pipefail
+          ./bin/tolmap build "$PWD/polyglot-fixture" --all-sources \
+            --name synthetic_polyglot --out scip-default > default.log 2>&1 || { cat default.log; exit 1; }
+          explicit=$(cat scip-det-synthetic_polyglot-1/synthetic_polyglot.json scip-det-synthetic_polyglot-1/synthetic_polyglot.symbols.json | sha256sum | cut -d' ' -f1)
+          default=$(cat scip-default/synthetic_polyglot.json scip-default/synthetic_polyglot.symbols.json | sha256sum | cut -d' ' -f1)
+          echo "explicit --refs scip: $explicit"
+          echo "default:              $default"
+          [ "$explicit" = "$default" ] || { echo "the default build differs from --refs scip"; exit 1; }
+
+      # On the default path too (no `--refs`), since that is what a hosted
+      # worker without one of the indexers would run.
       - name: A missing indexer falls back instead of failing
         env:
           LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
           TOLMAP_SCIP_GO: /nonexistent/scip-go
         run: |
           set -euo pipefail
-          ./bin/tolmap build "$PWD/polyglot-fixture" --all-sources --refs scip \
+          ./bin/tolmap build "$PWD/polyglot-fixture" --all-sources \
             --name synthetic_polyglot --out scip-fallback > fallback.log 2>&1 || { cat fallback.log; exit 1; }
           python3 eval/check_scip_references.py scip-fallback/synthetic_polyglot.json \
             --expect go=hand --expect ts=scip
+
+  # Issue #110 P2a: `tolmap build` defaults to `--refs scip`, which moves
+  # the membership the nine-fixture oracle records (finding 44: vue places
+  # 74.5% of files where its hand map does). `full-fixtures` below keeps
+  # gating the hand path against data/*.json with `--refs hand`; this job
+  # gates the SCIP path against fixtures re-derived under it, data/scip/
+  # (eval/scip_fixtures.py's header has the format and why it is a summary).
+  # Same pinned indexers as the `scip` job, the same pins and clone method as
+  # `full-fixtures`, and the binary the `gate` job built.
+  #
+  # Every run also writes the hand-versus-SCIP table (the step summary and
+  # the `scip-fixtures` artifact) and a fresh set of SCIP fixtures under
+  # `record/` in that artifact. Committing those is how the SCIP fixtures
+  # are re-derived: deliberately, with the finding that explains the move,
+  # never by this job.
+  scip-fixtures:
+    name: SCIP nine-fixture gate (on demand / nightly)
+    needs: gate
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    # django's scip-python run is about two minutes (finding 44); the other
+    # eight are smaller. Bounded so a hung indexer cannot hold the runner.
+    timeout-minutes: 120
+    env:
+      SCIP_TYPESCRIPT_VERSION: "0.4.0"
+      SCIP_PYTHON_VERSION: "0.6.6"
+      SCIP_GO_VERSION: "v0.2.7"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+      - run: chmod +x bin/tolmap
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Install pinned indexers and /usr/bin/time
+        run: |
+          set -euo pipefail
+          npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
+            "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
+          go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          command -v /usr/bin/time || { sudo apt-get update && sudo apt-get install -y time; }
+      - name: Build each fixture with --refs hand and --refs scip
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+        run: |
+          set -uo pipefail
+          scip-typescript --version; scip-python --version; command -v scip-go
+          mkdir -p scip-fx/hand scip-fx/scip fx-clones
+          python3 eval/scip_fixtures.py list > fixtures.txt
+          while read -r name url sha pkg lang parcels; do
+            echo "::group::$name"
+            dir="fx-clones/$name"
+            # Blobless, full history: the same clone `full-fixtures` builds.
+            git clone --quiet --filter=blob:none "$url" "$dir"
+            git -C "$dir" checkout --quiet "$sha"
+            parcels_arg=""
+            [ "$parcels" = "true" ] || parcels_arg="--no-parcels"
+            for mode in hand scip; do
+              if /usr/bin/time -v -o "scip-fx/$name.$mode.time.txt" \
+                  ./bin/tolmap build "$PWD/$dir" --pkg "$pkg" --lang "$lang" --refs "$mode" \
+                  $parcels_arg --name "$name" --out "scip-fx/$mode" > "scip-fx/$name.$mode.log" 2>&1; then
+                echo "$name --refs $mode: built"
+              else
+                echo "$name --refs $mode: FAILED"; tail -20 "scip-fx/$name.$mode.log"
+              fi
+              grep -E '^references |Indexing .*: done in' "scip-fx/$name.$mode.log" || true
+            done
+            rm -rf "$dir"
+            echo "::endgroup::"
+          done < fixtures.txt
+      - name: Measure SCIP against hand
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+        run: |
+          set -euo pipefail
+          python3 eval/scip_fixtures.py measure --work scip-fx --tolmap bin/tolmap \
+            --out scip-fx/measure.json --markdown scip-fx/measure.md
+          cat scip-fx/measure.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Record fresh SCIP fixtures (artifact only)
+        if: always()
+        run: |
+          python3 eval/scip_fixtures.py record --work scip-fx --out scip-fx/record \
+            --source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scip-fixtures
+          path: |
+            scip-fx
+            !scip-fx/**/*.symbols.json
+            !scip-fx/**/*.symbols
+          retention-days: 30
+      - name: Gate --refs scip against data/scip
+        if: always()
+        run: python3 eval/scip_fixtures.py gate --work scip-fx --summaries data/scip
 
   web:
     # The viewer had no CI at all: tsc ran only inside the Docker image at
@@ -465,8 +603,12 @@ jobs:
             # not enough -- docs/ARCHITECTURE.md's documented clone strategy.
             git clone --quiet --filter=blob:none "$url" "$dir"
             git -C "$dir" checkout --quiet "$sha"
+            # --refs hand: data/*.json is the frozen Python reference's
+            # output (or, for two fixtures, the Rust hand path's -- see
+            # data/fixtures.toml), and neither knows SCIP. The SCIP path is
+            # gated against its own fixtures in `scip-fixtures` below.
             ./target/release/tolmap build "$dir" --pkg "$pkg" --lang "$lang" \
-              --name "$name" --out full-out --resolution 1.1
+              --refs hand --name "$name" --out full-out --resolution 1.1
             if ! ./target/release/tolmap parity "data/${name}.json" "full-out/${name}.json"; then
               failed="$failed $name"
             fi
