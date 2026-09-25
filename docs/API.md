@@ -60,6 +60,12 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_SCIP_TYPESCRIPT` | `scip-typescript` on `PATH` | path to the scip-typescript binary (issue #110 P1a); the runtime image's `Dockerfile` sets this to an absolute path, overridable for a different install |
 | `TOLMAP_SCIP_PYTHON` | `scip-python` on `PATH` | path to the scip-python binary, same pattern |
 | `TOLMAP_SCIP_GO` | `scip-go` on `PATH` | path to the scip-go binary, same pattern |
+| `TOLMAP_SCIP_INSTALL` | `sandbox` | with `TOLMAP_REFS=scip` (issue #110 P1c): `sandbox` installs a TypeScript workspace's npm dependencies (pnpm or npm lockfile) before scip-typescript, inside nsjail -- see "Worker isolation" below; `off` never installs. Anything short of a finished install falls back to indexing without it and is recorded in the map's `coverage.references.ts.install`; no job fails because of it. Any value but `off` means `sandbox` |
+| `TOLMAP_NSJAIL` | `nsjail` on `PATH` | path to nsjail; the runtime image sets `/usr/local/bin/nsjail` |
+| `TOLMAP_INSTALL_NODE_PREFIX` | prefix of `node` on `PATH` | the Node.js prefix mounted read-only in the install sandbox, whose `bin` has `node`, `npm` and `pnpm`; the runtime image sets `/opt/node` |
+| `TOLMAP_INSTALL_TIME_LIMIT_S` | `1200` (20 min) | wall-time bound of one install, in seconds (fractions allowed); past it the install is killed and falls back (`install_timeout`) |
+| `TOLMAP_INSTALL_DISK_BUDGET_BYTES` | `20000000000` (20 GB) | bytes one install may add to the checkout and its sandbox home; past it the install is killed and falls back (`install_disk_budget`) |
+| `TOLMAP_INSTALL_MEMORY_MAX` | unset (off) | bytes: puts the install in a memory cgroup, with a 4,096-pid limit. Off by default because nsjail's cgroups on the production host's cgroup v1 are unverified, and a cgroup that cannot be created makes every install fall back |
 
 These queue, cache and rate settings map to `service::config::Limits`. There are no file-count, clone-size, history-depth or job-time admission caps. The co-change algorithm still reads at most 4000 commits per build; that horizon does not reject a repository with deeper history.
 
@@ -249,7 +255,13 @@ heartbeat comment is sent every 15 seconds.
 
 `tolmap worker` reads one JSON `WorkerSpec` line from stdin and writes one
 JSON event per stdout line. Events carry `v: 1` and a `type` of
-`stage_started`, `progress`, `stage_finished`, `features`, `log`, `result`, or `error`.
+`stage_started`, `progress`, `stage_finished`, `features`, `log`, `result`,
+`error`, or `install_request`. A spec with `install: "sandbox"` (issue #110
+P1c) keeps the worker's stdin open: just before scip-typescript, a worker
+whose checkout the install policy accepts sends `install_request` and blocks
+until the service writes one `InstallCoverage` JSON line back (the same
+record the map carries). The request has no parameters; the service reads
+the policy from the job's checkout itself.
 `stage_finished` has `duration_s` and `success`. `result` carries the map,
 symbols sibling, district symbols directory, names cache paths, commit and
 branch, plus language, file count, district count and modularity. `error`
@@ -295,6 +307,17 @@ slug, or that commit of it, has never been indexed.
 ## Worker isolation
 
 The `tolmap worker` child every index job spawns (`src/service/jobs.rs::process_worker_exe`) runs as an unprivileged `tolmap-worker` user (fixed uid/gid `10001:10001`, baked into the runtime image as `TOLMAP_WORKER_UID`/`TOLMAP_WORKER_GID` — see the Dockerfile's runtime stage), with an empty environment plus a short explicit allowlist (`PATH`, `LANG`, the `TOLMAP_NAMER_*` budget/ledger knobs, the `TOLMAP_SCIP_*` indexer locations in the configuration table above, and `OPENROUTER_API_KEY` only when `TOLMAP_NAMER=model`), and its own per-job directory instead of the shared `cache_dir` — see that function's doc comments for the full reasoning. The shared clone cache under `cache_dir/repos` is still fetched/updated and reused across jobs for the same repo; the service (at its own uid) does that clone/fetch itself and then hands the worker a fresh, non-hardlinked local-clone copy in its own job directory (`service::jobs::run_blocking`, `service::clone::local_clone_into`) rather than the shared cache directory itself. The uid switch only applies when the service itself runs as root, which is the runtime image's case (no `USER` in the Dockerfile, deliberately); locally and in CI the service is not root, so the worker runs as the current user.
+
+### Dependency installs (issue #110 P1c)
+
+A `scip` job may install a TypeScript workspace's npm dependencies before scip-typescript (`TOLMAP_SCIP_INSTALL`, on by default); the design is `docs/SCIP_SANDBOX.md` and the code `src/indexers.rs`. The worker cannot start the sandbox, so it asks the service over the worker protocol and the service, as root, runs the install:
+
+- **Policy.** Only a workspace (`pnpm-workspace.yaml`, or `package.json` `workspaces`) with a pnpm or npm lockfile at the repository root, and no `node_modules` there yet. yarn and bun lockfiles are never installed. Python and Go are never installed.
+- **Execution.** `pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile` or `npm ci --ignore-scripts`, with the image's own pnpm/npm; pnpm's `packageManager` handling and runtime downloads are off, so a repository cannot choose the package-manager build or pull a runtime.
+- **Sandbox.** nsjail started by root with `--disable_clone_newuser`: the install runs as the worker's uid (`TOLMAP_WORKER_UID`) with every capability dropped, an empty environment plus an explicit list, a tmpfs root holding read-only `/usr`, `/etc` and the Node prefix, the job's checkout read-write at its own path with its `.git` read-only on top, and a scratch home under `cache_dir/install/<job>`. Nothing else of the service is mounted: not the store, not the stored maps, not other jobs.
+- **Network.** A new network namespace with only loopback. Its one way out is an HTTP CONNECT proxy in the service, reached through a Unix socket bridged to `127.0.0.1:3128` in the jail. It allows `CONNECT registry.npmjs.org:443` and nothing else (exact host, no suffix, no IP literal, no other port, no plain HTTP), resolves the name itself and dials only globally routable addresses, so metadata endpoints (`169.254.0.0/16`), private and unique-local ranges (including `fdaa::/16`) and the host's own services stay unreachable.
+- **Bounds and fallback.** 20 minutes and 20 GB (`TOLMAP_INSTALL_TIME_LIMIT_S`, `TOLMAP_INSTALL_DISK_BUDGET_BYTES`). A self-test runs in the jail first (not root, no service paths, no credential-like variables, no direct egress, the proxy refusing another host). If the jail cannot start (a non-root service, a container that forbids namespaces, no nsjail), the self-test fails, or the install fails or passes a bound, every `node_modules` it created is removed and scip-typescript runs without it. The map records which in `coverage.references.ts.install`; the job never fails for it. Cancelling a job, or a graceful stop, kills the jail with it; if the service process itself dies, nsjail's own time limit (the bound plus a minute) ends the jail.
+- **Not covered.** The indexers themselves still run as the worker, outside the jail. A kernel exploit from inside the jail reaches the whole machine until the worker moves to its own VM (#97); that risk was accepted on #117.
 
 Nothing here needs a migration step for an existing cache volume. The per-job directories are made fresh and torn down by the service on every job, never a static layout an operator provisions, so there is nothing to pre-create, `chown`, or backfill.
 

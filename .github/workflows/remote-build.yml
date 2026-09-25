@@ -57,7 +57,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0) or scip-ingest (issue #110 P1a; both ignore repos/extra_args/compare_ref)"
+        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0), scip-ingest (P1a) or scip-install (P1c); the scip-* commands ignore repos/extra_args/compare_ref"
         required: false
         type: choice
         options:
@@ -67,6 +67,7 @@ on:
           - name-eval
           - scip-spike
           - scip-ingest
+          - scip-install
         default: build
       scip_reuse_run:
         description: "scip-spike only: analyze this earlier run's scip-base-*/scip-idx-* artifacts instead of re-indexing"
@@ -243,7 +244,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest'
+    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -630,7 +631,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -737,3 +738,16 @@ jobs:
       contents: read
       actions: read
     uses: ./.github/workflows/scip-ingest.yml
+
+  # Issue #110 P1c: `--refs scip` with sandboxed dependency installs on the
+  # TypeScript monorepos, against installs off and against `--refs hand`.
+  # Everything lives in scip-install.yml; this job hands it `setup`'s binary
+  # built from inputs.ref. See that file's header.
+  scip-install:
+    name: scip install
+    needs: setup
+    if: inputs.command == 'scip-install'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/scip-install.yml

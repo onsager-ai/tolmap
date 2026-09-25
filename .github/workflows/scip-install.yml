@@ -1,0 +1,230 @@
+# Issue #110, phase P1c: measure `--refs scip` with sandboxed dependency
+# installs on the TypeScript monorepos finding 41 found losing edges without
+# them. Called from remote-build.yml with `command=scip-install`, after that
+# workflow's `setup` job has built the binary from inputs.ref and its Leiden
+# runtime libraries. A reusable workflow behind remote-build.yml for the
+# reason scip-spike.yml gives: only a file on the default branch can be
+# dispatched on its own.
+#
+# Standard GitHub-hosted runners, no new spend. The indexers are P0's pinned
+# versions; nsjail, socat and pnpm are the runtime image's (Dockerfile,
+# ci.yml `scip-install`). The install build runs `tolmap` as root through
+# sudo, which starting the jail needs; the jail runs as the runner user,
+# who owns the checkout. What a runner cannot show about the production
+# host (its cgroup v1 memory controller, its kernel) is stated in
+# docs/FINDINGS.md, not guessed here.
+#
+# One job per repository, each on its own checkout at its eval/corpus.toml
+# pin, with the one branch binary, in this order (the last build writes
+# node_modules into the checkout):
+#   hand     --refs hand
+#   scip     --refs scip, installs off (P1a's behaviour)
+#   install  --refs scip --install sandbox
+# then eval/scip_install_measure.py reads the three maps and logs.
+
+name: SCIP install (#110 P1c)
+
+on:
+  workflow_call: {}
+
+env:
+  CLONE_DEPTH: "4000"
+  SCIP_TYPESCRIPT_VERSION: "0.4.0"
+  SCIP_PYTHON_VERSION: "0.6.6"
+  PNPM_VERSION: "12.6.0"
+  NSJAIL_VERSION: "3.6"
+  NSJAIL_COMMIT: "f78475530b46d0186111a9096b30725f816b55fe"
+
+jobs:
+  plan:
+    name: plan scip-install matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      repos: ${{ steps.plan.outputs.repos }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: plan
+        run: |
+          set -euo pipefail
+          # The three TypeScript workspaces of P0's five pins: vue (loads
+          # without installs), n8n (loses its @n8n/* graph) and dify (its
+          # tsconfigs extend an uninstalled workspace package).
+          repos="$(python3 eval/scip_plan.py | jq -c '{include: [.baseline.include[]
+            | select(.slug == "vuejs/core" or .slug == "n8n-io/n8n" or .slug == "langgenius/dify")]}')"
+          echo "repos=$repos" >> "$GITHUB_OUTPUT"
+          jq . <<<"$repos"
+
+  measure:
+    name: measure ${{ matrix.slug }}
+    needs: plan
+    runs-on: ubuntu-latest
+    # Three builds, two with indexing, on n8n are about twenty minutes on a
+    # standard runner (finding 44: 371 s per SCIP build); generous so a slow
+    # runner still finishes, bounded so a hung build cannot hold the job to
+    # the 6-hour ceiling.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.repos) }}
+    env:
+      LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+      # As scip-ingest.yml: V8's default heap would turn n8n's index into an
+      # OOM; 13 GiB stays inside the runner's 16 GB. The jail does not
+      # inherit it: its environment is explicit (src/indexers.rs).
+      NODE_OPTIONS: --max-old-space-size=13312
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+      - run: chmod +x bin/tolmap
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          df -h /
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned indexers and pnpm
+        run: |
+          set -euo pipefail
+          npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
+            "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}" "pnpm@${PNPM_VERSION}"
+          command -v /usr/bin/time || { sudo apt-get update && sudo apt-get install -y time; }
+      - name: Cache nsjail
+        uses: actions/cache@v4
+        with:
+          path: .nsjail
+          key: nsjail-${{ runner.os }}-${{ env.NSJAIL_COMMIT }}
+      - name: Build nsjail and install socat
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends socat autoconf bison flex \
+            libprotobuf-dev libnl-route-3-dev libtool pkg-config protobuf-compiler
+          if [ ! -x .nsjail/nsjail ]; then
+            git clone --quiet --depth 1 --branch "$NSJAIL_VERSION" --recurse-submodules \
+              --shallow-submodules https://github.com/google/nsjail.git "$RUNNER_TEMP/nsjail"
+            test "$(git -C "$RUNNER_TEMP/nsjail" rev-parse HEAD)" = "$NSJAIL_COMMIT"
+            make -C "$RUNNER_TEMP/nsjail" -j"$(nproc)" > "$RUNNER_TEMP/nsjail-build.log" 2>&1 \
+              || { tail -50 "$RUNNER_TEMP/nsjail-build.log"; exit 1; }
+            mkdir -p .nsjail && cp "$RUNNER_TEMP/nsjail/nsjail" .nsjail/
+          fi
+          sudo install -m 0755 .nsjail/nsjail /usr/local/bin/nsjail
+      - name: Clone at pinned commit
+        env:
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p clone
+          git -C clone init --quiet
+          git -C clone remote add origin "https://github.com/${SLUG}.git"
+          git -C clone fetch --quiet --filter=blob:none --depth="$CLONE_DEPTH" origin "$COMMIT"
+          git -C clone checkout --quiet --detach FETCH_HEAD
+          # What the install policy reads (src/indexers.rs install_plan).
+          ls -la clone | grep -E 'package.json|pnpm-|package-lock|yarn|node_modules' || true
+          grep -E '"packageManager"' clone/package.json || true
+          head -3 clone/pnpm-lock.yaml 2>/dev/null || true
+      - name: Build hand, SCIP without installs, SCIP with sandboxed installs
+        env:
+          STEM: ${{ matrix.stem }}
+          ARGS: ${{ join(matrix.args, ' ') }}
+        run: |
+          set -uo pipefail
+          mkdir -p work
+          timed() {
+            name=$1; shift
+            /usr/bin/time -v -o "work/$name.time.txt" "$@" > "work/$name.log" 2>&1
+            echo "$name: exit $?"
+            grep -E '^references |Indexing .*: done in|Installing dependencies: done in|^install |egress|sandbox' \
+              "work/$name.log" || true
+          }
+          timed hand bin/tolmap build "$PWD/clone" $ARGS --name "$STEM" --out work/hand
+          timed scip bin/tolmap build "$PWD/clone" $ARGS --refs scip --name "$STEM" --out work/scip
+          timed install sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "NODE_OPTIONS=$NODE_OPTIONS" \
+            bin/tolmap build "$PWD/clone" $ARGS --refs scip --install sandbox --name "$STEM" --out work/install
+          sudo chown -R "$(id -u):$(id -g)" work
+          du -sh clone || true
+          find clone -maxdepth 3 -name node_modules -type d | head -20 || true
+      - name: Delete clone
+        if: always()
+        run: sudo rm -rf clone
+      - name: Measure
+        env:
+          STEM: ${{ matrix.stem }}
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          python eval/scip_install_measure.py repo --stem "$STEM" --slug "$SLUG" \
+            --commit "$COMMIT" --work work --tolmap bin/tolmap --out result/measure.json
+      - name: Stage artifact
+        if: always()
+        env:
+          STEM: ${{ matrix.stem }}
+        run: |
+          set -uo pipefail
+          mkdir -p result
+          cp work/*.log work/*.time.txt result/ 2>/dev/null || true
+          for run in hand scip install; do
+            cp "work/$run/${STEM}.json" "result/${STEM}.${run}.json" 2>/dev/null || true
+          done
+          ls -la result
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scip-install-${{ matrix.stem }}
+          path: result
+          retention-days: 30
+
+  summary:
+    name: scip-install summary
+    needs: measure
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scip-install-*
+          path: results
+      - name: Summarize
+        run: |
+          set -euo pipefail
+          python eval/scip_install_measure.py summary --results results \
+            --out scip_install_summary.json --markdown scip_install_summary.md
+          cat scip_install_summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scip-install-summary
+          path: |
+            scip_install_summary.json
+            scip_install_summary.md
+          retention-days: 30
