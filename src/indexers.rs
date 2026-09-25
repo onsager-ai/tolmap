@@ -1583,12 +1583,12 @@ mod egress {
                                     }
                                     active.fetch_add(1, Ordering::Relaxed);
                                     let stats = stats.clone();
-                                    let active = active.clone();
+                                    let tunnel_active = active.clone();
                                     let spawned = std::thread::Builder::new()
                                         .name("tolmap-egress-tunnel".to_owned())
                                         .spawn(move || {
                                             serve(client, allow, &stats);
-                                            active.fetch_sub(1, Ordering::Relaxed);
+                                            tunnel_active.fetch_sub(1, Ordering::Relaxed);
                                         });
                                     if spawned.is_err() {
                                         active.fetch_sub(1, Ordering::Relaxed);
