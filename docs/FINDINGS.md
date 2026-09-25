@@ -2124,7 +2124,7 @@ The same after-run's `hand_map_vs_fixture`, which is the placement of this branc
 - Every Δq is within 0.02. Every placement except the three unchanged fixtures is below 95%, so the six Python fixtures that changed are re-derived.
 - django, rich and scrapy move inside the partitioner's own node-order band.
 - celery, flask and sqlalchemy move beyond it.
-- flask's "ctx & init__" district, held together by the package `__init__` edges that (a) removes, merges into "app & cli".
+- flask goes from four districts to three. The best match for its "ctx & init__" district is now "app & cli", and "app & testing" has no match. The package `__init__` edges that (a) removes are what held "ctx & init__" together.
 
 These are placements against a fixture. They measure agreement, not correctness.
 
@@ -2136,7 +2136,7 @@ The procedure follows finding 23 and CLAUDE.md's "Checks before a change lands".
 - **What was committed.**
   - `data/{celery,django,flask,rich,scrapy,sqlalchemy}.json` keep the committed fixtures' key set. The product's extra keys (`C`, `coverage`, neighbourhoods and centroids) are dropped: parity does not read them, and a schema test reads `data/flask.json` as an old map without `C`.
   - `data/fixtures.toml` marks the six `generator = "rust-python-reexports"`, which `eval/verify_fixtures.py` skips. Only httpx and vue remain Python-reference fixtures.
-  - `data/ci/flask.graph.json` is re-dumped from the same job (`dump-graph --refs hand`, in the old file's key shape). Its co-change on 10 of 245 edges now comes from Rust's history walk rather than the old dump's.
+  - `data/ci/flask.graph.json` is re-dumped from the same job (`dump-graph --refs hand`, in the old file's key shape). The old dump's co-change differed from Rust's history walk on 10 of its 248 edges, even with the unchanged binary. The new file takes Rust's.
   - httpx's graph did not change (all 16 of its package links are star imports), so `data/httpx.json` and `data/ci/httpx.graph.json` are untouched.
 
 Renames, matched through the parity gate's district matching:
@@ -2152,12 +2152,12 @@ Renames, matched through the parity gate's district matching:
 | django | gis · gdal | gdal & gis |
 | django | (new) | checks, serializers |
 | flask | ctx & init__ | app & cli |
-| flask | app & testing | (merged) |
+| flask | app & testing | (no match) |
 | rich | box & json | abc & json |
 | rich | bar & loop, abc & ansi | (unmatched) → bar & box, ansi & repr |
 | scrapy | downloadermiddlewares | downloadermiddlewares & spidermi |
 | scrapy | command line | commands |
-| scrapy | spider middleware | (merged) |
+| scrapy | spider middleware | (no match) |
 | sqlalchemy | util & engine | engine & asyncio |
 | sqlalchemy | (new) | util & event |
 
