@@ -224,7 +224,19 @@ def variants(args) -> int:
         permuted["nodes"] = nodes
         write(f"perm-{counter}", permuted)
 
+    def concentration(values) -> dict:
+        """How heavy-tailed a static signal is: SCIP weighs a pair by the
+        distinct symbols it references, hand by its import statements."""
+        ordered = sorted(values, reverse=True)
+        total = sum(ordered) or 1.0
+        top = ordered[: max(1, len(ordered) // 10)]
+        median = ordered[len(ordered) // 2] if ordered else 0.0
+        return {"top_decile_mass_share": sum(top) / total,
+                "max_over_median": (ordered[0] / median) if median else None}
+
     summary = {
+        "static_concentration_hand": concentration(h.values()),
+        "static_concentration_scip": concentration(s.values()),
         "files": n,
         "static_pairs_hand": len(h),
         "static_pairs_scip": len(s),

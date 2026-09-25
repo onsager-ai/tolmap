@@ -648,7 +648,9 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
         run: |
-          set -uo pipefail
+          # Not -e: a missing file or a failed variant is a finding here,
+          # not a reason to stop measuring the next one.
+          set +e -uo pipefail
           dir="$PWD/clones/sqlalchemy"
           mkdir -p churn/sqla
           {
