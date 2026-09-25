@@ -418,9 +418,10 @@ fn enqueue_job(
     let (tx, _rx) = watch::channel(snapshot);
     // Until the worker reports the repository's features, all the ETA
     // model knows is the service's reference mode. Recording it now lets a
-    // queued `--refs scip` job (the default since #110 P2a) be costed with
-    // indexing; the worker's own `Features` event replaces this row, and
-    // `worker_loop` (or a queued cancel) removes it.
+    // queued job under `TOLMAP_REFS=scip` be costed with indexing, while one
+    // on the hand default keeps the hand prior (`refs` absent, exactly as
+    // before #110 P2a). The worker's own `Features` event replaces this
+    // row, and `worker_loop` (or a queued cancel) removes it.
     let prior = RepoFeatures {
         refs: (state.config.refs == crate::extract::RefsMode::Scip)
             .then(|| state.config.refs.to_string()),
@@ -1836,13 +1837,14 @@ mod tests {
     }
 
     // #110 P2a: before the worker reports anything about the repository, a
-    // job under the SCIP default is quoted a range that covers indexing
-    // (finding 44's n8n build, 371.4 s), and a hand-written one is not.
+    // job under `TOLMAP_REFS=scip` is quoted a range that covers indexing
+    // (finding 44's n8n build, 371.4 s), and one on the hand default is not.
     #[tokio::test]
     async fn unstarted_scip_job_eta_covers_indexing() {
         let mut high = Vec::new();
+        // The default first: it must be costed as the hand path it is.
         for refs in [
-            crate::extract::RefsMode::Hand,
+            crate::extract::RefsMode::default(),
             crate::extract::RefsMode::Scip,
         ] {
             let (_dir, state) = state_with_refs(Limits::default(), refs);

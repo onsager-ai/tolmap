@@ -74,7 +74,7 @@ while read -r name pkg lang; do
   fi
   # --refs hand: the naming caches seeded above, and the parity claim at
   # the bottom of this script, are data/*.json's -- the hand-written
-  # resolver's membership. `tolmap build` defaults to scip since #110 P2a.
+  # resolver's membership. Pinned so a change of default cannot move it.
   "$BIN" build "$REPOS/$name" \
     --pkg "$pkg" --lang "$lang" --refs hand --name "$name" --out "$OUT" | tail -1
 done <<< "$names"

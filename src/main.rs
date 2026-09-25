@@ -74,16 +74,15 @@ enum Command {
         /// name the map after.
         #[arg(long)]
         graph: Option<PathBuf>,
-        /// Reference graph source (issue #110): `scip` (the default) runs
-        /// each language's SCIP indexer (scip-python, scip-go,
-        /// scip-typescript on PATH, or TOLMAP_SCIP_PYTHON/_GO/_TYPESCRIPT)
-        /// without installing any dependency, and uses its references
-        /// wherever the index keeps at least 80% of the hand-written graph.
-        /// Other languages, including any whose indexer is not installed,
-        /// fall back to the hand-written graph; the map's
-        /// `coverage.references` records which and why. `hand` is the
-        /// tree-sitter resolver alone, the one the frozen Python reference
-        /// reproduces. Ignored with `--graph`.
+        /// Reference graph source (issue #110): `hand` (the default), the
+        /// tree-sitter resolver, or `scip`, which runs each language's SCIP
+        /// indexer (scip-python, scip-go, scip-typescript on PATH, or
+        /// TOLMAP_SCIP_PYTHON/_GO/_TYPESCRIPT) without installing any
+        /// dependency, and uses its references wherever the index keeps at
+        /// least 80% of the hand-written graph. Other languages, including
+        /// any whose indexer is not installed, fall back to `hand`; the
+        /// map's `coverage.references` records which and why. Ignored with
+        /// `--graph`.
         #[arg(long, default_value_t = tolmap::extract::RefsMode::default())]
         refs: tolmap::extract::RefsMode,
     },
@@ -618,13 +617,13 @@ mod tests {
         }
     }
 
-    // Issue #110 P2a: an unqualified `tolmap build` takes SCIP references,
-    // and `--refs hand` -- what every parity gate against the frozen Python
-    // reference passes -- still selects the hand-written resolver.
+    // Issue #110 P2a: an unqualified `tolmap build` uses the hand-written
+    // resolver (owner decision, 2026-09-25T16:56Z: hand stays the default,
+    // SCIP is the oracle), and both modes stay selectable explicitly.
     #[test]
-    fn build_defaults_to_scip_refs_and_accepts_hand() {
+    fn build_defaults_to_hand_refs_and_accepts_both() {
         use tolmap::extract::RefsMode;
-        assert_eq!(build_refs(&["tolmap", "build", "repo"]), RefsMode::Scip);
+        assert_eq!(build_refs(&["tolmap", "build", "repo"]), RefsMode::Hand);
         assert_eq!(
             build_refs(&["tolmap", "build", "repo", "--refs", "hand"]),
             RefsMode::Hand

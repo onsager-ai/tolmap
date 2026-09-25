@@ -146,14 +146,15 @@ jobs:
       - name: Generated TypeScript bindings
         run: cargo run --release --bin generate-types -- --check
 
-      # `--refs hand` on every build in this job (issue #110 P2a): the
-      # default is now `scip`, but these gates test the hand-written
-      # resolver -- the only one the frozen Python reference knows -- and
-      # this job installs no indexer. Relying on the default would make each
-      # one a silent all-fallback SCIP build instead. A `--graph` build
-      # ignores `--refs` (its edges are already extracted); it is pinned
-      # anyway so no gate here depends on what the default is. The `scip`
-      # job below is where the SCIP path and the default are tested.
+      # `--refs hand` on every build in this job (issue #110 P2a). These
+      # gates test the hand-written resolver -- the only one the frozen
+      # Python reference knows -- and `hand` is also the default today, but
+      # a pinned gate cannot be moved by a future change of default: had the
+      # default been `scip`, each build here (no indexer installed) would
+      # have been a silent all-fallback SCIP build. A `--graph` build ignores
+      # `--refs` (its edges are already extracted); it is pinned anyway so no
+      # gate here depends on what the default is. The `scip` job below tests
+      # the SCIP path and that the default stays `hand`.
       - name: Offline parity gate (flask, httpx)
         run: |
           set -euo pipefail
@@ -376,41 +377,46 @@ jobs:
           python3 eval/check_scip_references.py scip-det-synthetic_islands-1/synthetic_islands.json \
             --symbols scip-det-synthetic_islands-1/synthetic_islands.symbols.json \
             --expect py=scip
-      # Issue #110 P2a: `--refs scip` is the default. A build that names no
-      # `--refs` must be byte-identical to the explicit `--refs scip` builds
-      # above, so the default cannot quietly drift back to `hand`.
-      - name: The default build is --refs scip
+      # Issue #110 P2a: `hand` stays the default (owner decision,
+      # 2026-09-25T16:56Z: "Tune hand, SCIP as oracle"). A build that names no
+      # `--refs` must be byte-identical to an explicit `--refs hand` build,
+      # on a runner where every indexer is installed, so the default cannot
+      # quietly start indexing. Every gate still pins `--refs hand` anyway.
+      - name: The default build is --refs hand
         env:
           LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
         run: |
           set -euo pipefail
+          ./bin/tolmap build "$PWD/polyglot-fixture" --all-sources --refs hand \
+            --name synthetic_polyglot --out refs-hand > hand.log 2>&1 || { cat hand.log; exit 1; }
           ./bin/tolmap build "$PWD/polyglot-fixture" --all-sources \
-            --name synthetic_polyglot --out scip-default > default.log 2>&1 || { cat default.log; exit 1; }
-          explicit=$(cat scip-det-synthetic_polyglot-1/synthetic_polyglot.json scip-det-synthetic_polyglot-1/synthetic_polyglot.symbols.json | sha256sum | cut -d' ' -f1)
-          default=$(cat scip-default/synthetic_polyglot.json scip-default/synthetic_polyglot.symbols.json | sha256sum | cut -d' ' -f1)
-          echo "explicit --refs scip: $explicit"
+            --name synthetic_polyglot --out refs-default > default.log 2>&1 || { cat default.log; exit 1; }
+          explicit=$(cat refs-hand/synthetic_polyglot.json refs-hand/synthetic_polyglot.symbols.json | sha256sum | cut -d' ' -f1)
+          default=$(cat refs-default/synthetic_polyglot.json refs-default/synthetic_polyglot.symbols.json | sha256sum | cut -d' ' -f1)
+          echo "explicit --refs hand: $explicit"
           echo "default:              $default"
-          [ "$explicit" = "$default" ] || { echo "the default build differs from --refs scip"; exit 1; }
+          [ "$explicit" = "$default" ] || { echo "the default build differs from --refs hand"; exit 1; }
 
-      # On the default path too (no `--refs`), since that is what a hosted
-      # worker without one of the indexers would run.
       - name: A missing indexer falls back instead of failing
         env:
           LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
           TOLMAP_SCIP_GO: /nonexistent/scip-go
         run: |
           set -euo pipefail
-          ./bin/tolmap build "$PWD/polyglot-fixture" --all-sources \
+          ./bin/tolmap build "$PWD/polyglot-fixture" --all-sources --refs scip \
             --name synthetic_polyglot --out scip-fallback > fallback.log 2>&1 || { cat fallback.log; exit 1; }
           python3 eval/check_scip_references.py scip-fallback/synthetic_polyglot.json \
             --expect go=hand --expect ts=scip
 
-  # Issue #110 P2a: `tolmap build` defaults to `--refs scip`, which moves
-  # the membership the nine-fixture oracle records (finding 44: vue places
-  # 74.5% of files where its hand map does). `full-fixtures` below keeps
-  # gating the hand path against data/*.json with `--refs hand`; this job
-  # gates the SCIP path against fixtures re-derived under it, data/scip/
-  # (eval/scip_fixtures.py's header has the format and why it is a summary).
+  # Issue #110 P2a: SCIP is the oracle the hand resolver is tuned against
+  # (owner decision, 2026-09-25T16:56Z: "Tune hand, SCIP as oracle"; hand
+  # stays the default). `--refs scip` moves the membership the nine-fixture parity
+  # oracle records (finding 45: 47.8-85.8% placement against the hand maps
+  # where SCIP is admitted), so it cannot be gated against data/*.json.
+  # `full-fixtures` below keeps gating the hand path there with `--refs
+  # hand`; this job gates the SCIP path against fixtures re-derived under
+  # it, data/scip/ (eval/scip_fixtures.py's header has the format and why it
+  # is a summary), so the oracle itself cannot drift unnoticed.
   # Same pinned indexers as the `scip` job, the same pins and clone method as
   # `full-fixtures`, and the binary the `gate` job built.
   #

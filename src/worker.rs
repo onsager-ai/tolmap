@@ -29,11 +29,11 @@ pub struct WorkerSpec {
     pub namer_model: String,
     pub previous_maps: Vec<PreviousMap>,
     pub names_cache: Option<String>,
-    // Issue #110: "hand" or "scip", as `tolmap build --refs`. The service
-    // always sends its configured `TOLMAP_REFS` (scip unless set otherwise,
-    // since P2a). Absent still means "hand", not the new default: only a
-    // service from before the option omits it, and that service meant the
-    // hand-written resolver. Optional on the wire so the two still agree.
+    // Issue #110: "hand" (the default, also when absent) or "scip", as
+    // `tolmap build --refs`. The service always sends its configured
+    // `TOLMAP_REFS`; only a service from before the option omits it, and
+    // that service meant the hand-written resolver. Optional on the wire so
+    // the two still agree.
     #[serde(default)]
     pub refs: Option<String>,
 }

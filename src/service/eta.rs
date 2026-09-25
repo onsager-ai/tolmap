@@ -280,8 +280,8 @@ impl EtaModel {
         if features.languages.is_empty() && features.clone_bytes.is_none() {
             // Nothing is known about the repository yet (a queued job). The
             // indexing stages seed per language, so with no languages they
-            // cost nothing, and a `--refs scip` job -- the default since
-            // #110 P2a -- would be quoted a hand-written build's range. Use
+            // cost nothing, and a `--refs scip` job (`TOLMAP_REFS=scip`;
+            // hand is the default) would be quoted a hand build's range. Use
             // the whole-build range each path was measured at instead:
             // finding 36's hand corpus (django 6.14 s .. n8n 101.163 s), or
             // finding 44's `--refs scip` builds (prometheus 17.3 s .. n8n
@@ -489,9 +489,9 @@ mod tests {
         assert_eq!(model.stage(StageId::IndexGo, &input), 0.0);
     }
 
-    // #110 P2a: a queued job knows only the service's reference mode. Under
-    // the SCIP default its prior must cover finding 44's indexing-inclusive
-    // build times, not the hand-written range.
+    // #110 P2a: a queued job knows only the service's reference mode. On the
+    // hand default nothing changes; under `TOLMAP_REFS=scip` the prior must
+    // cover finding 44's indexing-inclusive build times, not the hand range.
     #[test]
     fn unknown_repository_prior_covers_scip_indexing() {
         let model = EtaModel::default();

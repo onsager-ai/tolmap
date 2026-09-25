@@ -1685,16 +1685,16 @@ Go's 902 `possible_implementation` candidates (finding 37) are replaced by 517 e
 
 Whether SCIP becomes the default is P2. That means re-deriving the fixtures, since the oracle's membership moves (vue cold 74.5%), deciding the per-file fallback and decorator crediting above, and showing the viewer which references are exact. Dependency installs, which would admit dify's and n8n's TypeScript (finding 41: dify installed keeps 16,539 of 16,546 pairs), wait for P1c's sandbox. Rooting Python per project, which finding 41 measured at 0.970 for dify's `api/`, is not done.
 
-## 45. With SCIP on by default, eight of the nine fixtures move below the parity threshold against their hand maps; the SCIP path now has fixtures of its own
+## 45. Under `--refs scip`, eight of the nine fixtures move below the parity threshold against their hand maps; hand stays the default, and SCIP gets fixtures of its own as the oracle
 
 Owner decision, session `16030105`, AskUserQuestion, transcript line 6390 (2026-09-25T13:42:06Z): **"P1c sandbox + P2a together (Recommended)"**. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s P2a, [PR #127](https://github.com/onsager-ai/tolmap/pull/127). It uses number 45 because main has 44.
 
-**What changed.** `tolmap build --refs` and the service's `TOLMAP_REFS` both default to `RefsMode::default()`, which is now `scip`. `hand` stays selectable. A language whose indexer is missing, fails, or keeps less than `MIN_RECALL` = 0.80 of the hand-written graph still falls back per language, and `coverage.references` records it (finding 44). CI's `scip` job now also checks that a build naming no `--refs` is byte-identical to an explicit `--refs scip` build, and that the missing-indexer fallback works on the default path.
+**What changed.** This PR was written to make `scip` the default and measured what that would do; the flip was then dropped by the owner (see the end of this finding). What remains: `tolmap build --refs` and the service's `TOLMAP_REFS` both take `RefsMode::default()`, which stays `hand`, so the two cannot drift apart. CI's `scip` job checks that a build naming no `--refs` is byte-identical to an explicit `--refs hand` build on a runner with every indexer installed, and that the missing-indexer fallback works under `--refs scip`. The measurements below were taken while the branch defaulted to `scip`; every build in them named `--refs` explicitly, so they do not depend on the default.
 
-**The oracle keeps testing what it tested.** `data/*.json` is the frozen Python reference's output (two fixtures are the Rust hand path's, see `data/fixtures.toml`), and that reference only knows the hand resolver. Every gate that compares with it passes `--refs hand` explicitly instead of relying on the default:
+**The oracle keeps testing what it tested.** `data/*.json` is the frozen Python reference's output (two fixtures are the Rust hand path's, see `data/fixtures.toml`), and that reference only knows the hand resolver. Every gate that compares with it passes `--refs hand` explicitly instead of relying on the default, so no future change of default can move what the oracle tests:
 - ci.yml `gate`: the offline flask/httpx parity and synthetic polyglot `--graph` builds (which ignore `--refs`, but are pinned so no gate depends on the default), the module-resolution fixture, the three-build polyglot determinism check and the islands fixture;
 - ci.yml `full-fixtures`;
-- remote-build.yml's build steps, unless `extra_args` names `--refs`, and only for a binary that has the option. These runners install no indexer, so a default build there would be an all-fallback SCIP build whose map differs from a hand build only by `coverage.references`;
+- remote-build.yml's build steps, unless `extra_args` names `--refs`, and only for a binary that has the option. These runners install no indexer, so a `--refs scip` build there would be an all-fallback SCIP build whose map differs from a hand build only by `coverage.references`;
 - the hand baselines in scip-spike.yml and scip-ingest.yml, and `web/scripts/generate-maps.sh`, whose naming caches are seeded from `data/*.json`.
 
 [Remote-build run 36144144728](https://github.com/onsager-ai/tolmap/actions/runs/36144144728) built the nine fixture pins with this branch and with main (`compare_ref=main`). Map and symbols documents are byte-identical on all nine. [CI run 36144110628](https://github.com/onsager-ai/tolmap/actions/runs/36144110628)'s `full-fixtures` passed on all nine with `--refs hand`.
@@ -1735,11 +1735,14 @@ The last requirement makes a language that flips between SCIP and fallback, such
 
 ### ETA
 
-A queued job's ETA had no repository features, and the per-language indexing seeds cost nothing without languages. Under the SCIP default, a queued job would therefore have been quoted a hand build's prior (6.14–101.163 s). The service now records its reference mode in the job's features at enqueue. With nothing else known, a SCIP job's prior spans finding 44's whole-build range, 17.3 s (prometheus) to 371.4 s (n8n). Once the worker reports its languages, the per-language indexing seeds apply as before.
+A queued job's ETA had no repository features, and the per-language indexing seeds cost nothing without languages. Under `TOLMAP_REFS=scip`, a queued job would therefore have been quoted a hand build's prior (6.14–101.163 s). The service now records its reference mode in the job's features at enqueue. With nothing else known, a SCIP job's prior spans finding 44's whole-build range, 17.3 s (prometheus) to 371.4 s (n8n). On the hand default, `refs` stays absent and the prior is exactly what it was. Once the worker reports its languages, the per-language indexing seeds apply as before.
 
 ### Not settled here
 
-- Whether the production default flips. That is the owner's deploy, after the staging soak.
 - Per-file fallback and decorator crediting (finding 44).
 - Why sqlalchemy's recall is 0.66.
 - Whether the 0.80 floor suits very small packages.
+
+### The default did not flip
+
+Owner decision, session `16030105`, AskUserQuestion, transcript line 6937 (2026-09-25T16:56:34Z): **"Tune hand, SCIP as oracle (Recommended)"**, with the owner's own note at line 6929 (16:51:25Z): *"Hand written is in more control with less deps and more efficient"*. `hand` stays the default for the CLI and the service. SCIP becomes the measuring stick the hand resolver is tuned against, and this finding's `data/scip` fixtures and `scip-fixtures` job become that oracle's own regression gate. Two reasons. The first is cost: the table above shows indexing adds seconds to minutes and 0.4–3.9 GB per build on these small fixtures, where the hand build takes seconds and tens of MB, and it needs indexers and toolchains on the worker. The second is [PR #130](https://github.com/onsager-ai/tolmap/pull/130)'s churn diagnosis: most of the district movement above comes from SCIP's distinct-symbol weighting, not from its pairs. The pairs are more exact, and the hand resolver's fixable errors in them are package `__init__` over-attribution, re-exports and Go's per-directory spread. Hand is right about star imports, which SCIP cannot see. So the movement measured here is not evidence that the SCIP maps are better, and it is cheaper to fix the hand resolver's known errors against SCIP than to ship the indexers.

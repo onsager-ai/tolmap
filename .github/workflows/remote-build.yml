@@ -353,15 +353,16 @@ jobs:
       # with exit_code/reason both null). `rc=$?` is captured immediately
       # after the command, before any other command can overwrite `$?`.
       #
-      # Issue #110 P2a: `tolmap build` now defaults to `--refs scip`, but
-      # these runners install no indexer, so a default build here would be a
-      # silent all-fallback SCIP build: the hand-written graph plus a
-      # recorded `coverage.references`, which is enough to make a branch's
-      # map differ from main's and to break the fixture band's comparison
-      # with data/*.json (the frozen Python reference, hand-only). Both
-      # build steps therefore pin `--refs hand` unless `extra_args` names
-      # `--refs` itself, and only for a binary that has the option (an old
-      # `compare_ref` may predate it; its default was hand). SCIP is
+      # Issue #110 P2a: both build steps pin `--refs hand` unless
+      # `extra_args` names `--refs` itself, and only for a binary that has
+      # the option (an old `compare_ref` may predate it; its default was
+      # hand). `hand` is the default today; the pin keeps a future flip from
+      # moving these measurements. These runners install no indexer, so a
+      # `--refs scip` build here would be a silent all-fallback build: the
+      # hand-written graph plus a recorded `coverage.references`, enough to
+      # make a branch's map differ from main's and to break the fixture
+      # band's comparison with data/*.json (the frozen Python reference,
+      # hand-only). SCIP is
       # measured by `command=scip-ingest` and ci.yml's `scip-fixtures`, which
       # install the pinned indexers.
       - name: Build with primary binary

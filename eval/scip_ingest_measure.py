@@ -11,7 +11,7 @@ maintainer's laptop must not do (CLAUDE.md).
 `repo` expects, under --work, what scip-ingest.yml's measure job built from
 one checkout with the branch binary:
 
-    hand/<stem>.json, .symbols.json   --refs hand (pinned; scip is the default since P2a)
+    hand/<stem>.json, .symbols.json   --refs hand (pinned explicitly)
     hand.graph.json                   dump-graph (hand), for each file's language
     scip1/ scip2/ scip3/              three cold --refs scip builds
     scipwarm/                         --refs scip, warm-started from hand/
