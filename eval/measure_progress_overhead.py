@@ -27,13 +27,20 @@ def main() -> None:
         "progress": Path("bin-primary/tolmap").resolve(),
         "main": Path("bin-compare/tolmap").resolve(),
     }
+    # Each binary's own `--refs hand` pin from its build step in
+    # remote-build.yml (empty for a binary without the option): replays
+    # must build what the paired, byte-compared builds built.
+    refs_args = {
+        "progress": shlex.split(os.environ.get("PRIMARY_REFS_ARG", "")),
+        "main": shlex.split(os.environ.get("COMPARE_REFS_ARG", "")),
+    }
     samples = []
     for position, label in enumerate(("main", "progress", "progress", "main")):
         out = Path(f"overhead-{position}")
         out.mkdir()
         command = ["prlimit", f"--as={os.environ['BUILD_MEM_BYTES']}", "--",
                    str(binaries[label]), "build", str(Path("clone").resolve()),
-                   *args, "--name", stem, "--out", str(out)]
+                   *args, *refs_args[label], "--name", stem, "--out", str(out)]
         started = time.perf_counter()
         with Path(f"overhead-{position}.log").open("wb") as log:
             completed = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,

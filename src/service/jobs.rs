@@ -140,6 +140,7 @@ impl JobRegistry {
         if let Some(position) = registry.queue.iter().position(|job| job.id == id) {
             let job = registry.queue.remove(position).expect("position exists");
             registry.active.remove(&job.key);
+            registry.features.remove(&job.id);
             finish_failed(&tx, cancelled_error());
             refresh_queue_etas(&mut registry);
         } else {
@@ -250,6 +251,7 @@ impl JobRegistry {
         registry.stopping = true;
         while let Some(job) = registry.queue.pop_front() {
             registry.active.remove(&job.key);
+            registry.features.remove(&job.id);
             finish_failed(&job.tx, server_stopping_error());
         }
         let running: Vec<(Uuid, watch::Sender<JobSnapshot>)> = registry
@@ -414,10 +416,20 @@ fn enqueue_job(
             .collect(),
     };
     let (tx, _rx) = watch::channel(snapshot);
-    let initial_eta =
-        registry
-            .eta_model
-            .predict(&RepoFeatures::default(), &[false; StageId::ALL.len()], None);
+    // Until the worker reports the repository's features, all the ETA
+    // model knows is the service's reference mode. Recording it now lets a
+    // queued `--refs scip` job (the default since #110 P2a) be costed with
+    // indexing; the worker's own `Features` event replaces this row, and
+    // `worker_loop` (or a queued cancel) removes it.
+    let prior = RepoFeatures {
+        refs: (state.config.refs == crate::extract::RefsMode::Scip)
+            .then(|| state.config.refs.to_string()),
+        ..RepoFeatures::default()
+    };
+    let initial_eta = registry
+        .eta_model
+        .predict(&prior, &[false; StageId::ALL.len()], None);
+    registry.features.insert(job_id, prior);
     tx.send_modify(|snapshot| snapshot.eta = Some(initial_eta));
     registry.jobs.insert(job_id, tx.clone());
     registry.active.insert(key.clone(), job_id);
@@ -1474,6 +1486,13 @@ mod tests {
     use crate::service::store::Store;
 
     fn state(limits: Limits) -> (tempfile::TempDir, Arc<AppState>) {
+        state_with_refs(limits, crate::extract::RefsMode::Hand)
+    }
+
+    fn state_with_refs(
+        limits: Limits,
+        refs: crate::extract::RefsMode,
+    ) -> (tempfile::TempDir, Arc<AppState>) {
         let dir = tempfile::tempdir().unwrap();
         let config = ServeConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
@@ -1483,7 +1502,7 @@ mod tests {
             prune_variant: PruneVariant::NodeRelative,
             namer: crate::naming::NamerKind::Idf,
             namer_model: crate::naming::DEFAULT_MODEL.to_owned(),
-            refs: crate::extract::RefsMode::Hand,
+            refs,
             limits,
             retain_commits_per_repo: 20,
             worker_uid: current_uid(),
@@ -1814,6 +1833,32 @@ mod tests {
             second
         );
         release_tx.send(()).unwrap();
+    }
+
+    // #110 P2a: before the worker reports anything about the repository, a
+    // job under the SCIP default is quoted a range that covers indexing
+    // (finding 44's n8n build, 371.4 s), and a hand-written one is not.
+    #[tokio::test]
+    async fn unstarted_scip_job_eta_covers_indexing() {
+        let mut high = Vec::new();
+        for refs in [
+            crate::extract::RefsMode::Hand,
+            crate::extract::RefsMode::Scip,
+        ] {
+            let (_dir, state) = state_with_refs(Limits::default(), refs);
+            let (release_tx, release_rx) = mpsc::channel::<()>();
+            let release_rx = Arc::new(Mutex::new(release_rx));
+            let runner: JobRunner = Arc::new(move |_, _, tx| {
+                release_rx.lock().unwrap().recv().unwrap();
+                finish_done(&tx);
+            });
+            let id = enqueue_job(state.clone(), repo("one"), "a".to_owned(), runner).unwrap();
+            high.push(snapshot(&state, id).eta.unwrap().high_s);
+            release_tx.send(()).unwrap();
+            until(|| snapshot(&state, id).status == JobStatus::Done).await;
+        }
+        assert!(high[0] < 371.4, "hand: {}", high[0]);
+        assert!(high[1] >= 371.4, "scip: {}", high[1]);
     }
 
     #[tokio::test]
