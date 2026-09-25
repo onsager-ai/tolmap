@@ -778,8 +778,15 @@ direct.on('error', () => askProxy());
     /// because environment settings outrank a repository's `.npmrc` and
     /// `pnpm-workspace.yaml`. `pm_on_fail=ignore` stops pnpm from
     /// downloading and running the pnpm version a repository's
-    /// `packageManager` names; `runtime_on_fail=ignore` stops it from
-    /// downloading a Node.js or Python runtime a manifest asks for.
+    /// `packageManager` names.
+    ///
+    /// `runtime_on_fail` is deliberately left alone. Set to `ignore`, pnpm
+    /// drops a manifest's `node@runtime:` dependency from what it compares
+    /// with the lockfile, so every frozen install of a repository that
+    /// declares one fails as outdated: finding 46 measured dify failing
+    /// exactly that way. It is not needed for containment: a runtime pnpm
+    /// fetches from nodejs.org is refused by the proxy, and nothing pnpm
+    /// installs is executed with scripts off.
     pub(super) fn jail_env(node_prefix: &Path) -> Vec<(String, String)> {
         let proxy = format!("http://127.0.0.1:{PROXY_PORT}");
         let home = JAIL_HOME;
@@ -807,7 +814,6 @@ direct.on('error', () => askProxy());
             ("npm_config_fund", "false"),
             ("pnpm_config_ignore_pnpmfile", "true"),
             ("pnpm_config_pm_on_fail", "ignore"),
-            ("pnpm_config_runtime_on_fail", "ignore"),
             ("pnpm_config_strict_dep_builds", "false"),
             ("pnpm_config_confirm_modules_purge", "false"),
         ];
@@ -2193,7 +2199,7 @@ mod tests {
         assert!(!args.iter().any(|arg| arg.contains("cgroup")));
         // The environment is exactly what the jail is given: proxies at the
         // in-jail bridge, the registry, scripts and pnpmfiles off, pnpm's
-        // own version and runtime downloads off.
+        // own version management off.
         let env = args
             .windows(2)
             .filter(|window| window[0] == "-E")
@@ -2208,11 +2214,13 @@ mod tests {
             "pnpm_config_ignore_scripts=true",
             "pnpm_config_ignore_pnpmfile=true",
             "pnpm_config_pm_on_fail=ignore",
-            "pnpm_config_runtime_on_fail=ignore",
             "NO_PROXY=",
         ] {
             assert!(env.contains(&expected.to_owned()), "{expected} in {env:?}");
         }
+        assert!(!env
+            .iter()
+            .any(|variable| variable.starts_with("pnpm_config_runtime_on_fail")));
         assert!(
             !env.iter().any(|variable| variable.starts_with("OPENROUTER")
                 || variable.starts_with("TOLMAP_")
