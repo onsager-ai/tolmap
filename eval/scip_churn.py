@@ -542,10 +542,22 @@ def missed(args) -> int:
     by_tag = Counter(tag for r in rows for tag in r["why"])
     by_dir = Counter(directory(r["a"]) for r in rows)
     kept = [p for p in hd if p in scip_pairs]
+    # The gate compares by file, so a hand pair into a package's
+    # `__init__.py` counts as lost when SCIP credits the file inside that
+    # package that defines the name the `__init__` re-exports. This is the
+    # same comparison with that one case counted as kept.
+    targets_of = defaultdict(set)
+    for a, b in scip_pairs:
+        targets_of[a].add(b)
+    reexport_kept = sum(
+        1 for a, b in hd
+        if (a, b) in scip_pairs or (b.endswith("__init__.py") and any(
+            t.startswith(directory(b) + "/") for t in targets_of[a])))
     kept_tags = Counter(tag for a, b in kept for tag in classify(a, b, hand, imports))
     result = {
         "hand_directed": len(hd), "scip_directed": len(scip_pairs), "kept": len(kept),
         "recall": len(kept) / len(hd) if hd else None,
+        "recall_counting_package_reexports": reexport_kept / len(hd) if hd else None,
         "missed": len(rows),
         "missed_but_reverse_present": sum(r["reverse_in_scip"] for r in rows),
         "missed_by_tag": dict(by_tag.most_common()),
