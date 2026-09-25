@@ -449,6 +449,17 @@ jobs:
           cp tests/fixtures/sandbox/egress_check.js egress-check/
           sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" \
             ./bin/tolmap sandbox-exec --repo "$PWD/egress-check" -- node egress_check.js
+      - name: DEBUG pnpm inside the jail (temporary)
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          rm -rf dbg && cp -r tests/fixtures/scip/ts-workspace dbg
+          run() { sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" ./bin/tolmap sandbox-exec --repo "$PWD/dbg" -- "$@"; echo "exit=$?"; }
+          run sh -c 'id; ulimit -a; node --version; pnpm --version; env | sort | cut -c1-80'
+          run sh -c 'timeout 120 pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile --loglevel debug 2>&1 | tail -80; echo "pnpm-exit=$?"'
+          run sh -c 'timeout 120 npm view tiny-invariant@1.3.3 version --loglevel verbose 2>&1 | tail -30'
+          ls -la dbg dbg/node_modules 2>/dev/null || true
+          dmesg 2>/dev/null | tail -20 || sudo dmesg | tail -20 || true
       - name: Three sandboxed installs and builds are byte-identical, and the install is what admits TypeScript
         run: |
           set -euo pipefail
