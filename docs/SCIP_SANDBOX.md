@@ -2,15 +2,15 @@
 
 **Status: design for owner review. No code implements it yet.** Owner decisions (AskUserQuestion, session `16030105`): line 4359, 2026-09-24T06:15:43Z, **"Bigger production machine"** and **"Installs in a sandbox"**; line 4376, 06:26:42Z, **"Go: P1a+P1b now, P1c design first"**. Everything under "Open decisions" is reserved to the owner: it covers hosting spend and credentials.
 
-Prices were fetched from Fly's pricing page on 2026-09-24 at 06:30 UTC (sources at the end). Claims about Fly that come from Fly's docs or staff are marked *documented*. Claims we have not observed on a Fly Machine ourselves are marked **unverified**.
+Claims about Fly that come from Fly's docs or staff are marked *documented*. Claims we have not observed on a Fly Machine ourselves are marked **unverified**. (Fly pricing and machine-sizing figures moved to the private hosting repo's `docs/SIZING.md` -- see §5 below.)
 
 ## Summary
 
 - **Install as little as possible.** Finding 41 shows that only TypeScript/JavaScript monorepos gain from installs: dify's TypeScript went from indexing nothing to 3,622 cross-package pairs. Python gained 33 in-repo pairs out of 11,453 and Go gained 2, while their installs cost up to 10.5 GB and 296 s. So the design installs only JS/TS packages, from the lockfile, with lifecycle scripts and pnpmfiles off. Python and Go never install.
 - **Sandbox every step that reads the checkout with a tool that could execute something.** That covers the install and the indexers. Each runs in nsjail, started by the root-owned worker. It runs as an unprivileged uid with an empty environment, sees only its job's workspace plus a read-only image, and has its own network namespace whose only exit is an allowlist proxy to `registry.npmjs.org`. A memory cgroup and a fixed-size workspace bound it. This works inside the current single Fly Machine because the service is root in its own VM, so it does not depend on unprivileged user namespaces. Those are unverified on Fly.
 - **Fail soft.** If the sandbox cannot be set up, or the install fails or exceeds its limits, that language falls back to indexing without installs. Only if that also fails does it fall back to today's hand-written resolver, and `coverage` records which path ran. No job fails because of the sandbox.
-- **Machine: one `performance-2x` with 16 GB** (US$126.72 per 30 days list in `iad`, or about $80 with reservation blocks). Every P0 repository fits under the recommended install policy; the largest is n8n at 8.84 GB. Python roots beyond roughly 5k files and TypeScript beyond roughly 20–25k files are expected to OOM. That is a two-point extrapolation, not a measurement.
-- **Later, with #97's master/worker split**, the same sandbox runs inside a separate worker Machine. That Machine has no volume holding master data and no secrets beyond its own worker token, and it stops when idle. The master drops back to the current `shared-cpu-1x`/1 GB. At a few hundred jobs a month that totals about $15–25.
+- **Machine sized for SCIP indexing.** Every P0 repository fits under the recommended install policy; the largest is n8n at 8.84 GB. Python roots beyond roughly 5k files and TypeScript beyond roughly 20–25k files are expected to OOM. That is a two-point extrapolation, not a measurement. The exact machine class and its cost are recorded in the private hosting repo's `docs/SIZING.md` (§5 below), not here.
+- **Later, with #97's master/worker split**, the same sandbox runs inside a separate worker Machine. That Machine has no volume holding master data and no secrets beyond its own worker token, and it stops when idle. The master drops back to a smaller class. Cost at a few hundred jobs a month is also in `docs/SIZING.md`.
 
 ## 1. What an install buys
 
@@ -35,7 +35,7 @@ tolmap indexes arbitrary public repositories on request, and the endpoint is pub
 The current code and deployment matter here, because the sandbox has to close these gaps:
 
 - `src/service/jobs.rs` `process_worker_exe` spawns `tolmap worker` with the **parent's full environment**: no `env_clear`. It runs **as the same user**, which is root, since the `Dockerfile` runtime stage has no `USER`. The child therefore holds `OPENROUTER_API_KEY` (`src/naming.rs`) and anything else set as a Fly secret.
-- The worker spec gives the child `cache_dir` and `output_dir` on the `/data` volume. That volume also holds `/data/tolmap.sqlite3`, every stored map, the names cache, and **the other repositories' clones** (`fly.toml` `[mounts]`, `TOLMAP_DB_PATH`, `TOLMAP_CACHE_DIR`).
+- The worker spec gives the child `cache_dir` and `output_dir` on the `/data` volume. That volume also holds `/data/tolmap.sqlite3`, every stored map, the names cache, and **the other repositories' clones** (the production deploy config's `[mounts]`, `TOLMAP_DB_PATH`, `TOLMAP_CACHE_DIR`).
 - The machine has unrestricted outbound network. That includes Fly's private 6PN network: *documented*, "every machine in an organization can reach every other app's machines by default", over `fdaa::/16`, with DNS at `fdaa::3`. That puts every other app in org `core-digital` within reach, along with `_api.internal:4280` (the Machines API, which needs a token).
 - A root process in a Fly Machine can use the `/.fly/api` Unix socket. *Documented*: it "exports a subset of the Fly Machines API to privileged processes in the Machine", including minting OIDC tokens for `org:app:machine`.
 - One machine runs one job at a time (`TOLMAP_MAX_CONCURRENT_JOBS = "1"`) with no time or size caps (owner decision, #97). A job that exhausts memory or disk takes down the API, the store writes and the queue with it.
@@ -162,56 +162,16 @@ The owner ruled "no file-count, clone-size, history-depth or wall-time admission
 
 ## 5. Machine sizing and cost
 
-### 5.1 What a job needs
-
-A job's peak memory is the maximum over its steps, **provided the indexers for a job's languages run one after another**, never concurrently. That is a design rule for P1b. Figures are from finding 41 on 4-vCPU runners:
-
-| repository | largest step | peak RSS | job time, sequential (index + install + today's build) |
-|---|---|---:|---:|
-| vue | scip-typescript | 0.77 GB | ~23 s |
-| prometheus | scip-typescript (UI) / scip-go | 0.80 GB | ~21 s |
-| django | scip-python | 5.39 GB | ~86 s |
-| dify (recommended policy: TS installed, Python at `api/`, no Python install) | scip-python at `api/` | 7.17 GB (root-rooted: 7.89 GB) | ~550 s |
-| n8n (no install) | scip-typescript | 8.84 GB | ~390 s |
-| dify Python installed (not recommended) | scip-python | 10.53 GB | — |
-| n8n installed | — | **not measured** | — |
-
-Add the running service (tens to a few hundred MB; today's builds peak at 297 MB on n8n), the OS, and page cache for the workspace. A 16 GB machine leaves about 7 GB of headroom over n8n. An 8 GB machine does not fit n8n or dify's Python.
-
-CPU: the indexers look mostly single-threaded (inference from their runtimes on 4-vCPU runners, not measured). So more than two dedicated vCPUs buys little, and times on Fly may differ from the runner's (**unverified**). Shared CPUs are throttled after their burst balance runs out (*documented*: 5 ms per 80 ms per shared vCPU; the quota is shared across the Machine's vCPUs; initial burst balance 5 s, maximum 500 s). A 6–9 minute dify or n8n index can exhaust the balance and continue at the baseline: on `shared-cpu-8x`, 40 ms per 80 ms in total. How the balance behaves across stop and start is **unverified**. Volume bandwidth also differs (*documented*): shared-cpu-1x/2x 16 MiB/s, 4x/8x 32 MiB/s, performance-2x/4x 64 MiB/s. That matters for pnpm writing `node_modules`, whose size for dify was **not measured**.
-
-### 5.2 Prices
-
-Source: https://docs.fly.io/about/pricing/, fetched 2026-09-24 06:30 UTC. `iad` has markup 1.0 (same as `ams`). "Month" is the page's own 30 days = 2,592,000 s. Additional RAM is "about $5 per 30 days per GB". Stopped Machines pay only rootfs at $0.15/GB per 30 days. Volumes cost $0.15/GB-month, pro-rated hourly. Reservation blocks give 40% off: $144/year buys $20/month of performance usage, and $36/year buys $5/month of shared usage.
-
-| preset | vCPU | RAM | $/s | $/h | $/30 days always-on | fits every P0 job? |
-|---|---:|---:|---:|---:|---:|---|
-| shared-cpu-1x (today) | 1 shared | 1 GB | 0.00000228 | 0.0082 | **5.91** | no (SCIP at all) |
-| shared-cpu-4x | 4 shared | 8 GB | 0.00001714 | 0.0617 | 44.43 | no: n8n, dify Py at root |
-| performance-1x | 1 | 8 GB | 0.00002445 | 0.0880 | 63.37 | no: same |
-| performance-2x | 2 | 8 GB | 0.00003286 | 0.1183 | 85.17 | no: same |
-| shared-cpu-8x | 8 shared | 16 GB | 0.00003429 | 0.1234 | 88.88 | memory yes; CPU throttled after burst |
-| **performance-2x** | **2** | **16 GB** | **0.00004889** | **0.1760** | **126.72** | **yes** |
-| performance-4x | 4 | 16 GB | 0.00006571 | 0.2366 | 170.32 | yes; extra cores likely idle |
-| performance-4x | 4 | 32 GB | 0.00009778 | 0.3520 | 253.45 | yes; for Python roots beyond about 5k files |
-
-### 5.3 Monthly cost of the three billing shapes (performance-2x / 16 GB)
-
-The volume is today's 10 GB (`$1.50`). The rootfs of a stopped Machine assumes a 3 GB image with the toolchains, **an estimate**: P1b has not built it. Job minutes are finding 41's times, which vary between runs.
-
-| shape | what runs | monthly |
-|---|---|---|
-| **A. always-on** (today's shape, bigger) | one Machine serving and indexing, 24×7 | $126.72 + $1.50 = **$128.22**. With six $144/year performance blocks ($864 upfront, $72/month amortised, covering $120): about **$80.22** |
-| **B. auto-stop when idle** (same single Machine) | The app exits itself when no job is queued or running and no request arrived for N minutes. `auto_start_machines = true` restarts it on the next request. `auto_stop_machines` stays `"off"`, because Fly Proxy's own stop does not know about in-flight jobs; that is `fly.toml`'s existing warning. | $0.1760 × active hours + ≤ $0.45 rootfs + $1.50. At 60 h: **$12.51**. At 240 h: **$44.19**. Map *viewers* also wake it, so active hours follow traffic, not only jobs. Viewers get a cold-start delay (**unmeasured**). |
-| **C. separate on-demand indexing Machine** (§4.2) | Master `shared-cpu-1x`/1 GB always-on ($5.91 + $1.50 volume) plus a performance-2x/16 GB worker billed per job-second. A standing stopped worker adds $3.00 for a 20 GB volume plus ≤ $0.45 rootfs. Per-job Machines instead pay about $0.004 per job for an hour-minimum 20 GB volume. | Per job: dify ≈ 550 s → **$0.027**; n8n ≈ 390 s → $0.019; django ≈ 86 s → $0.004 (plus boot time, **unmeasured**). 300 jobs/month at a 5-minute mean ≈ 25 h → $4.40, total **≈ $15.26** with a standing worker. 1,000 jobs/month → $14.67 compute, total **≈ $25.53**. |
-
-For comparison, Fly Sprites list $0.07/CPU-hour and $0.04375/GB-hour (fly.io/sprites, fetched 2026-09-24). A dify-sized job at about 1 CPU and 6 GB for 10 minutes would cost roughly $0.06. Whether billing follows allocation or actual use, and whether the 16 GB tier is granted, are **unverified**.
-
-### 5.4 Recommendation
-
-**performance-2x with 16 GB**, as the single production Machine now (shape A, $126.72 list, about $80 with reservations). It then becomes the worker class when #97 lands (shape C, about $15–25 at hundreds of jobs a month), and the master returns to `shared-cpu-1x`/1 GB. Shape B is the cheaper bridge if the owner prefers it; its cost follows traffic, and viewers pay cold starts.
-
-What it supports: every P0 repository under the recommended install policy. That includes dify with its TypeScript installed (5.67 GB) and its Python rooted at `api/` (7.17 GB), and n8n without installs (8.84 GB). Where it would still OOM is **inference from two points per indexer**, not measurement. scip-python grew from 5.39 GB at 851 files (django) to 7.89 GB at 1,987 files (dify). scip-typescript grew from 5.67 GB at 4,350 files (dify) to 8.84 GB at 11,991 files (n8n). A 14 GB jail budget then runs out near **~5k Python files** or **~20–25k TypeScript files** per indexer run. From `eval/corpus.toml`, that makes azure-sdk-for-python (40k files), google-cloud-python (40k), msgraph-sdk-python (16.6k), probably home-assistant/core (10.2k) and borderline twentyhq/twenty (22k) the likely OOM cases. n8n with installs is unmeasured. Each would fall back to the hand-written resolver for that language (§4.3); the job does not fail.
+Fly prices, machine-class options and the billing-shape comparison that
+used to live here moved to the private hosting repo (`tolmap-infra`'s
+`docs/SIZING.md`) 2026-09-24, scope "hosting config only" (owner decision,
+session 16030105) -- they describe this deployment's hosting spend, not
+the open-source service. What stays here is the design: install as little
+as possible (§1), sandbox what does run (§§2–4), and fail soft rather than
+reject a job (§4.3). The current machine is sized against the same
+per-repository peak-RSS measurements (finding 41) that motivated this
+document; the exact class and its cost are recorded privately because they
+are a hosting decision, not a statement about what the software requires.
 
 ## 6. What to verify before the code merges
 
@@ -225,18 +185,16 @@ This change ran no experiments. A CI probe of the mechanisms was prepared for a 
 ## 7. Open decisions for the owner
 
 1. **Sandbox layer for now.** (a) In-VM nsjail on the single Machine (§4.1), accepting that a kernel exploit reaches the whole service until #97. (b) Ship installs only together with a separate worker VM (§4.2), which delays TS monorepo installs until #97's worker channel exists. (c) Add gVisor on top of (a), after the Fly cgroup issue is tested.
-2. **Machine size and billing shape.** performance-2x/16 GB always-on ($126.72/30 days list, or about $80 with six $144/year reservation blocks, $864 upfront). The same Machine auto-stopping ($0.176/h active plus about $2). shared-cpu-8x/16 GB ($88.88, throttled). Or performance-4x/32 GB ($253.45) for the large Python SDK monorepos. The change lands only on a release tag the owner pushes (#110).
+2. **Machine size and billing shape.** Options and their cost are in the private hosting repo's `docs/SIZING.md` (moved there 2026-09-24, scope "hosting config only"): performance-2x/16 GB always-on, the same Machine auto-stopping, shared-cpu-8x/16 GB (throttled), or performance-4x/32 GB for the large Python SDK monorepos. The change lands only on a release the owner deploys via that repo's `fly-deploy.yml` (#110).
 3. **Install limits under the no-caps ruling.** Whether the install step may have a wall-time bound and a disk budget that fall back to no-install indexing rather than failing the job (§4.3), and their values (proposed: 20 minutes, 20 GB).
 4. **Egress policy.** `registry.npmjs.org` only (proposed), or also PyPI/Go proxies (only if Python or Go installs are ever enabled), or also GitHub for git dependencies (opens an exfiltration channel). Separately, for the later worker VM: a Machines API token held by the master (credential) versus Flycast autostart (no token); and a custom private network for the worker app.
 
 ## Sources
 
-Fetched 2026-09-24.
+Fetched 2026-09-24. Fly pricing, CPU-quota and machine-sizing sources moved
+to the private hosting repo's `docs/SIZING.md` along with the figures they
+support.
 
-- Fly pricing (presets, per-second prices, region markups, additional RAM, stopped rootfs, volumes, reservations): https://docs.fly.io/about/pricing/
-- Fly billing (per-second started, rootfs-only stopped/suspended): https://docs.fly.io/about/billing/
-- Shared vs performance CPU quotas and bursts: https://docs.fly.io/machines/cpu-performance/
-- Machine sizing (2 GB per shared vCPU, 8 GB per performance vCPU): https://docs.fly.io/machines/guides-examples/machine-sizing/
 - Rootfs 8 MiB/s / 2000 IOPS; volume limits per preset; one volume per Machine: https://docs.fly.io/volumes/overview/
 - Rootfs 8 GB uncompressed limit (community): https://community.fly.io/t/rootfs-8gb-uncompressed-limit-exceeded-error/18202
 - Autostop/autostart, and apps that stop themselves: https://docs.fly.io/launch/autostop-autostart/
@@ -250,4 +208,4 @@ Fetched 2026-09-24.
 - Root in a full VM (staff): https://community.fly.io/t/why-are-fly-machines-running-as-firecracker-microvms-configured-with-privileged-true/26380
 - No nested virtualisation (staff, 2023): https://community.fly.io/t/nested-virtualization-on-fly-io/11778
 - Hybrid cgroups; gVisor and podman limit failures (Nov 2025): https://community.fly.io/t/podman-and-gvisor/26529
-- Sprites pricing: https://fly.io/sprites; memory limit 8 GB default, 16 GB on request: https://community.fly.io/t/16gb-ram-advertised-for-sprites-but-not-actually-available/28123
+- Sprites: default memory "up to 8GB", 16 GB on request: https://community.fly.io/t/16gb-ram-advertised-for-sprites-but-not-actually-available/28123 (pricing moved to `docs/SIZING.md`)

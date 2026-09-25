@@ -57,6 +57,9 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_RATE_LIMIT_PER_REPO` | `3` | `POST /api/index` requests per window, per slug |
 | `TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS` | `300` | window for the per-repo limit |
 | `TOLMAP_RETAIN_COMMITS_PER_REPO` | `20` | indexed commits kept per slug before older ones are pruned (see "Store" below) |
+| `TOLMAP_SCIP_TYPESCRIPT` | `scip-typescript` on `PATH` | path to the scip-typescript binary (issue #110 P1a); the runtime image's `Dockerfile` sets this to an absolute path, overridable for a different install |
+| `TOLMAP_SCIP_PYTHON` | `scip-python` on `PATH` | path to the scip-python binary, same pattern |
+| `TOLMAP_SCIP_GO` | `scip-go` on `PATH` | path to the scip-go binary, same pattern |
 
 These queue, cache and rate settings map to `service::config::Limits`. There are no file-count, clone-size, history-depth or job-time admission caps. The co-change algorithm still reads at most 4000 commits per build; that horizon does not reject a repository with deeper history.
 
@@ -225,7 +228,7 @@ killing any worker process group already started, the same way cancelling
 that job would -- with `status: "failed"` and `error_code: "server_stopping"`
 (`error: "the service is shutting down"`), before the process exits. This is
 what makes an operator-initiated stop (a deploy, a resize, a platform
-auto-stop -- see `fly.toml`) observable rather than silent: a client
+auto-stop, if your host has one) observable rather than silent: a client
 watching `GET /api/jobs/{job_id}/events` gets a final SSE frame carrying the
 terminal snapshot before its connection closes, and a client that only
 polls `GET /api/jobs/{job_id}` sees the same terminal state on its next
@@ -288,6 +291,12 @@ slug, or that commit of it, has never been indexed.
 200 OK
 {"status": "ok"}
 ```
+
+## Worker isolation
+
+The `tolmap worker` child every index job spawns (`src/service/jobs.rs::process_worker_exe`) runs as an unprivileged `tolmap-worker` user (fixed uid/gid `10001:10001`, baked into the runtime image as `TOLMAP_WORKER_UID`/`TOLMAP_WORKER_GID` — see the Dockerfile's runtime stage), with an empty environment plus a short explicit allowlist (`PATH`, `LANG`, the `TOLMAP_NAMER_*` budget/ledger knobs, the `TOLMAP_SCIP_*` indexer locations in the configuration table above, and `OPENROUTER_API_KEY` only when `TOLMAP_NAMER=model`), and its own per-job directory instead of the shared `cache_dir` — see that function's doc comments for the full reasoning. The shared clone cache under `cache_dir/repos` is still fetched/updated and reused across jobs for the same repo; the service (at its own uid) does that clone/fetch itself and then hands the worker a fresh, non-hardlinked local-clone copy in its own job directory (`service::jobs::run_blocking`, `service::clone::local_clone_into`) rather than the shared cache directory itself. The uid switch only applies when the service itself runs as root, which is the runtime image's case (no `USER` in the Dockerfile, deliberately); locally and in CI the service is not root, so the worker runs as the current user.
+
+Nothing here needs a migration step for an existing cache volume. The per-job directories are made fresh and torn down by the service on every job, never a static layout an operator provisions, so there is nothing to pre-create, `chown`, or backfill.
 
 ## Errors
 
