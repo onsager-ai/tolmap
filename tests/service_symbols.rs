@@ -49,6 +49,7 @@ async fn district_route_includes_remote_symbol_endpoint() {
         prune_variant: tolmap::pipeline::PruneVariant::NodeRelative,
         namer: tolmap::naming::NamerKind::Idf,
         namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),
+        refs: tolmap::extract::RefsMode::Hand,
         limits: Limits::default(),
         retain_commits_per_repo: 20,
         // Unused by this test -- it never spawns a worker -- so the

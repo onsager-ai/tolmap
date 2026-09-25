@@ -37,6 +37,38 @@ impl Eta {
     }
 }
 
+/// Number of stages, for the fixed-size per-stage arrays below.
+const STAGE_COUNT: usize = StageId::ALL.len();
+
+/// Stored timing rows are in `StageId::ALL` order. Rows written before the
+/// three `--refs scip` indexing stages existed (issue #110) have 18 entries;
+/// this inserts the missing stages after `Resolve` so every later stage
+/// keeps its own observations instead of shifting onto a neighbour's.
+pub fn upgrade_stage_layout(mut stage_s: Vec<Option<f64>>) -> Vec<Option<f64>> {
+    const LEGACY_STAGE_COUNT: usize = 18;
+    if stage_s.len() == LEGACY_STAGE_COUNT {
+        let at = StageId::Resolve.index();
+        for _ in 0..(STAGE_COUNT - LEGACY_STAGE_COUNT) {
+            stage_s.insert(at, None);
+        }
+    }
+    stage_s
+}
+
+/// Seconds per mapped file (and a fixed start-up cost) for each indexer,
+/// from finding 41's no-install runs on standard runners: scip-python took
+/// 79 s on django's 851 files and 246 s on dify's 1,989; scip-go 3 s on
+/// prometheus's 409; scip-typescript 315 s on n8n's 11,991, 20 s on vue's
+/// 239 and 7 s on prometheus's 187-file UI. A seed only: completed jobs
+/// refit it like every other stage.
+fn index_seed(language: &str) -> (f64, f64) {
+    match language {
+        "py" => (2.0, 0.11),
+        "go" => (1.0, 0.008),
+        _ => (3.0, 0.03),
+    }
+}
+
 pub fn expected_passes(stage: StageId, features: &RepoFeatures) -> usize {
     if matches!(stage, StageId::Parse | StageId::Resolve) {
         features.languages.len().max(1)
@@ -64,14 +96,17 @@ pub struct EtaModel {
     rows: Vec<TimingRow>,
 }
 
-// The 18 values are finding 36's stage_finished durations in StageId::ALL
-// order. Parse and resolve aggregate both selected source passes. Corpus
+// The 18 non-indexing values are finding 36's stage_finished durations in
+// StageId::ALL order. Parse and resolve aggregate both selected source passes. Corpus
 // build totals (django 6.14 s, dify 41.925 s, n8n 101.163 s) set the
 // prior's broad range; they are not fabricated per-stage observations.
 const DIFY_FILES: f64 = 6_347.0;
-const DIFY_STAGE_S: [f64; 18] = [
-    0.032, 0.0, 0.0, 0.0, 0.103, 26.913, 0.223, 0.382, 0.044, 0.219, 0.131, 0.010, 1.613, 5.109,
-    0.021, 0.390, 5.549, 0.182,
+// The three zeros after resolve's 0.223 are the `--refs scip` indexing
+// stages, which finding 36's hand-written timeline never ran; their seed is
+// `index_seed`, and only for a job that asked for SCIP.
+const DIFY_STAGE_S: [f64; STAGE_COUNT] = [
+    0.032, 0.0, 0.0, 0.0, 0.103, 26.913, 0.223, 0.0, 0.0, 0.0, 0.382, 0.044, 0.219, 0.131, 0.010,
+    1.613, 5.109, 0.021, 0.390, 5.549, 0.182,
 ];
 
 impl EtaModel {
@@ -109,6 +144,16 @@ impl EtaModel {
     }
 
     fn seed_stage(stage: StageId, features: &RepoFeatures) -> f64 {
+        if let Some(language) = stage.indexed_language() {
+            if features.refs.as_deref() != Some("scip") {
+                return 0.0; // a hand-written build never starts this stage
+            }
+            let Some(files) = features.languages.get(language).map(|lang| lang.files) else {
+                return 0.0; // no source of this language, nothing to index
+            };
+            let (start_up, per_file) = index_seed(language);
+            return start_up + per_file * files as f64;
+        }
         let seed = DIFY_STAGE_S[stage.index() - 1];
         if matches!(
             stage,
@@ -171,7 +216,7 @@ impl EtaModel {
     pub fn predict(
         &self,
         features: &RepoFeatures,
-        done: &[bool; 18],
+        done: &[bool; STAGE_COUNT],
         running: Option<(StageId, f64, Option<f64>, Option<f64>)>,
     ) -> Eta {
         let mut seconds = 0.0;
@@ -256,14 +301,14 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
     let events = timeline["events"].as_array().context("timeline events")?;
     let model = EtaModel::default();
     let mut features = RepoFeatures::default();
-    let mut done = [false; 18];
-    let mut stage_succeeded = [false; 18];
-    let mut completed_passes = [0usize; 18];
-    let mut stage_offsets = [0u64; 18];
-    let mut stage_max = [0u64; 18];
-    let mut starts = [None::<f64>; 18];
-    let mut last_progress = [None::<(u64, f64)>; 18];
-    let mut ewma = [None::<f64>; 18];
+    let mut done = [false; STAGE_COUNT];
+    let mut stage_succeeded = [false; STAGE_COUNT];
+    let mut completed_passes = [0usize; STAGE_COUNT];
+    let mut stage_offsets = [0u64; STAGE_COUNT];
+    let mut stage_max = [0u64; STAGE_COUNT];
+    let mut starts = [None::<f64>; STAGE_COUNT];
+    let mut last_progress = [None::<(u64, f64)>; STAGE_COUNT];
+    let mut ewma = [None::<f64>; STAGE_COUNT];
     let mut running = None::<(StageId, f64, Option<f64>, Option<f64>)>;
     let mut predictions = Vec::new();
     for value in events {
@@ -402,7 +447,33 @@ mod tests {
                 },
             )]
             .into(),
+            refs: None,
         }
+    }
+
+    #[test]
+    fn legacy_timing_rows_gain_empty_indexing_stages() {
+        let legacy = (0..18).map(|i| Some(i as f64)).collect::<Vec<_>>();
+        let upgraded = upgrade_stage_layout(legacy);
+        assert_eq!(upgraded.len(), StageId::ALL.len());
+        assert_eq!(upgraded[StageId::Resolve.index() - 1], Some(6.0));
+        assert_eq!(upgraded[StageId::IndexGo.index() - 1], None);
+        assert_eq!(upgraded[StageId::IndexTs.index() - 1], None);
+        assert_eq!(upgraded[StageId::History.index() - 1], Some(7.0));
+        assert_eq!(upgraded[StageId::Write.index() - 1], Some(17.0));
+        let current = vec![Some(1.0); StageId::ALL.len()];
+        assert_eq!(upgrade_stage_layout(current.clone()), current);
+    }
+
+    #[test]
+    fn indexing_is_estimated_only_for_scip_jobs() {
+        let mut input = features(851);
+        let model = EtaModel::default();
+        assert_eq!(model.stage(StageId::IndexPy, &input), 0.0);
+        input.refs = Some("scip".to_owned());
+        let python = model.stage(StageId::IndexPy, &input);
+        assert!(python > 60.0 && python < 120.0, "{python}");
+        assert_eq!(model.stage(StageId::IndexGo, &input), 0.0);
     }
 
     #[test]
@@ -419,8 +490,8 @@ mod tests {
         });
         assert!(model.stage(StageId::Parse, &input) > base);
         assert!(model.stage(StageId::Parse, &input) < base * 1.5);
-        let near = model.predict(&input, &[false; 18], None);
-        let far = model.predict(&features(100_000), &[false; 18], None);
+        let near = model.predict(&input, &[false; STAGE_COUNT], None);
+        let far = model.predict(&features(100_000), &[false; STAGE_COUNT], None);
         assert!(
             (far.high_s - far.low_s) / far.midpoint()
                 > (near.high_s - near.low_s) / near.midpoint()
@@ -431,7 +502,7 @@ mod tests {
     fn progress_rate_blends_into_remaining_time() {
         let model = EtaModel::default();
         let input = features(6_347);
-        let mut done = [true; 18];
+        let mut done = [true; STAGE_COUNT];
         done[StageId::Parse.index() - 1] = false;
         let model_only = model.predict(&input, &done, Some((StageId::Parse, 5.0, None, None)));
         let blended = model.predict(
@@ -472,13 +543,13 @@ mod tests {
     fn failed_job_does_not_narrow_extrapolation_interval() {
         let input = features(100_000);
         let mut model = EtaModel::default();
-        let before = model.predict(&input, &[false; 18], None);
+        let before = model.predict(&input, &[false; STAGE_COUNT], None);
         model.record(TimingRow {
             features: input.clone(),
             elapsed_s: 12.0,
             stage_s: vec![None; StageId::ALL.len()],
         });
-        let after = model.predict(&input, &[false; 18], None);
+        let after = model.predict(&input, &[false; STAGE_COUNT], None);
         assert!((before.low_s - after.low_s).abs() < 0.001);
         assert!((before.high_s - after.high_s).abs() < 0.001);
     }

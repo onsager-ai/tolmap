@@ -60,6 +60,14 @@ function formatRate(progress: ProgressValue): string | null {
   return `${progress.rate_per_s.toFixed(1)} ${progress.unit}/s`;
 }
 
+/** Issue #110: the three `index_*` stages run only for a `--refs scip`
+ * job, one per indexed language. A hand-written job never starts them, so
+ * a pending one is hidden rather than listed as work still to come; a SCIP
+ * job's rows appear as each language's indexer starts. */
+function shownStage(stage: JobSnapshot["stages"][number]): boolean {
+  return !(stage.id.startsWith("index_") && stage.state === "pending");
+}
+
 /** Spec item 2's `worker_crashed` wording names "the last stage" -- the
  * furthest one this job actually reached, not necessarily the one the
  * terminal snapshot still calls "running" (a crash can be observed before
@@ -312,7 +320,7 @@ export function IndexJobView() {
         <>
           <p className="text-sm text-[var(--dim)]">{job.stage}</p>
           <ol className="flex w-full max-w-sm flex-col gap-0.5" data-stage-timeline>
-            {job.stages.map((stage) => (
+            {job.stages.filter(shownStage).map((stage) => (
               <StageRow key={stage.id} stage={stage} progress={job.progress} elapsedS={job.elapsed_s} />
             ))}
           </ol>

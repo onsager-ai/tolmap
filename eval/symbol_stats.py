@@ -102,11 +102,17 @@ def measure(map_file: Path, symbols_file: Path, compare_file: Path | None = None
         "median_within_file_pearson": statistics.median(correlations) if correlations else None,
         "document_bytes_before_geometry": compact_bytes(before),
     }
-    result.update(contour_metrics(decoded))
-    result.update(shape_metrics(decoded))
-    result.update(containment_metrics(decoded, parcels))
-    result.update(audit_rings(decoded))
-    result.update(sample_sibling_overlaps(decoded))
+    # Maps built without footprints (the --no-parcels fixtures) carry no card
+    # geometry at all; every geometry metric below would index a missing
+    # `symbol_rings`, so they are skipped rather than reported as zeros.
+    if decoded.get("symbol_rings") is not None:
+        result.update(contour_metrics(decoded))
+        result.update(shape_metrics(decoded))
+        result.update(containment_metrics(decoded, parcels))
+        result.update(audit_rings(decoded))
+        result.update(sample_sibling_overlaps(decoded))
+    else:
+        result["card_geometry"] = None
     result["card_pass_seconds"] = card_pass_seconds(log_file)
     if compare_log_file:
         result["main_card_pass_seconds"] = card_pass_seconds(compare_log_file)

@@ -29,6 +29,11 @@ pub struct WorkerSpec {
     pub namer_model: String,
     pub previous_maps: Vec<PreviousMap>,
     pub names_cache: Option<String>,
+    // Issue #110: "hand" (the default, also when absent) or "scip", as
+    // `tolmap build --refs`. Optional on the wire so a service and a worker
+    // from before the option still agree.
+    #[serde(default)]
+    pub refs: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -42,6 +47,11 @@ pub struct RepoFeatures {
     pub clone_bytes: Option<u64>,
     pub commits: Option<u64>,
     pub languages: BTreeMap<String, LanguageFeatures>,
+    // "scip" when the job indexes with SCIP: the ETA model only expects the
+    // indexing stages then. Absent for hand-written jobs, so their feature
+    // rows serialize exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refs: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
@@ -175,6 +185,12 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         clone_cache_bytes: spec.clone_cache_bytes,
         ..Limits::default()
     };
+    let refs = spec
+        .refs
+        .as_deref()
+        .unwrap_or("hand")
+        .parse::<extract::RefsMode>()
+        .map_err(|error| fail("internal_error", error))?;
     let clone_stage = progress.stage(StageId::Clone, None);
     let materialized = clone::materialize_with_progress(
         &PathBuf::from(spec.cache_dir),
@@ -199,6 +215,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
             .and_then(|output| String::from_utf8(output.stdout).ok())
             .and_then(|count| count.trim().parse().ok()),
         languages: BTreeMap::new(),
+        refs: (refs == extract::RefsMode::Scip).then(|| refs.to_string()),
     };
     progress.emit_event(WorkerEvent::Features {
         v: 1,
@@ -252,6 +269,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
     let (graph, symbol_records) = extract::build_multi_source_with_symbols_progress(
         &materialized.path,
         &source_pairs,
+        refs,
         progress,
     )
     .map_err(|error| fail("index_failed", format!("{error:#}")))?;
@@ -288,6 +306,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
                 .parse()
                 .map_err(|error: &str| fail("internal_error", error.to_owned()))?,
             namer_model: spec.namer_model,
+            refs,
         },
         previous.as_ref(),
         progress,

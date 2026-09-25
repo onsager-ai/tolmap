@@ -57,7 +57,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation: build, dump-blend, stability, sequential name-eval, or scip-spike (issue #110 P0; ignores repos/extra_args/compare_ref)"
+        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0) or scip-ingest (issue #110 P1a; both ignore repos/extra_args/compare_ref)"
         required: false
         type: choice
         options:
@@ -66,6 +66,7 @@ on:
           - stability
           - name-eval
           - scip-spike
+          - scip-ingest
         default: build
       scip_reuse_run:
         description: "scip-spike only: analyze this earlier run's scip-base-*/scip-idx-* artifacts instead of re-indexing"
@@ -242,7 +243,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike'
+    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -629,7 +630,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -723,3 +724,16 @@ jobs:
     uses: ./.github/workflows/scip-spike.yml
     with:
       reuse_run: ${{ inputs.scip_reuse_run }}
+
+  # Issue #110 P1a: the product's `--refs scip` ingest on real repositories,
+  # against P0's oracle and against `--refs hand`. Everything lives in
+  # scip-ingest.yml; this job hands it `setup`'s binary built from
+  # inputs.ref. See that file's header.
+  scip-ingest:
+    name: scip ingest
+    needs: setup
+    if: inputs.command == 'scip-ingest'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/scip-ingest.yml

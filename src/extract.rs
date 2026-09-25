@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,7 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Node, Parser};
 
-use crate::schema::{FileId, GraphData, SignalEdge, SourceNode, SymbolRow};
+use crate::schema::{FileId, GraphData, ReferenceCoverage, SignalEdge, SourceNode, SymbolRow};
 
 const ALPHA: f64 = 0.45;
 const BETA: f64 = 0.35;
@@ -214,6 +214,43 @@ enum FileRaw {
     },
 }
 
+/// Where the static signal and symbol references come from (issue #110).
+///
+/// `Hand` is today's tree-sitter resolver and the default: a `--refs hand`
+/// map is byte-identical to one built before this option existed. `Scip`
+/// runs each detected language's SCIP indexer (`indexers`), reads the index
+/// (`scip_ingest`) and uses it per language wherever it passes the fallback
+/// gate (`scip_ingest::gate`); every other language keeps the hand-written
+/// graph, and the map's `coverage.references` records which path each
+/// language took and why.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RefsMode {
+    #[default]
+    Hand,
+    Scip,
+}
+
+impl std::str::FromStr for RefsMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "hand" => Ok(Self::Hand),
+            "scip" => Ok(Self::Scip),
+            other => Err(format!("unknown --refs {other:?}; expected hand or scip")),
+        }
+    }
+}
+
+impl std::fmt::Display for RefsMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Hand => "hand",
+            Self::Scip => "scip",
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PythonImport {
     pub(crate) from: bool,
@@ -257,7 +294,7 @@ pub fn build_multi_source_with_progress(
     sources: &[(String, LanguageKind)],
     progress: &crate::progress::Progress,
 ) -> Result<GraphData> {
-    Ok(build_multi_source_inner(repo, sources, false, progress)?.0)
+    Ok(build_multi_source_inner(repo, sources, false, RefsMode::Hand, progress)?.0)
 }
 
 pub(crate) fn build_with_symbols(
@@ -269,6 +306,7 @@ pub(crate) fn build_with_symbols(
         repo,
         &[(pkg.to_owned(), language)],
         true,
+        RefsMode::Hand,
         &crate::progress::Progress::silent(),
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -278,10 +316,11 @@ pub(crate) fn build_with_symbols_progress(
     repo: &Path,
     pkg: &str,
     language: LanguageKind,
+    refs: RefsMode,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
     let (graph, spool) =
-        build_multi_source_inner(repo, &[(pkg.to_owned(), language)], true, progress)?;
+        build_multi_source_inner(repo, &[(pkg.to_owned(), language)], true, refs, progress)?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
@@ -289,17 +328,23 @@ pub(crate) fn build_multi_source_with_symbols(
     repo: &Path,
     sources: &[(String, LanguageKind)],
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
-    let (graph, spool) =
-        build_multi_source_inner(repo, sources, true, &crate::progress::Progress::silent())?;
+    let (graph, spool) = build_multi_source_inner(
+        repo,
+        sources,
+        true,
+        RefsMode::Hand,
+        &crate::progress::Progress::silent(),
+    )?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
 pub(crate) fn build_multi_source_with_symbols_progress(
     repo: &Path,
     sources: &[(String, LanguageKind)],
+    refs: RefsMode,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
-    let (graph, spool) = build_multi_source_inner(repo, sources, true, progress)?;
+    let (graph, spool) = build_multi_source_inner(repo, sources, true, refs, progress)?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
@@ -307,6 +352,7 @@ fn build_multi_source_inner(
     repo: &Path,
     sources: &[(String, LanguageKind)],
     collect_symbols: bool,
+    refs: RefsMode,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
     let started = Instant::now();
@@ -368,8 +414,26 @@ fn build_multi_source_inner(
     }
 
     let graph_started = Instant::now();
-    let merged = union_sources(intermediates)?;
-    let graph = finish_graph(repo, merged, progress)?;
+    let mut merged = union_sources(intermediates)?;
+    graph_time += graph_started.elapsed();
+    // Indexing runs after every source is resolved, because the fallback
+    // gate compares each index with the hand-written graph, and before
+    // `finish_graph`, because the static signal it replaces feeds the blend
+    // there. Its time is its own stage, not `graph`.
+    let references = match refs {
+        RefsMode::Hand => None,
+        RefsMode::Scip => {
+            let (report, scip) =
+                apply_scip_references(repo, &mut merged, spool.is_some(), progress)?;
+            if let Some(spool) = spool.as_mut() {
+                spool.scip = scip;
+            }
+            Some(report)
+        }
+    };
+    let graph_started = Instant::now();
+    let mut graph = finish_graph(repo, merged, progress)?;
+    graph.references = references;
     graph_time += graph_started.elapsed();
     let total = started.elapsed();
     // These three durations are disjoint so a build log can account for
@@ -859,6 +923,187 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         dominant_pkg,
         dominant_lang,
     })
+}
+
+/// Removes a temporary index directory on every exit path. Go's module
+/// cache marks what it writes read-only, so a failed removal is ignored
+/// rather than failing a build that already succeeded.
+struct IndexWorkDir(Option<PathBuf>);
+
+impl Drop for IndexWorkDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+/// `--refs scip` (issue #110, P1a): index every language present in
+/// `merged`, and wherever an index passes the fallback gate, replace that
+/// language's static edges (`static_edges`, `directed`, `fanin`) with the
+/// SCIP file graph. The blend in `finish_graph` is untouched, so the SCIP
+/// signal is mass-normalised exactly as the hand-written one was
+/// (finding 1). `uses` stays hand-written: it names roads, not the graph.
+///
+/// Each directed pair weighs the distinct symbols it references (P0's
+/// primary weighting, finding 41), and its undirected sum is the static
+/// edge, as the hand-written resolver sums import counts.
+///
+/// Returns the per-language coverage rows and, when symbols are collected,
+/// the reference occurrences `symbols.rs` credits once the symbol order is
+/// final. A language that falls back contributes neither.
+///
+/// Indexes go to a temporary directory that is removed afterwards, or to
+/// `TOLMAP_SCIP_INDEX_DIR` when set, where they are kept as `<lang>.scip`
+/// so a measurement can run P0's oracle on the very index the build read.
+fn apply_scip_references(
+    repo: &Path,
+    merged: &mut MergedSources,
+    keep_symbol_refs: bool,
+    progress: &crate::progress::Progress,
+) -> Result<(
+    BTreeMap<String, ReferenceCoverage>,
+    Option<crate::symbols::ScipSymbolRefs>,
+)> {
+    use crate::scip_ingest::{gate, ingest, recall_granularity, MIN_RECALL};
+
+    let languages = merged
+        .files
+        .iter()
+        .map(|file| merged.file_language[file])
+        .collect::<Vec<_>>();
+    let mut present = languages.clone();
+    present.sort_by_key(|language| language.as_str());
+    present.dedup();
+
+    let kept = std::env::var_os("TOLMAP_SCIP_INDEX_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let work = kept.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!(
+            "tolmap-scip-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ))
+    });
+    fs::create_dir_all(&work).with_context(|| format!("create {}", work.display()))?;
+    let _cleanup = IndexWorkDir(kept.is_none().then(|| work.clone()));
+
+    let mut report = BTreeMap::new();
+    let mut symbols = keep_symbol_refs.then(|| crate::symbols::ScipSymbolRefs {
+        files: merged.files.clone(),
+        ..Default::default()
+    });
+    for language in present {
+        let scope = merged
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| languages[*id] == language)
+            .map(|(id, file)| (file.clone(), id as u32))
+            .collect::<BTreeMap<_, _>>();
+        let hand = merged
+            .directed
+            .keys()
+            .filter(|(a, _)| languages[*a as usize] == language)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut row = ReferenceCoverage {
+            path: "hand".to_owned(),
+            reason: String::new(),
+            indexer: None,
+            exit_code: None,
+            files: scope.len(),
+            files_indexed: None,
+            hand_pairs: gate(language, &hand, &BTreeSet::new(), &merged.files).hand_pairs,
+            scip_pairs: None,
+            recall: None,
+            min_recall: MIN_RECALL,
+            granularity: recall_granularity(language).to_owned(),
+        };
+
+        let stage = progress.stage(
+            crate::progress::StageId::index_for(language),
+            Some(scope.len() as u64),
+        );
+        let output = work.join(format!("{}.scip", language.as_str()));
+        // A kept directory from an earlier run must never be read as this
+        // run's index.
+        let _ = fs::remove_file(&output);
+        let log = |message: String| progress.log(message);
+        let ingested = match crate::indexers::run(repo, language, &output, &stage, &log) {
+            Err(failure) => {
+                row.reason = failure.reason().to_owned();
+                row.exit_code = failure.exit_code();
+                None
+            }
+            Ok(()) => match ingest(&output, &scope) {
+                Ok(ingested) => Some(ingested),
+                Err(error) => {
+                    progress.log(format!(
+                        "scip ingest failed for {}: {error:#}",
+                        language.as_str()
+                    ));
+                    row.reason = "ingest_failed".to_owned();
+                    None
+                }
+            },
+        };
+        stage.set(ingested.as_ref().map_or(0, |i| i.indexed_files as u64));
+        stage.finish();
+
+        if let Some(ingested) = ingested {
+            row.indexer = Some(ingested.tool.clone()).filter(|tool| !tool.is_empty());
+            row.files_indexed = Some(ingested.indexed_files);
+            row.scip_pairs = Some(ingested.file_edges.len());
+            let scip_pairs = ingested.file_edges.keys().copied().collect::<BTreeSet<_>>();
+            let outcome = gate(language, &hand, &scip_pairs, &merged.files);
+            row.recall = outcome.recall.map(|recall| round_to(recall, 4));
+            if ingested.indexed_files == 0 {
+                row.reason = "no_documents".to_owned();
+            } else if !outcome.passed {
+                row.reason = "below_min_recall".to_owned();
+            } else {
+                row.path = "scip".to_owned();
+                row.reason = "indexed".to_owned();
+                let in_language = |id: FileId| languages[id as usize] == language;
+                // Static edges are intra-language by construction (see
+                // `union_sources`), so the source end decides.
+                merged.static_edges.retain(|(a, _), _| !in_language(*a));
+                merged.directed.retain(|(a, _), _| !in_language(*a));
+                merged.fanin.retain(|file, _| !in_language(*file));
+                for (&(a, b), edge) in &ingested.file_edges {
+                    let value = edge.symbols as f64;
+                    *merged.directed.entry((a, b)).or_default() += value;
+                    *merged
+                        .static_edges
+                        .entry(ordered_file_pair(a, b))
+                        .or_default() += value;
+                    *merged.fanin.entry(b).or_default() += value;
+                }
+                if let Some(symbols) = symbols.as_mut() {
+                    symbols.languages.insert(language.as_str().to_owned());
+                    symbols.refs.extend(ingested.refs);
+                    symbols.implementations.extend(ingested.implementations);
+                }
+            }
+        }
+        progress.log(format!(
+            "references {}: {} ({}; recall {} at {} granularity, min {:.2}; {} hand pairs, {} SCIP pairs)",
+            language.as_str(),
+            row.path,
+            row.reason,
+            row.recall
+                .map_or_else(|| "n/a".to_owned(), |recall| format!("{recall:.4}")),
+            row.granularity,
+            MIN_RECALL,
+            row.hand_pairs,
+            row.scip_pairs
+                .map_or_else(|| "no".to_owned(), |pairs| pairs.to_string()),
+        ));
+        report.insert(language.as_str().to_owned(), row);
+    }
+    Ok((report, symbols))
 }
 
 // pub(crate): `detect` re-walks the same tree with the same filters to count
@@ -3495,6 +3740,7 @@ fn finish_graph(
         commits_scanned: history.commits,
         nodes,
         edges,
+        references: None,
     })
 }
 

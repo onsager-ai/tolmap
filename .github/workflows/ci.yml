@@ -131,14 +131,17 @@ jobs:
       # correctness issues, and turning them into a hard gate is a separate
       # decision from standing this workflow up. cargo clippy still runs and
       # its output is visible in the log.
+      # --locked (issue #110 P1a): Cargo.lock is committed and the release
+      # binary must build from exactly it. Without the flag a stale lock is
+      # silently rewritten on the runner and the check proves nothing.
       - name: cargo clippy
-        run: cargo clippy --release --all-targets
+        run: cargo clippy --locked --release --all-targets
 
       - name: cargo build
-        run: cargo build --release --bin tolmap
+        run: cargo build --locked --release --bin tolmap
 
       - name: cargo test
-        run: cargo test --release
+        run: cargo test --locked --release
 
       - name: Generated TypeScript bindings
         run: cargo run --release --bin generate-types -- --check
@@ -256,6 +259,123 @@ jobs:
 
       - name: Audit symbol cards and static district files
         run: python3 eval/symbol_stats.py islands-out/synthetic_islands.json islands-out/synthetic_islands.symbols.json
+
+      # The `scip` job below reuses this binary rather than compiling again.
+      # build.rs bakes $LEIDEN_PREFIX/lib in as the rpath; the libraries
+      # travel with it and are restored to the same path there.
+      - name: Upload binary for the SCIP job
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: target/release/tolmap
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload Leiden runtime libs for the SCIP job
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+          if-no-files-found: error
+          retention-days: 3
+
+  # Issue #110 P1a: `tolmap build --refs scip` must be as deterministic as
+  # the hand-written path -- three builds, byte-identical map and symbols
+  # document (CLAUDE.md, finding 9) -- with the real indexers doing real
+  # work. The pinned indexer versions are P0's (scip-spike.yml, finding 41).
+  # Both synthetic fixtures are generated fresh, as the gate job does: the
+  # polyglot one covers scip-go and scip-typescript, the islands one
+  # scip-python. `check_scip_references.py` asserts every language actually
+  # took the SCIP path, since a build that fell back everywhere would be
+  # deterministic without testing anything. Nothing is installed from the
+  # fixtures (they have no dependencies), and the build itself runs with the
+  # no-install policy src/indexers.rs enforces.
+  scip:
+    name: SCIP ingest determinism (--refs scip, 3x sha256)
+    needs: gate
+    runs-on: ubuntu-latest
+    env:
+      SCIP_TYPESCRIPT_VERSION: "0.4.0"
+      SCIP_PYTHON_VERSION: "0.6.6"
+      SCIP_GO_VERSION: "v0.2.7"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+      - run: chmod +x bin/tolmap
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Install pinned indexers
+        run: |
+          set -euo pipefail
+          npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
+            "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
+          go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Generate synthetic fixtures
+        run: |
+          set -euo pipefail
+          python3 eval/gen_synthetic_polyglot_fixture.py --out polyglot-fixture
+          python3 eval/gen_synthetic_islands_fixture.py --out islands-fixture
+      - name: Three --refs scip builds per fixture are byte-identical
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+        run: |
+          set -euo pipefail
+          scip-typescript --version; scip-python --version; command -v scip-go
+          determinism() {
+            name=$1; repo=$2; shift 2
+            hashes=""
+            for i in 1 2 3; do
+              out="scip-det-$name-$i"
+              mkdir -p "$out"
+              if ! ./bin/tolmap build "$PWD/$repo" "$@" --refs scip \
+                  --name "$name" --out "$out" > "$out/build.log" 2>&1; then
+                cat "$out/build.log"
+                exit 1
+              fi
+              grep -E '^references |Indexing .*done in' "$out/build.log" || true
+              hash=$(cat "$out/$name.json" "$out/$name.symbols.json" | sha256sum | cut -d' ' -f1)
+              echo "$name run $i: $hash"
+              hashes="$hashes $hash"
+            done
+            if [ "$(echo "$hashes" | tr ' ' '\n' | sort -u | grep -c .)" -ne 1 ]; then
+              echo "three --refs scip builds of $name differ -- determinism regression"
+              exit 1
+            fi
+          }
+          determinism synthetic_polyglot polyglot-fixture --all-sources
+          python3 eval/check_scip_references.py scip-det-synthetic_polyglot-1/synthetic_polyglot.json \
+            --symbols scip-det-synthetic_polyglot-1/synthetic_polyglot.symbols.json \
+            --expect go=scip --expect ts=scip
+          determinism synthetic_islands islands-fixture --pkg . --lang py
+          python3 eval/check_scip_references.py scip-det-synthetic_islands-1/synthetic_islands.json \
+            --symbols scip-det-synthetic_islands-1/synthetic_islands.symbols.json \
+            --expect py=scip
+      - name: A missing indexer falls back instead of failing
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+          TOLMAP_SCIP_GO: /nonexistent/scip-go
+        run: |
+          set -euo pipefail
+          ./bin/tolmap build "$PWD/polyglot-fixture" --all-sources --refs scip \
+            --name synthetic_polyglot --out scip-fallback > fallback.log 2>&1 || { cat fallback.log; exit 1; }
+          python3 eval/check_scip_references.py scip-fallback/synthetic_polyglot.json \
+            --expect go=hand --expect ts=scip
 
   web:
     # The viewer had no CI at all: tsc ran only inside the Docker image at

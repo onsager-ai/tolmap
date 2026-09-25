@@ -46,6 +46,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_BIND_ADDR` | `127.0.0.1` | listen host -- loopback unless explicitly widened (2026-09-20) |
 | `TOLMAP_STATIC_DIR` | unset | serve the built web bundle from this directory alongside the API when set (see above) |
 | `TOLMAP_PRUNE_VARIANT` | `node-relative` | blend/prune route: `absolute`, `percentile`, `node-relative`, or `pre-rescale`; unset or invalid uses `node-relative` |
+| `TOLMAP_REFS` | `hand` | reference graph for job maps: `hand` (tree-sitter resolver) or `scip` (issue #110: SCIP indexers on the worker's `PATH`, per-language fallback to `hand`, recorded in the map's `coverage.references`); unset or invalid uses `hand` |
 | `TOLMAP_DB_PATH` | `<TOLMAP_CACHE_DIR>/tolmap.sqlite3` | the SQLite store |
 | `TOLMAP_CACHE_DIR` | system temp dir `/tolmap-cache` | clone cache + indexed map files |
 | `TOLMAP_CLONE_CACHE_BYTES` | `2147483648` (2 GiB) | total clone-cache LRU eviction budget; never rejects or evicts the active clone |
@@ -290,6 +291,12 @@ slug, or that commit of it, has never been indexed.
 200 OK
 {"status": "ok"}
 ```
+
+## Worker isolation
+
+The `tolmap worker` child every index job spawns (`src/service/jobs.rs::process_worker_exe`) runs as an unprivileged `tolmap-worker` user (fixed uid/gid `10001:10001`, baked into the runtime image as `TOLMAP_WORKER_UID`/`TOLMAP_WORKER_GID` — see the Dockerfile's runtime stage), with an empty environment plus a short explicit allowlist (`PATH`, `LANG`, the `TOLMAP_NAMER_*` budget/ledger knobs, the `TOLMAP_SCIP_*` indexer locations in the configuration table above, and `OPENROUTER_API_KEY` only when `TOLMAP_NAMER=model`), and its own per-job directory instead of the shared `cache_dir` — see that function's doc comments for the full reasoning. The shared clone cache under `cache_dir/repos` is still fetched/updated and reused across jobs for the same repo; the service (at its own uid) does that clone/fetch itself and then hands the worker a fresh, non-hardlinked local-clone copy in its own job directory (`service::jobs::run_blocking`, `service::clone::local_clone_into`) rather than the shared cache directory itself. The uid switch only applies when the service itself runs as root, which is the runtime image's case (no `USER` in the Dockerfile, deliberately); locally and in CI the service is not root, so the worker runs as the current user.
+
+Nothing here needs a migration step for an existing cache volume. The per-job directories are made fresh and torn down by the service on every job, never a static layout an operator provisions, so there is nothing to pre-create, `chown`, or backfill.
 
 ## Errors
 
