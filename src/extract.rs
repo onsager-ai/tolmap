@@ -372,6 +372,28 @@ pub fn build_multi_source_with_progress(
     .0)
 }
 
+/// As [`build_multi_source`], with the reference graph chosen. Eval
+/// instrumentation for `tolmap dump-graph --refs` (finding 47): with
+/// `RefsMode::Scip` it returns the graph `tolmap build --refs scip`
+/// partitions without installs (finding 47 measured that path), so the
+/// SCIP graph can be dumped and rebuilt offline with `build --graph`.
+/// Symbols are not collected; they never feed the graph.
+pub fn build_multi_source_with_refs(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    refs: RefsMode,
+) -> Result<GraphData> {
+    Ok(build_multi_source_inner(
+        repo,
+        sources,
+        false,
+        refs,
+        &InstallMode::Off,
+        &crate::progress::Progress::silent(),
+    )?
+    .0)
+}
+
 pub(crate) fn build_with_symbols(
     repo: &Path,
     pkg: &str,
