@@ -2018,6 +2018,30 @@ The last column counts a hand pair into a package's `__init__.py` as confirmed w
 - **Go is a different problem.** 710 of prometheus's 732 hand-only pairs are `resolve_multi` spreading an import over every file of the imported package (finding 44). By directory, hand's precision is 0.9969. That is a separate follow-up and is not gated here.
 - **Some over-attribution is classed "other".** sqlalchemy's 223 "other" hand-only pairs include facade modules that are not packages (`schema.py`, `types.py`, finding 47's sample). The classifier only calls a pair to an `__init__.py` a re-export, so these counts are a lower bound on over-attribution.
 
+### Pairs SCIP confirms only through a namespace
+
+SCIP also has a pair for an import statement that names a module. `from celery.utils import functional` is itself an occurrence of the module symbol `celery.utils`, and that symbol is defined in `celery/utils/__init__.py`. The ingest flags a pair that only namespace or module symbols support (its `uses` column is 0). Such a pair is the import naming the package, not a use of anything the package's `__init__` defines.
+
+This matters for scoring package over-attribution: a hand pair to an `__init__` that SCIP has only this way counts as "confirmed". The job therefore also scores against SCIP's use pairs.
+
+The same run's numbers ([CI run 36180594364](https://github.com/onsager-ai/tolmap/actions/runs/36180594364), at `2038510`; every count and fingerprint above is unchanged):
+
+| fixture | lang | SCIP use pairs | shared by a use | recall (uses) | precision (uses) | hand pairs SCIP has only through a namespace (to a package) |
+|---|---|---:|---:|---:|---:|---:|
+| celery | py | 608 | 546 | 0.8980 | 0.8161 | 102 (89) |
+| django | py | 3,261 | 2,388 | 0.7323 | 0.7526 | 753 (717) |
+| flask | py | 113 | 93 | 0.8230 | 0.9118 | 0 (0) |
+| httpx | py | 73 | 70 | 0.9589 | 0.8046 | 1 (1) |
+| prometheus | go | 1,873 | 1,279 | 0.6829 | 0.2295 | 3,563 (4) |
+| rich | py | 423 | 419 | 0.9905 | 0.9836 | 1 (1) |
+| scrapy | py | 1,066 | 746 | 0.6998 | 0.8271 | 156 (155) |
+| sqlalchemy | py | 2,802 | 1,825 | 0.6513 | 0.6608 | 0 (0) |
+| vue | ts | 1,586 | 928 | 0.5851 | 0.7825 | 255 (233) |
+
+- **The hand-only classes undercount package over-attribution.** 1,196 of the 1,268 namespace-only Python and TypeScript pairs target a package file.
+- **prometheus's are Go package clauses (finding 44).** Every file's `package x` references the package symbol.
+- **sqlalchemy's index has no namespace-only pairs at all.** Why was not investigated. Its relative `from .. import util` form may make no module occurrence that resolves in-repo.
+
 **Construction checks.** On every admitted fixture, the SCIP graph's pairs equal the oracle's. Precision equals the product gate's recall. sqlalchemy's re-export-counted precision reproduces finding 47's. And every hand map places 100.0% of files, with Δq 0.0000, against its committed fixture, so the job scores the maps the oracle recorded. The classifier has a synthetic self-test (`eval/hand_score.py self-test`, in the push-time `gate` job) with one pair of each Python class and the Go spread.
 
 ### The baseline and its gate
@@ -2025,6 +2049,8 @@ The last column counts a hand pair into a package's `__init__.py` as confirmed w
 `data/scip/hand_score.json` is this run's `baseline` output. It holds the counts and ratios above and a SHA-256 of each fixture's sorted SCIP pair set. The job's last step fails on a regression against it, and only on one:
 - **The oracle moved.** A different SCIP fingerprint means an indexer, a pin or the mapped file set changed. Every other number is then not comparable, so re-baseline with a finding.
 - **Over-attribution rose.** The "submodule via package" and "re-export" hand-only counts may only go down.
-- **Confirmed pairs fell.** `shared` may not decrease: hand losing a pair SCIP confirms shrinks the lower bound.
+- **Pairs confirmed by a use fell.** `shared_uses` may not decrease: hand losing a pair SCIP confirms by a use shrinks the lower bound.
+
+The first version gated all of `shared`. The package fix's first run ([CI run 36179004373](https://github.com/onsager-ai/tolmap/actions/runs/36179004373)) tripped that gate on celery (648 → 586), django (3,141 → 3,059) and rich (420 → 419). On celery, all 85 SCIP-confirmed pairs the fix removed were namespace-only, each supported by one module symbol. The gate as first written would have blocked the very removal its over-attribution rule asks for, so it now holds confirmation by a use. `shared` is still reported. This change was made after seeing that run, and it is recorded here for that reason.
 
 It does not gate star imports (hand is right), "other" (heuristic and mixed), the SCIP-only classes (they move when hand gains a correct pair) or the ratios, which follow from the gated counts. An improvement never fails. The gate prints it, so the baseline is lowered in the same change, with a finding.
