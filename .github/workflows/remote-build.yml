@@ -57,7 +57,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0) or scip-ingest (issue #110 P1a; both ignore repos/extra_args/compare_ref)"
+        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0), scip-ingest (P1a) or scip-install (P1c); the scip-* commands ignore repos/extra_args/compare_ref"
         required: false
         type: choice
         options:
@@ -67,6 +67,7 @@ on:
           - name-eval
           - scip-spike
           - scip-ingest
+          - scip-install
         default: build
       scip_reuse_run:
         description: "scip-spike only: analyze this earlier run's scip-base-*/scip-idx-* artifacts instead of re-indexing"
@@ -243,7 +244,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest'
+    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -353,15 +354,16 @@ jobs:
       # with exit_code/reason both null). `rc=$?` is captured immediately
       # after the command, before any other command can overwrite `$?`.
       #
-      # Issue #110 P2a: `tolmap build` now defaults to `--refs scip`, but
-      # these runners install no indexer, so a default build here would be a
-      # silent all-fallback SCIP build: the hand-written graph plus a
-      # recorded `coverage.references`, which is enough to make a branch's
-      # map differ from main's and to break the fixture band's comparison
-      # with data/*.json (the frozen Python reference, hand-only). Both
-      # build steps therefore pin `--refs hand` unless `extra_args` names
-      # `--refs` itself, and only for a binary that has the option (an old
-      # `compare_ref` may predate it; its default was hand). SCIP is
+      # Issue #110 P2a: both build steps pin `--refs hand` unless
+      # `extra_args` names `--refs` itself, and only for a binary that has
+      # the option (an old `compare_ref` may predate it; its default was
+      # hand). `hand` is the default today; the pin keeps a future flip from
+      # moving these measurements. These runners install no indexer, so a
+      # `--refs scip` build here would be a silent all-fallback build: the
+      # hand-written graph plus a recorded `coverage.references`, enough to
+      # make a branch's map differ from main's and to break the fixture
+      # band's comparison with data/*.json (the frozen Python reference,
+      # hand-only). SCIP is
       # measured by `command=scip-ingest` and ci.yml's `scip-fixtures`, which
       # install the pinned indexers.
       - name: Build with primary binary
@@ -658,7 +660,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -765,3 +767,16 @@ jobs:
       contents: read
       actions: read
     uses: ./.github/workflows/scip-ingest.yml
+
+  # Issue #110 P1c: `--refs scip` with sandboxed dependency installs on the
+  # TypeScript monorepos, against installs off and against `--refs hand`.
+  # Everything lives in scip-install.yml; this job hands it `setup`'s binary
+  # built from inputs.ref. See that file's header.
+  scip-install:
+    name: scip install
+    needs: setup
+    if: inputs.command == 'scip-install'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/scip-install.yml

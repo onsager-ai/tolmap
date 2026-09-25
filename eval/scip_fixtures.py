@@ -6,11 +6,13 @@
     scip_fixtures.py record  --work DIR --out data/scip [--source URL]
     scip_fixtures.py gate    --work DIR --summaries data/scip
 
-`tolmap build` defaults to `--refs scip`, but `data/*.json` is the frozen
-Python reference's output and that reference only knows the hand-written
-resolver. So the nine-fixture parity gate (ci.yml `full-fixtures`) pins
-`--refs hand`, and the SCIP path gets fixtures of its own, re-derived under
-the new extraction as CLAUDE.md's "Checks before a change lands" requires:
+SCIP is the oracle the hand-written resolver is tuned against (owner
+decision, 2026-09-25T16:56Z: "Tune hand, SCIP as oracle"; `hand` stays
+the default). `data/*.json` is the frozen Python reference's output and only
+knows the hand resolver, so the nine-fixture parity gate (ci.yml
+`full-fixtures`) pins `--refs hand`, and the SCIP path gets fixtures of its
+own, derived under its extraction as CLAUDE.md's "Checks before a change
+lands" requires, so the oracle itself cannot drift unnoticed:
 `data/scip/<name>.json`, one per fixture, written by `record` from a
 `--refs scip` build with the pinned indexers (ci.yml `scip-fixtures`).
 

@@ -497,6 +497,39 @@ try {
       }
     }
   }
+  // Issue #110 P2: the "exact (SCIP) vs heuristic" reference-coverage
+  // indicator, collapsed and expanded, both themes and both profiles.
+  // No committed map has `coverage.references` (none was built with
+  // `--refs scip`), so this drives the synthetic fixture
+  // check-fixtures/scip-coverage__flask.json.gz (see its README.md entry
+  // and web/scripts/make-scip-coverage-fixture.mjs) instead of a real slug.
+  {
+    const SLUG = "scip-coverage/flask";
+    const stem = `${out}/${SLUG.replace("/", "__")}`;
+    for (const profile of PROFILES) {
+      for (const colorScheme of ["light", "dark"]) {
+        const context = await browser.newContext({ ...profile, colorScheme });
+        const page = await context.newPage();
+        await page.goto(`${base}/${SLUG}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+        const trigger = page.locator("[data-reference-coverage] button");
+        await trigger.waitFor({ timeout: 10_000 });
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: `${stem}-${profile.name}-collapsed-${colorScheme}.png` });
+        console.log(`${stem}-${profile.name}-collapsed-${colorScheme}.png`);
+
+        // Tap on phone (no hover surface), click on desktop -- same
+        // profile.isMobile split the other frames above use.
+        if (profile.isMobile) await trigger.tap();
+        else await trigger.click();
+        await page.waitForTimeout(200);
+        await page.screenshot({ path: `${stem}-${profile.name}-expanded-${colorScheme}.png` });
+        console.log(`${stem}-${profile.name}-expanded-${colorScheme}.png`);
+
+        await context.close();
+      }
+    }
+  }
 } finally {
   await browser.close();
 }

@@ -18,6 +18,10 @@ export type { SymbolRow } from "@bindings/SymbolRow";
 export type { DistrictSymbols } from "@bindings/DistrictSymbols";
 export type { HierSymbolRow } from "@bindings/HierSymbolRow";
 export type { SymbolCoverage } from "@bindings/SymbolCoverage";
+// Issue #110 P1a/P2: per-language reference-graph provenance
+// (`MapDocument.coverage.references`), read by map/referenceCoverage.ts.
+export type { CoverageReport } from "@bindings/CoverageReport";
+export type { ReferenceCoverage } from "@bindings/ReferenceCoverage";
 
 // Issue #97 (job progress, ETA, cancel): the job service's snapshot shape,
 // generated the same way -- src/service/jobs.rs's JobSnapshot is the one

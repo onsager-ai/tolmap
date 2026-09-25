@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Why do districts move so much under `--refs scip`? (issue #110 P2a, finding 46)
+"""Why do districts move so much under `--refs scip`? (issue #110 P2a, finding 47)
 
     scip_churn.py variants --hand H.graph.json --scip S.graph.json --out DIR [--seeds N]
     scip_churn.py pairs    --hand H.graph.json --scip S.graph.json --repo CLONE --out JSON

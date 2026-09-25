@@ -29,13 +29,21 @@ pub struct WorkerSpec {
     pub namer_model: String,
     pub previous_maps: Vec<PreviousMap>,
     pub names_cache: Option<String>,
-    // Issue #110: "hand" or "scip", as `tolmap build --refs`. The service
-    // always sends its configured `TOLMAP_REFS` (scip unless set otherwise,
-    // since P2a). Absent still means "hand", not the new default: only a
-    // service from before the option omits it, and that service meant the
-    // hand-written resolver. Optional on the wire so the two still agree.
+    // Issue #110: "hand" (the default, also when absent) or "scip", as
+    // `tolmap build --refs`. The service always sends its configured
+    // `TOLMAP_REFS`; only a service from before the option omits it, and
+    // that service meant the hand-written resolver. Optional on the wire so
+    // the two still agree.
     #[serde(default)]
     pub refs: Option<String>,
+    // Issue #110 P1c: "sandbox" when the service will run a TypeScript
+    // dependency install for this job on request (`WorkerEvent::
+    // InstallRequest`), absent otherwise. The worker itself never installs:
+    // it runs unprivileged, and the sandbox needs root to start (see
+    // `indexers::install`). Absent from the wire when unset, so a spec
+    // without installs serializes exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -54,6 +62,12 @@ pub struct RepoFeatures {
     // rows serialize exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refs: Option<String>,
+    // Issue #110 P1c: the package manager ("pnpm" or "npm") of the
+    // dependency install this job expects to run before scip-typescript.
+    // Absent when no install is planned, so the ETA model only expects the
+    // install stage when there will be one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
@@ -105,6 +119,13 @@ pub enum WorkerEvent {
         code: String,
         message: String,
     },
+    // Issue #110 P1c: sent only when the spec's `install` is "sandbox",
+    // just before scip-typescript. The service runs the sandboxed install
+    // on the job's checkout and answers with one `InstallCoverage` JSON
+    // line on the worker's stdin; the worker blocks until it does.
+    InstallRequest {
+        v: u8,
+    },
 }
 
 impl WorkerEvent {
@@ -116,7 +137,8 @@ impl WorkerEvent {
             | Self::Features { v, .. }
             | Self::Log { v, .. }
             | Self::Result { v, .. }
-            | Self::Error { v, .. } => *v,
+            | Self::Error { v, .. }
+            | Self::InstallRequest { v } => *v,
         }
     }
 }
@@ -218,6 +240,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
             .and_then(|count| count.trim().parse().ok()),
         languages: BTreeMap::new(),
         refs: (refs == extract::RefsMode::Scip).then(|| refs.to_string()),
+        install: None,
     };
     progress.emit_event(WorkerEvent::Features {
         v: 1,
@@ -262,7 +285,30 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
     }
     detect_stage.set(1);
     detect_stage.finish();
+    let delegate_installs =
+        refs == extract::RefsMode::Scip && spec.install.as_deref() == Some("sandbox");
+    if delegate_installs
+        && sources
+            .iter()
+            .any(|source| source.language == extract::LanguageKind::TypeScript)
+    {
+        // The same file-only policy the service applies before installing;
+        // here it only tells the ETA model whether to expect the stage.
+        if let crate::indexers::InstallPlan::Install(manager) =
+            crate::indexers::install_plan(&materialized.path)
+        {
+            features.install = Some(manager.as_str().to_owned());
+        }
+    }
     progress.emit_event(WorkerEvent::Features { v: 1, features });
+    let install = if delegate_installs {
+        extract::InstallMode::Delegate(std::sync::Arc::new({
+            let progress = progress.clone();
+            move || request_install(&progress)
+        }))
+    } else {
+        extract::InstallMode::Off
+    };
 
     let source_pairs = sources
         .into_iter()
@@ -272,6 +318,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         &materialized.path,
         &source_pairs,
         refs,
+        &install,
         progress,
     )
     .map_err(|error| fail("index_failed", format!("{error:#}")))?;
@@ -309,6 +356,8 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
                 .map_err(|error: &str| fail("internal_error", error.to_owned()))?,
             namer_model: spec.namer_model,
             refs,
+            // Extraction already ran above; the geometry stage never reads it.
+            install: extract::InstallMode::Off,
         },
         previous.as_ref(),
         progress,
@@ -343,6 +392,38 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         districts: document.districts.len(),
         modularity: document.q,
     })
+}
+
+/// Asks the service for the sandboxed install (`WorkerEvent::InstallRequest`)
+/// and blocks for its one-line `InstallCoverage` answer on stdin. The spec
+/// line was read through the same process-wide stdin buffer, so nothing the
+/// service wrote after it is lost. Any protocol failure is a fallback, never
+/// a failed job: the indexer then runs without installs, as it would with
+/// installs off.
+fn request_install(progress: &Progress) -> crate::schema::InstallCoverage {
+    progress.emit_event(WorkerEvent::InstallRequest { v: 1 });
+    let mut line = String::new();
+    match std::io::stdin().lock().read_line(&mut line) {
+        Ok(count) if count > 0 => {
+            match serde_json::from_str::<crate::schema::InstallCoverage>(line.trim_end()) {
+                Ok(coverage) => coverage,
+                Err(error) => {
+                    progress.log(format!("install: unreadable service reply: {error}"));
+                    crate::indexers::fell_back("sandbox_unavailable", None)
+                }
+            }
+        }
+        Ok(_) => {
+            progress.log("install: the service closed the channel without a reply".to_owned());
+            crate::indexers::fell_back("sandbox_unavailable", None)
+        }
+        Err(error) => {
+            progress.log(format!(
+                "install: reading the service reply failed: {error}"
+            ));
+            crate::indexers::fell_back("sandbox_unavailable", None)
+        }
+    }
 }
 
 #[cfg(test)]

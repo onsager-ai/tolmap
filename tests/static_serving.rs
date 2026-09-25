@@ -50,6 +50,7 @@ fn state_with_static_dir(
         namer: tolmap::naming::NamerKind::Idf,
         namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),
         refs: tolmap::extract::RefsMode::Hand,
+        scip_install: false,
         limits: Limits::default(),
         retain_commits_per_repo: 20,
         // Unused here -- this suite never spawns a worker.

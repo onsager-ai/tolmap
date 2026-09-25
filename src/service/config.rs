@@ -141,15 +141,30 @@ pub struct ServeConfig {
     /// `TOLMAP_NAMER` defaults to IDF; hosting does not enable model naming.
     pub namer: NamerKind,
     pub namer_model: String,
-    /// Where job maps take their references from (issue #110): `scip` (the
-    /// default since P2a, shared with `tolmap build --refs` through
-    /// `RefsMode::default`) or `hand`. `scip` needs the indexers on the
+    /// Where job maps take their references from (issue #110): `hand` (the
+    /// default, shared with `tolmap build --refs` through
+    /// `RefsMode::default`) or `scip`. `scip` needs the indexers on the
     /// worker's `PATH` or in `TOLMAP_SCIP_*` (P1b's image); without them
     /// every language records a fallback to the hand-written graph rather
     /// than failing.
     ///
     /// Env: `TOLMAP_REFS`.
     pub refs: crate::extract::RefsMode,
+    /// Whether a `scip` job installs a TypeScript workspace's npm
+    /// dependencies before scip-typescript (issue #110 P1c). The service,
+    /// which is root in the runtime image, runs the install in nsjail as the
+    /// worker's uid when its worker asks. Off unless `sandbox` is set: under
+    /// the npm-registry-only egress the owner chose (#117), finding 46
+    /// measured no gain on the repositories that need installs (n8n and dify
+    /// fall back after about 2 minutes each), and the owner then kept the hand
+    /// resolver as the default (#110, 2026-09-26), so the owner ruled
+    /// "installs off by default". When switched on it fails safe: where the sandbox cannot start (a non-root service, a
+    /// container that forbids namespaces, no nsjail), every install falls
+    /// back to indexing without it, recorded in the map. Ignored when
+    /// `refs` is `hand`.
+    ///
+    /// Env: `TOLMAP_SCIP_INSTALL` (`off`, the default, or `sandbox`).
+    pub scip_install: bool,
     pub limits: Limits,
     /// Store retention policy (issue #23 gap 2): the number of most-recently-
     /// indexed commits kept per repository slug; older `(slug, commit_sha)`
@@ -217,6 +232,12 @@ impl ServeConfig {
         let namer_model =
             env::var("TOLMAP_NAMER_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
         let refs = env_var_or("TOLMAP_REFS", crate::extract::RefsMode::default());
+        // Only an explicit `sandbox` turns installs on: installs run as root,
+        // so a typo must not switch them on.
+        let scip_install = matches!(
+            env::var("TOLMAP_SCIP_INSTALL").as_deref().map(str::trim),
+            Ok("sandbox")
+        );
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the
         // unbounded growth issue #23 gap 2 reported -- see store::prune.
@@ -236,6 +257,7 @@ impl ServeConfig {
             namer,
             namer_model,
             refs,
+            scip_install,
             limits: Limits::from_env(),
             retain_commits_per_repo,
             worker_uid,
@@ -415,21 +437,22 @@ mod tests {
         env::remove_var("TOLMAP_PRUNE_VARIANT");
     }
 
-    // Issue #110 P2a: SCIP is the default, `hand` stays selectable, and an
-    // unparsable value falls back to the default like every other variable
-    // here rather than taking the service down.
+    // Issue #110 P2a: hand is the default (owner decision, 2026-09-25T16:56Z),
+    // `scip` stays selectable, and an unparsable value falls back to the
+    // default like every other variable here rather than taking the service
+    // down.
     #[test]
-    fn refs_defaults_to_scip_and_hand_stays_selectable() {
+    fn refs_defaults_to_hand_and_scip_stays_selectable() {
         use crate::extract::RefsMode;
         let _guard = lock_env();
         env::remove_var("TOLMAP_REFS");
-        assert_eq!(ServeConfig::from_env().refs, RefsMode::Scip);
-        env::set_var("TOLMAP_REFS", "hand");
         assert_eq!(ServeConfig::from_env().refs, RefsMode::Hand);
         env::set_var("TOLMAP_REFS", "scip");
         assert_eq!(ServeConfig::from_env().refs, RefsMode::Scip);
+        env::set_var("TOLMAP_REFS", "hand");
+        assert_eq!(ServeConfig::from_env().refs, RefsMode::Hand);
         env::set_var("TOLMAP_REFS", "exact");
-        assert_eq!(ServeConfig::from_env().refs, RefsMode::Scip);
+        assert_eq!(ServeConfig::from_env().refs, RefsMode::Hand);
         env::remove_var("TOLMAP_REFS");
     }
 }

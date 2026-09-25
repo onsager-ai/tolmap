@@ -1,0 +1,5 @@
+{
+  "name": "fixture-ts-workspace",
+  "private": true,
+  "description": "Issue #110 P1c: a pnpm workspace whose cross-package import resolves only once installed; one real npm dependency (tiny-invariant) proves registry egress"
+}

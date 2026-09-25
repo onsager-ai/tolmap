@@ -4,7 +4,7 @@
 # repo, not here; README.md's "Self-hosting" section covers running this
 # image yourself.
 #
-# Five stages. The first two exist because of the one real native
+# Six stages. The first two exist because of the one real native
 # dependency this crate has (docs/ARCHITECTURE.md's "The one real risk:
 # Leiden"): build.rs compiles native/leiden_bridge.cpp against
 # libleidenalg + igraph and bakes `-Wl,-rpath,<LEIDEN_PREFIX>/lib` into the
@@ -43,6 +43,14 @@
 # deploy: `docker build -t tolmap . && docker run --rm tolmap /app/tolmap
 # --help` and `docker run --rm --entrypoint ldd tolmap /app/tolmap`
 # (expect no "not found" lines).
+#
+# A sixth stage, `nsjail` (issue #110 P1c), builds the sandbox that SCIP
+# jobs install TypeScript dependencies in (src/indexers.rs, docs/
+# SCIP_SANDBOX.md). The runtime stage adds socat (the jail's one network
+# bridge), pnpm (in `scip-tools`, next to npm) and the two shared libraries
+# nsjail links. The sandbox needs the service to run as root, which it
+# already does (see the runtime stage's `useradd` comment), and fails safe
+# where it cannot start: installs fall back, jobs do not fail.
 #
 # UPDATE (2026-09-24, issue #110 P1b): same constraint, same reason -- this
 # change adds the `scip-tools` stage below without building or running it
@@ -200,6 +208,16 @@ RUN npm install -g \
         "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
         "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
 
+# --- pnpm, for the sandboxed dependency install (issue #110 P1c,
+# src/indexers.rs). npm ships with Node above. The version is the image's
+# choice, never the repository's: the sandbox switches off pnpm's
+# `packageManager` handling (`pm_on_fail=ignore`), so a repository that
+# names another pnpm cannot make this one download and run it. 12.6.0 is
+# pnpm's `latest` tag as of 2026-09-25; vue and n8n declare 12.4.2 and dify
+# 12.6.0, all writing lockfileVersion 9.0.
+ARG PNPM_VERSION=12.6.0
+RUN npm install -g "pnpm@${PNPM_VERSION}"
+
 # --- scip-go, same pin as scip-spike.yml (finding 41). `go install` needs
 # network access to fetch scip-go's own module graph -- that happens only
 # in this throwaway build stage, never in the shipped image or at request
@@ -222,7 +240,41 @@ RUN go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
 # stages the way the two self-contained tarballs above are.
 
 # ---------------------------------------------------------------------------
-# Stage 5: runtime -- the image that actually ships.
+# Stage 5: nsjail -- the dependency-install sandbox (issue #110 P1c).
+# ---------------------------------------------------------------------------
+# Neither Debian bookworm nor Ubuntu packages nsjail, so it is built from
+# its release tag, and the tag's commit is checked so a moved tag fails the
+# build instead of shipping different code. 3.6 is nsjail's latest release
+# (2026-03-18). ci.yml's `scip-install` job builds the same commit on the
+# runner.
+FROM debian:bookworm-slim AS nsjail
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        autoconf \
+        bison \
+        ca-certificates \
+        flex \
+        g++ \
+        gcc \
+        git \
+        libnl-route-3-dev \
+        libprotobuf-dev \
+        libtool \
+        make \
+        pkg-config \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG NSJAIL_VERSION=3.6
+ARG NSJAIL_COMMIT=f78475530b46d0186111a9096b30725f816b55fe
+RUN git clone --quiet --depth 1 --branch "${NSJAIL_VERSION}" --recurse-submodules \
+        --shallow-submodules https://github.com/google/nsjail.git /src/nsjail \
+    && test "$(git -C /src/nsjail rev-parse HEAD)" = "${NSJAIL_COMMIT}" \
+    && make -C /src/nsjail -j"$(nproc)" \
+    && install -m 0755 /src/nsjail/nsjail /usr/local/bin/nsjail
+
+# ---------------------------------------------------------------------------
+# Stage 6: runtime -- the image that actually ships.
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 
@@ -253,14 +305,22 @@ FROM debian:bookworm-slim AS runtime
 #               invoked by the default no-install mode but keeping it
 #               present matches what finding 41's CI runner had
 #               (actions/setup-python) and costs a few MB.
+# socat      -- issue #110 P1c: inside the install sandbox it bridges
+#               127.0.0.1:3128, the jail's only network endpoint, to the
+#               egress proxy's Unix socket (src/indexers.rs, `jail`).
+# libprotobuf32, libnl-route-3-200 -- the shared libraries the `nsjail`
+#               stage's binary links (its config parser and network setup).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
         coreutils \
         libgomp1 \
+        libnl-route-3-200 \
+        libprotobuf32 \
         libstdc++6 \
         python3 \
         python3-pip \
+        socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Worker hardening (src/service/jobs.rs::process_worker_exe, docs/SCIP_SANDBOX.md
@@ -323,6 +383,14 @@ ENV PATH="/opt/go/bin:/opt/node/bin:${PATH}" \
 ENV TOLMAP_SCIP_TYPESCRIPT=/opt/node/bin/scip-typescript \
     TOLMAP_SCIP_PYTHON=/opt/node/bin/scip-python \
     TOLMAP_SCIP_GO=/usr/local/bin/scip-go
+
+# The dependency-install sandbox (issue #110 P1c): nsjail, and the Node
+# prefix it mounts read-only for node, npm and pnpm. Absolute paths for the
+# same reason as the indexers above. Whether a SCIP job installs at all is
+# TOLMAP_SCIP_INSTALL, a deploy-time setting (docs/API.md).
+COPY --from=nsjail /usr/local/bin/nsjail /usr/local/bin/nsjail
+ENV TOLMAP_NSJAIL=/usr/local/bin/nsjail \
+    TOLMAP_INSTALL_NODE_PREFIX=/opt/node
 
 WORKDIR /app
 COPY --from=rust-builder /app/target/release/tolmap /app/tolmap
