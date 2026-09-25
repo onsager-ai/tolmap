@@ -1190,7 +1190,7 @@ direct.on('error', () => askProxy());
                 .map(|(target, count)| format!("{target} x{count}"))
                 .collect::<Vec<_>>();
             log(format!(
-                "egress: {} tunnel(s) to {REGISTRY_HOST}, {:.1} MB in, {:.1} MB out; refused: {}",
+                "egress: {} tunnel(s) to {REGISTRY_HOST}, at least {:.1} MB in, {:.1} MB out; refused: {}",
                 stats.allowed,
                 stats.bytes_in as f64 / 1e6,
                 stats.bytes_out as f64 / 1e6,
@@ -1473,7 +1473,7 @@ direct.on('error', () => askProxy());
             }
         };
         log(format!(
-            "install {}: {} after {seconds:.1}s, {:.1} MB written (bound {:.0} s, {:.1} GB)",
+            "install {}: {} after {seconds:.1}s, {:.1} MB written (bound {:.1} s, {:.1} GB)",
             manager.as_str(),
             coverage.reason,
             added as f64 / 1e6,
@@ -1814,6 +1814,13 @@ mod egress {
         {
             return;
         }
+        // Counted when opened: a package manager keeps tunnels alive, and
+        // one still open when the proxy stops would otherwise go unseen.
+        // Bytes are added when a tunnel closes, so they are a lower bound.
+        stats
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .allowed += 1;
         let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
         let _ = upstream.set_read_timeout(Some(IDLE_TIMEOUT));
         let (Ok(mut upstream_read), Ok(mut client_write)) =
@@ -1830,7 +1837,6 @@ mod egress {
         let _ = upstream.shutdown(Shutdown::Write);
         let down = down.join().unwrap_or(0);
         let mut stats = stats.lock().unwrap_or_else(|poison| poison.into_inner());
-        stats.allowed += 1;
         stats.bytes_out += up + rest.len() as u64;
         stats.bytes_in += down;
     }

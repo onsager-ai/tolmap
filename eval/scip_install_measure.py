@@ -71,7 +71,7 @@ def install_log(path: Path) -> dict:
             written_mb=float(match.group(4)),
         )
     match = re.search(
-        r"egress: (\d+) tunnel\(s\) to (\S+), ([\d.]+) MB in, ([\d.]+) MB out; refused: (.*)", text
+        r"egress: (\d+) tunnel\(s\) to (\S+), at least ([\d.]+) MB in, ([\d.]+) MB out; refused: (.*)", text
     )
     if match:
         result.update(
