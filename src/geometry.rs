@@ -24,6 +24,10 @@ pub struct BuildFeatures {
     /// Where extraction takes references from (issue #110). Read only by
     /// the repository entry points; a `--graph` build already has its edges.
     pub refs: extract::RefsMode,
+    /// Whether `--refs scip` may install TypeScript dependencies first
+    /// (issue #110 P1c). Read only by the repository entry points, as
+    /// `refs` is.
+    pub install: extract::InstallMode,
 }
 
 /// A district holding at least this share of the repo's files is
@@ -372,8 +376,14 @@ pub fn build_warm_with_progress(
             .to_string_lossy()
             .into_owned()
     });
-    let (graph, symbol_records) =
-        extract::build_with_symbols_progress(repo, pkg, language, features.refs, progress)?;
+    let (graph, symbol_records) = extract::build_with_symbols_progress(
+        repo,
+        pkg,
+        language,
+        features.refs,
+        &features.install,
+        progress,
+    )?;
     let source_nodes = graph.nodes.clone();
     let output = build_from_graph_warm_with_progress(
         graph,
@@ -447,8 +457,13 @@ pub fn build_multi_warm_with_progress(
             .to_string_lossy()
             .into_owned()
     });
-    let (graph, symbol_records) =
-        extract::build_multi_source_with_symbols_progress(repo, sources, features.refs, progress)?;
+    let (graph, symbol_records) = extract::build_multi_source_with_symbols_progress(
+        repo,
+        sources,
+        features.refs,
+        &features.install,
+        progress,
+    )?;
     let source_nodes = graph.nodes.clone();
     let output = build_from_graph_warm_with_progress(
         graph,

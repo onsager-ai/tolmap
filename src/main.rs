@@ -83,6 +83,16 @@ enum Command {
         /// `hand`; the map's `coverage.references` records which and why.
         #[arg(long, default_value_t = tolmap::extract::RefsMode::Hand)]
         refs: tolmap::extract::RefsMode,
+        /// With `--refs scip` (issue #110 P1c): `off` installs nothing;
+        /// `sandbox` installs a TypeScript workspace's npm dependencies
+        /// from its pnpm or npm lockfile before scip-typescript, inside
+        /// nsjail with lifecycle scripts off and network only to
+        /// registry.npmjs.org, writing `node_modules` into REPO. Needs root
+        /// to start the sandbox; anything short of a finished install falls
+        /// back to indexing without it, recorded in the map's
+        /// `coverage.references.ts.install`.
+        #[arg(long, default_value_t = tolmap::extract::InstallMode::Off)]
+        install: tolmap::extract::InstallMode,
     },
     DumpBlend {
         repo: PathBuf,
@@ -167,6 +177,20 @@ enum Command {
     Worker,
     #[command(hide = true)]
     EtaReplay { timeline: PathBuf },
+    /// Runs COMMAND inside the dependency-install sandbox (issue #110 P1c)
+    /// exactly as `--install sandbox` would run the package manager: same
+    /// nsjail mounts, uid, environment and registry-only egress proxy, with
+    /// REPO mounted read-write at its own path and as the working
+    /// directory. Runs the sandbox's self-test first.
+    /// For operators and CI checking a host can run installs; needs root.
+    /// Exits with COMMAND's status, or 125 if the sandbox cannot start.
+    #[command(hide = true)]
+    SandboxExec {
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 fn cli_progress() -> tolmap::progress::Progress {
@@ -387,6 +411,7 @@ fn main() -> Result<()> {
             namer_model,
             graph,
             refs,
+            install,
         } => {
             let progress = cli_progress();
             let namer_model = namer_model
@@ -421,6 +446,7 @@ fn main() -> Result<()> {
                                 namer,
                                 namer_model,
                                 refs,
+                                install: install.clone(),
                             },
                             previous_document.as_ref(),
                             &progress,
@@ -445,6 +471,7 @@ fn main() -> Result<()> {
                                 namer,
                                 namer_model,
                                 refs,
+                                install: install.clone(),
                             },
                             previous_document.as_ref(),
                             &progress,
@@ -473,6 +500,7 @@ fn main() -> Result<()> {
                             namer,
                             namer_model,
                             refs,
+                            install,
                         },
                         previous_document.as_ref(),
                         &progress,
@@ -600,6 +628,16 @@ fn main() -> Result<()> {
             let report = tolmap::service::eta::replay_timeline(&timeline)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
+        }
+        Command::SandboxExec { repo, command } => {
+            let settings = tolmap::indexers::InstallSettings::for_repository(&repo);
+            let scratch =
+                std::env::temp_dir().join(format!("tolmap-sandbox-exec-{}", std::process::id()));
+            let code =
+                tolmap::indexers::sandbox_exec(&repo, &scratch, &settings, &command, &|line| {
+                    eprintln!("{line}")
+                });
+            std::process::exit(code);
         }
     }
 }

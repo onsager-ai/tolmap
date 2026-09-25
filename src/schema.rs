@@ -120,6 +120,12 @@ pub struct CoverageReport {
 // "indexer_not_found", "indexer_failed", "indexer_spawn_failed",
 // "no_index_written", "no_tsconfig", "no_documents" or "ingest_failed".
 // Nothing here is a timing, so the map stays byte-identical across runs.
+//
+// `install` (issue #110 P1c) is present only on the TypeScript row of a
+// build that allowed dependency installs (`tolmap build --install sandbox`,
+// or a job service with `TOLMAP_SCIP_INSTALL=sandbox`, its default). It is
+// absent otherwise, so a map built without installs stays byte-identical
+// to one built before the field existed.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 pub struct ReferenceCoverage {
@@ -139,6 +145,30 @@ pub struct ReferenceCoverage {
     pub recall: Option<f64>,
     pub min_recall: f64,
     pub granularity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<InstallCoverage>,
+}
+
+// Whether a language's dependencies were installed, in the sandbox, before
+// its indexer ran (issue #110 P1c, `indexers::install`). Plain `//`
+// comments for the same ts-rs reason as above.
+//
+// `status` is "installed"; "skipped", when the install policy does not
+// install for this repository; or "fell_back", when it wanted to but the
+// sandbox could not be set up or the install did not finish, so the indexer
+// ran without installs exactly as it would have with installs off. `reason`
+// is a stable code, never package-manager output: "installed"; for
+// "skipped", "no_package_json", "unsafe_manifest", "node_modules_present",
+// "no_lockfile", "unsupported_lockfile" or "not_a_workspace"; for "fell_back",
+// "sandbox_unavailable", "install_failed", "install_timeout",
+// "install_disk_budget" or "cancelled". `manager` is "pnpm" or "npm" once a
+// lockfile has chosen one.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+pub struct InstallCoverage {
+    pub status: String,
+    pub reason: String,
+    pub manager: Option<String>,
 }
 
 /// Indices in this document are global and stable across district responses.

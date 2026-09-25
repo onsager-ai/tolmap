@@ -460,6 +460,7 @@ mod tests {
                 )]
                 .into(),
                 refs: None,
+                install: None,
             },
             elapsed_s: 4.0,
             stage_s: vec![Some(1.0), None, Some(2.0)],

@@ -251,6 +251,62 @@ impl std::fmt::Display for RefsMode {
     }
 }
 
+/// Whether `--refs scip` may install TypeScript dependencies before
+/// scip-typescript runs (issue #110 P1c, `indexers::install`). Separate
+/// from `RefsMode` because it is a question of who holds the privilege to
+/// start the sandbox, not of where references come from:
+///
+/// - `Off` (the default) installs nothing, as P1a did. A map built this way
+///   carries no `install` field, so it is byte-identical to one built before
+///   installs existed.
+/// - `Sandbox` runs the sandboxed install in this process. Starting the
+///   jail needs root, so this is `tolmap build --install sandbox` run as
+///   root; anywhere else it records a `sandbox_unavailable` fallback.
+/// - `Delegate` asks whoever spawned this process to run it: the job
+///   service, which is root, answering its unprivileged worker over the
+///   worker protocol (`WorkerEvent::InstallRequest`).
+#[derive(Clone, Default)]
+pub enum InstallMode {
+    #[default]
+    Off,
+    Sandbox,
+    Delegate(std::sync::Arc<dyn Fn() -> crate::schema::InstallCoverage + Send + Sync>),
+}
+
+impl std::fmt::Debug for InstallMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Off => "Off",
+            Self::Sandbox => "Sandbox",
+            Self::Delegate(_) => "Delegate",
+        })
+    }
+}
+
+impl std::str::FromStr for InstallMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "off" => Ok(Self::Off),
+            "sandbox" => Ok(Self::Sandbox),
+            other => Err(format!(
+                "unknown --install {other:?}; expected off or sandbox"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for InstallMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Off => "off",
+            Self::Sandbox => "sandbox",
+            Self::Delegate(_) => "delegate",
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PythonImport {
     pub(crate) from: bool,
@@ -294,7 +350,15 @@ pub fn build_multi_source_with_progress(
     sources: &[(String, LanguageKind)],
     progress: &crate::progress::Progress,
 ) -> Result<GraphData> {
-    Ok(build_multi_source_inner(repo, sources, false, RefsMode::Hand, progress)?.0)
+    Ok(build_multi_source_inner(
+        repo,
+        sources,
+        false,
+        RefsMode::Hand,
+        &InstallMode::Off,
+        progress,
+    )?
+    .0)
 }
 
 pub(crate) fn build_with_symbols(
@@ -307,6 +371,7 @@ pub(crate) fn build_with_symbols(
         &[(pkg.to_owned(), language)],
         true,
         RefsMode::Hand,
+        &InstallMode::Off,
         &crate::progress::Progress::silent(),
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -317,10 +382,17 @@ pub(crate) fn build_with_symbols_progress(
     pkg: &str,
     language: LanguageKind,
     refs: RefsMode,
+    install: &InstallMode,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
-    let (graph, spool) =
-        build_multi_source_inner(repo, &[(pkg.to_owned(), language)], true, refs, progress)?;
+    let (graph, spool) = build_multi_source_inner(
+        repo,
+        &[(pkg.to_owned(), language)],
+        true,
+        refs,
+        install,
+        progress,
+    )?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
@@ -333,6 +405,7 @@ pub(crate) fn build_multi_source_with_symbols(
         sources,
         true,
         RefsMode::Hand,
+        &InstallMode::Off,
         &crate::progress::Progress::silent(),
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -342,9 +415,10 @@ pub(crate) fn build_multi_source_with_symbols_progress(
     repo: &Path,
     sources: &[(String, LanguageKind)],
     refs: RefsMode,
+    install: &InstallMode,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
-    let (graph, spool) = build_multi_source_inner(repo, sources, true, refs, progress)?;
+    let (graph, spool) = build_multi_source_inner(repo, sources, true, refs, install, progress)?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
@@ -353,6 +427,7 @@ fn build_multi_source_inner(
     sources: &[(String, LanguageKind)],
     collect_symbols: bool,
     refs: RefsMode,
+    install: &InstallMode,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
     let started = Instant::now();
@@ -424,7 +499,7 @@ fn build_multi_source_inner(
         RefsMode::Hand => None,
         RefsMode::Scip => {
             let (report, scip) =
-                apply_scip_references(repo, &mut merged, spool.is_some(), progress)?;
+                apply_scip_references(repo, &mut merged, spool.is_some(), install, progress)?;
             if let Some(spool) = spool.as_mut() {
                 spool.scip = scip;
             }
@@ -956,10 +1031,17 @@ impl Drop for IndexWorkDir {
 /// Indexes go to a temporary directory that is removed afterwards, or to
 /// `TOLMAP_SCIP_INDEX_DIR` when set, where they are kept as `<lang>.scip`
 /// so a measurement can run P0's oracle on the very index the build read.
+///
+/// TypeScript's dependencies are installed first when `install` allows it
+/// (issue #110 P1c, [`install_typescript_dependencies`]). Installs run
+/// after the hand-written graph is resolved, so `node_modules` can never
+/// enter it, and only for TypeScript: finding 41 measured Python and Go
+/// installs adding 33 and 2 in-repo pairs for up to 10.5 GB.
 fn apply_scip_references(
     repo: &Path,
     merged: &mut MergedSources,
     keep_symbol_refs: bool,
+    install: &InstallMode,
     progress: &crate::progress::Progress,
 ) -> Result<(
     BTreeMap<String, ReferenceCoverage>,
@@ -1020,7 +1102,11 @@ fn apply_scip_references(
             recall: None,
             min_recall: MIN_RECALL,
             granularity: recall_granularity(language).to_owned(),
+            install: None,
         };
+        if language == LanguageKind::TypeScript {
+            row.install = install_typescript_dependencies(repo, install, progress);
+        }
 
         let stage = progress.stage(
             crate::progress::StageId::index_for(language),
@@ -1104,6 +1190,55 @@ fn apply_scip_references(
         report.insert(language.as_str().to_owned(), row);
     }
     Ok((report, symbols))
+}
+
+/// Runs the TypeScript dependency install `install` allows (issue #110
+/// P1c) and returns what the map's `coverage.references.ts.install`
+/// records, or `None` when installs are off. The install policy is read
+/// here first, from files alone, so a repository it would never install
+/// for does not start the install stage or wake the service.
+fn install_typescript_dependencies(
+    repo: &Path,
+    install: &InstallMode,
+    progress: &crate::progress::Progress,
+) -> Option<crate::schema::InstallCoverage> {
+    use crate::indexers::{install_plan, skipped, InstallPlan};
+    if matches!(install, InstallMode::Off) {
+        return None;
+    }
+    let manager = match install_plan(repo) {
+        InstallPlan::Skip { reason, manager } => {
+            progress.log(format!("install typescript: skipped ({reason})"));
+            return Some(skipped(reason, manager));
+        }
+        InstallPlan::Install(manager) => manager,
+    };
+    let stage = progress.stage(crate::progress::StageId::Install, None);
+    let log = |message: String| progress.log(message);
+    let coverage = match install {
+        InstallMode::Off => unreachable!("returned above"),
+        InstallMode::Sandbox => {
+            let settings = crate::indexers::InstallSettings::for_repository(repo);
+            let scratch = std::env::temp_dir().join(format!(
+                "tolmap-install-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            let tick = || stage.set(0);
+            crate::indexers::install(repo, &scratch, &settings, &tick, &|| false, &log)
+        }
+        InstallMode::Delegate(request) => request(),
+    };
+    progress.log(format!(
+        "install typescript: {} ({}, {})",
+        coverage.status,
+        coverage.reason,
+        coverage.manager.as_deref().unwrap_or(manager.as_str())
+    ));
+    // The stage finishes either way: a fallback is recorded in the map, it
+    // is not a failed step of the job.
+    stage.finish();
+    Some(coverage)
 }
 
 // pub(crate): `detect` re-walks the same tree with the same filters to count
