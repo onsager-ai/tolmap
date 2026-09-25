@@ -22,6 +22,9 @@ pub enum StageId {
     // the order extraction runs them. Hand-written builds never start them.
     IndexGo,
     IndexPy,
+    // Issue #110 P1c: the sandboxed dependency install that runs just
+    // before scip-typescript, when the install policy wants one.
+    Install,
     IndexTs,
     History,
     BlendPrune,
@@ -37,7 +40,7 @@ pub enum StageId {
 }
 
 impl StageId {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Clone,
         Self::CloneObjects,
         Self::CloneDeltas,
@@ -47,6 +50,7 @@ impl StageId {
         Self::Resolve,
         Self::IndexGo,
         Self::IndexPy,
+        Self::Install,
         Self::IndexTs,
         Self::History,
         Self::BlendPrune,
@@ -96,6 +100,7 @@ impl StageId {
             Self::Resolve => "Resolving imports",
             Self::IndexGo => "Indexing Go",
             Self::IndexPy => "Indexing Python",
+            Self::Install => "Installing dependencies",
             Self::IndexTs => "Indexing TypeScript",
             Self::BlendPrune => "Blending and pruning",
             Self::Partition => "Partitioning districts",
@@ -124,7 +129,7 @@ impl StageId {
             | Self::SymbolCards => "files",
             Self::History => "commits",
             Self::Regions | Self::Footprints | Self::Neighbourhoods | Self::Naming => "districts",
-            Self::Detect | Self::BlendPrune | Self::Partition => "steps",
+            Self::Detect | Self::BlendPrune | Self::Partition | Self::Install => "steps",
         }
     }
 }

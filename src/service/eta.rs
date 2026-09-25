@@ -41,16 +41,22 @@ impl Eta {
 const STAGE_COUNT: usize = StageId::ALL.len();
 
 /// Stored timing rows are in `StageId::ALL` order. Rows written before the
-/// three `--refs scip` indexing stages existed (issue #110) have 18 entries;
-/// this inserts the missing stages after `Resolve` so every later stage
+/// three `--refs scip` indexing stages existed (issue #110) have 18 entries,
+/// and rows written before the install stage (#110 P1c) have 21; this
+/// inserts the missing stages where they now sit, so every later stage
 /// keeps its own observations instead of shifting onto a neighbour's.
 pub fn upgrade_stage_layout(mut stage_s: Vec<Option<f64>>) -> Vec<Option<f64>> {
-    const LEGACY_STAGE_COUNT: usize = 18;
-    if stage_s.len() == LEGACY_STAGE_COUNT {
+    const BEFORE_INDEXING: usize = 18;
+    const BEFORE_INSTALL: usize = 21;
+    if stage_s.len() == BEFORE_INDEXING {
+        // IndexGo, IndexPy and IndexTs, right after Resolve.
         let at = StageId::Resolve.index();
-        for _ in 0..(STAGE_COUNT - LEGACY_STAGE_COUNT) {
+        for _ in 0..3 {
             stage_s.insert(at, None);
         }
+    }
+    if stage_s.len() == BEFORE_INSTALL {
+        stage_s.insert(StageId::Install.index() - 1, None);
     }
     stage_s
 }
@@ -68,6 +74,13 @@ fn index_seed(language: &str) -> (f64, f64) {
         _ => (3.0, 0.03),
     }
 }
+
+/// Start-up seconds and seconds per TypeScript file for the sandboxed
+/// dependency install (#110 P1c). Finding 41's only measured install is
+/// dify's pnpm `--frozen-lockfile --ignore-scripts`, +23.0 s over 4,358
+/// TypeScript files on a standard runner; the start-up share is the jail
+/// and its self-test. A seed only, refit from completed jobs like the rest.
+const INSTALL_SEED: (f64, f64) = (5.0, 0.004);
 
 pub fn expected_passes(stage: StageId, features: &RepoFeatures) -> usize {
     if matches!(stage, StageId::Parse | StageId::Resolve) {
@@ -101,12 +114,13 @@ pub struct EtaModel {
 // build totals (django 6.14 s, dify 41.925 s, n8n 101.163 s) set the
 // prior's broad range; they are not fabricated per-stage observations.
 const DIFY_FILES: f64 = 6_347.0;
-// The three zeros after resolve's 0.223 are the `--refs scip` indexing
-// stages, which finding 36's hand-written timeline never ran; their seed is
-// `index_seed`, and only for a job that asked for SCIP.
+// The four zeros after resolve's 0.223 are the `--refs scip` indexing
+// stages and the install stage between the Python and TypeScript indexers,
+// which finding 36's hand-written timeline never ran; their seeds are
+// `index_seed` and `INSTALL_SEED`, and only for a job that asked for SCIP.
 const DIFY_STAGE_S: [f64; STAGE_COUNT] = [
-    0.032, 0.0, 0.0, 0.0, 0.103, 26.913, 0.223, 0.0, 0.0, 0.0, 0.382, 0.044, 0.219, 0.131, 0.010,
-    1.613, 5.109, 0.021, 0.390, 5.549, 0.182,
+    0.032, 0.0, 0.0, 0.0, 0.103, 26.913, 0.223, 0.0, 0.0, 0.0, 0.0, 0.382, 0.044, 0.219, 0.131,
+    0.010, 1.613, 5.109, 0.021, 0.390, 5.549, 0.182,
 ];
 
 impl EtaModel {
@@ -144,6 +158,16 @@ impl EtaModel {
     }
 
     fn seed_stage(stage: StageId, features: &RepoFeatures) -> f64 {
+        if stage == StageId::Install {
+            // The worker names a package manager only when the job may
+            // install (a SCIP job with installs on) and the policy wants to:
+            // a TypeScript workspace with a pnpm or npm lockfile.
+            if features.refs.as_deref() != Some("scip") || features.install.is_none() {
+                return 0.0;
+            }
+            let files = features.languages.get("ts").map_or(0, |lang| lang.files);
+            return INSTALL_SEED.0 + INSTALL_SEED.1 * files as f64;
+        }
         if let Some(language) = stage.indexed_language() {
             if features.refs.as_deref() != Some("scip") {
                 return 0.0; // a hand-written build never starts this stage
@@ -386,7 +410,10 @@ pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Val
                     running = None;
                 }
             }
-            WorkerEvent::Result { .. } | WorkerEvent::Error { .. } | WorkerEvent::Log { .. } => {}
+            WorkerEvent::Result { .. }
+            | WorkerEvent::Error { .. }
+            | WorkerEvent::Log { .. }
+            | WorkerEvent::InstallRequest { .. } => {}
         }
         if at < wall && !matches!(value["type"].as_str(), Some("result" | "error")) {
             for stage in StageId::ALL {
@@ -448,6 +475,7 @@ mod tests {
             )]
             .into(),
             refs: None,
+            install: None,
         }
     }
 
@@ -458,11 +486,44 @@ mod tests {
         assert_eq!(upgraded.len(), StageId::ALL.len());
         assert_eq!(upgraded[StageId::Resolve.index() - 1], Some(6.0));
         assert_eq!(upgraded[StageId::IndexGo.index() - 1], None);
+        assert_eq!(upgraded[StageId::Install.index() - 1], None);
         assert_eq!(upgraded[StageId::IndexTs.index() - 1], None);
         assert_eq!(upgraded[StageId::History.index() - 1], Some(7.0));
         assert_eq!(upgraded[StageId::Write.index() - 1], Some(17.0));
         let current = vec![Some(1.0); StageId::ALL.len()];
         assert_eq!(upgrade_stage_layout(current.clone()), current);
+    }
+
+    #[test]
+    fn rows_from_before_the_install_stage_keep_their_indexing_times() {
+        // A P1a-era row: 21 stages, IndexPy at 8 and IndexTs at 9 (0-based).
+        let before = (0..21).map(|i| Some(i as f64)).collect::<Vec<_>>();
+        let upgraded = upgrade_stage_layout(before);
+        assert_eq!(upgraded.len(), StageId::ALL.len());
+        assert_eq!(upgraded[StageId::IndexPy.index() - 1], Some(8.0));
+        assert_eq!(upgraded[StageId::Install.index() - 1], None);
+        assert_eq!(upgraded[StageId::IndexTs.index() - 1], Some(9.0));
+        assert_eq!(upgraded[StageId::Write.index() - 1], Some(20.0));
+    }
+
+    #[test]
+    fn install_is_estimated_only_when_the_worker_plans_one() {
+        let mut input = features(10);
+        input.languages.insert(
+            "ts".to_owned(),
+            LanguageFeatures {
+                files: 4_358,
+                bytes: 4_358 * 8_000,
+            },
+        );
+        let model = EtaModel::default();
+        input.refs = Some("scip".to_owned());
+        assert_eq!(model.stage(StageId::Install, &input), 0.0);
+        input.install = Some("pnpm".to_owned());
+        let install = model.stage(StageId::Install, &input);
+        assert!(install > 15.0 && install < 30.0, "{install}");
+        input.refs = None;
+        assert_eq!(model.stage(StageId::Install, &input), 0.0);
     }
 
     #[test]
