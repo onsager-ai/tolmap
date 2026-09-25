@@ -60,7 +60,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_SCIP_TYPESCRIPT` | `scip-typescript` on `PATH` | path to the scip-typescript binary (issue #110 P1a); the runtime image's `Dockerfile` sets this to an absolute path, overridable for a different install |
 | `TOLMAP_SCIP_PYTHON` | `scip-python` on `PATH` | path to the scip-python binary, same pattern |
 | `TOLMAP_SCIP_GO` | `scip-go` on `PATH` | path to the scip-go binary, same pattern |
-| `TOLMAP_SCIP_INSTALL` | `sandbox` | with `TOLMAP_REFS=scip` (issue #110 P1c): `sandbox` installs a TypeScript workspace's npm dependencies (pnpm or npm lockfile) before scip-typescript, inside nsjail -- see "Worker isolation" below; `off` never installs. Anything short of a finished install falls back to indexing without it and is recorded in the map's `coverage.references.ts.install`; no job fails because of it. Any value but `off` means `sandbox` |
+| `TOLMAP_SCIP_INSTALL` | `off` | with `TOLMAP_REFS=scip` (issue #110 P1c): `sandbox` installs a TypeScript workspace's npm dependencies (pnpm or npm lockfile) before scip-typescript, inside nsjail -- see "Worker isolation" below; `off` never installs. Anything short of a finished install falls back to indexing without it and is recorded in the map's `coverage.references.ts.install`; no job fails because of it. Any value but `sandbox` means `off` |
 | `TOLMAP_NSJAIL` | `nsjail` on `PATH` | path to nsjail; the runtime image sets `/usr/local/bin/nsjail` |
 | `TOLMAP_INSTALL_NODE_PREFIX` | prefix of `node` on `PATH` | the Node.js prefix mounted read-only in the install sandbox, whose `bin` has `node`, `npm` and `pnpm`; the runtime image sets `/opt/node` |
 | `TOLMAP_INSTALL_TIME_LIMIT_S` | `1200` (20 min) | wall-time bound of one install, in seconds (fractions allowed); past it the install is killed and falls back (`install_timeout`) |
@@ -310,7 +310,7 @@ The `tolmap worker` child every index job spawns (`src/service/jobs.rs::process_
 
 ### Dependency installs (issue #110 P1c)
 
-A `scip` job may install a TypeScript workspace's npm dependencies before scip-typescript (`TOLMAP_SCIP_INSTALL`, on by default); the design is `docs/SCIP_SANDBOX.md` and the code `src/indexers.rs`. The worker cannot start the sandbox, so it asks the service over the worker protocol and the service, as root, runs the install:
+A `scip` job may install a TypeScript workspace's npm dependencies before scip-typescript (`TOLMAP_SCIP_INSTALL=sandbox`; off by default); the design is `docs/SCIP_SANDBOX.md` and the code `src/indexers.rs`. The worker cannot start the sandbox, so it asks the service over the worker protocol and the service, as root, runs the install:
 
 - **Policy.** Only a workspace (`pnpm-workspace.yaml`, or `package.json` `workspaces`) with a pnpm or npm lockfile at the repository root, and no `node_modules` there yet. yarn and bun lockfiles are never installed. Python and Go are never installed.
 - **Execution.** `pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile` or `npm ci --ignore-scripts`, with the image's own pnpm/npm; pnpm's `packageManager` handling is off, so a repository cannot choose the package-manager build. A runtime a manifest pins (`node@runtime:`) is fetched from outside the registry, which the proxy refuses, so such an install falls back unless pnpm can satisfy it otherwise.

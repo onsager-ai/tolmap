@@ -151,14 +151,17 @@ pub struct ServeConfig {
     /// Whether a `scip` job installs a TypeScript workspace's npm
     /// dependencies before scip-typescript (issue #110 P1c). The service,
     /// which is root in the runtime image, runs the install in nsjail as the
-    /// worker's uid when its worker asks; the owner's go on #117 was that TS
-    /// monorepos get their dependencies installed, so this defaults to on.
-    /// It fails safe: where the sandbox cannot start (a non-root service, a
+    /// worker's uid when its worker asks. Off unless `sandbox` is set: under
+    /// the npm-registry-only egress the owner chose (#117), finding 46
+    /// measured no gain on the repositories that need installs (n8n and dify
+    /// fall back after about 2 minutes each), and the owner then kept the hand
+    /// resolver as the default (#110, 2026-09-26), so the owner ruled
+    /// "installs off by default". When switched on it fails safe: where the sandbox cannot start (a non-root service, a
     /// container that forbids namespaces, no nsjail), every install falls
     /// back to indexing without it, recorded in the map. Ignored when
     /// `refs` is `hand`.
     ///
-    /// Env: `TOLMAP_SCIP_INSTALL` (`sandbox`, the default, or `off`).
+    /// Env: `TOLMAP_SCIP_INSTALL` (`off`, the default, or `sandbox`).
     pub scip_install: bool,
     pub limits: Limits,
     /// Store retention policy (issue #23 gap 2): the number of most-recently-
@@ -227,11 +230,11 @@ impl ServeConfig {
         let namer_model =
             env::var("TOLMAP_NAMER_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
         let refs = env_var_or("TOLMAP_REFS", crate::extract::RefsMode::Hand);
-        // Anything but an explicit `off` keeps the default: a typo cannot
-        // silently switch installs off, and on is fail-safe anyway.
-        let scip_install = !matches!(
+        // Only an explicit `sandbox` turns installs on: installs run as root,
+        // so a typo must not switch them on.
+        let scip_install = matches!(
             env::var("TOLMAP_SCIP_INSTALL").as_deref().map(str::trim),
-            Ok("off")
+            Ok("sandbox")
         );
         // 20 is generous for a debugging/time-travel window (which commit
         // looked like what) while still being a bound instead of the

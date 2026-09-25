@@ -252,7 +252,7 @@ jobs:
           git -C sandbox/service-fixture init --quiet && git -C sandbox/service-fixture add -A
           git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
           docker run -d --name tolmap-service --privileged -p 127.0.0.1:8787:8787 \
-            -e TOLMAP_REFS=scip -e TOLMAP_BIND_ADDR=0.0.0.0 -e TOLMAP_CACHE_DIR=/srv/cache \
+            -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 -e TOLMAP_CACHE_DIR=/srv/cache \
             -v "$PWD/sandbox/service-fixture:/srv/fixture:ro" \
             --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap serve'
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8787/api/healthz && break; sleep 1; done

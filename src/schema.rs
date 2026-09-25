@@ -123,7 +123,7 @@ pub struct CoverageReport {
 //
 // `install` (issue #110 P1c) is present only on the TypeScript row of a
 // build that allowed dependency installs (`tolmap build --install sandbox`,
-// or a job service with `TOLMAP_SCIP_INSTALL=sandbox`, its default). It is
+// or a job service with `TOLMAP_SCIP_INSTALL=sandbox`; off by default). It is
 // absent otherwise, so a map built without installs stays byte-identical
 // to one built before the field existed.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
