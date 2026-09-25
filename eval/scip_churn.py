@@ -374,7 +374,15 @@ class Imports(ast.NodeVisitor):
     def __init__(self, module: str, is_pkg: bool):
         self.module, self.is_pkg = module, is_pkg
         self.context: list[str] = []
-        self.found: list[tuple[list[str], set[str]]] = []
+        self.found: list[tuple[list[str], set[str], str, list[str]]] = []
+
+    def base(self, node) -> str:
+        if not node.level:
+            return node.module or ""
+        package = self.module if self.is_pkg else self.module.rsplit(".", 1)[0]
+        parts = package.split(".")
+        base = ".".join(parts[: len(parts) - (node.level - 1)]) if node.level > 1 else package
+        return f"{base}.{node.module}" if node.module else base
 
     def targets(self, node) -> list[str]:
         if isinstance(node, ast.Import):
@@ -383,13 +391,7 @@ class Imports(ast.NodeVisitor):
                 parts = alias.name.split(".")
                 out += [".".join(parts[: i + 1]) for i in range(len(parts))]
             return out
-        if node.level:
-            package = self.module if self.is_pkg else self.module.rsplit(".", 1)[0]
-            parts = package.split(".")
-            base = ".".join(parts[: len(parts) - (node.level - 1)]) if node.level > 1 else package
-            base = f"{base}.{node.module}" if node.module else base
-        else:
-            base = node.module or ""
+        base = self.base(node)
         return [base] + [f"{base}.{alias.name}" for alias in node.names if alias.name != "*"]
 
     def record(self, node) -> None:
@@ -397,7 +399,11 @@ class Imports(ast.NodeVisitor):
         tags.add("relative" if isinstance(node, ast.ImportFrom) and node.level else "absolute")
         if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
             tags.add("star")
-        self.found.append((self.targets(node), tags))
+        if isinstance(node, ast.ImportFrom):
+            base, names = self.base(node), [alias.name for alias in node.names]
+        else:
+            base, names = "", []
+        self.found.append((self.targets(node), tags, base, names))
 
     visit_Import = record
     visit_ImportFrom = record
@@ -443,10 +449,19 @@ def classify(a: str, b: str, graph: Graph, imports: dict) -> list[str]:
     if found is None:
         return ["not parsed"]
     module_b = graph.raw["nodes"][graph.index[b]]["module"]
+    modules = {node["module"] for node in graph.raw["nodes"]}
     tags = set()
-    for targets, context in found:
+    for targets, context, base, names in found:
         if module_b in targets:
             tags |= context
+            # `from pkg import x` names the package itself as its base. When
+            # every x is a submodule, the package object is never used; when
+            # an x is a name, it is the package's re-export of it.
+            if base == module_b and b.endswith("__init__.py") and "*" not in names:
+                if all(f"{base}.{name}" in modules for name in names):
+                    tags.add("submodule via package")
+                else:
+                    tags.add("name from package")
     if not tags:
         return ["no import of target"]
     if b.endswith("__init__.py"):
