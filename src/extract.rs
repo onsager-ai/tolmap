@@ -2471,55 +2471,53 @@ impl PythonScope<'_> {
             .copied()
     }
 
-    /// The module to credit for `name` as `module` exposes it: `module`
+    /// The module that defines `name` as `module` exposes it: `module`
     /// itself when it defines the name, else the module it imports the name
-    /// from, followed for up to [`PYTHON_REEXPORT_HOPS`] hops. Whenever the
-    /// chain cannot be followed with certainty -- the name comes from
-    /// outside the parsed set, is bound twice to different places, arrives
-    /// through a star import whose `__all__` is computed, or is not bound
-    /// visibly at all (a module `__getattr__`, say) -- the answer is the
-    /// module the chain has reached, which at the first hop is exactly
-    /// what the resolver credited before re-exports were followed.
-    fn follow(&self, module: &str, name: &str, hops: usize) -> String {
-        let stay = || module.to_owned();
+    /// from, followed for up to [`PYTHON_REEXPORT_HOPS`] hops (at the limit,
+    /// the module reached, which does pass the name on). `None` whenever the
+    /// chain cannot be followed with certainty: the name comes from outside
+    /// the parsed set, is bound twice to different places, arrives through a
+    /// star import whose `__all__` is computed, or is not bound visibly at
+    /// all (a module `__getattr__`, say). The caller then credits what the
+    /// resolver credited before re-exports were followed, so an uncertain
+    /// chain never produces a pair that did not exist. (A first version
+    /// credited the module the chain had reached instead; on celery that
+    /// turned `from celery import uuid`, which `celery/utils/__init__.py`
+    /// takes from kombu, into a new pair to that file -- a pair no source
+    /// statement names and SCIP does not have.)
+    fn follow(&self, module: &str, name: &str, hops: usize) -> Option<String> {
         if hops >= PYTHON_REEXPORT_HOPS {
-            return stay();
+            return Some(module.to_owned());
         }
-        let Some(exports) = self.exports_of(module) else {
-            return stay();
-        };
+        let exports = self.exports_of(module)?;
         if exports.defined.contains(name) {
-            return stay();
+            return Some(module.to_owned());
         }
         let is_pkg = self.is_package(module);
         if let Some(bindings) = exports.bindings.get(name) {
             let targets = bindings
                 .iter()
                 .map(|binding| self.binding_target(binding, module, is_pkg, hops))
-                .collect::<BTreeSet<_>>();
+                .collect::<Option<BTreeSet<_>>>()?;
             return match targets.into_iter().collect::<Vec<_>>().as_slice() {
-                [Some(target)] => target.clone(),
-                _ => stay(),
+                [target] => Some(target.clone()),
+                _ => None,
             };
         }
         let mut hits = BTreeSet::new();
         for (level, star) in &exports.stars {
             let head = python_head_of(*level, star, module, is_pkg);
-            match self.star_binds(&head, name) {
-                Some(true) => {
-                    hits.insert(head);
-                }
-                Some(false) => {}
-                None => return stay(),
+            if self.star_binds(&head, name)? {
+                hits.insert(head);
             }
         }
         match hits.into_iter().collect::<Vec<_>>().as_slice() {
             [star] => self.follow(star, name, hops + 1),
-            _ => stay(),
+            _ => None,
         }
     }
 
-    /// Where one binding of a name points: `None` outside the parsed set.
+    /// Where one binding of a name points, when that is certain.
     fn binding_target(
         &self,
         binding: &PythonBinding,
@@ -2541,7 +2539,7 @@ impl PythonScope<'_> {
                     // `from . import sub as name`: a module bound as a name.
                     Some(full)
                 } else if self.known.contains(&head) {
-                    Some(self.follow(&head, original, hops + 1))
+                    self.follow(&head, original, hops + 1)
                 } else {
                     None
                 }
@@ -2613,7 +2611,8 @@ fn resolve_python_import(
         if scope.known.contains(&full) {
             result.insert(full);
         } else {
-            result.insert(scope.follow(&head, name, 0));
+            // Uncertain: credit the package, as before.
+            result.insert(scope.follow(&head, name, 0).unwrap_or_else(|| head.clone()));
         }
     }
     result.remove(current_module);
@@ -4911,6 +4910,21 @@ mod tests {
         // Imported inside a function, which binds nothing in the module;
         // and the computed `__all__` makes the star import unknowable.
         assert_eq!(targets_of(&edges, "local.py"), ["pkg/__init__.py"]);
+    }
+
+    #[test]
+    fn a_chain_that_leaves_the_parsed_set_credits_the_package_not_the_middle() {
+        // celery's shape: `from celery import uuid`, where the package takes
+        // `uuid` from `celery.utils`, which takes it from kombu.
+        let edges = python_edges(&[
+            ("pkg/__init__.py", "from pkg.utils import uuid\n"),
+            (
+                "pkg/utils/__init__.py",
+                "from kombu.utils.uuid import uuid\n",
+            ),
+            ("use.py", "from pkg import uuid\n"),
+        ]);
+        assert_eq!(targets_of(&edges, "use.py"), ["pkg/__init__.py"]);
     }
 
     #[test]
