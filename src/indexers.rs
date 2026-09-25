@@ -866,14 +866,23 @@ direct.on('error', () => askProxy());
         // address space, 1 MiB files, 32 fds, 600 s CPU) would kill any real
         // install; V8 reserves far more address space than it uses, so
         // memory is the cgroup's job, not RLIMIT_AS's.
+        //
+        // The two MiB-denominated limits are given as numbers, not `inf`:
+        // nsjail 3.6 multiplies whatever the command line gives by 1 MiB
+        // when it applies them, so `inf` (and `max`) overflow to
+        // 2^64 - 2^20 bytes, which the kernel reads as a negative file-size
+        // limit. Every write then fails with EFBIG and SIGXFSZ: CI's first
+        // runs had pnpm dying that way with no output. 2^24 MiB (16 TiB) is
+        // unlimited in practice and far from overflow; the disk budget is
+        // enforced by `supervise`, not by this.
         let backstop = (layout.time_limit.as_secs() + 60).to_string();
         push(&["--time_limit", backstop.as_str()]);
         push(&[
             "--rlimit_as",
-            "inf",
-            "--rlimit_cpu",
-            "inf",
+            "16777216",
             "--rlimit_fsize",
+            "16777216",
+            "--rlimit_cpu",
             "inf",
             "--rlimit_nofile",
             "max",
@@ -2171,6 +2180,10 @@ mod tests {
         assert!(pair("-s", "usr/bin:/bin"));
         assert!(pair("-R", "/opt/node"));
         assert!(pair("--time_limit", "1260"));
+        // Never `inf` for a MiB-denominated limit: nsjail 3.6 overflows it
+        // into a negative file-size limit (see `jail_args`).
+        assert!(pair("--rlimit_fsize", "16777216"));
+        assert!(pair("--rlimit_as", "16777216"));
         assert!(!args.iter().any(|arg| arg.contains("cgroup")));
         // The environment is exactly what the jail is given: proxies at the
         // in-jail bridge, the registry, scripts and pnpmfiles off, pnpm's
