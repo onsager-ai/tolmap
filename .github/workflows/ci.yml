@@ -398,6 +398,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: node scripts/check-collect-symbols.mjs
+      # Issue #110 P2: map/referenceCoverage.ts's pure summarising function
+      # (the "exact (SCIP) vs heuristic" indicator's collapsed-label and
+      # per-language logic), the same npx-tsx pattern check-pinch-math.ts and
+      # check-district-colours.ts already use in this project (no test
+      # runner exists yet -- web/README.md) but the first of the three
+      # actually wired into a workflow, since this one runs from scripted
+      # data rather than a Playwright session or a public/maps/ fixture.
+      - run: npx tsx scripts/check-reference-coverage.ts
       - run: pnpm build
 
   full-fixtures:
