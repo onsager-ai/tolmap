@@ -470,7 +470,7 @@ jobs:
                 --install sandbox --name ts_workspace --out "install-$i" > "install-$i.log" 2>&1; then
               cat "install-$i.log"; exit 1
             fi
-            grep -E '^references |install|egress|sandbox' "install-$i.log" || true
+            if [ "$i" = 1 ]; then cat install-1.log; else grep -E '^references |install|egress|sandbox' "install-$i.log" || true; fi
             hash=$(cat "install-$i/ts_workspace.json" "install-$i/ts_workspace.symbols.json" | sha256sum | cut -d' ' -f1)
             echo "sandboxed install build $i: $hash"
             hashes="$hashes $hash"

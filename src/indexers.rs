@@ -711,7 +711,8 @@ const done = (ok, message) => {
 };
 if (process.getuid() === 0 || process.getgid() === 0) done(false, 'running as root');
 for (const path of ['/app', '/root', '/opt/go', '/var/run/docker.sock', '/.fly']) {
-  if (fs.existsSync(path)) done(false, path + ' is visible');
+  // An ancestor of the checkout exists as an empty mount point.
+  if (fs.existsSync(path) && !process.cwd().startsWith(path + '/')) done(false, path + ' is visible');
 }
 // The checkout is mounted at its own path; its parent must hold nothing
 // else: not the job's output or names cache, not another job.
