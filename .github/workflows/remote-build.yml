@@ -353,6 +353,19 @@ jobs:
       # from the missing Leiden libs above, and result.json still came out
       # with exit_code/reason both null). `rc=$?` is captured immediately
       # after the command, before any other command can overwrite `$?`.
+      #
+      # Issue #110 P2a: both build steps pin `--refs hand` unless
+      # `extra_args` names `--refs` itself, and only for a binary that has
+      # the option (an old `compare_ref` may predate it; its default was
+      # hand). `hand` is the default today; the pin keeps a future flip from
+      # moving these measurements. These runners install no indexer, so a
+      # `--refs scip` build here would be a silent all-fallback build: the
+      # hand-written graph plus a recorded `coverage.references`, enough to
+      # make a branch's map differ from main's and to break the fixture
+      # band's comparison with data/*.json (the frozen Python reference,
+      # hand-only). SCIP is
+      # measured by `command=scip-ingest` and ci.yml's `scip-fixtures`, which
+      # install the pinned indexers.
       - name: Build with primary binary
         id: build_primary
         env:
@@ -375,6 +388,13 @@ jobs:
           if [ "$FIXTURE_NO_PARCELS" = "true" ]; then
             parcels_arg="--no-parcels"
           fi
+          refs_arg=""
+          build_help="$(./bin-primary/tolmap build --help 2>/dev/null || true)"
+          if [ "$COMMAND" != "dump-blend" ] && [[ " $EXTRA_ARGS " != *" --refs"* ]] \
+              && [[ "$build_help" == *"--refs"* ]]; then
+            refs_arg="--refs hand"
+          fi
+          echo "refs_arg=$refs_arg" >> "$GITHUB_OUTPUT"
           set +e
           if [ "$COMMAND" = "dump-blend" ]; then
             /usr/bin/time -v -o primary.time.txt \
@@ -389,7 +409,7 @@ jobs:
             git -C clone checkout --quiet --detach "HEAD~${BACK}"
             prlimit "--as=${BUILD_MEM_BYTES}" -- \
               ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
-              $parcels_arg \
+              $parcels_arg $refs_arg \
               --name "$STEM" --out out-previous \
               > previous.log 2>&1
             previous_rc=$?
@@ -398,7 +418,7 @@ jobs:
               /usr/bin/time -v -o primary.time.txt \
                 prlimit "--as=${BUILD_MEM_BYTES}" -- \
                 ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
-                $parcels_arg \
+                $parcels_arg $refs_arg \
                 --previous-map "out-previous/${STEM}.json" \
                 --name "$STEM" --out out-primary \
                 > primary.log 2>&1
@@ -411,7 +431,7 @@ jobs:
             /usr/bin/time -v -o primary.time.txt \
               prlimit "--as=${BUILD_MEM_BYTES}" -- \
               ./bin-primary/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
-              $parcels_arg \
+              $parcels_arg $refs_arg \
               --name "$STEM" --out out-primary \
               > primary.log 2>&1
             rc=$?
@@ -442,6 +462,13 @@ jobs:
           if [ "$FIXTURE_NO_PARCELS" = "true" ]; then
             parcels_arg="--no-parcels"
           fi
+          refs_arg=""
+          build_help="$(./bin-compare/tolmap build --help 2>/dev/null || true)"
+          if [ "$COMMAND" != "dump-blend" ] && [[ " $EXTRA_ARGS " != *" --refs"* ]] \
+              && [[ "$build_help" == *"--refs"* ]]; then
+            refs_arg="--refs hand"
+          fi
+          echo "refs_arg=$refs_arg" >> "$GITHUB_OUTPUT"
           set +e
           if [ "$COMMAND" = "dump-blend" ]; then
             /usr/bin/time -v -o compare.time.txt \
@@ -456,7 +483,7 @@ jobs:
             git -C clone checkout --quiet --detach "HEAD~${BACK}"
             prlimit "--as=${BUILD_MEM_BYTES}" -- \
               ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
-              $parcels_arg \
+              $parcels_arg $refs_arg \
               --name "$STEM" --out out-compare-previous \
               > compare-previous.log 2>&1
             previous_rc=$?
@@ -465,7 +492,7 @@ jobs:
               /usr/bin/time -v -o compare.time.txt \
                 prlimit "--as=${BUILD_MEM_BYTES}" -- \
                 ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
-                $parcels_arg \
+                $parcels_arg $refs_arg \
                 --previous-map "out-compare-previous/${STEM}.json" \
                 --name "$STEM" --out out-compare \
                 > compare.log 2>&1
@@ -478,7 +505,7 @@ jobs:
             /usr/bin/time -v -o compare.time.txt \
               prlimit "--as=${BUILD_MEM_BYTES}" -- \
               ./bin-compare/tolmap build "$PWD/clone" $REPO_ARGS $EXTRA_ARGS \
-              $parcels_arg \
+              $parcels_arg $refs_arg \
               --name "$STEM" --out out-compare \
               > compare.log 2>&1
             rc=$?
@@ -495,6 +522,8 @@ jobs:
           STEM: ${{ matrix.stem }}
           REPO_ARGS_JSON: ${{ toJSON(matrix.args) }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
+          PRIMARY_REFS_ARG: ${{ steps.build_primary.outputs.refs_arg }}
+          COMPARE_REFS_ARG: ${{ steps.build_compare.outputs.refs_arg }}
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
         run: |
           # Balanced progress timing is only comparable when both binaries

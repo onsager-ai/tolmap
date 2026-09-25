@@ -15,7 +15,8 @@
 #
 # One job per repository (eval/scip_plan.py's five pins), each on its own
 # checkout, all with the one branch binary:
-#   hand       --refs hand (the default), plus dump-graph for file languages
+#   hand       --refs hand (the default, pinned explicitly), plus
+#              dump-graph for file languages
 #   scip1..3   three cold --refs scip builds; scip1 keeps its indexes
 #              (TOLMAP_SCIP_INDEX_DIR) for the oracle
 #   scipwarm   --refs scip warm-started from the hand map, as the product
@@ -147,7 +148,7 @@ jobs:
             echo "$name: exit $?"
             grep -E '^references |Indexing .*: done in|scip-typescript:' "work/$name.log" || true
           }
-          timed hand bin/tolmap build "$PWD/clone" $ARGS --name "$STEM" --out work/hand
+          timed hand bin/tolmap build "$PWD/clone" $ARGS --refs hand --name "$STEM" --out work/hand
           bin/tolmap dump-graph "$PWD/clone" $ARGS --out work/hand.graph.json > work/dump.log 2>&1
           TOLMAP_SCIP_INDEX_DIR="$PWD/work/idx" \
             timed scip1 bin/tolmap build "$PWD/clone" $ARGS --refs scip --name "$STEM" --out work/scip1

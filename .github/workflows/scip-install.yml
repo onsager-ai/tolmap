@@ -158,7 +158,7 @@ jobs:
             grep -E '^references |Indexing .*: done in|Installing dependencies: done in|^install |egress|sandbox' \
               "work/$name.log" || true
           }
-          timed hand bin/tolmap build "$PWD/clone" $ARGS --name "$STEM" --out work/hand
+          timed hand bin/tolmap build "$PWD/clone" $ARGS --refs hand --name "$STEM" --out work/hand
           timed scip bin/tolmap build "$PWD/clone" $ARGS --refs scip --name "$STEM" --out work/scip
           timed install sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "NODE_OPTIONS=$NODE_OPTIONS" \
             bin/tolmap build "$PWD/clone" $ARGS --refs scip --install sandbox --name "$STEM" --out work/install

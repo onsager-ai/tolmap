@@ -1685,6 +1685,68 @@ Go's 902 `possible_implementation` candidates (finding 37) are replaced by 517 e
 
 Whether SCIP becomes the default is P2. That means re-deriving the fixtures, since the oracle's membership moves (vue cold 74.5%), deciding the per-file fallback and decorator crediting above, and showing the viewer which references are exact. Dependency installs, which would admit dify's and n8n's TypeScript (finding 41: dify installed keeps 16,539 of 16,546 pairs), wait for P1c's sandbox. Rooting Python per project, which finding 41 measured at 0.970 for dify's `api/`, is not done.
 
+## 45. Under `--refs scip`, eight of the nine fixtures move below the parity threshold against their hand maps; hand stays the default, and SCIP gets fixtures of its own as the oracle
+
+Owner decision, session `16030105`, AskUserQuestion, transcript line 6390 (2026-09-25T13:42:06Z): **"P1c sandbox + P2a together (Recommended)"**. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s P2a, [PR #127](https://github.com/onsager-ai/tolmap/pull/127). It uses number 45 because main has 44.
+
+**What changed.** This PR was written to make `scip` the default and measured what that would do; the flip was then dropped by the owner (see the end of this finding). What remains: `tolmap build --refs` and the service's `TOLMAP_REFS` both take `RefsMode::default()`, which stays `hand`, so the two cannot drift apart. CI's `scip` job checks that a build naming no `--refs` is byte-identical to an explicit `--refs hand` build on a runner with every indexer installed, and that the missing-indexer fallback works under `--refs scip`. The measurements below were taken while the branch defaulted to `scip`; every build in them named `--refs` explicitly, so they do not depend on the default.
+
+**The oracle keeps testing what it tested.** `data/*.json` is the frozen Python reference's output (two fixtures are the Rust hand path's, see `data/fixtures.toml`), and that reference only knows the hand resolver. Every gate that compares with it passes `--refs hand` explicitly instead of relying on the default, so no future change of default can move what the oracle tests:
+- ci.yml `gate`: the offline flask/httpx parity and synthetic polyglot `--graph` builds (which ignore `--refs`, but are pinned so no gate depends on the default), the module-resolution fixture, the three-build polyglot determinism check and the islands fixture;
+- ci.yml `full-fixtures`;
+- remote-build.yml's build steps, unless `extra_args` names `--refs`, and only for a binary that has the option. These runners install no indexer, so a `--refs scip` build there would be an all-fallback SCIP build whose map differs from a hand build only by `coverage.references`;
+- the hand baselines in scip-spike.yml and scip-ingest.yml, and `web/scripts/generate-maps.sh`, whose naming caches are seeded from `data/*.json`.
+
+[Remote-build run 36144144728](https://github.com/onsager-ai/tolmap/actions/runs/36144144728) built the nine fixture pins with this branch and with main (`compare_ref=main`). Map and symbols documents are byte-identical on all nine. [CI run 36144110628](https://github.com/onsager-ai/tolmap/actions/runs/36144110628)'s `full-fixtures` passed on all nine with `--refs hand`.
+
+### SCIP against hand on the nine fixtures
+
+The same run's new `scip-fixtures` job built each fixture pin twice on one standard runner, with `--refs hand` and `--refs scip`. It used the full-fixtures clone and the pinned indexers: scip-python 0.6.6, scip-go v0.2.7 and scip-typescript 0.4.0. `eval/scip_fixtures.py measure` then scored the SCIP map against the hand map with the parity gate's placement metric. It checks its Python mirror of `src/parity.rs` against `tolmap parity` on every pair, and they agreed on all nine. The hand maps placed 100.0% of files, with Δq 0.0000, against the committed `data/*.json` on all nine, so "against hand" here is also "against the oracle".
+
+| fixture | files | districts hand → SCIP | q hand → SCIP | placement SCIP vs hand | Δq | ≥ 95% and ≤ 0.02 | `E` hand → SCIP (both) | zero-edge files hand → SCIP | reference path (reason, recall, files indexed) | build s hand → SCIP (indexing) | peak RSS MB hand → SCIP |
+|---|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---:|
+| celery | 161 | 7 → 8 | 0.3606 → 0.3349 | 62.7% | 0.0257 | **no** | 669 → 710 (648) | 6 → 7 | py: scip (indexed, 0.9686, 161/161) | 0.7 → 29.8 (29.1) | 30 → 1,401 |
+| django | 851 | 12 → 13 | 0.5061 → 0.5034 | 85.8% | 0.0027 | **no** | 3,173 → 4,018 (3,141) | 215 → 216 | py: scip (indexed, 0.9899, 851/851) | 2.0 → 96.6 (94.5) | 52 → 3,900 |
+| flask | 24 | 4 → 3 | 0.0326 → 0.0425 | 70.8% | 0.0099 | **no** | 102 → 113 (93) | 0 → 0 | py: scip (indexed, 0.9118, 24/24) | 0.3 → 7.0 (6.7) | 22 → 397 |
+| httpx | 23 | 4 → 2 | 0.0297 → −0.0043 | 47.8% | 0.0340 | **no** | 87 → 74 (71) | 0 → 1 | py: scip (indexed, 0.8161, 23/23) | 0.1 → 10.6 (10.4) | 23 → 443 |
+| prometheus | 444 | 9 → 13 | 0.5430 → 0.5725 | 72.3% | 0.0295 | **no** | 5,574 → 5,436 (4,842) | 4 → 31 | go: scip (indexed, 0.9969 by directory, 409/444) | 2.4 → 6.5 (4.0) | 39 → 783 |
+| rich | 100 | 4 → 5 | 0.3437 → 0.3263 | 48.0% | 0.0174 | **no** | 426 → 424 (420) | 0 → 0 | py: scip (indexed, 0.9859, 100/100) | 0.5 → 21.9 (21.5) | 25 → 724 |
+| scrapy | 188 | 8 → 7 | 0.3454 → 0.3268 | 77.7% | 0.0186 | **no** | 902 → 1,222 (902) | 5 → 5 | py: scip (indexed, 1.0000, 188/188) | 0.6 → 22.7 (22.1) | 31 → 1,155 |
+| sqlalchemy | 258 | 6 → 6 | 0.4318 → 0.4318 | 100.0% | 0.0000 | yes | 2,762 → 2,762 (2,762) | 0 → 0 | py: **hand** (below_min_recall, 0.6608, 258/258) | 4.5 → 134.2 (129.7) | 52 → 3,901 |
+| vue | 239 | 8 → 7 | 0.5389 → 0.4739 | 74.5% | 0.0650 | **no** | 1,186 → 1,911 (1,183) | 0 → 0 | ts: scip (indexed, 0.9975, 233/239) | 0.8 → 15.0 (14.2) | 32 → 684 |
+
+Build seconds and peak RSS come from one runner and one build each, so they are indicative, not a benchmark.
+
+**Eight of nine fixtures fall below the parity threshold against their own hand maps.** Placement runs from 47.8% (httpx) to 85.8% (django). Every fixture that took the SCIP path fails placement, and five of the eight also fail modularity. The one pass, sqlalchemy, is a fallback. scip-python keeps only 0.6608 of its hand-written pairs, so the map is the hand map, having spent 130 s indexing. Why sqlalchemy's recall is that low was not investigated. vue's corpus pin is its fixture pin, and its numbers are exactly finding 44's: 7 districts, q 0.4739, 74.5%. Django's differ (85.8% against finding 44's 70.5%) because `eval/corpus.toml` pins a different django commit (`dd6f6b1`, hand q 0.5092, against the fixture's `a3f0642`, 0.5061).
+
+**The small fixtures move most, on the fewest edges.** Their partitions are weakly modular (flask q 0.03, httpx 0.03), so a handful of changed pairs moves whole districts. httpx is the extreme case. SCIP finds fewer pairs than the hand resolver (74 against 87, recall 0.8161, just over the gate), the map drops from four districts to two, and q goes negative. That is a partition no better than chance by modularity's own measure. The gate admits httpx's index at 0.8161, and this is what the admitted index draws. Whether 0.80 is the right floor for a 23-file package is a question this finding raises, not one it settles. Placement against a fixture measures agreement, not correctness. This table does not say which map is better, only that the default moves the maps the oracle recorded.
+
+**Cost.** Indexing adds 4 s (prometheus's Go) to 130 s (sqlalchemy) per build, and peak RSS rises from 22–52 MB to 0.4–3.9 GB. These are small repositories. Finding 44 has the corpus-scale numbers.
+
+### The SCIP path's own fixtures
+
+The Python reference cannot produce a SCIP map, so the SCIP path is regression-gated against fixtures re-derived under it: `data/scip/<name>.json`, recorded by `eval/scip_fixtures.py record` from the `--refs scip` maps of the run above. Each fixture is a summary, not a map: `F`, each file's district `D`, `q`, the district and edge counts, and the build's `coverage.references` block, which names the indexer versions. The nine together are 124 KB. A whole map would re-commit layout geometry that no gate reads. ci.yml's `scip-fixtures` job, run on dispatch and nightly like `full-fixtures`, rebuilds the nine with `--refs scip` and requires, per fixture:
+- ≥ 95% placement against the SCIP fixture;
+- modularity within 0.02;
+- an identical `F`;
+- the same reference path for every language.
+
+The last requirement makes a language that flips between SCIP and fallback, such as sqlalchemy clearing 0.80 under a new indexer, a visible failure rather than a silent membership change. Every run also uploads a fresh `record/` set, so the SCIP fixtures are re-derived by committing that set with a finding, never by the job itself.
+
+### ETA
+
+A queued job's ETA had no repository features, and the per-language indexing seeds cost nothing without languages. Under `TOLMAP_REFS=scip`, a queued job would therefore have been quoted a hand build's prior (6.14–101.163 s). The service now records its reference mode in the job's features at enqueue. With nothing else known, a SCIP job's prior spans finding 44's whole-build range, 17.3 s (prometheus) to 371.4 s (n8n). On the hand default, `refs` stays absent and the prior is exactly what it was. Once the worker reports its languages, the per-language indexing seeds apply as before.
+
+### Not settled here
+
+- Per-file fallback and decorator crediting (finding 44).
+- Why sqlalchemy's recall is 0.66.
+- Whether the 0.80 floor suits very small packages.
+
+### The default did not flip
+
+Owner decision, session `16030105`, AskUserQuestion, transcript line 6937 (2026-09-25T16:56:34Z): **"Tune hand, SCIP as oracle (Recommended)"**, with the owner's own note at line 6929 (16:51:25Z): *"Hand written is in more control with less deps and more efficient"*. `hand` stays the default for the CLI and the service. SCIP becomes the measuring stick the hand resolver is tuned against, and this finding's `data/scip` fixtures and `scip-fixtures` job become that oracle's own regression gate. Two reasons. The first is cost: the table above shows indexing adds seconds to minutes and 0.4–3.9 GB per build on these small fixtures, where the hand build takes seconds and tens of MB, and it needs indexers and toolchains on the worker. The second is [PR #130](https://github.com/onsager-ai/tolmap/pull/130)'s churn diagnosis: most of the district movement above comes from SCIP's distinct-symbol weighting, not from its pairs. The pairs are more exact, and the hand resolver's fixable errors in them are package `__init__` over-attribution, re-exports and Go's per-directory spread. Hand is right about star imports, which SCIP cannot see. So the movement measured here is not evidence that the SCIP maps are better, and it is cheaper to fix the hand resolver's known errors against SCIP than to ship the indexers.
+
 ## 46. Sandboxed installs work and are contained, but registry-only egress admits neither monorepo that needs them: dify needs nodejs.org, n8n needs codeload.github.com
 
 Owner decisions on [#117](https://github.com/onsager-ai/tolmap/pull/117) (session `16030105`, line 4551, 2026-09-24T06:51:34Z): nsjail on the single machine, egress to `registry.npmjs.org` only, a 20 min / 20 GB install bound that falls back and never fails a job, npm-ecosystem installs only, and fail safe. Go for this change: session `16030105`, line 6390, 2026-09-25T13:42:06Z, "P1c sandbox + P2a together (Recommended)". This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s P1c, [PR #129](https://github.com/onsager-ai/tolmap/pull/129). It uses number 46 because open PR #127 adds 45.

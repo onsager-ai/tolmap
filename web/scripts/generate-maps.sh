@@ -72,8 +72,11 @@ while read -r name pkg lang; do
     echo "skip $name: no clone at $REPOS/$name" >&2
     continue
   fi
+  # --refs hand: the naming caches seeded above, and the parity claim at
+  # the bottom of this script, are data/*.json's -- the hand-written
+  # resolver's membership. Pinned so a change of default cannot move it.
   "$BIN" build "$REPOS/$name" \
-    --pkg "$pkg" --lang "$lang" --name "$name" --out "$OUT" | tail -1
+    --pkg "$pkg" --lang "$lang" --refs hand --name "$name" --out "$OUT" | tail -1
 done <<< "$names"
 
 # tolmap's own map.
