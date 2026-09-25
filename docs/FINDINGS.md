@@ -1743,3 +1743,159 @@ A queued job's ETA had no repository features, and the per-language indexing see
 - Per-file fallback and decorator crediting (finding 44).
 - Why sqlalchemy's recall is 0.66.
 - Whether the 0.80 floor suits very small packages.
+
+## 46. Most of SCIP's district churn is the partitioner's own sensitivity plus SCIP's symbol-count weights, not a wrong pair set; sqlalchemy's 0.66 recall comes from re-exports
+
+The owner chose "Investigate, then decide (Recommended)" in an AskUserQuestion answer, session `16030105`, 2026-09-25. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s P2a follow-up to finding 45, [PR #130](https://github.com/onsager-ai/tolmap/pull/130). It is an evidence PR and builds on #127's unmerged `eval/scip_fixtures.py`.
+
+Finding 45 measured SCIP maps placing 47.8–85.8% of files where the hand maps do. Placement measures agreement, not correctness. This finding asks what that number is made of, and whether it would be about as low under any change to the graph.
+
+**Method.** `tolmap dump-graph` gains an eval-only `--refs` (default `hand`, so every existing dump, including `data/ci/*.graph.json`, is unchanged). It dumps the exact graph a `build --refs scip` partitions. `eval/scip_churn.py` assembles variants of the hand graph the way `finish_graph` does, and ci.yml's `scip-churn` job (dispatch only, behind the `scip_churn` input) rebuilds each variant through the product's own `tolmap build --graph`. Each variant is scored with the parity gate's placement against the hand graph's map.
+
+The variants:
+- **node order**: the hand graph with its nodes shuffled, 8 draws. The graph is identical; only vertex ids change, so Leiden walks a different trajectory under the same `SEED = 7`.
+  - `SEED` is a compile-time constant with no flag, so a true second seed would need a product change and was not run.
+  - Node order is the seed proxy.
+- **random pairs**: SCIP's own counts of removed and added static pairs, at random positions (`random.Random(SEED + k)`), 8 draws in each of two ways. Removals are uniform over hand's static pairs. Additions are uniform over all file pairs (`uniform`), or taken from pairs the graph already links by co-change, proximity or semantics (`candidate`, which is local the way real references are).
+  - Added pairs carry SCIP's added weights, shuffled.
+  - A random pair that no signal links gets semantic 0, which makes it lighter than a real one.
+  - This is the noise baseline: a change of SCIP's size and mass that carries no information.
+- **pairs only**: SCIP's pair set, with hand's weights on the pairs both graphs have.
+- **weights only**: hand's pair set, with SCIP's weights on the shared pairs.
+  - SCIP weights are brought to hand units by one factor, the ratio of the two graphs' static mass on the shared pairs. The blend normalises each signal on its mass (finding 1), so the factor matters only where a variant mixes the two.
+
+**The construction is checked, not trusted.** On all nine fixtures, four rebuilds each place 100.0% of files with Δq 0.0000:
+- the repository hand map against the hand graph's map;
+- the hand graph reassembled by the variant code;
+- the repository SCIP map against the SCIP graph's map;
+- the reassembled SCIP graph.
+
+Three runs produced these numbers: [CI run 36150835159](https://github.com/onsager-ai/tolmap/actions/runs/36150835159), [36153172950](https://github.com/onsager-ai/tolmap/actions/runs/36153172950) and [36156781762](https://github.com/onsager-ai/tolmap/actions/runs/36156781762), job `scip-churn`, standard runners, pinned indexers. The score tables of all three runs are byte-identical. The same dispatches' `scip-fixtures` gate passed on all nine, so today's SCIP maps are the ones finding 45 recorded.
+
+### Is it noise?
+
+Placement against the hand map, as a percentage.
+- "random" pools 16 draws (8 uniform, 8 candidate).
+- "below SCIP" counts the random draws that placed fewer files than SCIP did.
+
+| fixture | SCIP | node order, 8 draws | random pairs, 16 draws | below SCIP | pairs only | weights only |
+|---|---:|---|---|---:|---:|---:|
+| celery | 62.7 | 71.4–100.0 | 53.4–88.2 | 3/16 | 80.1 | 62.1 |
+| django | 85.8 | 79.2–93.3 | 37.5–77.4 | 16/16 | 64.9 | 82.6 |
+| flask | 70.8 | 100.0 (all 8) | 45.8–95.8 | 7/16 | 83.3 | 41.7 |
+| httpx | 47.8 | 82.6–100.0 | 43.5–95.7 | 2/16 | 95.7 | 47.8 |
+| prometheus | 72.3 | 69.1–94.6 | 34.7–66.7 | 16/16 | 66.7 | 74.8 |
+| rich | 48.0 | 24.0–80.0 | 24.0–98.0 | 7/16 | 72.0 | 48.0 |
+| scrapy | 77.7 | 72.9–97.3 | 60.1–94.1 | 6/16 | 79.3 | 83.5 |
+| sqlalchemy (fallback) | 100.0 | 95.0–100.0 | — (no change) | — | 100.0 | 100.0 |
+| vue | 74.5 | 95.8–100.0 | 87.4–95.8 | 0/16 | 77.4 | 95.0 |
+
+**The partitioner disagrees with itself about as much as SCIP disagrees with it, on half the fixtures.** On the identical graph, shuffling node order alone moves rich to as low as 24.0%. It also reaches 69.1% on prometheus, 71.4% on celery and 79.2% on django. On four of the eight admitted fixtures, SCIP's placement sits inside that band: django, prometheus, rich and scrapy.
+
+On rich, every one of the eight shuffled partitions has a higher q (0.3537–0.3691) than the hand map's own 0.3437. The fixture map is one draw among many near-equal optima. A ≥ 95% placement gate cannot tell a real change from a reshuffle on graphs like that. The hand gate passes because the port follows the reference's exact Leiden trajectory (finding 11). That is agreement on one draw, not stability.
+
+**Measured against a random change of the same size, SCIP is no worse than noise on seven of eight.**
+- On django and prometheus, SCIP moves fewer files than every one of the 16 random draws. Its 861 and 453 added pairs agree with the structure the other signals already carry.
+- On celery, flask, httpx, rich and scrapy, it is an ordinary draw: 2–7 of 16 draws land lower.
+- On vue alone, SCIP moves more than every random draw: 74.5% against 87.4–95.8%.
+
+vue's change is structural. SCIP adds 673 static pairs carrying 30.7% of the static mass, and pairs-only reproduces most of the move (77.4%).
+
+**On the small Python fixtures, the weights drive the move, not the pairs.** Weights-only (hand's pairs, SCIP's weights) reproduces or exceeds SCIP's drop:
+- httpx 47.8%, identical to SCIP, though with 3 districts where SCIP has 2;
+- rich 48.0%, identical;
+- celery 62.1% against SCIP's 62.7%;
+- flask 41.7%, below SCIP's 70.8%.
+
+Pairs-only keeps 72.0–95.7% on the same four.
+
+SCIP weighs a pair by the distinct symbols it references. Hand weighs it by the import statements that resolve to it. SCIP's weighting is much more heavy-tailed:
+
+| fixture | top-decile share of static mass, hand → SCIP | largest ÷ median pair weight, hand → SCIP |
+|---|---|---|
+| celery | 0.17 → 0.33 | 6.0 → 12.5 |
+| django | 0.16 → 0.36 | 7.0 → 30.0 |
+| flask | 0.30 → 0.38 | 10.0 → 18.0 |
+| httpx | 0.16 → 0.29 | 3.0 → 9.5 |
+| prometheus | 0.44 → 0.50 | 11.0 → 105.3 |
+| rich | 0.21 → 0.39 | 5.0 → 14.0 |
+| scrapy | 0.13 → 0.29 | 4.0 → 17.5 |
+| vue | 0.19 → 0.49 | 7.0 → 70.9 |
+
+On weakly modular graphs, a few heavy hub pairs decide which districts merge. That is P0's primary weighting (finding 41), a modelling choice, and this finding does not show it is better or worse. On django and prometheus the pair set moves more than the weights do: pairs-only gives 64.9% and 66.7%, weights-only 82.6% and 74.8%. Pairs-only mixes the two scales on those graphs, so read it as indicative.
+
+### What SCIP changes, pair by pair
+
+Undirected file pairs of the emitted import list (`E`):
+
+| fixture | hand | SCIP | shared | hand only | SCIP only |
+|---|---:|---:|---:|---:|---:|
+| celery | 659 | 700 | 639 | 20 | 61 |
+| django | 3,091 | 3,933 | 3,072 | 19 | 861 |
+| flask | 83 | 91 | 78 | 5 | 13 |
+| httpx | 82 | 69 | 66 | 16 | 3 |
+| prometheus | 5,574 | 5,313 | 4,842 | 732 | 471 |
+| rich | 393 | 391 | 388 | 5 | 3 |
+| scrapy | 883 | 1,190 | 883 | 0 | 307 |
+| vue | 1,086 | 1,756 | 1,083 | 3 | 673 |
+
+**SCIP-only pairs are references with no import between the two files.** On every Python fixture, the file on one end never imports the other (`ast` over the source): 13 of 13 on flask, 61 of 61 on celery, all 863 directed pairs on django, 308 on scrapy. They come from inferred types, inherited members, and names reached through a re-export.
+
+One flask pair was checked by hand. `wrappers.py` reads `current_app.config` and `current_app.debug`, and both are defined on `App` in `sansio/app.py`, which `wrappers.py` never imports. The hand graph cannot see these pairs, and they are exact references, not guesses. Hand's pair count is the lower bound the product rule asks for, and SCIP's extras do not break that rule.
+
+**Hand-only pairs, classified.** `eval/scip_churn.py pairs` classifies all 65 directed hand-only pairs on the five Python fixtures that have any: flask 5, httpx 16, celery 20, django 19, rich 5. The categories are heuristic, from each source file's import statements:
+- **25 are star imports**, all 16 of httpx's and 9 of django's. `from ._api import *` in an `__init__.py` makes no symbol occurrence, so SCIP cannot see the dependency. These are real imports that SCIP misses.
+- **21 are a submodule imported through its package**: flask 4, celery 11, rich 5, django 1. An example is `from .. import typing as ft` in `flask/views.py`. The hand resolver also links the package's `__init__.py`, whose own content is never used. These hand pairs are over-attributions.
+- **12 are a name the package re-exports**: flask 1, celery 4, django 7. An example is `from . import Flask` in `flask/cli.py`. Six of django's seven are GEOS modules that do `from django.contrib.gis.geos import prototypes as capi` and call `capi.create_point`, a name `prototypes/__init__.py` re-exports from `prototypes/coordseq.py` and its siblings. The classifier tags those six only as imports of a package `__init__.py`; they were checked in the source. Hand credits the re-exporting `__init__.py`, and SCIP credits the file that defines the name, which then shows up as a SCIP-only pair. Both see the dependency, and SCIP places it more exactly.
+- **7 are other cases**: function-level imports, and one django pair with no import of its target, `staticfiles/testing.py → django/__init__.py`, which is a hand resolver error. These were not checked one by one.
+
+So hand's extras are not mostly wrong. About a third over-attribute to a package, and about a third are imports SCIP cannot see. Go is different by construction. prometheus's 732 hand-only pairs are `resolve_multi` spreading each import over its whole package directory (finding 44). At file granularity they are an upper envelope, not a lower bound. SCIP's Go pairs are file-exact.
+
+### httpx: why four districts become two
+
+Two things happen at once, and the decomposition says the second decides:
+- **`_transports` loses its internal glue.** Its five internal pairs are the star imports in `_transports/__init__.py`, which SCIP drops. The district's share of blended, pruned weight inside itself falls from 10.2% to 5.8%.
+- **Symbol counts pull the core modules together.**
+  - `_client–_models` goes from 1.05% to 4.67% of all weight.
+  - `_client–_transports/default`, `_config–_transports/default` and `_exceptions–_transports/default` roughly double.
+  - The weight joining `_transports` to hand's "api & client" district rises from 6.0% to 9.1% of all weight, and the weight joining "auth & init__" to "api & client" from 12.8% to 13.7%.
+
+Leiden then merges "auth & init__", "urls & types", "api & client" and one transport file into one 16-file district.
+
+The weight inside hand's four districts is only 38.8% of the hand graph (34.0% under SCIP). Most of httpx's weight crosses district lines, which is why q is 0.03 to begin with. Pairs-only (the star imports dropped, weights kept) places 95.7%. Weights-only places 47.8%.
+
+On the SCIP graph, SCIP's own two-district partition scores a lower Newman modularity (0.0515, at resolution 1, on the blended and pruned graph) than the hand partition scored on the same SCIP graph (0.0793). Leiden, at resolution 1.1 and followed by `merge_tiny`, does not find the better split. httpx is the only fixture where this is inverted. The two-district map is a weak optimum on a nearly structureless graph, not a finding about httpx's architecture.
+
+### sqlalchemy: 0.66 is re-exports, not configuration
+
+- **The gate compares by file.** scip-python keeps 1,825 of the 2,762 directed hand pairs (0.6608, which matches the product's gate exactly).
+- **75% of the misses point into packages.** 701 of the 937 misses (74.8%) target a package's `__init__.py`:
+  - 427 are a submodule imported through its package (`from .. import util`, then `util.x`);
+  - 218 are a name the package re-exports.
+  - Of the rest, the 60-pair sample the job keeps shows two patterns. Some go to facade modules such as `types.py`, `schema.py` and `sql/expression.py`. Others are `from . import <dialect>` registration imports in an `__init__.py`. The remaining 236 were not classified one by one.
+  - In each case, SCIP credits the file that defines the symbol, not the file that re-exports it.
+- **Counting re-exports lifts recall above the floor.** When a hand pair into a package's `__init__.py` counts as kept because SCIP links the same source to a file inside that package, recall is 0.9008, or 0.9182 with `lib/` on the search path (run 36156781762, `missed-*.json`). That clears the 0.80 floor.
+- **Configuration does not fix it.**
+  - Putting `lib/` on the search path, by `PYTHONPATH` or by a `pyrightconfig.json` with `extraPaths`, resolves 70 more absolute imports. Recall goes to 0.6872, and both routes give the same pair counts and the same missed pairs.
+  - sqlalchemy's own `[tool.pyright]` sets no paths.
+- **Cython is not the cause.** Only two `.pxd` files exist, outside the mapped set. The `_cy.py` modules are ordinary Python, and all 258 mapped files were indexed.
+- **`TYPE_CHECKING` imports are not the cause.** 704 are kept and 108 are missed.
+
+The gate measures agreement with hand's attribution, and sqlalchemy imports almost everything through re-exporting packages.
+
+### What this says for the default
+
+Most of the churn is not evidence against SCIP's references. Four of eight admitted fixtures sit inside the partitioner's own run-to-run band. Seven of eight move no more than a random change of the same size. SCIP's pair set is the more exact one: its extras are real references, and its misses are mostly star imports and re-export attribution.
+
+The real change is the weighting. Distinct-symbol weights concentrate the static signal on hub pairs and decide the small fixtures' districts. vue is the one fixture where SCIP's pairs change the structure beyond noise.
+
+Confidence:
+- **High** that the decomposition is right. It is deterministic, construction-checked on all nine fixtures and reproduced in three runs.
+- **Moderate** on the noise bands. Eight draws per control give a rough range, not a distribution. The random-pairs baseline depends on how "random" is drawn, which is why both ways are shown.
+
+### Not settled here
+
+- Whether a flatter SCIP weighting (log or capped symbol counts) keeps SCIP's pairs without the weight-driven moves. Pairs-only approximates it, 64.9–95.7%. It was not measured as a product option.
+- Whether the recall gate should count package re-exports as kept, which would admit sqlalchemy at 0.9008. That is a gate change, left to the owner.
+- A true second Leiden seed. `SEED` has no flag, and node order stands in for it.
+- The TypeScript and Go hand-only pairs were counted but not classified: vue 3, prometheus 732.
