@@ -408,6 +408,157 @@ jobs:
           python3 eval/check_scip_references.py scip-fallback/synthetic_polyglot.json \
             --expect go=hand --expect ts=scip
 
+  # Issue #110 P1c: the sandboxed dependency install, for real, on a runner.
+  # nsjail (built from its pinned tag), socat and pnpm are what the runtime
+  # image carries (Dockerfile); `tolmap` runs as root through sudo, which is
+  # what starting the jail needs, and the jail runs as the fixture's owner
+  # (the runner user). It proves, on every push:
+  #   - the jail reaches registry.npmjs.org and nothing else
+  #     (tests/fixtures/sandbox/egress_check.js inside `tolmap sandbox-exec`);
+  #   - an install into a pnpm workspace with one real npm dependency runs in
+  #     the sandbox and is what admits TypeScript to the SCIP path: the same
+  #     fixture without installs falls back to `hand` (its one cross-package
+  #     import resolves only through node_modules);
+  #   - three cold installs and builds give byte-identical maps;
+  #   - a sandbox that cannot start (no nsjail; not root) and an install past
+  #     its time or disk bound each fall back with the reason recorded, the
+  #     build still succeeds, and no node_modules is left behind.
+  scip-install:
+    name: SCIP install sandbox (nsjail, --install sandbox, 3x sha256)
+    needs: gate
+    runs-on: ubuntu-latest
+    env:
+      SCIP_TYPESCRIPT_VERSION: "0.4.0"
+      PNPM_VERSION: "12.6.0"
+      NSJAIL_VERSION: "3.6"
+      NSJAIL_COMMIT: "f78475530b46d0186111a9096b30725f816b55fe"
+      LD_LIBRARY_PATH: ${{ github.workspace }}/.native/leiden/lib
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+      - run: chmod +x bin/tolmap
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install pinned scip-typescript and pnpm
+        run: |
+          set -euo pipefail
+          npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" "pnpm@${PNPM_VERSION}"
+          scip-typescript --version; pnpm --version
+      - name: Cache nsjail
+        uses: actions/cache@v4
+        with:
+          path: .nsjail
+          key: nsjail-${{ runner.os }}-${{ env.NSJAIL_COMMIT }}
+      - name: Build nsjail and install socat
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends socat autoconf bison flex \
+            libprotobuf-dev libnl-route-3-dev libtool pkg-config protobuf-compiler
+          if [ ! -x .nsjail/nsjail ]; then
+            git clone --quiet --depth 1 --branch "$NSJAIL_VERSION" --recurse-submodules \
+              --shallow-submodules https://github.com/google/nsjail.git "$RUNNER_TEMP/nsjail"
+            test "$(git -C "$RUNNER_TEMP/nsjail" rev-parse HEAD)" = "$NSJAIL_COMMIT"
+            make -C "$RUNNER_TEMP/nsjail" -j"$(nproc)" > "$RUNNER_TEMP/nsjail-build.log" 2>&1 \
+              || { tail -50 "$RUNNER_TEMP/nsjail-build.log"; exit 1; }
+            mkdir -p .nsjail && cp "$RUNNER_TEMP/nsjail/nsjail" .nsjail/
+          fi
+          sudo install -m 0755 .nsjail/nsjail /usr/local/bin/nsjail
+          command -v socat nsjail
+      - name: The jail reaches registry.npmjs.org and nothing else
+        run: |
+          set -euo pipefail
+          mkdir -p egress-check
+          cp tests/fixtures/sandbox/egress_check.js egress-check/
+          sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" \
+            ./bin/tolmap sandbox-exec --repo "$PWD/egress-check" -- node egress_check.js
+      - name: Three sandboxed installs and builds are byte-identical, and the install is what admits TypeScript
+        run: |
+          set -euo pipefail
+          fixture() {
+            rm -rf "$1"
+            cp -r tests/fixtures/scip/ts-workspace "$1"
+            git -C "$1" init --quiet
+            git -C "$1" add -A
+            # Fixed dates: every copy is the same commit, so the three maps
+            # can be compared byte for byte.
+            GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z \
+              git -C "$1" -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
+          }
+          as_root() { sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "$@"; }
+          hashes=""
+          for i in 1 2 3; do
+            fixture "ws-$i"
+            if ! as_root ./bin/tolmap build "$PWD/ws-$i" --pkg . --lang ts --refs scip \
+                --install sandbox --name ts_workspace --out "install-$i" > "install-$i.log" 2>&1; then
+              cat "install-$i.log"; exit 1
+            fi
+            grep -E '^references |^install|egress|sandbox' "install-$i.log" || true
+            hash=$(cat "install-$i/ts_workspace.json" "install-$i/ts_workspace.symbols.json" | sha256sum | cut -d' ' -f1)
+            echo "sandboxed install build $i: $hash"
+            hashes="$hashes $hash"
+          done
+          if [ "$(echo "$hashes" | tr ' ' '\n' | sort -u | grep -c .)" -ne 1 ]; then
+            echo "three sandboxed-install builds differ -- determinism regression"; exit 1
+          fi
+          python3 eval/check_scip_references.py install-1/ts_workspace.json \
+            --expect ts=scip --expect-install ts=installed
+          # The install wrote the workspace link and the npm package, as the
+          # fixture's owner rather than as root.
+          test -L ws-1/packages/app/node_modules/@fixture/core
+          test -f ws-1/packages/core/node_modules/tiny-invariant/package.json
+          test "$(stat -c %u ws-1/packages/core/node_modules)" = "$(id -u)"
+
+          # Without installs the same checkout falls back: scip-typescript
+          # cannot resolve @fixture/core, so the index keeps too little of
+          # the hand-written graph.
+          fixture ws-plain
+          ./bin/tolmap build "$PWD/ws-plain" --pkg . --lang ts --refs scip \
+            --name ts_workspace --out plain > plain.log 2>&1 || { cat plain.log; exit 1; }
+          grep -E '^references ' plain.log || true
+          python3 eval/check_scip_references.py plain/ts_workspace.json \
+            --expect ts=hand --expect-install ts=none
+      - name: A sandbox that cannot start, and an install past its bounds, fall back without failing the build
+        run: |
+          set -euo pipefail
+          fixture() {
+            rm -rf "$1"
+            cp -r tests/fixtures/scip/ts-workspace "$1"
+            git -C "$1" init --quiet
+            git -C "$1" add -A
+            git -C "$1" -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
+          }
+          as_root() { sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "$@"; }
+          fallback() {
+            name=$1; reason=$2; shift 2
+            fixture "fb-$name"
+            if ! "$@" ./bin/tolmap build "$PWD/fb-$name" --pkg . --lang ts --refs scip \
+                --install sandbox --name ts_workspace --out "fb-$name-out" > "fb-$name.log" 2>&1; then
+              cat "fb-$name.log"; exit 1
+            fi
+            grep -E 'install|sandbox|egress' "fb-$name.log" || true
+            python3 eval/check_scip_references.py "fb-$name-out/ts_workspace.json" \
+              --expect ts=hand --expect-install "ts=fell_back:$reason"
+            if find "fb-$name" -name node_modules -print -quit | grep -q .; then
+              echo "the $name fallback left node_modules behind"; exit 1
+            fi
+          }
+          # The sandbox cannot start: no nsjail, and not root at all.
+          fallback no-nsjail sandbox_unavailable as_root TOLMAP_NSJAIL=/nonexistent/nsjail
+          fallback not-root sandbox_unavailable env
+          # The install passes its bounds: a tenth of a second, which no
+          # install meets, and a one-byte disk budget.
+          fallback timeout install_timeout as_root TOLMAP_INSTALL_TIME_LIMIT_S=0.1
+          fallback disk install_disk_budget as_root TOLMAP_INSTALL_DISK_BUDGET_BYTES=1
+
   # Issue #110 P2a: SCIP is the oracle the hand resolver is tuned against
   # (owner decision, 2026-09-25T16:56Z: "Tune hand, SCIP as oracle"; hand
   # stays the default). `--refs scip` moves the membership the nine-fixture parity

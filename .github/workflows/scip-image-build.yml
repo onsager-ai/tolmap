@@ -31,6 +31,8 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "tests/fixtures/scip/**"
+      - "tests/fixtures/sandbox/**"
+      - "src/indexers.rs"
       - ".github/workflows/scip-image-build.yml"
   workflow_dispatch:
     inputs:
@@ -178,6 +180,106 @@ jobs:
           set -euo pipefail
           docker run --rm --entrypoint /app/tolmap tolmap:after --help
           docker run --rm --entrypoint ldd tolmap:after /app/tolmap | (grep "not found" && exit 1 || true)
+
+      # Issue #110 P1c: the dependency-install sandbox inside the built
+      # image. `--privileged` stands in for the production host, a VM where
+      # the service is root with every capability; a default container
+      # (no CAP_SYS_ADMIN, Docker's seccomp profile) stands in for a host
+      # that forbids namespaces, where installs must fall back. Neither is
+      # the production host itself: its cgroup v1 memory controller is not
+      # exercised here (TOLMAP_INSTALL_MEMORY_MAX stays off by default).
+      - name: "Install sandbox: nsjail, socat and pnpm are in the image"
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint ldd tolmap:after /usr/local/bin/nsjail | (grep "not found" && exit 1 || true)
+          docker run --rm --entrypoint sh tolmap:after -c \
+            'command -v nsjail socat && /opt/node/bin/pnpm --version && echo "TOLMAP_NSJAIL=$TOLMAP_NSJAIL TOLMAP_INSTALL_NODE_PREFIX=$TOLMAP_INSTALL_NODE_PREFIX"'
+
+      - name: "Install sandbox: the jail starts and reaches registry.npmjs.org and nothing else"
+        run: |
+          set -euo pipefail
+          mkdir -p sandbox/egress
+          cp tests/fixtures/sandbox/egress_check.js sandbox/egress/
+          docker run --rm --privileged -v "$PWD/sandbox/egress:/srv/egress" \
+            --entrypoint /app/tolmap tolmap:after \
+            sandbox-exec --repo /srv/egress -- node egress_check.js
+
+      - name: "Install sandbox: a sandboxed install admits the TypeScript workspace, as root VM and as a restricted container"
+        run: |
+          set -euo pipefail
+          fixture() {
+            rm -rf "$1"; mkdir -p "$(dirname "$1")"
+            cp -r tests/fixtures/scip/ts-workspace "$1"
+            git -C "$1" init --quiet && git -C "$1" add -A
+            git -C "$1" -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
+          }
+          # The image's worker uid owns the checkout, as it does in a job.
+          # safe.directory: the CLI's own git calls run as root on it.
+          build() {
+            docker run --rm "$@" --entrypoint sh tolmap:after -c '
+              git config --global --add safe.directory "*"
+              chown -R 10001:10001 /srv/ws
+              /app/tolmap build /srv/ws --pkg . --lang ts --refs scip --install sandbox \
+                --name ts_workspace --out /srv/out'
+          }
+          fixture sandbox/ws-vm; mkdir -p sandbox/out-vm
+          build --privileged -v "$PWD/sandbox/ws-vm:/srv/ws" -v "$PWD/sandbox/out-vm:/srv/out" \
+            2>&1 | tee sandbox/vm.log | grep -E '^references |install|egress|sandbox' || true
+          python3 eval/check_scip_references.py sandbox/out-vm/ts_workspace.json \
+            --expect ts=scip --expect-install ts=installed
+          test -f sandbox/ws-vm/packages/core/node_modules/tiny-invariant/package.json
+          test "$(stat -c %u sandbox/ws-vm/packages/core/node_modules)" = 10001
+
+          fixture sandbox/ws-restricted; mkdir -p sandbox/out-restricted
+          build -v "$PWD/sandbox/ws-restricted:/srv/ws" -v "$PWD/sandbox/out-restricted:/srv/out" \
+            2>&1 | tee sandbox/restricted.log | grep -E '^references |install|egress|sandbox' || true
+          python3 eval/check_scip_references.py sandbox/out-restricted/ts_workspace.json \
+            --expect ts=hand --expect-install ts=fell_back:sandbox_unavailable
+          if find sandbox/ws-restricted -name node_modules -print -quit | grep -q .; then
+            echo "the restricted-container fallback left node_modules behind"; exit 1
+          fi
+
+      # The job service end to end: `tolmap serve` as root with TOLMAP_REFS=
+      # scip, its worker dropped to uid 10001, the worker asking the service
+      # for the install over the worker protocol, the service running it in
+      # nsjail. A local-path job (POST /api/index {"path"}) on the same
+      # fixture.
+      - name: "Install sandbox: a SCIP job through the service installs via its worker's request"
+        run: |
+          set -euo pipefail
+          rm -rf sandbox/service-fixture
+          cp -r tests/fixtures/scip/ts-workspace sandbox/service-fixture
+          git -C sandbox/service-fixture init --quiet && git -C sandbox/service-fixture add -A
+          git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
+          docker run -d --name tolmap-service --privileged -p 127.0.0.1:8787:8787 \
+            -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 -e TOLMAP_CACHE_DIR=/srv/cache \
+            -v "$PWD/sandbox/service-fixture:/srv/fixture:ro" \
+            --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap serve'
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8787/api/healthz && break; sleep 1; done
+          job=$(curl -fsS -X POST -H 'content-type: application/json' \
+            -d '{"path":"/srv/fixture"}' http://127.0.0.1:8787/api/index)
+          echo "$job"
+          id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<<"$job")
+          for _ in $(seq 1 300); do
+            snapshot=$(curl -fsS "http://127.0.0.1:8787/api/jobs/$id")
+            status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$snapshot")
+            [ "$status" = done ] || [ "$status" = failed ] && break
+            sleep 2
+          done
+          echo "$snapshot" | python3 -m json.tool | head -80
+          docker logs tolmap-service 2>&1 | tail -40
+          [ "$status" = done ]
+          python3 - "$snapshot" <<'PY'
+          import json, sys
+          stages = {row["id"]: row for row in json.loads(sys.argv[1])["stages"]}
+          install = stages["install"]
+          print("install stage:", install)
+          assert install["state"] == "done", install
+          PY
+          curl -fsS http://127.0.0.1:8787/api/maps/local/service-fixture -o sandbox/service-map.json \
+            || curl -fsS http://127.0.0.1:8787/api/maps/local/fixture -o sandbox/service-map.json
+          python3 eval/check_scip_references.py sandbox/service-map.json --expect-install ts=installed
+          docker rm -f tolmap-service
 
       - name: Size and time summary
         if: always()

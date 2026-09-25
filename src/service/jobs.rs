@@ -798,6 +798,25 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         let _ = std::fs::remove_dir_all(&job_dir);
         return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
+    // Issue #110 P1c: a SCIP job may install TypeScript dependencies. The
+    // worker cannot start the sandbox (it is unprivileged), so it asks this
+    // process, which can (root in the runtime image), over the protocol;
+    // see `ServiceInstall`. Anywhere the sandbox cannot start, the answer
+    // is a recorded fallback, never a failed job.
+    let install = (state.config.refs == crate::extract::RefsMode::Scip
+        && state.config.scip_install)
+        .then(|| ServiceInstall {
+            repo: job_repo_dir.clone(),
+            scratch: state
+                .config
+                .cache_dir
+                .join("install")
+                .join(tx.borrow().job_id.to_string()),
+            settings: crate::indexers::InstallSettings::from_env(
+                state.config.worker_uid,
+                state.config.worker_gid,
+            ),
+        });
     // Always a local, already-materialised checkout now -- see
     // `clone::materialize_with_progress`'s `RepoSource::Local` branch: no
     // clone, no cache_dir use, no network, nothing left for the worker to do
@@ -824,8 +843,13 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         previous_maps,
         names_cache: Some(names_input.to_string_lossy().into_owned()),
         refs: Some(state.config.refs.to_string()),
+        install: install.as_ref().map(|_| "sandbox".to_owned()),
     };
-    let output = match process_worker(&state, &tx, spec, started, &job_dir) {
+    let output = process_worker(&state, &tx, spec, started, &job_dir, install.as_ref());
+    if let Some(install) = &install {
+        let _ = std::fs::remove_dir_all(&install.scratch);
+    }
+    let output = match output {
         Ok(output) => output,
         Err(error) => {
             let _ = std::fs::remove_dir_all(&job_dir);
@@ -897,6 +921,58 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     }
     tx.send_modify(|snapshot| snapshot.elapsed_s = started.elapsed().as_secs_f64());
     finish_done(&tx);
+}
+
+/// A TypeScript dependency install the service runs for its worker
+/// (issue #110 P1c) when the worker sends `WorkerEvent::InstallRequest`.
+/// The service holds this, not the worker: it names the job's checkout and
+/// a scratch directory under `cache_dir/install`, which is root's and
+/// outside the job directory the worker's uid owns, so nothing the worker
+/// (or the repository) can write decides where root creates the jail's
+/// home, the proxy socket or the log. `indexers::install` re-reads the
+/// install policy from the checkout itself; the request carries nothing.
+struct ServiceInstall {
+    repo: PathBuf,
+    scratch: PathBuf,
+    settings: crate::indexers::InstallSettings,
+}
+
+impl ServiceInstall {
+    fn run(
+        &self,
+        id: Uuid,
+        tick: &dyn Fn(),
+        cancelled: &dyn Fn() -> bool,
+    ) -> crate::schema::InstallCoverage {
+        let log = |line: String| eprintln!("job {id}: {line}");
+        // The checkout must still be the plain directory the service made:
+        // nsjail, as root, bind-mounts whatever this path resolves to.
+        let is_plain_directory =
+            std::fs::symlink_metadata(&self.repo).is_ok_and(|meta| meta.file_type().is_dir());
+        let parent = self.scratch.parent().map(Path::to_path_buf);
+        if !is_plain_directory
+            || parent
+                .as_deref()
+                .is_some_and(|parent| std::fs::create_dir_all(parent).is_err())
+        {
+            log(
+                "install sandbox unavailable: the job checkout or scratch directory is not usable"
+                    .to_owned(),
+            );
+            return crate::indexers::fell_back("sandbox_unavailable", None);
+        }
+        if let Some(parent) = parent {
+            let _ = harden_persistent_dir(&parent);
+        }
+        crate::indexers::install(
+            &self.repo,
+            &self.scratch,
+            &self.settings,
+            tick,
+            cancelled,
+            &log,
+        )
+    }
 }
 
 struct WorkerOutput {
@@ -1070,6 +1146,7 @@ fn process_worker(
     spec: WorkerSpec,
     started: Instant,
     job_dir: &Path,
+    install: Option<&ServiceInstall>,
 ) -> Result<WorkerOutput, ErrorBody> {
     let exe =
         std::env::current_exe().map_err(|error| ApiError::internal(error.to_string()).body)?;
@@ -1079,7 +1156,15 @@ fn process_worker(
         gid: state.config.worker_gid,
         allow_openrouter_key: state.config.namer == crate::naming::NamerKind::Model,
     };
-    process_worker_exe(tx, spec, started, &exe, Some(&state.jobs), &hardening)
+    process_worker_exe(
+        tx,
+        spec,
+        started,
+        &exe,
+        Some(&state.jobs),
+        &hardening,
+        install,
+    )
 }
 
 fn process_worker_exe(
@@ -1089,6 +1174,7 @@ fn process_worker_exe(
     exe: &std::path::Path,
     registry: Option<&JobRegistry>,
     hardening: &WorkerHardening,
+    install: Option<&ServiceInstall>,
 ) -> Result<WorkerOutput, ErrorBody> {
     let mut command = Command::new(exe);
     command
@@ -1193,10 +1279,19 @@ fn process_worker_exe(
         }
         text
     });
+    // The worker's stdin stays open only when it may ask for an install
+    // and needs a channel for the answer; otherwise it closes after the
+    // spec, as it always has (a worker may read stdin to its end).
+    let answers_installs = spec.install.is_some() && install.is_some();
+    let mut worker_stdin = None;
     let write_spec = (|| -> anyhow::Result<()> {
         let mut stdin = child.stdin.take().expect("piped worker stdin");
         serde_json::to_writer(&mut stdin, &spec)?;
         stdin.write_all(b"\n")?;
+        stdin.flush()?;
+        if answers_installs {
+            worker_stdin = Some(stdin);
+        }
         Ok(())
     })();
     if let Err(error) = write_spec {
@@ -1413,6 +1508,38 @@ fn process_worker_exe(
             WorkerEvent::Error { code, message, .. } => {
                 error = Some(format!("{code}\n{message}"));
             }
+            WorkerEvent::InstallRequest { .. } => {
+                // The worker blocks until this answers, so its events wait
+                // in the pipe meanwhile; `tick` keeps the job's elapsed
+                // time moving instead.
+                let coverage = match install {
+                    Some(install) if worker_stdin.is_some() => install.run(
+                        id,
+                        &|| {
+                            tx.send_modify(|snapshot| {
+                                if !is_terminal(snapshot) {
+                                    snapshot.elapsed_s = started.elapsed().as_secs_f64();
+                                }
+                            })
+                        },
+                        &|| registry.is_some_and(|registry| registry.is_cancelled(id)),
+                    ),
+                    // A worker that asks without having been offered
+                    // installs gets a fallback, not a hang.
+                    _ => crate::indexers::fell_back("sandbox_unavailable", None),
+                };
+                if let Some(stdin) = worker_stdin.as_mut() {
+                    let answer = serde_json::to_vec(&coverage).map(|mut line| {
+                        line.push(b'\n');
+                        line
+                    });
+                    if let Ok(line) = answer {
+                        // A worker killed meanwhile (cancel, shutdown) makes
+                        // this a broken pipe; its exit is handled below.
+                        let _ = stdin.write_all(&line).and_then(|()| stdin.flush());
+                    }
+                }
+            }
         }
         if let Some(registry) = registry {
             registry.estimate(
@@ -1504,6 +1631,7 @@ mod tests {
             namer: crate::naming::NamerKind::Idf,
             namer_model: crate::naming::DEFAULT_MODEL.to_owned(),
             refs,
+            scip_install: false,
             limits,
             retain_commits_per_repo: 20,
             worker_uid: current_uid(),
@@ -1948,6 +2076,7 @@ mod tests {
                     previous_maps: vec![],
                     names_cache: None,
                     refs: None,
+                    install: None,
                 };
                 let error = process_worker_exe(
                     &tx,
@@ -1956,6 +2085,7 @@ mod tests {
                     &fake_worker,
                     None,
                     &WorkerHardening::for_test(dir.path()),
+                    None,
                 )
                 .err()
                 .expect("killed child fails");
@@ -2010,6 +2140,7 @@ mod tests {
                     previous_maps: vec![],
                     names_cache: None,
                     refs: None,
+                    install: None,
                 };
                 let error = process_worker_exe(
                     &tx,
@@ -2018,6 +2149,7 @@ mod tests {
                     &fake_worker,
                     Some(&state.jobs),
                     &WorkerHardening::for_test(dir.path()),
+                    None,
                 )
                 .err()
                 .expect("cancelled child must exit");
@@ -2171,6 +2303,7 @@ mod tests {
                 previous_maps: vec![],
                 names_cache: None,
                 refs: None,
+                install: None,
             };
             let error = process_worker_exe(
                 &tx,
@@ -2179,6 +2312,7 @@ mod tests {
                 &fake_worker,
                 Some(&state.jobs),
                 &WorkerHardening::for_test(dir.path()),
+                None,
             )
             .err()
             .expect("shutdown must fail the running child");
@@ -2251,6 +2385,7 @@ mod tests {
                 previous_maps: vec![],
                 names_cache: None,
                 refs: None,
+                install: None,
             };
             let error = process_worker_exe(
                 &tx,
@@ -2259,6 +2394,7 @@ mod tests {
                 &fake_worker,
                 None,
                 &WorkerHardening::for_test(dir.path()),
+                None,
             )
             .err()
             .expect("worker terminal error");
@@ -2341,6 +2477,7 @@ mod tests {
                 previous_maps: vec![],
                 names_cache: None,
                 refs: None,
+                install: None,
             };
             let error = process_worker_exe(
                 &tx,
@@ -2349,6 +2486,7 @@ mod tests {
                 &fake_worker,
                 None,
                 &WorkerHardening::for_test(dir.path()),
+                None,
             )
             .err()
             .expect("fake worker reports the marker via an error event");
@@ -2447,6 +2585,7 @@ mod tests {
                 previous_maps: vec![],
                 names_cache: None,
                 refs: None,
+                install: None,
             };
             let hardening = WorkerHardening {
                 job_dir: job_dir.clone(),
@@ -2454,10 +2593,17 @@ mod tests {
                 gid,
                 allow_openrouter_key: false,
             };
-            let error =
-                process_worker_exe(&tx, spec, Instant::now(), &fake_worker, None, &hardening)
-                    .err()
-                    .expect("fake worker reports via an error event");
+            let error = process_worker_exe(
+                &tx,
+                spec,
+                Instant::now(),
+                &fake_worker,
+                None,
+                &hardening,
+                None,
+            )
+            .err()
+            .expect("fake worker reports via an error event");
             finish_failed(&tx, error);
         });
         let id = enqueue_job(state.clone(), repo("secret"), "a".to_owned(), runner).unwrap();
@@ -2469,5 +2615,97 @@ mod tests {
             "a worker dropped to an unprivileged uid must not be able to read a root-owned file \
              outside its job directory"
         );
+    }
+
+    /// Issue #110 P1c: a worker that asks for an install gets exactly one
+    /// answer line on its stdin. Where the sandbox cannot start (this test
+    /// process is not root, and nsjail is pointed at nothing in case it is)
+    /// that answer is a recorded fallback: never a hang, never a failed job,
+    /// and nothing runs in the checkout.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_install_request_is_answered_with_a_fallback_where_the_sandbox_cannot_start() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, state) = state(Limits::default());
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(
+            checkout.join("package.json"),
+            r#"{"name":"root","private":true}"#,
+        )
+        .unwrap();
+        std::fs::write(checkout.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+        std::fs::write(
+            checkout.join("pnpm-workspace.yaml"),
+            "packages:\n  - packages/*\n",
+        )
+        .unwrap();
+        let fake_worker = dir.path().join("installing-worker");
+        let script = concat!(
+            "#!/bin/sh\n",
+            "read -r spec\n",
+            "printf '%s\\n' '{\"type\":\"install_request\",\"v\":1}'\n",
+            "read -r reply\n",
+            "printf '{\"type\":\"error\",\"v\":1,\"code\":\"test\",\"message\":\"%s\"}\\n' ",
+            "\"$(printf '%s' \"$reply\" | tr -d '\"{}')\"\n",
+        );
+        std::fs::write(&fake_worker, script).unwrap();
+        std::fs::set_permissions(&fake_worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let scratch = dir.path().join("cache/install/job");
+        let job_dir = dir.path().to_path_buf();
+        let runner: JobRunner = Arc::new(move |_, repo, tx| {
+            let spec = WorkerSpec {
+                v: 1,
+                slug: repo.slug,
+                owner: repo.owner,
+                repo: repo.repo,
+                source: "unused".to_owned(),
+                local: false,
+                all_sources: false,
+                cache_dir: String::new(),
+                output_dir: String::new(),
+                clone_cache_bytes: 1,
+                prune_variant: "node-relative".to_owned(),
+                namer: "idf".to_owned(),
+                namer_model: String::new(),
+                previous_maps: vec![],
+                names_cache: None,
+                refs: Some("scip".to_owned()),
+                install: Some("sandbox".to_owned()),
+            };
+            let install = ServiceInstall {
+                repo: checkout.clone(),
+                scratch: scratch.clone(),
+                settings: crate::indexers::InstallSettings {
+                    nsjail: "/nonexistent/nsjail".to_owned(),
+                    node_prefix: None,
+                    uid: 10001,
+                    gid: 10001,
+                    time_limit: crate::indexers::INSTALL_TIME_LIMIT,
+                    disk_budget: crate::indexers::INSTALL_DISK_BUDGET,
+                    memory_max: None,
+                },
+            };
+            let error = process_worker_exe(
+                &tx,
+                spec,
+                Instant::now(),
+                &fake_worker,
+                None,
+                &WorkerHardening::for_test(&job_dir),
+                Some(&install),
+            )
+            .err()
+            .expect("the fake worker reports through an error event");
+            finish_failed(&tx, error);
+        });
+        let id = enqueue_job(state.clone(), repo("install"), "a".to_owned(), runner).unwrap();
+        until(|| snapshot(&state, id).status == JobStatus::Failed).await;
+        assert_eq!(
+            snapshot(&state, id).error.as_deref(),
+            Some("status:fell_back,reason:sandbox_unavailable,manager:pnpm")
+        );
+        assert!(!dir.path().join("checkout/node_modules").exists());
+        assert!(!dir.path().join("cache/install/job").exists());
     }
 }
