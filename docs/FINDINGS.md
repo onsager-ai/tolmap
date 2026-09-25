@@ -2038,7 +2038,7 @@ The same run's numbers ([CI run 36180594364](https://github.com/onsager-ai/tolma
 | sqlalchemy | py | 2,802 | 1,825 | 0.6513 | 0.6608 | 0 (0) |
 | vue | ts | 1,586 | 928 | 0.5851 | 0.7825 | 255 (233) |
 
-- **The hand-only classes undercount package over-attribution.** 1,196 of the 1,271 namespace-only Python and TypeScript pairs target a package file.
+- **The hand-only classes undercount package over-attribution.** 1,196 of the 1,268 namespace-only Python and TypeScript pairs target a package file.
 - **prometheus's are Go package clauses (finding 44).** Every file's `package x` references the package symbol.
 - **sqlalchemy's index has no namespace-only pairs at all.** Why was not investigated. Its relative `from .. import util` form may make no module occurrence that resolves in-repo.
 
