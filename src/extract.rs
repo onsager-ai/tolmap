@@ -203,10 +203,15 @@ struct ParsedFile {
 /// finds (object identifier text, attribute name), unfiltered, for phase 2
 /// to match against the aliases it can only build once `known`/`file_of`
 /// exist.
+///
+/// `exports` is what the file binds at module level (finding 48): phase 2
+/// follows a package's re-exports through it to the file that defines a
+/// name, which it can only do once every file's exports are in hand.
 enum FileRaw {
     Python {
         imports: Vec<PythonImport>,
         attribute_candidates: Vec<(String, String)>,
+        exports: PythonExports,
     },
     Multi {
         imports: Vec<String>,
@@ -324,6 +329,47 @@ pub(crate) struct PythonImport {
     pub(crate) level: usize,
     pub(crate) module: String,
     pub(crate) names: Vec<(String, Option<String>)>,
+}
+
+/// What a Python module binds at module level, so a package's re-exports
+/// can be followed to the file that defines a name (finding 48). Only
+/// module-level statements count, including those inside a module-level
+/// `if`, `try` or `with`, never a function or class body: a name a function
+/// imports is not an attribute of the module.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PythonExports {
+    /// Names the module defines itself: `def`, `class` and assignment
+    /// targets.
+    pub(crate) defined: BTreeSet<String>,
+    /// Names bound by `from X import O as N` or `import X as N`, keyed by
+    /// the bound name `N`. More than one entry is a name bound twice, as a
+    /// `try: from ._speedups import X / except ImportError: from ._py
+    /// import X` fallback does.
+    pub(crate) bindings: BTreeMap<String, Vec<PythonBinding>>,
+    /// `from X import *`, as (level, module).
+    pub(crate) stars: Vec<(usize, String)>,
+    pub(crate) all: PythonAll,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct PythonBinding {
+    pub(crate) level: usize,
+    pub(crate) module: String,
+    /// `Some(O)` for `from X import O [as N]`; `None` for `import X as N`,
+    /// which binds the module `X` itself.
+    pub(crate) original: Option<String>,
+}
+
+/// A module's `__all__`, which decides what `from module import *` binds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) enum PythonAll {
+    /// No `__all__`: a star import binds every public name.
+    #[default]
+    Absent,
+    /// Assigned only literal lists or tuples of plain strings.
+    Literal(BTreeSet<String>),
+    /// Computed, or mutated by a call: what a star import binds is unknown.
+    Dynamic,
 }
 
 pub fn build(repo: &Path, pkg: &str, language: LanguageKind) -> Result<GraphData> {
@@ -649,6 +695,7 @@ fn parse_files_inner(
                     LanguageKind::Python => FileRaw::Python {
                         imports: Vec::new(),
                         attribute_candidates: Vec::new(),
+                        exports: PythonExports::default(),
                     },
                     _ => FileRaw::Multi {
                         imports: Vec::new(),
@@ -675,6 +722,7 @@ fn parse_files_inner(
             LanguageKind::Python => FileRaw::Python {
                 imports: python_imports(root, &source),
                 attribute_candidates: python_attribute_candidates(root, &source),
+                exports: python_exports(root, &source),
             },
             LanguageKind::Go => FileRaw::Multi {
                 imports: go_imports(root, &source),
@@ -1868,6 +1916,20 @@ fn parse_python_with_progress(
         })
         .collect::<BTreeMap<_, _>>();
 
+    // Every file's module-level bindings, by path, for following a
+    // package's re-exports (`resolve_python_import`, finding 48).
+    let exports = raw
+        .iter()
+        .filter_map(|(file, raw)| match raw {
+            FileRaw::Python { exports, .. } => Some((file.clone(), exports)),
+            FileRaw::Multi { .. } => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let scope = PythonScope {
+        known: &known,
+        file_of: &file_of,
+        exports: &exports,
+    };
     let mut static_edges = BTreeMap::<(FileId, FileId), f64>::new();
     let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
     let mut fanin = BTreeMap::<FileId, f64>::new();
@@ -1877,13 +1939,14 @@ fn parse_python_with_progress(
         let FileRaw::Python {
             imports,
             attribute_candidates,
+            ..
         } = &raw[file]
         else {
             unreachable!("parse_python only ever stores FileRaw::Python");
         };
         let is_pkg = file.rsplit('/').next() == Some("__init__.py");
         for import in imports {
-            let mut target_files = resolve_python(import, module, &known, is_pkg)
+            let mut target_files = resolve_python_import(import, module, &scope, is_pkg)
                 .into_iter()
                 .map(|target| file_of[&target].clone())
                 .collect::<BTreeSet<_>>();
@@ -1891,8 +1954,12 @@ fn parse_python_with_progress(
                 let scoped = &project_modules[project];
                 let current = python_project_module(file, project);
                 if python_relative_within_package(import, &current, is_pkg) {
-                    for target in resolve_python(import, &current, &project_known[project], is_pkg)
-                    {
+                    let project_scope = PythonScope {
+                        known: &project_known[project],
+                        file_of: scoped,
+                        exports: &exports,
+                    };
+                    for target in resolve_python_import(import, &current, &project_scope, is_pkg) {
                         target_files.insert(scoped[&target].clone());
                     }
                 }
@@ -2060,6 +2127,237 @@ pub(crate) fn python_imports(root: Node<'_>, source: &[u8]) -> Vec<PythonImport>
     result
 }
 
+/// Module-level bindings of one Python file (see [`PythonExports`]). The
+/// statements are visited in no particular order; nothing recorded here
+/// depends on it, and every collection is ordered.
+pub(crate) fn python_exports(root: Node<'_>, source: &[u8]) -> PythonExports {
+    let mut exports = PythonExports::default();
+    let mut all = BTreeSet::new();
+    let mut all_literal = false;
+    let mut all_dynamic = false;
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        let children = node.named_children(&mut cursor).collect::<Vec<_>>();
+        for child in children {
+            match child.kind() {
+                // Module-level control flow: its statements still bind
+                // module attributes. A function or class body does not.
+                "block"
+                | "if_statement"
+                | "elif_clause"
+                | "else_clause"
+                | "try_statement"
+                | "except_clause"
+                | "except_group_clause"
+                | "finally_clause"
+                | "with_statement" => stack.push(child),
+                "function_definition" | "class_definition" | "decorated_definition" => {
+                    if let Some(name) = name_of(unwrap_decorated(child), source) {
+                        exports.defined.insert(name);
+                    }
+                }
+                "expression_statement" => {
+                    let mut inner = child.walk();
+                    for statement in child.named_children(&mut inner) {
+                        python_export_statement(
+                            statement,
+                            source,
+                            &mut exports,
+                            &mut all,
+                            &mut all_literal,
+                            &mut all_dynamic,
+                        );
+                    }
+                }
+                "import_from_statement" => {
+                    let module_node = child.child_by_field_name("module_name");
+                    let raw_module = module_node.map_or("", |value| text(value, source));
+                    let level = raw_module.chars().take_while(|value| *value == '.').count();
+                    let module = raw_module[level..].to_owned();
+                    let mut inner = child.walk();
+                    for name in child.named_children(&mut inner) {
+                        if module_node.map(|value| value.id()) == Some(name.id()) {
+                            continue;
+                        }
+                        match name.kind() {
+                            "wildcard_import" => exports.stars.push((level, module.clone())),
+                            "dotted_name" | "aliased_import" => {
+                                if let Some((original, alias)) = import_name(name, source) {
+                                    let bound = alias.unwrap_or_else(|| original.clone());
+                                    exports.bindings.entry(bound).or_default().push(
+                                        PythonBinding {
+                                            level,
+                                            module: module.clone(),
+                                            original: Some(original),
+                                        },
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                "import_statement" => {
+                    let mut inner = child.walk();
+                    for name in child.named_children(&mut inner) {
+                        if let Some((module, alias)) = import_name(name, source) {
+                            // `import a.b` binds `a`, the top package.
+                            let (bound, module) = match alias {
+                                Some(alias) => (alias, module),
+                                None => {
+                                    let top = module.split('.').next().unwrap_or("").to_owned();
+                                    (top.clone(), top)
+                                }
+                            };
+                            exports
+                                .bindings
+                                .entry(bound)
+                                .or_default()
+                                .push(PythonBinding {
+                                    level: 0,
+                                    module,
+                                    original: None,
+                                });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for bindings in exports.bindings.values_mut() {
+        bindings.sort();
+        bindings.dedup();
+    }
+    exports.stars.sort();
+    exports.stars.dedup();
+    exports.all = if all_dynamic {
+        PythonAll::Dynamic
+    } else if all_literal {
+        PythonAll::Literal(all)
+    } else {
+        PythonAll::Absent
+    };
+    exports
+}
+
+/// One module-level expression statement: an assignment binds its targets,
+/// and anything that touches `__all__` decides what a star import binds.
+fn python_export_statement(
+    statement: Node<'_>,
+    source: &[u8],
+    exports: &mut PythonExports,
+    all: &mut BTreeSet<String>,
+    all_literal: &mut bool,
+    all_dynamic: &mut bool,
+) {
+    // What an assignment to `__all__` does to it: a literal list extends
+    // it, anything else makes it unknowable.
+    let mut listed =
+        |value: Option<Node<'_>>| match value.and_then(|value| python_string_list(value, source)) {
+            Some(names) => {
+                *all_literal = true;
+                all.extend(names);
+            }
+            None => *all_dynamic = true,
+        };
+    match statement.kind() {
+        "assignment" => {
+            // `a = b = 1` nests the second assignment as the first one's
+            // right-hand side.
+            let mut current = Some(statement);
+            while let Some(assignment) = current {
+                let right = assignment.child_by_field_name("right");
+                let chained = right.filter(|right| right.kind() == "assignment");
+                // An annotation without a value (`x: int`) binds nothing.
+                if let (Some(left), Some(right)) = (assignment.child_by_field_name("left"), right) {
+                    let mut names = Vec::new();
+                    python_target_names(left, source, &mut names);
+                    for name in names {
+                        if name == "__all__" && chained.is_none() {
+                            listed(Some(right));
+                        }
+                        exports.defined.insert(name);
+                    }
+                }
+                current = chained;
+            }
+        }
+        "augmented_assignment" => {
+            let target = statement
+                .child_by_field_name("left")
+                .map(|left| text(left, source));
+            if target == Some("__all__") {
+                listed(statement.child_by_field_name("right"));
+            }
+        }
+        // `__all__.extend(...)`, `__all__.append(...)`: computed.
+        "call" => {
+            let object = statement
+                .child_by_field_name("function")
+                .filter(|function| function.kind() == "attribute")
+                .and_then(|function| function.child_by_field_name("object"));
+            if object.map(|object| text(object, source)) == Some("__all__") {
+                listed(None);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The plain names an assignment target binds: `a`, `a, b`, `[a, *b]`.
+/// Attribute and subscript targets bind nothing in the module.
+fn python_target_names(node: Node<'_>, source: &[u8], out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" => out.push(text(node, source).to_owned()),
+        "pattern_list"
+        | "tuple_pattern"
+        | "list_pattern"
+        | "list_splat_pattern"
+        | "parenthesized_expression"
+        | "tuple"
+        | "list" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                python_target_names(child, source, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A literal list or tuple of plain strings, as `__all__` usually is; `None`
+/// for anything computed (a call, a concatenation, an f-string).
+fn python_string_list(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
+    if !matches!(node.kind(), "list" | "tuple") {
+        return None;
+    }
+    let mut names = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "comment" {
+            continue;
+        }
+        if child.kind() != "string" {
+            return None;
+        }
+        let unprefixed = text(child, source).trim_start_matches(&['r', 'R', 'u', 'U'][..]);
+        let quote = if unprefixed.starts_with("\"\"\"") || unprefixed.starts_with("'''") {
+            3
+        } else {
+            1
+        };
+        if !(unprefixed.starts_with('"') || unprefixed.starts_with('\''))
+            || unprefixed.len() < 2 * quote
+        {
+            return None;
+        }
+        names.push(unprefixed[quote..unprefixed.len() - quote].to_owned());
+    }
+    Some(names)
+}
+
 fn import_name(node: Node<'_>, source: &[u8]) -> Option<(String, Option<String>)> {
     if node.kind() == "aliased_import" {
         let name = child_text(node, "name", source)?;
@@ -2082,26 +2380,30 @@ fn import_name(node: Node<'_>, source: &[u8]) -> Option<(String, Option<String>)
 /// `from . import x` resolved to a name that was never a known module.
 /// See issue #12.
 pub(crate) fn python_head(import: &PythonImport, current_module: &str, is_pkg: bool) -> String {
-    if import.level == 0 {
-        return import.module.clone();
+    python_head_of(import.level, &import.module, current_module, is_pkg)
+}
+
+fn python_head_of(level: usize, module: &str, current_module: &str, is_pkg: bool) -> String {
+    if level == 0 {
+        return module.to_owned();
     }
     let mut pkg_parts = current_module.split('.').collect::<Vec<_>>();
     if !is_pkg {
         pkg_parts.pop();
     }
-    let strip = import.level - 1;
+    let strip = level - 1;
     let keep = if strip <= pkg_parts.len() {
         pkg_parts.len() - strip
     } else {
         0
     };
     let prefix = pkg_parts[..keep].join(".");
-    if import.module.is_empty() {
+    if module.is_empty() {
         prefix
     } else if prefix.is_empty() {
-        import.module.clone()
+        module.to_owned()
     } else {
-        format!("{prefix}.{}", import.module)
+        format!("{prefix}.{module}")
     }
 }
 
@@ -2136,6 +2438,182 @@ fn resolve_python(
             if known.contains(parent) {
                 result.insert(parent.to_owned());
             }
+        }
+    }
+    result.remove(current_module);
+    result
+}
+
+/// How many re-export hops [`PythonScope::follow`] takes before it stops
+/// and credits the file it has reached. The symbols document follows the
+/// same chains to the same depth (`symbols::lookup`).
+const PYTHON_REEXPORT_HOPS: usize = 4;
+
+/// The parsed Python files one resolution runs over (the source root, or
+/// one nested project of it), with each file's module-level bindings.
+struct PythonScope<'a> {
+    known: &'a BTreeSet<String>,
+    file_of: &'a BTreeMap<String, String>,
+    exports: &'a BTreeMap<String, &'a PythonExports>,
+}
+
+impl PythonScope<'_> {
+    fn is_package(&self, module: &str) -> bool {
+        self.file_of
+            .get(module)
+            .is_some_and(|file| file == "__init__.py" || file.ends_with("/__init__.py"))
+    }
+
+    fn exports_of(&self, module: &str) -> Option<&PythonExports> {
+        self.file_of
+            .get(module)
+            .and_then(|file| self.exports.get(file))
+            .copied()
+    }
+
+    /// The module to credit for `name` as `module` exposes it: `module`
+    /// itself when it defines the name, else the module it imports the name
+    /// from, followed for up to [`PYTHON_REEXPORT_HOPS`] hops. Whenever the
+    /// chain cannot be followed with certainty -- the name comes from
+    /// outside the parsed set, is bound twice to different places, arrives
+    /// through a star import whose `__all__` is computed, or is not bound
+    /// visibly at all (a module `__getattr__`, say) -- the answer is the
+    /// module the chain has reached, which at the first hop is exactly
+    /// what the resolver credited before re-exports were followed.
+    fn follow(&self, module: &str, name: &str, hops: usize) -> String {
+        let stay = || module.to_owned();
+        if hops >= PYTHON_REEXPORT_HOPS {
+            return stay();
+        }
+        let Some(exports) = self.exports_of(module) else {
+            return stay();
+        };
+        if exports.defined.contains(name) {
+            return stay();
+        }
+        let is_pkg = self.is_package(module);
+        if let Some(bindings) = exports.bindings.get(name) {
+            let targets = bindings
+                .iter()
+                .map(|binding| self.binding_target(binding, module, is_pkg, hops))
+                .collect::<BTreeSet<_>>();
+            return match targets.into_iter().collect::<Vec<_>>().as_slice() {
+                [Some(target)] => target.clone(),
+                _ => stay(),
+            };
+        }
+        let mut hits = BTreeSet::new();
+        for (level, star) in &exports.stars {
+            let head = python_head_of(*level, star, module, is_pkg);
+            match self.star_binds(&head, name) {
+                Some(true) => {
+                    hits.insert(head);
+                }
+                Some(false) => {}
+                None => return stay(),
+            }
+        }
+        match hits.into_iter().collect::<Vec<_>>().as_slice() {
+            [star] => self.follow(star, name, hops + 1),
+            _ => stay(),
+        }
+    }
+
+    /// Where one binding of a name points: `None` outside the parsed set.
+    fn binding_target(
+        &self,
+        binding: &PythonBinding,
+        module: &str,
+        is_pkg: bool,
+        hops: usize,
+    ) -> Option<String> {
+        let head = python_head_of(binding.level, &binding.module, module, is_pkg);
+        match &binding.original {
+            // `import x as y` names the module itself.
+            None => self.known.contains(&head).then_some(head),
+            Some(original) => {
+                let full = if head.is_empty() {
+                    original.clone()
+                } else {
+                    format!("{head}.{original}")
+                };
+                if self.known.contains(&full) {
+                    // `from . import sub as name`: a module bound as a name.
+                    Some(full)
+                } else if self.known.contains(&head) {
+                    Some(self.follow(&head, original, hops + 1))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Whether `from module import *` binds `name`: `None` when that cannot
+    /// be known (a module outside the parsed set, or a computed `__all__`).
+    fn star_binds(&self, module: &str, name: &str) -> Option<bool> {
+        if !self.known.contains(module) {
+            return None;
+        }
+        let exports = self.exports_of(module)?;
+        match &exports.all {
+            PythonAll::Literal(names) => Some(names.contains(name)),
+            PythonAll::Dynamic => None,
+            PythonAll::Absent => Some(
+                !name.starts_with('_')
+                    && (exports.defined.contains(name) || exports.bindings.contains_key(name)),
+            ),
+        }
+    }
+}
+
+/// The modules one import statement links (finding 48): [`resolve_python`],
+/// except that a `from pkg import ...` whose `pkg` is a package credits the
+/// package's `__init__.py` only for what that file defines itself.
+///
+/// - `from pkg import sub`, `sub` a submodule, links `pkg/sub.py` alone.
+///   [`resolve_python`] also links `pkg/__init__.py`, whose content the
+///   import never uses; SCIP, the oracle, never has that pair (finding 47:
+///   21 of the 65 hand-only pairs on the Python fixtures).
+/// - `from pkg import Name`, where `pkg/__init__.py` re-exports `Name`
+///   (`from .mod import Name`, or a star import that binds it, read through
+///   `__all__`), links the file that defines it, through the chain of
+///   re-exports ([`PythonScope::follow`]). SCIP credits the defining file
+///   too (finding 47: 12 pairs, and most of sqlalchemy's 0.66).
+/// - `from pkg import *` still links the package: that is the one import
+///   SCIP cannot see and the hand-written resolver gets right.
+///
+/// Anything else -- a plain `import`, a `from` a module that is not a
+/// package, a package outside the parsed set, a package importing from
+/// itself -- resolves exactly as before. Symbol uses (`python_uses_from_raw`)
+/// keep the unrefined resolution: the map's `U` already follows re-exports
+/// by name (`geometry::define_site`), so only the file graph changes here.
+fn resolve_python_import(
+    import: &PythonImport,
+    current_module: &str,
+    scope: &PythonScope<'_>,
+    is_pkg: bool,
+) -> BTreeSet<String> {
+    let head = python_head(import, current_module, is_pkg);
+    if !import.from
+        || head.is_empty()
+        || head == current_module
+        || !scope.known.contains(&head)
+        || !scope.is_package(&head)
+    {
+        return resolve_python(import, current_module, scope.known, is_pkg);
+    }
+    let mut result = BTreeSet::new();
+    for (name, _) in &import.names {
+        if name == "*" {
+            result.insert(head.clone());
+            continue;
+        }
+        let full = format!("{head}.{name}");
+        if scope.known.contains(&full) {
+            result.insert(full);
+        } else {
+            result.insert(scope.follow(&head, name, 0));
         }
     }
     result.remove(current_module);
@@ -4297,6 +4775,190 @@ mod tests {
         assert!(edges.contains(&("other/app.py", "other/core/helper.py")));
         assert!(!edges.contains(&("api/app.py", "other/core/helper.py")));
         assert!(!edges.contains(&("outside.py", "api/core/helper.py")));
+    }
+
+    // -- Python package re-exports (finding 48) ---------------------------
+
+    fn python_edges(files: &[(&str, &str)]) -> BTreeSet<(String, String)> {
+        let dir = tempfile::TempDir::new().unwrap();
+        for (path, contents) in files {
+            write(dir.path(), path, contents);
+        }
+        let (parsed, raw) = parse_files(dir.path(), ".", LanguageKind::Python).unwrap();
+        let intermediate = parse_python(dir.path(), ".", parsed, raw).unwrap();
+        intermediate
+            .directed
+            .keys()
+            .map(|&(a, b)| {
+                (
+                    intermediate.files[a as usize].clone(),
+                    intermediate.files[b as usize].clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn targets_of(edges: &BTreeSet<(String, String)>, source: &str) -> Vec<String> {
+        edges
+            .iter()
+            .filter(|(a, _)| a == source)
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
+
+    #[test]
+    fn submodule_through_its_package_does_not_link_the_package_init() {
+        let edges = python_edges(&[
+            ("pkg/__init__.py", "VERSION = 1\n"),
+            ("pkg/sub.py", "x = 1\n"),
+            ("use.py", "from pkg import sub\n"),
+        ]);
+        assert_eq!(targets_of(&edges, "use.py"), ["pkg/sub.py"]);
+    }
+
+    #[test]
+    fn a_name_the_package_defines_still_links_the_package_init() {
+        let edges = python_edges(&[
+            ("pkg/__init__.py", "VERSION = 1\ndef helper():\n    pass\n"),
+            ("pkg/sub.py", "x = 1\n"),
+            (
+                "use.py",
+                "from pkg import sub, VERSION\nfrom pkg import helper\n",
+            ),
+        ]);
+        assert_eq!(
+            targets_of(&edges, "use.py"),
+            ["pkg/__init__.py", "pkg/sub.py"]
+        );
+    }
+
+    #[test]
+    fn a_re_exported_name_links_the_file_that_defines_it() {
+        let edges = python_edges(&[
+            (
+                "pkg/__init__.py",
+                "from .core import Engine\nfrom .sub import Session as Sess\n",
+            ),
+            ("pkg/core.py", "class Engine:\n    pass\n"),
+            ("pkg/sub/__init__.py", "from .impl import Session\n"),
+            ("pkg/sub/impl.py", "class Session:\n    pass\n"),
+            ("use.py", "from pkg import Engine, Sess\n"),
+        ]);
+        assert_eq!(
+            targets_of(&edges, "use.py"),
+            ["pkg/core.py", "pkg/sub/impl.py"]
+        );
+        // The package's own `from .sub import Session` goes through the
+        // subpackage the same way.
+        assert_eq!(
+            targets_of(&edges, "pkg/__init__.py"),
+            ["pkg/core.py", "pkg/sub/impl.py"]
+        );
+    }
+
+    #[test]
+    fn a_star_re_export_is_read_through_all() {
+        let edges = python_edges(&[
+            (
+                "pkg/__init__.py",
+                "from ._api import *\nfrom ._models import *\n",
+            ),
+            (
+                "pkg/_api.py",
+                "__all__ = ['get']\ndef get():\n    pass\ndef post():\n    pass\n",
+            ),
+            (
+                "pkg/_models.py",
+                "class Response:\n    pass\ndef _private():\n    pass\n",
+            ),
+            ("get.py", "from pkg import get\n"),
+            ("response.py", "from pkg import Response\n"),
+            // Not in `_api.__all__`, and private in `_models`: nothing binds
+            // it, so the package keeps it.
+            ("post.py", "from pkg import post\n"),
+            ("star.py", "from pkg import *\n"),
+        ]);
+        assert_eq!(targets_of(&edges, "get.py"), ["pkg/_api.py"]);
+        assert_eq!(targets_of(&edges, "response.py"), ["pkg/_models.py"]);
+        assert_eq!(targets_of(&edges, "post.py"), ["pkg/__init__.py"]);
+        assert_eq!(targets_of(&edges, "star.py"), ["pkg/__init__.py"]);
+    }
+
+    #[test]
+    fn an_uncertain_re_export_keeps_the_package_init() {
+        let edges = python_edges(&[
+            (
+                "pkg/__init__.py",
+                "try:\n    from ._c import X\nexcept ImportError:\n    from ._py import X\n\
+                 from os.path import join\n\
+                 from ._dyn import *\n\
+                 def later():\n    from ._c import Y\n",
+            ),
+            ("pkg/_c.py", "X = 1\nY = 2\n"),
+            ("pkg/_py.py", "X = 1\n"),
+            (
+                "pkg/_dyn.py",
+                "from ._c import X\n__all__ = ['Z'] + []\nZ = 3\n",
+            ),
+            ("two.py", "from pkg import X\n"),
+            ("external.py", "from pkg import join\n"),
+            ("local.py", "from pkg import Y\n"),
+        ]);
+        // Bound twice, to two files: ambiguous.
+        assert_eq!(targets_of(&edges, "two.py"), ["pkg/__init__.py"]);
+        // From outside the parsed set.
+        assert_eq!(targets_of(&edges, "external.py"), ["pkg/__init__.py"]);
+        // Imported inside a function, which binds nothing in the module;
+        // and the computed `__all__` makes the star import unknowable.
+        assert_eq!(targets_of(&edges, "local.py"), ["pkg/__init__.py"]);
+    }
+
+    #[test]
+    fn re_export_chains_stop_after_four_hops() {
+        let edges = python_edges(&[
+            ("p/__init__.py", "from .a import X\n"),
+            ("p/a.py", "from .b import X\n"),
+            ("p/b.py", "from .c import X\n"),
+            ("p/c.py", "from .d import X\n"),
+            ("p/d.py", "from .e import X\n"),
+            ("p/e.py", "class X:\n    pass\n"),
+            ("use.py", "from p import X\n"),
+        ]);
+        assert_eq!(targets_of(&edges, "use.py"), ["p/d.py"]);
+    }
+
+    #[test]
+    fn python_exports_reads_module_level_bindings_only() {
+        let source = b"import os.path\nimport json as j\nfrom . import a as b\nfrom .m import *\n\
+            __all__ = ['x', \"y\"]\n__all__ += ('z',)\nx = y = 1\n(p, [q, *r]) = 1, [2, 3]\n\
+            if True:\n    class K:\n        inner = 1\n@deco\ndef f():\n    from .n import hidden\n";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let exports = python_exports(tree.root_node(), source);
+        assert_eq!(
+            exports
+                .defined
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["K", "__all__", "f", "p", "q", "r", "x", "y"]
+        );
+        assert_eq!(
+            exports
+                .bindings
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["b", "j", "os"]
+        );
+        assert_eq!(exports.stars, [(1, "m".to_owned())]);
+        assert_eq!(
+            exports.all,
+            PythonAll::Literal(["x", "y", "z"].into_iter().map(str::to_owned).collect())
+        );
     }
 
     fn resolved_import_edge_count(root: &Path, pkg: &str, language: LanguageKind) -> usize {
