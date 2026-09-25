@@ -1945,3 +1945,86 @@ Confidence:
 - Whether the recall gate should count package re-exports as kept, which would admit sqlalchemy at 0.9008. That is a gate change, left to the owner.
 - A true second Leiden seed. `SEED` has no flag, and node order stands in for it.
 - The TypeScript and Go hand-only pairs were counted but not classified: vue 3, prometheus 732.
+
+## 48. Scored against SCIP, the hand resolver's precision is 0.66–1.00 and its over-attribution to packages is 335 submodule pairs and 413 re-export pairs, 701 of them sqlalchemy's
+
+Owner decision, session `16030105`, AskUserQuestion, transcript line 6937 (2026-09-25T16:56:34Z): **"Tune hand, SCIP as oracle (Recommended)"**, with the owner's note *"Hand written is in more control with less deps and more efficient"*. `hand` stays the default, and SCIP measures it. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s scoring job, [PR #131](https://github.com/onsager-ai/tolmap/pull/131). It is evidence only: no product code changes.
+
+**What ships.** ci.yml's `hand-score` job runs nightly and on dispatch, on a standard runner with the pinned indexers (scip-python 0.6.6, scip-go v0.2.7, scip-typescript 0.4.0). For each fixture pin it dumps the hand graph (`dump-graph --refs hand`) and runs the indexer through `dump-graph --refs scip`, keeping the index. `eval/hand_score.py` then compares two sets of directed file pairs over the same mapped files:
+- **hand**: the dumped graph's `imports`;
+- **SCIP**: P0's oracle ingest (`eval/scip_ingest.py`) of the kept index.
+
+The oracle is used rather than the SCIP graph because sqlalchemy's index falls below the 0.80 admission floor, so its SCIP graph is hand's. Where a language is admitted, the job checks that the SCIP graph's pairs equal the oracle's. They did, on all eight admitted fixtures.
+
+Two ratios, named for this job:
+- **recall**: the share of SCIP pairs hand also has;
+- **precision**: the share of hand pairs SCIP also has.
+
+Precision is what the product gate calls recall. On every file-granularity row it equals the gate's number in the map's `coverage.references`, and prometheus's by-directory precision equals its gate's 0.9969, so the two implementations agree.
+
+Pairs that only one side has are classified by heuristics that read the source (`eval/hand_score.py`'s docstring has the rules), and the JSON keeps a fixed-seed sample of each class for checking by hand. The counts here are directed pairs, compared direction by direction. Finding 47 counted a hand pair as missing only when SCIP had neither direction, so these counts are larger: flask has 9 hand-only pairs here against finding 47's 5.
+
+[CI run 36176225788](https://github.com/onsager-ai/tolmap/actions/runs/36176225788), job `hand-score`, at `f4667d8`:
+
+| fixture | lang | hand pairs | SCIP pairs | shared | recall | precision | precision, re-exports counted |
+|---|---|---:|---:|---:|---:|---:|---:|
+| celery | py | 669 | 710 | 648 | 0.9127 | 0.9686 | 0.9895 |
+| django | py | 3,173 | 4,018 | 3,141 | 0.7817 | 0.9899 | 0.9953 |
+| flask | py | 102 | 113 | 93 | 0.8230 | 0.9118 | 0.9902 |
+| httpx | py | 87 | 74 | 71 | 0.9595 | 0.8161 | 0.8161 |
+| prometheus | go | 5,574 | 5,436 | 4,842 | 0.8907 | 0.8687 | 0.8687 |
+| prometheus, by directory | go | 956 | 1,206 | 953 | 0.7902 | 0.9969 | |
+| rich | py | 426 | 424 | 420 | 0.9906 | 0.9859 | 1.0000 |
+| scrapy | py | 902 | 1,222 | 902 | 0.7381 | 1.0000 | 1.0000 |
+| sqlalchemy | py | 2,762 | 2,802 | 1,825 | 0.6513 | 0.6608 | 0.9008 |
+| vue | ts | 1,186 | 1,911 | 1,183 | 0.6190 | 0.9975 | 0.9975 |
+
+The last column counts a hand pair into a package's `__init__.py` as confirmed when SCIP links the same source to any file under that package. That is finding 47's rule, and it reproduces its 0.9008 for sqlalchemy.
+
+**Hand-only pairs, by class:**
+
+| fixture | hand-only | star import | submodule via package | re-export | package spread | other |
+|---|---:|---:|---:|---:|---:|---:|
+| celery | 21 | 0 | 12 | 4 | 0 | 5 |
+| django | 32 | 9 | 2 | 14 | 0 | 7 |
+| flask | 9 | 0 | 7 | 2 | 0 | 0 |
+| httpx | 16 | 16 | 0 | 0 | 0 | 0 |
+| prometheus | 732 | 0 | 0 | 0 | 710 | 22 |
+| rich | 6 | 0 | 6 | 0 | 0 | 0 |
+| scrapy | 0 | 0 | 0 | 0 | 0 | 0 |
+| sqlalchemy | 937 | 13 | 308 | 393 | 0 | 223 |
+| vue | 3 | 0 | 0 | 0 | 0 | 3 |
+| all | 1,756 | 38 | 335 | 413 | 710 | 260 |
+
+**SCIP-only pairs, by class:**
+
+| fixture | SCIP-only | re-export | inherited member | inferred type | other |
+|---|---:|---:|---:|---:|---:|
+| celery | 62 | 33 | 1 | 11 | 17 |
+| django | 877 | 745 | 55 | 31 | 46 |
+| flask | 20 | 2 | 16 | 1 | 1 |
+| httpx | 3 | 0 | 0 | 3 | 0 |
+| prometheus | 594 | 0 | 0 | 22 | 572 |
+| rich | 4 | 0 | 0 | 4 | 0 |
+| scrapy | 320 | 243 | 2 | 70 | 5 |
+| sqlalchemy | 977 | 700 | 55 | 105 | 117 |
+| vue | 728 | 447 | 0 | 80 | 201 |
+| all | 3,585 | 2,170 | 129 | 327 | 959 |
+
+**What the numbers say:**
+- **Hand's precision is high except where packages re-export.** Six fixtures are at 0.91 or above. httpx's 0.8161 is entirely star imports (16 of 16 hand-only pairs), where hand is right and SCIP cannot see the dependency. sqlalchemy's 0.6608 is mostly packages: 308 submodule pairs and 393 re-export pairs out of 937 hand-only pairs.
+- **The two over-attribution classes are the fixable part.** "Submodule via package" is a pair to a package `__init__.py` that the import names only as the head of `from pkg import sub`: 335 pairs on five fixtures. "Re-export" is a pair to a package `__init__.py` for a name it re-exports from another file: 413 pairs on four fixtures. Each claims a dependency on a file whose own content is not what is used, against CLAUDE.md's rule that numbers must be a lower bound.
+- **SCIP's extras are mostly the other side of the same coin.** 2,170 of the 3,585 SCIP-only pairs are re-exports: hand links the package that re-exports a name, and SCIP links the file that defines it. Next come inferred types (327) and inherited members (129), which no import-level resolver sees.
+- **Go is a different problem.** 710 of prometheus's 732 hand-only pairs are `resolve_multi` spreading an import over every file of the imported package (finding 44). By directory, hand's precision is 0.9969. That is a separate follow-up and is not gated here.
+- **Some over-attribution is classed "other".** sqlalchemy's 223 "other" hand-only pairs include facade modules that are not packages (`schema.py`, `types.py`, finding 47's sample). The classifier only calls a pair to an `__init__.py` a re-export, so these counts are a lower bound on over-attribution.
+
+**Construction checks.** On every admitted fixture, the SCIP graph's pairs equal the oracle's. Precision equals the product gate's recall. sqlalchemy's re-export-counted precision reproduces finding 47's. And every hand map places 100.0% of files, with Δq 0.0000, against its committed fixture, so the job scores the maps the oracle recorded. The classifier has a synthetic self-test (`eval/hand_score.py self-test`, in the push-time `gate` job) with one pair of each Python class and the Go spread.
+
+### The baseline and its gate
+
+`data/scip/hand_score.json` is this run's `baseline` output. It holds the counts and ratios above and a SHA-256 of each fixture's sorted SCIP pair set. The job's last step fails on a regression against it, and only on one:
+- **The oracle moved.** A different SCIP fingerprint means an indexer, a pin or the mapped file set changed. Every other number is then not comparable, so re-baseline with a finding.
+- **Over-attribution rose.** The "submodule via package" and "re-export" hand-only counts may only go down.
+- **Confirmed pairs fell.** `shared` may not decrease: hand losing a pair SCIP confirms shrinks the lower bound.
+
+It does not gate star imports (hand is right), "other" (heuristic and mixed), the SCIP-only classes (they move when hand gains a correct pair) or the ratios, which follow from the gated counts. An improvement never fails. The gate prints it, so the baseline is lowered in the same change, with a finding.
