@@ -2054,3 +2054,122 @@ The same run's numbers ([CI run 36180594364](https://github.com/onsager-ai/tolma
 The first version gated all of `shared`. The package fix's first run ([CI run 36179004373](https://github.com/onsager-ai/tolmap/actions/runs/36179004373)) tripped that gate on celery (648 → 586), django (3,141 → 3,059) and rich (420 → 419). On celery, all 85 SCIP-confirmed pairs the fix removed were namespace-only, each supported by one module symbol. The gate as first written would have blocked the very removal its over-attribution rule asks for, so it now holds confirmation by a use. `shared` is still reported. This change was made after seeing that run, and it is recorded here for that reason.
 
 It does not gate star imports (hand is right), "other" (heuristic and mixed), the SCIP-only classes (they move when hand gains a correct pair) or the ratios, which follow from the gated counts. An improvement never fails. The gate prints it, so the baseline is lowered in the same change, with a finding.
+
+## 49. Crediting a package's re-exports to the defining file raises every Python fixture's precision against SCIP and loses no pair SCIP confirms by a use; six fixtures are re-derived
+
+Owner decision, session `16030105`, AskUserQuestion, transcript line 6937 (2026-09-25T16:56:34Z): **"Tune hand, SCIP as oracle (Recommended)"**. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s first hand-resolver fix measured against finding 48's job, in [PR #132](https://github.com/onsager-ai/tolmap/pull/132), stacked on #131.
+
+**What changed** (`src/extract.rs` `resolve_python_import`). The change applies to `from pkg import ...` where `pkg` is a parsed package:
+- **(a) Submodules.** `from pkg import sub`, where `sub` is a submodule, links `pkg/sub.py` alone. It no longer also links `pkg/__init__.py`.
+- **(b) Re-exported names.** `from pkg import Name` links the file that defines `Name`. The resolver follows the package's module-level `from .mod import Name [as Alias]` bindings, `import x as Name`, and star imports read through the target's `__all__` (literal lists or tuples; without `__all__`, its public names). It follows them for up to four hops, the same depth `symbols::lookup` uses.
+- **When the chain is uncertain, the old pair stays.** That covers a name bound twice (a `try`/`except ImportError` fallback), a name from outside the parsed set, a computed `__all__`, and a name not bound visibly. The pair stays on `pkg/__init__.py`, exactly as before, so an uncertain chain never produces a new pair.
+- **Unchanged:** star imports (`from pkg import *` still links the package), plain `import`, `from module import` for a module that is not a package, and a package importing from itself. Symbol uses (`U`) keep the old resolution, because the map's `U` already follows re-exports by name (`geometry::define_site`). `S` and `U` are byte-identical on every fixture.
+- **No schema change.** Module-level bindings are a new internal `FileRaw::Python` field, read from the tree the parser already builds. No new dependency. Everything iterates BTreeMaps and sorted vectors.
+
+One correction was made along the way. The first version credited the module an uncertain chain had reached. On celery, that turned `from celery import uuid` (kombu's, re-exported through `celery/utils/__init__.py`) into a new pair to `celery/utils/__init__.py`. No source statement names that pair, and SCIP does not have it. [CI run 36182351947](https://github.com/onsager-ai/tolmap/actions/runs/36182351947) measured that version. Only chains followed to a definition now move the credit.
+
+### Before and after, against SCIP
+
+Finding 48's job. Before is [CI run 36182287066](https://github.com/onsager-ai/tolmap/actions/runs/36182287066) (#131 at `853efb3`). After is [CI run 36184125477](https://github.com/onsager-ai/tolmap/actions/runs/36184125477) (this branch at `a862eb8`). Recall and precision are shown against all of SCIP's pairs, and against its use pairs only, which set aside pairs that only a namespace symbol supports (finding 48).
+
+| fixture | hand pairs | recall, all | precision, all | recall, uses | precision, uses | shared by a use | hand-only | submodule via package | re-export | SCIP-only |
+|---|---|---|---|---|---|---|---|---|---|---|
+| celery | 669 → 600 | 0.9127 → **0.8296** | 0.9686 → 0.9817 | 0.8980 → 0.9359 | 0.8161 → 0.9483 | 546 → 569 | 21 → 11 | 12 → 0 | 4 → 0 | 62 → 121 |
+| django | 3,173 → 3,083 | 0.7817 → **0.7613** | 0.9899 → 0.9922 | 0.7323 → 0.8878 | 0.7526 → 0.9390 | 2,388 → 2,895 | 32 → 24 | 2 → 1 | 14 → 6 | 877 → 959 |
+| flask | 102 → 94 | 0.8230 → 0.8230 | 0.9118 → 0.9894 | 0.8230 → 0.8230 | 0.9118 → 0.9894 | 93 → 93 | 9 → 1 | 7 → 0 | 2 → 1 | 20 → 20 |
+| httpx | 87 | 0.9595 | 0.8161 | 0.9589 | 0.8046 | 70 | 16 | 0 | 0 | 3 |
+| rich | 426 → 419 | 0.9906 → **0.9882** | 0.9859 → 1.0000 | 0.9905 → 0.9905 | 0.9836 → 1.0000 | 419 → 419 | 6 → 0 | 6 → 0 | 0 → 0 | 4 → 5 |
+| scrapy | 902 → 944 | 0.7381 → 0.7725 | 1.0000 → 1.0000 | 0.6998 → 0.8790 | 0.8271 → 0.9926 | 746 → 937 | 0 → 0 | 0 | 0 | 320 → 278 |
+| sqlalchemy | 2,762 → 2,592 | 0.6513 → 0.7455 | 0.6608 → 0.8059 | 0.6513 → 0.7455 | 0.6608 → 0.8059 | 1,825 → 2,089 | 937 → 503 | 308 → 0 | 393 → 245 | 977 → 713 |
+| prometheus (go) | 5,574 | 0.8907 | 0.8687 | 0.6829 | 0.2295 | 1,279 | 732 | 0 | 0 | 594 |
+| vue (ts) | 1,186 | 0.6190 | 0.9975 | 0.5851 | 0.7825 | 928 | 3 | 0 | 0 | 728 |
+
+**Recall against all of SCIP's pairs falls on three fixtures:** celery 0.9127 → 0.8296, django 0.7817 → 0.7613, rich 0.9906 → 0.9882. Every pair behind the fall is one SCIP has only through a namespace symbol. The before and after hand graphs (the same runs' artifacts) show this:
+
+| fixture | pairs removed | of them SCIP had | of them SCIP had by a use | pairs added | added, SCIP has by a use | added, SCIP does not have |
+|---|---:|---:|---:|---:|---:|---:|
+| celery | 98 | 82 | 0 | 29 | 23 | 6 |
+| django | 598 | 589 | 0 | 508 | 507 | 1 |
+| flask | 8 | 0 | 0 | 0 | 0 | 0 |
+| rich | 7 | 1 | 0 | 0 | 0 | 0 |
+| scrapy | 149 | 149 | 0 | 191 | 191 | 0 |
+| sqlalchemy | 456 | 0 | 0 | 286 | 264 | 22 |
+
+- **No fixture loses a pair SCIP confirms by a use.** The pairs removed that SCIP had are all an import statement naming a package (`from celery.utils import functional` is an occurrence of the module symbol `celery.utils`). Nothing the package's `__init__` defines is used through them. Change (a) removes exactly these by design, and finding 48 explains why its gate holds confirmation by a use.
+- **Against use pairs, recall and precision rise or hold on every fixture.**
+- **The fix adds 29 pairs SCIP does not have:** celery 6, django 1, sqlalchemy 22. They are hand-only "other". Two celery samples were read in the source. `celery/events/receiver.py` does `from celery.app import app_or_default`, and `celery/app/__init__.py` takes that name `from celery._state import app_or_default`. The new pair `receiver.py → _state.py` is what the source says, but SCIP credits neither file with a use. Why was not investigated. The other 27 were not read one by one.
+- **sqlalchemy clears the product's admission floor.** Its precision, the product gate's recall, rises from 0.6608 to 0.8059, above 0.80 by 0.0059, so `--refs scip` now admits its index. See the SCIP fixtures below.
+
+**What is left for Python:**
+- **Module-object imports of a package.** Examples are `from .. import util` followed by `util.x`, and django's GEOS `capi` case (finding 47). These are sqlalchemy's remaining 245 "re-export" hand-only pairs, django's 6 and flask's 1. They need the attribute uses (`alias.attr`) followed into the package, not the import statement. That is a follow-up.
+- **Facade modules that are not packages.** Examples are sqlalchemy's `schema.py` and `types.py` (245 "other"). The fix leaves them alone, because (b) starts only from a package.
+- **Star imports.** 38 pairs, unchanged. Hand is right there.
+
+**SCIP-only moves where hand's pairs move.** It rises on celery (62 → 121) and django (877 → 959) by the namespace pairs removed. Its "re-export" class falls, because that class needs hand to link the package (finding 48's rule). On sqlalchemy it falls from 977 to 713, and on scrapy from 320 to 278, as hand now links the defining files.
+
+### District churn against the old fixtures
+
+The same after-run's `hand_map_vs_fixture`, which is the placement of this branch's hand map against the committed fixture before re-derivation. `full-fixtures` in the same run reports the same placements through `tolmap parity`. The node-order band is finding 47's: the partitioner's own spread on an unchanged graph under eight vertex shuffles.
+
+| fixture | placement vs old fixture | Δq | districts old → new | `E` old → new | node-order band (finding 47) |
+|---|---:|---:|---|---|---|
+| celery | 52.8% | 0.0107 | 7 → 7 | 669 → 600 | 71.4–100.0 |
+| django | 80.8% | 0.0165 | 12 → 14 | 3,173 → 3,083 | 79.2–93.3 |
+| flask | 70.8% | 0.0103 | 4 → 3 | 102 → 94 | 100.0 |
+| rich | 49.0% | 0.0156 | 4 → 4 | 426 → 419 | 24.0–80.0 |
+| scrapy | 85.1% | 0.0099 | 8 → 7 | 902 → 944 | 72.9–97.3 |
+| sqlalchemy | 92.6% | 0.0096 | 6 → 7 | 2,762 → 2,592 | 95.0–100.0 |
+| httpx, prometheus, vue | 100.0% | 0.0000 | unchanged | unchanged | |
+
+- Every Δq is within 0.02. Every placement except the three unchanged fixtures is below 95%, so the six Python fixtures that changed are re-derived.
+- django, rich and scrapy move inside the partitioner's own node-order band.
+- celery, flask and sqlalchemy move beyond it.
+- flask's "ctx & init__" district, held together by the package `__init__` edges that (a) removes, merges into "app & cli".
+
+These are placements against a fixture. They measure agreement, not correctness.
+
+### Re-derivation
+
+The procedure follows finding 23 and CLAUDE.md's "Checks before a change lands". Each changed fixture was rebuilt by the product at its pin, with its naming cache seeded from the committed map (`eval/seed_names.py`). `full-fixtures` then compares against the result.
+- **The maps come from `hand-score`, not remote-build.** They are the maps of [CI run 36184125477](https://github.com/onsager-ai/tolmap/actions/runs/36184125477)'s `hand-score` job, which now seeds names. That job clones with full history, as `full-fixtures` does.
+- **Why not remote-build.** Its fixture band clones to depth 4000. With the unchanged binary, it builds django at 75.2% against django's own committed fixture, although `E` is identical. The co-change history differs. [Remote-build run 36179010716](https://github.com/onsager-ai/tolmap/actions/runs/36179010716) showed this, and the other five fixtures agreed between the two routes. The remote-build fixture band is therefore not a faithful re-derivation route for django. Finding 23's re-derivation did not include django.
+- **What was committed.**
+  - `data/{celery,django,flask,rich,scrapy,sqlalchemy}.json` keep the committed fixtures' key set. The product's extra keys (`C`, `coverage`, neighbourhoods and centroids) are dropped: parity does not read them, and a schema test reads `data/flask.json` as an old map without `C`.
+  - `data/fixtures.toml` marks the six `generator = "rust-python-reexports"`, which `eval/verify_fixtures.py` skips. Only httpx and vue remain Python-reference fixtures.
+  - `data/ci/flask.graph.json` is re-dumped from the same job (`dump-graph --refs hand`, in the old file's key shape). Its co-change on 10 of 245 edges now comes from Rust's history walk rather than the old dump's.
+  - httpx's graph did not change (all 16 of its package links are star imports), so `data/httpx.json` and `data/ci/httpx.graph.json` are untouched.
+
+Renames, matched through the parity gate's district matching:
+
+| fixture | previous name | re-derived name |
+|---|---|---|
+| celery | utils & loaders | events & utils |
+| celery | worker | worker & consumer |
+| celery | contrib & concurrency, events & apps | (unmatched) → utils & contrib, concurrency |
+| django | models & db | db & models |
+| django | sessions | sessions & views |
+| django | template & utils | template |
+| django | gis · gdal | gdal & gis |
+| django | (new) | checks, serializers |
+| flask | ctx & init__ | app & cli |
+| flask | app & testing | (merged) |
+| rich | box & json | abc & json |
+| rich | bar & loop, abc & ansi | (unmatched) → bar & box, ansi & repr |
+| scrapy | downloadermiddlewares | downloadermiddlewares & spidermi |
+| scrapy | command line | commands |
+| scrapy | spider middleware | (merged) |
+| sqlalchemy | util & engine | engine & asyncio |
+| sqlalchemy | (new) | util & event |
+
+### The SCIP fixtures
+
+The product gate's hand pair count and recall change on every fixture whose hand graph changed. For the seven admitted Python fixtures, the SCIP map is the same (100.0% placement in the same run's `scip-fixtures`), so only the recorded `coverage.references` changes.
+
+sqlalchemy's path flips from `hand` (fallback) to `scip`: its old SCIP fixture was the hand map, and it now places 77.9% against it, Δq 0.0230. The six changed `data/scip/*.json` files are re-recorded from the same run's `record/` artifact. For sqlalchemy that means 7 districts, q 0.4088, and path `scip` at recall 0.8059. The margin over the floor is 0.0059, so a small change to either resolver can flip it back. The `scip-fixtures` gate's path check will make such a flip visible.
+
+`data/scip/hand_score.json` is lowered to the after-run's numbers, which finding 48's gate now holds.
+
+### Not verified
+- The 29 added pairs SCIP does not have, apart from the two celery samples above.
+- Why scip-python credits no file with a use of a re-exported `app_or_default`.
+- `eval/batch_stability.py` was not run. It imports the frozen Python reference, which has no route for this change, as in finding 23. The before-and-after placement above is the churn measurement.

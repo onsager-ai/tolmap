@@ -1109,9 +1109,10 @@ jobs:
             # not enough -- docs/ARCHITECTURE.md's documented clone strategy.
             git clone --quiet --filter=blob:none "$url" "$dir"
             git -C "$dir" checkout --quiet "$sha"
-            # --refs hand: data/*.json is the frozen Python reference's
-            # output (or, for two fixtures, the Rust hand path's -- see
-            # data/fixtures.toml), and neither knows SCIP. The SCIP path is
+            # --refs hand: data/*.json is the hand path's output -- the
+            # frozen Python reference's for httpx and vue, the Rust
+            # product's for the other seven (data/fixtures.toml's
+            # `generator`) -- and neither knows SCIP. The SCIP path is
             # gated against its own fixtures in `scip-fixtures` below.
             ./target/release/tolmap build "$dir" --pkg "$pkg" --lang "$lang" \
               --refs hand --name "$name" --out full-out --resolution 1.1

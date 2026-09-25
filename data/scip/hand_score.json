@@ -6,98 +6,98 @@
  "rows": [
   {
    "files": 161,
-   "hand_fingerprint": "27e3de3b54408eb91745b1ed1710eef6b4945250ab3c34f4150a616035164944",
-   "hand_only": 21,
+   "hand_fingerprint": "eb16e9a5eb9ce7ea5dd937fd7f21ac1e58154931c6cac12f7279c478def6d4b1",
+   "hand_only": 11,
    "hand_only_by_class": {
-    "other": 5,
+    "other": 11,
     "package spread": 0,
-    "re-export": 4,
+    "re-export": 0,
     "star import": 0,
-    "submodule via package": 12
+    "submodule via package": 0
    },
-   "hand_pairs": 669,
+   "hand_pairs": 600,
    "lang": "py",
    "name": "celery",
-   "precision": 0.9686,
-   "precision_counting_reexports": 0.9895,
-   "precision_uses": 0.8161,
-   "recall": 0.9127,
-   "recall_uses": 0.898,
+   "precision": 0.9817,
+   "precision_counting_reexports": 0.9817,
+   "precision_uses": 0.9483,
+   "recall": 0.8296,
+   "recall_uses": 0.9359,
    "scip_fingerprint": "d97aa7ee4f3161cfeb57f179bbcf62b8df1b137e7cc7b6f1b45bf1f90c2c1508",
-   "scip_only": 62,
+   "scip_only": 121,
    "scip_only_by_class": {
-    "inferred type": 11,
-    "inherited member": 1,
-    "other": 17,
-    "re-export": 33
+    "inferred type": 51,
+    "inherited member": 3,
+    "other": 58,
+    "re-export": 9
    },
    "scip_pairs": 710,
    "scip_use_pairs": 608,
-   "shared": 648,
-   "shared_namespace_only": 102,
-   "shared_namespace_only_to_package": 89,
-   "shared_uses": 546
+   "shared": 589,
+   "shared_namespace_only": 20,
+   "shared_namespace_only_to_package": 7,
+   "shared_uses": 569
   },
   {
    "files": 851,
-   "hand_fingerprint": "f13508a98dcb7ef838af09b95fca33858d7dfbc81e5bb75742894019d57485fd",
-   "hand_only": 32,
+   "hand_fingerprint": "a2e4e5cbc0a89fdfb9c269c2d1a68e7d074fd3616162faa4d80c7df29fca7e1c",
+   "hand_only": 24,
    "hand_only_by_class": {
-    "other": 7,
+    "other": 8,
     "package spread": 0,
-    "re-export": 14,
+    "re-export": 6,
     "star import": 9,
-    "submodule via package": 2
+    "submodule via package": 1
    },
-   "hand_pairs": 3173,
+   "hand_pairs": 3083,
    "lang": "py",
    "name": "django",
-   "precision": 0.9899,
-   "precision_counting_reexports": 0.9953,
-   "precision_uses": 0.7526,
-   "recall": 0.7817,
-   "recall_uses": 0.7323,
+   "precision": 0.9922,
+   "precision_counting_reexports": 0.9948,
+   "precision_uses": 0.939,
+   "recall": 0.7613,
+   "recall_uses": 0.8878,
    "scip_fingerprint": "b36032597414084586a76cbabf583dfeb56a3fa888090b826d92af49805bf96e",
-   "scip_only": 877,
+   "scip_only": 959,
    "scip_only_by_class": {
-    "inferred type": 31,
-    "inherited member": 55,
-    "other": 46,
-    "re-export": 745
+    "inferred type": 130,
+    "inherited member": 147,
+    "other": 468,
+    "re-export": 214
    },
    "scip_pairs": 4018,
    "scip_use_pairs": 3261,
-   "shared": 3141,
-   "shared_namespace_only": 753,
-   "shared_namespace_only_to_package": 717,
-   "shared_uses": 2388
+   "shared": 3059,
+   "shared_namespace_only": 164,
+   "shared_namespace_only_to_package": 128,
+   "shared_uses": 2895
   },
   {
    "files": 24,
-   "hand_fingerprint": "6202ad444a64677cf6e11c22ad18971515c7b8c5cd3bc9d5037ee96f3d0fc0d0",
-   "hand_only": 9,
+   "hand_fingerprint": "27a5eb1d99a5bb4a37bca797e7ffc3cafb133239f5b106791ab42423a1b66863",
+   "hand_only": 1,
    "hand_only_by_class": {
     "other": 0,
     "package spread": 0,
-    "re-export": 2,
+    "re-export": 1,
     "star import": 0,
-    "submodule via package": 7
+    "submodule via package": 0
    },
-   "hand_pairs": 102,
+   "hand_pairs": 94,
    "lang": "py",
    "name": "flask",
-   "precision": 0.9118,
-   "precision_counting_reexports": 0.9902,
-   "precision_uses": 0.9118,
+   "precision": 0.9894,
+   "precision_counting_reexports": 0.9894,
+   "precision_uses": 0.9894,
    "recall": 0.823,
    "recall_uses": 0.823,
    "scip_fingerprint": "fbfe8e2f8a63893dcc5254e482164ed04f764e584adc34178607fd4a6953d914",
    "scip_only": 20,
    "scip_only_by_class": {
-    "inferred type": 1,
-    "inherited member": 16,
+    "inferred type": 2,
+    "inherited member": 17,
     "other": 1,
-    "re-export": 2
+    "re-export": 0
    },
    "scip_pairs": 113,
    "scip_use_pairs": 113,
@@ -183,41 +183,7 @@
   },
   {
    "files": 100,
-   "hand_fingerprint": "5e48941b8c3f563eb4c3d3e367cca3d892ed8af7c3953ac36bef17eada0d5254",
-   "hand_only": 6,
-   "hand_only_by_class": {
-    "other": 0,
-    "package spread": 0,
-    "re-export": 0,
-    "star import": 0,
-    "submodule via package": 6
-   },
-   "hand_pairs": 426,
-   "lang": "py",
-   "name": "rich",
-   "precision": 0.9859,
-   "precision_counting_reexports": 1.0,
-   "precision_uses": 0.9836,
-   "recall": 0.9906,
-   "recall_uses": 0.9905,
-   "scip_fingerprint": "f790d469e3941e24435a1cca8efbfa9dac99313f0a6eafa11b6eb629f7d958fd",
-   "scip_only": 4,
-   "scip_only_by_class": {
-    "inferred type": 4,
-    "inherited member": 0,
-    "other": 0,
-    "re-export": 0
-   },
-   "scip_pairs": 424,
-   "scip_use_pairs": 423,
-   "shared": 420,
-   "shared_namespace_only": 1,
-   "shared_namespace_only_to_package": 1,
-   "shared_uses": 419
-  },
-  {
-   "files": 188,
-   "hand_fingerprint": "f6dec58322be3b8da8131bb9391a759996032d7b5de2e760f549fe545d2403b4",
+   "hand_fingerprint": "bedd0eb1e03f714d55f2346861b0dad56fa3e606a76dec2797b876a5e7be876d",
    "hand_only": 0,
    "hand_only_by_class": {
     "other": 0,
@@ -226,62 +192,96 @@
     "star import": 0,
     "submodule via package": 0
    },
-   "hand_pairs": 902,
+   "hand_pairs": 419,
+   "lang": "py",
+   "name": "rich",
+   "precision": 1.0,
+   "precision_counting_reexports": 1.0,
+   "precision_uses": 1.0,
+   "recall": 0.9882,
+   "recall_uses": 0.9905,
+   "scip_fingerprint": "f790d469e3941e24435a1cca8efbfa9dac99313f0a6eafa11b6eb629f7d958fd",
+   "scip_only": 5,
+   "scip_only_by_class": {
+    "inferred type": 5,
+    "inherited member": 0,
+    "other": 0,
+    "re-export": 0
+   },
+   "scip_pairs": 424,
+   "scip_use_pairs": 423,
+   "shared": 419,
+   "shared_namespace_only": 0,
+   "shared_namespace_only_to_package": 0,
+   "shared_uses": 419
+  },
+  {
+   "files": 188,
+   "hand_fingerprint": "617145b932bd21a8a83cff416537fac30eb391e066c1835c4389a282849a8168",
+   "hand_only": 0,
+   "hand_only_by_class": {
+    "other": 0,
+    "package spread": 0,
+    "re-export": 0,
+    "star import": 0,
+    "submodule via package": 0
+   },
+   "hand_pairs": 944,
    "lang": "py",
    "name": "scrapy",
    "precision": 1.0,
    "precision_counting_reexports": 1.0,
-   "precision_uses": 0.8271,
-   "recall": 0.7381,
-   "recall_uses": 0.6998,
+   "precision_uses": 0.9926,
+   "recall": 0.7725,
+   "recall_uses": 0.879,
    "scip_fingerprint": "a69347ff1c8e71de0b31aa62832f6fcac8d8e629c68bdf308064aae3ae88c52c",
-   "scip_only": 320,
+   "scip_only": 278,
    "scip_only_by_class": {
-    "inferred type": 70,
-    "inherited member": 2,
-    "other": 5,
-    "re-export": 243
+    "inferred type": 161,
+    "inherited member": 4,
+    "other": 103,
+    "re-export": 10
    },
    "scip_pairs": 1222,
    "scip_use_pairs": 1066,
-   "shared": 902,
-   "shared_namespace_only": 156,
-   "shared_namespace_only_to_package": 155,
-   "shared_uses": 746
+   "shared": 944,
+   "shared_namespace_only": 7,
+   "shared_namespace_only_to_package": 6,
+   "shared_uses": 937
   },
   {
    "files": 258,
-   "hand_fingerprint": "9acdfdd771610d7e9d510c025bec648317eea8389d0edd3d15c728c6b2024e43",
-   "hand_only": 937,
+   "hand_fingerprint": "912385bb77c1327d5b8a0523b0dbf34c6cafcde6cf1eda8324efb7e66c31a176",
+   "hand_only": 503,
    "hand_only_by_class": {
-    "other": 223,
+    "other": 245,
     "package spread": 0,
-    "re-export": 393,
+    "re-export": 245,
     "star import": 13,
-    "submodule via package": 308
+    "submodule via package": 0
    },
-   "hand_pairs": 2762,
+   "hand_pairs": 2592,
    "lang": "py",
    "name": "sqlalchemy",
-   "precision": 0.6608,
-   "precision_counting_reexports": 0.9008,
-   "precision_uses": 0.6608,
-   "recall": 0.6513,
-   "recall_uses": 0.6513,
+   "precision": 0.8059,
+   "precision_counting_reexports": 0.8927,
+   "precision_uses": 0.8059,
+   "recall": 0.7455,
+   "recall_uses": 0.7455,
    "scip_fingerprint": "d9d25ce4ebc3068007a23420073bce527f58bf35cb1c800ea969874b0ec100de",
-   "scip_only": 977,
+   "scip_only": 713,
    "scip_only_by_class": {
-    "inferred type": 105,
-    "inherited member": 55,
-    "other": 117,
-    "re-export": 700
+    "inferred type": 204,
+    "inherited member": 139,
+    "other": 45,
+    "re-export": 325
    },
    "scip_pairs": 2802,
    "scip_use_pairs": 2802,
-   "shared": 1825,
+   "shared": 2089,
    "shared_namespace_only": 0,
    "shared_namespace_only_to_package": 0,
-   "shared_uses": 1825
+   "shared_uses": 2089
   },
   {
    "files": 239,
@@ -318,5 +318,5 @@
    "shared_uses": 928
   }
  ],
- "source": "https://github.com/onsager-ai/tolmap/actions/runs/36180594364"
+ "source": "https://github.com/onsager-ai/tolmap/actions/runs/36184125477"
 }

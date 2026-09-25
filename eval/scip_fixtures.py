@@ -8,8 +8,9 @@
 
 SCIP is the oracle the hand-written resolver is tuned against (owner
 decision, 2026-09-25T16:56Z: "Tune hand, SCIP as oracle"; `hand` stays
-the default). `data/*.json` is the frozen Python reference's output and only
-knows the hand resolver, so the nine-fixture parity gate (ci.yml
+the default). `data/*.json` is the hand path's output (the frozen Python
+reference's, or the Rust product's where data/fixtures.toml names a
+`generator`) and only knows the hand resolver, so the nine-fixture parity gate (ci.yml
 `full-fixtures`) pins `--refs hand`, and the SCIP path gets fixtures of its
 own, derived under its extraction as CLAUDE.md's "Checks before a change
 lands" requires, so the oracle itself cannot drift unnoticed:

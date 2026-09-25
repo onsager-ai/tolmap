@@ -40,6 +40,19 @@
 # 35756191891. The other seven remain Python-reference fixtures and were not
 # changed. `generator = "rust-node-relative"` makes that boundary explicit to
 # `eval/verify_fixtures.py` instead of pretending Python can reproduce it.
+#
+# On 2026-09-26 the Rust hand resolver stopped crediting a package's
+# `__init__.py` for `from pkg import submodule` and began crediting a
+# re-exported name to the file that defines it (issue #110, owner decision
+# "Tune hand, SCIP as oracle"; finding 49). The frozen Python reference does
+# neither, so celery, django, flask, rich, scrapy and sqlalchemy were rebuilt
+# by the Rust product at their pins with their naming caches seeded first, by
+# ci.yml's `hand-score` job on the full-history clone `full-fixtures` uses.
+# Not remote-build.yml: its depth-4000 clone builds django at 75.2% against
+# its own fixture even with an unchanged binary. Each keeps the committed
+# fixture's key set, and `generator = "rust-python-reexports"` marks them.
+# httpx's graph did not change (its package imports are star imports), and
+# neither did Go or TypeScript.
 
 [celery]
 url = "https://github.com/celery/celery.git"
@@ -47,9 +60,10 @@ commit = "208a803655672d63cf2a257d30f39c672a5b4bcf"
 pkg = "celery"
 lang = "py"
 parcels = false
+generator = "rust-python-reexports"
 files = 161
 districts = 7
-q = 0.3606
+q = 0.3499
 
 [django]
 url = "https://github.com/django/django.git"
@@ -57,9 +71,10 @@ commit = "a3f0642f69277f01611d0d3e829fc3b85aded2ec"
 pkg = "django"
 lang = "py"
 parcels = false
+generator = "rust-python-reexports"
 files = 851
-districts = 12
-q = 0.5061
+districts = 14
+q = 0.5226
 
 [flask]
 url = "https://github.com/pallets/flask.git"
@@ -67,9 +82,10 @@ commit = "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35"
 pkg = "src/flask"
 lang = "py"
 parcels = true
+generator = "rust-python-reexports"
 files = 24
-districts = 4
-q = 0.0326
+districts = 3
+q = 0.0429
 
 [httpx]
 url = "https://github.com/encode/httpx.git"
@@ -98,9 +114,10 @@ commit = "9d8f9a372cc5916fd4781fec207ced7ddac2f08f"
 pkg = "rich"
 lang = "py"
 parcels = false
+generator = "rust-python-reexports"
 files = 100
 districts = 4
-q = 0.3437
+q = 0.3593
 
 [scrapy]
 url = "https://github.com/scrapy/scrapy.git"
@@ -108,9 +125,10 @@ commit = "fe30c1882a12651c19c5a94d71e9f14e442456c7"
 pkg = "scrapy"
 lang = "py"
 parcels = false
+generator = "rust-python-reexports"
 files = 188
-districts = 8
-q = 0.3454
+districts = 7
+q = 0.3355
 
 [sqlalchemy]
 url = "https://github.com/sqlalchemy/sqlalchemy.git"
@@ -118,10 +136,10 @@ commit = "4883307858ea3def775b5a1cc1c01a5be6dfe213"
 pkg = "lib/sqlalchemy"
 lang = "py"
 parcels = true
-generator = "rust-node-relative"
+generator = "rust-python-reexports"
 files = 258
-districts = 6
-q = 0.4318
+districts = 7
+q = 0.4222
 
 [vue]
 url = "https://github.com/vuejs/core.git"
