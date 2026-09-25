@@ -33,6 +33,15 @@ Two directions, named for this job, not the product gate:
 - **precision** = hand pairs SCIP also has / hand pairs. This is the number
   the product gate calls "recall" (sqlalchemy's 0.6608 in finding 45).
 
+Each is also reported over SCIP's **use pairs** (`*_uses`): the pairs at
+least one non-namespace symbol supports (the ingest's `uses` flag). The rest
+are namespace-only: the import statement `from pkg.sub import x` is itself
+an occurrence of the module symbol `pkg.sub`, whose definition is the
+package's `__init__.py`, so SCIP has that pair even when nothing the
+`__init__` defines is used. That is the pair a package over-attribution fix
+removes, so "confirmed by a use" is what the gate holds, and
+`shared_namespace_only` counts the hand pairs SCIP confirms only that way.
+
 Pairs one side has alone are classified by heuristics, not proof; the samples
 in the JSON exist so a class can be checked by reading source.
 
@@ -424,7 +433,12 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
     lang_of = {n["file"]: n.get("lang") or hand_graph["lang"] for n in hand_graph["nodes"]}
     hand = {(a, b) for a, b, _ in hand_graph["imports"] if a != b and lang_of.get(a) == lang}
     scip = {(a, b) for a, b, *_ in ingest["file_edges"] if a != b and lang_of.get(a) == lang}
+    # The ingest's fifth column: 1 when a non-namespace symbol supports the
+    # pair (eval/scip_ingest.py `pair_uses`).
+    scip_uses = {(row[0], row[1]) for row in ingest["file_edges"]
+                 if row[0] != row[1] and lang_of.get(row[0]) == lang and (len(row) < 5 or row[4])}
     shared = hand & scip
+    shared_uses = hand & scip_uses
     hand_only = sorted(hand - scip)
     scip_only = sorted(scip - hand)
     scip_targets, hand_targets = defaultdict(set), defaultdict(set)
@@ -461,6 +475,13 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
         "recall": ratio(len(shared), len(scip)),
         "precision": ratio(len(shared), len(hand)),
         "precision_counting_reexports": ratio(reexport_kept, len(hand)),
+        "scip_use_pairs": len(scip_uses),
+        "shared_uses": len(shared_uses),
+        "recall_uses": ratio(len(shared_uses), len(scip_uses)),
+        "precision_uses": ratio(len(shared_uses), len(hand)),
+        "shared_namespace_only": len(shared - scip_uses),
+        "shared_namespace_only_to_package": sum(
+            1 for _, b in shared - scip_uses if is_package_file(b)),
         "hand_only": len(hand_only),
         "scip_only": len(scip_only),
         "hand_only_by_class": {c: sum(1 for r in rows_hand if r["class"] == c) for c in HAND_CLASSES},
@@ -552,6 +573,13 @@ def markdown(rows: list[dict]) -> str:
             d = r["by_directory"]
             out.append(f"| {r['name']} (by directory) | {r['lang']} | {d['hand_pairs']:,} | {d['scip_pairs']:,} "
                        f"| {d['shared']:,} | {pct(d['recall'])} | {pct(d['precision'])} | | | | |")
+    out += ["", "### Against SCIP's use pairs (namespace-only pairs set aside)", "",
+            "| fixture | lang | SCIP use pairs | shared by a use | recall (uses) | precision (uses) | confirmed only by a namespace (to a package) |",
+            "|---|---|---:|---:|---:|---:|---:|"]
+    for r in scored:
+        out.append(f"| {r['name']} | {r['lang']} | {r['scip_use_pairs']:,} | {r['shared_uses']:,} "
+                   f"| {pct(r['recall_uses'])} | {pct(r['precision_uses'])} "
+                   f"| {r['shared_namespace_only']:,} ({r['shared_namespace_only_to_package']:,}) |")
     out += ["", "### Hand-only pairs by class", "",
             "| fixture | lang | hand-only | " + " | ".join(HAND_CLASSES) + " |",
             "|---|---|---:|" + "---:|" * len(HAND_CLASSES)]
@@ -592,7 +620,9 @@ def summary(args) -> int:
 
 
 BASELINE_FIELDS = ("name", "lang", "files", "hand_pairs", "scip_pairs", "shared", "recall", "precision",
-                   "precision_counting_reexports", "hand_only", "scip_only", "hand_only_by_class",
+                   "precision_counting_reexports", "scip_use_pairs", "shared_uses", "recall_uses",
+                   "precision_uses", "shared_namespace_only", "shared_namespace_only_to_package",
+                   "hand_only", "scip_only", "hand_only_by_class",
                    "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory")
 
 
@@ -620,8 +650,15 @@ def gate(args) -> int:
       `re-export` hand-only counts may not rise. Each such pair claims a
       dependency on a package `__init__` whose own content is not what is
       used, against CLAUDE.md's "numbers must be a lower bound".
-    - Confirmed pairs may only go up: `shared` may not fall. Hand losing a
-      pair SCIP confirms is the lower bound shrinking.
+    - Pairs confirmed by a use may only go up: `shared_uses` may not fall.
+      Hand losing a pair SCIP confirms by a use is the lower bound
+      shrinking. A pair SCIP has only through a namespace symbol is the
+      import statement naming a package, not a use of anything the
+      package's `__init__` defines; gating on it would block removing the
+      very over-attribution the second check asks to go down. (This was
+      learned the hard way: the first version gated all of `shared`, and
+      the package fix's first run tripped it on 85 celery pairs, every one
+      of them namespace-only. `shared` is still reported.)
     It does not gate `star import` (hand is right, SCIP blind), `other`
     (heuristic and mixed), the SCIP-only classes (they move when hand adds a
     correct pair, which is progress) or the ratios, which follow from the
@@ -647,12 +684,15 @@ def gate(args) -> int:
                 problems.append(f"hand-only `{c}` rose {was} → {now}")
             elif now < was:
                 improved.append(f"{label}: hand-only `{c}` {was} → {now}")
-        if r["shared"] < b["shared"]:
-            problems.append(f"confirmed pairs fell {b['shared']} → {r['shared']}")
-        elif r["shared"] > b["shared"]:
-            improved.append(f"{label}: confirmed pairs {b['shared']} → {r['shared']}")
+        if r["shared_uses"] < b["shared_uses"]:
+            problems.append(f"pairs confirmed by a use fell {b['shared_uses']} → {r['shared_uses']}")
+        elif r["shared_uses"] > b["shared_uses"]:
+            improved.append(f"{label}: pairs confirmed by a use {b['shared_uses']} → {r['shared_uses']}")
         print(f"{'FAIL' if problems else 'PASS'} {label}: recall {pct(b['recall'])} → {pct(r['recall'])}, "
               f"precision {pct(b['precision'])} → {pct(r['precision'])}, "
+              f"recall (uses) {pct(b['recall_uses'])} → {pct(r['recall_uses'])}, "
+              f"precision (uses) {pct(b['precision_uses'])} → {pct(r['precision_uses'])}, "
+              f"shared {b['shared']} → {r['shared']} (by a use {b['shared_uses']} → {r['shared_uses']}), "
               f"hand-only {b['hand_only']} → {r['hand_only']}, SCIP-only {b['scip_only']} → {r['scip_only']}"
               + (" -- " + "; ".join(problems) if problems else ""))
         if problems:
@@ -700,7 +740,11 @@ def self_test(_args) -> int:
         ]
         graph = {"lang": "py", "nodes": nodes, "imports": hand}
         py = PythonFiles(graph, repo)
-        row = score_language("synthetic", "py", graph, None, {"file_edges": [p + [1, 1, 0] for p in scip]}, py)
+        # One pair SCIP has only through a namespace symbol (the import
+        # statement naming the module); every other pair is a use.
+        namespace = {("pkg/cli.py", "pkg/util.py")}
+        edges = [p + [1, 1, 0 if tuple(p) in namespace else 1] for p in scip]
+        row = score_language("synthetic", "py", graph, None, {"file_edges": edges}, py)
         by_pair = {(r["a"], r["b"]): r["class"] for r in row["hand_only_pairs"]}
         # `from . import util` + `from . import Engine`: the statement naming
         # Engine is a re-export; util alone would be `submodule via package`.
@@ -713,6 +757,8 @@ def self_test(_args) -> int:
                                              "other": 0}, row["scip_only_by_class"]
         assert (row["hand_pairs"], row["scip_pairs"], row["shared"]) == (8, 7, 5), row
         assert row["recall"] == round(5 / 7, 4) and row["precision"] == round(5 / 8, 4), row
+        assert (row["scip_use_pairs"], row["shared_uses"], row["shared_namespace_only"]) == (6, 4, 1), row
+        assert row["shared_namespace_only_to_package"] == 0, row
 
         # Without the Engine import the package link is submodule-only.
         (repo / "pkg/cli.py").write_text("from . import util\nfrom .core import Engine as E\n")
