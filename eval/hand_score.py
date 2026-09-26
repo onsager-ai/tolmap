@@ -464,6 +464,10 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
                  if row[0] != row[1] and lang_of.get(row[0]) == lang and (len(row) < 5 or row[4])}
     shared = hand & scip
     shared_uses = hand & scip_uses
+    # A use pair some non-member symbol supports: the source names something
+    # the target declares (the ingest's `member_only_use_pairs` are the rest).
+    member_only = {(a, b) for a, b in ingest.get("member_only_use_pairs", [])}
+    shared_named_uses = shared_uses - member_only
     hand_only = sorted(hand - scip)
     scip_only = sorted(scip - hand)
     scip_targets, hand_targets = defaultdict(set), defaultdict(set)
@@ -476,7 +480,6 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
     for a, b in hand_only:
         why, context = classify_hand_only(lang, a, b, scip_targets[a], hand_targets, py)
         rows_hand.append({"a": a, "b": b, "class": why, "context": context})
-    member_only = {(a, b) for a, b in ingest.get("member_only_use_pairs", [])}
     rows_scip = [{"a": a, "b": t, "class": classify_scip_only(lang, a, t, hand_targets, py, member_only)}
                  for a, t in scip_only]
 
@@ -506,6 +509,7 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
         "shared_uses": len(shared_uses),
         "recall_uses": ratio(len(shared_uses), len(scip_uses)),
         "precision_uses": ratio(len(shared_uses), len(hand)),
+        "shared_named_uses": len(shared_named_uses) if "member_only_use_pairs" in ingest else None,
         "shared_namespace_only": len(shared - scip_uses),
         "shared_namespace_only_to_package": sum(
             1 for _, b in shared - scip_uses if is_package_file(b)),
@@ -696,7 +700,8 @@ def summary(args) -> int:
 
 BASELINE_FIELDS = ("name", "lang", "files", "hand_pairs", "scip_pairs", "shared", "recall", "precision",
                    "precision_counting_reexports", "scip_use_pairs", "shared_uses", "recall_uses",
-                   "precision_uses", "shared_namespace_only", "shared_namespace_only_to_package",
+                   "precision_uses", "shared_named_uses", "shared_namespace_only",
+                   "shared_namespace_only_to_package",
                    "hand_only", "scip_only", "hand_only_by_class",
                    "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory", "go")
 
@@ -734,6 +739,19 @@ def gate(args) -> int:
       learned the hard way: the first version gated all of `shared`, and
       the package fix's first run tripped it on 85 celery pairs, every one
       of them namespace-only. `shared` is still reported.)
+    For Go the third check holds `shared_named_uses` instead, once both
+    the baseline and the run have it: the shared use pairs some non-member
+    symbol supports, where the importer names what the target declares.
+    Go's resolver links an import to the files declaring the names the
+    importer selects (finding 50); a pair SCIP supports only through a
+    method or field reached on a value (`x := pkg.New(); x.Run()`) is one
+    no syntax-level resolver can name, and the whole-package link held it
+    only by linking every file. This was also learned from a run: finding
+    50's first run lost exactly 24 such pairs on prometheus (1,279 → 1,255
+    by a use), all member-only, and none named. `shared_uses` is still
+    reported. Python and TypeScript keep the `shared_uses` gate: their
+    resolvers link by import statement, so a member-only pair there is
+    still an import the file makes.
     It does not gate `star import` (hand is right, SCIP blind), `other`
     (heuristic and mixed), the SCIP-only classes (they move when hand adds a
     correct pair, which is progress) or the ratios, which follow from the
@@ -759,10 +777,15 @@ def gate(args) -> int:
                 problems.append(f"hand-only `{c}` rose {was} → {now}")
             elif now < was:
                 improved.append(f"{label}: hand-only `{c}` {was} → {now}")
-        if r["shared_uses"] < b["shared_uses"]:
-            problems.append(f"pairs confirmed by a use fell {b['shared_uses']} → {r['shared_uses']}")
-        elif r["shared_uses"] > b["shared_uses"]:
-            improved.append(f"{label}: pairs confirmed by a use {b['shared_uses']} → {r['shared_uses']}")
+        held = "shared_uses"
+        if key[1] == "go" and b.get("shared_named_uses") is not None \
+                and r.get("shared_named_uses") is not None:
+            held = "shared_named_uses"
+        what = "pairs confirmed by a named use" if held == "shared_named_uses" else "pairs confirmed by a use"
+        if r[held] < b[held]:
+            problems.append(f"{what} fell {b[held]} → {r[held]}")
+        elif r[held] > b[held]:
+            improved.append(f"{label}: {what} {b[held]} → {r[held]}")
         print(f"{'FAIL' if problems else 'PASS'} {label}: recall {pct(b['recall'])} → {pct(r['recall'])}, "
               f"precision {pct(b['precision'])} → {pct(r['precision'])}, "
               f"recall (uses) {pct(b['recall_uses'])} → {pct(r['recall_uses'])}, "
@@ -874,6 +897,23 @@ def self_test(_args) -> int:
         assert outcomes["by_outcome"] == {"narrowed": 1, "opaque": 1, "undeclared_name": 1}, outcomes
         assert (outcomes["links_before"], outcomes["links_after"]) == (8, 6), outcomes
         assert outcomes["top_names"]["undeclared_name"] == [["Run", 1]], outcomes
+
+        # The gate: Go holds pairs confirmed by a named use, once both sides
+        # carry it; Python keeps holding every pair confirmed by a use.
+        def gate_rows(lang, shared_uses, named):
+            return [{"name": "x", "lang": lang, "status": "scored", "scip_fingerprint": "f", "scip_pairs": 1,
+                     "hand_only_by_class": {c: 0 for c in HAND_CLASSES}, "shared_uses": shared_uses,
+                     "shared_named_uses": named, "recall": 0, "precision": 0, "recall_uses": 0,
+                     "precision_uses": 0, "shared": 0, "hand_only": 0, "scip_only": 0}]
+
+        def run_gate(base, run):
+            (repo / "base.json").write_text(json.dumps({"rows": base}))
+            (repo / "run.json").write_text(json.dumps(run))
+            return gate(argparse.Namespace(baseline=repo / "base.json", summary=repo / "run.json"))
+        assert run_gate(gate_rows("go", 10, 8), gate_rows("go", 9, 8)) == 0
+        assert run_gate(gate_rows("go", 10, 8), gate_rows("go", 10, 7)) == 1
+        assert run_gate(gate_rows("go", 10, None), gate_rows("go", 9, 8)) == 1
+        assert run_gate(gate_rows("py", 10, 8), gate_rows("py", 9, 8)) == 1
     print("hand_score self-test passed")
     return 0
 
