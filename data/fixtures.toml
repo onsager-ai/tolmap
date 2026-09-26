@@ -101,6 +101,16 @@
 # was rebuilt the same way, by `hand-score` at its pin with its naming cache
 # seeded first, and `generator = "rust-go-build-tags"` marks it. No Python
 # or TypeScript fixture changed.
+#
+# Later still on 2026-09-26 the namer stopped numbering a district whose name
+# collides with another's: the holder keeps the name and the newcomer is named
+# by the terms that set it apart (owner decision "Duplicate district names";
+# finding 56). A cached numbered name whose base another district holds is
+# renamed once. celery's `utils & contrib 2` became `loaders & utils` and
+# prometheus's `runtime & util 2` became `statfs`, from `hand-score` at their
+# pins with their naming caches seeded first. Only `names` changed; every other
+# key equals the previous fixture. `generator = "rust-distinct-names"` marks
+# them.
 
 [celery]
 url = "https://github.com/celery/celery.git"
@@ -108,7 +118,7 @@ commit = "208a803655672d63cf2a257d30f39c672a5b4bcf"
 pkg = "celery"
 lang = "py"
 parcels = false
-generator = "rust-python-module-objects"
+generator = "rust-distinct-names"
 files = 161
 districts = 7
 q = 0.3552
@@ -152,7 +162,7 @@ commit = "296080c0a504ea0e72941ef16143f0a9702b137b"
 pkg = "."
 lang = "go"
 parcels = false
-generator = "rust-go-build-tags"
+generator = "rust-distinct-names"
 files = 444
 districts = 11
 q = 0.5519

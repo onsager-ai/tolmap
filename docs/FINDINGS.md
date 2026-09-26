@@ -2773,3 +2773,44 @@ It does not settle:
 - The cfg-gated-file sample only reads the first 15 lines of the candidate file itself; a `#[cfg(...)]` on that file's `mod` declaration elsewhere is invisible to it, undercounting the true cfg/feature exclusion set (documented directly above for both ripgrep and tokio).
 - The derive-macro sample is a name-based proxy over a fixed marker table (`eval/rust_scip_stats.py`'s `MARKERS`); a macro that expands into a free function, a differently-named method, or a trait impl with no method at all would show as a false "not observed".
 - Byte-for-byte index determinism across repeated runs (finding 41's scip-go result) was not checked here — each variant ran once.
+
+## 56. A colliding district is named by the terms that set it apart from the name's holder; the two numbered fixture names become `loaders & utils` and `statfs`, and nothing else moves
+
+Owner decision, session `16030105`, AskUserQuestion, transcript line 7583 (2026-09-26T05:47:37Z): **"Duplicate district names"**, "Make the second name distinguishing rather than numbered, keeping the previous-name rule (finding 4). Cost: fixture names change, and naming changes are subtle." [PR #144](https://github.com/onsager-ai/tolmap/pull/144).
+
+**What changed** (`src/naming.rs`, `assign_unique` and `distinguishing_name`; both namer paths, IDF and `TOLMAP_NAMER=model`, now share them).
+- **The holder keeps the name.** Every cache hit claims its previous name before any new name is considered, largest district first. Before, a larger newcomer could take a smaller district's cached name: the IDF path then gave both districts the same name, and the model path renumbered the cached one.
+- **The newcomer is named against the holder.** The namer's own IDF weighting, with document frequency taken over the two districts only, so a directory both share scores near zero. Terms are still admitted by the whole map's frequency, so the package root cannot name it. The candidates, in order:
+  1. the usual one-or-two-term name over those scores;
+  2. each term the collided name lacks, paired with the collided name's lead term (`tsdb & runtime` beside `runtime & util`);
+  3. each term alone;
+  4. the same three over filename words, weighted against the holder's file stems.
+  The first that carries a term the collided name lacks, and repeats no taken name's terms in any order, wins.
+- **A number is the last resort**, when nothing qualifies: `name 2`, the first free number, cut to fit 32 characters. Such a name's cache entry is marked `numbered`.
+- **A new name that repeats a taken name's terms in another order is a collision.** `util & runtime` beside `runtime & util` is the same name to a reader. Two cached names that differ only in order are both kept.
+- **A model reply that repeats a taken name** goes through the same rule. The model is told the taken names but is not trusted to have avoided them.
+
+**Where the spec left room.**
+- **A cached numbered name is treated as a collision, not as a previous name.** "Only newcomers change" and "the fixture names change" can hold together only this way: seeded from the committed map, every district is a cache hit, so without this rule nothing would move. A cached name is recognised as numbered when it is another held name plus ` 2`, ` 3`, and so on. `eval/seed_names.py` does not carry the `numbered` flag. It is given a distinguishing name once, if one exists, and keeps its number otherwise. That is the only way a cache hit's name moves. The replacement is then cached as an ordinary name, and a rerun keeps it (unit-tested byte for byte). `python 3` is not numbered unless another district is named `python`.
+- **The anchored pair (step 2) is not in the spec.** It was added after the first CI re-derivation ([run 36230621698](https://github.com/onsager-ai/tolmap/actions/runs/36230621698)) named celery's district `loaders`, alone. `loaders` is on 2 of its 29 files and would claim the whole district. The filename words (step 4) were added in the same revision. Without them, prometheus kept `runtime & util 2`, because both of its districts sit entirely in `util/runtime/`.
+
+### Re-derivation
+
+[CI run 36231506348](https://github.com/onsager-ai/tolmap/actions/runs/36231506348) at `2e7e48c`, jobs `hand-score` (full-history clone, naming cache seeded from the committed map), `full-fixtures` and `scip-fixtures`, all green. Every committed key of every fixture's `hand-score` map other than `names` (`F`, `N`, `E`, `L`, `S`, `U`, `P` where present, `districts`, `roads`, `q`) equals the committed fixture's. The two fixtures below were patched in `names` only, so every other byte is unchanged.
+
+| fixture | district | size | previous name | new name | holder of the base name |
+|---|---:|---:|---|---|---|
+| celery | 2 | 29 | utils & contrib 2 | loaders & utils | 0, `utils & contrib`, 33 files |
+| prometheus | 8 | 4 | runtime & util 2 | statfs | 7, `runtime & util`, 4 files |
+
+No other name changed on any of the nine fixtures. No fixture had a numbered name other than these two, or two districts with one name.
+
+- **celery.** Against its holder, `utils` and `contrib` score first and third, so the usual name says nothing new. `loaders` is the first term the holder lacks.
+- **prometheus.** The two districts split `util/runtime/` by file: `limits_*`/`vmlimits_*` against `statfs*`. `statfs` is on all four stems of the newcomer and on none of the holder's.
+
+`data/fixtures.toml` marks both `generator = "rust-distinct-names"`. Their `files`, `districts` and `q` are unchanged. There is no measurement change: membership, edges and layout are untouched, so `eval/batch_stability.py` was not run.
+
+### Not verified
+- How often the new rule fires on the 132-repository corpus (finding 18), or how its names read there. Only the nine fixtures were re-derived, and they had two collisions between them.
+- The model path's collision handling is unit-tested with a model reply injected into the shared resolver. No real model call was made.
+- Whether the frozen Python reference's numbering (`name N`, where N counts the used names that start with `name`) left cached names whose base is no longer held. Such a name keeps its number under this rule.
