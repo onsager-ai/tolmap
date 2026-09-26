@@ -453,6 +453,13 @@ for each class c, largest first, and each queued job j bound to c, in order:
 
 With one worker this reduces to today's `refresh_queue_etas` sum exactly, and the phase 0 test pins that equivalence. With `TOLMAP_MAX_CONCURRENT_JOBS` above 1 in local mode it fixes the overestimate noted in §0. `queue_position` becomes the position within the job's class queue, which is the count of jobs that must start before it, as the field already means. An optional `eta_start` range (`low_s`, `high_s`, from the low and high ends of each job ahead) can be added next to `eta_start_s` without changing it.
 
+Phase 0 checks the claim that the estimate and the scheduler cannot disagree instead of assuming it ([#148](https://github.com/onsager-ai/tolmap/pull/148)). `src/service/schedule.rs` replays the dispatch rule itself as events, where the worker that frees next takes whatever queue `next_for` names, and compares that replay with this pseudo-code on 5,000 generated queue shapes with up to three classes and four workers, ties included. They agree job for job and bit for bit. Two details of the pseudo-code carry that agreement, and an implementation that drops either one breaks it:
+
+- **Classes are taken largest first.** Taking queued jobs in admission order across classes would let a large worker that frees first take an older small job while a large job waits in its own queue, which dispatch never does. By the time a smaller class is simulated, every larger job is placed, each no later than the time any larger worker is left free at, so a larger worker is only offered small jobs from the moment its own queues are empty.
+- **The tie-break by worker id belongs to the dispatcher too.** Worker ids run smallest class first, and a job admitted while several eligible workers are idle starts on the lowest id. It therefore takes an idle worker of its own class before an idle larger one, in the simulation and in dispatch alike.
+
+The implementation keeps times relative to now (`free_at - now` as a remaining time from the start), because `(now + a) - now` is not `a` in floating point, and the one-slot equivalence is exact, not within a rounding error.
+
 The ETA is only as good as its inputs. Finding 38 measured a cold-start n8n underestimate of 42 s at 10% of the run. With several workers, the start estimate of a queued job adds up several such errors, so the range widens with queue depth. That is honest, and the UI already shows a range.
 
 ### 7.3 Fairness
@@ -479,7 +486,7 @@ Every phase ships on its own, keeps single-process mode unchanged and on by defa
 
 **Phase 0: measure and schedule, in today's process.**
 - The master records the job child's peak RSS (`getrusage(RUSAGE_CHILDREN)` after reaping) next to its stage durations in `job_timings`, and `eta.rs` gains a peak-memory prediction seeded from findings 18 and 44–46. It changes nothing about a map, so the determinism and parity gates are untouched.
-- `refresh_queue_etas` is replaced by the §7.2 simulation over a scheduler with per-class queues. Local mode has one class with `TOLMAP_MAX_CONCURRENT_JOBS` slots, so single-slot behaviour is identical and multi-slot ETAs become correct.
+- `refresh_queue_etas` is replaced by the §7.2 simulation over a scheduler with per-class queues. Local mode has one class with `TOLMAP_MAX_CONCURRENT_JOBS` slots, so single-slot behaviour is identical and multi-slot ETAs become correct. **Implemented in [#148](https://github.com/onsager-ai/tolmap/pull/148)** (`src/service/schedule.rs`): jobs bind to a class with no memory prediction yet, which means the largest and, in local mode, the only class, until the memory model is wired in.
 
 **Phase 1: the network protocol, over loopback.**
 - `run_blocking` splits into prepare, execute and register (§2). Local mode calls execute in-process and its behaviour is byte-for-byte unchanged.
