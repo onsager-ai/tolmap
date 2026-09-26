@@ -1731,8 +1731,10 @@ def self_test(_args) -> int:
         assert run_gate(gate_rows("go", 10, 8), gate_rows("go", 10, 7)) == 1
         assert run_gate(gate_rows("go", 10, None), gate_rows("go", 9, 8)) == 1
         assert run_gate(gate_rows("py", 10, 8), gate_rows("py", 9, 8)) == 1
-        # Rust is reported, never gated (issue #126), even on a fall.
-        assert run_gate(gate_rows("rs", 10, 8), gate_rows("rs", 2, 1)) == 0
+        # Rust is gated like the others since the owner saw its numbers
+        # (issue #126, "Gate Rust now"): a fall fails, a hold passes.
+        assert run_gate(gate_rows("rs", 10, 8), gate_rows("rs", 2, 1)) == 1
+        assert run_gate(gate_rows("rs", 10, 8), gate_rows("rs", 10, 8)) == 0
 
         # Rust (finding 57): the report's outcomes and both classifiers.
         rs_files = ["src/lib.rs", "src/a.rs", "src/b.rs", "src/b/c.rs", "src/d.rs"]
