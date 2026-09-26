@@ -50,7 +50,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_DB_PATH` | `<TOLMAP_CACHE_DIR>/tolmap.sqlite3` | the SQLite store |
 | `TOLMAP_CACHE_DIR` | system temp dir `/tolmap-cache` | clone cache + indexed map files |
 | `TOLMAP_CLONE_CACHE_BYTES` | `2147483648` (2 GiB) | total clone-cache LRU eviction budget; never rejects or evicts the active clone |
-| `TOLMAP_MAX_CONCURRENT_JOBS` | `1` | maximum blocking index jobs running at once; zero is treated as one |
+| `TOLMAP_MAX_CONCURRENT_JOBS` | `1` | maximum blocking index jobs running at once; zero is treated as one. Ignored with `TOLMAP_WORKERS=loopback:N`, where each agent is one slot and N jobs run at once |
 | `TOLMAP_MAX_QUEUED_JOBS` | `16` | pending jobs allowed beyond running jobs; zero disables waiting |
 | `TOLMAP_RATE_LIMIT_PER_IP` | `30` | requests per window, per source IP, under `/api/` |
 | `TOLMAP_RATE_LIMIT_WINDOW_SECONDS` | `60` | window for the per-IP limit |
@@ -65,7 +65,13 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 | `TOLMAP_INSTALL_NODE_PREFIX` | prefix of `node` on `PATH` | the Node.js prefix mounted read-only in the install sandbox, whose `bin` has `node`, `npm` and `pnpm`; the runtime image sets `/opt/node` |
 | `TOLMAP_INSTALL_TIME_LIMIT_S` | `1200` (20 min) | wall-time bound of one install, in seconds (fractions allowed); past it the install is killed and falls back (`install_timeout`) |
 | `TOLMAP_INSTALL_DISK_BUDGET_BYTES` | `20000000000` (20 GB) | bytes one install may add to the checkout and its sandbox home; past it the install is killed and falls back (`install_disk_budget`) |
+| `TOLMAP_WORKERS` | unset | where jobs run (#97 phase 1, `docs/WORKER_TIER.md`). Unset or `local`: in this process, each job in a `tolmap worker` child, exactly as without the variable. `loopback:N` (N ≥ 1): `tolmap serve` opens the worker listener on loopback and starts N `tolmap worker --connect` agents on this host, each with its own random token and its own cache directory under `<TOLMAP_CACHE_DIR>/agents/<n>`; every job runs in an agent. Any other value stops startup with an error |
+| `TOLMAP_WORKER_LISTEN` | `127.0.0.1:0` | with `loopback:N`: the worker listener's address (the agents' channel and artifact URLs); port 0 picks a free port. Must be a loopback address, and anything else, or an unparsable value, stops startup with an error. Not used in local mode |
+| `TOLMAP_WORKER_HEARTBEAT_S` | `15` | with `loopback:N`: seconds between an agent's heartbeats |
+| `TOLMAP_WORKER_LEASE_TTL_S` | `60` | with `loopback:N`: seconds a job's lease lasts without a heartbeat or event from its agent; when it runs out the job fails with `worker_crashed` (`worker lost: lease expired`) |
 | `TOLMAP_INSTALL_MEMORY_MAX` | unset (off) | bytes: puts the install in a memory cgroup, with a 4,096-pid limit. Off by default because nsjail's cgroups on the production host's cgroup v1 are unverified, and a cgroup that cannot be created makes every install fall back |
+
+`TOLMAP_WORKERS` and `TOLMAP_WORKER_LISTEN` are the exceptions to the fallback rule above: they decide whether a listener opens and processes start, so a bad value is a startup error, not a default.
 
 These queue, cache and rate settings map to `service::config::Limits`. There are no file-count, clone-size, history-depth or job-time admission caps. The co-change algorithm still reads at most 4000 commits per build; that horizon does not reject a repository with deeper history.
 
@@ -242,6 +248,8 @@ terminal snapshot before its connection closes, and a client that only
 polls `GET /api/jobs/{job_id}` sees the same terminal state on its next
 request instead of the job hanging forever.
 
+With `TOLMAP_WORKERS=loopback:N` the contract is the same: queued and running jobs fail with `server_stopping` (phase 1 keeps job state in memory), then the service tells each agent to stop, which kills its job child, and waits up to 10 seconds for the agents to exit before killing them.
+
 ### `GET /api/jobs/{job_id}/events`
 
 Server-Sent Events. The current snapshot is sent immediately, then changed
@@ -278,7 +286,7 @@ also accepts `all_sources: true` to union every detected source that clears
 the detector's floor; the service currently sends `false` and retains its
 existing single-source confidence check.
 
-This child protocol is unchanged by issue #97's worker tier. A remote worker agent talks to the master over a separate channel protocol (`proto` 1) that wraps these same v1 events in session messages (`hello`, `assign`, `job_event`, …); it is specified in `docs/WORKER_TIER.md` §3 and is not a public API, so it is not documented here.
+This child protocol is unchanged by issue #97's worker tier. A worker agent talks to the master over a separate channel protocol (`proto` 1) that wraps these same v1 events in session messages (`hello`, `assign`, `job_event`, …); it is specified in `docs/WORKER_TIER.md` §3 and is not a public API, so it is not documented here. It runs on its own listener (`TOLMAP_WORKER_LISTEN`), never on this API's port: nothing under `/workers` is routed here. With `TOLMAP_WORKERS=loopback:N` an agent runs each job with the same executor local mode uses, so the job child, its events and its map are the same; a job whose agent is lost, or whose lease runs out, fails with `worker_crashed` and a message saying which.
 
 ### `GET /api/maps`
 

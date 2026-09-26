@@ -39,6 +39,10 @@ on:
       - "src/service/jobs.rs"
       - "src/service/executor.rs"
       - "src/service/worker_result.rs"
+      # #97 phase 1: the loopback step below runs the same job through a
+      # worker agent over the channel.
+      - "src/service/workers.rs"
+      - "src/service/agent.rs"
       - ".github/workflows/scip-image-build.yml"
   workflow_dispatch:
     inputs:
@@ -346,6 +350,102 @@ jobs:
           echo "--- peak memory log lines ---"
           grep -E "peak memory|no peak memory measured" sandbox/service.log || true
           docker rm -f tolmap-service
+
+      # #97 phase 1: the same two jobs with TOLMAP_WORKERS=loopback:1. The
+      # master starts one `tolmap worker --connect` agent on loopback; the
+      # agent (root, like the service above) clones, runs the job child as
+      # uid 10001, answers its install request with nsjail on its own host,
+      # and uploads the artifacts file by file. The master's log must carry
+      # the same warm-start, names-cache and peak-memory lines as local
+      # mode's, the peak now measured by the agent and sent over the
+      # channel.
+      - name: "Loopback worker agent: the same SCIP jobs through TOLMAP_WORKERS=loopback:1"
+        run: |
+          set -euo pipefail
+          rm -rf sandbox/loopback-fixture
+          cp -r tests/fixtures/scip/ts-workspace sandbox/loopback-fixture
+          git -C sandbox/loopback-fixture init --quiet && git -C sandbox/loopback-fixture add -A
+          git -C sandbox/loopback-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
+          docker run -d --name tolmap-loopback --privileged -p 127.0.0.1:8788:8787 \
+            -e TOLMAP_WORKERS=loopback:1 \
+            -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 -e TOLMAP_CACHE_DIR=/srv/cache \
+            -v "$PWD/sandbox/loopback-fixture:/srv/fixture:ro" \
+            --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap serve'
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8788/api/healthz && break; sleep 1; done
+          run_job() {
+            job=$(curl -fsS -X POST -H 'content-type: application/json' \
+              -d '{"path":"/srv/fixture"}' http://127.0.0.1:8788/api/index)
+            echo "$job"
+            id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<<"$job")
+            for _ in $(seq 1 300); do
+              snapshot=$(curl -fsS "http://127.0.0.1:8788/api/jobs/$id")
+              status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$snapshot")
+              [ "$status" = done ] || [ "$status" = failed ] && break
+              sleep 2
+            done
+            echo "$snapshot" | python3 -m json.tool | head -80
+          }
+          run_job
+          first_id=$id
+          docker logs tolmap-loopback 2>&1 | tail -60
+          [ "$status" = done ]
+          python3 - "$snapshot" <<'PY'
+          import json, sys
+          stages = {row["id"]: row for row in json.loads(sys.argv[1])["stages"]}
+          for stage in ("clone", "install"):
+              print(stage, "stage:", stages[stage])
+              assert stages[stage]["state"] == "done", stages[stage]
+          PY
+          curl -fsS http://127.0.0.1:8788/api/maps/local/fixture -o sandbox/loopback-map.json
+          python3 eval/check_scip_references.py sandbox/loopback-map.json --expect-install ts=installed
+
+          first_commit=$(git -C sandbox/loopback-fixture rev-parse HEAD)
+          cat > sandbox/loopback-fixture/packages/core/src/extra.ts <<'TS'
+          import { add } from "./math";
+
+          export function twice(value: number): number {
+            return add(value, value);
+          }
+          TS
+          git -C sandbox/loopback-fixture add -A
+          git -C sandbox/loopback-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m "second commit"
+          run_job
+          second_id=$id
+          docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
+          echo "--- agent and assignment lines ---"
+          grep -E "worker agent|assigned to worker agent|worker listener" sandbox/loopback.log || true
+          echo "--- the jobs' worker log lines ---"
+          grep -E "^job ($first_id|$second_id): (warm start|cold start|names cache)" sandbox/loopback.log || true
+          echo "--- peak memory log lines ---"
+          grep -E "peak memory|no peak memory measured" sandbox/loopback.log || true
+          [ "$status" = done ]
+          grep -q "worker listener on http://127.0.0.1:" sandbox/loopback.log
+          grep -qE "^worker agent 0 \(agent-[0-9]+\) connected" sandbox/loopback.log
+          grep -qx "job $first_id: assigned to worker agent 0 (epoch 1)" sandbox/loopback.log
+          grep -qx "job $first_id: cold start: no previous map" sandbox/loopback.log
+          if ! grep -qx "job $second_id: warm start from $first_commit" sandbox/loopback.log; then
+            echo "::error::the loopback agent's job did not warm-start from $first_commit"
+            exit 1
+          fi
+          if ! grep -qE "^job $second_id: names cache: [1-9][0-9]* entries in hand$" sandbox/loopback.log; then
+            echo "::error::the loopback agent's job had no cached district names in hand"
+            exit 1
+          fi
+          # The agent reaps the job child with wait4 and sends the peak on
+          # the terminal event; the master logs it as in local mode.
+          for id in "$first_id" "$second_id"; do
+            if ! grep -qE "^job $id peak memory [0-9]+ MiB" sandbox/loopback.log; then
+              echo "::error::no peak memory line for loopback job $id"
+              exit 1
+            fi
+          done
+          # SIGTERM: the master fails nothing (both jobs are done), tells the
+          # agent `shutdown now`, reaps it, and exits cleanly.
+          docker stop tolmap-loopback
+          docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
+          tail -20 sandbox/loopback.log
+          grep -q "tolmap serve: shut down cleanly" sandbox/loopback.log
+          docker rm -f tolmap-loopback
 
       - name: Size and time summary
         if: always()
