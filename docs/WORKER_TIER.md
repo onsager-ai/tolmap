@@ -1,10 +1,10 @@
 # Production worker tier (#97)
 
-**Status: specification, not implemented.** Owner timing ruling on [#97](https://github.com/onsager-ai/tolmap/issues/97) (AskUserQuestion, session `16030105`, transcript line 6521, 2026-09-25T13:51:51Z): **"After P2a merges."** P2a ([#127](https://github.com/onsager-ai/tolmap/pull/127)) merged 2026-09-25T18:07Z and the P1c sandbox ([#129](https://github.com/onsager-ai/tolmap/pull/129)) 17:48Z, so the design starts here. That ruling expected P2a to make SCIP the default; the owner then kept `hand` as the default (finding 45, "The default did not flip", 16:56Z). This matters below, because most hosted jobs are therefore small.
+**Status: specification, not implemented; the owner's decisions on it are recorded in §10.** Owner timing ruling on [#97](https://github.com/onsager-ai/tolmap/issues/97) (AskUserQuestion, session `16030105`, transcript line 6521, 2026-09-25T13:51:51Z): **"After P2a merges."** P2a ([#127](https://github.com/onsager-ai/tolmap/pull/127)) merged 2026-09-25T18:07Z and the P1c sandbox ([#129](https://github.com/onsager-ai/tolmap/pull/129)) 17:48Z, so the design starts here. That ruling expected P2a to make SCIP the default; the owner then kept `hand` as the default (finding 45, "The default did not flip", 16:56Z). This matters below, because most hosted jobs are therefore small.
 
 Owner rulings this document builds on, all on #97: **workers never touch the database**; they dial the master over WebSocket or another RPC channel, so the database is never exposed (2026-09-24). **No caps**: no file-count, clone-size, history-depth or job-time admission caps. **Cancel + queue ETA**: every queued job shows its ETA, including the jobs ahead of it (transcript line 2157, 2026-09-24T01:20:31Z).
 
-Reserved to the owner, and listed in §10 rather than decided here: hosting spend (worker classes, autoscaling bounds, object storage), credentials (worker tokens, any platform API token), and making the worker endpoint publicly reachable. This document is provider-neutral on purpose. Machine names, prices and deploy configuration belong in the private hosting repository, not here.
+The owner decided the spend, credential and exposure questions this design raised on 2026-09-26 (§10, recorded on #97): one 16 GB worker class with at most one worker, WebSocket, artifacts over HTTPS through the master, per-worker tokens on a private network with nothing public, the sandbox moving with the first remote worker, and bounded retries. Any change to those, and any platform API credential, stays reserved to the owner. This document is provider-neutral on purpose. Machine names, prices and deploy configuration belong in the private hosting repository, not here.
 
 ## Terms
 
@@ -24,7 +24,7 @@ The MVP seam is already most of the way there. What this design keeps and what i
 
 - **One child per job, JSON lines.** `src/worker.rs` defines `WorkerSpec` and `WorkerEvent` (`stage_started`, `progress`, `stage_finished`, `features`, `log`, `result`, `error`, `install_request`), each carrying `v: 1`. `docs/API.md` "Worker protocol (v1)" is the contract. The child never opens the database.
 - **The service does the trusted work around the child.** It clones into its own LRU cache, copies a fresh non-hardlinked checkout into a per-job directory, drops the child to uid 10001 with an empty environment plus an allowlist, and answers `install_request` by running the nsjail install as root (`run_blocking`, `process_worker_exe`, `ServiceInstall`).
-- **Results are paths on a shared filesystem.** The child's `result` names `map_path`, `symbols_path`, `symbols_dir` and `names_cache` inside its output directory; the service renames them into the store. That cannot cross a network and must not: a remote worker's path must never be opened on the master (§5.3).
+- **Results are paths on a shared filesystem.** The child's `result` names `map_path`, `symbols_path`, `symbols_dir` and `names_cache`; the service moves them into the store. Paths cannot cross a network, so in remote mode results name artifacts instead (§3.4).
 - **All job state is in memory.** The `JobRegistry` queue, cancel set and snapshots live in the serving process. A master restart fails every job (`server_stopping`), and the private deploy notes record the resulting risk when a platform stops an idle machine.
 - **The cost model predicts time, not memory.** `src/service/eta.rs` predicts per-stage seconds from repository features (finding 38) and refits from completed jobs. Nothing predicts peak memory, which class selection needs.
 - **The queue ETA assumes one slot.** `refresh_queue_etas` adds up the remaining time of every running job, then each queued job in turn. With `TOLMAP_MAX_CONCURRENT_JOBS` above 1 that overstates the wait, because a queued job starts when the first slot frees, not after all of them.
@@ -34,7 +34,7 @@ The MVP seam is already most of the way there. What this design keeps and what i
 
 **Goals**
 
-1. **Scale out large reports.** Run jobs on more than one machine at once, and put each job on a machine with enough memory for it, so a 13 GB job does not need every machine to be 16 GB and a 20 MB job does not wait behind it.
+1. **Scale out large reports.** Move indexing onto worker machines sized for it, and make the master able to run several workers and several classes, placing each job on one with enough memory. The first fleet is one 16 GB worker (§10.1); adding workers or classes later is configuration plus an owner spend decision, not a redesign.
 2. **Isolate untrusted indexing from the master.** Repository-controlled bytes (clone, parse, indexers, installs) run on worker hosts that hold no database, no stored maps, no service secrets and nothing but their own worker token. A sandbox escape on a worker then reaches one worker, not the service. This ends the in-VM sandbox's accepted kernel-exploit risk (#117, `docs/SCIP_SANDBOX.md` §2 and §4.2).
 3. **Keep the no-caps ruling.** No admission caps. A job that exceeds its worker's memory moves to a larger class; it fails only when no class can hold it.
 4. **Honest per-job ETA with several workers.** Extend the owner's "cancel + queue ETA" to many workers and several classes, with the ETA computed by the same rule the dispatcher uses.
@@ -100,6 +100,8 @@ The prediction uses, in order:
 Memory needs a model next to the time model. Each finished job records its peak RSS alongside its stage durations: the agent (or the master in local mode) reads it from `getrusage(RUSAGE_CHILDREN)` after reaping the job child, which gives the largest single process in the tree, the same measure findings 41–46 report. The model fits log(peak) against log(files) per reference mode and language, seeded from the findings above, and uses an upper quantile. It errs high on purpose: underestimating memory costs an OOM and a rerun, while overestimating costs a larger machine for one job. This does not conflict with the rule that numbers must be a lower bound, which governs what a map reports, not internal scheduling estimates.
 
 A job whose prediction exceeds every class is bound to the largest class anyway. No caps means best effort, never a rejection.
+
+With the decided fleet of one class (§10.1), every job binds to that class, and rerouting (step 3) and OOM escalation (step 4) have nowhere to go: an OOM there fails the job (§6). The memory model is still worth building in phase 0. It records what jobs actually need, which is the evidence for any later class decision, and it makes class selection work the day a second class exists.
 
 ### 2.2 Job and lease states
 
@@ -319,36 +321,27 @@ The master persists a job's snapshot at stage boundaries and every few seconds, 
 
 ## 4. Transport
 
-### 4.1 Control channel: WebSocket or gRPC
+### 4.1 Control channel: WebSocket (decided, §10.2)
 
-| | WebSocket | gRPC bidirectional streaming |
-|---|---|---|
-| server dependency | axum's `ws` feature (brings `tokio-tungstenite`); axum is already the HTTP stack | `tonic`, `prost`, `h2` and a code generator (`prost-build` needs `protoc`, or a pure-Rust substitute); a second server stack beside axum |
-| client dependency | `tokio-tungstenite` with rustls | `tonic` client |
-| schema | the serde types already in `src/worker.rs`, as JSON text frames; the v1 events cross unchanged | a `.proto` file: a second hand-written definition of the worker events next to the Rust types, which `CLAUDE.md` rules out ("two hand-written definitions will drift"), or opaque JSON bytes inside protobuf, which throws away what gRPC offers |
-| proxies and load balancers | an HTTP/1.1 Upgrade: passes nearly every reverse proxy and platform edge; needs keepalive traffic against idle timeouts, which the 15 s heartbeat provides | needs HTTP/2 end to end; some platform edges terminate HTTP/2 and speak HTTP/1.1 to the backend unless configured otherwise, and some corporate proxies strip trailers |
-| backpressure | TCP only; the application bounds its send queue and coalesces progress (§3.5) | per-stream HTTP/2 flow control, deadlines and keepalive built in |
-| debuggability | readable frames; `websocat` can play a fake worker | needs `grpcurl` and the `.proto` |
-| payload efficiency | JSON, about four frames a second per job at most | protobuf; irrelevant at this rate |
+The control channel is a WebSocket served by axum, using its `ws` feature (which brings `tokio-tungstenite`) on the server and `tokio-tungstenite` with rustls in the agent. Frames are JSON text built from the serde types in `src/worker.rs`, so the protocol's types stay defined once in Rust and the v1 events cross unchanged. The upgrade is plain HTTP/1.1, which passes reverse proxies and platform edges. The 15 s heartbeat doubles as keepalive against idle timeouts. TCP provides the only transport-level backpressure, so the application bounds its send queue and coalesces progress (§3.5). That is enough, because the only large payloads travel outside the channel (§4.2). A fake worker can be played with `websocat` in tests and debugging.
 
-**Recommendation: WebSocket.** It reuses the serde types that already define the seam, adds one small dependency family to a stack that is already axum and tokio, and crosses more proxies. gRPC's advantages, flow control and binary framing, matter for high-rate or large streams, and this design moves the only large payloads off the channel (§4.2). Deadlines and keepalive are replaced by the lease and heartbeat, which are needed anyway.
+*Considered: gRPC bidirectional streaming (tonic).* It offers per-stream flow control, deadlines and binary framing. But it needs a `.proto` file, which is a second hand-written definition of the worker events that `CLAUDE.md` rules out, or opaque JSON inside protobuf. It would also bring a second server stack beside axum and need HTTP/2 end to end, which some platform edges do not provide by default. At a few frames a second per job its advantages do not matter.
 
-### 4.2 Artifacts: over the channel, through the master, or presigned object storage
+### 4.2 Artifacts: HTTPS through the master (decided, §10.3)
 
 A map plus its symbols document and per-district files is small for most repositories (the nine committed fixtures are 0.1–0.6 MB each) but can reach tens of MB on the largest ones. That figure is the issue's estimate: the largest corpus map's size was not measured for this document. Artifacts flow both ways: results up, and warm-start maps and names caches down.
 
-| | A. streamed over the WebSocket | B. HTTPS PUT and GET to the master, lease-scoped | C. presigned object-storage URLs |
-|---|---|---|---|
-| how | chunked binary frames on the control channel | `PUT /workers/artifacts/{job}/{epoch}/{name}` with the worker token; the master checks the lease and streams the body to disk while hashing | the master signs short-lived URLs that expire with the lease; workers talk to the object store directly |
-| control traffic | heartbeats and cancels queue behind artifact chunks unless frames are interleaved by hand | unaffected | unaffected |
-| resume after a drop | needs chunk offsets and acknowledgement logic | retry the PUT; content-addressed, so a repeat is harmless | retry the PUT |
-| master load | bytes pass through the master's memory and bandwidth | bytes pass through the master's bandwidth and disk, streamed, not buffered | none; the master only signs |
-| new infrastructure | none | none | an object store, its credentials on the master, and a retention policy (spend and credentials, §10) |
-| worker credentials | the channel token | the channel token, checked against the lease | none standing: URLs die with the lease |
+Artifacts move as plain HTTPS requests to the master, on the same private listener as the channel (§5.6):
 
-**Recommendation: B now, with the protocol carrying URLs so C needs no protocol change.** `assign` gives the agent URLs, and the agent does not care whether they point at the master or an object store. B needs no new infrastructure and keeps artifacts off the control channel. C becomes worth it when the master tier has more than one API node, or when artifact traffic starts to matter for the master's size. That is phase 4 and an owner decision.
+- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch.
+- `GET` on the input URLs in `assign` fetches the previous map and the names cache, under the same lease check.
+- A retry is harmless: stored artifacts are content-addressed, so a repeat upload is a no-op.
+- Artifacts are stored on the master's disk, as maps are today.
+- **Retention is unchanged:** the newest `TOLMAP_RETAIN_COMMITS_PER_REPO` commits per slug, never the newest row. In addition, uploads from jobs that never registered (failed, cancelled or superseded) are deleted after 24 h.
 
-Integrity is the same in every option. Each upload carries its SHA-256, the master recomputes it while streaming, and a mismatch refuses the upload. Stored artifacts are content-addressed, so a duplicate upload is a no-op.
+`assign` gives the agent URLs, and the agent does not care where they point. Moving to presigned object-storage URLs therefore needs no protocol or worker change. That move waits until the master tier has more than one API node (phase 4), and it needs an object store, which is an owner decision.
+
+*Considered: streaming artifacts over the WebSocket.* It would put heartbeats and cancels behind 50 MB of chunks unless frames were interleaved by hand, and it needs its own chunk-resume logic. *Considered: presigned object storage now.* It adds an object store, its credentials and a retention policy, for no benefit while there is one master node.
 
 ### 4.3 Frame and message bounds
 
@@ -356,13 +349,15 @@ These bound the protocol, not jobs: the master rejects a control frame over 1 Mi
 
 ## 5. Security
 
-### 5.1 Worker authentication
+### 5.1 Worker authentication (decided, §10.4)
 
-The agent presents a **per-worker bearer token** in the `Authorization` header of the WebSocket upgrade and of every artifact request, never in a URL, where it would be logged. Non-loopback connections require TLS (`wss`, `https`); the agent refuses plain `ws` to anything but loopback.
+Each worker has its own **bearer token**. The agent presents it in the `Authorization` header of the WebSocket upgrade and of every artifact request, never in a URL, where it would be logged. Every connection uses TLS (`wss`, `https`) except loopback.
 
-Options for the credential itself are in §10.4. The recommendation is random 256-bit tokens, one per worker, stored on the master only as SHA-256 hashes in a file named by configuration, each line binding a hash to a `worker_id`. Revoking a worker means deleting its line; rotating means adding a new line, moving the worker to the new token, then deleting the old line. A small `tolmap worker-token new --id <id>` command would print the token once and the line to add. **Issuing, storing and rotating these tokens is a credential decision reserved to the owner.** Nothing in phases 0–2 needs one: loopback agents get an ephemeral token the master generates in memory at start-up (§8).
+Tokens are random 256-bit values. The master stores them only as SHA-256 hashes, in a file named by configuration, each line binding a hash to a `worker_id`. The master compares in constant time. Revoking a worker means deleting its line. Rotating means adding a new line, moving the worker to the new token, then deleting the old line. A small `tolmap worker-token new --id <id>` command prints a token once, together with the line to add. **The owner issues and rotates the tokens.** Nothing in phases 0–2 needs one: loopback agents get an ephemeral token that the master generates in memory at start-up (§8).
 
-On the worker host the token sits in a root-only file (mode 0600) read by the agent. The job child runs as uid 10001 with an empty environment, so it can read neither the file nor the agent's memory.
+On the worker host the token sits in a root-only file (mode 0600) that the agent reads. The job child runs as uid 10001 with an empty environment, so it can read neither the file nor the agent's memory.
+
+*Considered:* mutual TLS with a private CA, which means running a CA for no gain at one worker; and platform workload identity (OIDC), which ties the protocol to one provider.
 
 ### 5.2 What reaches a worker host, and what never does
 
@@ -386,7 +381,7 @@ Assume an attacker controls a worker host completely, root included, for example
 |---|---|
 | read or write the database | no route, no path, no credential ever reaches the host |
 | read or overwrite another slug's stored maps | artifact URLs are scoped to a job and epoch the worker holds; the master writes stored maps only after registration, under content-addressed names it chooses |
-| make the master open a file it names | in remote mode the master never interprets a worker-supplied string as a filesystem path: results name artifacts (§3.4), and the master chooses every path it writes. Local mode confines child-reported result paths to the job's output directory (phase 0) |
+| choose where the master writes | results name artifacts (§3.4), never paths; the master chooses every path it writes |
 | mint tokens, see other workers' tokens, or reach other workers | tokens are issued out of band and stored hashed; workers dial the master only |
 | obtain service secrets | none are on the host (§5.2) |
 
@@ -394,17 +389,17 @@ Assume an attacker controls a worker host completely, root included, for example
 
 Registration checks each artifact's SHA-256 and size, parses the map as a `MapDocument` and the symbols document against its schema, and checks that the result's `commit` is the job's pinned commit and `files` and `districts` match the document. Because tolmap's output is deterministic, the master can also re-run a sample of jobs on a second worker and compare digests. A mismatch is either a determinism bug or a lying worker, and both are worth an alert. The sampling rate is an operational setting; one job in fifty costs 2% more compute. Two results for the same `(slug, commit)` from different jobs should always be byte-identical, and the master logs any that are not.
 
-### 5.5 Where the nsjail sandbox goes
+### 5.5 Where the nsjail sandbox goes (decided, §10.5)
 
 The install sandbox moves with the executor: it runs on the worker host, started by the root agent, exactly as the root service starts it today (`docs/API.md` "Dependency installs"). Policy, mounts, egress proxy, self-test and the 20 min / 20 GB fallback bound are unchanged. `docs/SCIP_SANDBOX.md` §4.2 sets out why this ends the accepted risk: a kernel exploit from the jail now becomes root on a worker host that holds one token and no master data, instead of root on the machine holding the store, every map and the service's secrets. The in-VM jail still matters there, because it keeps install code away from the agent's token and the host's network.
 
 Two consequences follow. In remote mode the master no longer needs root, since it spawns no children and starts no jails, so it can run unprivileged. And the indexers, which run as the worker uid outside the jail (`docs/API.md` "Not covered"), now do so on a host with nothing of the master's to reach.
 
-Production runs `TOLMAP_REFS=hand` today, so the install path is not exercised in hosting at all. The kernel-exploit exposure the sandbox carries becomes live only when hosting enables `scip` with installs. Moving the sandbox is therefore tied to the first remote worker (phase 3), not urgent before it (§10.5).
+**Installs stay off in hosting until phase 3** (§10.5). Production runs `TOLMAP_REFS=hand` today, so neither installs nor indexers run in hosting, and the kernel-exploit risk accepted on #117 stays latent until then. In phase 3 the sandbox moves with the executor to the worker host, and `TOLMAP_SCIP_INSTALL=sandbox` may then be set there, never on the master.
 
-### 5.6 Exposing the worker endpoint
+### 5.6 The worker endpoint: a private listener (decided, §10.4)
 
-The worker endpoint is a separate listener (`TOLMAP_WORKER_BIND`, default unset, meaning off), not a route on the public site's port. This keeps it out from under the `/api` per-IP rate limit and the static-site fallback, and lets a deployment put it on a private interface when workers share a private network with the master. Loopback mode binds it to `127.0.0.1`. **Making it publicly reachable is reserved to the owner**, and is part of the decision in §10.4.
+The worker endpoint (the channel and the artifact URLs) is a separate listener (`TOLMAP_WORKER_BIND`, unset by default, meaning off), not a route on the public site's port. **It is reachable only on the provider's private network between the master and its workers. Nothing about it is public.** Loopback mode binds it to `127.0.0.1`. Keeping it off the public port also keeps it out from under the `/api` per-IP rate limit and the static-site fallback. Workers still dial out to the master and need no inbound ports. TLS and tokens apply on the private network too, so a peer that reaches the network still cannot act as a worker without a token.
 
 ## 6. Failure semantics under the no-caps ruling
 
@@ -412,9 +407,9 @@ No failure below is an admission cap: nothing is refused for size or time. Jobs 
 
 | event | detected by | master action | job outcome |
 |---|---|---|---|
-| **job child OOM-killed** | agent: child killed by SIGKILL with the memory cgroup's `oom_kill` count raised (or, without a cgroup, SIGKILL not sent by the agent) | agent sends `released` `oom` with the observed peak; master records the peak, rebinds the job to the next larger class, puts it at the head of that class's queue, epoch + 1 | continues on a larger worker; on the largest class, fails `worker_crashed` ("out of memory on the largest worker class") |
+| **job child OOM-killed** | agent: child killed by SIGKILL with the memory cgroup's `oom_kill` count raised (or, without a cgroup, SIGKILL not sent by the agent) | agent sends `released` `oom` with the observed peak; master records the peak, rebinds the job to the next larger class, puts it at the head of that class's queue, epoch + 1 | continues on a larger worker if a larger class exists; otherwise fails `worker_crashed` ("out of memory on the largest worker class"). With the decided single class (§10.1), an OOM fails the job |
 | **job child crashes otherwise** | agent: exit without `result` or `error` | forwarded as today | fails `worker_crashed` with exit status and last stage, as today |
-| **worker host dies, or its OOM takes the agent too** | lease expiry | attempt + 1, epoch + 1, head of the same class's queue; if that host died of memory (last heartbeat's `rss_bytes` near its class), rebind to the next class | continues; after the retry bound (§10.6), fails `worker_crashed` ("lost N workers") |
+| **worker host dies, or its OOM takes the agent too** | lease expiry | attempt + 1, epoch + 1, head of the same class's queue; if that host died of memory (last heartbeat's `rss_bytes` near its class), rebind to the next class | continues; after the retry bound (§10.6), fails `worker_crashed` ("lost N workers"), never refused at admission |
 | **channel lost, worker alive** | both sides | nothing within the lease TTL; the agent resumes (§3.5) | uninterrupted |
 | **channel lost past the lease TTL** | lease expiry | as "worker host dies"; the old agent learns `lease_lost` on reconnect and kills its child | continues elsewhere |
 | **master restarts mid-job** (remote mode) | agents see the channel close | on start-up, jobs and leases load from the store and every lease's deadline is extended by one TTL, so agents have time to reconnect and resume | uninterrupted; SSE clients reconnect and catch up with `GET` first, as `docs/API.md` already asks |
@@ -439,7 +434,7 @@ When an agent sends `ready`, it takes the head of its own class's queue. If that
 
 This gives the property the owner asked for: **a large job does not block small ones.** A 13 GB job waits for a large worker while small jobs keep flowing through small workers. The reverse holds too. A large worker spills only when its own queue is empty, so a large job that arrives waits at most for the one small job that worker is already running. No reservation logic is needed.
 
-With one class, which is every deployment until phase 3, this is exactly today's single FIFO.
+With one class this is exactly today's single FIFO. That covers every deployment through phase 2 and the decided phase 3 fleet of one 16 GB worker (§10.1). With a single worker, a large job does delay the small jobs behind it, as it does today. The property above needs a second worker or class, which is a later owner spend decision, and the design is ready for it.
 
 ### 7.2 Queue ETA with several workers
 
@@ -466,9 +461,9 @@ Admission already bounds request frequency per IP (30 a minute) and index reques
 
 With several classes, `TOLMAP_MAX_QUEUED_JOBS` applies per class, so a backlog of large jobs cannot fill the queue that small jobs need. A job that joins a full class queue gets `503 busy`, as today.
 
-### 7.4 Autoscaling
+### 7.4 Starting and stopping workers
 
-The master exposes desired capacity per class: running plus queued jobs bound to that class, clamped to the configured minimum and maximum per class, and dropping back after a configurable idle period. A provider-specific scaler acts on it. The first implementation is none: a static fleet, which is all phases 1–3 need. A scaler that starts and stops worker machines needs a platform API credential or a platform autostart feature, and its bounds are spend. Both are owner decisions (§10.1), and its configuration lives in the private hosting repository. Capacity an autoscaler may start is counted in the ETA simulation at its measured cold-start time, which is refitted like a stage duration.
+The decided bounds are one class and **at most one worker, stopped when idle and started when a job is queued for it** (§10.1). The master exposes desired capacity per class: running plus queued jobs bound to that class, clamped to the configured maximum (1), dropping to zero after a configurable idle period. A provider-specific starter acts on it, and its configuration lives in the private hosting repository. If starting a worker needs a platform API credential, issuing that credential is a separate owner decision. A stopped worker is counted in the ETA simulation at its measured cold-start time, which is refitted like a stage duration. General autoscaling, meaning more than one worker per class, is phase 4 and needs new bounds from the owner.
 
 ## 8. Migration plan
 
@@ -476,16 +471,15 @@ Every phase ships on its own, keeps single-process mode unchanged and on by defa
 
 | phase | ships | new spend or credential |
 |---|---|---|
-| 0 | memory measurement and model, one-queue-per-class scheduler with the ETA simulation (one class in practice), result-path confinement in local mode | none |
+| 0 | memory measurement and model, one-queue-per-class scheduler with the ETA simulation (one class in practice) | none |
 | 1 | the executor split, channel protocol `proto` 1, `tolmap worker --connect`, the worker listener, `TOLMAP_WORKERS=loopback:N` | none |
 | 2 | durable jobs and leases in the store, resume, restart survival, rerouting and OOM escalation, loopback agents advertising configurable classes | none |
-| 3 | the first remote worker host; the sandbox moves there; the master can drop to a small class and run unprivileged | **yes**: worker class, token, public worker endpoint (§10) |
-| 4 | autoscaling, presigned object storage, Postgres with several API nodes and internal SSE fan-out | **yes**: bounds, object store, database |
+| 3 | one remote 16 GB worker on the private network, stopped when idle; the sandbox moves there; loopback agents off; the master can shrink and run unprivileged | decided (§10.1, §10.4, §10.5); tokens issued by the owner |
+| 4 | more workers or classes, presigned object storage, Postgres with several API nodes and internal SSE fan-out | **yes**: new bounds, object store, database (not yet decided) |
 
 **Phase 0: measure and schedule, in today's process.**
 - The master records the job child's peak RSS (`getrusage(RUSAGE_CHILDREN)` after reaping) next to its stage durations in `job_timings`, and `eta.rs` gains a peak-memory prediction seeded from findings 18 and 44–46. It changes nothing about a map, so the determinism and parity gates are untouched.
 - `refresh_queue_etas` is replaced by the §7.2 simulation over a scheduler with per-class queues. Local mode has one class with `TOLMAP_MAX_CONCURRENT_JOBS` slots, so single-slot behaviour is identical and multi-slot ETAs become correct.
-- Child-reported result paths are confined to the job's output directory: resolved without following symlinks and refused otherwise. This is the local-mode half of §5.3's rule and a hardening worth having regardless of this design.
 
 **Phase 1: the network protocol, over loopback.**
 - `run_blocking` splits into prepare, execute and register (§2). Local mode calls execute in-process and its behaviour is byte-for-byte unchanged.
@@ -499,13 +493,14 @@ Every phase ships on its own, keeps single-process mode unchanged and on by defa
 - Loopback agents take a configured `class` override, so CI can run a "small" and a "large" loopback agent on one runner and exercise class selection, spill-down and escalation for real.
 - `docs/API.md` gains the remote-mode shutdown paragraph and any additive snapshot fields.
 
-**Phase 3: the first remote worker (owner decisions §10.1, §10.4, §10.5).**
-- One worker host of the chosen class runs the same image as `tolmap worker --connect wss://<master>/…` with its token. The worker endpoint becomes reachable from it: publicly with TLS, or over a private network if the platform offers one.
-- The sandbox runs there; `TOLMAP_SCIP_INSTALL=sandbox` is set on the worker host, not the master. The master can drop to a small class and run as a non-root user.
-- Loopback agents can stay as a fallback class on the master's host, or be switched off, which is what finally removes untrusted indexing from the master.
+**Phase 3: the first remote worker (decisions §10.1, §10.4, §10.5).**
+- One 16 GB worker host runs the same image as `tolmap worker --connect wss://<master's private address>/…` with an owner-issued token. It is stopped when idle and started when a job is queued (§7.4).
+- The worker listener is bound to the provider's private network only (§5.6). Nothing new is public.
+- The sandbox runs on the worker host. Installs, off in hosting until now, may be enabled there with `TOLMAP_SCIP_INSTALL=sandbox`, never on the master.
+- Loopback agents are switched off, which removes untrusted indexing from the master. The master can then shrink and run as a non-root user.
 - The hosting configuration lives in the private hosting repository.
 
-**Phase 4: scale.** A scaler per §7.4 within owner-set bounds, presigned object storage for artifacts (§4.2, §10.3), and several API nodes on Postgres with the SSE fan-out kept on the master tier's private network (LISTEN/NOTIFY or equivalent), never reachable by workers.
+**Phase 4: scale.** More workers or classes within new owner-set bounds, presigned object storage once there is more than one API node (§4.2), and several API nodes on Postgres with the SSE fan-out kept on the master tier's private network (LISTEN/NOTIFY or equivalent), never reachable by workers.
 
 ## 9. Test plan
 
@@ -525,7 +520,7 @@ This repository's rule is that heavy builds and browser checks run on GitHub Act
   - duplicate and stale results from a scripted fake agent: refused, never registered;
   - the cancel race matrix of §6, including cancel during `install_request` (the image workflow already runs the install through `tolmap serve` in a `--privileged` container, and gains a loopback variant);
   - worker `draining` and master `shutdown` in both modes; local-mode `server_stopping` tests stay green unchanged.
-- **Authentication and confinement.** No token, a wrong token, a revoked token, a token for another `worker_id`, a result for a job the agent does not hold, an artifact with the wrong digest or size, an over-sized frame, and a remote result naming a filesystem path: each is refused and none reaches the store. A test asserts that no `WorkerSpec` or `JobSpec` an agent receives contains the store's path. The phase 0 path-confinement test sends a result naming a path outside the output directory, and a symlink inside it.
+- **Authentication and scoping.** No token, a wrong token, a revoked token, a token for another `worker_id`, a result for a job the agent does not hold, an artifact with the wrong digest or size, an over-sized frame, and a remote result naming a filesystem path: each is refused and none reaches the store. A test asserts that no `WorkerSpec` or `JobSpec` an agent receives contains the store's path.
 - **Bindings.** Any field added to `JobSnapshot` goes through the existing generated-bindings check.
 
 **What CI cannot prove**
@@ -537,18 +532,18 @@ This repository's rule is that heavy builds and browser checks run on GitHub Act
 
 These need a staging worker host, which is phase 3 and spend.
 
-## 10. Open decisions for the owner
+## 10. Decisions
 
-Each has options and a recommendation. Provider-specific sizing and cost for 10.1 and 10.3 go to the private hosting repository.
+The owner decided all six questions this specification raised (AskUserQuestion, session `16030105`, 2026-09-26; recorded on [#97](https://github.com/onsager-ai/tolmap/issues/97), 2026-09-26T06:07Z). The alternatives considered are noted in the sections cited.
 
-**10.1 Worker classes and autoscaling bounds (spend).** Options: (a) one class matching today's production machine size (16 GB, 2 vCPU), a fleet of at most one worker, stopped when idle and started when a job is queued for it; (b) two classes, small (about 4 GB) for hand jobs and large (16 GB) for SCIP and ultra-band repositories, each at most one; (c) (b) plus an on-demand 32 GB class for the msgraph-sized outliers. **Recommendation: (a) for phase 3.** It adds no sizing risk, because it is the size production already runs. With `hand` the default, nearly every job would fit a smaller class, but on a per-second machine that stops when idle the difference is small. Add the small class once queue-wait measurements show large jobs delaying small ones, and the 32 GB class only if an outlier is actually requested. How a stopped worker gets started is part of this decision: the platform's own start-on-request feature where it has one (no credential), or a platform API credential held by the master (a credential decision).
+**10.1 Worker classes and bounds.** One 16 GB class, at most one worker, stopped when idle and started when a job is queued (AskUserQuestion, session `16030105`, 2026-09-26). This is the size production already runs. Considered: a small class for hand jobs next to it, and an on-demand 32 GB class for the msgraph-sized outliers. The phase 0 memory measurements are the evidence for revisiting this. See §2.1, §7.1 and §7.4.
 
-**10.2 Control channel.** Options: (a) WebSocket on axum; (b) gRPC bidirectional streaming via tonic. **Recommendation: (a)**, for the reasons in §4.1: no second schema definition, one small dependency family, better proxy compatibility, and nothing large on the channel.
+**10.2 Control channel.** WebSocket on axum. The protocol's types stay defined once in Rust (AskUserQuestion, session `16030105`, 2026-09-26). Considered: gRPC bidirectional streaming. See §4.1.
 
-**10.3 Artifact path and retention (spend).** Options: (a) HTTPS PUT and GET through the master, stored on the master's disk as today; (b) presigned object-storage URLs; (c) streamed over the WebSocket. Retention: keep today's rule (`TOLMAP_RETAIN_COMMITS_PER_REPO` newest commits per slug, never the newest row, 5 in production) wherever artifacts live, plus deletion of uploads for jobs that never registered after 24 h. **Recommendation: (a) now, (b) in phase 4** if the master tier grows past one node. The protocol carries URLs, so the switch needs no worker change. Retention unchanged, with the 24 h orphan sweep.
+**10.3 Artifacts and retention.** HTTPS PUT and GET through the master, scoped to the job's lease, stored on the master's disk. Today's retention stays, and uploads from jobs that never registered are deleted after 24 h. Object storage waits until there is more than one API node (AskUserQuestion, session `16030105`, 2026-09-26). See §4.2.
 
-**10.4 Worker tokens and the public worker endpoint (credentials, public reachability).** Options: (a) per-worker random bearer tokens, stored hashed on the master, issued and rotated by hand with a `tolmap worker-token` helper; (b) mutual TLS with a private CA; (c) platform workload identity (OIDC tokens the worker's platform mints), verified by the master. **Recommendation: (a)**, reachable only over TLS on a separate listener, exposed publicly only if the platform has no private network between master and workers. (b) adds a CA to run for no gain at one to three workers, and (c) ties the protocol to one provider. Phases 0–2 need no token at all.
+**10.4 Worker authentication and exposure.** One bearer token per worker, stored hashed on the master, issued and rotated by the owner, over TLS, on a separate listener reachable only on the provider's private network. Nothing public (AskUserQuestion, session `16030105`, 2026-09-26). Considered: mutual TLS, platform workload identity. See §5.1 and §5.6.
 
-**10.5 When the sandbox moves.** Options: (a) with the first remote worker (phase 3), keeping the in-VM jail on the master until then; (b) earlier, by standing up a worker host before the protocol exists, which cannot work because the host has no way to receive jobs; (c) keep installs off in hosting until phase 3. **Recommendation: (a), which in practice is also (c) today**: production runs `TOLMAP_REFS=hand`, so neither installs nor indexers run in hosting, and the kernel-exploit risk accepted on #117 stays latent until the owner enables `scip` there. If `scip` with installs is wanted in hosting before phase 3, the accepted risk applies as ruled on #117.
+**10.5 Sandbox move.** The sandbox moves with the first remote worker (phase 3). Installs stay off in hosting until then (AskUserQuestion, session `16030105`, 2026-09-26). See §5.5 and §8.
 
-**10.6 A retry bound for jobs that kill their workers (touches the no-caps ruling).** A job that repeatedly takes down its worker host (lease lost with no result) would otherwise re-queue forever, killing a machine each time. Options: (a) no bound: re-queue indefinitely; (b) a bound on lost-worker retries per class, after which the job fails `worker_crashed`, for example two per class plus one escalation. **Recommendation: (b).** It limits how many machines one job may destroy, not what may be admitted. Nothing is refused for its size or duration, and a job that finishes, however long it takes, is never affected. This is still the owner's call, because it bounds a job's outcome.
+**10.6 Retries.** Bounded. A job whose worker keeps dying fails with `worker_crashed` after a bounded number of lost-worker retries. There are no admission caps (AskUserQuestion, session `16030105`, 2026-09-26). The default bound is two lost-worker retries per class, configurable. A job released for a graceful worker stop or a reroute does not count against it, and neither does a finished job, however long it ran. See §6.
