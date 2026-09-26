@@ -1,11 +1,12 @@
 //! Byte identity across execution paths (docs/WORKER_TIER.md §9, #97 phase
-//! 1): the same repository at the same commit indexed by `tolmap build` and
-//! by `tolmap serve` in local mode -- prepare, the executor, the real
-//! `tolmap worker` child, register -- must store byte-identical map and
-//! symbols documents. This is the determinism rule (CLAUDE.md, finding 9)
-//! extended to the service's own seam, which the executor split moved and
-//! a remote worker will move again. The loopback path (`TOLMAP_WORKERS=
-//! loopback:N`) joins this test when it exists.
+//! 1): the same repository at the same commit indexed by `tolmap build`, by
+//! `tolmap serve` in local mode -- prepare, the executor, the real `tolmap
+//! worker` child, register -- and by `tolmap serve` with
+//! `TOLMAP_WORKERS=loopback:2` -- the same executor inside a `tolmap worker
+//! --connect` agent, its events over the channel, its artifacts uploaded
+//! file by file -- must store byte-identical map and symbols documents. This
+//! is the determinism rule (CLAUDE.md, finding 9) extended to the service's
+//! own seam, which the executor split moved and the agent moves again.
 //!
 //! The service runs as its own process, as in production, because the job
 //! child is `std::env::current_exe()`: only the real binary can play it.
@@ -113,10 +114,86 @@ fn district_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
     files
 }
 
+/// Runs `tolmap serve` with `env` on a fresh store, indexes `repo` through
+/// it, and returns the cache directory the stored map is under.
+fn serve_and_index(
+    dir: &Path,
+    name: &str,
+    repo: &Path,
+    commit: &str,
+    env: &[(&str, &str)],
+) -> std::path::PathBuf {
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let cache = dir.join(format!("cache-{name}"));
+    let mut serve = Command::new(TOLMAP);
+    serve
+        .arg("serve")
+        .env("TOLMAP_PORT", port.to_string())
+        .env("TOLMAP_BIND_ADDR", "127.0.0.1")
+        .env("TOLMAP_DB_PATH", dir.join(format!("store-{name}.sqlite3")))
+        .env("TOLMAP_CACHE_DIR", &cache)
+        // Polling below would trip the per-IP limit meant for clients.
+        .env("TOLMAP_RATE_LIMIT_PER_IP", "1000000")
+        .env_remove("TOLMAP_WORKERS")
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    for key in DEFAULTS_ONLY {
+        serve.env_remove(key);
+    }
+    for (key, value) in env {
+        serve.env(key, value);
+    }
+    let _service = Service(serve.spawn().unwrap());
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !matches!(http(port, "GET", "/api/healthz", ""), Ok((200, _))) {
+        assert!(
+            Instant::now() < deadline,
+            "tolmap serve ({name}) did not come up"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let request = serde_json::json!({ "path": repo.to_string_lossy() }).to_string();
+    let (status, body) = http(port, "POST", "/api/index", &request).unwrap();
+    assert_eq!(status, 202, "POST /api/index ({name}): {body}");
+    let job: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let job_id = job["job_id"].as_str().expect("job_id").to_owned();
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let snapshot = loop {
+        let (status, body) = http(port, "GET", &format!("/api/jobs/{job_id}"), "").unwrap();
+        assert_eq!(status, 200, "GET /api/jobs/{job_id}: {body}");
+        let snapshot: serde_json::Value = serde_json::from_str(&body).unwrap();
+        if matches!(snapshot["status"].as_str(), Some("done" | "failed")) {
+            break snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "job did not finish ({name}): {snapshot}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(snapshot["status"], "done", "{name}: {snapshot}");
+    assert_eq!(snapshot["commit"], commit, "{name}: {snapshot}");
+    // The clone stage is bracketed the same way on both service paths: the
+    // loopback agent reports its executor's clone and the master turns it
+    // back into the same two snapshot updates local mode makes.
+    let clone = snapshot["stages"]
+        .as_array()
+        .and_then(|stages| stages.iter().find(|stage| stage["id"] == "clone"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(clone["state"], "done", "{name}: {snapshot}");
+    cache
+}
+
 #[test]
 fn tolmap_build_and_the_local_service_store_byte_identical_maps() {
     let dir = tempfile::tempdir().unwrap();
-    // The directory's name is the map's name on both paths: `tolmap build`
+    // The directory's name is the map's name on every path: `tolmap build`
     // names the map after the repository directory, and the service names a
     // local-path job `local/<directory>`.
     let repo = dir.path().join("identity");
@@ -142,71 +219,35 @@ fn tolmap_build_and_the_local_service_store_byte_identical_maps() {
         String::from_utf8_lossy(&built.stderr)
     );
 
-    let port = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let cache = dir.path().join("cache");
-    let mut serve = Command::new(TOLMAP);
-    serve
-        .arg("serve")
-        .env("TOLMAP_PORT", port.to_string())
-        .env("TOLMAP_BIND_ADDR", "127.0.0.1")
-        .env("TOLMAP_DB_PATH", dir.path().join("store.sqlite3"))
-        .env("TOLMAP_CACHE_DIR", &cache)
-        // Polling below would trip the per-IP limit meant for clients.
-        .env("TOLMAP_RATE_LIMIT_PER_IP", "1000000")
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
-    for key in DEFAULTS_ONLY {
-        serve.env_remove(key);
+    for (name, env) in [
+        ("local", &[][..]),
+        ("loopback", &[("TOLMAP_WORKERS", "loopback:2")][..]),
+    ] {
+        let cache = serve_and_index(dir.path(), name, &repo, &commit, env);
+        let stored = cache
+            .join("maps/local/identity")
+            .join(format!("{commit}.json"));
+        let map = read(&stored);
+        let document: serde_json::Value = serde_json::from_slice(&map).unwrap();
+        let files = document["F"].as_array().map_or(0, Vec::len);
+        assert!(
+            files >= 5,
+            "the fixture should map its modules ({name}): {files}"
+        );
+        assert!(
+            map == read(&out.join("identity.json")),
+            "the {name} service's map differs from `tolmap build`'s"
+        );
+        assert!(
+            read(&stored.with_extension("symbols.json"))
+                == read(&out.join("identity.symbols.json")),
+            "the {name} service's symbols document differs from `tolmap build`'s"
+        );
+        let service_districts = district_files(&stored.with_extension("symbols"));
+        assert!(!service_districts.is_empty());
+        assert!(
+            service_districts == district_files(&out.join("identity.symbols")),
+            "the {name} service's per-district symbol files differ from `tolmap build`'s"
+        );
     }
-    let _service = Service(serve.spawn().unwrap());
-
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !matches!(http(port, "GET", "/api/healthz", ""), Ok((200, _))) {
-        assert!(Instant::now() < deadline, "tolmap serve did not come up");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let request = serde_json::json!({ "path": repo.to_string_lossy() }).to_string();
-    let (status, body) = http(port, "POST", "/api/index", &request).unwrap();
-    assert_eq!(status, 202, "POST /api/index: {body}");
-    let job: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let job_id = job["job_id"].as_str().expect("job_id").to_owned();
-    let deadline = Instant::now() + Duration::from_secs(300);
-    let snapshot = loop {
-        let (status, body) = http(port, "GET", &format!("/api/jobs/{job_id}"), "").unwrap();
-        assert_eq!(status, 200, "GET /api/jobs/{job_id}: {body}");
-        let snapshot: serde_json::Value = serde_json::from_str(&body).unwrap();
-        if matches!(snapshot["status"].as_str(), Some("done" | "failed")) {
-            break snapshot;
-        }
-        assert!(Instant::now() < deadline, "job did not finish: {snapshot}");
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    assert_eq!(snapshot["status"], "done", "{snapshot}");
-    assert_eq!(snapshot["commit"], commit.as_str(), "{snapshot}");
-
-    let stored = cache
-        .join("maps/local/identity")
-        .join(format!("{commit}.json"));
-    let map = read(&stored);
-    let document: serde_json::Value = serde_json::from_slice(&map).unwrap();
-    let files = document["F"].as_array().map_or(0, Vec::len);
-    assert!(files >= 5, "the fixture should map its modules: {files}");
-    assert!(
-        map == read(&out.join("identity.json")),
-        "the service's map differs from `tolmap build`'s"
-    );
-    assert!(
-        read(&stored.with_extension("symbols.json")) == read(&out.join("identity.symbols.json")),
-        "the service's symbols document differs from `tolmap build`'s"
-    );
-    let service_districts = district_files(&stored.with_extension("symbols"));
-    assert!(!service_districts.is_empty());
-    assert!(
-        service_districts == district_files(&out.join("identity.symbols")),
-        "the service's per-district symbol files differ from `tolmap build`'s"
-    );
 }

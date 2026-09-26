@@ -3,6 +3,7 @@
 //! and serves the resulting map -- docs/API.md is the contract this module
 //! implements.
 
+pub mod agent;
 pub mod clone;
 pub mod config;
 pub mod error;
@@ -15,6 +16,7 @@ pub mod schedule;
 pub mod store;
 mod time;
 mod worker_result;
+pub mod workers;
 
 use std::sync::Arc;
 
@@ -38,6 +40,10 @@ pub struct AppState {
 /// and docs/API.md; there is no parameter anywhere in this module that
 /// widens that.
 pub async fn serve(config: ServeConfig) -> Result<()> {
+    // Read before anything starts, so a bad `TOLMAP_WORKERS` is a startup
+    // error rather than a half-started service. Unset is local mode,
+    // exactly as before it existed.
+    let workers_mode = workers::WorkersMode::from_env()?;
     let store = Store::open(&config.db_path)
         .with_context(|| format!("open store at {}", config.db_path.display()))?;
     let bind = config.bind;
@@ -98,6 +104,16 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
     // what turns "Fly stops the Machine mid-job anyway" from a silent loss
     // into a clean, observable failure.
 
+    // `TOLMAP_WORKERS=loopback:N` (#97 phase 1, docs/WORKER_TIER.md §8):
+    // the worker listener on loopback and N agents. Local mode starts
+    // neither.
+    let loopback = match workers_mode {
+        workers::WorkersMode::Local => None,
+        workers::WorkersMode::Loopback(agents) => {
+            Some(workers::start_loopback(&state, agents).await?)
+        }
+    };
+
     let app = http::router(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -128,6 +144,12 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
         shutdown_signal().await;
         eprintln!("tolmap serve: shutdown signal received, draining jobs");
         shutdown_state.jobs.shutdown();
+        // Loopback mode: the jobs above are failed with `server_stopping`
+        // as in local mode (phase 1 keeps its state in memory); then every
+        // agent is told `shutdown now` and reaped.
+        if let Some(loopback) = loopback {
+            loopback.shutdown().await;
+        }
     })
     .await
     .context("axum::serve")?;
