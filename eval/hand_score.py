@@ -194,8 +194,9 @@ resolver's own report (`TOLMAP_RUST_IMPORT_REPORT`, written by `dump-graph
   `other`.
 - `hand_only_by_class`: `uncertain module` (a chain the resolver could not
   follow linked the module it named), `other`.
-Rust rows are reported and not gated (UNGATED_LANGS) until the owner has
-seen the numbers.
+Rust rows are gated like the others since the owner saw the numbers
+(issue #126, AskUserQuestion "Gate Rust now", session 16030105, 2026-09-26).
+UNGATED_LANGS stays as the switch for a future language's first rows.
 
 A fixed-seed sample (`random.Random(SEED)`) of up to SAMPLE rows per class
 is kept; the class counts are over every pair.
@@ -237,7 +238,7 @@ RS_SCIP_CLASSES = ("member via value", "macro", "glob import", "inferred type", 
 RS_HAND_CLASSES = ("uncertain module", "other")
 # Languages whose rows are reported but not gated: Rust, until the owner
 # has seen its numbers (issue #126).
-UNGATED_LANGS = ("rs",)
+UNGATED_LANGS: tuple[str, ...] = ()
 # Rust repositories scored against rust-analyzer that are not map fixtures:
 # finding 55's ripgrep pin (tag 14.1.1, a small multi-crate workspace).
 RUST_ORACLE_ONLY = {
@@ -1730,8 +1731,10 @@ def self_test(_args) -> int:
         assert run_gate(gate_rows("go", 10, 8), gate_rows("go", 10, 7)) == 1
         assert run_gate(gate_rows("go", 10, None), gate_rows("go", 9, 8)) == 1
         assert run_gate(gate_rows("py", 10, 8), gate_rows("py", 9, 8)) == 1
-        # Rust is reported, never gated (issue #126), even on a fall.
-        assert run_gate(gate_rows("rs", 10, 8), gate_rows("rs", 2, 1)) == 0
+        # Rust is gated like the others since the owner saw its numbers
+        # (issue #126, "Gate Rust now"): a fall fails, a hold passes.
+        assert run_gate(gate_rows("rs", 10, 8), gate_rows("rs", 2, 1)) == 1
+        assert run_gate(gate_rows("rs", 10, 8), gate_rows("rs", 10, 8)) == 0
 
         # Rust (finding 57): the report's outcomes and both classifiers.
         rs_files = ["src/lib.rs", "src/a.rs", "src/b.rs", "src/b/c.rs", "src/d.rs"]
