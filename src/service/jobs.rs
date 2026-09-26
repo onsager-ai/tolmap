@@ -29,7 +29,7 @@ use crate::service::store::MapRow;
 use crate::service::time::now_rfc3339;
 use crate::service::worker_result;
 use crate::service::AppState;
-use crate::worker::{RepoFeatures, WorkerEvent, WorkerSpec};
+use crate::worker::{JobSpec, RepoFeatures, WorkerEvent};
 
 // The tests below were written against these names while they lived in
 // this module, before the executor moved out (#97 phase 1). They reach them
@@ -39,6 +39,8 @@ use crate::worker::{RepoFeatures, WorkerEvent, WorkerSpec};
 use crate::service::executor::{
     chown_recursive, current_gid, harden_job_dir, ServiceInstall, WorkerHardening,
 };
+#[cfg(test)]
+use crate::worker::WorkerSpec;
 #[cfg(test)]
 use std::path::PathBuf;
 #[cfg(test)]
@@ -886,7 +888,7 @@ fn prepare(
     state: &AppState,
     repo_ref: &RepoRef,
     tx: &watch::Sender<JobSnapshot>,
-) -> Result<(WorkerSpec, JobInputs), ErrorBody> {
+) -> Result<(JobSpec, JobInputs), ErrorBody> {
     let internal = |error: anyhow::Error| ApiError::internal(error.to_string()).body;
     let warm_start_candidates = state
         .store
@@ -898,21 +900,13 @@ fn prepare(
         RepoSource::Local(path) => (path.to_string_lossy().into_owned(), true),
     };
     let config = &state.config;
-    // Interim until `JobSpec` lands (#97 phase 1 protocol types): the
-    // executor fills in the paths.
-    let _commit = tx.borrow().commit.clone().unwrap_or_default();
-    let job = WorkerSpec {
-        v: 1,
-        cache_dir: String::new(),
-        output_dir: String::new(),
-        clone_cache_bytes: config.limits.clone_cache_bytes,
-        previous_maps: Vec::new(),
-        names_cache: None,
+    let job = JobSpec {
         slug: repo_ref.slug.clone(),
         owner: repo_ref.owner.clone(),
         repo: repo_ref.repo.clone(),
         source,
         local,
+        commit: tx.borrow().commit.clone().unwrap_or_default(),
         all_sources: false,
         prune_variant: config.prune_variant.to_string(),
         namer: config.namer.to_string(),

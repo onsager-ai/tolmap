@@ -36,7 +36,7 @@ use crate::progress::StageId;
 use crate::service::clone::{self, RepoRef, RepoSource};
 use crate::service::error::{ApiError, ErrorBody};
 use crate::service::worker_result;
-use crate::worker::{PreviousMap, WorkerEvent, WorkerSpec};
+use crate::worker::{JobSpec, LocalInputs, PreviousMap, WorkerEvent, WorkerSpec};
 
 /// This host's side of a job: where its caches and job directories live,
 /// which binary is the job child and which uid it drops to. The master
@@ -143,7 +143,7 @@ pub trait CancelProbe {
 pub fn execute(
     env: &ExecEnv,
     job_id: Uuid,
-    job: &WorkerSpec,
+    job: &JobSpec,
     inputs: &JobInputs,
     sink: &mut dyn EventSink,
     probe: &dyn CancelProbe,
@@ -238,18 +238,19 @@ pub fn execute(
     // told which one it was. `cache_dir` below is consequently unused by the
     // worker in this flow, kept only for structural consistency with the
     // rest of `WorkerSpec`.
-    // Interim until `JobSpec` lands (#97 phase 1 protocol types).
-    let spec = WorkerSpec {
+    let checkout_job = JobSpec {
         source: job_repo_dir.to_string_lossy().into_owned(),
         local: true,
         install: install.as_ref().map(|_| "sandbox".to_owned()),
+        ..job.clone()
+    };
+    let spec = checkout_job.to_worker_spec(LocalInputs {
         cache_dir: worker_cache_dir.to_string_lossy().into_owned(),
         output_dir: output_dir.to_string_lossy().into_owned(),
         clone_cache_bytes: env.clone_cache_bytes,
         previous_maps,
         names_cache: Some(names_input.to_string_lossy().into_owned()),
-        ..job.clone()
-    };
+    });
     let hardening = WorkerHardening {
         job_dir: job_dir.clone(),
         uid: env.worker_uid,
