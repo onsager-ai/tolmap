@@ -28,12 +28,15 @@
    "scip_only_by_class": {
     "inferred type": 51,
     "inherited member": 3,
+    "member via value": 0,
     "other": 58,
-    "re-export": 9
+    "re-export": 9,
+    "same package": 0
    },
    "scip_pairs": 710,
    "scip_use_pairs": 608,
    "shared": 589,
+   "shared_named_uses": 569,
    "shared_namespace_only": 20,
    "shared_namespace_only_to_package": 7,
    "shared_uses": 569
@@ -62,12 +65,15 @@
    "scip_only_by_class": {
     "inferred type": 130,
     "inherited member": 147,
+    "member via value": 0,
     "other": 468,
-    "re-export": 214
+    "re-export": 214,
+    "same package": 0
    },
    "scip_pairs": 4018,
    "scip_use_pairs": 3261,
    "shared": 3059,
+   "shared_named_uses": 2895,
    "shared_namespace_only": 164,
    "shared_namespace_only_to_package": 128,
    "shared_uses": 2895
@@ -96,12 +102,15 @@
    "scip_only_by_class": {
     "inferred type": 2,
     "inherited member": 17,
+    "member via value": 0,
     "other": 1,
-    "re-export": 0
+    "re-export": 0,
+    "same package": 0
    },
    "scip_pairs": 113,
    "scip_use_pairs": 113,
    "shared": 93,
+   "shared_named_uses": 93,
    "shared_namespace_only": 0,
    "shared_namespace_only_to_package": 0,
    "shared_uses": 93
@@ -130,12 +139,15 @@
    "scip_only_by_class": {
     "inferred type": 3,
     "inherited member": 0,
+    "member via value": 0,
     "other": 0,
-    "re-export": 0
+    "re-export": 0,
+    "same package": 0
    },
    "scip_pairs": 74,
    "scip_use_pairs": 73,
    "shared": 71,
+   "shared_named_uses": 70,
    "shared_namespace_only": 1,
    "shared_namespace_only_to_package": 1,
    "shared_uses": 70
@@ -149,37 +161,299 @@
     "shared": 953
    },
    "files": 444,
-   "hand_fingerprint": "c02463ac686968301c446f7d71738a096a99d8cd6aa5abc38f34e8af22ee333d",
-   "hand_only": 732,
+   "go": {
+    "file_gap": {
+     "member_only": 24,
+     "named": 0,
+     "named_samples": [],
+     "use_pairs": 24
+    },
+    "import_outcomes": {
+     "by_outcome": {
+      "ambiguous_name": 100,
+      "narrowed": 791,
+      "opaque": 60,
+      "undeclared_name": 5
+     },
+     "imports": 956,
+     "links_after": 2584,
+     "links_before": 5574,
+     "samples": {
+      "ambiguous_name": [
+       {
+        "a": "cmd/promtool/sd.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "EmptyLabels"
+       },
+       {
+        "a": "cmd/promtool/tsdb.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "Labels"
+       },
+       {
+        "a": "config/config.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "Labels"
+       },
+       {
+        "a": "model/relabel/relabel.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "Builder"
+       },
+       {
+        "a": "notifier/alert.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "EmptyLabels"
+       },
+       {
+        "a": "schema/labels.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "Builder"
+       },
+       {
+        "a": "storage/fanout.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "Labels"
+       },
+       {
+        "a": "storage/remote/codec.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "Compare"
+       },
+       {
+        "a": "tsdb/agent/series.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "EmptyLabels"
+       },
+       {
+        "a": "tsdb/compact.go",
+        "b": "github.com/prometheus/prometheus/tsdb/fileutil",
+        "name": "OpenDir"
+       },
+       {
+        "a": "tsdb/head_append_v2.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "EmptyLabels"
+       },
+       {
+        "a": "tsdb/querier.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "Labels"
+       }
+      ],
+      "opaque": [
+       {
+        "a": "discovery/install/install.go",
+        "b": "github.com/prometheus/prometheus/discovery/aws",
+        "name": null
+       },
+       {
+        "a": "discovery/install/install.go",
+        "b": "github.com/prometheus/prometheus/discovery/azure",
+        "name": null
+       },
+       {
+        "a": "discovery/install/install.go",
+        "b": "github.com/prometheus/prometheus/discovery/digitalocean",
+        "name": null
+       },
+       {
+        "a": "discovery/install/install.go",
+        "b": "github.com/prometheus/prometheus/discovery/file",
+        "name": null
+       },
+       {
+        "a": "discovery/install/install.go",
+        "b": "github.com/prometheus/prometheus/discovery/openstack",
+        "name": null
+       },
+       {
+        "a": "discovery/install/install.go",
+        "b": "github.com/prometheus/prometheus/discovery/puppetdb",
+        "name": null
+       },
+       {
+        "a": "discovery/install/install.go",
+        "b": "github.com/prometheus/prometheus/discovery/stackit",
+        "name": null
+       },
+       {
+        "a": "plugins/plugin_azure.go",
+        "b": "github.com/prometheus/prometheus/discovery/azure",
+        "name": null
+       },
+       {
+        "a": "plugins/plugin_dns.go",
+        "b": "github.com/prometheus/prometheus/discovery/dns",
+        "name": null
+       },
+       {
+        "a": "plugins/plugin_ionos.go",
+        "b": "github.com/prometheus/prometheus/discovery/ionos",
+        "name": null
+       },
+       {
+        "a": "plugins/plugin_scaleway.go",
+        "b": "github.com/prometheus/prometheus/discovery/scaleway",
+        "name": null
+       },
+       {
+        "a": "plugins/plugin_uyuni.go",
+        "b": "github.com/prometheus/prometheus/discovery/uyuni",
+        "name": null
+       }
+      ],
+      "undeclared_name": [
+       {
+        "a": "cmd/promtool/main.go",
+        "b": "github.com/prometheus/prometheus/config",
+        "name": "Address"
+       },
+       {
+        "a": "promql/promqltest/test.go",
+        "b": "github.com/prometheus/prometheus/model/histogram",
+        "name": "Convert"
+       },
+       {
+        "a": "storage/remote/otlptranslator/prometheusremotewrite/helper.go",
+        "b": "github.com/prometheus/prometheus/model/timestamp",
+        "name": "Add"
+       },
+       {
+        "a": "storage/remote/otlptranslator/prometheusremotewrite/helper.go",
+        "b": "github.com/prometheus/prometheus/model/value",
+        "name": "AsString"
+       },
+       {
+        "a": "tsdb/querier.go",
+        "b": "github.com/prometheus/prometheus/tsdb/index",
+        "name": "ShardedPostings"
+       }
+      ]
+     },
+     "top_names": {
+      "ambiguous_name": [
+       [
+        "Labels",
+        41
+       ],
+       [
+        "EmptyLabels",
+        18
+       ],
+       [
+        "Compare",
+        11
+       ],
+       [
+        "Builder",
+        9
+       ],
+       [
+        "OpenDir",
+        5
+       ],
+       [
+        "Equal",
+        4
+       ],
+       [
+        "FromStrings",
+        3
+       ],
+       [
+        "NewSymbolTable",
+        2
+       ],
+       [
+        "Assets",
+        1
+       ],
+       [
+        "FdLimits",
+        1
+       ],
+       [
+        "FsSize",
+        1
+       ],
+       [
+        "ImplementationName",
+        1
+       ],
+       [
+        "NewBufioWriterWithSize",
+        1
+       ],
+       [
+        "ScratchBuilder",
+        1
+       ],
+       [
+        "UncachedIOSupported",
+        1
+       ]
+      ],
+      "undeclared_name": [
+       [
+        "Add",
+        1
+       ],
+       [
+        "Address",
+        1
+       ],
+       [
+        "AsString",
+        1
+       ],
+       [
+        "Convert",
+        1
+       ],
+       [
+        "ShardedPostings",
+        1
+       ]
+      ]
+     }
+    },
+    "member_only_available": true
+   },
+   "hand_fingerprint": "01d545da5450d0ff919d714f9c670e53248433e221fcec4689f6d7a0f6e11f22",
+   "hand_only": 505,
    "hand_only_by_class": {
-    "other": 22,
-    "package spread": 710,
+    "other": 15,
+    "package spread": 490,
     "re-export": 0,
     "star import": 0,
     "submodule via package": 0
    },
-   "hand_pairs": 5574,
+   "hand_pairs": 2584,
    "lang": "go",
    "name": "prometheus",
-   "precision": 0.8687,
-   "precision_counting_reexports": 0.8687,
-   "precision_uses": 0.2295,
-   "recall": 0.8907,
-   "recall_uses": 0.6829,
+   "precision": 0.8046,
+   "precision_counting_reexports": 0.8046,
+   "precision_uses": 0.4857,
+   "recall": 0.3825,
+   "recall_uses": 0.67,
    "scip_fingerprint": "0e405d1fa79db6fac80844d55be859d2fa0d583f05f9c06e718933a528b37b36",
-   "scip_only": 594,
+   "scip_only": 3357,
    "scip_only_by_class": {
-    "inferred type": 22,
+    "inferred type": 243,
     "inherited member": 0,
-    "other": 572,
-    "re-export": 0
+    "member via value": 24,
+    "other": 2522,
+    "re-export": 0,
+    "same package": 568
    },
    "scip_pairs": 5436,
    "scip_use_pairs": 1873,
-   "shared": 4842,
-   "shared_namespace_only": 3563,
-   "shared_namespace_only_to_package": 4,
-   "shared_uses": 1279
+   "shared": 2079,
+   "shared_named_uses": 1245,
+   "shared_namespace_only": 824,
+   "shared_namespace_only_to_package": 0,
+   "shared_uses": 1255
   },
   {
    "files": 100,
@@ -205,12 +479,15 @@
    "scip_only_by_class": {
     "inferred type": 5,
     "inherited member": 0,
+    "member via value": 0,
     "other": 0,
-    "re-export": 0
+    "re-export": 0,
+    "same package": 0
    },
    "scip_pairs": 424,
    "scip_use_pairs": 423,
    "shared": 419,
+   "shared_named_uses": 419,
    "shared_namespace_only": 0,
    "shared_namespace_only_to_package": 0,
    "shared_uses": 419
@@ -239,12 +516,15 @@
    "scip_only_by_class": {
     "inferred type": 161,
     "inherited member": 4,
+    "member via value": 0,
     "other": 103,
-    "re-export": 10
+    "re-export": 10,
+    "same package": 0
    },
    "scip_pairs": 1222,
    "scip_use_pairs": 1066,
    "shared": 944,
+   "shared_named_uses": 937,
    "shared_namespace_only": 7,
    "shared_namespace_only_to_package": 6,
    "shared_uses": 937
@@ -273,12 +553,15 @@
    "scip_only_by_class": {
     "inferred type": 204,
     "inherited member": 139,
+    "member via value": 0,
     "other": 45,
-    "re-export": 325
+    "re-export": 325,
+    "same package": 0
    },
    "scip_pairs": 2802,
    "scip_use_pairs": 2802,
    "shared": 2089,
+   "shared_named_uses": 2084,
    "shared_namespace_only": 0,
    "shared_namespace_only_to_package": 0,
    "shared_uses": 2089
@@ -307,16 +590,19 @@
    "scip_only_by_class": {
     "inferred type": 80,
     "inherited member": 0,
+    "member via value": 0,
     "other": 201,
-    "re-export": 447
+    "re-export": 447,
+    "same package": 0
    },
    "scip_pairs": 1911,
    "scip_use_pairs": 1586,
    "shared": 1183,
+   "shared_named_uses": 928,
    "shared_namespace_only": 255,
    "shared_namespace_only_to_package": 233,
    "shared_uses": 928
   }
  ],
- "source": "https://github.com/onsager-ai/tolmap/actions/runs/36184125477"
+ "source": "https://github.com/onsager-ai/tolmap/actions/runs/36206406154"
 }
