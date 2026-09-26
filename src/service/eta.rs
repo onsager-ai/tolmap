@@ -14,6 +14,12 @@ pub struct TimingRow {
     pub elapsed_s: f64,
     /// StageId::ALL order; None means the stage did not finish successfully.
     pub stage_s: Vec<Option<f64>>,
+    /// The job child's own peak RSS, from `wait4` (`jobs::wait_with_peak`),
+    /// in bytes. `None` on a platform `wait4` does not cover, or for a row
+    /// written before #97 phase 0. `#[serde(default)]` so those old rows
+    /// still deserialize.
+    #[serde(default)]
+    pub peak_rss_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, TS)]
@@ -326,6 +332,278 @@ impl EtaModel {
     }
 }
 
+// ---------------------------------------------------------------------
+// Memory: docs/WORKER_TIER.md #2.1 needs a predicted peak RSS next to the
+// time model above, so class selection has something to compare against an
+// agent's advertised memory. Phase 0 (this file) only builds and tests the
+// model; nothing here reaches `JobSnapshot`, the API or a worker class --
+// there is exactly one class today (docs/WORKER_TIER.md #10.1), so nothing
+// consumes a prediction yet. It exists so evidence accrues from day one
+// (#2.1's own words: "worth building in phase 0 ... the evidence for any
+// later class decision").
+//
+// Shape: log(peak) against log(file count), fit separately per (reference
+// mode, primary language) group, exactly as #2.1 asks. "Primary language" is
+// the language with the most reported files; a tie is broken by picking the
+// lexicographically first name, which is what falls out of scanning
+// `RepoFeatures::languages` (a `BTreeMap`, so already name-ordered) and only
+// replacing the running best on a strict `>` -- deterministic without a
+// second sort.
+//
+// The seed curves below are fit from *per-band or per-repository medians*
+// findings 18 and 44-46 report, not from a residual distribution over many
+// repositories in one band (no such per-repository dataset is checked into
+// this repository, only the aggregates in FINDINGS.md), so the "upper
+// quantile" asked for is approximated rather than computed exactly: finding
+// 18 is the one place with a p10-p90 spread alongside the median, so its
+// spread is what stands in for a residual, applied to every seed as
+// `UPPER_QUANTILE_MULTIPLIER` (see its own comment). This is a documented
+// approximation, not a precise 90th percentile; it can be replaced once
+// finished jobs give the model real per-repository observations, which is
+// exactly what the refit loop below is for.
+
+/// A finished job's own group (reference mode is `hand` when `refs` is
+/// absent, matching every other place in this file and #2.1's own text) and
+/// its primary language, or `None` when the worker has not reported
+/// languages yet (a queued job).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MemoryGroup<'a> {
+    scip: bool,
+    language: Option<&'a str>,
+}
+
+impl<'a> MemoryGroup<'a> {
+    fn of(features: &'a RepoFeatures) -> Self {
+        let mut best: Option<(&str, u64)> = None;
+        for (language, info) in &features.languages {
+            if best.is_none_or(|(_, files)| info.files > files) {
+                best = Some((language.as_str(), info.files));
+            }
+        }
+        MemoryGroup {
+            scip: features.refs.as_deref() == Some("scip"),
+            language: best.map(|(language, _)| language),
+        }
+    }
+}
+
+/// finding 18's per-band medians, `(files, peak MiB)`: small, medium, large,
+/// ultra. Reference-mode `hand`, no language split -- finding 18 measured
+/// across the whole 132-repository corpus without separating by language,
+/// so this is the only seed available for `hand`, applied regardless of
+/// which language dominates a repository.
+const HAND_ANCHORS: [(f64, f64); 4] = [
+    (51.0, 20.8),
+    (704.0, 114.2),
+    (4_050.0, 519.8),
+    (11_991.0, 1_786.7),
+];
+
+/// The geometric mean of finding 18's four per-band p90/median ratios
+/// (34.1/20.8, 254.5/254.5... i.e. 34.1/20.8=1.639, 254.5/114.2=2.228,
+/// 1266.9/519.8=2.438, 5305.8/1786.7=2.969 -> geometric mean 2.27). Applied
+/// to every seed curve, `hand` and `scip` alike, as the stand-in "upper
+/// quantile" described in the module comment above: findings 44-46 give a
+/// single peak per repository under `scip`, with no p10-p90 spread to draw
+/// its own multiplier from, so reusing finding 18's is the closest measured
+/// evidence rather than an invented number. Once finished `scip` rows
+/// accumulate, the refit loop below moves the prediction from measurement,
+/// not this constant.
+const UPPER_QUANTILE_MULTIPLIER: f64 = 2.27;
+
+/// `--refs scip` Python peaks, `(files, peak MiB)`. Fixture-scale points are
+/// finding 45's table (httpx, flask, rich, celery, scrapy, sqlalchemy --
+/// sqlalchemy's indexer ran its full peak even though the map fell back to
+/// hand on recall); the two largest points are finding 44's corpus-scale
+/// figures for django and dify.
+const SCIP_PY_ANCHORS: [(f64, f64); 8] = [
+    (23.0, 443.0),
+    (24.0, 397.0),
+    (100.0, 724.0),
+    (161.0, 1_401.0),
+    (188.0, 1_155.0),
+    (258.0, 3_901.0),
+    (851.0, 4_904.0),
+    (6_347.0, 6_914.0),
+];
+
+/// `--refs scip` Go peaks. Only prometheus is measured (finding 45, `409`/
+/// `444` files indexed by directory recall 0.9969), so there is only one
+/// point; `seed_bytes` anchors `HAND_ANCHORS`' own log-log slope through it
+/// rather than inventing a second Go point to fit independently.
+const SCIP_GO_ANCHOR: (f64, f64) = (444.0, 783.0);
+
+/// `--refs scip` TypeScript peaks, `(files, peak MiB)`: vue (finding 45) and
+/// n8n (finding 46, the `scip`-only peak, before its install attempt that
+/// the registry-only egress policy refuses). dify's TypeScript peak
+/// (finding 46) is not used here: dify's primary language is Python, so its
+/// row belongs to the Python group above, and using its number here as well
+/// would double-count one repository's cost across two language groups.
+const SCIP_TS_ANCHORS: [(f64, f64); 2] = [(239.0, 684.0), (11_991.0, 8_082.0)];
+
+/// A queued `scip` job with no languages yet: the median of finding 45's
+/// nine `--refs scip` fixture peaks (397, 443, 684, 724, 1155, 1401, 3900,
+/// 3901, 4904 MiB -> median 1155), times the same upper-quantile multiplier
+/// every other seed gets. This is #2.1's "reference mode ... known at
+/// admission" case: nothing about file count or language is known yet, so
+/// the estimate cannot be file-count-derived the way every other group's is.
+const SCIP_UNKNOWN_PEAK_MIB: f64 = 1_155.0;
+
+/// files per MiB conversion; `ru_maxrss` observations and the findings this
+/// module cites both round-trip through `/usr/bin/time -v`'s "Maximum
+/// resident set size (kbytes)", i.e. binary MiB, not decimal MB.
+const MIB: f64 = 1_048_576.0;
+
+/// Least-squares slope and intercept of `ln(peak)` on `ln(files)`, in natural
+/// log. Mirrors finding 18's own method (Pearson r on log-log). With a
+/// single anchor point there is no unique slope, so the caller supplies one
+/// (`HAND_ANCHORS`' own slope, the only multi-point fit available) and this
+/// just re-centers the intercept through that one point.
+fn fit_loglog(points: &[(f64, f64)], fallback_slope: Option<f64>) -> (f64, f64) {
+    if points.len() < 2 {
+        let (x, y) = points[0];
+        let slope = fallback_slope.unwrap_or(0.0);
+        return (slope, y.ln() - slope * x.ln());
+    }
+    let n = points.len() as f64;
+    let (sum_x, sum_y) = points
+        .iter()
+        .fold((0.0, 0.0), |(sx, sy), &(x, y)| (sx + x.ln(), sy + y.ln()));
+    let (mean_x, mean_y) = (sum_x / n, sum_y / n);
+    let (mut cov, mut var) = (0.0, 0.0);
+    for &(x, y) in points {
+        let (lx, ly) = (x.ln() - mean_x, y.ln() - mean_y);
+        cov += lx * ly;
+        var += lx * lx;
+    }
+    let slope = if var > 0.0 { cov / var } else { 0.0 };
+    (slope, mean_y - slope * mean_x)
+}
+
+fn loglog_predict(points: &[(f64, f64)], fallback_slope: Option<f64>, files: f64) -> f64 {
+    let (slope, intercept) = fit_loglog(points, fallback_slope);
+    (slope * files.max(1.0).ln() + intercept).exp()
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MemoryModel {
+    rows: Vec<TimingRow>,
+}
+
+/// Real, matching observations needed before they collectively outweigh the
+/// seed curve. Larger than `EtaModel::stage`'s three seed pseudo-observations
+/// on purpose (#2.1: "used until a group has enough finished rows (pick a
+/// threshold, e.g. 8, and say why)") -- an underestimated *time* costs a
+/// stale progress bar; an underestimated *memory* prediction costs an OOM
+/// and a rerun, so a memory group should need more corroborating evidence
+/// before it can move the seed as far.
+const MEMORY_SEED_WEIGHT: f64 = 8.0;
+
+impl MemoryModel {
+    pub fn from_rows(rows: Vec<TimingRow>) -> Self {
+        Self {
+            rows: rows.into_iter().rev().take(256).collect(),
+        }
+    }
+
+    pub fn record(&mut self, row: TimingRow) {
+        self.rows.push(row);
+        if self.rows.len() > 256 {
+            self.rows.remove(0);
+        }
+    }
+
+    fn file_count(features: &RepoFeatures) -> Option<f64> {
+        let count: u64 = features.languages.values().map(|v| v.files).sum();
+        (count > 0).then_some(count as f64)
+    }
+
+    /// The upper-quantile seed, in bytes, for a group and a file count. See
+    /// the anchor tables above for what each branch is fit from.
+    fn seed_bytes(group: MemoryGroup<'_>, files: f64) -> f64 {
+        let hand_slope = fit_loglog(&HAND_ANCHORS, None).0;
+        let mib = if group.scip {
+            match group.language {
+                Some("py") => loglog_predict(&SCIP_PY_ANCHORS, None, files),
+                Some("go") => loglog_predict(&[SCIP_GO_ANCHOR], Some(hand_slope), files),
+                Some("ts") => loglog_predict(&SCIP_TS_ANCHORS, None, files),
+                // No finding measures this language's SCIP indexer peak (or
+                // none is known yet within a `scip` job): the hand curve is
+                // the only measurement in hand, so it is used as a floor
+                // rather than inventing a number for an unmeasured indexer.
+                _ => loglog_predict(&HAND_ANCHORS, None, files),
+            }
+        } else {
+            loglog_predict(&HAND_ANCHORS, None, files)
+        };
+        mib * UPPER_QUANTILE_MULTIPLIER * MIB
+    }
+
+    /// The reference-mode prior alone, for a queued job whose worker has not
+    /// reported `features` yet (#2.1 point 4). `hand`'s prior reuses
+    /// `seed_bytes` at finding 18's own medium-band median file count -- the
+    /// corpus's own middle, not a magic number -- so it never drifts from
+    /// the same curve a known-file-count `hand` job gets. `scip` has no
+    /// per-file-count curve to evaluate at an arbitrary point without also
+    /// knowing a language, so it is `SCIP_UNKNOWN_PEAK_MIB` directly.
+    fn unknown_prior(scip: bool) -> f64 {
+        if scip {
+            SCIP_UNKNOWN_PEAK_MIB * UPPER_QUANTILE_MULTIPLIER * MIB
+        } else {
+            Self::seed_bytes(
+                MemoryGroup {
+                    scip: false,
+                    language: None,
+                },
+                HAND_ANCHORS[1].0, // the medium-band median file count
+            )
+        }
+    }
+
+    /// Predicted peak RSS in bytes: an upper bound meant to overestimate
+    /// (#2.1: "it errs high on purpose"), never CLAUDE.md's lower-bound rule,
+    /// which governs what a *map* reports, not this internal scheduling
+    /// estimate (#2.1 says so explicitly).
+    pub fn predict_peak(&self, features: &RepoFeatures) -> u64 {
+        let group = MemoryGroup::of(features);
+        let seed = match Self::file_count(features) {
+            Some(files) => Self::seed_bytes(group, files),
+            None => Self::unknown_prior(group.scip),
+        };
+        let mut sum = MEMORY_SEED_WEIGHT;
+        let mut weight = MEMORY_SEED_WEIGHT;
+        for row in &self.rows {
+            // Only a successfully finished job's peak is evidence: a failed
+            // or cancelled row's `stage_s` is all `None` (see `worker_loop`'s
+            // `TimingRow` construction), and a killed job's peak is a floor
+            // on what it needed, not a measurement of what finishing would
+            // have needed -- it must never *narrow* the prediction the way a
+            // real completion can (mirrors `EtaModel`'s
+            // `failed_job_does_not_narrow_extrapolation_interval`).
+            if row.stage_s.iter().all(Option::is_none) {
+                continue;
+            }
+            let Some(observed) = row.peak_rss_bytes.filter(|bytes| *bytes > 0) else {
+                continue;
+            };
+            let row_group = MemoryGroup::of(&row.features);
+            if row_group != group {
+                continue;
+            }
+            let Some(row_files) = Self::file_count(&row.features) else {
+                continue;
+            };
+            let predicted = Self::seed_bytes(row_group, row_files);
+            if predicted <= 0.0 {
+                continue;
+            }
+            sum += (observed as f64 / predicted).clamp(0.5, 2.0);
+            weight += 1.0;
+        }
+        (seed * sum / weight).round().max(1.0) as u64
+    }
+}
+
 /// Replay the exact worker event stream on a standard runner. Predictions use
 /// only events already emitted at each checkpoint, never the final duration.
 pub fn replay_timeline(path: &std::path::Path) -> anyhow::Result<serde_json::Value> {
@@ -581,6 +859,7 @@ mod tests {
             features: input.clone(),
             elapsed_s: 50.0,
             stage_s,
+            peak_rss_bytes: None,
         });
         assert!(model.stage(StageId::Parse, &input) > base);
         assert!(model.stage(StageId::Parse, &input) < base * 1.5);
@@ -642,9 +921,103 @@ mod tests {
             features: input.clone(),
             elapsed_s: 12.0,
             stage_s: vec![None; StageId::ALL.len()],
+            peak_rss_bytes: None,
         });
         let after = model.predict(&input, &[false; STAGE_COUNT], None);
         assert!((before.low_s - after.low_s).abs() < 0.001);
         assert!((before.high_s - after.high_s).abs() < 0.001);
+    }
+
+    fn scip_py(files: u64) -> RepoFeatures {
+        let mut input = features(files);
+        input.refs = Some("scip".to_owned());
+        input
+    }
+
+    fn finished_row(features: RepoFeatures, peak: u64) -> TimingRow {
+        TimingRow {
+            features,
+            elapsed_s: 10.0,
+            stage_s: vec![Some(1.0); StageId::ALL.len()],
+            peak_rss_bytes: Some(peak),
+        }
+    }
+
+    #[test]
+    fn memory_seed_with_no_rows_is_positive_and_scip_exceeds_hand() {
+        let model = MemoryModel::default();
+        let hand = model.predict_peak(&features(851));
+        let scip = model.predict_peak(&scip_py(851));
+        assert!(hand > 0);
+        assert!(scip > hand, "scip {scip} should exceed hand {hand}");
+
+        // #2.1 point 4: a queued job before the worker's first `features`
+        // event predicts from the reference-mode prior alone.
+        let hand_unknown = model.predict_peak(&RepoFeatures::default());
+        let scip_unknown = model.predict_peak(&RepoFeatures {
+            refs: Some("scip".to_owned()),
+            ..RepoFeatures::default()
+        });
+        assert!(hand_unknown > 0);
+        assert!(
+            scip_unknown > hand_unknown,
+            "scip {scip_unknown} should exceed hand {hand_unknown} even with no features yet"
+        );
+    }
+
+    #[test]
+    fn memory_refit_moves_the_prediction_but_stays_bounded() {
+        let input = scip_py(851);
+        let mut model = MemoryModel::default();
+        let seed = model.predict_peak(&input);
+        // Every observation reports exactly double the seed; the refit loop
+        // clamps each observation's ratio to at most 2.0 (mirrors
+        // `EtaModel::stage`'s clipped refit), so the blended result should
+        // land above the seed but nowhere near an unclamped 2x.
+        for _ in 0..(MEMORY_SEED_WEIGHT as usize) {
+            model.record(finished_row(input.clone(), seed * 2));
+        }
+        let refit = model.predict_peak(&input);
+        assert!(refit > seed, "refit {refit} should exceed the seed {seed}");
+        assert!(
+            (refit as f64) <= seed as f64 * 2.01,
+            "the clamp must keep the refit from exceeding the observed ratio, got {refit} against seed {seed}"
+        );
+    }
+
+    #[test]
+    fn memory_failed_rows_do_not_narrow_the_prediction() {
+        let input = scip_py(851);
+        let mut model = MemoryModel::default();
+        let before = model.predict_peak(&input);
+        // A killed job's peak is real evidence of what it needed (#97 phase
+        // 0's brief), but a job that never finished must never *narrow* the
+        // prediction below what a completed job would justify -- a tiny
+        // reported peak from a job killed almost immediately is not proof
+        // the repository is small.
+        model.record(TimingRow {
+            features: input.clone(),
+            elapsed_s: 1.0,
+            stage_s: vec![None; StageId::ALL.len()],
+            peak_rss_bytes: Some(1),
+        });
+        let after = model.predict_peak(&input);
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn memory_prediction_is_order_independent() {
+        let a = scip_py(200);
+        let b = scip_py(900);
+        let forward = MemoryModel::from_rows(vec![
+            finished_row(a.clone(), 500_000_000),
+            finished_row(b.clone(), 900_000_000),
+        ]);
+        let backward = MemoryModel::from_rows(vec![
+            finished_row(b.clone(), 900_000_000),
+            finished_row(a.clone(), 500_000_000),
+        ]);
+        assert_eq!(forward.predict_peak(&a), backward.predict_peak(&a));
+        assert_eq!(forward.predict_peak(&b), backward.predict_peak(&b));
     }
 }
