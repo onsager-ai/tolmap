@@ -9,12 +9,15 @@
 # parameter, passed as `None`).
 #
 # Standard GitHub-hosted runners only, no new spend (remote-build.yml's
-# header). `workflow_dispatch` only: GitHub can only dispatch a workflow
-# file that is on the default branch, but this file is not there yet, so it
-# has to be triggered by branch/ref on this PR once it exists on `main` --
-# same limitation `scip-spike.yml`'s header documents for why that spike
-# hides behind `remote-build.yml`. This one is small enough (three repos,
-# no cargo build of tolmap itself) not to need that indirection.
+# header). `workflow_call` only, invoked by remote-build.yml's
+# `command=rust-scip-spike` -- the same indirection `scip-spike.yml` uses
+# and for the same reason its header gives: GitHub only lets
+# `workflow_dispatch` target a workflow file that is already on the default
+# branch, and this file is not there yet. remote-build.yml already is, so
+# dispatching it with `--ref eval/rust-scip-spike` runs that ref's copy of
+# both files. Unlike `scip-spike`, this job does not `needs: setup` --
+# there is no hand resolver for Rust to build a baseline from (#126 is
+# design-only so far), so it never touches `setup`'s tolmap binary.
 #
 # Repos, pinned commits:
 #   - onsager-ai/tolmap  -- dogfood: single non-workspace crate, a build.rs
@@ -49,7 +52,7 @@
 name: Rust SCIP spike (#126)
 
 on:
-  workflow_dispatch:
+  workflow_call: {}
 
 env:
   CARGO_TERM_COLOR: always
