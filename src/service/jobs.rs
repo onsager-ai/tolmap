@@ -728,14 +728,8 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     if state.jobs.is_cancelled(tx.borrow().job_id) {
         return;
     }
-    let previous_maps = match state.store.warm_start_candidates(&repo_ref.slug) {
-        Ok(rows) => rows
-            .into_iter()
-            .map(|row| PreviousMap {
-                branch: row.branch,
-                path: row.map_path.to_string_lossy().into_owned(),
-            })
-            .collect(),
+    let warm_start_candidates = match state.store.warm_start_candidates(&repo_ref.slug) {
+        Ok(rows) => rows,
         Err(error) => return finish_failed(&tx, ApiError::internal(error.to_string()).body),
     };
     // Per-job directory, not the shared `cache_dir` -- see
@@ -795,6 +789,14 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         let _ = std::fs::remove_dir_all(&job_dir);
         return finish_failed(&tx, ApiError::internal(error.to_string()).body);
     }
+    // Like the names cache above, and before the same chown: the worker's
+    // uid cannot read the map store (see `stage_previous_map`).
+    let previous_maps = stage_previous_map(
+        &job_dir,
+        &warm_start_candidates,
+        checkout.branch.as_deref(),
+        &|line: String| eprintln!("job {}: {line}", tx.borrow().job_id),
+    );
     // Chown + lock down the job's directory *before* the child that will
     // run inside it is spawned -- see `harden_job_dir`. This now covers the
     // fresh `repo/` checkout made above too: a real, non-hardlinked copy,
@@ -882,6 +884,62 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     }
     tx.send_modify(|snapshot| snapshot.elapsed_s = started.elapsed().as_secs_f64());
     finish_done(&tx);
+}
+
+/// Issue #141: the map store (`cache_dir/maps/<owner>/<repo>`) is the
+/// service's own and `0700` (`harden_persistent_dir`), and in the runtime
+/// image the worker runs at another uid (`process_worker_exe`), so a store
+/// path handed to the worker cannot be read. The worker treated that as "no
+/// previous map", and every re-index cold-started: finding 4's warm start,
+/// 88% district retention against 46% cold, silently off.
+///
+/// So the service picks the previous map the worker would have picked --
+/// the newest on the checked-out branch, else the newest overall
+/// (`warm_start_candidates` is newest first) -- and copies it into
+/// `job_dir/previous/<commit>.json` while `job_dir` is still its own, before
+/// `harden_job_dir` hands the whole directory to the worker's uid. The store
+/// keeps its owner and mode. Only that one map is copied: the worker never
+/// uses more than one, and a repository's retained maps can be large.
+///
+/// A map that cannot be copied is a cold start, as an unreadable one always
+/// was, but logged, not silent.
+fn stage_previous_map(
+    job_dir: &Path,
+    candidates: &[MapRow],
+    branch: Option<&str>,
+    log: &dyn Fn(String),
+) -> Vec<PreviousMap> {
+    let Some(row) = candidates
+        .iter()
+        .find(|row| row.branch.as_deref() == branch)
+        .or_else(|| candidates.first())
+    else {
+        return Vec::new();
+    };
+    // The commit names the copy, and the worker logs the name it warm
+    // started from; the store only ever records a checked object id.
+    if !worker_result::is_object_id(&row.commit) {
+        log(format!(
+            "cold start: stored commit {:?} is not an object id",
+            row.commit
+        ));
+        return Vec::new();
+    }
+    let dir = job_dir.join("previous");
+    let copy = dir.join(format!("{}.json", row.commit));
+    let copied = worker_result::create_private_dir(&dir)
+        .and_then(|()| worker_result::copy_for_worker(&row.map_path, &copy));
+    if let Err(error) = copied {
+        log(format!(
+            "cold start: previous map {} not copied for the worker: {error}",
+            row.commit
+        ));
+        return Vec::new();
+    }
+    vec![PreviousMap {
+        branch: row.branch.clone(),
+        path: copy.to_string_lossy().into_owned(),
+    }]
 }
 
 /// Moves a finished worker's map, symbols and names cache into the store and
@@ -1549,6 +1607,10 @@ fn process_worker_exe(
                 }
             }
             WorkerEvent::Log { message, .. } => {
+                // Also into the service's own log: the snapshot's `stage`
+                // is overwritten by the next event, and whether a job
+                // warm-started (issue #141) must be answerable afterwards.
+                eprintln!("job {id}: {message}");
                 tx.send_modify(|snapshot| {
                     if !is_terminal(snapshot) {
                         snapshot.stage = message;
@@ -3045,5 +3107,87 @@ mod tests {
         )
         .unwrap();
         result.unwrap();
+    }
+
+    fn stored_row(dir: &Path, commit: char, branch: Option<&str>) -> MapRow {
+        let commit = commit.to_string().repeat(40);
+        let map_path = dir.join(format!("{commit}.json"));
+        std::fs::write(&map_path, format!("{{\"commit\":\"{commit}\"}}")).unwrap();
+        MapRow {
+            slug: "test/demo".to_owned(),
+            owner: "test".to_owned(),
+            repo: "demo".to_owned(),
+            commit,
+            branch: branch.map(str::to_owned),
+            lang: "py".to_owned(),
+            files: 1,
+            districts: 1,
+            modularity: 0.0,
+            map_path,
+            indexed_at: String::new(),
+        }
+    }
+
+    /// Issue #141: the worker gets a copy of the one previous map it would
+    /// have chosen, inside its own job directory, never a store path.
+    #[test]
+    fn the_previous_map_is_copied_into_the_job_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("maps");
+        std::fs::create_dir_all(&store).unwrap();
+        // Newest first, as `warm_start_candidates` returns them.
+        let rows = vec![
+            stored_row(&store, 'a', Some("dev")),
+            stored_row(&store, 'b', Some("main")),
+        ];
+        let no_log = |line: String| panic!("unexpected log line: {line}");
+
+        let job = dir.path().join("job-main");
+        std::fs::create_dir_all(&job).unwrap();
+        let staged = stage_previous_map(&job, &rows, Some("main"), &no_log);
+        assert_eq!(staged.len(), 1);
+        let copy = job
+            .join("previous")
+            .join(format!("{}.json", "b".repeat(40)));
+        assert_eq!(Path::new(&staged[0].path), copy.as_path());
+        assert_eq!(staged[0].branch.as_deref(), Some("main"));
+        assert_eq!(
+            std::fs::read(&copy).unwrap(),
+            std::fs::read(&rows[1].map_path).unwrap()
+        );
+
+        // No map on this branch yet: the newest overall.
+        let job = dir.path().join("job-other");
+        std::fs::create_dir_all(&job).unwrap();
+        let staged = stage_previous_map(&job, &rows, Some("feature"), &no_log);
+        assert_eq!(
+            Path::new(&staged[0].path),
+            job.join("previous")
+                .join(format!("{}.json", "a".repeat(40)))
+                .as_path()
+        );
+
+        // A first index has nothing to copy.
+        assert!(stage_previous_map(&job, &[], Some("main"), &no_log).is_empty());
+    }
+
+    #[test]
+    fn a_previous_map_that_cannot_be_copied_is_a_logged_cold_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = vec![stored_row(dir.path(), 'c', Some("main"))];
+        std::fs::remove_file(&rows[0].map_path).unwrap();
+        let job = dir.path().join("job");
+        std::fs::create_dir_all(&job).unwrap();
+        let lines = std::cell::RefCell::new(Vec::new());
+        let staged = stage_previous_map(&job, &rows, Some("main"), &|line: String| {
+            lines.borrow_mut().push(line)
+        });
+        assert!(staged.is_empty());
+        let lines = lines.into_inner();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("cold start: previous map"),
+            "{lines:?}"
+        );
     }
 }

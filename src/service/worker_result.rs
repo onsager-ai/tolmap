@@ -132,6 +132,38 @@ pub(crate) fn create_private_dir(path: &Path) -> std::io::Result<()> {
     builder.create(path)
 }
 
+/// Copies `source`, a file in the service's own store, to `dest`, a new file
+/// in a job directory the service has just created and not yet handed to the
+/// worker (issue #141). The store stays the service's own and `0700`; the
+/// worker reads the copy, which `harden_job_dir` then gives to its uid with
+/// the rest of the job directory.
+///
+/// The source is opened by the service, never through a symlink, and must be
+/// a regular file. The destination is created, never opened if something is
+/// already there -- `create_new` does not follow a symlink at the last
+/// component -- and is readable by its owner only.
+pub(crate) fn copy_for_worker(source: &Path, dest: &Path) -> std::io::Result<u64> {
+    let mut read = std::fs::OpenOptions::new();
+    read.read(true);
+    let mut write = std::fs::OpenOptions::new();
+    write.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        read.custom_flags(libc::O_NOFOLLOW);
+        write.mode(0o600);
+    }
+    let mut from = read.open(source)?;
+    if !from.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", source.display()),
+        ));
+    }
+    let mut to = write.open(dest)?;
+    std::io::copy(&mut from, &mut to)
+}
+
 /// Checks a worker's reported paths against the ones the service expects in
 /// `output_dir`, then moves the map, its symbols sibling, the district
 /// symbols directory and the names cache into `staging` and checks each
@@ -510,6 +542,47 @@ mod tests {
         );
         let message = refused(result);
         assert!(message.contains("not owned by the worker"), "{message}");
+    }
+
+    #[test]
+    fn a_store_file_is_copied_for_the_worker_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("stored.json");
+        std::fs::write(&source, b"{\"map\":1}").unwrap();
+        let dest = dir.path().join("copy.json");
+        assert_eq!(copy_for_worker(&source, &dest).unwrap(), 9);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"{\"map\":1}");
+        let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_copy_for_the_worker_follows_no_symlink_and_overwrites_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside.json");
+        std::fs::write(&outside, b"keep me").unwrap();
+
+        // A symlinked source is not read through.
+        let linked_source = dir.path().join("linked.json");
+        symlink(&outside, &linked_source).unwrap();
+        assert!(copy_for_worker(&linked_source, &dir.path().join("a.json")).is_err());
+        assert!(!dir.path().join("a.json").exists());
+
+        // A directory is not a map.
+        assert!(copy_for_worker(dir.path(), &dir.path().join("b.json")).is_err());
+
+        // A symlink already at the destination is not written through.
+        let source = dir.path().join("stored.json");
+        std::fs::write(&source, b"{\"map\":1}").unwrap();
+        let linked_dest = dir.path().join("dest.json");
+        symlink(&outside, &linked_dest).unwrap();
+        assert!(copy_for_worker(&source, &linked_dest).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep me");
+
+        // Nor is an existing file replaced.
+        assert!(copy_for_worker(&source, &outside).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep me");
     }
 
     #[test]
