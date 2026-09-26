@@ -486,6 +486,9 @@ def ingest(
         "documents_mapped": sum(1 for p in seen_paths if p in mapped),
         "mapped_files_of_lang": len(lang_files),
         "mapped_files_of_lang_indexed": indexed_lang_files,
+        # Outside `fingerprint` (finding 51): a pair hand has from a file the
+        # indexer never read is not evidence against hand.
+        "unindexed_lang_files": unindexed,
         "unindexed_lang_files_by_directory": dict(
             sorted(Counter(f.rsplit("/", 1)[0] if "/" in f else "." for f in unindexed).most_common(15))
         ),

@@ -984,6 +984,19 @@ jobs:
               ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
               --lang "$lang" --refs hand \
               --out "$work/hand.graph.json" || echo "$name dump-graph --refs hand FAILED"
+            # Finding 51: the TypeScript static signal rebuilt from the
+            # resolver's report, as it is (`rebuild`, a construction check)
+            # and with each import's mass shared among the files it reaches
+            # (`share`), each partitioned by the product.
+            if [ "$lang" = "ts" ]; then
+              python3 eval/hand_score.py ts-variants --work "$work" || echo "$name ts-variants FAILED"
+              for variant in rebuild share; do
+                [ -f "$work/variants/$variant.graph.json" ] || continue
+                ./bin/tolmap build --graph "$work/variants/$variant.graph.json" --name "$name.$variant" \
+                  --no-parcels --refs hand --out "$work/variants/maps" > "$work/variants/$variant.log" 2>&1 \
+                  || echo "$name $variant build FAILED"
+              done
+            fi
             TOLMAP_SCIP_INDEX_DIR="$PWD/$work/index" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
               --lang "$lang" --refs scip --out "$work/scip.graph.json" \
               || echo "$name dump-graph --refs scip FAILED"
@@ -996,7 +1009,7 @@ jobs:
             done
             python3 eval/hand_score.py score --name "$name" --work "$work" --repo "$dir" \
               --out "$work/score.json" || echo "$name score FAILED"
-            rm -rf "$dir" "$work/index" "$work"/map/*.symbols.json
+            rm -rf "$dir" "$work/index" "$work"/map/*.symbols.json "$work"/variants/maps/*.symbols.json
             echo "::endgroup::"
           done < fixtures.txt
       - name: Summary
