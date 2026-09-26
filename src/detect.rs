@@ -150,6 +150,7 @@ pub fn detect(repo: &Path) -> Result<Detection> {
         LanguageKind::Python,
         LanguageKind::Go,
         LanguageKind::TypeScript,
+        LanguageKind::Rust,
     ] {
         if let Some(candidate) = detect_language(repo, language)? {
             candidates.push(candidate);
@@ -157,7 +158,7 @@ pub fn detect(repo: &Path) -> Result<Detection> {
     }
     ensure!(
         !candidates.is_empty(),
-        "no supported source (.py, .go, or .ts) found in {}",
+        "no supported source (.py, .go, .ts, or .rs) found in {}",
         repo.display()
     );
     sort_candidates(&mut candidates);
@@ -175,6 +176,7 @@ pub fn detect_language(repo: &Path, language: LanguageKind) -> Result<Option<Sou
         LanguageKind::Python => detect_python(repo),
         LanguageKind::Go => detect_go(repo),
         LanguageKind::TypeScript => detect_typescript(repo),
+        LanguageKind::Rust => detect_rust(repo),
     }
 }
 
@@ -603,6 +605,142 @@ fn collect_go_mod_dirs(repo: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Resul
 }
 
 // ---------------------------------------------------------------------
+// Rust (issue #126): a Cargo.toml at the root, as a workspace (`[workspace]
+// members`) or a package (`[package]`), covers every crate under it; the
+// resolver finds the crates themselves (`extract::rust::crate_targets`,
+// which follows `path =` dependencies between them). `target/` is cargo's
+// build output and is never walked.
+// ---------------------------------------------------------------------
+
+fn detect_rust(repo: &Path) -> Result<Option<SourceCandidate>> {
+    let total = extract::source_files(repo, ".", LanguageKind::Rust)?.len();
+    if total == 0 {
+        return Ok(None);
+    }
+    if let Some(manifest) = fs::read_to_string(repo.join("Cargo.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Value>().ok())
+    {
+        let members = manifest
+            .get("workspace")
+            .and_then(|workspace| workspace.get("members"))
+            .and_then(toml::Value::as_array)
+            .map(|members| {
+                members
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            });
+        let package = manifest
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str);
+        let evidence = match (members, package) {
+            (Some(members), Some(package)) => format!(
+                "Cargo.toml at repository root: package {package} and [workspace] members {members}"
+            ),
+            (Some(members), None) => {
+                format!("Cargo.toml at repository root: [workspace] members {members}")
+            }
+            (None, Some(package)) => format!("Cargo.toml at repository root: package {package}"),
+            (None, None) => "Cargo.toml at repository root".to_owned(),
+        };
+        return Ok(Some(SourceCandidate {
+            language: LanguageKind::Rust,
+            pkg: ".".to_owned(),
+            confidence: Confidence::High,
+            file_count: total,
+            evidence,
+        }));
+    }
+    // No root manifest: every Cargo.toml found, chosen by file count, as Go
+    // does for go.mod.
+    let mut roots = Vec::new();
+    collect_named_dirs(repo, repo, "Cargo.toml", &mut roots)?;
+    roots.sort();
+    let mut scored = Vec::new();
+    for dir in roots {
+        let rel = dir
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        // An unreadable root manifest: the root still covers everything.
+        let rel = if rel.is_empty() { ".".to_owned() } else { rel };
+        let files = extract::source_files(repo, &rel, LanguageKind::Rust)?;
+        scored.push((rel, files.len()));
+    }
+    // A nested package inside another's directory is counted in both;
+    // only the outermost ones are roots.
+    let outer = scored
+        .iter()
+        .filter(|(dir, _)| {
+            !scored.iter().any(|(other, _)| {
+                other != dir && (other == "." || dir.starts_with(&format!("{other}/")))
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut scored = outer;
+    if scored.is_empty() {
+        return Ok(Some(SourceCandidate {
+            language: LanguageKind::Rust,
+            pkg: ".".to_owned(),
+            confidence: Confidence::Low,
+            file_count: total,
+            evidence:
+                "no Cargo.toml found anywhere in the repository; mapping the repository root directly"
+                    .to_owned(),
+        }));
+    }
+    sort_pkg_counts(&mut scored);
+    let (pkg, count) = scored[0].clone();
+    let (confidence, evidence) = if scored.len() == 1 {
+        (
+            Confidence::High,
+            format!("Cargo.toml found at {pkg} (not the repository root)"),
+        )
+    } else {
+        let others = scored[1..]
+            .iter()
+            .map(|(p, c)| format!("{p} ({c} files)"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        (
+            Confidence::Medium,
+            format!(
+                "{} Cargo.toml roots found; chose {pkg} by file count over {others}",
+                scored.len()
+            ),
+        )
+    };
+    Ok(Some(SourceCandidate {
+        language: LanguageKind::Rust,
+        pkg,
+        confidence,
+        file_count: count,
+        evidence,
+    }))
+}
+
+fn collect_named_dirs(repo: &Path, dir: &Path, marker: &str, out: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = fs::read_dir(dir)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if file_type.is_dir() {
+            if extract::rust::skip_dir(&name) {
+                continue;
+            }
+            collect_named_dirs(repo, &entry.path(), marker, out)?;
+        } else if file_type.is_file() && name == marker {
+            out.push(dir.strip_prefix(repo)?.to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
 // TypeScript: docs/ARCHITECTURE.md -- "package.json plus tsconfig.json
 // points at src or a packages/* workspace".
 // ---------------------------------------------------------------------
@@ -1009,6 +1147,58 @@ mod tests {
         }
         let selected = all_sources(dir.path()).unwrap();
         assert_eq!(selected.len(), 2);
+    }
+
+    #[test]
+    fn rust_workspace_at_the_root_maps_the_root_and_skips_target() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
+        );
+        write(
+            dir.path(),
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"a\"\n",
+        );
+        write(dir.path(), "crates/a/src/lib.rs", "pub fn a() {}\n");
+        write(
+            dir.path(),
+            "crates/b/Cargo.toml",
+            "[package]\nname = \"b\"\n",
+        );
+        write(dir.path(), "crates/b/src/main.rs", "fn main() {}\n");
+        write(dir.path(), "target/debug/build/gen.rs", "pub fn gen() {}\n");
+        let candidate = detect_language(dir.path(), LanguageKind::Rust)
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.pkg, ".");
+        assert_eq!(candidate.confidence, Confidence::High);
+        assert_eq!(candidate.file_count, 2);
+        assert!(candidate.evidence.contains("crates/a, crates/b"));
+        assert_eq!(
+            detect(dir.path()).unwrap().chosen.language,
+            LanguageKind::Rust
+        );
+    }
+
+    #[test]
+    fn rust_package_below_the_root_is_found_by_its_manifest() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "tools/cli/Cargo.toml",
+            "[package]\nname = \"cli\"\n",
+        );
+        write(dir.path(), "tools/cli/src/main.rs", "fn main() {}\n");
+        write(dir.path(), "tools/cli/src/args.rs", "pub struct Args;\n");
+        write(dir.path(), "scripts/one_off.rs", "fn main() {}\n");
+        let candidate = detect_language(dir.path(), LanguageKind::Rust)
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.pkg, "tools/cli");
+        assert_eq!(candidate.file_count, 2);
     }
 
     #[test]

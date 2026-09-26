@@ -118,7 +118,9 @@ pub struct CoverageReport {
 // (`scip_ingest::gate`), "hand" otherwise. `reason` is a stable code, never
 // indexer output: "indexed" (admitted), "below_min_recall",
 // "indexer_not_found", "indexer_failed", "indexer_spawn_failed",
-// "no_index_written", "no_tsconfig", "no_documents" or "ingest_failed".
+// "no_index_written", "no_tsconfig", "no_documents", "ingest_failed" or
+// "no_product_indexer" (Rust: its indexer runs repository code natively,
+// finding 55, so it is a CI oracle, never a path a map takes).
 // Nothing here is a timing, so the map stays byte-identical across runs.
 //
 // `install` (issue #110 P1c) is present only on the TypeScript row of a

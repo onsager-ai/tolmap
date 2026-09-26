@@ -69,12 +69,14 @@ impl StageId {
         Self::ALL.iter().position(|stage| *stage == self).unwrap() + 1
     }
 
-    /// The indexing stage for `language` under `--refs scip`.
-    pub fn index_for(language: crate::extract::LanguageKind) -> Self {
+    /// The indexing stage for `language` under `--refs scip`, or `None` for
+    /// a language the product never indexes (Rust, finding 55).
+    pub fn index_for(language: crate::extract::LanguageKind) -> Option<Self> {
         match language {
-            crate::extract::LanguageKind::Go => Self::IndexGo,
-            crate::extract::LanguageKind::Python => Self::IndexPy,
-            crate::extract::LanguageKind::TypeScript => Self::IndexTs,
+            crate::extract::LanguageKind::Go => Some(Self::IndexGo),
+            crate::extract::LanguageKind::Python => Some(Self::IndexPy),
+            crate::extract::LanguageKind::TypeScript => Some(Self::IndexTs),
+            crate::extract::LanguageKind::Rust => None,
         }
     }
 

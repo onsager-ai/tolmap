@@ -36,7 +36,7 @@ enum Command {
         pkg: Vec<String>,
         /// Required with `--graph`; detected when omitted otherwise. See
         /// `--pkg` for the repeatable/paired form.
-        #[arg(long, value_parser = ["py", "go", "ts"])]
+        #[arg(long, value_parser = ["py", "go", "ts", "rs"])]
         lang: Vec<String>,
         /// Union every source `tolmap detect` finds that clears the
         /// `--all-sources` floor (`detect::ALL_SOURCES_MIN_FILES` files and
@@ -103,7 +103,7 @@ enum Command {
         /// the repeatable/paired multi-source form.
         #[arg(long)]
         pkg: Vec<String>,
-        #[arg(long, value_parser = ["py", "go", "ts"])]
+        #[arg(long, value_parser = ["py", "go", "ts", "rs"])]
         lang: Vec<String>,
         #[arg(long)]
         all_sources: bool,
@@ -125,7 +125,7 @@ enum Command {
         /// the repeatable/paired multi-source form.
         #[arg(long)]
         pkg: Vec<String>,
-        #[arg(long, value_parser = ["py", "go", "ts"])]
+        #[arg(long, value_parser = ["py", "go", "ts", "rs"])]
         lang: Vec<String>,
         #[arg(long)]
         all_sources: bool,
@@ -165,7 +165,7 @@ enum Command {
         repo: PathBuf,
         #[arg(long)]
         pkg: Vec<String>,
-        #[arg(long, value_parser = ["py", "go", "ts"])]
+        #[arg(long, value_parser = ["py", "go", "ts", "rs"])]
         lang: Vec<String>,
         #[arg(long)]
         all_sources: bool,
