@@ -278,6 +278,8 @@ also accepts `all_sources: true` to union every detected source that clears
 the detector's floor; the service currently sends `false` and retains its
 existing single-source confidence check.
 
+This child protocol is unchanged by issue #97's worker tier. A remote worker agent talks to the master over a separate channel protocol (`proto` 1) that wraps these same v1 events in session messages (`hello`, `assign`, `job_event`, …); it is specified in `docs/WORKER_TIER.md` §3 and is not a public API, so it is not documented here.
+
 ### `GET /api/maps`
 
 ```
