@@ -276,6 +276,11 @@ jobs:
       - name: Audit symbol cards and static district files
         run: python3 eval/symbol_stats.py islands-out/synthetic_islands.json islands-out/synthetic_islands.symbols.json
 
+      # The hand-versus-SCIP classifier (finding 48), on a synthetic package
+      # with one pair of each class; the real scores run in `hand-score`.
+      - name: Hand-score classifier self-test
+        run: python3 eval/hand_score.py self-test
+
       # The `scip` job below reuses this binary rather than compiling again.
       # build.rs bakes $LEIDEN_PREFIX/lib in as the rpath; the libraries
       # travel with it and are restored to the same path there.
@@ -872,6 +877,133 @@ jobs:
             churn
             !churn/index
           retention-days: 30
+
+  # Finding 48: how the hand-written resolver scores against SCIP (issue
+  # #110; owner decision 2026-09-25T16:56:34Z, "Tune hand, SCIP as oracle":
+  # hand stays the default and SCIP only measures it). For each fixture it
+  # dumps the hand graph, runs the pinned indexer through `dump-graph --refs
+  # scip` with the index kept, and scores hand's directed pairs against P0's
+  # oracle ingest of that index (eval/hand_score.py's docstring has the
+  # definitions and the pair classes). The oracle rather than the SCIP graph,
+  # because sqlalchemy's index falls below the admission floor and its SCIP
+  # graph is hand's; where a language is admitted the two are checked equal.
+  # The gate compares with the committed data/scip/hand_score.json and fails
+  # only on a regression: the oracle moving, an over-attribution class rising,
+  # or confirmed pairs falling (`gate`'s docstring says why only those).
+  hand-score:
+    name: Hand resolver vs SCIP score (on demand / nightly)
+    needs: gate
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    # About the scip-fixtures job's indexing time plus the ingest; bounded so
+    # a hung indexer cannot hold the runner.
+    timeout-minutes: 90
+    env:
+      SCIP_TYPESCRIPT_VERSION: "0.4.0"
+      SCIP_PYTHON_VERSION: "0.6.6"
+      SCIP_GO_VERSION: "v0.2.7"
+      SCIP_PROTO_TAG: "v0.10.0"
+      PROTOBUF_VERSION: "5.29.3"
+      GRPCIO_TOOLS_VERSION: "1.70.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+      - run: chmod +x bin/tolmap
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Install pinned indexers
+        run: |
+          set -euo pipefail
+          npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
+            "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
+          go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Generate scip_pb2 for P0's ingest
+        run: |
+          set -euo pipefail
+          pip install "protobuf==${PROTOBUF_VERSION}" "grpcio-tools==${GRPCIO_TOOLS_VERSION}"
+          mkdir -p "$RUNNER_TEMP/scippb"
+          curl -fsSL --retry 3 \
+            "https://raw.githubusercontent.com/scip-code/scip/${SCIP_PROTO_TAG}/scip.proto" \
+            -o "$RUNNER_TEMP/scippb/scip.proto"
+          python -m grpc_tools.protoc -I "$RUNNER_TEMP/scippb" \
+            --python_out="$RUNNER_TEMP/scippb" "$RUNNER_TEMP/scippb/scip.proto"
+      - name: Score each fixture
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+        run: |
+          # Not -e: a fixture that fails to build is reported by `summary`
+          # (which then fails the step), not a reason to skip the other eight.
+          set -uo pipefail
+          scip-typescript --version; scip-python --version; command -v scip-go
+          mkdir -p score clones
+          python3 eval/scip_fixtures.py list > fixtures.txt
+          while read -r name url sha pkg lang parcels; do
+            echo "::group::$name"
+            dir="clones/$name"
+            work="score/$name"
+            mkdir -p "$work/index"
+            # Blobless, full history: the same clone `full-fixtures` builds.
+            git clone --quiet --filter=blob:none "$url" "$dir"
+            git -C "$dir" checkout --quiet "$sha"
+            parcels_arg=""
+            [ "$parcels" = "true" ] || parcels_arg="--no-parcels"
+            ./bin/tolmap build "$PWD/$dir" --pkg "$pkg" --lang "$lang" --refs hand $parcels_arg \
+              --name "$name" --out "$work/map" > "$work/build.log" 2>&1 || echo "$name build FAILED"
+            ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" --lang "$lang" --refs hand \
+              --out "$work/hand.graph.json" || echo "$name dump-graph --refs hand FAILED"
+            TOLMAP_SCIP_INDEX_DIR="$PWD/$work/index" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
+              --lang "$lang" --refs scip --out "$work/scip.graph.json" \
+              || echo "$name dump-graph --refs scip FAILED"
+            for index in "$work"/index/*.scip; do
+              [ -e "$index" ] || continue
+              language="$(basename "$index" .scip)"
+              PYTHONPATH="$RUNNER_TEMP/scippb:$PWD/eval" python3 eval/scip_ingest.py --index "$index" \
+                --map "$work/map/$name.json" --graph "$work/hand.graph.json" --lang "$language" \
+                --out "$work/$language.ingest.json" || echo "$name ingest $language FAILED"
+            done
+            python3 eval/hand_score.py score --name "$name" --work "$work" --repo "$dir" \
+              --out "$work/score.json" || echo "$name score FAILED"
+            rm -rf "$dir" "$work/index" "$work"/map/*.symbols.json
+            echo "::endgroup::"
+          done < fixtures.txt
+      - name: Summary
+        run: |
+          set -uo pipefail
+          python3 eval/hand_score.py summary --work score --out score/hand_score.json \
+            --markdown score/hand_score.md
+          status=$?
+          cat score/hand_score.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - name: Record a fresh baseline (artifact only)
+        if: always()
+        run: |
+          python3 eval/hand_score.py baseline --summary score/hand_score.json --out score/baseline.json \
+            --source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hand-score
+          path: score
+          retention-days: 30
+      - name: Gate against data/scip/hand_score.json
+        if: always()
+        run: python3 eval/hand_score.py gate --summary score/hand_score.json --baseline data/scip/hand_score.json
 
   web:
     # The viewer had no CI at all: tsc ran only inside the Docker image at
