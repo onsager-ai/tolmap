@@ -3206,37 +3206,40 @@ fn parse_multi_with_progress(
         for (index, path) in imports.iter().enumerate() {
             let resolved = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
             let package = resolved.as_slice();
-            if language == LanguageKind::TypeScript {
-                let uses = ts_uses.get(index);
-                let followed = package
-                    .first()
-                    .map(|&module| follow_ts_import(module, uses, &ts_table));
-                if report_dir.is_some() {
-                    let (reason, name) = followed
-                        .as_ref()
-                        .map_or(("unresolved", None), |(_, outcome)| outcome.reason());
-                    // [file, specifier, outcome, name, type-only, resolved
-                    // file, files the followed names reach]
-                    report.push(serde_json::json!([
-                        file,
-                        path,
-                        reason,
-                        name,
-                        uses.is_some_and(|uses| uses.type_only),
-                        package.first().map(|&id| &files[id as usize]),
-                        followed.as_ref().map_or(Vec::new(), |(targets, _)| targets
-                            .iter()
-                            .map(|&id| &files[id as usize])
-                            .collect()),
-                    ]));
-                }
+            // A TypeScript import links the files that define the names it
+            // takes, followed through re-exports; where a name cannot be
+            // followed with certainty, the file the specifier resolves to,
+            // as it always did (finding 51).
+            let uses = ts_uses.get(index);
+            let followed = package
+                .first()
+                .filter(|_| language == LanguageKind::TypeScript)
+                .map(|&module| follow_ts_import(module, uses, &ts_table));
+            if language == LanguageKind::TypeScript && report_dir.is_some() {
+                let (reason, name) = followed
+                    .as_ref()
+                    .map_or(("unresolved", None), |(_, outcome)| outcome.reason());
+                // [file, specifier, outcome, name, type-only, resolved file,
+                // files the followed names reach]
+                report.push(serde_json::json!([
+                    file,
+                    path,
+                    reason,
+                    name,
+                    uses.is_some_and(|uses| uses.type_only),
+                    package.first().map(|&id| &files[id as usize]),
+                    followed.as_ref().map_or(Vec::new(), |(targets, _)| targets
+                        .iter()
+                        .map(|&id| &files[id as usize])
+                        .collect()),
+                ]));
             }
             if package.is_empty() {
                 continue;
             }
             // A Go import links the files that declare what the importer
             // names, where every name resolves; otherwise the whole package,
-            // as it always did. TypeScript resolves to one file already.
+            // as it always did.
             let narrowed = (language == LanguageKind::Go)
                 .then(|| narrow_go_import(package, import_uses.get(index), &declares));
             if let (Some(_), Some(outcome)) = (&report_dir, &narrowed) {
@@ -3255,11 +3258,21 @@ fn parse_multi_with_progress(
                 ]));
             }
             let narrowed = narrowed.and_then(std::result::Result::ok);
-            let targets = match &narrowed {
-                Some(narrowed) => narrowed.iter().copied().collect::<Vec<_>>(),
-                None => package.to_vec(),
+            let (targets, share) = match (&narrowed, followed) {
+                // A Go import's mass of 1 is shared among the files it
+                // links, as it was shared among the whole package.
+                (Some(narrowed), _) => (
+                    narrowed.iter().copied().collect::<Vec<_>>(),
+                    1.0 / narrowed.len() as f64,
+                ),
+                // A TypeScript import weighs 1 on each defining file, what
+                // importing each of them directly would weigh: the static
+                // signal does not depend on whether a repository routes its
+                // imports through barrels. Python's re-exports do the same
+                // (finding 49).
+                (None, Some((followed, _))) => (followed.into_iter().collect(), 1.0),
+                (None, None) => (package.to_vec(), 1.0 / package.len() as f64),
             };
-            let share = 1.0 / targets.len() as f64;
             for &target in &targets {
                 if target == source_id {
                     continue;
@@ -7540,5 +7553,156 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    fn ts_edges_from(files: &[(&str, &str)], source: &str) -> BTreeMap<String, f64> {
+        let dir = tempfile::TempDir::new().unwrap();
+        for (path, contents) in files {
+            write(dir.path(), path, contents);
+        }
+        let modules = module_index(dir.path()).unwrap();
+        let (parsed, raw) = parse_files(dir.path(), ".", LanguageKind::TypeScript).unwrap();
+        let intermediate = parse_multi(
+            dir.path(),
+            ".",
+            LanguageKind::TypeScript,
+            parsed,
+            raw,
+            &modules,
+        )
+        .unwrap();
+        intermediate
+            .directed
+            .iter()
+            .filter(|((a, _), _)| intermediate.files[*a as usize] == source)
+            .map(|(&(_, b), &weight)| (intermediate.files[b as usize].clone(), weight))
+            .collect()
+    }
+
+    const BARREL: &str = "export { a } from './a'\n\
+                          export * from './b'\n\
+                          import { c as local } from './c'\n\
+                          export { local as c }\n\
+                          export const own = 1\n";
+
+    fn barrel_package(user: &str) -> Vec<(&'static str, String)> {
+        vec![
+            ("src/index.ts", BARREL.to_owned()),
+            ("src/a.ts", "export const a = 1\n".to_owned()),
+            (
+                "src/b.ts",
+                "export function b() {}\nexport interface B {}\n".to_owned(),
+            ),
+            ("src/c.ts", "export class c {}\n".to_owned()),
+            ("src/use.ts", user.to_owned()),
+        ]
+    }
+
+    fn barrel_edges(user: &str) -> BTreeMap<String, f64> {
+        let files = barrel_package(user);
+        let files = files
+            .iter()
+            .map(|(path, contents)| (*path, contents.as_str()))
+            .collect::<Vec<_>>();
+        ts_edges_from(&files, "src/use.ts")
+    }
+
+    #[test]
+    fn typescript_import_links_the_files_that_define_what_it_takes_from_a_barrel() {
+        // A named re-export, a star re-export, an import-then-export, a type,
+        // and a name the barrel declares itself: each credits its definition,
+        // with the weight a direct import of that file would have.
+        assert_eq!(
+            barrel_edges("import { a, b, c, own } from './index'\nimport type { B } from '.'\n"),
+            weights(&[
+                ("src/a.ts", 1.0),
+                ("src/b.ts", 2.0),
+                ("src/c.ts", 1.0),
+                ("src/index.ts", 1.0),
+            ])
+        );
+        // `export { x } from` in the importing file is followed the same way.
+        assert_eq!(
+            barrel_edges("export { b } from './index'\n"),
+            weights(&[("src/b.ts", 1.0)])
+        );
+    }
+
+    #[test]
+    fn typescript_import_keeps_the_barrel_when_it_cannot_follow_a_name() {
+        // A namespace import, a side-effect import, `export *` and
+        // `require()` say nothing about which names are used.
+        for user in [
+            "import * as ns from './index'\n",
+            "import './index'\n",
+            "export * from './index'\n",
+            "const x = require('./index')\n",
+            // A name the barrel does not export visibly.
+            "import { missing } from './index'\n",
+        ] {
+            assert_eq!(
+                barrel_edges(user),
+                weights(&[("src/index.ts", 1.0)]),
+                "{user}"
+            );
+        }
+        // The certain name moves; the uncertain one keeps the barrel.
+        assert_eq!(
+            barrel_edges("import { a, missing } from './index'\n"),
+            weights(&[("src/a.ts", 1.0), ("src/index.ts", 1.0)])
+        );
+    }
+
+    #[test]
+    fn typescript_star_reexports_that_cannot_decide_keep_the_barrel() {
+        let package = |barrel: &'static str| {
+            vec![
+                ("src/index.ts", barrel),
+                ("src/x.ts", "export const dup = 1\nexport const onlyX = 1\n"),
+                ("src/y.ts", "export const dup = 2\n"),
+                ("src/use.ts", "import { dup, onlyX } from './index'\n"),
+            ]
+        };
+        // Two star re-exports binding one name: ECMAScript leaves it
+        // ambiguous, so `dup` stays on the barrel; `onlyX` still moves.
+        assert_eq!(
+            ts_edges_from(
+                &package("export * from './x'\nexport * from './y'\n"),
+                "src/use.ts"
+            ),
+            weights(&[("src/index.ts", 1.0), ("src/x.ts", 1.0)])
+        );
+        // A star re-export from outside the parsed set might bind either.
+        assert_eq!(
+            ts_edges_from(
+                &package("export * from 'external'\nexport * from './x'\n"),
+                "src/use.ts"
+            ),
+            weights(&[("src/index.ts", 1.0)])
+        );
+    }
+
+    #[test]
+    fn typescript_reexport_chains_are_followed_to_the_definition_within_four_hops() {
+        let files = [
+            ("src/index.ts", "export * from './one'\n"),
+            ("src/one.ts", "export { deep } from './two'\n"),
+            ("src/two.ts", "export * from './three'\n"),
+            ("src/three.ts", "export function deep() {}\n"),
+            ("src/use.ts", "import { deep } from './index'\n"),
+        ];
+        assert_eq!(
+            ts_edges_from(&files, "src/use.ts"),
+            weights(&[("src/three.ts", 1.0)])
+        );
+        // A module that declares its own default export is its definition.
+        let files = [
+            ("src/d.ts", "export default class {}\n"),
+            ("src/use.ts", "import D from './d'\n"),
+        ];
+        assert_eq!(
+            ts_edges_from(&files, "src/use.ts"),
+            weights(&[("src/d.ts", 1.0)])
+        );
     }
 }
