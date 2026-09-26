@@ -6670,7 +6670,7 @@ mod tests {
                 "from .. import util\ndef f():\n    from ..sql import schema as util\n    \
                  return util.memoized\n"
             ),
-            [init, "pkg/sql/schema.py"]
+            ["pkg/sql/schema.py", init]
         );
         // A star import from outside the parsed set could rebind the name.
         assert_eq!(
