@@ -187,9 +187,11 @@ resolver's own report (`TOLMAP_RUST_IMPORT_REPORT`, written by `dump-graph
   how many hit a cfg tie, broken or kept.
 - `scip_only_uses_by_class`: SCIP use pairs hand lacks, in this order:
   `member via value` (only methods or fields support the pair: a trait
-  method or a method called on a value, finding 50's class), `glob import`
-  (the source glob-imports the target's module or one above it), `inferred
-  type` (two hand hops), `other`.
+  method or a method called on a value, finding 50's class), `macro` (every
+  symbol SCIP names for the pair is a macro, `name!`: macros are
+  deliberately unresolved), `glob import` (the source glob-imports the
+  target's module or one above it), `inferred type` (two hand hops),
+  `other`.
 - `hand_only_by_class`: `uncertain module` (a chain the resolver could not
   follow linked the module it named), `other`.
 Rust rows are reported and not gated (UNGATED_LANGS) until the owner has
@@ -231,7 +233,7 @@ TS_OUTCOMES = ("defined_here", "followed", "partly_followed", "uncertain", "opaq
 PY_OUTCOMES = ("narrowed", "partly", "defined_here", "uncertain", "unused", "value", "ambiguous")
 RS_OUTCOMES = ("defined", "module", "uncertain", "uncertain_glob", "module_unselected", "glob", "unused",
                "unused_external", "unnamed", "glob_scope", "external", "unresolved", "no_module")
-RS_SCIP_CLASSES = ("member via value", "glob import", "inferred type", "other")
+RS_SCIP_CLASSES = ("member via value", "macro", "glob import", "inferred type", "other")
 RS_HAND_CLASSES = ("uncertain module", "other")
 # Languages whose rows are reported but not gated: Rust, until the owner
 # has seen its numbers (issue #126).
@@ -668,7 +670,8 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
                                   "named": len(named), "named_samples": sample(named)},
                      "member_only_available": "member_only_use_pairs" in ingest}
     if lang == "rs":
-        row["rs"] = score_rs(lang_of, hand, scip, scip_uses, hand_targets, rs_report, member_only)
+        symbols = {(a, b): names for a, b, names in ingest.get("use_pair_symbols", [])}
+        row["rs"] = score_rs(lang_of, hand, scip, scip_uses, hand_targets, rs_report, member_only, symbols)
     if lang == "py" and py_report is not None:
         row["py"] = score_py(lang_of, hand, scip, scip_uses, py_report, py, scip_targets)
     if lang == "ts":
@@ -974,7 +977,8 @@ def rs_absolute(segments: list[str], own: str) -> str | None:
 
 
 def score_rs(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: dict,
-             report: tuple[list[list], dict] | None, member_only: set) -> dict:
+             report: tuple[list[list], dict] | None, member_only: set,
+             symbols: dict | None = None) -> dict:
     """Finding 56's block: the resolver's outcomes and the pairs one side
     has alone, by class."""
     if report is None:
@@ -1000,6 +1004,9 @@ def score_rs(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: 
     def scip_class(a: str, t: str) -> str:
         if (a, t) in member_only:
             return "member via value"
+        names = (symbols or {}).get((a, t))
+        if names and all(name.endswith("!") for name in names):
+            return "macro"
         module = modules.get(t)
         if module and any(module == g or module.startswith(g + "::") for g in globs.get(a, ())):
             return "glob import"
@@ -1007,7 +1014,8 @@ def score_rs(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: 
             return "inferred type"
         return "other"
 
-    missing = [{"a": a, "b": t, "class": scip_class(a, t)} for a, t in sorted(scip_uses - hand)]
+    missing = [{"a": a, "b": t, "class": scip_class(a, t), "symbols": (symbols or {}).get((a, t), [])}
+               for a, t in sorted(scip_uses - hand)]
     hand_only = [{"a": a, "b": b, "class": "uncertain module" if (a, b) in uncertain else "other"}
                  for a, b in sorted(hand - scip)]
     return {
@@ -1742,8 +1750,10 @@ def self_test(_args) -> int:
         rs_ingest = {"file_edges": [
             ["src/lib.rs", "src/a.rs", 1, 1, 1], ["src/a.rs", "src/b.rs", 1, 1, 1],
             ["src/lib.rs", "src/b/c.rs", 1, 1, 1], ["src/lib.rs", "src/b.rs", 1, 1, 1],
-            ["src/a.rs", "src/d.rs", 1, 1, 1], ["src/b.rs", "src/a.rs", 1, 1, 1]],
-            "member_only_use_pairs": [["src/b.rs", "src/a.rs"]]}
+            ["src/a.rs", "src/d.rs", 1, 1, 1], ["src/b.rs", "src/a.rs", 1, 1, 1],
+            ["src/d.rs", "src/b.rs", 1, 1, 1]],
+            "member_only_use_pairs": [["src/b.rs", "src/a.rs"]],
+            "use_pair_symbols": [["src/d.rs", "src/b.rs", ["rust-analyzer cargo demo 0.1.0 b/made!"]]]}
         rs_row = score_language("synthetic", "rs", rs_graph, None, rs_ingest, None,
                                 rs_report=(rs_rows, rs_modules))
         rs = rs_row["rs"]
@@ -1753,7 +1763,8 @@ def self_test(_args) -> int:
         # lib.rs globs `crate::b`, and b.rs and b/c.rs are under it; b.rs ->
         # a.rs is member-only; a.rs -> d.rs has no hand path at all.
         assert rs["scip_only_uses_by_class"] == {
-            "member via value": 1, "glob import": 2, "inferred type": 0, "other": 1}, rs["scip_only_uses_by_class"]
+            "member via value": 1, "macro": 1, "glob import": 2, "inferred type": 0, "other": 1}, \
+            rs["scip_only_uses_by_class"]
         assert rs["hand_only_by_class"] == {"uncertain module": 1, "other": 0}, rs["hand_only_by_class"]
         assert rs_absolute(["super", "b"], "demo::a") == "demo::b"
         assert rs_absolute(["crate", "x", "super", "y"], "demo::a") == "demo::y"

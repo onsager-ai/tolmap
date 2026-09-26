@@ -1101,6 +1101,16 @@ jobs:
               --name "$name" --out "$work/map" > "$work/build.log" 2>&1 || echo "$name build FAILED"
             TOLMAP_RUST_IMPORT_REPORT="$PWD/$work" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
               --lang rs --refs hand --out "$work/hand.graph.json" || echo "$name dump-graph --refs hand FAILED"
+            # The viewer's Rust map (web/check-fixtures): the same build with
+            # file footprints, which the fixture itself does not record.
+            # Its names come from the map just built, whose membership it
+            # shares: footprints do not move the partition.
+            if [ "$name" = "tolmap" ]; then
+              mkdir -p "$work/viewer"
+              cp "$work/map/$name.names.json" "$work/viewer/" 2>/dev/null || true
+              ./bin/tolmap build "$PWD/$dir" --pkg "$pkg" --lang rs --refs hand \
+                --name "$name" --out "$work/viewer" > "$work/viewer.log" 2>&1 || echo "$name viewer build FAILED"
+            fi
             # Last: rust-analyzer runs cargo in the clone and may leave
             # target/ behind (never mapped).
             env -u LEIDEN_PREFIX CARGO_HOME="$RUNNER_TEMP/cargo-home-$name" \

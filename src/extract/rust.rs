@@ -1241,12 +1241,26 @@ struct Reach {
     glob: bool,
     tie_kept: bool,
     tie_broken: bool,
+    /// The `use` leaf being resolved, `(module, declaration, leaf)`: its
+    /// path's first segment never names itself. `use memchr::memchr;`
+    /// binds `memchr`, and without this its head found that binding
+    /// instead of the crate. rustc excludes an import from its own
+    /// resolution the same way. Consumed by the first lookup.
+    skip: Option<(usize, usize, usize)>,
 }
 
 impl Reach {
     fn for_importer(importer_in: bool) -> Self {
         Self {
             importer_in,
+            ..Self::default()
+        }
+    }
+
+    fn for_leaf(importer_in: bool, leaf: (usize, usize, usize)) -> Self {
+        Self {
+            importer_in,
+            skip: Some(leaf),
             ..Self::default()
         }
     }
@@ -1538,12 +1552,15 @@ impl<'a> Resolver<'a> {
             m.uses.get(name)
         };
         for &(use_index, leaf_index) in bindings.into_iter().flatten() {
+            if reach.skip == Some((module, use_index, leaf_index)) {
+                continue;
+            }
             if depth >= RUST_REEXPORT_HOPS {
                 return Err(Missing::Uncertain);
             }
             let decl = &self.syntax[&m.file].uses[use_index];
             let leaf = &decl.leaves[leaf_index];
-            let mut sub = Reach::for_importer(reach.importer_in);
+            let mut sub = Reach::for_leaf(reach.importer_in, (module, use_index, leaf_index));
             self.follow(
                 module,
                 &leaf.segments,
@@ -1608,6 +1625,7 @@ impl<'a> Resolver<'a> {
         depth: usize,
         reach: &mut Reach,
     ) {
+        let skip = reach.skip.take();
         let Some((head, rest)) = segments.split_first() else {
             return;
         };
@@ -1637,12 +1655,14 @@ impl<'a> Resolver<'a> {
                 } else {
                     Some(from)
                 };
+                reach.skip = skip;
                 let local = match base {
                     Some(base) if !extern_only => {
                         self.lookup(base, name, !rest.is_empty(), depth, reach)
                     }
                     _ => Err(Missing::Undeclared),
                 };
+                reach.skip = None;
                 match local {
                     Ok(found) => found,
                     Err(Missing::Uncertain) => {
@@ -1886,7 +1906,7 @@ pub(crate) fn resolve(
         let path_of = |target: FileId| files[target as usize].as_str();
         let (idents_seen, paths_seen) = seen_from_children(file_syntax);
         // 1. `use` declarations: one unit each.
-        for decl in &file_syntax.uses {
+        for (use_index, decl) in file_syntax.uses.iter().enumerate() {
             let Some(&module) = resolver.by_scope.get(&(file, decl.scope.clone())) else {
                 if report_dir.is_some() {
                     for leaf in &decl.leaves {
@@ -1908,7 +1928,8 @@ pub(crate) fn resolve(
             let idents = idents_seen.get(&decl.scope);
             let selected = paths_seen.get(&decl.scope);
             let mut unit = Unit::new();
-            for leaf in &decl.leaves {
+            for (leaf_index, leaf) in decl.leaves.iter().enumerate() {
+                let this_leaf = (module, use_index, leaf_index);
                 let mut row_targets = BTreeSet::new();
                 let (outcome_name, tie_name) = if leaf.glob {
                     ("glob", None)
@@ -1918,7 +1939,7 @@ pub(crate) fn resolve(
                         // this repository (a possible miss: a trait used
                         // for its methods, or a name only a macro expands
                         // to) from another crate's.
-                        let mut reach = Reach::for_importer(importer_in);
+                        let mut reach = Reach::for_leaf(importer_in, this_leaf);
                         resolver.follow(
                             module,
                             &leaf.segments,
@@ -1932,7 +1953,7 @@ pub(crate) fn resolve(
                             || !reach.uncertain.is_empty();
                         (if in_repo { "unused" } else { "unused_external" }, None)
                     } else {
-                        let mut reach = Reach::for_importer(importer_in);
+                        let mut reach = Reach::for_leaf(importer_in, this_leaf);
                         resolver.follow(
                             module,
                             &leaf.segments,
@@ -2578,6 +2599,37 @@ mod tests {
                 // through lib.rs's re-export, in the same file.
                 ("src/pattern.rs", "src/escape.rs", 2.0),
             ])
+        );
+    }
+
+    #[test]
+    fn a_use_naming_a_crate_and_its_item_alike_resolves_to_the_crate() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"util\", \"app\"]\n",
+        );
+        write(
+            dir.path(),
+            "util/Cargo.toml",
+            "[package]\nname = \"util\"\nedition = \"2021\"\n",
+        );
+        write(dir.path(), "util/src/lib.rs", "pub fn util() {}\n");
+        write(
+            dir.path(),
+            "app/Cargo.toml",
+            "[package]\nname = \"app\"\nedition = \"2021\"\n\n[dependencies]\nutil = { path = \"../util\" }\nmemchr = \"2\"\n",
+        );
+        // `use util::util;` binds `util`; its own head must be the crate.
+        write(
+            dir.path(),
+            "app/src/main.rs",
+            "use memchr::memchr;\nuse util::util;\n\nfn main() {\n    util();\n    memchr(b'a', b\"abc\");\n}\n",
+        );
+        assert_eq!(
+            edges(dir.path()),
+            expected(&[("app/src/main.rs", "util/src/lib.rs", 1.0)])
         );
     }
 
