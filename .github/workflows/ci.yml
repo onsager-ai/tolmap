@@ -980,6 +980,10 @@ jobs:
             # TOLMAP_TS_IMPORT_REPORT: the TypeScript resolver's, per module
             # specifier (where it resolved, and what following its names
             # through re-exports reached; finding 51).
+            # TOLMAP_PY_IMPORT_REPORT: the Python resolver's, per statement
+            # (the files it linked before module objects and module
+            # re-exports were followed, and now; finding 53).
+            TOLMAP_PY_IMPORT_REPORT="$PWD/$work" \
             TOLMAP_GO_IMPORT_REPORT="$PWD/$work" TOLMAP_TS_IMPORT_REPORT="$PWD/$work" \
               ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
               --lang "$lang" --refs hand \
@@ -1132,9 +1136,9 @@ jobs:
             git clone --quiet --filter=blob:none "$url" "$dir"
             git -C "$dir" checkout --quiet "$sha"
             # --refs hand: data/*.json is the hand path's output -- the
-            # frozen Python reference's for httpx and vue, the Rust
-            # product's for the other seven (data/fixtures.toml's
-            # `generator`) -- and neither knows SCIP. The SCIP path is
+            # Rust product's for all nine since finding 53 re-derived
+            # httpx, the last frozen-Python-reference fixture
+            # (data/fixtures.toml's `generator`) -- and it knows no SCIP. The SCIP path is
             # gated against its own fixtures in `scip-fixtures` below.
             ./target/release/tolmap build "$dir" --pkg "$pkg" --lang "$lang" \
               --refs hand --name "$name" --out full-out --resolution 1.1
