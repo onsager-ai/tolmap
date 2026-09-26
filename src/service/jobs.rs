@@ -17,6 +17,7 @@ use crate::progress::{ProgressValue, StageId};
 use crate::service::clone::{self, RepoRef};
 use crate::service::error::{ApiError, ErrorBody};
 use crate::service::eta::{expected_passes, progress_total, Eta, EtaModel, MemoryModel, TimingRow};
+use crate::service::schedule::{self, Class};
 use crate::service::store::MapRow;
 use crate::service::time::now_rfc3339;
 use crate::service::worker_result;
@@ -99,13 +100,27 @@ struct PendingJob {
     runner: JobRunner,
 }
 
+/// One worker slot: a `worker_loop` task while it holds a job, idle
+/// otherwise. Its index in `RegistryInner::slots` is its stable worker id.
+struct Slot {
+    class: usize,
+    running: Option<(Uuid, watch::Sender<JobSnapshot>)>,
+}
+
 #[derive(Default)]
 struct RegistryInner {
     jobs: HashMap<Uuid, watch::Sender<JobSnapshot>>,
     active: HashMap<JobKey, Uuid>,
-    queue: VecDeque<PendingJob>,
-    running: usize,
-    running_jobs: BTreeMap<Uuid, watch::Sender<JobSnapshot>>,
+    /// Worker classes, smallest first (`schedule::order_classes`); a
+    /// class is its index here. Empty until the first admission -- see
+    /// `ensure_classes`.
+    classes: Vec<Class>,
+    /// One FIFO per class, same index as `classes` (docs/WORKER_TIER.md
+    /// §7.1).
+    queues: Vec<VecDeque<PendingJob>>,
+    /// Worker slots, numbered smallest class first
+    /// (`schedule::worker_classes`).
+    slots: Vec<Slot>,
     children: HashMap<Uuid, u32>,
     cancelled: HashSet<Uuid>,
     features: HashMap<Uuid, RepoFeatures>,
@@ -124,6 +139,49 @@ struct RegistryInner {
     /// process is exiting, not pausing. Checked by `enqueue_job` so no job
     /// is admitted after a shutdown signal starts draining the registry.
     stopping: bool,
+}
+
+impl RegistryInner {
+    /// Local mode's classes: exactly one, of unknown size (`None` usable
+    /// memory), with `TOLMAP_MAX_CONCURRENT_JOBS` slots, which is today's
+    /// single FIFO (§7.1: "with one class this is exactly today's single
+    /// FIFO"). Phase 0 adds no configuration.
+    ///
+    /// Built on the first admission rather than in `new_registry`, which
+    /// takes no configuration and is called that way from the integration
+    /// tests; the limits cannot change while the service runs, so building
+    /// late is the same as building early. Nothing reads the classes before
+    /// a job exists: every other path finds no slots and empty queues.
+    fn ensure_classes(&mut self, limits: &crate::service::config::Limits) {
+        if !self.classes.is_empty() {
+            return;
+        }
+        let mut classes = vec![Class {
+            usable_memory: None,
+            slots: limits.max_concurrent_jobs.max(1),
+        }];
+        schedule::order_classes(&mut classes);
+        self.slots = schedule::worker_classes(&classes)
+            .into_iter()
+            .map(|class| Slot {
+                class,
+                running: None,
+            })
+            .collect();
+        self.queues = classes.iter().map(|_| VecDeque::new()).collect();
+        self.classes = classes;
+    }
+
+    /// The idle slot a job bound to `class` starts on at once, if any: one
+    /// of its own class or larger (a larger idle worker spills down, as it
+    /// would have on its last `next_for`), the lowest id first. Ids run
+    /// smallest class first, so this prefers the job's own class, and it is
+    /// the same tie-break `schedule::simulate` uses for workers free now.
+    fn idle_slot_for(&self, class: usize) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|slot| slot.class >= class && slot.running.is_none())
+    }
 }
 
 pub struct JobRegistry(Mutex<RegistryInner>);
@@ -147,12 +205,24 @@ impl JobRegistry {
         if is_terminal(&tx.borrow()) {
             return Ok(tx.borrow().clone());
         }
-        if let Some(position) = registry.queue.iter().position(|job| job.id == id) {
-            let job = registry.queue.remove(position).expect("position exists");
+        let queued = registry
+            .queues
+            .iter()
+            .enumerate()
+            .find_map(|(class, queue)| {
+                queue
+                    .iter()
+                    .position(|job| job.id == id)
+                    .map(|position| (class, position))
+            });
+        if let Some((class, position)) = queued {
+            let job = registry.queues[class]
+                .remove(position)
+                .expect("position exists");
             registry.active.remove(&job.key);
             registry.features.remove(&job.id);
             finish_failed(&tx, cancelled_error());
-            refresh_queue_etas(&mut registry);
+            simulate_queue_etas(&registry);
         } else {
             registry.cancelled.insert(id);
             registry.active.retain(|_, active_id| *active_id != id);
@@ -160,7 +230,7 @@ impl JobRegistry {
             if let Some(&pid) = registry.children.get(&id) {
                 kill_worker_group(pid);
             }
-            refresh_queue_etas(&mut registry);
+            simulate_queue_etas(&registry);
         }
         let result = tx.borrow().clone();
         Ok(result)
@@ -243,7 +313,7 @@ impl JobRegistry {
         }
         let eta = registry.eta_model.predict(&features, &done, running);
         tx.send_modify(|snapshot| snapshot.eta = Some(eta));
-        refresh_queue_etas(&mut registry);
+        simulate_queue_etas(&registry);
     }
     pub fn subscribe(&self, id: Uuid) -> Option<watch::Receiver<JobSnapshot>> {
         self.0
@@ -271,15 +341,21 @@ impl JobRegistry {
     pub fn shutdown(&self) {
         let mut registry = self.0.lock().expect("job registry mutex poisoned");
         registry.stopping = true;
-        while let Some(job) = registry.queue.pop_front() {
+        // Every class's queue, smallest class first, each in FIFO order.
+        let queued: Vec<PendingJob> = registry
+            .queues
+            .iter_mut()
+            .flat_map(|queue| queue.drain(..))
+            .collect();
+        for job in queued {
             registry.active.remove(&job.key);
             registry.features.remove(&job.id);
             finish_failed(&job.tx, server_stopping_error());
         }
         let running: Vec<(Uuid, watch::Sender<JobSnapshot>)> = registry
-            .running_jobs
+            .slots
             .iter()
-            .map(|(id, tx)| (*id, tx.clone()))
+            .filter_map(|slot| slot.running.clone())
             .collect();
         for (id, tx) in running {
             // Mirrors `cancel`'s running-job branch: mark cancelled (so the
@@ -295,7 +371,7 @@ impl JobRegistry {
                 kill_worker_group(pid);
             }
         }
-        refresh_queue_etas(&mut registry);
+        simulate_queue_etas(&registry);
     }
 }
 
@@ -406,34 +482,64 @@ fn wait_with_peak(
     Ok((child.wait()?, None))
 }
 
-fn refresh_queue_etas(registry: &mut RegistryInner) {
-    let prior =
-        registry
-            .eta_model
-            .predict(&RepoFeatures::default(), &[false; StageId::ALL.len()], None);
-    let mut wait_s: f64 = registry
-        .running_jobs
-        .values()
-        .map(|tx| {
-            let row = tx.borrow();
-            if is_terminal(&row) {
-                0.0
-            } else {
-                row.eta.unwrap_or(prior).midpoint()
-            }
+/// Writes `queue_position`, `eta_start_s` and `eta` into every queued
+/// snapshot from `schedule::simulate` (docs/WORKER_TIER.md §7.2).
+///
+/// This replaced a running sum: the remaining time of every running job
+/// added together, then each queued job's in turn. That is exact for one
+/// slot and overstates the wait for several, because a queued job starts
+/// when the first slot frees, not after all of them. The simulation keeps
+/// the one-slot numbers bit for bit (`schedule`'s
+/// `one_slot_reproduces_todays_queue_eta_exactly`), so the inputs below are
+/// the ones the sum used: a running job's remaining ETA midpoint, the
+/// prior's when it has none yet, 0 once its row is terminal (a cancelled
+/// job whose worker has not been reaped), and 0 for an idle slot.
+fn simulate_queue_etas(registry: &RegistryInner) {
+    let never_started = [false; StageId::ALL.len()];
+    let prior = registry
+        .eta_model
+        .predict(&RepoFeatures::default(), &never_started, None);
+    let workers: Vec<schedule::Worker> = registry
+        .slots
+        .iter()
+        .enumerate()
+        .map(|(id, slot)| schedule::Worker {
+            id,
+            class: slot.class,
+            free_in_s: slot.running.as_ref().map_or(0.0, |(_, tx)| {
+                let row = tx.borrow();
+                if is_terminal(&row) {
+                    0.0
+                } else {
+                    row.eta.unwrap_or(prior).midpoint()
+                }
+            }),
         })
-        .sum();
-    for (index, job) in registry.queue.iter().enumerate() {
-        let features = registry.features.get(&job.id).cloned().unwrap_or_default();
-        let eta = registry
-            .eta_model
-            .predict(&features, &[false; StageId::ALL.len()], None);
+        .collect();
+    let mut etas: BTreeMap<Uuid, Eta> = BTreeMap::new();
+    let mut queued: Vec<Vec<schedule::Queued<Uuid>>> = Vec::with_capacity(registry.queues.len());
+    for queue in &registry.queues {
+        let mut class_queue = Vec::with_capacity(queue.len());
+        for job in queue {
+            let features = registry.features.get(&job.id).cloned().unwrap_or_default();
+            let eta = registry.eta_model.predict(&features, &never_started, None);
+            etas.insert(job.id, eta);
+            class_queue.push(schedule::Queued {
+                job: job.id,
+                midpoint_s: eta.midpoint(),
+            });
+        }
+        queued.push(class_queue);
+    }
+    let starts = schedule::simulate(&workers, &queued);
+    for job in registry.queues.iter().flatten() {
+        let start = starts[&job.id];
+        let eta = etas[&job.id];
         job.tx.send_modify(|snapshot| {
-            snapshot.queue_position = Some(index + 1);
-            snapshot.eta_start_s = Some(wait_s);
+            snapshot.queue_position = Some(start.queue_position);
+            snapshot.eta_start_s = start.eta_start_s;
             snapshot.eta = Some(eta);
         });
-        wait_s += eta.midpoint();
     }
 }
 
@@ -465,10 +571,29 @@ fn enqueue_job(
     if let Some(id) = registry.active.get(&key) {
         return Ok(*id);
     }
-    let max_running = state.config.limits.max_concurrent_jobs.max(1);
-    if registry.running >= max_running
-        && registry.queue.len() >= state.config.limits.max_queued_jobs
-    {
+    registry.ensure_classes(&state.config.limits);
+    // Until the worker reports the repository's features, all the ETA
+    // and memory models know is the service's reference mode. Recording it
+    // now lets a queued job under `TOLMAP_REFS=scip` be costed with
+    // indexing, while one on the hand default keeps the hand prior (`refs`
+    // absent, exactly as before #110 P2a). The worker's own `Features`
+    // event replaces this row, and `worker_loop` (or a queued cancel)
+    // removes it.
+    let prior = RepoFeatures {
+        refs: (state.config.refs == crate::extract::RefsMode::Scip)
+            .then(|| state.config.refs.to_string()),
+        ..RepoFeatures::default()
+    };
+    // The class comes from the memory model's reference-mode prior (§2.1,
+    // step 2). Local mode has one class, so every job still binds to it;
+    // the prediction matters the day a second class exists.
+    let predicted_peak = registry.memory_model.predict_peak(&prior);
+    let class = schedule::bind(Some(predicted_peak), &registry.classes);
+    let idle_slot = registry.idle_slot_for(class);
+    // §7.3: the queue bound applies per class, so a backlog of large jobs
+    // cannot fill the queue small ones need. With one class this is the
+    // single bound it always was.
+    if idle_slot.is_none() && registry.queues[class].len() >= state.config.limits.max_queued_jobs {
         return Err(ApiError::busy(
             "the index queue is full; please try again later",
         ));
@@ -501,17 +626,6 @@ fn enqueue_job(
             .collect(),
     };
     let (tx, _rx) = watch::channel(snapshot);
-    // Until the worker reports the repository's features, all the ETA
-    // model knows is the service's reference mode. Recording it now lets a
-    // queued job under `TOLMAP_REFS=scip` be costed with indexing, while one
-    // on the hand default keeps the hand prior (`refs` absent, exactly as
-    // before #110 P2a). The worker's own `Features` event replaces this
-    // row, and `worker_loop` (or a queued cancel) removes it.
-    let prior = RepoFeatures {
-        refs: (state.config.refs == crate::extract::RefsMode::Scip)
-            .then(|| state.config.refs.to_string()),
-        ..RepoFeatures::default()
-    };
     let initial_eta = registry
         .eta_model
         .predict(&prior, &[false; StageId::ALL.len()], None);
@@ -526,22 +640,25 @@ fn enqueue_job(
         tx,
         runner,
     };
-    if registry.running < max_running {
-        registry.running += 1;
+    if let Some(slot) = idle_slot {
         job.tx
             .send_modify(|snapshot| snapshot.eta_start_s = Some(0.0));
-        registry.running_jobs.insert(job_id, job.tx.clone());
-        tokio::spawn(worker_loop(state.clone(), job));
+        registry.slots[slot].running = Some((job_id, job.tx.clone()));
+        tokio::spawn(worker_loop(state.clone(), slot, job));
     } else {
+        let position = registry.queues[class].len() + 1;
         job.tx
-            .send_modify(|snapshot| snapshot.queue_position = Some(registry.queue.len() + 1));
-        registry.queue.push_back(job);
+            .send_modify(|snapshot| snapshot.queue_position = Some(position));
+        registry.queues[class].push_back(job);
     }
-    refresh_queue_etas(&mut registry);
+    simulate_queue_etas(&registry);
     Ok(job_id)
 }
 
-async fn worker_loop(state: Arc<AppState>, first: PendingJob) {
+/// Runs jobs on one worker slot until [`schedule::next_for`] finds nothing
+/// this slot's class may take, then leaves the slot idle for `enqueue_job`
+/// to start again.
+async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
     let mut job = first;
     loop {
         let PendingJob {
@@ -606,18 +723,24 @@ async fn worker_loop(state: Arc<AppState>, first: PendingJob) {
             registry.memory_model.record(row.clone());
             registry.eta_model.record(row);
         }
-        registry.running_jobs.remove(&id);
         registry.cancelled.remove(&id);
         if registry.active.get(&key) == Some(&id) {
             registry.active.remove(&key);
         }
-        if let Some(next) = registry.queue.pop_front() {
-            registry.running_jobs.insert(next.id, next.tx.clone());
-            refresh_queue_etas(&mut registry);
+        // The slot is handed straight to the next job under the same lock,
+        // as the single FIFO did, so no admission can see it idle in
+        // between and start a second job on it.
+        let class = registry.slots[slot].class;
+        if let Some(next_class) = schedule::next_for(class, &registry.queues) {
+            let next = registry.queues[next_class]
+                .pop_front()
+                .expect("next_for names a non-empty queue");
+            registry.slots[slot].running = Some((next.id, next.tx.clone()));
+            simulate_queue_etas(&registry);
             job = next;
         } else {
-            registry.running -= 1;
-            refresh_queue_etas(&mut registry);
+            registry.slots[slot].running = None;
+            simulate_queue_etas(&registry);
             break;
         }
     }
@@ -2259,6 +2382,61 @@ mod tests {
         }
         assert!(high[0] < 371.4, "hand: {}", high[0]);
         assert!(high[1] >= 371.4, "scip: {}", high[1]);
+    }
+
+    // #97 phase 0: with two slots a queued job starts when the first slot
+    // frees, not after both. The running sum this replaced quoted the two
+    // queued jobs below 2r and 2r + m.
+    #[tokio::test]
+    async fn two_slots_quote_the_first_free_slot_not_the_sum_of_both() {
+        let limits = Limits {
+            max_concurrent_jobs: 2,
+            max_queued_jobs: 4,
+            ..Limits::default()
+        };
+        let (_dir, state) = state(limits);
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let runner: JobRunner = Arc::new({
+            let started = started.clone();
+            move |_, repo, tx| {
+                started.lock().unwrap().push(repo.slug);
+                release_rx.lock().unwrap().recv().unwrap();
+                finish_done(&tx);
+            }
+        });
+        let first =
+            enqueue_job(state.clone(), repo("one"), "a".to_owned(), runner.clone()).unwrap();
+        let second =
+            enqueue_job(state.clone(), repo("two"), "b".to_owned(), runner.clone()).unwrap();
+        until(|| started.lock().unwrap().len() == 2).await;
+        let third =
+            enqueue_job(state.clone(), repo("three"), "c".to_owned(), runner.clone()).unwrap();
+        let fourth = enqueue_job(state.clone(), repo("four"), "d".to_owned(), runner).unwrap();
+
+        // Neither running job has reported anything, so both slots free at
+        // the same remaining midpoint r, the one each was admitted with.
+        let r = snapshot(&state, first).eta.unwrap().midpoint();
+        assert_eq!(snapshot(&state, second).eta.unwrap().midpoint(), r);
+        // third: slot 0 at r (tie with slot 1, lower id wins);
+        // fourth: slot 1 at r.
+        assert_eq!(snapshot(&state, third).queue_position, Some(1));
+        assert_eq!(snapshot(&state, third).eta_start_s, Some(r));
+        assert_eq!(snapshot(&state, fourth).queue_position, Some(2));
+        assert_eq!(snapshot(&state, fourth).eta_start_s, Some(r));
+
+        // One slot frees and takes the head of the queue.
+        release_tx.send(()).unwrap();
+        until(|| started.lock().unwrap().len() == 3).await;
+        assert_eq!(snapshot(&state, third).queue_position, None);
+        assert_eq!(snapshot(&state, fourth).queue_position, Some(1));
+        for _ in 0..3 {
+            release_tx.send(()).unwrap();
+        }
+        for id in [first, second, third, fourth] {
+            until(|| snapshot(&state, id).status == JobStatus::Done).await;
+        }
     }
 
     #[tokio::test]

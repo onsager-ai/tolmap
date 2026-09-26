@@ -10,6 +10,7 @@ pub mod eta;
 pub mod http;
 pub mod jobs;
 pub mod ratelimit;
+pub mod schedule;
 pub mod store;
 mod time;
 mod worker_result;
