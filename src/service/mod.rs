@@ -7,6 +7,7 @@ pub mod clone;
 pub mod config;
 pub mod error;
 pub mod eta;
+pub mod executor;
 pub mod http;
 pub mod jobs;
 pub mod ratelimit;

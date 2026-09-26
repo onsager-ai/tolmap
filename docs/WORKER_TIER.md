@@ -86,6 +86,8 @@ flowchart LR
 
 In local mode all three run in `tolmap serve`, exactly as now. In remote mode, execute runs in the agent, and the only things crossing the network are the `JobSpec`, v1 events, and artifact bytes.
 
+**Implemented in local mode** (#97 phase 1): `jobs::prepare` and `jobs::register` in `src/service/jobs.rs`, and `executor::execute` in `src/service/executor.rs`. The executor takes no `AppState`, `Store` or `ServeConfig`: it gets the `JobSpec`, a `JobInputs` (the names cache by value, previous-map files by path), an `ExecEnv` naming this host's cache, job and install directories, worker binary and uid, and two callbacks, an `EventSink` for the child's events and a `CancelProbe` for cancellation. The master implements both against its registry exactly as before; an agent will implement them against the channel. Local mode still builds whatever the clone resolves HEAD to; checking out the pinned `JobSpec.commit` arrives with remote mode (§3.3). `tests/service_byte_identity.rs` holds `tolmap build` and `tolmap serve` to byte-identical map and symbols documents (§9).
+
 ### 2.1 Class selection
 
 The master picks a class for each job from a **predicted peak RSS**, compared with each agent's advertised usable memory (total minus a reserve for the agent and the OS, 1 GiB by default).
