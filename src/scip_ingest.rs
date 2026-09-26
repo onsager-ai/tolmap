@@ -356,11 +356,15 @@ pub fn ingest(index: &Path, scope: &BTreeMap<String, u32>) -> Result<Ingested> {
 pub const MIN_RECALL: f64 = 0.80;
 
 /// The unit a language's recall is measured in. Go's hand-written resolver
-/// spreads every import over each file of the imported package
-/// (`extract::resolve_multi`), so a file-level comparison counts that
-/// fan-out as misses: prometheus's Go keeps 0.869 of hand pairs by file and
-/// 0.997 by target directory (finding 41). The directory is the unit the
-/// hand-written Go graph actually asserts.
+/// spread every import over each file of the imported package
+/// (`extract::resolve_multi`), so a file-level comparison counted that
+/// fan-out as misses: prometheus's Go kept 0.869 of hand pairs by file and
+/// 0.997 by target directory (finding 41). Since finding 50 an import links
+/// only the files that declare the names it selects, but it still spreads
+/// where it cannot tell (an opaque import, a name no single file declares),
+/// so the directory is still the one unit every hand-written Go pair
+/// asserts. Keeping it also keeps admission exactly where it was: the
+/// narrowing changes no importer's set of target directories.
 pub fn recall_granularity(language: crate::extract::LanguageKind) -> &'static str {
     match language {
         crate::extract::LanguageKind::Go => "directory",

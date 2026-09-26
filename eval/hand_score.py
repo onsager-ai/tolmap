@@ -80,7 +80,26 @@ SCIP-only, from the hand graph plus the source files:
 - `inferred type`: hand links the source to some file that links the target
   (two import hops): the source uses a value whose type lives in the target,
   which it never imports.
+- `same package` (Go, checked first): source and target share a directory.
+  Go needs no import there, so no import-level resolver sees the pair.
+- `member via value` (Go, checked next): hand links the source to another
+  file of the target's directory, and every symbol SCIP credits the pair
+  with is a method or field (the ingest's `member_only_use_pairs`). This is
+  `x := pkg.New(); x.Run()`: the importer never names `Run`, so the hand
+  resolver, which since finding 50 links an import only to the files that
+  declare the names it selects, does not link `Run`'s file.
 - `other`.
+
+For Go the row also carries `go` (finding 50):
+- `import_outcomes`: how each in-repo import resolved, from the resolver's
+  own report (`TOLMAP_GO_IMPORT_REPORT`, written by `dump-graph --refs
+  hand`): `narrowed` to the declaring files, or why it kept the whole
+  package (`opaque`, `no_names`, `undeclared_name`, `ambiguous_name`,
+  `unknown_declarations`), with the most frequent failing names.
+- `file_gap`: SCIP use pairs hand lacks although it links the source to the
+  target's directory. Before finding 50 the whole-package link covered all
+  of them, so this is exactly what narrowing gave up, split into
+  `member_only` (reached only through a method or field) and the rest.
 
 A fixed-seed sample (`random.Random(SEED)`) of up to SAMPLE rows per class
 is kept; the class counts are over every pair.
@@ -108,7 +127,7 @@ SAMPLE = 12
 EXTENDS_DEPTH = 3
 REEXPORT_DEPTH = 3
 HAND_CLASSES = ("star import", "submodule via package", "re-export", "package spread", "other")
-SCIP_CLASSES = ("re-export", "inherited member", "inferred type", "other")
+SCIP_CLASSES = ("re-export", "inherited member", "inferred type", "same package", "member via value", "other")
 # The classes that are hand over-attributing to a package: each such pair
 # claims a dependency on a file whose own content is not what is used. They
 # may only go down (CLAUDE.md: numbers must be a lower bound).
@@ -403,8 +422,14 @@ def reexports(p: str, t: str, hand_targets: dict[str, set[str]]) -> bool:
     return False
 
 
-def classify_scip_only(lang: str, a: str, t: str, hand_targets: dict[str, set[str]], py: PythonFiles | None) -> str:
+def classify_scip_only(lang: str, a: str, t: str, hand_targets: dict[str, set[str]], py: PythonFiles | None,
+                       member_only: set[tuple[str, str]] = frozenset()) -> str:
     direct = hand_targets.get(a, set())
+    if lang == "go":
+        if directory(a) == directory(t):
+            return "same package"
+        if (a, t) in member_only and any(directory(b) == directory(t) for b in direct):
+            return "member via value"
     if any(reexports(p, t, hand_targets) for p in direct):
         return "re-export"
     if lang == "py" and py is not None:
@@ -451,7 +476,9 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
     for a, b in hand_only:
         why, context = classify_hand_only(lang, a, b, scip_targets[a], hand_targets, py)
         rows_hand.append({"a": a, "b": b, "class": why, "context": context})
-    rows_scip = [{"a": a, "b": t, "class": classify_scip_only(lang, a, t, hand_targets, py)} for a, t in scip_only]
+    member_only = {(a, b) for a, b in ingest.get("member_only_use_pairs", [])}
+    rows_scip = [{"a": a, "b": t, "class": classify_scip_only(lang, a, t, hand_targets, py, member_only)}
+                 for a, t in scip_only]
 
     # The product gate's comparison with a package re-export counted as
     # kept: finding 47's 0.9008 for sqlalchemy.
@@ -499,6 +526,13 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
         sd = {(a, directory(b)) for a, b in scip}
         row["by_directory"] = {"hand_pairs": len(hd), "scip_pairs": len(sd), "shared": len(hd & sd),
                                "recall": ratio(len(hd & sd), len(sd)), "precision": ratio(len(hd & sd), len(hd))}
+        # SCIP use pairs whose target directory hand links from the source
+        # but whose file it does not: what narrowing gave up (finding 50).
+        gap = sorted((a, b) for a, b in scip_uses - hand if (a, directory(b)) in hd)
+        named = [{"a": a, "b": b} for a, b in gap if (a, b) not in member_only]
+        row["go"] = {"file_gap": {"use_pairs": len(gap), "member_only": len(gap) - len(named),
+                                  "named": len(named), "named_samples": sample(named)},
+                     "member_only_available": "member_only_use_pairs" in ingest}
     references = ((scip_graph or {}).get("references") or {}).get(lang)
     row["references"] = references
     if references and references.get("path") == "scip":
@@ -508,6 +542,30 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
     else:
         row["oracle_check"] = "fallback (not comparable)" if references else "no SCIP graph"
     return row
+
+
+def go_import_outcomes(work: Path) -> dict | None:
+    """Aggregate the resolver's own per-import report (finding 50): rows of
+    [file, import, outcome, failing name, package files, files linked]."""
+    reports = sorted(work.glob("go-imports.*.json"))
+    if not reports:
+        return None
+    rows = [row for path in reports for row in load(path)]
+    outcomes = Counter(row[2] for row in rows)
+    names = {kind: Counter(row[3] for row in rows if row[2] == kind)
+             for kind in ("undeclared_name", "ambiguous_name")}
+    return {
+        "imports": len(rows),
+        "by_outcome": dict(sorted(outcomes.items())),
+        # Files linked, summed over imports: what the old whole-package link
+        # had against what the narrowed one has.
+        "links_before": sum(row[4] for row in rows),
+        "links_after": sum(row[5] for row in rows),
+        "top_names": {kind: [[n, c] for n, c in sorted(counter.items(), key=lambda x: (-x[1], x[0]))[:15]]
+                      for kind, counter in names.items()},
+        "samples": {kind: sample([{"a": r[0], "b": r[1], "name": r[3]} for r in rows if r[2] == kind])
+                    for kind in sorted(outcomes) if kind != "narrowed"},
+    }
 
 
 def score(args) -> int:
@@ -524,6 +582,8 @@ def score(args) -> int:
             rows.append({"name": args.name, "lang": lang, "status": "no index"})
             continue
         row = score_language(args.name, lang, hand_graph, scip_graph, load(ingest_path), py)
+        if lang == "go":
+            row["go"]["import_outcomes"] = go_import_outcomes(work)
         row["status"] = "scored"
         rows.append(row)
     # District churn of this binary's hand map against the committed
@@ -580,6 +640,21 @@ def markdown(rows: list[dict]) -> str:
         out.append(f"| {r['name']} | {r['lang']} | {r['scip_use_pairs']:,} | {r['shared_uses']:,} "
                    f"| {pct(r['recall_uses'])} | {pct(r['precision_uses'])} "
                    f"| {r['shared_namespace_only']:,} ({r['shared_namespace_only_to_package']:,}) |")
+    go_rows = [r for r in scored if r.get("go")]
+    if go_rows:
+        out += ["", "### Go imports (finding 50)", "",
+                "| fixture | imports | narrowed | opaque | no names | undeclared name | ambiguous name "
+                "| unknown | files linked, whole package → narrowed | SCIP use pairs given up (member only / named) |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+        for r in go_rows:
+            o = r["go"].get("import_outcomes") or {}
+            by = o.get("by_outcome", {})
+            gap = r["go"]["file_gap"]
+            links = f"{o['links_before']:,} → {o['links_after']:,}" if o else "—"
+            out.append(f"| {r['name']} | {o.get('imports', 0):,} | " + " | ".join(
+                f"{by.get(k, 0):,}" for k in ("narrowed", "opaque", "no_names", "undeclared_name",
+                                              "ambiguous_name", "unknown_declarations"))
+                + f" | {links} | {gap['use_pairs']:,} ({gap['member_only']:,} / {gap['named']:,}) |")
     out += ["", "### Hand-only pairs by class", "",
             "| fixture | lang | hand-only | " + " | ".join(HAND_CLASSES) + " |",
             "|---|---|---:|" + "---:|" * len(HAND_CLASSES)]
@@ -623,7 +698,7 @@ BASELINE_FIELDS = ("name", "lang", "files", "hand_pairs", "scip_pairs", "shared"
                    "precision_counting_reexports", "scip_use_pairs", "shared_uses", "recall_uses",
                    "precision_uses", "shared_namespace_only", "shared_namespace_only_to_package",
                    "hand_only", "scip_only", "hand_only_by_class",
-                   "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory")
+                   "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory", "go")
 
 
 def baseline(args) -> int:
@@ -754,6 +829,7 @@ def self_test(_args) -> int:
             ("pkg/star.py", "pkg/__init__.py"): "star import",
         }, by_pair
         assert row["scip_only_by_class"] == {"re-export": 0, "inherited member": 1, "inferred type": 1,
+                                             "same package": 0, "member via value": 0,
                                              "other": 0}, row["scip_only_by_class"]
         assert (row["hand_pairs"], row["scip_pairs"], row["shared"]) == (8, 7, 5), row
         assert row["recall"] == round(5 / 7, 4) and row["precision"] == round(5 / 8, 4), row
@@ -776,6 +852,28 @@ def self_test(_args) -> int:
         # Go: a hand pair spread to a sibling file of the one SCIP names.
         assert classify_hand_only("go", "a/x.go", "b/one.go", {"b/two.go"}, {}, None) == ("package spread", [])
         assert classify_hand_only("go", "a/x.go", "b/one.go", {"c/two.go"}, {}, None) == ("other", [])
+        # Go, finding 50: hand links a/x.go to b/one.go only; SCIP also has
+        # b/two.go through a method (member only) and b/three.go through a
+        # package-level name, and a/y.go in a/x.go's own package.
+        go_graph = {"lang": "go", "nodes": [{"file": f, "lang": "go"} for f in
+                                            ("a/x.go", "a/y.go", "b/one.go", "b/three.go", "b/two.go")],
+                    "imports": [["a/x.go", "b/one.go", 1.0]]}
+        go_ingest = {"file_edges": [["a/x.go", "a/y.go", 1, 1, 1], ["a/x.go", "b/one.go", 1, 1, 1],
+                                    ["a/x.go", "b/three.go", 1, 1, 1], ["a/x.go", "b/two.go", 1, 1, 1]],
+                     "member_only_use_pairs": [["a/x.go", "b/two.go"]]}
+        go_row = score_language("synthetic", "go", go_graph, None, go_ingest, None)
+        assert go_row["scip_only_by_class"] == {"re-export": 0, "inherited member": 0, "inferred type": 0,
+                                                "same package": 1, "member via value": 1,
+                                                "other": 1}, go_row["scip_only_by_class"]
+        gap = go_row["go"]["file_gap"]
+        assert (gap["use_pairs"], gap["member_only"], gap["named"]) == (2, 1, 1), gap
+        (repo / "go-imports.root.json").write_text(json.dumps([
+            ["a/x.go", "m/b", "narrowed", None, 3, 1], ["a/y.go", "m/b", "undeclared_name", "Run", 3, 3],
+            ["a/y.go", "m/c", "opaque", None, 2, 2]]))
+        outcomes = go_import_outcomes(repo)
+        assert outcomes["by_outcome"] == {"narrowed": 1, "opaque": 1, "undeclared_name": 1}, outcomes
+        assert (outcomes["links_before"], outcomes["links_after"]) == (8, 6), outcomes
+        assert outcomes["top_names"]["undeclared_name"] == [["Run", 1]], outcomes
     print("hand_score self-test passed")
     return 0
 
