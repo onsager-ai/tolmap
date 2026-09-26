@@ -271,9 +271,8 @@ carries a machine `code` and human `message`. The Rust definitions in
 `src/worker.rs` and generated `bindings/WorkerEvent.ts` are authoritative.
 
 The service owns its SQLite store and queue. It gives the child clone source,
-clone-cache eviction budget, output directory, previous map candidates and a names cache file. The worker emits `features` after clone (clone bytes and history count) and after detection (source file counts and bytes per language).
-The child chooses the newest previous map on the cloned branch, falling back
-to the newest overall, then clones, detects and builds. The service registers
+clone-cache eviction budget, output directory, the previous map to warm-start from and a names cache file. The worker emits `features` after clone (clone bytes and history count) and after detection (source file counts and bytes per language).
+The service chooses the newest previous map on the checked-out branch, falling back to the newest overall, and copies it into the job's own directory before handing that directory to the worker's uid: the map store is the service's and `0700`, so the worker could not read a store path (issue #141). The names cache file sits in the job directory the same way. The worker logs `warm start from <commit>` or `cold start: <reason>`, and `names cache: <n> entries in hand`; the service writes every worker `log` event to its own log as `job <id>: <message>`. The child then clones, detects and builds. The service registers
 the returned artifacts only after a successful terminal result. The job spec
 also accepts `all_sources: true` to union every detected source that clears
 the detector's floor; the service currently sends `false` and retains its
