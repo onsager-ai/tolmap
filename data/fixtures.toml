@@ -53,6 +53,15 @@
 # fixture's key set, and `generator = "rust-python-reexports"` marks them.
 # httpx's graph did not change (its package imports are star imports), and
 # neither did Go or TypeScript.
+#
+# Later on 2026-09-26 the Rust hand resolver stopped linking a Go import to
+# every file of the imported package: it links the files that declare the
+# names the importer selects, where each name is declared in exactly one
+# file, and keeps the whole package otherwise (issue #110, finding 50). The
+# frozen Python reference has no Go at all, so prometheus was rebuilt the
+# same way, by `hand-score` at its pin with its naming cache seeded first,
+# and `generator = "rust-go-declarations"` marks it. The Python and
+# TypeScript fixtures are unchanged.
 
 [celery]
 url = "https://github.com/celery/celery.git"
@@ -103,10 +112,10 @@ commit = "296080c0a504ea0e72941ef16143f0a9702b137b"
 pkg = "."
 lang = "go"
 parcels = false
-generator = "rust-node-relative"
+generator = "rust-go-declarations"
 files = 444
-districts = 9
-q = 0.5430
+districts = 11
+q = 0.5333
 
 [rich]
 url = "https://github.com/Textualize/rich.git"

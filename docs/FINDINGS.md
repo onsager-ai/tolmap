@@ -2173,3 +2173,91 @@ sqlalchemy's path flips from `hand` (fallback) to `scip`: its old SCIP fixture w
 - The 29 added pairs SCIP does not have, apart from the two celery samples above.
 - Why scip-python credits no file with a use of a re-exported `app_or_default`.
 - `eval/batch_stability.py` was not run. It imports the frozen Python reference, which has no route for this change, as in finding 23. The before-and-after placement above is the churn measurement.
+
+## 50. Linking a Go import to the files that declare what it names doubles prometheus's use-pair precision against SCIP; it gives up 24 use pairs, all methods or fields reached on a value
+
+Owner decisions, session `16030105`, AskUserQuestion: transcript line 6937 (2026-09-25T16:56:34Z) **"Tune hand, SCIP as oracle (Recommended)"**, and (2026-09-26) **"Uses only: merge both (Recommended)"**, which defines a reference edge as a name being used. `hand` stays the default. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s Go follow-up to finding 49, [PR #133](https://github.com/onsager-ai/tolmap/pull/133).
+
+**What changed** (`src/extract.rs` `parse_multi`, `narrow_go_import`). A Go import used to link every file of the imported package (`resolve_multi`, finding 44). It now links the files that declare the names the importer selects:
+- **Names** are every `alias.Name` (a `selector_expression`: values, calls, conversions, method expressions) and every `alias.Type` (a `qualified_type`: every type position). Those are the only two places Go lets an imported identifier appear. Reading only selectors, as `go_selectors` does, would miss a package used only as a type.
+- **Declarations** are each file's package-level functions, types (aliases included), variables and constants, grouped or not. Methods belong to their receiver's type and do not count.
+- **A name resolves** when exactly one file of the package declares it, the rule `symbols::lookup` applies to a Go package. `symbols::lookup`'s own index is not reused: it is built from the symbols spool after extraction, so the graph would depend on whether a symbols document is written, and its spans have no variables or constants.
+- **An import is narrowed** only when every name resolves. It then links the union of the declaring files, and its mass of 1 is shared among them, as it was shared among the whole package.
+- **Otherwise the whole package stays linked, exactly as before:** a blank or dot import, a local name that never appears qualified, a name no file declares, a name several files declare (build-tag variants), or a package with a file the parser gave up on. The narrowed targets are always a subset of the old ones, so the change removes pairs and never adds one. Every importer's set of target directories is unchanged, so SCIP admission, which compares Go by directory (`scip_ingest::recall_granularity`), is unchanged too.
+- **Unchanged:** `S` and `U` (`go_selectors` still feeds the symbol uses), Python, TypeScript. No schema change and no new dependency. The two new `FileRaw::Multi` fields are internal, and everything iterates BTreeMaps and sorted vectors.
+
+**Measurement additions.**
+- `TOLMAP_GO_IMPORT_REPORT=<dir>` makes the resolver write one row per in-repo Go import: narrowed, or why not, and the failing name. It is eval instrumentation, like `TOLMAP_SCIP_INDEX_DIR`, and `hand-score` sets it for its `dump-graph --refs hand`.
+- The oracle ingest (`eval/scip_ingest.py`) records `member_only_use_pairs`: use pairs that only methods and fields support (a type descriptor followed by a member, `Labels#Get().`). It is outside the ingest's fingerprint, so earlier fingerprints still compare.
+- `eval/hand_score.py` reports the import outcomes and the **file gap**: SCIP use pairs hand lacks although it links the source to the target's directory. Before this change the whole-package link covered every such pair, so the file gap is exactly what narrowing gave up. Two Go SCIP-only classes are added: `same package` (no import is needed there, so no import-level resolver sees the pair) and `member via value`.
+
+### Before and after, against SCIP
+
+prometheus's Go, finding 48's job. Before is the committed baseline, [CI run 36184125477](https://github.com/onsager-ai/tolmap/actions/runs/36184125477). prometheus's Go graph did not change between that run and main `bbc4314`: finding 49 touched only Python. After is [CI run 36205337659](https://github.com/onsager-ai/tolmap/actions/runs/36205337659) (this branch at `ddda397`), job `hand-score`.
+
+| | before | after |
+|---|---:|---:|
+| hand pairs | 5,574 | 2,584 |
+| shared with SCIP (of 5,436) | 4,842 | 2,079 |
+| recall, all | 0.8907 | **0.3825** |
+| precision, all | 0.8687 | **0.8046** |
+| shared by a use (of 1,873 SCIP use pairs) | 1,279 | **1,255** |
+| recall, uses | 0.6829 | **0.6700** |
+| precision, uses | 0.2295 | 0.4857 |
+| shared only through a namespace | 3,563 | 824 |
+| hand-only, `package spread` | 710 | 490 |
+| hand-only, `other` | 22 | 15 |
+| SCIP-only | 594 | 3,357 |
+| by directory: hand / shared / precision | 956 / 953 / 0.9969 | 956 / 953 / 0.9969 |
+
+**Against use pairs, precision more than doubles** (0.2295 → 0.4857): 2,990 hand pairs are gone, and all but 24 of them were pairs SCIP has no use for.
+
+**Recall and precision against all of SCIP's pairs fall.** Recall drops from 0.8907 to 0.3825, and precision from 0.8687 to 0.8046. This is the Go form of finding 49's namespace pairs. An import statement is itself an occurrence of the imported package's symbol, and scip-go defines that symbol in one file of the package. So SCIP has a pair from every importer to that one file, whether or not anything the file declares is used. 2,739 of the 2,763 shared pairs removed are these (3,563 → 824 shared only through a namespace).
+
+**The fix gives up 24 pairs SCIP confirms by a use** (1,279 → 1,255). The file gap accounts for all 24, and all 24 are member-only: a method or field reached on a value (`x := pkg.New(); x.Run()`). The importer never names `Run`, so syntax cannot say which type `x` has. The whole-package link held these 24 only by linking every file. The file gap's named part is 0, so no pair where the source names what the target declares was lost. Recall against use pairs falls by the same 24, 0.6829 → 0.6700.
+
+**What is left of the spread.** 956 in-repo imports:
+- **791 are narrowed.**
+- **100 keep the package because a name is declared in several files.** `model/labels` has three build-tag implementations: `Labels` (41 imports), `EmptyLabels` (18), `Compare` (11) and `Builder` (9) are each declared in its `slicelabels`, `stringlabels` and `dedupelabels` files. `tsdb/fileutil`'s `OpenDir` (5) has platform variants. Choosing the default build's file means evaluating `//go:build` constraints, which is not done here.
+- **60 are blank imports.** Examples are `discovery/install` and `plugins/*` registering discovery mechanisms.
+- **5 name something no file declares at package level:** `Add`, `Address`, `AsString`, `Convert`, `ShardedPostings`. The job keeps them as samples. They are consistent with a local variable shadowing the package's name, which was not checked one by one.
+
+Together these 165 imports account for the 490 remaining `package spread` pairs. Files linked, summed over imports, go from 5,574 to 2,584.
+
+**SCIP-only, by the new classes:** 568 are `same package` and 24 `member via value`. 243 are `inferred type` and 2,522 `other`; most of `other` are the namespace-only pairs above, which moved from shared to SCIP-only. The before classification put 572 of 594 in `other` (finding 48). The class counts are not comparable across the two runs, because the Go classes are new.
+
+### The gate
+
+Finding 48's gate holds `shared_uses`, so the first run failed on prometheus (1,279 → 1,255). **The gate now holds `shared_named_uses` for Go:** shared use pairs that some non-member symbol supports. Python and TypeScript keep `shared_uses`, because their resolvers link by import statement, and there a member-only pair is still an import the file makes. For Go, the member-only pairs are what no syntax-level resolver can name. **This change was made after seeing the run**, as finding 48's was, and it is recorded here for that reason. `shared_uses` is still reported, and its fall from 1,279 to 1,255 is in the table above. `data/scip/hand_score.json` is re-recorded from [CI run 36206406154](https://github.com/onsager-ai/tolmap/actions/runs/36206406154)'s `baseline` output (this branch with the gate change), whose `hand-score` gate still failed only because the committed baseline did not yet carry the new field. prometheus's `shared_named_uses` is 1,245. It was 1,245 before as well: the file gap's named part is 0, so every one of the 24 pairs given up is member-only. Every Python and TypeScript row is unchanged: their hand and SCIP fingerprints are identical to finding 49's.
+
+### District churn and re-derivation
+
+| | old fixture | re-derived |
+|---|---|---|
+| placement of this branch's hand map against the old fixture | | 78.8% (350 of 444) |
+| q | 0.5430 | 0.5333 (Δq 0.0097) |
+| districts | 9 | 11 |
+| `E` | 5,574 | 2,584 |
+| `S`, `U` | | identical |
+
+**prometheus moves inside the partitioner's own band.** Finding 47's node-order band for prometheus, the spread of placements on an unchanged graph under eight vertex shuffles, is 69.1–94.6%, and 78.8% sits inside it. It is above every random-pairs draw (34.7–66.7%). Δq is within 0.02, and placement is below 95%, so the fixture is re-derived.
+
+`data/prometheus.json` is the map from run 36205337659's `hand-score` job, the same route as finding 49: the full-history clone and a seeded naming cache. The committed fixture's key set is kept. `data/fixtures.toml` marks it `generator = "rust-go-declarations"`. `data/scip/prometheus.json` is unchanged: `scip-fixtures` passed on all nine in the same run, since SCIP admission compares Go by directory.
+
+Renames, matched through the parity gate's district matching:
+
+| previous name | re-derived name | Jaccard |
+|---|---|---:|
+| service discovery | discovery | 0.91 |
+| storage | storage & remote | 0.46 |
+| web & notifier | web & api | 0.39 |
+| kubernetes (11 files), chunkenc & tsdb (21) | (unmatched) | |
+| (new) | fileutil & tsdb (4), runtime & util (4), runtime & util 2 (4), promql & promqltest (3) | |
+
+`tsdb`, `model`, `promql` and `internal tools` keep their names. The four new districts have 3–4 files each. Two of them are both named "runtime & util", told apart only by the namer's numeric suffix. That is the product namer's output under a seeded cache, and it is recorded here rather than hand-edited.
+
+### Not verified
+- The 5 undeclared names were not read in the source.
+- Whether evaluating `//go:build` constraints would narrow the 100 ambiguous imports without guessing. That is a follow-up.
+- `data/ci/synthetic_polyglot.graph.json` was not re-dumped. It is a pre-extracted graph that `gate` only runs through `build --graph`, and no parity check reads it. The synthetic polyglot fixture's live build (determinism, `polyglot-report` ceilings) passed under the new resolver in `gate`.
+- `eval/batch_stability.py` was not run. It imports the frozen Python reference, which has no Go, as in findings 23 and 49. The placement above is the churn measurement.

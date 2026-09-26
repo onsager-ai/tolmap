@@ -107,6 +107,17 @@ def category(symbol: str) -> int:
     return OTHER
 
 
+def is_member(symbol: str) -> bool:
+    """A method or field of a type: a type descriptor (`#`) followed by
+    more descriptors, after the last namespace (`Labels#Get().`, not
+    `Labels#` or `New().`). A reference to one is reached through a value
+    or a type, never by naming it at package or module level (finding 50).
+    Package paths are backticked, so the last "`/" ends the namespace; an
+    unquoted path ends at its last "/"."""
+    tail = symbol.rsplit("`/", 1)[-1] if "`/" in symbol else symbol.rsplit("/", 1)[-1]
+    return "#" in tail[:-1]
+
+
 def _varint(buffer, offset: int) -> tuple[int, int]:
     result = 0
     shift = 0
@@ -335,6 +346,9 @@ def ingest(
     pair_symbols: dict[tuple[str, str], set[int]] = defaultdict(set)
     pair_occurrences: Counter = Counter()
     pair_uses: set[tuple[str, str]] = set()
+    # Pairs a use of a non-member symbol supports; the rest of `pair_uses`
+    # is reached only through methods and fields (`is_member`).
+    pair_named_uses: set[tuple[str, str]] = set()
     symbol_edges: Counter = Counter()
     symbol_edge_categories: dict[tuple[int, int], int] = defaultdict(int)
     references = Counter()
@@ -406,6 +420,8 @@ def ingest(
                 pair_occurrences[pair] += 1
                 if kind not in (NAMESPACE, META):
                     pair_uses.add(pair)
+                    if not is_member(symbol):
+                        pair_named_uses.add(pair)
             if spans is None:
                 continue
             if owner < 0:
@@ -484,6 +500,8 @@ def ingest(
         "relationships": dict(sorted(relationship_counts.items())),
         "unmapped_targets": sorted([a, b, n] for (a, b), n in unmapped_targets.items()),
         "file_edges": file_edges,
+        # Not in `fingerprint`, so every earlier fingerprint still compares.
+        "member_only_use_pairs": sorted([a, b] for (a, b) in pair_uses - pair_named_uses),
         "symbol_edges": edges_out,
         "relationship_pairs": relationship_rows,
         "relationship_file_pairs": relationship_file_rows,
@@ -532,6 +550,13 @@ def self_test() -> None:
     finally:
         path.unlink(missing_ok=True)
     assert result["file_edges"] == [["pkg/b.py", "pkg/a.py", 3, 4, 1]], result["file_edges"]
+    assert result["member_only_use_pairs"] == [], result["member_only_use_pairs"]
+    assert is_member("scip-go gomod example.com/m v1 `example.com/m/lib`/T#Run().")
+    assert is_member("scip-go gomod example.com/m v1 `example.com/m/lib`/T#Field.")
+    assert not is_member("scip-go gomod example.com/m v1 `example.com/m/lib`/T#")
+    assert not is_member("scip-go gomod example.com/m v1 `example.com/m/lib`/New().")
+    assert not is_member("scip-go gomod example.com/m v1 `example.com/m/lib`/ErrX.")
+    assert is_member("scip-go gomod example.com/m v1 lib/T#Run().")
     assert result["symbol_edges"] == [[3, 0, 2, 1 << CALLABLE]], result["symbol_edges"]
     assert result["calls"] == {
         "callable_refs_in_symbols": 3,

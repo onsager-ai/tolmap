@@ -207,6 +207,13 @@ struct ParsedFile {
 /// `exports` is what the file binds at module level (finding 48): phase 2
 /// follows a package's re-exports through it to the file that defines a
 /// name, which it can only do once every file's exports are in hand.
+///
+/// Go's `import_uses` and `declares` do the same for Go packages (finding
+/// 50): what each import's local name selects in this file, and what this
+/// file declares at package level (`None` when that is not known: a file
+/// the parser gave up on, or TypeScript). With every file's declarations in
+/// hand, phase 2 links an import to the files that declare what the
+/// importer names, instead of to every file of the package.
 enum FileRaw {
     Python {
         imports: Vec<PythonImport>,
@@ -216,7 +223,23 @@ enum FileRaw {
     Multi {
         imports: Vec<String>,
         named_candidates: Vec<(String, String)>,
+        import_uses: Vec<GoImportUse>,
+        declares: Option<BTreeSet<String>>,
     },
+}
+
+/// What one Go import's local name is used for in the importing file
+/// (finding 50). A file's list is parallel to its `go_imports`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GoImportUse {
+    /// `import _ "p"` or `import . "p"`. A blank import is there for its
+    /// side effects, and a dot import's names are used unqualified, so no
+    /// `alias.Name` says which file of the package is used.
+    Opaque,
+    /// Every `Name` of the file's `alias.Name` selectors and `alias.Type`
+    /// qualified types. Empty when the local name never appears qualified,
+    /// e.g. when the package clause differs from the path's last element.
+    Names(BTreeSet<String>),
 }
 
 /// Where the static signal and symbol references come from (issue #110).
@@ -700,6 +723,10 @@ fn parse_files_inner(
                     _ => FileRaw::Multi {
                         imports: Vec::new(),
                         named_candidates: Vec::new(),
+                        import_uses: Vec::new(),
+                        // Unknown, not empty: a package whose files are not
+                        // all read cannot say which one declares a name.
+                        declares: None,
                     },
                 },
             );
@@ -727,10 +754,14 @@ fn parse_files_inner(
             LanguageKind::Go => FileRaw::Multi {
                 imports: go_imports(root, &source),
                 named_candidates: go_selectors(root, &source),
+                import_uses: go_import_uses(root, &source),
+                declares: Some(go_declarations(root, &source)),
             },
             LanguageKind::TypeScript => FileRaw::Multi {
                 imports: typescript_imports(root, &source),
                 named_candidates: typescript_named(root, &source),
+                import_uses: Vec::new(),
+                declares: None,
             },
         };
         let loc = source.iter().filter(|&&byte| byte == b'\n').count() + 1;
@@ -3062,23 +3093,67 @@ fn parse_multi_with_progress(
     let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
     let mut fanin = BTreeMap::<FileId, f64>::new();
     let mut uses = BTreeSet::<(FileId, FileId, String)>::new();
+    // Every Go file's package-level declarations, by id, for narrowing an
+    // import to the files that declare what it names (finding 50).
+    let declares = raw
+        .iter()
+        .filter_map(|(file, raw)| match raw {
+            FileRaw::Multi { declares, .. } => ids.get(file).map(|&id| (id, declares.as_ref())),
+            FileRaw::Python { .. } => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    // Eval instrumentation only (finding 50): one row per in-repo Go import,
+    // saying whether it was narrowed and, if not, why.
+    let report_dir = (language == LanguageKind::Go)
+        .then(|| std::env::var_os("TOLMAP_GO_IMPORT_REPORT"))
+        .flatten()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let mut report = Vec::new();
     for file in parsed.keys() {
         let source_id = ids[file];
         let FileRaw::Multi {
             imports,
             named_candidates,
+            import_uses,
+            ..
         } = &raw[file]
         else {
             unreachable!("parse_multi only ever stores FileRaw::Multi");
         };
-        for path in imports {
-            let targets = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
-            let targets = targets.as_slice();
-            if targets.is_empty() {
+        for (index, path) in imports.iter().enumerate() {
+            let resolved = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
+            let package = resolved.as_slice();
+            if package.is_empty() {
                 continue;
             }
+            // A Go import links the files that declare what the importer
+            // names, where every name resolves; otherwise the whole package,
+            // as it always did. TypeScript resolves to one file already.
+            let narrowed = (language == LanguageKind::Go)
+                .then(|| narrow_go_import(package, import_uses.get(index), &declares));
+            if let (Some(_), Some(outcome)) = (&report_dir, &narrowed) {
+                let (reason, name) = match outcome {
+                    Ok(_) => ("narrowed", None),
+                    Err(spread) => spread.reason(),
+                };
+                // [file, import, outcome, name, package files, files linked]
+                report.push(serde_json::json!([
+                    file,
+                    path,
+                    reason,
+                    name,
+                    package.len(),
+                    outcome.as_ref().map_or(package.len(), BTreeSet::len),
+                ]));
+            }
+            let narrowed = narrowed.and_then(std::result::Result::ok);
+            let targets = match &narrowed {
+                Some(narrowed) => narrowed.iter().copied().collect::<Vec<_>>(),
+                None => package.to_vec(),
+            };
             let share = 1.0 / targets.len() as f64;
-            for &target in targets {
+            for &target in &targets {
                 if target == source_id {
                     continue;
                 }
@@ -3099,6 +3174,19 @@ fn parse_multi_with_progress(
             }
         }
         progress.advance(1);
+    }
+    if let Some(directory) = report_dir {
+        // Rows are in file order, then import order: deterministic.
+        let slug = if pkg == "." {
+            "root".to_owned()
+        } else {
+            pkg.replace('/', "_")
+        };
+        let path = directory.join(format!("go-imports.{slug}.json"));
+        fs::create_dir_all(&directory)
+            .with_context(|| format!("create {}", directory.display()))?;
+        fs::write(&path, serde_json::to_vec(&report)?)
+            .with_context(|| format!("write {}", path.display()))?;
     }
 
     let module_for = parsed
@@ -3649,6 +3737,240 @@ fn go_selectors(root: Node<'_>, source: &[u8]) -> Vec<(String, String)> {
         }
     }
     result
+}
+
+/// What each import's local name selects in this file (finding 50), one
+/// entry per import in `go_imports`'s order: the same walk, and one entry
+/// per import spec whose path is an interpreted string, as there.
+///
+/// Names are collected from both places Go lets an imported identifier
+/// appear: `alias.Name` (a `selector_expression`, which covers values,
+/// calls, conversions and method expressions) and `alias.Type` (a
+/// `qualified_type`, which covers every type position). `go_selectors` sees
+/// only the first. It feeds the symbol uses `U` and is left alone, so `S`
+/// and `U` do not move. Reading only selectors here would miss a package
+/// used only in type positions, and would link the import to a strict
+/// subset of the files it uses.
+///
+/// A local variable that shadows the package's name is not told apart, so
+/// its `.Method` is collected as though the package declared `Method`. That
+/// can only fail to resolve, which keeps the whole package as before, or
+/// name a file the package really has. It cannot add a pair.
+fn go_import_uses(root: Node<'_>, source: &[u8]) -> Vec<GoImportUse> {
+    // `None` is an opaque import; otherwise the import's local name.
+    let mut specs = Vec::<Option<String>>::new();
+    let mut used = BTreeMap::<String, BTreeSet<String>>::new();
+    for node in walk(root) {
+        match node.kind() {
+            "import_spec" => {
+                let name = node.child_by_field_name("name");
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() != "interpreted_string_literal" {
+                        continue;
+                    }
+                    let path = strip_quotes(text(child, source));
+                    specs.push(match name.map(|name| name.kind()) {
+                        Some("blank_identifier" | "dot") => None,
+                        Some(_) => name.map(|name| text(name, source).to_owned()),
+                        // `go_selectors`'s default: the path's last element.
+                        None => Some(
+                            path.trim_end_matches('/')
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or(path)
+                                .to_owned(),
+                        ),
+                    });
+                }
+            }
+            "selector_expression" => {
+                let (Some(operand), Some(field)) = (
+                    node.child_by_field_name("operand"),
+                    node.child_by_field_name("field"),
+                ) else {
+                    continue;
+                };
+                if operand.kind() == "identifier" {
+                    used.entry(text(operand, source).to_owned())
+                        .or_default()
+                        .insert(text(field, source).to_owned());
+                }
+            }
+            "qualified_type" => {
+                let (Some(package), Some(name)) = (
+                    node.child_by_field_name("package"),
+                    node.child_by_field_name("name"),
+                ) else {
+                    continue;
+                };
+                used.entry(text(package, source).to_owned())
+                    .or_default()
+                    .insert(text(name, source).to_owned());
+            }
+            _ => {}
+        }
+    }
+    specs
+        .into_iter()
+        .map(|spec| match spec {
+            None => GoImportUse::Opaque,
+            Some(alias) => GoImportUse::Names(used.get(&alias).cloned().unwrap_or_default()),
+        })
+        .collect()
+}
+
+/// Every name the file declares at package level (finding 50): functions,
+/// types (aliases included), variables and constants. Not methods, which
+/// belong to their receiver's type.
+///
+/// This is not `symbols::lookup`'s index, though it answers the same
+/// question ("which file of this package declares `Name`?") by the same
+/// rule (exactly one file, or no answer). That index is built from the
+/// symbols spool after extraction, so the graph would depend on whether a
+/// symbols document is being written. Its spans also have no variables or
+/// constants. A package's exported variables and constants (sentinel
+/// errors, enum values, defaults) are selected about as often as its
+/// functions, and one unresolved name keeps the whole package, so leaving
+/// them out would leave most imports as they were.
+fn go_declarations(root: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    fn named_children(node: Node<'_>) -> Vec<Node<'_>> {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor).collect()
+    }
+    fn spec_names(spec: Node<'_>, source: &[u8], names: &mut BTreeSet<String>) {
+        let mut cursor = spec.walk();
+        for name in spec.children_by_field_name("name", &mut cursor) {
+            if name.kind() == "identifier" {
+                names.insert(text(name, source).to_owned());
+            }
+        }
+    }
+    let mut names = BTreeSet::new();
+    for node in named_children(root) {
+        match node.kind() {
+            "function_declaration" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    names.insert(text(name, source).to_owned());
+                }
+            }
+            "type_declaration" => {
+                for spec in named_children(node) {
+                    if matches!(spec.kind(), "type_spec" | "type_alias") {
+                        if let Some(name) = spec.child_by_field_name("name") {
+                            names.insert(text(name, source).to_owned());
+                        }
+                    }
+                }
+            }
+            "var_declaration" | "const_declaration" => {
+                for spec in named_children(node) {
+                    match spec.kind() {
+                        "var_spec" | "const_spec" => spec_names(spec, source, &mut names),
+                        "var_spec_list" => {
+                            for inner in named_children(spec) {
+                                if inner.kind() == "var_spec" {
+                                    spec_names(inner, source, &mut names);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // `var _ = ...` declares nothing another file can name.
+    names.remove("_");
+    names
+}
+
+/// Why a Go import keeps linking every file of its package (finding 50).
+/// Recorded only for `TOLMAP_GO_IMPORT_REPORT`; the graph needs only that
+/// it did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GoSpread {
+    /// `import _` or `import .`.
+    Opaque,
+    /// The import's local name never appears qualified in the file.
+    NoNames,
+    /// A file of the package was not read, so its declarations are unknown.
+    Unknown,
+    /// No file of the package declares this name.
+    Undeclared(String),
+    /// Several files of the package declare this name.
+    Ambiguous(String),
+}
+
+impl GoSpread {
+    fn reason(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::Opaque => ("opaque", None),
+            Self::NoNames => ("no_names", None),
+            Self::Unknown => ("unknown_declarations", None),
+            Self::Undeclared(name) => ("undeclared_name", Some(name)),
+            Self::Ambiguous(name) => ("ambiguous_name", Some(name)),
+        }
+    }
+}
+
+/// The files of an imported Go package that declare what the importer
+/// names (finding 50), or why every file of the package stays linked.
+///
+/// `package` is the package's parsed files, as `resolve_multi` returns
+/// them. A name resolves when exactly one of those files declares it, the
+/// rule `symbols::lookup` applies to a Go package. The import resolves when
+/// every name does. Anything short of that keeps the whole package, as
+/// before, so the result is always a subset of the old targets and never
+/// adds a pair:
+/// - an opaque import (`_` or `.`), or one whose local name never appears
+///   qualified;
+/// - a name no file declares, such as a method called on a local variable
+///   that shadows the package's name;
+/// - a name several files declare, as build-tag variants do
+///   (`foo_linux.go` and `foo_windows.go`);
+/// - a file of the package whose declarations are unknown.
+///
+/// A method called on a value the package returned (`x := pkg.New();
+/// x.Run()`) is not a name the importer selects from the package, so the
+/// file declaring `Run` is linked only if a selected name is declared there
+/// too. Syntax cannot say which type `x` has, and linking every file was
+/// the guess this replaces.
+fn narrow_go_import(
+    package: &[FileId],
+    uses: Option<&GoImportUse>,
+    declares: &BTreeMap<FileId, Option<&BTreeSet<String>>>,
+) -> std::result::Result<BTreeSet<FileId>, GoSpread> {
+    let names = match uses {
+        Some(GoImportUse::Names(names)) if !names.is_empty() => names,
+        Some(GoImportUse::Names(_)) => return Err(GoSpread::NoNames),
+        // No entry means `go_import_uses` and `go_imports` disagreed about
+        // the file's imports; keeping the package is the safe answer.
+        Some(GoImportUse::Opaque) | None => return Err(GoSpread::Opaque),
+    };
+    let mut known = Vec::with_capacity(package.len());
+    for file in package {
+        let Some(&Some(declared)) = declares.get(file) else {
+            return Err(GoSpread::Unknown);
+        };
+        known.push((*file, declared));
+    }
+    let mut targets = BTreeSet::new();
+    for name in names {
+        let mut declaring = known
+            .iter()
+            .filter(|(_, declared)| declared.contains(name))
+            .map(|(file, _)| *file);
+        match (declaring.next(), declaring.next()) {
+            (Some(file), None) => {
+                targets.insert(file);
+            }
+            (None, _) => return Err(GoSpread::Undeclared(name.clone())),
+            (Some(_), Some(_)) => return Err(GoSpread::Ambiguous(name.clone())),
+        }
+    }
+    Ok(targets)
 }
 
 fn typescript_imports(root: Node<'_>, source: &[u8]) -> Vec<String> {
@@ -4275,11 +4597,13 @@ fn finish_graph(
 
     // `static_max` used to be one max over every static edge in the graph.
     // In a merged graph that punishes a language systematically rather than
-    // measuring anything real: a Go import spreads 1/|D| across the package
-    // directory (`resolve_multi`'s `share = 1.0 / targets.len()`, well below
-    // this function) while Python and TypeScript resolve to a single file at
-    // 1.0, so a shared global max makes every Go static edge lighter for a
-    // reason that is a language convention, not a signal. Computed per
+    // measuring anything real: a Go import spreads 1/|D| across the files it
+    // links, the whole package directory where it cannot be narrowed
+    // (`parse_multi`'s `share = 1.0 / targets.len()`, well below this
+    // function, and finding 50), while Python and TypeScript resolve to a
+    // single file at 1.0, so a shared global max makes every Go static edge
+    // lighter for a reason that is a language convention, not a signal.
+    // Computed per
     // language instead: each edge divides by its own language's largest
     // static edge. A static edge is always intra-language by construction
     // (resolution only looks a target up in its own source's known-file
@@ -5623,6 +5947,199 @@ mod tests {
         assert_eq!(
             resolved_import_edge_count(dir.path(), "services/core", LanguageKind::Go),
             2
+        );
+    }
+
+    /// A three-file package for finding 50's tests: `a.go` declares a
+    /// function and a constant group, `b.go` a type, a variable group and a
+    /// method, `c.go` a function and a type alias.
+    fn write_go_package(root: &Path) {
+        write(root, "go.mod", "module example.com/repo\n\ngo 1.22\n");
+        write(
+            root,
+            "lib/a.go",
+            "package lib\n\nfunc A() int { return K }\n\nconst (\n\tK = iota\n\tL\n)\n",
+        );
+        write(
+            root,
+            "lib/b.go",
+            "package lib\n\ntype T struct{ N int }\n\nvar (\n\tV, W = 1, 2\n\t_ = V\n)\n\nfunc (t *T) Run() {}\n",
+        );
+        write(
+            root,
+            "lib/c.go",
+            "package lib\n\nfunc C() {}\n\ntype Alias = T\n",
+        );
+    }
+
+    fn go_edges(root: &Path) -> BTreeMap<(String, String), f64> {
+        let modules = module_index(root).unwrap();
+        let (parsed, raw) = parse_files(root, ".", LanguageKind::Go).unwrap();
+        let intermediate = parse_multi(root, ".", LanguageKind::Go, parsed, raw, &modules).unwrap();
+        intermediate
+            .directed
+            .iter()
+            .map(|(&(a, b), &weight)| {
+                (
+                    (
+                        intermediate.files[a as usize].clone(),
+                        intermediate.files[b as usize].clone(),
+                    ),
+                    weight,
+                )
+            })
+            .collect()
+    }
+
+    fn edges_from(root: &Path, source: &str) -> BTreeMap<String, f64> {
+        go_edges(root)
+            .into_iter()
+            .filter(|((a, _), _)| a == source)
+            .map(|((_, b), weight)| (b, weight))
+            .collect()
+    }
+
+    fn weights(pairs: &[(&str, f64)]) -> BTreeMap<String, f64> {
+        pairs
+            .iter()
+            .map(|&(file, weight)| (file.to_owned(), weight))
+            .collect()
+    }
+
+    #[test]
+    fn go_import_links_only_the_files_declaring_what_it_names() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_package(dir.path());
+        // `lib.A` is a call, `lib.T` appears only as a type, and `lib.W` is
+        // the second name of a grouped `var`. `c.go` declares nothing named.
+        write(
+            dir.path(),
+            "cmd/main.go",
+            "package main\n\nimport \"example.com/repo/lib\"\n\nfunc main() {\n\tvar t *lib.T\n\t_ = t\n\t_ = lib.A() + lib.W\n}\n",
+        );
+        // One import still has mass 1, shared by the files it now links.
+        assert_eq!(
+            edges_from(dir.path(), "cmd/main.go"),
+            weights(&[("lib/a.go", 0.5), ("lib/b.go", 0.5)])
+        );
+    }
+
+    #[test]
+    fn go_import_narrowing_follows_the_local_name_and_every_declaration_form() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_package(dir.path());
+        // An aliased import, a constant from an `iota` group with no value
+        // of its own, and a type alias. Nothing names `b.go`.
+        write(
+            dir.path(),
+            "cmd/main.go",
+            "package main\n\nimport l \"example.com/repo/lib\"\n\nvar x = l.L\nvar y l.Alias\n",
+        );
+        assert_eq!(
+            edges_from(dir.path(), "cmd/main.go"),
+            weights(&[("lib/a.go", 0.5), ("lib/c.go", 0.5)])
+        );
+    }
+
+    #[test]
+    fn go_import_keeps_the_whole_package_when_a_name_does_not_resolve() {
+        let whole = weights(&[
+            ("lib/a.go", 1.0 / 3.0),
+            ("lib/b.go", 1.0 / 3.0),
+            ("lib/c.go", 1.0 / 3.0),
+        ]);
+        for (case, main) in [
+            // A local variable shadows the package: `Run` is its method,
+            // which no file declares at package level.
+            (
+                "undeclared",
+                "package main\n\nimport \"example.com/repo/lib\"\n\nfunc main() {\n\t_ = lib.A()\n\tlib := &lib.T{}\n\tlib.Run()\n}\n",
+            ),
+            // Blank and dot imports select nothing by name.
+            (
+                "blank",
+                "package main\n\nimport _ \"example.com/repo/lib\"\n",
+            ),
+            (
+                "dot",
+                "package main\n\nimport . \"example.com/repo/lib\"\n\nvar x = A()\n",
+            ),
+            // The local name never appears qualified.
+            (
+                "no names",
+                "package main\n\nimport \"example.com/repo/lib\"\n\nvar x = other.A()\n",
+            ),
+        ] {
+            let dir = tempfile::TempDir::new().unwrap();
+            write_go_package(dir.path());
+            write(dir.path(), "cmd/main.go", main);
+            assert_eq!(edges_from(dir.path(), "cmd/main.go"), whole, "{case}");
+        }
+
+        // Build-tag variants: two files declare `C`, so neither is certain.
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_package(dir.path());
+        write(
+            dir.path(),
+            "lib/c_windows.go",
+            "//go:build windows\n\npackage lib\n\nfunc C() {}\n",
+        );
+        write(
+            dir.path(),
+            "cmd/main.go",
+            "package main\n\nimport \"example.com/repo/lib\"\n\nvar x = lib.C\n",
+        );
+        assert_eq!(
+            edges_from(dir.path(), "cmd/main.go").len(),
+            4,
+            "an ambiguous name keeps all four files"
+        );
+    }
+
+    #[test]
+    fn go_import_narrowing_is_per_import() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_package(dir.path());
+        write(dir.path(), "other/o.go", "package other\n\nfunc O() {}\n");
+        write(dir.path(), "other/p.go", "package other\n\nfunc P() {}\n");
+        // `lib` resolves; `other` does not (`Q` is declared nowhere), and
+        // keeps both of its files without undoing `lib`'s narrowing.
+        write(
+            dir.path(),
+            "cmd/main.go",
+            "package main\n\nimport (\n\t\"example.com/repo/lib\"\n\t\"example.com/repo/other\"\n)\n\nvar x = lib.C\nvar y = other.Q\n",
+        );
+        assert_eq!(
+            edges_from(dir.path(), "cmd/main.go"),
+            weights(&[("lib/c.go", 1.0), ("other/o.go", 0.5), ("other/p.go", 0.5)])
+        );
+    }
+
+    #[test]
+    fn narrow_go_import_needs_every_file_of_the_package_read() {
+        let names = GoImportUse::Names(["A".to_owned()].into_iter().collect());
+        let declared = ["A".to_owned()].into_iter().collect::<BTreeSet<_>>();
+        let empty = BTreeSet::new();
+        let mut declares = BTreeMap::new();
+        declares.insert(0, Some(&declared));
+        declares.insert(1, None);
+        assert_eq!(
+            narrow_go_import(&[0, 1], Some(&names), &declares),
+            Err(GoSpread::Unknown)
+        );
+        declares.insert(1, Some(&declared));
+        assert_eq!(
+            narrow_go_import(&[0, 1], Some(&names), &declares),
+            Err(GoSpread::Ambiguous("A".to_owned()))
+        );
+        declares.insert(1, Some(&empty));
+        assert_eq!(
+            narrow_go_import(&[0, 1], Some(&names), &declares),
+            Ok([0].into_iter().collect::<BTreeSet<FileId>>())
+        );
+        assert_eq!(
+            narrow_go_import(&[0, 1], None, &declares),
+            Err(GoSpread::Opaque)
         );
     }
 
