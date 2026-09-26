@@ -159,6 +159,7 @@ function coverage(references: Record<string, ReferenceCoverage> | null): Coverag
     "no_tsconfig",
     "no_documents",
     "ingest_failed",
+    "no_product_indexer",
   ];
   let allHumanised = true;
   for (const reason of documented) {

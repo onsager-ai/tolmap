@@ -112,6 +112,15 @@
 # key equals the previous fixture. `generator = "rust-distinct-names"` marks
 # them.
 
+# Also on 2026-09-26 tolmap itself joined as the first Rust fixture (issue
+# #126, owner decision "Go: add tree-sitter-rust"; finding 57), at finding
+# 55's pin. There is no Python reference for Rust: the oracle is the Rust
+# product's own map, recorded by ci.yml's `hand-score` Rust step on a
+# full-history clone with the namer of #144, and `full-fixtures` places the
+# product's rebuild against it. `generator = "rust-rs-hand"` marks it. Its
+# references are scored against rust-analyzer in the same job; the product
+# has no Rust indexer (finding 55), so it has no SCIP fixture in data/scip.
+
 [celery]
 url = "https://github.com/celery/celery.git"
 commit = "208a803655672d63cf2a257d30f39c672a5b4bcf"
@@ -210,3 +219,14 @@ generator = "rust-ts-reexports"
 files = 239
 districts = 7
 q = 0.5058
+
+[tolmap]
+url = "https://github.com/onsager-ai/tolmap.git"
+commit = "c62a96869a86940dcdb8eaa251f43e31b481c181"
+pkg = "."
+lang = "rs"
+parcels = false
+generator = "rust-rs-hand"
+files = 34
+districts = 3
+q = 0.178

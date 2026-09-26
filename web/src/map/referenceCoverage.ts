@@ -47,7 +47,7 @@ export interface ReferenceCoverageSummary {
   languages: ReferenceCoverageLanguageRow[];
 }
 
-const LANGUAGE_NAMES: Record<string, string> = { py: "Python", go: "Go", ts: "TypeScript" };
+const LANGUAGE_NAMES: Record<string, string> = { py: "Python", go: "Go", ts: "TypeScript", rs: "Rust" };
 
 // Every reason string src/schema.rs documents `ReferenceCoverage.reason`
 // can hold, in plain words. Read from src/indexers.rs's `IndexFailure::reason()`
@@ -66,6 +66,9 @@ const REASON_LABELS: Record<string, string> = {
   no_tsconfig: "no tracked tsconfig.json to index",
   no_documents: "the index had no documents for this repository",
   ingest_failed: "the index could not be read",
+  // Rust (issue #126): rust-analyzer compiles a repository's build scripts
+  // natively, so it is a CI oracle only (docs/FINDINGS.md finding 55).
+  no_product_indexer: "no indexer runs for this language in the service",
 };
 
 function reasonLabel(reason: string): string {

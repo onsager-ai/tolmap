@@ -68,6 +68,9 @@ pub enum IndexFailure {
     Exit { code: Option<i32> },
     /// Exited 0 without writing an index.
     NoIndex,
+    /// A language the product never indexes: Rust, whose indexer runs a
+    /// repository's build scripts and proc macros natively (finding 55).
+    NoProductIndexer,
 }
 
 impl IndexFailure {
@@ -81,6 +84,7 @@ impl IndexFailure {
             Self::Spawn { .. } => "indexer_spawn_failed",
             Self::Exit { .. } => "indexer_failed",
             Self::NoIndex => "no_index_written",
+            Self::NoProductIndexer => "no_product_indexer",
         }
     }
 
@@ -94,16 +98,20 @@ impl IndexFailure {
 
 /// The indexer binary for `language`: its override variable when set,
 /// otherwise the plain name for a `PATH` lookup.
-pub fn binary(language: LanguageKind) -> String {
+/// `None` for a language the product never indexes (Rust, finding 55).
+pub fn binary(language: LanguageKind) -> Option<String> {
     let (variable, name) = match language {
         LanguageKind::Python => ("TOLMAP_SCIP_PYTHON", "scip-python"),
         LanguageKind::Go => ("TOLMAP_SCIP_GO", "scip-go"),
         LanguageKind::TypeScript => ("TOLMAP_SCIP_TYPESCRIPT", "scip-typescript"),
+        LanguageKind::Rust => return None,
     };
-    std::env::var(variable)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| name.to_owned())
+    Some(
+        std::env::var(variable)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| name.to_owned()),
+    )
 }
 
 /// The checkout's commit SHA for scip-python's `--project-version`, read
@@ -180,7 +188,9 @@ pub fn run(
     stage: &StageCounter,
     log: &dyn Fn(String),
 ) -> Result<(), IndexFailure> {
-    let program = binary(language);
+    let Some(program) = binary(language) else {
+        return Err(IndexFailure::NoProductIndexer);
+    };
     let mut command = Command::new(&program);
     command.current_dir(repo);
     match language {
@@ -224,6 +234,8 @@ pub fn run(
                 .arg(output)
                 .args(&projects);
         }
+        // `binary` answered `None` above.
+        LanguageKind::Rust => return Err(IndexFailure::NoProductIndexer),
     }
     let log_path = PathBuf::from(format!("{}.log", output.display()));
     let log_file = File::create(&log_path).map_err(|error| IndexFailure::Spawn {

@@ -1,5 +1,6 @@
 //! Acceptance test for issue #4: detection must reproduce the known-correct
-//! `pkg`/`lang` for all nine fixture repositories in `data/fixtures.toml`.
+//! `pkg`/`lang` for every fixture repository in `data/fixtures.toml` (nine,
+//! plus tolmap itself as the Rust fixture since issue #126).
 //!
 //! Reads the answers from the manifest rather than hardcoding a second copy
 //! (the same "one source of truth" rule the schema follows -- CLAUDE.md).
@@ -60,8 +61,8 @@ fn load_fixtures(manifest_path: &Path) -> Vec<Fixture> {
     }
     assert_eq!(
         fixtures.len(),
-        9,
-        "expected 9 fixtures in {}, parsed {}",
+        10,
+        "expected 10 fixtures in {}, parsed {}",
         manifest_path.display(),
         fixtures.len()
     );
@@ -131,7 +132,7 @@ fn detection_reproduces_all_nine_fixtures() {
 
     assert!(
         failures.is_empty(),
-        "{} of 9 fixtures mismatched:\n{}",
+        "{} of 10 fixtures mismatched:\n{}",
         failures.len(),
         failures.join("\n")
     );

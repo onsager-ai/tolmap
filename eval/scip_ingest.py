@@ -595,7 +595,7 @@ def main() -> int:
     parser.add_argument("--map", type=Path, help="tolmap map JSON (for F)")
     parser.add_argument("--graph", type=Path, help="tolmap dump-graph JSON (for node lang)")
     parser.add_argument("--symbols", type=Path, help="tolmap symbols JSON (for spans)")
-    parser.add_argument("--lang", choices=("py", "ts", "go"))
+    parser.add_argument("--lang", choices=("py", "ts", "go", "rs"))
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     if args.self_test:

@@ -7,6 +7,8 @@ Seven stages. Five are pure geometry and must be byte-reproducible from a seed. 
 
 Go imports name a *package*, so one import spreads 1/|D| weight across that directory's files; TypeScript and Python resolve to a single file.
 
+The Rust product also reads Rust (`src/extract/rust.rs`, finding 57), which the reference never did. A crate's module tree is built from `Cargo.toml` and `mod` declarations, and each `use` or written-out path links the file that defines the name it uses. Each `use` declaration shares a mass of 1 among the files it reaches.
+
 ## 2 · weight
 ```
 w(a,b) = α·static + β·cochange + γ·proximity + δ·semantic     α .45 β .35 γ .08 δ .12

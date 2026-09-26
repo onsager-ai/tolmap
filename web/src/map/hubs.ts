@@ -21,6 +21,8 @@ const GENERIC_BASENAMES = new Set([
   "index.tsx",
   "index.js",
   "mod.rs",
+  "lib.rs",
+  "main.rs",
   "base.py",
   "types.ts",
   "wraps.py",

@@ -1263,6 +1263,389 @@
      }
     }
    }
+  },
+  {
+   "files": 34,
+   "hand_fingerprint": "3941e92a824f04b99b8aca605f49d5ccac0590f7be5e90ef5878e706ba6fe96b",
+   "hand_only": 0,
+   "hand_only_by_class": {
+    "other": 0,
+    "package spread": 0,
+    "re-export": 0,
+    "star import": 0,
+    "submodule via package": 0
+   },
+   "hand_pairs": 135,
+   "lang": "rs",
+   "name": "tolmap",
+   "precision": 1.0,
+   "precision_counting_reexports": 1.0,
+   "precision_uses": 1.0,
+   "recall": 0.4982,
+   "recall_uses": 0.9712,
+   "rs": {
+    "files": 34,
+    "files_in_a_crate": 34,
+    "hand_only_by_class": {
+     "other": 0,
+     "uncertain module": 0
+    },
+    "hand_only_samples": {
+     "other": [],
+     "uncertain module": []
+    },
+    "outcomes": {
+     "path": {
+      "defined": 277,
+      "external": 0,
+      "glob": 0,
+      "glob_scope": 184,
+      "module": 0,
+      "module_unselected": 0,
+      "no_module": 0,
+      "uncertain": 0,
+      "uncertain_glob": 0,
+      "unnamed": 0,
+      "unresolved": 79,
+      "unused": 0,
+      "unused_external": 0
+     },
+     "use": {
+      "defined": 155,
+      "external": 257,
+      "glob": 28,
+      "glob_scope": 0,
+      "module": 23,
+      "module_unselected": 0,
+      "no_module": 0,
+      "uncertain": 0,
+      "uncertain_glob": 0,
+      "unnamed": 1,
+      "unresolved": 0,
+      "unused": 0,
+      "unused_external": 95
+     }
+    },
+    "report": true,
+    "scip_only_uses": 4,
+    "scip_only_uses_by_class": {
+     "glob import": 0,
+     "inferred type": 0,
+     "macro": 0,
+     "member via value": 4,
+     "other": 0
+    },
+    "scip_only_uses_samples": {
+     "glob import": [],
+     "inferred type": [],
+     "macro": [],
+     "member via value": [
+      {
+       "a": "src/service/http.rs",
+       "b": "src/service/config.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo tolmap 0.1.0 service/config/Limits#rate_limit_per_ip.",
+        "rust-analyzer cargo tolmap 0.1.0 service/config/Limits#rate_limit_per_repo.",
+        "rust-analyzer cargo tolmap 0.1.0 service/config/Limits#rate_limit_per_repo_window_seconds."
+       ]
+      },
+      {
+       "a": "src/service/http.rs",
+       "b": "src/service/store.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo tolmap 0.1.0 service/store/MapRow#commit.",
+        "rust-analyzer cargo tolmap 0.1.0 service/store/MapRow#districts.",
+        "rust-analyzer cargo tolmap 0.1.0 service/store/MapRow#files."
+       ]
+      },
+      {
+       "a": "src/service/http.rs",
+       "b": "src/symbols.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo tolmap 0.1.0 symbols/impl#[SymbolsDocument]district()."
+       ]
+      },
+      {
+       "a": "src/worker.rs",
+       "b": "src/service/error.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo tolmap 0.1.0 service/error/ApiError#body.",
+        "rust-analyzer cargo tolmap 0.1.0 service/error/ErrorBody#error.",
+        "rust-analyzer cargo tolmap 0.1.0 service/error/ErrorBody#message."
+       ]
+      }
+     ],
+     "other": []
+    },
+    "ties": {
+     "path": {},
+     "use": {}
+    }
+   },
+   "scip_fingerprint": "5f4b338872a53572d5a2522d1ba3805364dd1fb8045f9203aa5fe3fa4411de8e",
+   "scip_only": 136,
+   "scip_only_by_class": {
+    "inferred type": 18,
+    "inherited member": 0,
+    "member via value": 0,
+    "other": 118,
+    "re-export": 0,
+    "same package": 0
+   },
+   "scip_pairs": 271,
+   "scip_use_pairs": 139,
+   "shared": 135,
+   "shared_named_uses": 135,
+   "shared_namespace_only": 0,
+   "shared_namespace_only_to_package": 0,
+   "shared_uses": 135
+  },
+  {
+   "files": 80,
+   "hand_fingerprint": "128af0922c47e631b2bb9307e503a968717de6f938923a99ba61744644213ab4",
+   "hand_only": 5,
+   "hand_only_by_class": {
+    "other": 5,
+    "package spread": 0,
+    "re-export": 0,
+    "star import": 0,
+    "submodule via package": 0
+   },
+   "hand_pairs": 237,
+   "lang": "rs",
+   "name": "ripgrep",
+   "precision": 0.9789,
+   "precision_counting_reexports": 0.9789,
+   "precision_uses": 0.9789,
+   "recall": 0.6138,
+   "recall_uses": 0.9469,
+   "rs": {
+    "files": 80,
+    "files_in_a_crate": 80,
+    "hand_only_by_class": {
+     "other": 5,
+     "uncertain module": 0
+    },
+    "hand_only_samples": {
+     "other": [
+      {
+       "a": "crates/core/flags/doc/version.rs",
+       "b": "crates/pcre2/src/lib.rs",
+       "class": "other"
+      },
+      {
+       "a": "crates/core/flags/hiargs.rs",
+       "b": "crates/pcre2/src/matcher.rs",
+       "class": "other"
+      },
+      {
+       "a": "crates/core/search.rs",
+       "b": "crates/pcre2/src/matcher.rs",
+       "class": "other"
+      },
+      {
+       "a": "crates/globset/src/serde_impl.rs",
+       "b": "crates/globset/src/glob.rs",
+       "class": "other"
+      },
+      {
+       "a": "crates/globset/src/serde_impl.rs",
+       "b": "crates/globset/src/lib.rs",
+       "class": "other"
+      }
+     ],
+     "uncertain module": []
+    },
+    "outcomes": {
+     "path": {
+      "defined": 397,
+      "external": 0,
+      "glob": 0,
+      "glob_scope": 54,
+      "module": 0,
+      "module_unselected": 0,
+      "no_module": 0,
+      "uncertain": 1,
+      "uncertain_glob": 0,
+      "unnamed": 0,
+      "unresolved": 8,
+      "unused": 0,
+      "unused_external": 0
+     },
+     "use": {
+      "defined": 442,
+      "external": 279,
+      "glob": 48,
+      "glob_scope": 0,
+      "module": 17,
+      "module_unselected": 7,
+      "no_module": 0,
+      "uncertain": 1,
+      "uncertain_glob": 0,
+      "unnamed": 0,
+      "unresolved": 0,
+      "unused": 14,
+      "unused_external": 80
+     }
+    },
+    "report": true,
+    "scip_only_uses": 13,
+    "scip_only_uses_by_class": {
+     "glob import": 0,
+     "inferred type": 0,
+     "macro": 7,
+     "member via value": 6,
+     "other": 0
+    },
+    "scip_only_uses_samples": {
+     "glob import": [],
+     "inferred type": [],
+     "macro": [
+      {
+       "a": "crates/core/flags/config.rs",
+       "b": "crates/core/messages.rs",
+       "class": "macro",
+       "symbols": [
+        "rust-analyzer cargo ripgrep 14.1.1 messages/message!"
+       ]
+      },
+      {
+       "a": "crates/core/flags/hiargs.rs",
+       "b": "crates/core/messages.rs",
+       "class": "macro",
+       "symbols": [
+        "rust-analyzer cargo ripgrep 14.1.1 messages/ignore_message!"
+       ]
+      },
+      {
+       "a": "crates/core/haystack.rs",
+       "b": "crates/core/messages.rs",
+       "class": "macro",
+       "symbols": [
+        "rust-analyzer cargo ripgrep 14.1.1 messages/err_message!",
+        "rust-analyzer cargo ripgrep 14.1.1 messages/ignore_message!"
+       ]
+      },
+      {
+       "a": "crates/core/logger.rs",
+       "b": "crates/core/messages.rs",
+       "class": "macro",
+       "symbols": [
+        "rust-analyzer cargo ripgrep 14.1.1 messages/eprintln_locked!"
+       ]
+      },
+      {
+       "a": "crates/printer/src/standard.rs",
+       "b": "crates/printer/src/macros.rs",
+       "class": "macro",
+       "symbols": [
+        "rust-analyzer cargo grep-printer 0.2.2 macros/assert_eq_printed!"
+       ]
+      },
+      {
+       "a": "crates/printer/src/summary.rs",
+       "b": "crates/printer/src/macros.rs",
+       "class": "macro",
+       "symbols": [
+        "rust-analyzer cargo grep-printer 0.2.2 macros/assert_eq_printed!"
+       ]
+      },
+      {
+       "a": "crates/searcher/src/testutil.rs",
+       "b": "crates/searcher/src/macros.rs",
+       "class": "macro",
+       "symbols": [
+        "rust-analyzer cargo grep-searcher 0.1.14 macros/assert_eq_printed!"
+       ]
+      }
+     ],
+     "member via value": [
+      {
+       "a": "crates/core/flags/complete/bash.rs",
+       "b": "crates/core/flags/mod.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo ripgrep 14.1.1 flags/Flag#doc_choices().",
+        "rust-analyzer cargo ripgrep 14.1.1 flags/Flag#name_long().",
+        "rust-analyzer cargo ripgrep 14.1.1 flags/Flag#name_negated()."
+       ]
+      },
+      {
+       "a": "crates/core/flags/complete/powershell.rs",
+       "b": "crates/core/flags/mod.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo ripgrep 14.1.1 flags/Flag#doc_short().",
+        "rust-analyzer cargo ripgrep 14.1.1 flags/Flag#name_long().",
+        "rust-analyzer cargo ripgrep 14.1.1 flags/Flag#name_negated()."
+       ]
+      },
+      {
+       "a": "crates/core/main.rs",
+       "b": "crates/core/search.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo ripgrep 14.1.1 search/impl#[SearchResult]has_match().",
+        "rust-analyzer cargo ripgrep 14.1.1 search/impl#[SearchResult]stats().",
+        "rust-analyzer cargo ripgrep 14.1.1 search/impl#[`Printer<W>`]get_mut()."
+       ]
+      },
+      {
+       "a": "crates/core/main.rs",
+       "b": "crates/ignore/src/types.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo ignore 0.4.23 types/impl#[FileTypeDef]globs().",
+        "rust-analyzer cargo ignore 0.4.23 types/impl#[FileTypeDef]name().",
+        "rust-analyzer cargo ignore 0.4.23 types/impl#[Types]definitions()."
+       ]
+      },
+      {
+       "a": "crates/core/main.rs",
+       "b": "crates/printer/src/path.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo grep-printer 0.2.2 path/impl#[PathPrinterBuilder]build().",
+        "rust-analyzer cargo grep-printer 0.2.2 path/impl#[`PathPrinter<W>`]write()."
+       ]
+      },
+      {
+       "a": "crates/core/search.rs",
+       "b": "crates/ignore/src/lib.rs",
+       "class": "member via value",
+       "symbols": [
+        "rust-analyzer cargo ignore 0.4.23 impl#[`Match<T>`]is_ignore()."
+       ]
+      }
+     ],
+     "other": []
+    },
+    "ties": {
+     "path": {},
+     "use": {}
+    }
+   },
+   "scip_fingerprint": "01794ecc5f4f8109f53bc9ffbe7d607f61de5ea24962c5cdd62b348856e2f6ae",
+   "scip_only": 146,
+   "scip_only_by_class": {
+    "inferred type": 34,
+    "inherited member": 0,
+    "member via value": 0,
+    "other": 112,
+    "re-export": 0,
+    "same package": 0
+   },
+   "scip_pairs": 378,
+   "scip_use_pairs": 245,
+   "shared": 232,
+   "shared_named_uses": 232,
+   "shared_namespace_only": 0,
+   "shared_namespace_only_to_package": 0,
+   "shared_uses": 232
   }
  ],
  "source": "https://github.com/onsager-ai/tolmap/actions/runs/36222918694"

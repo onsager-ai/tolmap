@@ -82,6 +82,17 @@ jobs:
       - name: Screenshots
         if: always()
         run: node scripts/screenshots.mjs --base http://127.0.0.1:5176 --out shots
+      # Issue #126: a Rust map (tolmap itself, data/tolmap.json, and its
+      # symbols from web/check-fixtures) renders on a phone and a desktop,
+      # overview to symbols, with the language named.
+      - name: Screenshots (Rust map)
+        if: always()
+        run: |
+          if [ -f public/maps/onsager-ai/tolmap.json ]; then
+            node scripts/screenshots.mjs --base http://127.0.0.1:5176 --slugs onsager-ai/tolmap --out shots/rust
+          else
+            echo "no Rust map in public/maps"; exit 1
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

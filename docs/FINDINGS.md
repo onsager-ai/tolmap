@@ -2814,3 +2814,100 @@ No other name changed on any of the nine fixtures. No fixture had a numbered nam
 - How often the new rule fires on the 132-repository corpus (finding 18), or how its names read there. Only the nine fixtures were re-derived, and they had two collisions between them.
 - The model path's collision handling is unit-tested with a model reply injected into the shared resolver. No real model call was made.
 - Whether the frozen Python reference's numbering (`name N`, where N counts the used names that start with `name`) left cached names whose base is no longer held. Such a name keeps its number under this rule.
+
+## 57. Rust's hand resolver links only pairs rust-analyzer confirms on tolmap and 97.9% on ripgrep, and finds 97.1% and 94.7% of their use pairs; what it misses is methods on values and macros
+
+Owner decisions, session `16030105`, AskUserQuestion: transcript line 7897 (2026-09-26T08:15:06Z) **"Go: add tree-sitter-rust (Recommended)"**: "Two PRs. First, a dependency PR that only adds the `tree-sitter-rust` crate, pinned to the version matching our tree-sitter ABI. Second, the extractor and resolver with a synthetic workspace fixture, plus a Rust row in the hand-vs-SCIP scoring job (network-mode rust-analyzer). tolmap itself becomes a new Rust fixture." Also line 6937 (2026-09-25T16:56:34Z) **"Tune hand, SCIP as oracle (Recommended)"** and line 7246 (2026-09-26T00:06:50Z) **"Uses only: merge both (Recommended)"**. This is issue [#126](https://github.com/onsager-ai/tolmap/issues/126): [PR #143](https://github.com/onsager-ai/tolmap/pull/143) (`tree-sitter-rust` 0.24.2) and [PR #145](https://github.com/onsager-ai/tolmap/pull/145).
+
+**What changed.**
+- **Detection** (`src/detect.rs`). A root `Cargo.toml`, as a workspace (`[workspace] members`) or a package, maps the root at high confidence. Without one, every `Cargo.toml` is a candidate root and the one with the most `.rs` files wins, as `go.mod` does for Go. The walk skips `target/` and `benches/` besides the directories Go and TypeScript skip (`tests/`, `examples/`, dot directories).
+- **Extraction** (`src/extract/rust.rs`, `metrics` and `syntax`). The map's `S` gets fn, struct, enum, union, trait, methods (a function in an `impl` or `trait` body), inline `mod`, const/static, type alias and `macro_rules!`, in the existing kinds: no schema change. The symbols document parents an `impl`'s methods to its type, in the same file first, then the same directory, as Go's receivers. The map stops at the file: an inline `mod x { }` is a symbol in its file.
+- **Crates** (`crate_targets`). Each package's lib (`[lib] path`, `src/lib.rs`), bins (`[[bin]]`, `src/main.rs`, `src/bin/*`) and build script, with the workspace libraries it can name: `path =` dependencies, `workspace = true` ones through `[workspace.dependencies]`, renames, and a bin's own lib.
+- **Module trees.** From each crate root through `mod foo;` to `foo.rs` or `foo/mod.rs`, from the right directory for mod-rs and non-mod-rs files and inside inline modules, and through `#[path = "..."]`. A file is one module, of the first crate that reaches it.
+- **Resolution** (`resolve`). A `use` leaf links the file that defines the item it brings in once the file names it, or at once when the `use` re-exports (any `pub`). `pub use` chains are followed for up to four hops, the depth of Python's and TypeScript's. A leaf that brings in a module links the files that define what the file selects through it (`store::keep`), as Go does (finding 50). A path written out in full (`crate::schema::FileId`, `super::helper()`, `cli::run()`, `other_crate::f()`, and `a::b::c` inside macro arguments) links the file that defines what it names. `Type::method` links the type's file and, when exactly one inherent `impl` of that type declares `method`, that impl's file.
+- **The uncertain case links the module the path named**, never one further along the chain: a name the module does not declare visibly (macro-generated), a glob re-export in that module, a re-export of another crate's name. This is the Python resolver's rule for a package's uncertain re-exports (finding 49's celery correction).
+- **Weight.** Each `use` declaration shares a mass of 1 among the files its leaves reach, the importer included, and the self-pair is then skipped (finding 52). Paths written in full share a mass of 1 per module they go through, the unit a Go import has.
+- **Uses (`U`).** One row per file and name reached, `Type` and `method` alike.
+- **`--refs scip`** records Rust as `hand`, reason `no_product_indexer` (`src/indexers.rs`), and the viewer words it "no indexer runs for this language in the service". rust-analyzer runs a repository's build scripts and proc macros natively and has no flag to stop it (finding 55), so it is a CI oracle only.
+- **Viewer.** The reference-coverage row names Rust, and `lib.rs` and `main.rs` join the generic hub basenames (`mod.rs` already was). No language has a colour of its own in `web/`, so there was none to add.
+
+**Deliberately unresolved, so the graph stays a lower bound:**
+- glob imports in the importing file (`use a::*`);
+- items a macro generates, macro invocations themselves, and paths inside `macro_rules!` bodies;
+- methods and fields reached on a value, trait methods included (`x.run()`): Go's "member via value" (finding 50);
+- `Self::`, `<T as Trait>::` and `::global` paths.
+
+**Where the spec left room.**
+- **`cfg` alternatives follow finding 54's rule** for one target, `x86_64-unknown-linux-gnu`: `unix`, `target_os = "linux"`, `target_arch = "x86_64"` and the like evaluate; `feature`, `test`, `debug_assertions`, `panic` and custom cfgs are unknown, since a crate's features are whatever its dependents enable and rust-analyzer sets `test` where `cargo build` does not. A name bound in several files (`#[cfg(unix)] #[path = "sys/unix.rs"] mod platform;` beside its Windows twin) resolves to the one file whose alternative is in, when every alternative evaluates, exactly one file's is in, and the importing module is itself in. Otherwise every alternative stays linked, in one unit. A name one file binds resolves to it whatever its `cfg`.
+- **Test code counts.** A `#[cfg(test)] mod tests` is part of its file, and rust-analyzer indexes it. Its `use super::*` binds exactly what the parent binds, so its references count for the parent's `use` leaves.
+- **A re-export of a module is not a use.** `pub use self::inner;` and `pub extern crate grep_cli as cli;` name a namespace, as a `mod` declaration does; a path through them is.
+- **A path segment that more segments follow is looked up in the type namespace** (modules, types, traits), and a module's `use` bindings only when it declares none, as rustc does. The first scoring run ([CI run 36231344991](https://github.com/onsager-ai/tolmap/actions/runs/36231344991)) lacked 23 of ripgrep's SCIP use pairs, 16 of them from one shape: `mod escape; pub use crate::escape::escape;` sent `crate::escape` round the `use` binding it was resolving. Separately, a `use` leaf's head never names the leaf itself (`use memchr::memchr;`), as rustc excludes an import from its own resolution.
+- **A 2015-edition crate** (no `edition` key) resolves `use` paths from its root.
+- **Inline modules and type aliases are `type`, a `macro_rules!` is a `function`, struct, enum and union are `class`.** These are the nearest existing kinds; a schema change was out of scope.
+
+### Against rust-analyzer
+
+ci.yml's `hand-score` job gains a Rust step. It installs rust-analyzer at finding 55's pinned release (`2026-09-21`, SHA-256 checked; the index reports `0.3.3057-standalone`) and runs `rust-analyzer scip` with network, a job-fresh `CARGO_HOME` and `LEIDEN_PREFIX` unset, as finding 55's network runs did. The pins are tolmap at `c62a968` (the fixture) and ripgrep 14.1.1 at `0e8390a` (scored only; `hand_score.py rust-targets`). The index goes through P0's ingest (`eval/scip_ingest.py --lang rs`) and `hand_score.py score`, whose new `rs` block reads the resolver's own report (`TOLMAP_RUST_IMPORT_REPORT`).
+
+[CI run 36233758528](https://github.com/onsager-ai/tolmap/actions/runs/36233758528), at `db49aa6`:
+
+| repo | files (indexed) | hand pairs | SCIP pairs | shared | recall | precision | SCIP use pairs | shared by a use | recall (uses) | precision (uses) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| tolmap | 34 (34) | 135 | 271 | 135 | 0.4982 | **1.0000** | 139 | 135 | **0.9712** | **1.0000** |
+| ripgrep | 80 (79) | 237 | 378 | 232 | 0.6138 | **0.9789** | 245 | 232 | **0.9469** | **0.9789** |
+
+- **Every pair hand links that SCIP has, SCIP has by a use**: none is confirmed only through a namespace. That is "Uses only" holding: a `mod` or a module import is never an edge by itself.
+- **Recall against all of SCIP's pairs is low by construction.** 132 of tolmap's 271 SCIP pairs and 133 of ripgrep's 378 are namespace-only: `mod foo;` and `use crate::foo;` are occurrences of the module symbol, whatever the file uses. Against use pairs, recall is 0.9712 and 0.9469.
+- rust-analyzer took 32.5 s and 1.6 GB on tolmap and 14.4 s and 1.1 GB on ripgrep, and downloaded 160 and 38 crates, as in finding 55. It indexed 79 of ripgrep's 80 mapped files; `crates/globset/src/serde_impl.rs` is behind the `serde1` feature.
+
+**What hand lacks, and its share of SCIP's use pairs:**
+
+| repo | SCIP use pairs hand lacks | member via value | macro | glob import | inferred type | other |
+|---|---:|---:|---:|---:|---:|---:|
+| tolmap | 4 (2.9%) | 4 | 0 | 0 | 0 | 0 |
+| ripgrep | 13 (5.3%) | 6 | 7 | 0 | 0 | 0 |
+
+- **Member via value** (the ingest's member-only pairs): fields and methods reached on a value, `row.commit` or `doc.district(..)`. The importer never names the type, so syntax cannot say which file.
+- **Macro**: every symbol SCIP names for the pair is a macro (`message!`, `err_message!`, `assert_eq_printed!`). Macros are deliberately unresolved.
+- **No pair is lost to a glob import or a cfg tie.** tolmap's 28 glob `use` leaves are all `use super::*` in test modules, whose names are the parent's. ripgrep's 48 are 17 of those and 31 globs of an enum's variants (`use self::StandardStreamKind::*`, `use super::Token::*`, one of `regex_syntax::hir::HirKind`). No `cfg` tie arose on either repository: 0 broken, 0 kept.
+
+**What hand has that SCIP lacks:** 0 pairs on tolmap and 5 on ripgrep, all in code behind a feature rust-analyzer's default build leaves off. Three are `crates/core` naming `grep::pcre2` under `#[cfg(feature = "pcre2")]` (`search.rs` line 198, `flags/hiargs.rs` line 412, `flags/doc/version.rs` line 58, read at the tag), and two are from `serde_impl.rs` (`#[cfg(feature = "serde1")] mod serde_impl;` in `globset/src/lib.rs` line 129), which it never indexed. The source names each of them; the oracle's build does not compile them.
+
+**The resolver's own outcomes** (the report's rows, finding 57's `rs` block):
+
+| repo | kind | defined | module | uncertain | module unselected | glob | unused (this repo / other crates) | unnamed | glob or prelude | external | unresolved |
+|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|
+| tolmap | `use` leaf | 155 | 23 | 0 | 0 | 28 | 0 / 95 | 1 | 0 | 257 | 0 |
+| tolmap | path | 277 | | 0 | | | | | 184 | | 79 |
+| ripgrep | `use` leaf | 442 | 17 | 1 | 7 | 48 | 14 / 80 | 0 | 0 | 279 | 0 |
+| ripgrep | path | 397 | | 1 | | | | | 54 | | 8 |
+
+- "Unused" is a private `use` of a name the file never names: a trait imported for its methods (the 95 on tolmap are all other crates' names, `std::io::Write` and the like), or a name only a macro body uses.
+- "Glob or prelude" is a path headed by a name the module neither declares nor imports, in a module with a glob: a test module's `Vec::new`, or a name its `use super::*` brings in. Paths from a test module to its parent's items are in the same file, so they are not edges either way.
+- "Unresolved" paths are `Self::` (tolmap's 79 are all in `impl` blocks).
+
+**Not gated.** `data/scip/hand_score.json` records both rows, and `hand_score.py gate` reports them without holding them (`UNGATED_LANGS`) until the owner has seen the numbers. Every Python, Go and TypeScript row passed unchanged in the same run.
+
+### The fixture
+
+`data/tolmap.json` is the Rust product's map of tolmap at `c62a968`, from the same run's `hand-score` step: the full-history clone, `--no-parcels`, and the committed fixtures' key set. It is the first fixture no Python reference can reproduce, so the product's own recorded map is the oracle, and `full-fixtures` places a rebuild against it (`generator = "rust-rs-hand"`). 34 files, 3 districts, q 0.178, 135 edges, 7 landmarks.
+
+The names are the product namer's with #144's rule (finding 56), unseeded, since there was no earlier map: `bin & partition`, `service` and `service 2`. The third is `src/service/*`; the second holds `extract.rs`, `symbols.rs` and the other resolver files plus `src/service/eta.rs`. No term or filename word sets `src/service/` apart from the holder of `service`, so the namer fell back to a number, its last resort. It is recorded, not hand-edited, as in findings 49–56.
+
+`full-fixtures` in [CI run 36234778545](https://github.com/onsager-ai/tolmap/actions/runs/36234778545) (this branch at `f2dafc3`, the fixture committed) rebuilt tolmap from its own full-history clone and placed it 100.0% (34 of 34 files, 3 of 3 districts), q 0.1780 against 0.1780, with `F`, `E` (135), `L` (7), `S` and `U` identical. The other nine fixtures placed 100.0% with Δq 0.0000 in the same run, and every Python, Go and TypeScript row of `hand-score` passed its gate unchanged in run 36233758528: nothing outside Rust moved.
+
+### Determinism
+
+- `cargo test` holds a synthetic two-crate workspace's exact edges and weights (`synthetic_workspace_links_exactly_the_files_that_define_what_is_used`): a 2018-style `model.rs` beside `model/`, a `store/mod.rs`, a pair of `#[path]` modules behind `cfg(unix)` and `cfg(windows)`, re-exports two hops deep, a glob, a `workspace = true` path dependency, and `Type::method` into an inherent impl in another file. The same fixture resolves identically three times in one process.
+- The `gate` job builds this checkout's Rust three times: map, symbols document and resolver report byte-identical (`6de2ab90…`, 37 files, on this branch's first run).
+
+### Viewer
+
+`viewer-check.yml` ([run 36234781437](https://github.com/onsager-ai/tolmap/actions/runs/36234781437)) passed `check:view` on its pinned maps and took the Rust map's screenshots, phone and desktop at zoom steps 0, 2 and 4, from `web/check-fixtures/onsager-ai__tolmap.*` (the fixture's map with file footprints, and its symbols). The three districts are named, the sidebar lists them with their most-imported files, and at the deepest step files show their functions and a collapsed `tests ▸5` inline module. The reference indicator reads "Heuristic references", as for any `--refs hand` map.
+
+### Not verified
+- tokio and rust-analyzer's own repository were not scored. ripgrep is the only multi-crate workspace measured, and neither measured repository has a `cfg` tie.
+- The resolver's crate model reads `Cargo.toml` only: no `build.rs` output, no `include!`, no `#[cfg_attr(..., path = ...)]`, and no `[patch]` or git dependencies inside the repository.
+- The 118 and 112 SCIP-only pairs classed "other" in the all-pairs table are mostly namespace-only (the 132 and 133 above); they were not read one by one.
+- `check:view`'s taps (a district, a file and a symbol each produce a card) ran on its two pinned maps, not on the Rust map: the screenshots show the Rust map at three zooms without tapping. The viewer changes here are a language label and two hub basenames.
+- `eval/batch_stability.py` was not run: it imports the frozen Python reference, which has no Rust.

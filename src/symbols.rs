@@ -119,6 +119,9 @@ enum RawImports {
     Python(Vec<extract::PythonImport>),
     Go(Vec<(String, String)>),
     TypeScript(Vec<(String, Vec<(String, Option<String>)>)>),
+    /// `(local name, path)`: every named `use` leaf in the file's own
+    /// module, and every `mod x;` as `(x, [self, x])` (issue #126).
+    Rust(Vec<(String, Vec<String>)>),
 }
 
 /// Wall time spent inside symbol collection, split by step so a build log
@@ -325,6 +328,32 @@ fn kind(node: Node<'_>, parent: Option<Node<'_>>, lang: LanguageKind) -> Option<
             }
             _ => None,
         },
+        // Rust's kinds depend on more than the parent (`rust_kind`).
+        LanguageKind::Rust => None,
+    }
+}
+
+/// Rust symbol kinds (issue #126), from a node and its named ancestors: a
+/// function in an `impl` or `trait` body is a method, struct, enum and
+/// union are classes (they carry methods), a trait is an interface, an
+/// inline `mod` and a type alias are types, and a `macro_rules!` is a
+/// function. The same codes the other languages use; no schema change.
+fn rust_kind<S>(node: Node<'_>, ancestors: &[(Node<'_>, S)]) -> Option<usize> {
+    let member = ancestors.len() >= 2
+        && ancestors[ancestors.len() - 1].0.kind() == "declaration_list"
+        && matches!(
+            ancestors[ancestors.len() - 2].0.kind(),
+            "impl_item" | "trait_item"
+        );
+    match node.kind() {
+        "function_item" | "function_signature_item" => Some(if member { METHOD } else { FUNCTION }),
+        "struct_item" | "enum_item" | "union_item" => Some(CLASS),
+        "trait_item" => Some(INTERFACE),
+        "type_item" => Some(TYPE),
+        "mod_item" if node.child_by_field_name("body").is_some() => Some(TYPE),
+        "const_item" | "static_item" => Some(CONST),
+        "macro_definition" => Some(FUNCTION),
+        _ => None,
     }
 }
 
@@ -412,7 +441,8 @@ fn abstract_decl(
                 .split_whitespace()
                 .any(|part| part == "abstract")
         }
-        LanguageKind::Go => false,
+        // Rust's is set in `collect_spans`, which sees the enclosing trait.
+        LanguageKind::Go | LanguageKind::Rust => false,
     }
 }
 
@@ -472,7 +502,13 @@ fn collect_spans(
 ) {
     preorder(root, |node, ancestors| {
         let parent_node = ancestors.last().map(|entry| entry.0);
-        let Some(mut k) = kind(node, parent_node, lang) else {
+        let rust = lang == LanguageKind::Rust;
+        let found = if rust {
+            rust_kind(node, ancestors)
+        } else {
+            kind(node, parent_node, lang)
+        };
+        let Some(mut k) = found else {
             return;
         };
         let Some(n) = name(node, bytes) else {
@@ -485,7 +521,20 @@ fn collect_spans(
             .find(|(_, s)| s.begin_byte <= node.start_byte() && node.end_byte() <= s.end_byte)
             .map(|(i, _)| (first + i) as isize)
             .unwrap_or(-1);
-        if k == FUNCTION && parent >= 0 {
+        if rust {
+            // A Rust method is known from syntax (`rust_kind`), and a
+            // function in an inline module is still a function: only one
+            // inside another function's body is nested.
+            if k == FUNCTION
+                && parent >= 0
+                && matches!(
+                    spans[parent as usize].kind,
+                    FUNCTION | METHOD | NESTED_FUNCTION
+                )
+            {
+                k = NESTED_FUNCTION;
+            }
+        } else if k == FUNCTION && parent >= 0 {
             k = if spans[parent as usize].kind == CLASS {
                 METHOD
             } else {
@@ -510,7 +559,13 @@ fn collect_spans(
             abstract_symbol: abstract_decl(node, parent_node, bytes, lang, k)
                 || (parent >= 0
                     && spans[parent as usize].kind == INTERFACE
-                    && lang == LanguageKind::TypeScript),
+                    && lang == LanguageKind::TypeScript)
+                // A trait, and a trait method with no default body.
+                || (rust
+                    && (k == INTERFACE
+                        || (node.kind() == "function_signature_item"
+                            && parent >= 0
+                            && spans[parent as usize].kind == INTERFACE))),
             go_signature: (lang == LanguageKind::Go)
                 .then(|| go_signature(node))
                 .flatten(),
@@ -562,10 +617,73 @@ fn collect_go_receivers(
     });
 }
 
+/// The type an `impl` block's methods belong to (issue #126): its self
+/// type's last name, `Store` for `impl<T> crate::store::Store<T>`. The
+/// methods are parented to that type's span once every file is read, as a
+/// Go method is to its receiver's type.
+fn rust_impl_type(node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => Some(text(node, bytes).to_owned()),
+        "scoped_type_identifier" => node
+            .child_by_field_name("name")
+            .map(|name| text(name, bytes).to_owned()),
+        "generic_type" => rust_impl_type(node.child_by_field_name("type")?, bytes),
+        _ => None,
+    }
+}
+
+fn collect_rust_receivers(
+    root: Node<'_>,
+    bytes: &[u8],
+    spans: &[Span],
+    out: &mut Vec<(usize, String)>,
+) {
+    preorder(root, |node, ancestors| {
+        if node.kind() != "function_item" || ancestors.len() < 2 {
+            return;
+        }
+        let owner = ancestors[ancestors.len() - 2].0;
+        if ancestors[ancestors.len() - 1].0.kind() != "declaration_list"
+            || owner.kind() != "impl_item"
+        {
+            return;
+        }
+        let Some(type_name) = owner
+            .child_by_field_name("type")
+            .and_then(|ty| rust_impl_type(ty, bytes))
+        else {
+            return;
+        };
+        if let Some((i, _)) = spans
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.begin_byte == node.start_byte() && s.kind == METHOD)
+        {
+            out.push((i, type_name));
+        }
+    });
+}
+
 fn chain(node: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
     match node.kind() {
-        "identifier" | "type_identifier" | "package_identifier" | "this" | "super" => {
-            Some(vec![text(node, bytes).to_owned()])
+        // `crate` and `self` are node kinds only in Rust's grammar.
+        "identifier" | "type_identifier" | "package_identifier" | "this" | "super" | "crate"
+        | "self" => Some(vec![text(node, bytes).to_owned()]),
+        // Rust (issue #126): `a::b::f` and `value.field`. Neither kind
+        // exists in the Python, Go or TypeScript grammars.
+        "scoped_identifier" | "scoped_type_identifier" => {
+            let base = node.child_by_field_name("path")?;
+            let name = node.child_by_field_name("name")?;
+            let mut parts = chain(base, bytes)?;
+            parts.push(text(name, bytes).to_owned());
+            Some(parts)
+        }
+        "field_expression" => {
+            let base = node.child_by_field_name("value")?;
+            let field = node.child_by_field_name("field")?;
+            let mut parts = chain(base, bytes)?;
+            parts.push(text(field, bytes).to_owned());
+            Some(parts)
         }
         "attribute" | "member_expression" | "selector_expression" => {
             let base = node
@@ -1021,6 +1139,93 @@ fn imports_go(
     result
 }
 
+/// A Rust file's bindings (issue #126): its `use` leaves and `mod x;`
+/// declarations, made absolute from the file's module path
+/// (`crate_key::a::b`, `rust::resolve`'s `module_for`) and cut at the
+/// longest prefix that names a module file. `crate`, `self`, `super` and
+/// every workspace crate name bind the modules they name, so a call chain
+/// like `crate::store::keep` resolves through `lookup` module by module.
+/// Re-exports are followed by `lookup` itself, through the target file's
+/// own bindings. A file no crate reaches (its module is its path) binds
+/// nothing.
+fn imports_rust(
+    imports: &[(String, Vec<String>)],
+    module: &str,
+    file: &str,
+    modules: &BTreeMap<String, usize>,
+    crates: &BTreeMap<String, usize>,
+) -> BTreeMap<String, Binding> {
+    let mut result = BTreeMap::new();
+    if module == file {
+        return result;
+    }
+    let own = module.split("::").map(str::to_owned).collect::<Vec<_>>();
+    let absolute = |segments: &[String]| -> Option<Vec<String>> {
+        let (head, rest) = segments.split_first()?;
+        let mut path = match head.as_str() {
+            "crate" => vec![own[0].clone()],
+            "self" => own.clone(),
+            "super" => {
+                let mut parent = own.clone();
+                if parent.len() < 2 {
+                    return None;
+                }
+                parent.pop();
+                parent
+            }
+            name if crates.contains_key(name) => vec![name.to_owned()],
+            name => {
+                let mut local = own.clone();
+                local.push(name.to_owned());
+                local
+            }
+        };
+        for segment in rest {
+            if segment == "super" {
+                if path.len() < 2 {
+                    return None;
+                }
+                path.pop();
+            } else {
+                path.push(segment.clone());
+            }
+        }
+        Some(path)
+    };
+    for (local, segments) in imports {
+        let Some(path) = absolute(segments) else {
+            continue;
+        };
+        let binding = (1..=path.len())
+            .rev()
+            .find_map(|cut| {
+                let &fi = modules.get(&path[..cut].join("::"))?;
+                Some(match &path[cut..] {
+                    [] => Binding::Module(fi),
+                    [name] => Binding::From(fi, name.clone()),
+                    // `Type::Variant` and deeper: not a symbol by name.
+                    _ => Binding::External,
+                })
+            })
+            .unwrap_or(Binding::External);
+        result.insert(local.clone(), binding);
+    }
+    let mut heads = vec![("crate".to_owned(), own[..1].join("::"))];
+    heads.push(("self".to_owned(), module.to_owned()));
+    if own.len() >= 2 {
+        heads.push(("super".to_owned(), own[..own.len() - 1].join("::")));
+    }
+    for (name, target) in heads {
+        if let Some(&fi) = modules.get(&target) {
+            result.insert(name, Binding::Module(fi));
+        }
+    }
+    for (name, &fi) in crates {
+        result.entry(name.clone()).or_insert(Binding::Module(fi));
+    }
+    result
+}
+
 #[cfg(test)]
 pub(crate) fn collect(
     root: Node<'_>,
@@ -1046,6 +1251,8 @@ pub(crate) fn collect_timed(
     let mut receivers = Vec::new();
     if lang == LanguageKind::Go {
         collect_go_receivers(root, bytes, &spans, 0, &mut receivers);
+    } else if lang == LanguageKind::Rust {
+        collect_rust_receivers(root, bytes, &spans, &mut receivers);
     }
     timings.receivers += started.elapsed();
     let started = Instant::now();
@@ -1146,6 +1353,28 @@ pub(crate) fn collect_timed(
                 }
             }
             RawImports::TypeScript(imports)
+        }
+        LanguageKind::Rust => {
+            let syntax = extract::rust::syntax(root, bytes);
+            let mut imports = syntax
+                .mods
+                .iter()
+                .filter(|decl| decl.scope.is_empty() && !decl.inline)
+                .map(|decl| {
+                    (
+                        decl.name.clone(),
+                        vec!["self".to_owned(), decl.name.clone()],
+                    )
+                })
+                .collect::<Vec<_>>();
+            for decl in syntax.uses.iter().filter(|decl| decl.scope.is_empty()) {
+                for leaf in &decl.leaves {
+                    if let (Some(local), false) = (&leaf.local, leaf.glob) {
+                        imports.push((local.clone(), leaf.segments.clone()));
+                    }
+                }
+            }
+            RawImports::Rust(imports)
         }
     };
     timings.imports += started.elapsed();
@@ -1304,7 +1533,15 @@ fn resolve(
         return Err("dynamic");
     }
     let head = parts[0].as_str();
-    if (head == "self" || head == "cls" || head == "this" || head == "super") && parts.len() >= 2 {
+    // Rust's `super` and `self::` name modules, bound in `imports_rust`;
+    // `Self::` and `self.` name the impl's type, as `this` does.
+    let rust = infos[source.file].lang == LanguageKind::Rust;
+    let member_head = if rust {
+        matches!(head, "Self" | "self")
+    } else {
+        matches!(head, "self" | "cls" | "this" | "super")
+    };
+    if member_head && parts.len() >= 2 {
         let mut p = Some(candidate.owner);
         while let Some(i) = p {
             if spans[i].kind == CLASS {
@@ -1426,6 +1663,16 @@ pub(crate) fn build_with_progress(
             packages.entry(directory).or_default().push(fi);
         }
     }
+    // Rust crate roots by crate name: a module path with no `::` that is
+    // not the file's own path (issue #126).
+    let rust_crates = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| {
+            node.lang == "rs" && node.module != node.file && !node.module.contains("::")
+        })
+        .map(|(fi, node)| (node.module.clone(), fi))
+        .collect::<BTreeMap<_, _>>();
     let go_module = fs::read_to_string(repo.join("go.mod"))
         .ok()
         .and_then(|contents| {
@@ -1490,6 +1737,9 @@ pub(crate) fn build_with_progress(
             ),
             RawImports::Go(imports) => imports_go(&imports, go_module.as_deref(), &packages),
             RawImports::TypeScript(imports) => imports_multi(&imports, &entry.file, &modules),
+            RawImports::Rust(imports) => {
+                imports_rust(&imports, &entry.module, &entry.file, &modules, &rust_crates)
+            }
         };
         infos.push(FileInfo {
             lang,
@@ -1516,9 +1766,44 @@ pub(crate) fn build_with_progress(
                 .push(i);
         }
     }
+    // A Rust `impl` names its type, which the same file usually declares
+    // and a sibling file sometimes does (issue #126): the same file first,
+    // then the directory, as Go's package, and only a unique match.
+    let mut rust_types: BTreeMap<(usize, String), Vec<usize>> = BTreeMap::new();
+    let mut rust_dir_types: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (i, span) in spans.iter().enumerate() {
+        if nodes[span.file].lang == "rs" && matches!(span.kind, CLASS | INTERFACE | TYPE) {
+            rust_types
+                .entry((span.file, span.name.clone()))
+                .or_default()
+                .push(i);
+            let directory = nodes[span.file]
+                .file
+                .rsplit_once('/')
+                .map_or("", |v| v.0)
+                .to_owned();
+            rust_dir_types
+                .entry((directory, span.name.clone()))
+                .or_default()
+                .push(i);
+        }
+    }
     for (method, type_name) in go_receivers {
         let file = spans[method].file;
         let directory = nodes[file].file.rsplit_once('/').map_or("", |v| v.0);
+        if nodes[file].lang == "rs" {
+            let owner = match rust_types.get(&(file, type_name.clone())) {
+                Some(ids) => (ids.len() == 1).then(|| ids[0]),
+                None => rust_dir_types
+                    .get(&(directory.to_owned(), type_name))
+                    .filter(|ids| ids.len() == 1)
+                    .map(|ids| ids[0]),
+            };
+            if let Some(owner) = owner {
+                spans[method].parent = owner as isize;
+            }
+            continue;
+        }
         if let Some(ids) = go_types.get(&(directory.to_owned(), type_name)) {
             if ids.len() == 1 {
                 spans[method].parent = ids[0] as isize;
@@ -2159,6 +2444,7 @@ mod tests {
                     tree_sitter_typescript::LANGUAGE_TSX.into()
                 }
                 LanguageKind::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+                LanguageKind::Rust => tree_sitter_rust::LANGUAGE.into(),
             };
             parser.set_language(&grammar).unwrap();
             let bytes = fs::read(repo.join(&node.file)).unwrap();
@@ -2511,6 +2797,51 @@ mod tests {
     }
 
     #[test]
+    fn rust_impl_methods_join_their_type_and_paths_resolve_through_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "mod store;\npub use store::Store;\n\npub trait Shape {\n    fn area(&self) -> u32;\n    fn twice(&self) -> u32 {\n        self.area() * 2\n    }\n}\n\npub fn build() -> Store {\n    store::make();\n    crate::store::make();\n    Store::open()\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/store.rs"),
+            "pub struct Store;\n\nimpl Store {\n    pub fn open() -> Store {\n        Self::close();\n        Store\n    }\n\n    fn close() {}\n}\n\npub fn make() {}\n",
+        )
+        .unwrap();
+        let nodes = vec![
+            source("src/lib.rs", "demo", "rs"),
+            source("src/store.rs", "demo::store", "rs"),
+        ];
+        let doc = build_fixture(dir.path(), &nodes);
+        let store = id(&doc, 1, "Store");
+        let open = id(&doc, 1, "open");
+        let close = id(&doc, 1, "close");
+        assert_eq!(doc.symbols[store].0 .2, CLASS);
+        assert_eq!(doc.symbols[open].0 .2, METHOD);
+        assert_eq!(doc.symbols[open].0 .5, store as isize);
+        assert_eq!(doc.symbols[close].0 .5, store as isize);
+        let shape = id(&doc, 0, "Shape");
+        let area = id(&doc, 0, "area");
+        let twice = id(&doc, 0, "twice");
+        assert_eq!(doc.symbols[shape].0 .2, INTERFACE);
+        assert!(doc.symbols[shape].0 .7);
+        assert_eq!(doc.symbols[area].0 .2, METHOD);
+        assert_eq!(doc.symbols[area].0 .5, shape as isize);
+        assert!(
+            doc.symbols[area].0 .7,
+            "a trait method with no body is abstract"
+        );
+        assert!(!doc.symbols[twice].0 .7);
+        let build = id(&doc, 0, "build");
+        let make = id(&doc, 1, "make");
+        assert!(typed_edge(&doc, build, make, CALL));
+        assert!(typed_edge(&doc, build, open, CALL));
+        assert!(typed_edge(&doc, open, close, CALL));
+    }
+
+    #[test]
     fn resolves_go_package_and_typescript_import_alias() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("p")).unwrap();
@@ -2685,6 +3016,7 @@ mod parent_walk_reference {
                 }
                 _ => None,
             },
+            LanguageKind::Rust => None,
         }
     }
 
@@ -2727,7 +3059,7 @@ mod parent_walk_reference {
                     .split_whitespace()
                     .any(|part| part == "abstract")
             }
-            LanguageKind::Go => false,
+            LanguageKind::Go | LanguageKind::Rust => false,
         }
     }
 
@@ -3064,6 +3396,7 @@ mod parent_walk_reference {
                 tree_sitter_typescript::LANGUAGE_TSX.into()
             }
             LanguageKind::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            LanguageKind::Rust => tree_sitter_rust::LANGUAGE.into(),
         }
     }
 

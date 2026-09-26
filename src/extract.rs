@@ -95,6 +95,9 @@ const BRANCHY: &[&str] = &[
     "binary_expression",
 ];
 
+// Rust (issue #126): extraction and module-tree resolution, finding 57.
+pub(crate) mod rust;
+
 const KIND_CLASS: usize = 0;
 const KIND_FUNC: usize = 1;
 const KIND_METHOD: usize = 2;
@@ -107,6 +110,7 @@ pub enum LanguageKind {
     Python,
     Go,
     TypeScript,
+    Rust,
 }
 
 impl LanguageKind {
@@ -115,7 +119,8 @@ impl LanguageKind {
             "py" => Ok(Self::Python),
             "go" => Ok(Self::Go),
             "ts" => Ok(Self::TypeScript),
-            _ => bail!("unsupported language {value:?}; expected py, go, or ts"),
+            "rs" => Ok(Self::Rust),
+            _ => bail!("unsupported language {value:?}; expected py, go, ts, or rs"),
         }
     }
 
@@ -124,6 +129,7 @@ impl LanguageKind {
             Self::Python => "py",
             Self::Go => "go",
             Self::TypeScript => "ts",
+            Self::Rust => "rs",
         }
     }
 
@@ -136,6 +142,7 @@ impl LanguageKind {
             Self::Python => tree_sitter_python::LANGUAGE.into(),
             Self::Go => tree_sitter_go::LANGUAGE.into(),
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Self::Rust => tree_sitter_rust::LANGUAGE.into(),
         }
     }
 }
@@ -247,6 +254,10 @@ enum FileRaw {
         ts_uses: Vec<TsImportUse>,
         ts_exports: Option<TsExports>,
     },
+    /// Rust's `mod`, `use`, item and path syntax (issue #126, finding 57):
+    /// a crate's module tree only exists once every file is read, so phase
+    /// 2 (`rust::resolve`) builds it and resolves against it.
+    Rust(rust::RustSyntax),
 }
 
 /// What one Go import's local name is used for in the importing file
@@ -573,7 +584,7 @@ fn build_multi_source_inner(
     // for the whole union rather than re-walking the tree for every source.
     let modules = sorted_sources
         .iter()
-        .any(|(_, language)| *language != LanguageKind::Python)
+        .any(|(_, language)| matches!(language, LanguageKind::Go | LanguageKind::TypeScript))
         .then(|| module_index(repo))
         .transpose()?;
 
@@ -604,6 +615,7 @@ fn build_multi_source_inner(
                     .expect("multi-language source has an index"),
                 &resolve_stage,
             )?,
+            LanguageKind::Rust => rust::resolve(repo, pkg, parsed, raw, &resolve_stage)?,
         };
         resolve_stage.set(intermediate.parsed.len() as u64);
         resolve_stage.finish();
@@ -742,6 +754,9 @@ fn parse_files_inner(
                         exports: PythonExports::default(),
                         bare_names: BTreeSet::new(),
                     },
+                    // Nothing read: no module, item, `use` or path, so the
+                    // file adds nothing to its crate's tree.
+                    LanguageKind::Rust => FileRaw::Rust(rust::RustSyntax::default()),
                     _ => FileRaw::Multi {
                         imports: Vec::new(),
                         named_candidates: Vec::new(),
@@ -773,6 +788,7 @@ fn parse_files_inner(
             LanguageKind::Python => python_metrics(root, &source),
             LanguageKind::Go => multi_metrics(root, &source, language),
             LanguageKind::TypeScript => multi_metrics(root, &source, language),
+            LanguageKind::Rust => rust::metrics(root, &source),
         };
         let file_raw = match language {
             LanguageKind::Python => FileRaw::Python {
@@ -811,6 +827,7 @@ fn parse_files_inner(
                     ts_exports: Some(typescript_exports(root, &source)),
                 }
             }
+            LanguageKind::Rust => FileRaw::Rust(rust::syntax(root, &source)),
         };
         let loc = source.iter().filter(|&&byte| byte == b'\n').count() + 1;
         let code_lines = if let Some(spool) = spool.as_deref_mut() {
@@ -869,7 +886,12 @@ pub(crate) fn code_line_flags(root: Node<'_>, source: &[u8], language: LanguageK
     let mut marked = vec![false; source.iter().filter(|&&byte| byte == b'\n').count() + 1];
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        if node.kind() == "comment" || (language == LanguageKind::Python && is_docstring(node)) {
+        if node.kind() == "comment"
+            || (language == LanguageKind::Python && is_docstring(node))
+            // tree-sitter-rust's comment kinds; doc comments are among them.
+            || (language == LanguageKind::Rust
+                && matches!(node.kind(), "line_comment" | "block_comment"))
+        {
             continue;
         }
         if node.child_count() == 0 {
@@ -1267,11 +1289,25 @@ fn apply_scip_references(
         if language == LanguageKind::TypeScript {
             row.install = install_typescript_dependencies(repo, install, progress);
         }
-
-        let stage = progress.stage(
-            crate::progress::StageId::index_for(language),
-            Some(scope.len() as u64),
-        );
+        // Rust has no product indexer. rust-analyzer's `scip` compiles a
+        // repository's build scripts and proc-macro crates natively and has
+        // no flag to stop it, and without network it silently degrades to
+        // `--no-deps` (finding 55). It is the hand resolver's oracle in CI
+        // (`hand-score`), never a path a map takes.
+        let Some(stage_id) = crate::progress::StageId::index_for(language) else {
+            row.reason = crate::indexers::IndexFailure::NoProductIndexer
+                .reason()
+                .to_owned();
+            progress.log(format!(
+                "references {}: hand ({}; {} hand pairs)",
+                language.as_str(),
+                row.reason,
+                row.hand_pairs,
+            ));
+            report.insert(language.as_str().to_owned(), row);
+            continue;
+        };
+        let stage = progress.stage(stage_id, Some(scope.len() as u64));
         let output = work.join(format!("{}.scip", language.as_str()));
         // A kept directory from an earlier run must never be read as this
         // run's index.
@@ -1438,6 +1474,7 @@ fn collect_source_files(
                 LanguageKind::Go | LanguageKind::TypeScript => {
                     MULTI_SKIP_DIR.contains(&name.as_str()) || name.starts_with('.')
                 }
+                LanguageKind::Rust => rust::skip_dir(&name),
             };
             if !skip {
                 collect_source_files(repo, &path, language, result)?;
@@ -1450,6 +1487,7 @@ fn collect_source_files(
         let accepted = match language {
             LanguageKind::Python => name.ends_with(".py"),
             LanguageKind::Go => name.ends_with(".go") && !name.ends_with("_test.go"),
+            LanguageKind::Rust => name.ends_with(".rs"),
             LanguageKind::TypeScript => {
                 // `.tsx` alongside `.ts`: the import resolver
                 // (`resolve_multi`) has always listed `{base}.tsx` as a
@@ -1912,7 +1950,9 @@ fn multi_metrics(
                 }
                 _ => None,
             },
-            LanguageKind::Python => None,
+            // Rust has its own walk (`rust::metrics`), which knows whether a
+            // function sits in an `impl` or `trait` body.
+            LanguageKind::Python | LanguageKind::Rust => None,
         };
         if let Some(kind) = kind {
             if let Some(name) = name_of(node, source) {
@@ -2001,7 +2041,7 @@ fn parse_python_with_progress(
         .iter()
         .filter_map(|(file, raw)| match raw {
             FileRaw::Python { exports, .. } => Some((file.clone(), exports)),
-            FileRaw::Multi { .. } => None,
+            FileRaw::Multi { .. } | FileRaw::Rust(_) => None,
         })
         .collect::<BTreeMap<_, _>>();
     let scope = PythonScope {
@@ -3192,7 +3232,7 @@ pub fn coverage_diagnostics(
     }
     let modules = sources
         .iter()
-        .any(|(_, lang)| *lang != LanguageKind::Python)
+        .any(|(_, lang)| matches!(lang, LanguageKind::Go | LanguageKind::TypeScript))
         .then(|| module_index(repo))
         .transpose()?;
     let mut rows = Vec::new();
@@ -3324,6 +3364,17 @@ pub fn coverage_diagnostics(
                             &by_file,
                         );
                         imports.push(json!({"specifier": spec, "reason": if targets.as_slice().is_empty() { "no_candidate_in_parsed_set" } else { "resolved" }, "target_count": targets.as_slice().len()}));
+                    }
+                }
+                // Rust's resolution needs every file's module tree, which
+                // this per-file diagnosis does not rebuild: the `use` leaves
+                // are listed, not judged. `TOLMAP_RUST_IMPORT_REPORT` has
+                // the resolver's own outcome for each.
+                LanguageKind::Rust => {
+                    for decl in rust::syntax(root, &bytes).uses {
+                        for leaf in decl.leaves {
+                            imports.push(json!({"specifier": leaf.segments.join("::"), "reason": "not_diagnosed"}));
+                        }
                     }
                 }
             }
@@ -3672,7 +3723,7 @@ fn parse_multi_with_progress(
                     },
                 )
             }),
-            FileRaw::Python { .. } => None,
+            FileRaw::Python { .. } | FileRaw::Rust(_) => None,
         })
         .collect::<BTreeMap<_, _>>();
     // Every TypeScript file's exports with their specifiers resolved, for
@@ -3734,7 +3785,7 @@ fn parse_multi_with_progress(
     let report_variable = match language {
         LanguageKind::Go => Some("TOLMAP_GO_IMPORT_REPORT"),
         LanguageKind::TypeScript => Some("TOLMAP_TS_IMPORT_REPORT"),
-        LanguageKind::Python => None,
+        LanguageKind::Python | LanguageKind::Rust => None,
     };
     let report_dir = report_variable
         .and_then(std::env::var_os)
@@ -5397,7 +5448,7 @@ fn resolve_multi<'a>(
             };
             ts_candidate(&base, by_file).map_or(ResolvedTargets::Empty, ResolvedTargets::One)
         }
-        LanguageKind::Python => ResolvedTargets::Empty,
+        LanguageKind::Python | LanguageKind::Rust => ResolvedTargets::Empty,
     }
 }
 
