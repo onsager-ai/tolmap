@@ -105,18 +105,11 @@ protobuf = "=3.7.2"
 scip = "=0.10.0"
 # Issue #97 phase 1, owner decision "Add sha2, per-file uploads": the agent
 # hashes each uploaded artifact file with SHA-256 so the master can verify
-# what it received. RustCrypto's sha2, pinned to 0.11.0, its current release.
-# Note for the reviewer: 0.11 is a coordinated major bump of RustCrypto's
-# trait crates, so this adds a second copy of `digest` (0.11.3 next to the
-# 0.10.7 that `sha1` above already locks) and its dependents `block-buffer`,
-# `const-oid`, `crypto-common`, `cpufeatures` (0.3.1 next to 0.2.17) and
-# `hybrid-array` -- 7 crates total for sha2 itself. `sha2 = "=0.10.9"` would
-# add zero new crates (it depends on `digest = "0.10.7"` and
-# `cpufeatures = "0.2"`, both already locked by `sha1`), at the cost of using
-# the older, still-maintained 0.10 line. Left at the current release per the
-# phase 1 plan; see the PR body for both crate lists if that trade should go
-# the other way.
-sha2 = "=0.11.0"
+# what it received. RustCrypto's sha2 on the 0.10 line, not 0.11: 0.11 is a
+# coordinated major bump of RustCrypto's trait crates and would lock a second
+# `digest` stack (7 crates) next to the 0.10 one `sha1` above already uses.
+# 0.10.9 reuses that stack and adds only itself.
+sha2 = "=0.10.9"
 
 [build-dependencies]
 cc = "=1.4.7"
