@@ -33,6 +33,11 @@ on:
       - "tests/fixtures/scip/**"
       - "tests/fixtures/sandbox/**"
       - "src/indexers.rs"
+      # The end-to-end service test below guards the worker protocol and
+      # the job directory the service hands its worker (issue #141).
+      - "src/worker.rs"
+      - "src/service/jobs.rs"
+      - "src/service/worker_result.rs"
       - ".github/workflows/scip-image-build.yml"
   workflow_dispatch:
     inputs:
@@ -244,7 +249,14 @@ jobs:
       # for the install over the worker protocol, the service running it in
       # nsjail. A local-path job (POST /api/index {"path"}) on the same
       # fixture.
-      - name: "Install sandbox: a SCIP job through the service installs via its worker's request"
+      #
+      # Then a second commit of the same fixture and a second job (issue
+      # #141): the service's map store is root's and `0700`, the worker is
+      # uid 10001, and finding 4's warm start (88% district retention warm,
+      # 46% cold) reads the previous commit's map. The worker logs which
+      # start it made and how many cached names it had in hand; the service
+      # copies those lines into its own log, and this step asserts on them.
+      - name: "Install sandbox: a SCIP job through the service installs via its worker's request, and a second commit warm-starts"
         run: |
           set -euo pipefail
           rm -rf sandbox/service-fixture
@@ -256,17 +268,23 @@ jobs:
             -v "$PWD/sandbox/service-fixture:/srv/fixture:ro" \
             --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap serve'
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8787/api/healthz && break; sleep 1; done
-          job=$(curl -fsS -X POST -H 'content-type: application/json' \
-            -d '{"path":"/srv/fixture"}' http://127.0.0.1:8787/api/index)
-          echo "$job"
-          id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<<"$job")
-          for _ in $(seq 1 300); do
-            snapshot=$(curl -fsS "http://127.0.0.1:8787/api/jobs/$id")
-            status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$snapshot")
-            [ "$status" = done ] || [ "$status" = failed ] && break
-            sleep 2
-          done
-          echo "$snapshot" | python3 -m json.tool | head -80
+          # Runs one job on the fixture's current HEAD; sets $id, $status and
+          # $snapshot.
+          run_job() {
+            job=$(curl -fsS -X POST -H 'content-type: application/json' \
+              -d '{"path":"/srv/fixture"}' http://127.0.0.1:8787/api/index)
+            echo "$job"
+            id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<<"$job")
+            for _ in $(seq 1 300); do
+              snapshot=$(curl -fsS "http://127.0.0.1:8787/api/jobs/$id")
+              status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$snapshot")
+              [ "$status" = done ] || [ "$status" = failed ] && break
+              sleep 2
+            done
+            echo "$snapshot" | python3 -m json.tool | head -80
+          }
+          run_job
+          first_id=$id
           docker logs tolmap-service 2>&1 | tail -40
           [ "$status" = done ]
           python3 - "$snapshot" <<'PY'
@@ -276,9 +294,49 @@ jobs:
           print("install stage:", install)
           assert install["state"] == "done", install
           PY
-          curl -fsS http://127.0.0.1:8787/api/maps/local/service-fixture -o sandbox/service-map.json \
-            || curl -fsS http://127.0.0.1:8787/api/maps/local/fixture -o sandbox/service-map.json
+          curl -fsS http://127.0.0.1:8787/api/maps/local/fixture -o sandbox/service-map.json
           python3 eval/check_scip_references.py sandbox/service-map.json --expect-install ts=installed
+
+          # Issue #141: a second commit, a small real change -- one new file
+          # in `core` importing from it -- so the two jobs index different
+          # commits of one repository.
+          first_commit=$(git -C sandbox/service-fixture rev-parse HEAD)
+          cat > sandbox/service-fixture/packages/core/src/extra.ts <<'TS'
+          import { add } from "./math";
+
+          export function twice(value: number): number {
+            return add(value, value);
+          }
+          TS
+          git -C sandbox/service-fixture add -A
+          git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m "second commit"
+          run_job
+          second_id=$id
+          docker logs tolmap-service > sandbox/service.log 2>&1 || true
+          echo "--- first job's worker log lines ---"
+          grep -E "^job $first_id: (warm start|cold start|names cache)" sandbox/service.log || true
+          echo "--- second job's worker log lines ---"
+          grep -E "^job $second_id: (warm start|cold start|names cache)" sandbox/service.log || true
+          [ "$status" = done ]
+          curl -fsS http://127.0.0.1:8787/api/maps/local/fixture -o sandbox/service-map-2.json
+          python3 - sandbox/service-map.json sandbox/service-map-2.json <<'PY'
+          import json, sys
+          first, second = (json.load(open(path)) for path in sys.argv[1:])
+          print("first commit's district names: ", sorted(first["names"].values()))
+          print("second commit's district names:", sorted(second["names"].values()))
+          PY
+          # A first index has nothing to warm-start from.
+          grep -qx "job $first_id: cold start: no previous map" sandbox/service.log
+          # The second must have read the first commit's map ...
+          if ! grep -qx "job $second_id: warm start from $first_commit" sandbox/service.log; then
+            echo "::error::the second job did not warm-start from $first_commit (issue #141)"
+            exit 1
+          fi
+          # ... and had the first job's district names in hand.
+          if ! grep -qE "^job $second_id: names cache: [1-9][0-9]* entries in hand$" sandbox/service.log; then
+            echo "::error::the second job had no cached district names in hand (issue #141)"
+            exit 1
+          fi
           docker rm -f tolmap-service
 
       - name: Size and time summary

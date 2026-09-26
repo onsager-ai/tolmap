@@ -329,15 +329,52 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         .find(|row| row.branch == materialized.branch)
         .or_else(|| spec.previous_maps.first())
         .map(|row| &row.path);
-    let previous =
-        previous_path.and_then(|path| store::read_map_document(&PathBuf::from(path)).ok());
+    // A previous map that cannot be read is a cold start, not a failed job,
+    // but it must say so: issue #141 was a warm start (finding 4: 88%
+    // district retention warm, 46% cold) skipped without a trace because
+    // this worker's uid could not read the store the path pointed into.
+    // These log lines are what the image-build job's end-to-end test
+    // asserts on.
+    let previous = match previous_path {
+        None => {
+            progress.log("cold start: no previous map".to_owned());
+            None
+        }
+        Some(path) => {
+            let path = PathBuf::from(path);
+            let commit = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            match store::read_map_document(&path) {
+                Ok(document) => {
+                    progress.log(format!("warm start from {commit}"));
+                    Some(document)
+                }
+                Err(error) => {
+                    progress.log(format!(
+                        "cold start: previous map {commit} unreadable: {error:#}"
+                    ));
+                    None
+                }
+            }
+        }
+    };
     let output_dir = PathBuf::from(spec.output_dir);
     std::fs::create_dir_all(&output_dir)
         .map_err(|error| fail("internal_error", error.to_string()))?;
     let names_path = output_dir.join(format!("{}.names.json", repo_ref.repo));
-    if let Some(cache) = spec.names_cache {
-        std::fs::copy(cache, &names_path)
-            .map_err(|error| fail("internal_error", error.to_string()))?;
+    match spec.names_cache {
+        Some(cache) => {
+            std::fs::copy(cache, &names_path)
+                .map_err(|error| fail("internal_error", error.to_string()))?;
+            // "Never rename a district without the previous name in hand"
+            // (CLAUDE.md): an empty cache on a repository indexed before is
+            // the same silent loss as a cold start, so it is logged too.
+            let entries = crate::naming::load_cache(&names_path).len();
+            progress.log(format!("names cache: {entries} entries in hand"));
+        }
+        None => progress.log("names cache: none".to_owned()),
     }
     let map_path = geometry::build_from_graph_warm_with_progress(
         graph,

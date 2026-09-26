@@ -1549,6 +1549,10 @@ fn process_worker_exe(
                 }
             }
             WorkerEvent::Log { message, .. } => {
+                // Also into the service's own log: the snapshot's `stage`
+                // is overwritten by the next event, and whether a job
+                // warm-started (issue #141) must be answerable afterwards.
+                eprintln!("job {id}: {message}");
                 tx.send_modify(|snapshot| {
                     if !is_terminal(snapshot) {
                         snapshot.stage = message;
