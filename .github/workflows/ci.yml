@@ -1236,6 +1236,7 @@ jobs:
           django     django         py https://github.com/django/django.git     a3f0642f69277f01611d0d3e829fc3b85aded2ec
           vue        packages       ts https://github.com/vuejs/core.git        4ab865a848a1da3d10fb674f857e5fff13094644
           prometheus .              go https://github.com/prometheus/prometheus.git 296080c0a504ea0e72941ef16143f0a9702b137b
+          tolmap     .              rs https://github.com/onsager-ai/tolmap.git  c62a96869a86940dcdb8eaa251f43e31b481c181
           "
           mkdir -p full-clones full-out
           failed=""
