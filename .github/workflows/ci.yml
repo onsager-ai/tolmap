@@ -985,12 +985,12 @@ jobs:
               --lang "$lang" --refs hand \
               --out "$work/hand.graph.json" || echo "$name dump-graph --refs hand FAILED"
             # Finding 51: the TypeScript static signal rebuilt from the
-            # resolver's report, as it is (`rebuild`, a construction check)
-            # and with each import's mass shared among the files it reaches
-            # (`share`), each partitioned by the product.
+            # resolver's report, as the resolver weighs it (`share`, a
+            # construction check) and with 1 on each file an import reaches
+            # (`per-file`), each partitioned by the product.
             if [ "$lang" = "ts" ]; then
               python3 eval/hand_score.py ts-variants --work "$work" || echo "$name ts-variants FAILED"
-              for variant in rebuild share; do
+              for variant in share per-file; do
                 [ -f "$work/variants/$variant.graph.json" ] || continue
                 ./bin/tolmap build --graph "$work/variants/$variant.graph.json" --name "$name.$variant" \
                   --no-parcels --refs hand --out "$work/variants/maps" > "$work/variants/$variant.log" 2>&1 \

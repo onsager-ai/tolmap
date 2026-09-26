@@ -135,11 +135,12 @@ when followed through `export ... from` and `export *`):
   pair and SCIP does not have it) and `other`.
 - `weight_variants`: `ts-variants` rebuilds the dumped graph's static
   signal from the report two ways and the job partitions each through
-  `tolmap build --graph`: `rebuild` (1 per defining file, what the resolver
-  does; it must place 100% against the job's own map, which checks the
-  construction) and `share` (one import's mass of 1 shared among the files
-  it reaches, as Go's narrowing does, finding 50). Each is placed against
-  the job's map, the committed fixture and the SCIP fixture.
+  `tolmap build --graph`: `share` (one import's mass of 1 shared among the
+  files it reaches, what the resolver does, so it must place 100% against
+  the job's own map, which checks the construction) and `per file` (1 on
+  each file an import reaches, what a direct import of each would weigh,
+  the alternative finding 51 measured). Each is placed against the job's
+  map, the committed fixture and the SCIP fixture.
 
 A fixed-seed sample (`random.Random(SEED)`) of up to SAMPLE rows per class
 is kept; the class counts are over every pair.
@@ -831,11 +832,11 @@ def score_ts(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: 
     return out
 
 
-TS_VARIANTS = ("rebuild", "share")
+TS_VARIANTS = ("share", "per-file")
 
 
 def ts_variants(args) -> int:
-    """Write `variants/{rebuild,share}.graph.json` for a TypeScript fixture:
+    """Write `variants/{share,per-file}.graph.json` for a TypeScript fixture:
     the dumped hand graph with its static signal recomputed from the
     resolver's report (see the module docstring, `weight_variants`)."""
     work = args.work
@@ -846,7 +847,7 @@ def ts_variants(args) -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from scip_churn import Graph, assemble
     graph = Graph(load(work / "hand.graph.json"))
-    full, share = defaultdict(float), defaultdict(float)
+    per_file, share = defaultdict(float), defaultdict(float)
     for row in report:
         a, targets = row[0], row[6]
         if a not in graph.index or not targets:
@@ -854,16 +855,17 @@ def ts_variants(args) -> int:
         for t in targets:
             if t == a or t not in graph.index:
                 continue
-            # src/extract.rs: static edges are undirected; a Go-style share
-            # divides by every file the import reaches, the source included.
-            full[graph.key(a, t)] += 1.0
+            # src/extract.rs `parse_multi`: static edges are undirected, and
+            # the share divides by every file the import reaches, the source
+            # included.
+            per_file[graph.key(a, t)] += 1.0
             share[graph.key(a, t)] += 1.0 / len(targets)
     out = work / "variants"
     out.mkdir(parents=True, exist_ok=True)
-    for name, static in (("rebuild", full), ("share", share)):
+    for name, static in (("share", share), ("per-file", per_file)):
         document = assemble(graph, graph, dict(static), graph.raw["imports"])
         (out / f"{name}.graph.json").write_text(json.dumps(document, separators=(",", ":")))
-    print(f"wrote {len(TS_VARIANTS)} variants: {len(full)} static pairs")
+    print(f"wrote {len(TS_VARIANTS)} variants: {len(share)} static pairs")
     return 0
 
 

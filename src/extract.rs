@@ -3258,21 +3258,22 @@ fn parse_multi_with_progress(
                 ]));
             }
             let narrowed = narrowed.and_then(std::result::Result::ok);
-            let (targets, share) = match (&narrowed, followed) {
-                // A Go import's mass of 1 is shared among the files it
-                // links, as it was shared among the whole package.
-                (Some(narrowed), _) => (
-                    narrowed.iter().copied().collect::<Vec<_>>(),
-                    1.0 / narrowed.len() as f64,
-                ),
-                // A TypeScript import weighs 1 on each defining file, what
-                // importing each of them directly would weigh: the static
-                // signal does not depend on whether a repository routes its
-                // imports through barrels. Python's re-exports do the same
-                // (finding 49).
-                (None, Some((followed, _))) => (followed.into_iter().collect(), 1.0),
-                (None, None) => (package.to_vec(), 1.0 / package.len() as f64),
+            // One import keeps its mass of 1, shared among the files it
+            // links: a Go import's among the declaring files, as it was
+            // shared among the whole package, and a TypeScript import's
+            // among the defining files, as it all went to the one file the
+            // specifier resolved to. Weighing each defining file 1 instead
+            // (what importing each directly would weigh, and what Python's
+            // re-exports do, finding 49) was measured on vue and moved more
+            // files for no better agreement with SCIP's districts: 73.2%
+            // placement against the old fixture against 87.0% shared, and
+            // 84.5% against the SCIP fixture against 86.6% (finding 51).
+            let targets = match (narrowed, followed) {
+                (Some(narrowed), _) => narrowed.into_iter().collect::<Vec<_>>(),
+                (None, Some((followed, _))) => followed.into_iter().collect(),
+                (None, None) => package.to_vec(),
             };
+            let share = 1.0 / targets.len() as f64;
             for &target in &targets {
                 if target == source_id {
                     continue;
@@ -7610,15 +7611,15 @@ mod tests {
     #[test]
     fn typescript_import_links_the_files_that_define_what_it_takes_from_a_barrel() {
         // A named re-export, a star re-export, an import-then-export, a type,
-        // and a name the barrel declares itself: each credits its definition,
-        // with the weight a direct import of that file would have.
+        // and a name the barrel declares itself: each credits its definition.
+        // One statement keeps its mass of 1, shared among them.
         assert_eq!(
             barrel_edges("import { a, b, c, own } from './index'\nimport type { B } from '.'\n"),
             weights(&[
-                ("src/a.ts", 1.0),
-                ("src/b.ts", 2.0),
-                ("src/c.ts", 1.0),
-                ("src/index.ts", 1.0),
+                ("src/a.ts", 0.25),
+                ("src/b.ts", 1.25),
+                ("src/c.ts", 0.25),
+                ("src/index.ts", 0.25),
             ])
         );
         // `export { x } from` in the importing file is followed the same way.
@@ -7649,7 +7650,7 @@ mod tests {
         // The certain name moves; the uncertain one keeps the barrel.
         assert_eq!(
             barrel_edges("import { a, missing } from './index'\n"),
-            weights(&[("src/a.ts", 1.0), ("src/index.ts", 1.0)])
+            weights(&[("src/a.ts", 0.5), ("src/index.ts", 0.5)])
         );
     }
 
@@ -7670,7 +7671,7 @@ mod tests {
                 &package("export * from './x'\nexport * from './y'\n"),
                 "src/use.ts"
             ),
-            weights(&[("src/index.ts", 1.0), ("src/x.ts", 1.0)])
+            weights(&[("src/index.ts", 0.5), ("src/x.ts", 0.5)])
         );
         // A star re-export from outside the parsed set might bind either.
         assert_eq!(
