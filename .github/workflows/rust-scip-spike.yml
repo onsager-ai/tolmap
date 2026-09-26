@@ -1,0 +1,384 @@
+# Issue #126, a P0-style measurement spike: what does `rust-analyzer scip`
+# give us for Rust, run the way `.github/workflows/scip-spike.yml` (finding
+# 41) measured py/ts/go -- CI only, no product change. There is no hand
+# resolver or tree-sitter-rust extractor yet (#126 is still design-only), so
+# unlike that workflow's `analyze` job this one never builds a tolmap map:
+# `eval/rust_scip_stats.py` calls `eval/scip_ingest.py`'s `ingest()` with the
+# repo-relative `.rs` files tracked by `git ls-files` standing in for the
+# map's `F`, and no symbols document at all (finding 41's `Spans`
+# parameter, passed as `None`).
+#
+# Standard GitHub-hosted runners only, no new spend (remote-build.yml's
+# header). `workflow_call` only, invoked by remote-build.yml's
+# `command=rust-scip-spike` -- the same indirection `scip-spike.yml` uses
+# and for the same reason its header gives: GitHub only lets
+# `workflow_dispatch` target a workflow file that is already on the default
+# branch, and this file is not there yet. remote-build.yml already is, so
+# dispatching it with `--ref eval/rust-scip-spike` runs that ref's copy of
+# both files. Unlike `scip-spike`, this job does not `needs: setup` --
+# there is no hand resolver for Rust to build a baseline from (#126 is
+# design-only so far), so it never touches `setup`'s tolmap binary.
+#
+# Repos, pinned commits:
+#   - onsager-ai/tolmap  -- dogfood: single non-workspace crate, a build.rs
+#     that panics without LEIDEN_PREFIX (native/leiden_bridge.cpp), and
+#     ts-rs/serde/clap derives to sample.
+#   - BurntSushi/ripgrep -- tag 14.1.1, multi-crate workspace, cfg(windows)
+#     platform code to sample.
+#   - tokio-rs/tokio     -- tag tokio-1.42.0, the largest and most
+#     feature-cfg-gated of the three.
+#
+# rust-analyzer's `scip` subcommand has no `--disable-build-scripts` or
+# `--disable-proc-macros` flag -- `diagnostics`, `analysis-stats`,
+# `unresolved-references` and `prime-caches` all have one, `scip` does not
+# (checked against the pinned release's `flags.rs`). Its `run()` hardcodes
+# `LoadCargoConfig { load_out_dirs_from_check: true, with_proc_macro_server:
+# ProcMacroServerChoice::Sysroot, .. }` regardless of `--config-path`, so
+# "no build" is this workflow's intent, not a guarantee the tool gives us:
+# `load_out_dirs_from_check` is what makes rust-analyzer shell out to
+# something check-shaped to prime OUT_DIR values, which is exactly the kind
+# of build issue #126 asked to avoid. `config_probe` below tests whether an
+# LSP-style `--config-path` JSON changes that in practice for tolmap, since
+# nothing in the CLI promises it does.
+#
+# Two variants of the main measurement, per repo: `network` (default
+# runner network, fresh CARGO_HOME so a hit is visible in its size
+# afterward) and `offline` (CARGO_NET_OFFLINE=true, fresh CARGO_HOME, per
+# #126: "crates.io egress would reopen an owner decision"). Both use a
+# freshly created CARGO_HOME per job -- every matrix job already gets its
+# own fresh runner, so this only makes "did anything land in the registry
+# cache" legible rather than assumed.
+
+name: Rust SCIP spike (#126)
+
+on:
+  workflow_call: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned rust-analyzer release (issue #110's rule: pin every indexer).
+  # SHA256 of the linux-gnu asset, verified below before it is ever run.
+  RUST_ANALYZER_TAG: "2026-09-21"
+  RUST_ANALYZER_SHA256: "b2d24ce2bda2ea05b1ad7c2917d205f8111775f703ccd908e6061803ae8257d0"
+  SCIP_PROTO_TAG: "v0.10.0"
+  PROTOBUF_VERSION: "5.29.3"
+  GRPCIO_TOOLS_VERSION: "1.70.0"
+
+jobs:
+  index:
+    name: index ${{ matrix.slug }} (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: onsager-ai/tolmap
+            stem: onsager-ai__tolmap
+            commit: c62a96869a86940dcdb8eaa251f43e31b481c181
+            variant: network
+          - slug: onsager-ai/tolmap
+            stem: onsager-ai__tolmap
+            commit: c62a96869a86940dcdb8eaa251f43e31b481c181
+            variant: offline
+          - slug: BurntSushi/ripgrep
+            stem: BurntSushi__ripgrep
+            commit: 0e8390a66fbcf6eeac1aeb0541b367663a597c79
+            variant: network
+          - slug: BurntSushi/ripgrep
+            stem: BurntSushi__ripgrep
+            commit: 0e8390a66fbcf6eeac1aeb0541b367663a597c79
+            variant: offline
+          - slug: tokio-rs/tokio
+            stem: tokio-rs__tokio
+            commit: bb9d57017e100985f86d8ca41ac105ee9140423e
+            variant: network
+          - slug: tokio-rs/tokio
+            stem: tokio-rs__tokio
+            commit: bb9d57017e100985f86d8ca41ac105ee9140423e
+            variant: offline
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install rust-analyzer (pinned, verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o ra.gz \
+            "https://github.com/rust-lang/rust-analyzer/releases/download/${RUST_ANALYZER_TAG}/rust-analyzer-x86_64-unknown-linux-gnu.gz"
+          echo "${RUST_ANALYZER_SHA256}  ra.gz" | sha256sum -c -
+          gunzip ra.gz
+          chmod +x ra
+          sudo mv ra /usr/local/bin/rust-analyzer
+          rust-analyzer --version
+
+      - name: Install /usr/bin/time and strace
+        run: command -v /usr/bin/time && command -v strace || { sudo apt-get update && sudo apt-get install -y time strace; }
+
+      # depth=1: this is an index job, not a co-change baseline. It never
+      # reads history (scip-spike.yml's `index` job does the same).
+      - name: Clone at pinned commit
+        env:
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p clone
+          git -C clone init --quiet
+          git -C clone remote add origin "https://github.com/${SLUG}.git"
+          git -C clone fetch --quiet --depth=1 origin "$COMMIT"
+          git -C clone checkout --quiet --detach FETCH_HEAD
+
+      - name: Index
+        id: index
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -uo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/cargo-home"
+          mkdir -p "$CARGO_HOME"
+          if [ "$VARIANT" = "offline" ]; then
+            export CARGO_NET_OFFLINE=true
+          fi
+          # /usr/bin/time needs an executable; the strace child inherits the
+          # same env. -f follows the cargo/rustc/proc-macro-srv children
+          # rust-analyzer spawns, which is exactly what "did it invoke
+          # cargo" needs to see; -s 300 keeps enough of each execve's argv
+          # to find "cargo" in a long rustup toolchain path (a rustup shim
+          # path alone can run past the default -s 32).
+          /usr/bin/time -v -o time.txt \
+            strace -f -qq -s 300 -e trace=execve -o strace.execve.log \
+            rust-analyzer scip clone --output index.scip --exclude-vendored-libraries \
+            > index.log 2>&1
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          du -sb "$CARGO_HOME" 2>/dev/null | cut -f1 > cargo_home_bytes.txt || echo 0 > cargo_home_bytes.txt
+          find "$CARGO_HOME/registry/src" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l > cargo_home_crates.txt || echo 0 > cargo_home_crates.txt
+          grep -o 'execve("[^"]*cargo[^"]*"' strace.execve.log | sort -u > cargo_invocations.txt || true
+          tail -n 60 index.log
+          echo "--- cargo invocations seen (execve) ---"
+          cat cargo_invocations.txt
+          echo "--- CARGO_HOME after run ---"
+          cat cargo_home_bytes.txt; echo " bytes,"; cat cargo_home_crates.txt; echo " extracted crate dirs"
+          exit 0
+
+      - name: Generate scip_pb2 from the pinned scip.proto
+        run: |
+          set -euo pipefail
+          pip install "protobuf==${PROTOBUF_VERSION}" "grpcio-tools==${GRPCIO_TOOLS_VERSION}"
+          mkdir -p "$RUNNER_TEMP/scippb"
+          curl -fsSL --retry 3 \
+            "https://raw.githubusercontent.com/scip-code/scip/${SCIP_PROTO_TAG}/scip.proto" \
+            -o "$RUNNER_TEMP/scippb/scip.proto"
+          python -m grpc_tools.protoc -I "$RUNNER_TEMP/scippb" \
+            --python_out="$RUNNER_TEMP/scippb" "$RUNNER_TEMP/scippb/scip.proto"
+          echo "PYTHONPATH=$RUNNER_TEMP/scippb:$PWD/eval" >> "$GITHUB_ENV"
+
+      - name: Stats (documents, occurrences, file pairs, macro/cfg samples)
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ ! -s index.scip ]; then
+            echo '{"note": "no index produced, indexer exit '"${{ steps.index.outputs.exit_code }}"'"}' \
+              | tee stats.json stats_summary.json > /dev/null
+          else
+            python eval/rust_scip_stats.py --index index.scip --clone clone --prefix . \
+              --slug "${{ matrix.slug }}" --out stats.json | tee stats_summary.json
+          fi
+
+      - name: Assemble result
+        if: always()
+        env:
+          SLUG: ${{ matrix.slug }}
+          VARIANT: ${{ matrix.variant }}
+          EXIT_CODE: ${{ steps.index.outputs.exit_code }}
+        run: |
+          set -uo pipefail
+          mkdir -p result
+          cp stats.json result/ 2>/dev/null || true
+          cp stats_summary.json result/ 2>/dev/null || true
+          cp time.txt result/ 2>/dev/null || true
+          cp index.log result/ 2>/dev/null || true
+          cp cargo_invocations.txt result/ 2>/dev/null || true
+          cp cargo_home_bytes.txt result/ 2>/dev/null || true
+          cp cargo_home_crates.txt result/ 2>/dev/null || true
+          [ -s index.scip ] && stat -c%s index.scip > result/index_size_bytes.txt || echo 0 > result/index_size_bytes.txt
+          cat > result/meta.json <<EOF
+          {"slug": "$SLUG", "variant": "$VARIANT", "exit_code": ${EXIT_CODE:-null}}
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-scip-${{ matrix.stem }}-${{ matrix.variant }}
+          path: result
+          retention-days: 30
+
+  # #126: "no proc-macro server if that can be turned off." The `scip` CLI
+  # has no flag for that (see the header comment); the only lever it
+  # exposes is `--config-path`, an LSP client-settings JSON. This job asks
+  # tolmap alone (the cheapest repo) whether that config actually changes
+  # anything measurable, since the source shows `load_out_dirs_from_check`
+  # and `ProcMacroServerChoice::Sysroot` hardcoded in `run()` regardless of
+  # it. If `result/` here looks identical to the tolmap `network` row from
+  # `index` (same exit code, same cargo invocations, same doc/occurrence
+  # counts), the config had no effect and #126's design should not assume
+  # a config file is a way to avoid a build.
+  config_probe:
+    name: config-path probe (tolmap, build scripts + proc macros off)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install rust-analyzer (pinned, verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o ra.gz \
+            "https://github.com/rust-lang/rust-analyzer/releases/download/${RUST_ANALYZER_TAG}/rust-analyzer-x86_64-unknown-linux-gnu.gz"
+          echo "${RUST_ANALYZER_SHA256}  ra.gz" | sha256sum -c -
+          gunzip ra.gz
+          chmod +x ra
+          sudo mv ra /usr/local/bin/rust-analyzer
+
+      - name: Install /usr/bin/time and strace
+        run: command -v /usr/bin/time && command -v strace || { sudo apt-get update && sudo apt-get install -y time strace; }
+
+      - name: Clone tolmap at the pinned commit
+        run: |
+          set -euo pipefail
+          mkdir -p clone
+          git -C clone init --quiet
+          git -C clone remote add origin "https://github.com/onsager-ai/tolmap.git"
+          git -C clone fetch --quiet --depth=1 origin c62a96869a86940dcdb8eaa251f43e31b481c181
+          git -C clone checkout --quiet --detach FETCH_HEAD
+
+      - name: Write config JSON asking for build scripts and proc macros off
+        run: |
+          cat > ra-config.json <<'EOF'
+          {"cargo": {"buildScripts": {"enable": false}}, "procMacro": {"enable": false}}
+          EOF
+          cat ra-config.json
+
+      - name: Index with --config-path
+        id: index
+        run: |
+          set -uo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/cargo-home"
+          mkdir -p "$CARGO_HOME"
+          /usr/bin/time -v -o time.txt \
+            strace -f -qq -s 300 -e trace=execve -o strace.execve.log \
+            rust-analyzer scip clone --output index.scip --exclude-vendored-libraries \
+              --config-path ra-config.json \
+            > index.log 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          grep -o 'execve("[^"]*cargo[^"]*"' strace.execve.log | sort -u > cargo_invocations.txt || true
+          tail -n 60 index.log
+          cat cargo_invocations.txt
+          exit 0
+
+      - name: Generate scip_pb2 from the pinned scip.proto
+        if: always()
+        run: |
+          set -euo pipefail
+          pip install "protobuf==${PROTOBUF_VERSION}" "grpcio-tools==${GRPCIO_TOOLS_VERSION}"
+          mkdir -p "$RUNNER_TEMP/scippb"
+          curl -fsSL --retry 3 \
+            "https://raw.githubusercontent.com/scip-code/scip/${SCIP_PROTO_TAG}/scip.proto" \
+            -o "$RUNNER_TEMP/scippb/scip.proto"
+          python -m grpc_tools.protoc -I "$RUNNER_TEMP/scippb" \
+            --python_out="$RUNNER_TEMP/scippb" "$RUNNER_TEMP/scippb/scip.proto"
+          echo "PYTHONPATH=$RUNNER_TEMP/scippb:$PWD/eval" >> "$GITHUB_ENV"
+
+      - name: Stats
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ ! -s index.scip ]; then
+            echo '{"note": "no index produced, indexer exit '"${{ steps.index.outputs.exit_code }}"'"}' \
+              | tee stats.json stats_summary.json > /dev/null
+          else
+            python eval/rust_scip_stats.py --index index.scip --clone clone --prefix . \
+              --slug "onsager-ai/tolmap" --out stats.json | tee stats_summary.json
+          fi
+
+      - name: Assemble result
+        if: always()
+        env:
+          EXIT_CODE: ${{ steps.index.outputs.exit_code }}
+        run: |
+          mkdir -p result
+          cp stats.json result/ 2>/dev/null || true
+          cp stats_summary.json result/ 2>/dev/null || true
+          cp time.txt result/ 2>/dev/null || true
+          cp index.log result/ 2>/dev/null || true
+          cp cargo_invocations.txt result/ 2>/dev/null || true
+          [ -s index.scip ] && stat -c%s index.scip > result/index_size_bytes.txt || echo 0 > result/index_size_bytes.txt
+          echo "{\"exit_code\": ${EXIT_CODE:-null}}" > result/meta.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-scip-config-probe-tolmap
+          path: result
+          retention-days: 30
+
+  summary:
+    name: rust scip summary
+    needs: [index, config_probe]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rust-scip-*
+          path: results
+      - name: Summarize
+        run: |
+          set -uo pipefail
+          {
+            echo "# Rust SCIP spike (#126)"
+            echo
+          for d in results/*/; do
+            name=$(basename "$d")
+            echo "## $name"
+            echo
+            if [ -f "$d/meta.json" ]; then echo '```json'; cat "$d/meta.json"; echo; echo '```'; fi
+            if [ -f "$d/time.txt" ]; then
+              echo "Wall clock / peak RSS:"
+              echo '```'
+              grep -E "Elapsed|Maximum resident" "$d/time.txt" || true
+              echo '```'
+            fi
+            if [ -f "$d/index_size_bytes.txt" ]; then echo "Index size (bytes): $(cat "$d/index_size_bytes.txt")"; fi
+            if [ -f "$d/cargo_invocations.txt" ] && [ -s "$d/cargo_invocations.txt" ]; then
+              echo "cargo invocations seen (execve):"
+              echo '```'; cat "$d/cargo_invocations.txt"; echo '```'
+            fi
+            if [ -f "$d/stats_summary.json" ]; then
+              echo "Stats (trimmed -- full detail, including every file_edges pair, is in the"
+              echo "uploaded rust-scip-* artifact's stats.json):"
+              echo '```json'
+              cat "$d/stats_summary.json"
+              echo '```'
+            fi
+            echo
+          done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-scip-summary
+          path: results
+          retention-days: 30

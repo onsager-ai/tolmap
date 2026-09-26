@@ -57,7 +57,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0), scip-ingest (P1a) or scip-install (P1c); the scip-* commands ignore repos/extra_args/compare_ref"
+        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0), scip-ingest (P1a), scip-install (P1c) or rust-scip-spike (issue #126); the scip-*/rust-scip-spike commands ignore repos/extra_args/compare_ref"
         required: false
         type: choice
         options:
@@ -68,6 +68,7 @@ on:
           - scip-spike
           - scip-ingest
           - scip-install
+          - rust-scip-spike
         default: build
       scip_reuse_run:
         description: "scip-spike only: analyze this earlier run's scip-base-*/scip-idx-* artifacts instead of re-indexing"
@@ -95,8 +96,12 @@ jobs:
   # Builds the tolmap release binary(ies) once -- `ref` always, plus
   # `compare_ref` when given -- and works out which corpus repositories
   # `repos` selects, so neither cost is repeated per matrix job below.
+  # Skipped for rust-scip-spike: issue #126 has no hand resolver for Rust
+  # yet, so that job never needs a tolmap binary at all (unlike scip-spike/
+  # scip-ingest/scip-install, which still `needs: setup` for theirs).
   setup:
     name: build binary(ies) + plan matrix
+    if: inputs.command != 'rust-scip-spike'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -244,7 +249,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install'
+    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -660,7 +665,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -780,3 +785,13 @@ jobs:
       contents: read
       actions: read
     uses: ./.github/workflows/scip-install.yml
+
+  # Issue #126, a P0-style spike: what does `rust-analyzer scip` give us
+  # for Rust, with no build. No `needs: setup` -- there is no hand resolver
+  # or tree-sitter-rust extractor yet (#126 is design-only so far), so
+  # unlike the three jobs above it never touches a tolmap binary at all.
+  # Everything lives in rust-scip-spike.yml; see that file's header.
+  rust-scip-spike:
+    name: rust scip spike
+    if: inputs.command == 'rust-scip-spike'
+    uses: ./.github/workflows/rust-scip-spike.yml
