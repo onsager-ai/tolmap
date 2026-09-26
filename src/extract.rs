@@ -209,6 +209,13 @@ struct ParsedFile {
 /// follows a package's re-exports through it to the file that defines a
 /// name, which it can only do once every file's exports are in hand.
 ///
+/// `bare_names` is every identifier the file uses other than as the object
+/// of `x.attr` or inside an import statement (finding 53). A module object
+/// (`from .. import util`) whose local name is never among them is used
+/// only through `util.attr`, so phase 2 can credit each `attr` to the file
+/// that defines it; one that is (passed as a value, rebound, shadowed by a
+/// parameter) keeps its link to the module.
+///
 /// Go's `import_uses` and `declares` do the same for Go packages (finding
 /// 50): what each import's local name selects in this file, and what this
 /// file declares at package level (`None` when that is not known: a file
@@ -229,6 +236,7 @@ enum FileRaw {
         imports: Vec<PythonImport>,
         attribute_candidates: Vec<(String, String)>,
         exports: PythonExports,
+        bare_names: BTreeSet<String>,
     },
     Multi {
         imports: Vec<String>,
@@ -732,6 +740,7 @@ fn parse_files_inner(
                         imports: Vec::new(),
                         attribute_candidates: Vec::new(),
                         exports: PythonExports::default(),
+                        bare_names: BTreeSet::new(),
                     },
                     _ => FileRaw::Multi {
                         imports: Vec::new(),
@@ -770,6 +779,7 @@ fn parse_files_inner(
                 imports: python_imports(root, &source),
                 attribute_candidates: python_attribute_candidates(root, &source),
                 exports: python_exports(root, &source),
+                bare_names: python_bare_names(root, &source),
             },
             LanguageKind::Go => {
                 let imports = go_imports(root, &source);
@@ -2003,37 +2013,111 @@ fn parse_python_with_progress(
     let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
     let mut fanin = BTreeMap::<FileId, f64>::new();
     let mut uses = BTreeSet::<(FileId, FileId, String)>::new();
+    // Eval instrumentation only (finding 53): one row per import statement,
+    // with the files it linked before module objects and ordinary-module
+    // re-exports were followed and the files it links now, and how each
+    // module object it binds went. Both graphs from one binary let
+    // `eval/hand_score.py` score the change pair by pair.
+    let report_dir = std::env::var_os("TOLMAP_PY_IMPORT_REPORT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let mut report = Vec::new();
     for (module, file) in &modules {
         let file_id = ids[file];
         let FileRaw::Python {
             imports,
             attribute_candidates,
+            bare_names,
             ..
         } = &raw[file]
         else {
             unreachable!("parse_python only ever stores FileRaw::Python");
         };
         let is_pkg = file.rsplit('/').next() == Some("__init__.py");
-        for import in imports {
-            let mut links = PythonLinks::default();
-            links.add(
-                resolve_python_import(import, module, &scope, is_pkg),
-                &file_of,
+        let mut attributes = BTreeMap::<String, BTreeSet<String>>::new();
+        for (object, attribute) in attribute_candidates {
+            attributes
+                .entry(object.clone())
+                .or_default()
+                .insert(attribute.clone());
+        }
+        let objects =
+            PythonObjectUses::new(imports, &attributes, bare_names, module, is_pkg, &scope);
+        let project = project_for.get(file).map(|project| {
+            let scoped = &project_modules[project];
+            let current = python_project_module(file, project);
+            let project_scope = PythonScope {
+                known: &project_known[project],
+                file_of: scoped,
+                exports: &exports,
+            };
+            let project_objects = PythonObjectUses::new(
+                imports,
+                &attributes,
+                bare_names,
+                &current,
+                is_pkg,
+                &project_scope,
             );
-            if let Some(project) = project_for.get(file) {
-                let scoped = &project_modules[project];
-                let current = python_project_module(file, project);
-                if python_relative_within_package(import, &current, is_pkg) {
-                    let project_scope = PythonScope {
-                        known: &project_known[project],
-                        file_of: scoped,
-                        exports: &exports,
-                    };
-                    links.add(
-                        resolve_python_import(import, &current, &project_scope, is_pkg),
-                        scoped,
-                    );
+            (scoped, current, project_scope, project_objects)
+        });
+        for (index, import) in imports.iter().enumerate() {
+            let links_of = |objects: Option<(&PythonObjectUses<'_>, &PythonObjectUses<'_>)>| {
+                let mut links = PythonLinks::default();
+                links.add(
+                    resolve_python_import(import, module, &scope, is_pkg, objects.map(|o| o.0)),
+                    &file_of,
+                );
+                if let Some((scoped, current, project_scope, _)) = &project {
+                    if python_relative_within_package(import, current, is_pkg) {
+                        let mut targets = resolve_python_import(
+                            import,
+                            current,
+                            project_scope,
+                            is_pkg,
+                            objects.map(|o| o.1),
+                        );
+                        // The report describes each module object once.
+                        targets.outcomes.clear();
+                        links.add(targets, scoped);
+                    }
                 }
+                links
+            };
+            let links = links_of(Some((
+                &objects,
+                project.as_ref().map_or(&objects, |project| &project.3),
+            )));
+            if report_dir.is_some() {
+                let before = links_of(None);
+                let others = |links: &PythonLinks| {
+                    links
+                        .files()
+                        .into_iter()
+                        .filter(|target| *target != file)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                // [file, statement index, files before, files now, module
+                // objects: [local name, module file, outcome, attributes
+                // used, attributes whose chain was uncertain]]
+                report.push(serde_json::json!([
+                    file,
+                    index,
+                    others(&before),
+                    others(&links),
+                    links
+                        .outcomes
+                        .iter()
+                        .map(|outcome| serde_json::json!([
+                            outcome.local,
+                            outcome.module,
+                            outcome.outcome,
+                            outcome.attributes,
+                            outcome.uncertain,
+                        ]))
+                        .collect::<Vec<_>>(),
+                ]));
             }
             for (target_file, weight) in links.weights() {
                 let target_id = ids[target_file];
@@ -2076,6 +2160,19 @@ fn parse_python_with_progress(
             uses.insert((file_id, ids[&target_file], name));
         }
         progress.advance(1);
+    }
+    if let Some(directory) = report_dir {
+        // Rows are in file order, then statement order: deterministic.
+        let slug = if pkg == "." {
+            "root".to_owned()
+        } else {
+            pkg.replace('/', "_")
+        };
+        let path = directory.join(format!("py-imports.{slug}.json"));
+        fs::create_dir_all(&directory)
+            .with_context(|| format!("create {}", directory.display()))?;
+        fs::write(&path, serde_json::to_vec(&report)?)
+            .with_context(|| format!("write {}", path.display()))?;
     }
 
     let module_for = parsed
@@ -2618,6 +2715,35 @@ impl PythonScope<'_> {
         }
     }
 
+    /// What `module.name` is when `module` is used as an object (finding
+    /// 53): what `from module import name` would reach ([`Self::follow`]),
+    /// else the submodule `module.name` when the module binds nothing by
+    /// that name, which is what attribute access on a package finds once
+    /// the submodule is imported. `None` when neither is certain.
+    fn attribute_of(&self, module: &str, name: &str) -> Option<String> {
+        if let Some(target) = self.follow(module, name, 0) {
+            return Some(target);
+        }
+        let full = format!("{module}.{name}");
+        (self.known.contains(&full) && self.binds_nothing(module, name)).then_some(full)
+    }
+
+    /// Whether `module` certainly binds nothing called `name`: no
+    /// definition, no import, no star import that might, and no module
+    /// `__getattr__` that could answer for it.
+    fn binds_nothing(&self, module: &str, name: &str) -> bool {
+        let Some(exports) = self.exports_of(module) else {
+            return false;
+        };
+        let is_pkg = self.is_package(module);
+        !exports.defined.contains(name)
+            && !exports.defined.contains("__getattr__")
+            && !exports.bindings.contains_key(name)
+            && exports.stars.iter().all(|(level, star)| {
+                self.star_binds(&python_head_of(*level, star, module, is_pkg), name) == Some(false)
+            })
+    }
+
     /// Whether `from module import *` binds `name`: `None` when that cannot
     /// be known (a module outside the parsed set, or a computed `__all__`).
     fn star_binds(&self, module: &str, name: &str) -> Option<bool> {
@@ -2637,60 +2763,102 @@ impl PythonScope<'_> {
 }
 
 /// The modules one import statement links (finding 48): [`resolve_python`],
-/// except that a `from pkg import ...` whose `pkg` is a package credits the
-/// package's `__init__.py` only for what that file defines itself.
+/// except that a `from mod import ...` whose `mod` is a parsed module
+/// credits `mod` only for what it defines itself, and a module the
+/// statement binds as an object is credited only for what is used from it.
 ///
 /// - `from pkg import sub`, `sub` a submodule, links `pkg/sub.py` alone.
 ///   [`resolve_python`] also links `pkg/__init__.py`, whose content the
 ///   import never uses; SCIP, the oracle, never has that pair (finding 47:
 ///   21 of the 65 hand-only pairs on the Python fixtures).
-/// - `from pkg import Name`, where `pkg/__init__.py` re-exports `Name`
-///   (`from .mod import Name`, or a star import that binds it, read through
-///   `__all__`), links the file that defines it, through the chain of
-///   re-exports ([`PythonScope::follow`]). SCIP credits the defining file
-///   too (finding 47: 12 pairs, and most of sqlalchemy's 0.66).
+/// - `from mod import Name`, where `mod` re-exports `Name` (`from .x import
+///   Name`, or a star import that binds it, read through `__all__`), links
+///   the file that defines it, through the chain of re-exports
+///   ([`PythonScope::follow`]). SCIP credits the defining file too (finding
+///   47: 12 pairs, and most of sqlalchemy's 0.66). Finding 49 did this for
+///   packages only; finding 53 extends it to ordinary modules, because
+///   sqlalchemy's facades `schema.py`, `types.py` and `sql/expression.py`
+///   re-export exactly as a package `__init__` does.
+/// - A module bound as an object -- `from pkg import sub [as s]`, `import
+///   a.b as s`, `import a` -- is credited, attribute by attribute, with the
+///   file that defines each `s.attr` the importer uses
+///   ([`PythonObjectUses::narrow`], finding 53). `from .. import util`
+///   followed by `util.x` used to link `util/__init__.py`, which only passes
+///   `x` on; SCIP credits the file that defines `x` (finding 49: 245
+///   sqlalchemy pairs, 6 django, 1 flask).
 /// - `from pkg import *` still links the package: that is the one import
 ///   SCIP cannot see and the hand-written resolver gets right.
 ///
-/// Anything else -- a plain `import`, a `from` a module that is not a
-/// package, a package outside the parsed set, a package importing from
-/// itself -- resolves exactly as before. Symbol uses (`python_uses_from_raw`)
-/// keep the unrefined resolution: the map's `U` already follows re-exports
-/// by name (`geometry::define_site`), so only the file graph changes here.
+/// Anything else -- a plain `import a.b` without an alias, a module outside
+/// the parsed set, a module importing from itself -- resolves exactly as
+/// before. Symbol uses (`python_uses_from_raw`) keep the unrefined
+/// resolution: the map's `U` already follows re-exports by name
+/// (`geometry::define_site`), so only the file graph changes here.
 ///
-/// The result separates the two kinds of link for their weights
-/// ([`PythonLinks`]): a submodule, and everything [`resolve_python`]
-/// links, is a module the statement imports; the modules its names reach
-/// are one import of the package, whose mass is shared among them.
+/// `objects` is `None` for the resolution before finding 53 (packages only,
+/// no module objects), which only `TOLMAP_PY_IMPORT_REPORT` asks for, so
+/// the report can show both graphs from one binary.
+///
+/// The result separates the kinds of link for their weights
+/// ([`PythonLinks`]): a module the statement imports; the modules its names
+/// reach, which share one import's mass; and, per module object, the
+/// modules its attributes reach, which share that module's.
 fn resolve_python_import(
     import: &PythonImport,
     current_module: &str,
     scope: &PythonScope<'_>,
     is_pkg: bool,
+    objects: Option<&PythonObjectUses<'_>>,
 ) -> PythonTargets {
     let head = python_head(import, current_module, is_pkg);
-    if !import.from
-        || head.is_empty()
-        || head == current_module
-        || !scope.known.contains(&head)
-        || !scope.is_package(&head)
-    {
-        return PythonTargets {
-            modules: resolve_python(import, current_module, scope.known, is_pkg),
-            names: BTreeSet::new(),
-        };
-    }
     let mut result = PythonTargets::default();
-    for (name, _) in &import.names {
+    let follows_names = import.from
+        && !head.is_empty()
+        && head != current_module
+        && scope.known.contains(&head)
+        && (objects.is_some() || scope.is_package(&head));
+    if !follows_names {
+        result.modules = resolve_python(import, current_module, scope.known, is_pkg);
+        let Some(objects) = objects else {
+            return result;
+        };
+        for (name, alias) in &import.names {
+            let module = if !import.from {
+                // `import a.b` binds `a`, not the module it links; only an
+                // alias, or a module with no dot, binds the module itself.
+                if alias.is_none() && name.contains('.') {
+                    continue;
+                }
+                name.clone()
+            } else if name == "*" {
+                continue;
+            } else if head.is_empty() {
+                name.clone()
+            } else {
+                format!("{head}.{name}")
+            };
+            if result.modules.contains(&module) {
+                result.object(module, alias.as_deref().unwrap_or(name), objects, scope);
+            }
+        }
+        return result;
+    }
+    for (name, alias) in &import.names {
         if name == "*" {
             result.names.insert(head.clone());
             continue;
         }
         let full = format!("{head}.{name}");
         if scope.known.contains(&full) {
-            result.modules.insert(full);
+            if full == current_module {
+                continue;
+            }
+            result.modules.insert(full.clone());
+            if let Some(objects) = objects {
+                result.object(full, alias.as_deref().unwrap_or(name), objects, scope);
+            }
         } else {
-            // Uncertain: credit the package, as before.
+            // Uncertain: credit the module, as before.
             result
                 .names
                 .insert(scope.follow(&head, name, 0).unwrap_or_else(|| head.clone()));
@@ -2710,12 +2878,218 @@ fn resolve_python_import(
 #[derive(Default)]
 struct PythonTargets {
     /// Modules the statement imports: submodules, and whatever
-    /// [`resolve_python`] links where the package rule does not apply.
+    /// [`resolve_python`] links where the name rule does not apply.
     modules: BTreeSet<String>,
-    /// The modules the names taken from a package reach: the defining files,
-    /// or the package itself for a name it defines, a name whose chain is
+    /// The modules the names taken from a module reach: the defining files,
+    /// or the module itself for a name it defines, a name whose chain is
     /// uncertain, and `*`.
     names: BTreeSet<String>,
+    /// Each module bound as an object whose attributes lead elsewhere, with
+    /// the modules they reach. Such a module has left `modules`; one whose
+    /// attributes all credit it stays there, exactly as before.
+    objects: BTreeMap<String, BTreeSet<String>>,
+    /// Every module object the statement binds, narrowed or not, for
+    /// `TOLMAP_PY_IMPORT_REPORT`.
+    outcomes: Vec<PythonObjectOutcome>,
+}
+
+impl PythonTargets {
+    /// Replace the link to `module`, bound here as `local`, by the modules
+    /// its attributes reach, when they are not just `module` itself.
+    fn object(
+        &mut self,
+        module: String,
+        local: &str,
+        objects: &PythonObjectUses<'_>,
+        scope: &PythonScope<'_>,
+    ) {
+        let (reached, outcome) = objects.narrow(local, &module, scope);
+        if reached.len() != 1 || !reached.contains(&module) {
+            self.modules.remove(&module);
+            self.objects
+                .entry(module.clone())
+                .or_default()
+                .extend(reached);
+        }
+        self.outcomes.push(PythonObjectOutcome {
+            local: local.to_owned(),
+            module,
+            ..outcome
+        });
+    }
+}
+
+/// How one module object was resolved, for `TOLMAP_PY_IMPORT_REPORT`.
+struct PythonObjectOutcome {
+    local: String,
+    /// A module name in [`PythonTargets`], a file in [`PythonLinks`].
+    module: String,
+    /// `narrowed` (every attribute credited elsewhere), `partly` (some to
+    /// the module itself: defined there, or an uncertain chain),
+    /// `defined_here` (all to the module), `uncertain` (all to the module,
+    /// at least one because its chain is uncertain), `unused` (no
+    /// attribute use), `value` (the name is also used bare, so not
+    /// narrowed), `ambiguous` (the name may be bound more than once, so not
+    /// narrowed).
+    outcome: &'static str,
+    attributes: usize,
+    /// The attributes whose chain was uncertain, in name order.
+    uncertain: Vec<String>,
+}
+
+/// How one file uses the names its imports bind as module objects (finding
+/// 53): what follows each name as `name.attr`, whether the name is also
+/// used bare, and which names are bound more than once. Built per file and
+/// per resolution scope, since relative imports resolve per scope.
+struct PythonObjectUses<'a> {
+    attributes: &'a BTreeMap<String, BTreeSet<String>>,
+    bare: &'a BTreeSet<String>,
+    ambiguous: BTreeSet<String>,
+}
+
+impl<'a> PythonObjectUses<'a> {
+    /// `attributes` is the file's `attribute_candidates` grouped by object,
+    /// and `bare` its `bare_names`.
+    fn new(
+        imports: &[PythonImport],
+        attributes: &'a BTreeMap<String, BTreeSet<String>>,
+        bare: &'a BTreeSet<String>,
+        current_module: &str,
+        is_pkg: bool,
+        scope: &PythonScope<'_>,
+    ) -> Self {
+        // What each local name is bound to, by every import in the file
+        // (a function's too: it may shadow the module-level binding).
+        let mut bound = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut stars = BTreeSet::new();
+        for import in imports {
+            if import.from {
+                let head = python_head(import, current_module, is_pkg);
+                for (name, alias) in &import.names {
+                    if name == "*" {
+                        stars.insert(head.clone());
+                        continue;
+                    }
+                    let full = if head.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{head}.{name}")
+                    };
+                    bound
+                        .entry(alias.clone().unwrap_or_else(|| name.clone()))
+                        .or_default()
+                        .insert(full);
+                }
+            } else {
+                for (name, alias) in &import.names {
+                    let (local, target) = match alias {
+                        Some(alias) => (alias.clone(), name.clone()),
+                        None => {
+                            let top = name.split('.').next().unwrap_or(name).to_owned();
+                            (top.clone(), top)
+                        }
+                    };
+                    bound.entry(local).or_default().insert(target);
+                }
+            }
+        }
+        let ambiguous = bound
+            .into_iter()
+            .filter(|(local, targets)| {
+                // Bound to two different things, or possibly rebound by a
+                // star import (outside the parsed set, a computed
+                // `__all__`, or one that lists the name).
+                targets.len() > 1
+                    || stars
+                        .iter()
+                        .any(|star| scope.star_binds(star, local) != Some(false))
+            })
+            .map(|(local, _)| local)
+            .collect();
+        Self {
+            attributes,
+            bare,
+            ambiguous,
+        }
+    }
+
+    /// The modules `local.attr` reaches for every `attr` the file uses on
+    /// `local`, which is bound to the parsed module `module`, with how it
+    /// went. `module` itself stands in for anything not certain: a name
+    /// bound more than once, a name also used bare, one with no attribute
+    /// use, and an attribute whose chain [`PythonScope::attribute_of`]
+    /// cannot follow. So an uncertain use keeps today's link and never adds a pair.
+    /// Only the attribute right after the name counts: in `util.x.y`, `y`
+    /// is an attribute of a value, which syntax cannot place.
+    fn narrow(
+        &self,
+        local: &str,
+        module: &str,
+        scope: &PythonScope<'_>,
+    ) -> (BTreeSet<String>, PythonObjectOutcome) {
+        let kept = |outcome, attributes| {
+            (
+                BTreeSet::from([module.to_owned()]),
+                PythonObjectOutcome {
+                    local: String::new(),
+                    module: String::new(),
+                    outcome,
+                    attributes,
+                    uncertain: Vec::new(),
+                },
+            )
+        };
+        let attributes = self.attributes.get(local);
+        let count = attributes.map_or(0, BTreeSet::len);
+        if self.ambiguous.contains(local) {
+            return kept("ambiguous", count);
+        }
+        // A name also used bare is not narrowed at all, not even for the
+        // attributes that do follow: `bare_names` cannot tell a value use of
+        // the module (`f(util)`) from a parameter or a local that shadows
+        // it (`def f(util): util.x`), and in the second case `util.x` is not
+        // the module's `x`.
+        if self.bare.contains(local) {
+            return kept("value", count);
+        }
+        let Some(attributes) = attributes else {
+            return kept("unused", 0);
+        };
+        let mut reached = BTreeSet::new();
+        let mut uncertain = Vec::new();
+        for attribute in attributes {
+            match scope.attribute_of(module, attribute) {
+                Some(target) => {
+                    reached.insert(target);
+                }
+                None => {
+                    uncertain.push(attribute.clone());
+                    reached.insert(module.to_owned());
+                }
+            }
+        }
+        let outcome = if reached.len() == 1 && reached.contains(module) {
+            if uncertain.is_empty() {
+                "defined_here"
+            } else {
+                "uncertain"
+            }
+        } else if reached.contains(module) {
+            "partly"
+        } else {
+            "narrowed"
+        };
+        (
+            reached,
+            PythonObjectOutcome {
+                local: String::new(),
+                module: String::new(),
+                outcome,
+                attributes: count,
+                uncertain,
+            },
+        )
+    }
 }
 
 /// One statement's links by file, over every scope it resolves in (the
@@ -2725,6 +3099,8 @@ struct PythonTargets {
 struct PythonLinks {
     modules: BTreeSet<String>,
     names: BTreeSet<String>,
+    objects: BTreeMap<String, BTreeSet<String>>,
+    outcomes: Vec<PythonObjectOutcome>,
 }
 
 impl PythonLinks {
@@ -2733,32 +3109,68 @@ impl PythonLinks {
             .extend(targets.modules.iter().map(|module| file_of[module].clone()));
         self.names
             .extend(targets.names.iter().map(|module| file_of[module].clone()));
+        for (module, reached) in &targets.objects {
+            self.objects
+                .entry(file_of[module].clone())
+                .or_default()
+                .extend(reached.iter().map(|module| file_of[module].clone()));
+        }
+        self.outcomes.extend(
+            targets
+                .outcomes
+                .into_iter()
+                .map(|outcome| PythonObjectOutcome {
+                    module: file_of[&outcome.module].clone(),
+                    ..outcome
+                }),
+        );
     }
 
-    /// Each linked file with its weight, in file order within each kind.
+    /// Every file the statement links, the importer included.
+    fn files(&self) -> BTreeSet<&String> {
+        self.modules
+            .iter()
+            .chain(&self.names)
+            .chain(self.objects.values().flatten())
+            .collect()
+    }
+
+    /// Each linked file with its weight.
     ///
     /// A module the statement imports weighs 1, what the frozen reference
     /// gives every file an import resolves to (`extract.py`), and what
-    /// `import pkg.sub` gives `pkg/sub.py`. The names taken from a package
-    /// were one import of the package, weight 1 on its `__init__.py`,
-    /// before re-exports were followed (finding 49); that mass of 1 is now
-    /// shared among the files the names reach, as a TypeScript import's is
-    /// among its defining files and a Go import's among its declaring files
+    /// `import pkg.sub` gives `pkg/sub.py`. The names taken from a module
+    /// were one import of the module, weight 1 on its file, before
+    /// re-exports were followed (finding 49); that mass of 1 is now shared
+    /// among the files the names reach, as a TypeScript import's is among
+    /// its defining files and a Go import's among its declaring files
     /// (findings 50 and 51; finding 52 measures it on the Python fixtures).
     /// Finding 49 first gave each defining file 1, which lets one statement
     /// weigh as much as the number of files a package spreads its names
     /// over; finding 1's rule is to normalise on mass, and vue measured the
     /// per-file weighting moving more files for no better agreement with
-    /// SCIP (finding 51). A file the statement
-    /// already imports as a submodule keeps its 1 and takes no share, so a
-    /// statement that links one file weighs exactly 1, as before.
-    fn weights(&self) -> impl Iterator<Item = (&String, f64)> {
-        let shared = self.names.difference(&self.modules).collect::<Vec<_>>();
-        let share = 1.0 / shared.len() as f64;
-        self.modules
-            .iter()
-            .map(|file| (file, 1.0))
-            .chain(shared.into_iter().map(move |file| (file, share)))
+    /// SCIP (finding 51). A module object is one import of its module too:
+    /// its 1 is shared among the files its attributes reach (finding 53).
+    /// A file the statement already imports as a module keeps its 1 and
+    /// takes no share, so a statement that links one file weighs exactly 1,
+    /// as before. Two groups reaching one file each give it their share:
+    /// they are two imports.
+    fn weights(&self) -> BTreeMap<&String, f64> {
+        let mut weights = BTreeMap::new();
+        for file in &self.modules {
+            *weights.entry(file).or_default() += 1.0;
+        }
+        for group in std::iter::once(&self.names).chain(self.objects.values()) {
+            let shared = group.difference(&self.modules).collect::<Vec<_>>();
+            if shared.is_empty() {
+                continue;
+            }
+            let share = 1.0 / shared.len() as f64;
+            for file in shared {
+                *weights.entry(file).or_default() += share;
+            }
+        }
+        weights
     }
 }
 
@@ -3092,6 +3504,44 @@ fn python_attribute_candidates(root: Node<'_>, source: &[u8]) -> Vec<(String, St
         }
     }
     result
+}
+
+/// Every identifier in the file except the object of `x.attr` (whose uses
+/// `python_attribute_candidates` records), the `attr` itself (a member
+/// name, not a binding in this file) and anything inside an import
+/// statement (see [`FileRaw`]'s `bare_names`). Deliberately broad: a
+/// parameter, a `def`, an assignment target, a `for` or `with` target and a
+/// keyword argument's label all count, because each can rebind or shadow a
+/// module object's local name, and a module object named here is not
+/// narrowed (finding 53). Reading every identifier costs a few false keeps,
+/// never a guessed pair. It walks down from the root rather than asking
+/// each identifier for its parent: `Node::parent()` walks from the root on
+/// every call (finding 40).
+fn python_bare_names(root: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "import_statement" | "import_from_statement" | "future_import_statement" => continue,
+            "identifier" => {
+                names.insert(text(node, source).to_owned());
+                continue;
+            }
+            "attribute" => {
+                if let Some(object) = node
+                    .child_by_field_name("object")
+                    .filter(|object| object.kind() != "identifier")
+                {
+                    stack.push(object);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    names
 }
 
 /// Phase 2 of Python's `uses` extraction: resolves `imports` (raw, from
@@ -6238,6 +6688,173 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    // -- Python module objects (finding 53) -------------------------------
+
+    /// sqlalchemy's shape: a package whose `__init__` passes names on from
+    /// its submodules, a facade module that re-exports, and a submodule the
+    /// package does not import.
+    const PYTHON_OBJECTS: &[(&str, &str)] = &[
+        ("pkg/__init__.py", "VERSION = 1\n"),
+        (
+            "pkg/util/__init__.py",
+            "from .lang import memoized, public\nfrom ._collections import OrderedSet\n\
+             from .compat import py3 as py3k\nfrom kombu import uuid\nLOCAL = 1\n",
+        ),
+        (
+            "pkg/util/lang.py",
+            "def memoized():\n    pass\ndef public():\n    pass\n",
+        ),
+        ("pkg/util/_collections.py", "class OrderedSet:\n    pass\n"),
+        ("pkg/util/compat.py", "py3 = True\n"),
+        ("pkg/util/extra.py", "def helper():\n    pass\n"),
+        ("pkg/sql/__init__.py", ""),
+        (
+            "pkg/sql/schema.py",
+            "class Column:\n    pass\nclass Table:\n    pass\n",
+        ),
+        ("pkg/sql/sqltypes.py", "class Integer:\n    pass\n"),
+        ("pkg/schema.py", "from .sql.schema import Column, Table\n"),
+        ("pkg/types.py", "from .sql.sqltypes import *\n"),
+    ];
+
+    fn with_objects(source: &str) -> Vec<(&str, &str)> {
+        let mut files = PYTHON_OBJECTS.to_vec();
+        files.push(("pkg/orm/use.py", source));
+        files.push(("pkg/orm/__init__.py", ""));
+        files
+    }
+
+    fn object_targets(source: &str) -> Vec<String> {
+        targets_of(&python_edges(&with_objects(source)), "pkg/orm/use.py")
+    }
+
+    #[test]
+    fn a_module_object_links_the_files_that_define_its_attributes() {
+        // `from .. import util` then `util.x`: the defining files, not the
+        // package that passes them on.
+        assert_eq!(
+            object_targets("from .. import util\nutil.memoized()\nutil.OrderedSet()\n"),
+            ["pkg/util/_collections.py", "pkg/util/lang.py"]
+        );
+        // The same through `import a.b as s`, an alias, and an attribute
+        // re-exported under another name.
+        assert_eq!(
+            object_targets("import pkg.util as u\nx = u.py3k\n"),
+            ["pkg/util/compat.py"]
+        );
+        assert_eq!(
+            object_targets("from pkg import util as u\nu.public()\n"),
+            ["pkg/util/lang.py"]
+        );
+        // A submodule reached as an attribute, which the package does not
+        // bind: the submodule.
+        assert_eq!(
+            object_targets("from .. import util\nutil.extra.helper()\n"),
+            ["pkg/util/extra.py"]
+        );
+        // Only the attribute right after the name counts: `.memoized` in
+        // `util.lang.memoized` is not followed further than `util.lang`.
+        assert_eq!(
+            object_targets("from .. import util\nutil.lang.memoized\n"),
+            ["pkg/util/lang.py"]
+        );
+    }
+
+    #[test]
+    fn a_module_object_keeps_its_module_where_a_use_is_uncertain() {
+        let init = "pkg/util/__init__.py";
+        // Defined by the package itself, or from outside the parsed set.
+        assert_eq!(
+            object_targets("from .. import util\nutil.LOCAL\nutil.memoized\n"),
+            [init, "pkg/util/lang.py"]
+        );
+        assert_eq!(object_targets("from .. import util\nutil.uuid()\n"), [init]);
+        // Not bound at all (a dunder, a typo, a module `__getattr__`).
+        assert_eq!(
+            object_targets("from .. import util\nutil.__file__\n"),
+            [init]
+        );
+        // Used as a value too: the module alone, as before, since a bare
+        // name could equally be a local that shadows it.
+        assert_eq!(
+            object_targets("from .. import util\nutil.memoized\nf(util)\n"),
+            [init]
+        );
+        // Imported and never used through an attribute: a re-export, or an
+        // import for its side effects.
+        assert_eq!(object_targets("from .. import util\n"), [init]);
+        // Shadowed by a parameter, or bound twice.
+        assert_eq!(
+            object_targets("from .. import util\ndef f(util):\n    return util.memoized\n"),
+            [init]
+        );
+        assert_eq!(
+            object_targets(
+                "from .. import util\ndef f():\n    from ..sql import schema as util\n    \
+                 return util.memoized\n"
+            ),
+            ["pkg/sql/schema.py", init]
+        );
+        // A star import from outside the parsed set could rebind the name.
+        assert_eq!(
+            object_targets("from .. import util\nfrom os.path import *\nutil.memoized\n"),
+            [init]
+        );
+        // `import a.b` binds `a`, so `a.b.x` is not a use of `a.b`'s
+        // attributes: the import links `a/b`, as before.
+        assert_eq!(
+            object_targets("import pkg.util\npkg.util.memoized()\n"),
+            [init]
+        );
+    }
+
+    #[test]
+    fn an_ordinary_module_passes_its_re_exports_on_too() {
+        // `from ..schema import Column` and `schema.Column`: the facade is
+        // not a package, and its names are followed the same way.
+        assert_eq!(
+            object_targets("from ..schema import Column, Table\n"),
+            ["pkg/sql/schema.py"]
+        );
+        assert_eq!(
+            object_targets("from .. import schema\nschema.Column\n"),
+            ["pkg/sql/schema.py"]
+        );
+        // Through a star import without `__all__`.
+        assert_eq!(
+            object_targets("from .. import types as sqltypes\nsqltypes.Integer\n"),
+            ["pkg/sql/sqltypes.py"]
+        );
+        assert_eq!(
+            object_targets("from ..types import Integer\n"),
+            ["pkg/sql/sqltypes.py"]
+        );
+    }
+
+    #[test]
+    fn a_module_object_shares_its_mass_among_the_files_its_attributes_reach() {
+        let weights = |source| python_weights(&with_objects(source), "pkg/orm/use.py");
+        // One import of `util`, reaching two files: 1/2 each.
+        assert_eq!(
+            weights("from .. import util\nutil.memoized\nutil.OrderedSet\n"),
+            weights_of(&[("pkg/util/_collections.py", 0.5), ("pkg/util/lang.py", 0.5)])
+        );
+        // Each module object is its own import; a module whose attributes
+        // all credit it keeps its 1, as before.
+        assert_eq!(
+            weights(
+                "from .. import util, schema\nfrom ..sql import sqltypes\n\
+                 util.memoized\nutil.py3k\nschema.Column\nsqltypes.Integer\n"
+            ),
+            weights_of(&[
+                ("pkg/sql/schema.py", 1.0),
+                ("pkg/sql/sqltypes.py", 1.0),
+                ("pkg/util/compat.py", 0.5),
+                ("pkg/util/lang.py", 0.5),
+            ])
+        );
     }
 
     #[test]

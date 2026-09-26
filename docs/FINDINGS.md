@@ -2486,6 +2486,141 @@ That is the drift CLAUDE.md's naming rule warns about. The namer's cache is keye
 - How a per-file-weighted Python graph would place against the SCIP fixtures. The TypeScript variants in `hand_score.py ts-variants` were not ported to Python.
 - `eval/batch_stability.py` was not run. It imports the frozen Python reference, which does not follow re-exports, as in findings 23 and 49–51.
 
+## 53. Crediting a Python module object's attribute uses to the defining files lifts sqlalchemy's precision against SCIP from 0.81 to 0.92 and its recall from 0.75 to 0.92; four member-only use pairs are given up, and httpx is no longer a frozen-reference fixture
+
+Owner decisions, session `16030105`, AskUserQuestion: transcript line 6937 (2026-09-25T16:56:34Z) **"Tune hand, SCIP as oracle (Recommended)"**; (2026-09-26) **"Uses only: merge both (Recommended)"**, which defines a reference edge as a name being used; line 7454 (2026-09-26T03:19:11Z) **"Merge; align Python later (Recommended)"**, under which one import's mass of 1 is shared among the files it reaches (finding 52); and line 7583 (2026-09-26T05:47:37Z), which chose **"Python module objects"** among the items to run in parallel. `hand` stays the default. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s follow-up to finding 49's "What is left for Python", [PR #138](https://github.com/onsager-ai/tolmap/pull/138).
+
+**What changed** (`src/extract.rs`, `resolve_python_import`, `PythonObjectUses`, `PythonScope::attribute_of`, `PythonLinks`).
+- **Module objects.** A module a statement binds as an object (`from pkg import sub [as s]`, `import a.b as s`, `import a`) is credited, attribute by attribute, with the file that defines each `s.attr` the importing file uses. `from .. import util` followed by `util.x` used to link `util/__init__.py`, which only passes `x` on. It now links the file that defines `x`. Each attribute is followed through the existing re-export index (`python_exports`, `PythonScope::follow`) with the same four hops. An attribute that the module does not bind at all but that names a submodule (`util.extra.helper()`) credits the submodule.
+- **Re-exports through ordinary modules.** `from mod import Name` now follows `mod`'s re-exports when `mod` is an ordinary module too, not only a package. sqlalchemy's facades `schema.py`, `types.py` and `sql/expression.py` pass names on exactly as a package `__init__` does.
+- **Only the attribute right after the name counts.** In `util.x.y`, `y` is an attribute of a value, which syntax cannot place.
+- **An uncertain use keeps today's link, so nothing is guessed.** The module object keeps its link to the module, and nothing else is added, when its local name:
+  - is also used bare anywhere in the file. That covers a value use (`f(util)`), a parameter or local that shadows it, and a rebinding. `bare_names`, a new internal `FileRaw::Python` field, is every identifier outside `x.attr` objects and import statements. It cannot tell a value use from a shadowing one, so neither narrows. A first version kept the module *and* added the followed attributes for a value use; the unit test for a shadowing parameter showed that `def f(util): util.x` would then credit the module's `x` for a use of the parameter's, so it was changed before any measurement.
+  - is bound by more than one import in the file (a function-level import included), or could be rebound by a star import that is outside the parsed set, has a computed `__all__`, or lists the name;
+  - is never used as `name.attr` (a re-export, or an import for its side effects).
+- **Per attribute**, one whose chain is uncertain (a name from outside the parsed set, bound twice, not bound visibly, or a module with a `__getattr__`) credits the module, as finding 49's names do.
+- **Weight (finding 52).** A module object is one import of its module. Its mass of 1 is shared among the files its attributes reach. A module whose attributes all credit it keeps its 1, exactly as before, and every other statement's links and weights are as they were. Two groups in one statement that reach one file each give it their share, since they are two imports.
+- **Unchanged:** `S` and `U` (`python_uses_from_raw` is untouched), star imports, `import a.b` without an alias (it binds `a`), Go and TypeScript. There is no schema change and no new dependency. The new structs are internal and iterate BTreeMaps and BTreeSets.
+
+**Measurement additions.**
+- `TOLMAP_PY_IMPORT_REPORT=<dir>` makes the resolver write one row per Python import statement. Each row gives the files the statement linked before this change (main's resolution, computed by the same binary with module objects and ordinary-module following off), the files it links now, and each module object's outcome. `hand-score` sets it for its `dump-graph --refs hand`.
+- `eval/hand_score.py` scores both pair sets against SCIP in the same run, from the report. It adds the outcome counts, the pair-by-pair change and each set's hand-only classes.
+- **The construction is checked.** On all seven Python fixtures the report's `before` pair set has the committed baseline's `hand_fingerprint`, which is main's graph, and its `after` set equals the dumped hand graph.
+
+### Before and after, against SCIP
+
+[CI run 36222918694](https://github.com/onsager-ai/tolmap/actions/runs/36222918694), job `hand-score`, at `89dcaac`. Before is main's resolution from the same run's report. Its numbers equal the committed baseline's (finding 49's after-run, whose pairs finding 52 left unchanged).
+
+| fixture | hand pairs | recall, uses | precision, uses | shared by a use | recall, all | precision, all | hand-only | re-export | other | SCIP-only |
+|---|---|---|---|---|---|---|---|---|---|---|
+| celery | 600 → 602 | 0.9359 → 0.9408 | 0.9483 → 0.9502 | 569 → 572 | 0.8296 → 0.8324 | 0.9817 → 0.9817 | 11 → 11 | 0 → 0 | 11 → 11 | 121 → 119 |
+| django | 3,083 → 3,170 | 0.8878 → **0.9460** | 0.9390 → **0.9732** | 2,895 → 3,085 | 0.7613 → 0.7822 | 0.9922 → 0.9915 | 24 → 27 | 6 → **0** | 8 → 17 | 959 → 875 |
+| flask | 94 | 0.8230 | 0.9894 | 93 | 0.8230 | 0.9894 | 1 | 1 | 0 | 20 |
+| httpx | 87 → 86 | 0.9589 → 0.9589 | 0.8046 → 0.8140 | 70 → 70 | 0.9595 → 0.9459 | 0.8161 → 0.8140 | 16 → 16 | 0 | 0 | 3 → 4 |
+| rich | 419 | 0.9905 | 1.0000 | 419 | 0.9882 | 1.0000 | 0 | 0 | 0 | 5 |
+| scrapy | 944 → 945 | 0.8790 → 0.8827 | 0.9926 → 0.9958 | 937 → 941 | 0.7725 → 0.7733 | 1.0000 → 1.0000 | 0 → 0 | 0 | 0 | 278 → 277 |
+| sqlalchemy | 2,592 → 2,785 | 0.7455 → **0.9186** | 0.8059 → **0.9242** | 2,089 → 2,574 | 0.7455 → 0.9186 | 0.8059 → 0.9242 | 503 → 211 | 245 → **30** | 245 → 168 | 713 → 228 |
+
+"Submodule via package" is unchanged: django 1, every other fixture 0. Star imports are unchanged: httpx 16, django 9, sqlalchemy 13. sqlalchemy's index has no namespace-only pairs (finding 48), so its "all" and "uses" columns agree.
+
+The change, pair by pair, from the report:
+
+| fixture | statements changed (by a module object / by names only) | pairs removed | of them SCIP has | of them SCIP has by a use | removed pairs to a package `__init__` | pairs added | added, SCIP has by a use | added, SCIP lacks |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| celery | 2 (1 / 1) | 1 | 1 | 0 | 1 | 3 | 3 | 0 |
+| django | 138 (118 / 20) | 116 | 110 | 0 | 113 | 203 | 190 | 9 |
+| httpx | 1 (1 / 0) | 1 | 1 | 0 | 1 | 0 | 0 | 0 |
+| scrapy | 3 (3 / 0) | 3 | 3 | 0 | 3 | 4 | 4 | 0 |
+| sqlalchemy | 969 (341 / 628) | 316 | 4 | **4** | 215 | 509 | 489 | 20 |
+| flask, rich | 0 | 0 | | | | 0 | | |
+
+- **sqlalchemy's gap closes.** Its "re-export" hand-only class falls from 245 to 30 and "other", which held the facade modules, from 245 to 168. Against SCIP's use pairs, recall rises from 0.7455 to 0.9186 and precision from 0.8059 to 0.9242. The product gate's recall is that precision, so sqlalchemy's SCIP admission margin over the 0.80 floor grows from 0.0059 to 0.1242 (`data/scip/sqlalchemy.json` records 0.9242).
+- **django's GEOS `capi` pairs are fixed.** Finding 47 read these by hand, and the re-export class falls from 6 to 0. django's precision against use pairs rises from 0.9390 to 0.9732, and its recall from 0.8878 to 0.9460.
+- **The pairs removed that SCIP has are namespace pairs,** except sqlalchemy's 4. As in findings 49 and 51, an import statement naming a module is an occurrence of the module symbol, so SCIP has importer → `__init__.py` whether or not anything the `__init__` defines is used. httpx's one removed pair is `_transports/default.py` → `httpx/__init__.py`, from `import httpx` under `TYPE_CHECKING` followed by `httpx.HTTPError`, which is defined in `_exceptions.py`. httpx's recall against all SCIP pairs falls by that one pair (0.9595 → 0.9459), and its recall against use pairs is unchanged.
+- **sqlalchemy gives up 4 pairs SCIP confirms by a use.** All four were read in the source at the pin. In each, the file imports a module whose names it actually uses are defined elsewhere, and SCIP credits the old target only through something reached on a value:
+  - `orm/clsregistry.py` → `orm/interfaces.py`. It uses `interfaces.NotExtension`, which is defined in `orm/base.py`; SCIP's support is `MapperProperty#key` and `#parent`.
+  - `orm/loading.py` → `orm/attributes.py`. Its seven `attributes.x` names are defined in `orm/base.py`; SCIP's support is `History#has_changes()`.
+  - `dialects/mysql/_mariadb_shim.py` → `engine/interfaces.py`. It uses `from ...engine.interfaces import TypeCompiler`, which `interfaces.py` re-exports from `sql/compiler.py`; SCIP's support is `DBAPIConnection#close()`, `#cursor()` and `DBAPICursor#description()`.
+  - `orm/writeonly.py` → `orm/interfaces.py`. It uses `interfaces.ONETOMANY` and `interfaces.MANYTOMANY`, both defined in `orm/base.py`; SCIP's support is `StrategizedProperty#strategy_for()` and the class `LoaderStrategy`, reached through `@relationships.RelationshipProperty.strategy_for(...)` and an inherited base.
+
+  The first three are member-only in the ingest's `member_only_use_pairs`. The fourth is an inferred type. None is a name the source writes that the old target defines: these are finding 50's "member via value" and finding 51's "inferred type" in Python. The gate holds the total `shared_uses`, which rises on every changed fixture (sqlalchemy 2,089 → 2,574), so it passed. The 4 are recorded here rather than hidden in that total.
+- **The fix adds 29 pairs SCIP does not have:** django 9, sqlalchemy 20. Two were read in the source:
+  - `django/core/checks/messages.py` → `django/db/models/base.py`. It is `models.base.ModelBase` after a function-level `from django.db import models`, so the pair is exactly what the source says.
+  - `sqlalchemy/orm/base.py` → `util/compat.py`. It is `util.dottedgetter`, which `util/__init__.py` takes `from .compat import dottedgetter`.
+
+  Why scip-python credits neither file was not investigated; finding 49's `app_or_default` is the same shape. The other 27 were not read one by one.
+
+**Module objects, by outcome** (the report; one per module a statement binds as an object):
+
+| fixture | module objects | narrowed | partly | defined here | uncertain | unused | value | ambiguous |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| celery | 108 | 1 | 0 | 94 | 1 | 2 | 10 | 0 |
+| django | 330 | 113 | 7 | 177 | 7 | 4 | 20 | 2 |
+| flask | 9 | 0 | 0 | 7 | 0 | 1 | 1 | 0 |
+| httpx | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| rich | 10 | 0 | 0 | 7 | 0 | 0 | 3 | 0 |
+| scrapy | 45 | 3 | 0 | 38 | 2 | 0 | 2 | 0 |
+| sqlalchemy | 1,068 | 296 | 46 | 553 | 14 | 30 | 120 | 9 |
+
+"Defined here" is the common case, a module used for its own names, and it is unchanged by construction. The most frequent uncertain attributes are sqlalchemy's `defaultdict` (6, which `util/__init__.py` takes from `collections`) and `dialect` (5), and django's GIS aggregates `Collect`, `MakeLine` and `Extent3D` (3 each).
+
+**What is left.** sqlalchemy's 30 remaining "re-export" pairs are the conservative rule at work. There are three kinds:
+- a module object also used bare (`value`: `testing/engines.py`'s `pool`, `util/preloaded.py`'s `_orm`);
+- an attribute from outside the parsed set (`util.defaultdict`, `util.update_wrapper`, `sqlalchemy.__file__`);
+- names taken from a package that it defines itself or re-exports uncertainly (the `testing` package's `config`, `fixtures`, `eq_`).
+
+flask's one is `wrappers.py`'s `json`, also used bare. Star imports (38 pairs) stay as they are, since hand is right there.
+
+### District churn and re-derivation
+
+The same run's `hand_map_vs_fixture`, the placement of this branch's hand map against the committed fixture. `full-fixtures` in the same run reports the same placements. The bands are finding 47's, measured before findings 49–52 with eight draws each, so they are a rough yardstick.
+
+| fixture | placement vs old fixture | Δq | districts | `E` | node-order band | random-pairs band | placement vs SCIP fixture, old → new |
+|---|---:|---:|---|---|---|---|---|
+| celery | 100.0% | 0.0003 | 7 → 7 | 600 → 602 | 71.4–100.0 | 53.4–88.2 | 59.6% → 59.6% |
+| django | 77.7% (661/851) | 0.0044 | 13 → 12 | 3,083 → 3,170 | 79.2–93.3 | 37.5–77.4 | 78.4% → 71.8% |
+| httpx | 100.0% | 0.0020 | 4 → 4 | 87 → 86 | 82.6–100.0 | 43.5–95.7 | 47.8% → 47.8% |
+| scrapy | 68.1% (128/188) | 0.0023 | 8 → 7 | 944 → 945 | 72.9–97.3 | 60.1–94.1 | 50.5% → **75.5%** |
+| sqlalchemy | 90.7% (234/258) | 0.0081 | 7 → 6 | 2,592 → 2,785 | 95.0–100.0 | — | 81.4% → 81.8% |
+| flask, rich | 100.0% | 0.0000 | unchanged | unchanged | | | unchanged |
+
+- **Every Δq is within 0.02.** celery and httpx place 100.0%, but their `E` changed, so `parity` fails them on edges. django, scrapy and sqlalchemy place below 95%. All five are re-derived.
+- **django, scrapy and sqlalchemy move just outside their node-order bands:** django 77.7% against 79.2–93.3, scrapy 68.1% against 72.9–97.3, and sqlalchemy 90.7% against 95.0–100.0. django sits just above its random-pairs band, and scrapy inside its band. sqlalchemy's graph gains 193 pairs, 7.4% of its `E`.
+- **scrapy moves back towards SCIP's districts,** from 50.5% to 75.5% against its SCIP fixture, near the 76.1% it had before finding 52. Its district names also return to finding 49's under the seeded cache ("http", "downloader & handlers", "pipelines & utils", "extensions"). By inference, the three module-object statements tip scrapy back to its finding-49 partition. That inference was not checked beyond the names and placements.
+- **django moves away from SCIP's districts,** from 78.4% to 71.8%, as it did under finding 52. Placement measures agreement, not correctness. SCIP's weights are distinct-symbol counts (finding 47), which hand does not try to track.
+
+**Re-derivation.** This is finding 49's route. The maps are this run's `hand-score` maps: a full-history clone and a naming cache seeded from the committed map.
+- `data/{celery,django,httpx,scrapy,sqlalchemy}.json` keep the committed fixtures' key set. `F`, `S` and `U` are identical to the old fixtures. `E` and `L` change as in the table (`L`: django 19 → 18, scrapy 12 → 11).
+- `data/fixtures.toml` marks the five `generator = "rust-python-module-objects"` and records their new `districts` and `q`. **httpx was the last fixture generated by the frozen Python reference. Every fixture is now generated by the Rust product.** `full-fixtures`' comment is updated to say so.
+- `data/ci/httpx.graph.json` takes this run's dump in the old file's key shape. Only its `imports`, `edges` and two nodes' `fanin` change: `_transports/default.py`'s import of `httpx` now weighs on `_exceptions.py`. flask's graph did not change, and `data/ci/flask.graph.json` is untouched.
+- `data/scip/{celery,django,httpx,scrapy,sqlalchemy}.json` are re-recorded from the same run's `scip-fixtures` `record/` artifact. Only the recorded hand pair count, the gate recall and the source run change; `scip-fixtures` passed on all nine, so the SCIP maps are the same.
+- `data/scip/hand_score.json`'s Python rows and source are lowered to this run's baseline. The Go and TypeScript rows are left as committed. vue's row differs in the fresh baseline only in its `weight_variants` placements against the vue fixture that finding 51 re-derived since, so it was not re-recorded here.
+
+Renames, matched through the parity gate's district matching (previous name → re-derived name, Jaccard, size in files old → new). celery and httpx keep every name at Jaccard 1.00.
+
+| fixture | previous name | re-derived name | Jaccard | size |
+|---|---|---|---:|---|
+| django | contrib & admin | utils & forms | 0.36 | 129 → 87 |
+| django | sessions & middleware, messages, serializers | (unmatched) | | 58, 13, 9 |
+| django | (new) | contrib & views, sessions | | 109, 13 |
+| scrapy | http & response | http | 0.91 | 22 → 22 |
+| scrapy | downloader & _http2 | downloader & handlers | 0.72 | 19 → 24 |
+| scrapy | utils & pipelines | pipelines & utils | 0.61 | 36 → 25 |
+| scrapy | downloadermiddlewares & extensio | downloadermiddlewares & spidermi | 0.40 | 42 → 38 |
+| scrapy | spiders, downloader & handlers | (unmatched) | | 16, 8 |
+| scrapy | (new) | extensions | | 35 |
+| sqlalchemy | mysql & engine | engine & dialects | 0.76 | 47 → 48 |
+| sqlalchemy | engine & asyncio | util & engine | 0.70 | 22 → 29 |
+| sqlalchemy | util & event | (unmatched, 6 districts from 7) | | 15 |
+
+Every other district keeps its name at Jaccard 0.62–1.00. For django that is tasks, gdal & gis, conf & locale, gis & contrib, db & backends, files & cache, models & db, management & commands and template. For scrapy it is commands and utils. For sqlalchemy it is orm, testing, sql and dialects & postgresql. As in findings 49–52, these names are the product namer's output under a seeded cache, recorded rather than hand-edited. django's "contrib & admin" → "utils & forms" at Jaccard 0.36 is the name drift CLAUDE.md warns about: the namer's cache is keyed on exact membership.
+
+### Not verified
+- 27 of the 29 added pairs SCIP lacks, and why scip-python credits neither file on the two that were read.
+- Whether a value use of a module object could be told from shadowing without scope analysis, which would narrow sqlalchemy's 120 `value` module objects.
+- The effect on repositories outside the fixtures, including nested Python projects. There, the report records each module object once, from the source-root scope.
+- `eval/batch_stability.py` was not run. It imports the frozen Python reference, which follows neither re-exports nor module objects, as in findings 23 and 49–52. The placements above are the churn measurement.
+
 ## 54. Evaluating Go build constraints for linux/amd64 narrows 96 of prometheus's 100 tied imports and raises its precision against SCIP from 0.80 to 0.98; no pair SCIP confirms by a named use is lost
 
 Owner decisions, session `16030105`, AskUserQuestion: transcript line 6937 (2026-09-25T16:56:34Z) **"Tune hand, SCIP as oracle (Recommended)"**; line 7246 (2026-09-26T00:06:50Z) **"Uses only: merge both (Recommended)"**; line 7562 (2026-09-26T05:45:29Z) **"Merge for consistency (Recommended)"** (the shared weighting of finding 52); and line 7583 (2026-09-26T05:47:37Z), which chose **"Go build tags"** as a parallel item with its stated cost: *"Evaluate `//go:build` for linux/amd64 to narrow 100 prometheus imports. Cost: bakes in a platform choice."* This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s follow-up to finding 50, [PR #137](https://github.com/onsager-ai/tolmap/pull/137).
