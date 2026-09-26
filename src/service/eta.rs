@@ -484,9 +484,17 @@ fn fit_loglog(points: &[(f64, f64)], fallback_slope: Option<f64>) -> (f64, f64) 
     (slope, mean_y - slope * mean_x)
 }
 
+/// The curve is never extrapolated below its smallest measured repository.
+/// Below that size a job's peak is dominated by fixed start-up cost (the
+/// interpreter and indexer loading), not by file count, so the log-log line
+/// keeps falling where the real peak does not. The image e2e caught this:
+/// a 4-file `--refs scip` job peaked at 210 MiB while the extrapolated
+/// upper bound said 118 MiB. Clamping to the smallest anchor errs high,
+/// which is the direction this model is meant to err (§2.1).
 fn loglog_predict(points: &[(f64, f64)], fallback_slope: Option<f64>, files: f64) -> f64 {
     let (slope, intercept) = fit_loglog(points, fallback_slope);
-    (slope * files.max(1.0).ln() + intercept).exp()
+    let smallest = points.iter().map(|&(x, _)| x).fold(f64::INFINITY, f64::min);
+    (slope * files.max(smallest).max(1.0).ln() + intercept).exp()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1078,5 +1086,23 @@ mod tests {
         ]);
         assert_eq!(forward.predict_peak(&a), backward.predict_peak(&a));
         assert_eq!(forward.predict_peak(&b), backward.predict_peak(&b));
+    }
+
+    // The image e2e measured a 4-file `--refs scip` job at 210 MiB, and the
+    // unclamped curve predicted an upper bound of 118 MiB for it. Below the
+    // smallest anchor the prediction must stay at the anchor's level.
+    #[test]
+    fn a_repository_smaller_than_every_anchor_is_not_extrapolated_down() {
+        let model = MemoryModel::default();
+        let tiny = model.predict_peak(&scip_py(4));
+        assert!(
+            tiny >= 210 * 1_048_576,
+            "a 4-file scip job measured 210 MiB; predicted {tiny} bytes"
+        );
+        assert_eq!(tiny, model.predict_peak(&scip_py(23)));
+        assert_eq!(
+            model.predict_peak(&features(1)),
+            model.predict_peak(&features(51))
+        );
     }
 }
