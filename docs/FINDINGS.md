@@ -2621,6 +2621,106 @@ Every other district keeps its name at Jaccard 0.62–1.00. For django that is t
 - The effect on repositories outside the fixtures, including nested Python projects. There, the report records each module object once, from the source-root scope.
 - `eval/batch_stability.py` was not run. It imports the frozen Python reference, which follows neither re-exports nor module objects, as in findings 23 and 49–52. The placements above are the churn measurement.
 
+## 54. Evaluating Go build constraints for linux/amd64 narrows 96 of prometheus's 100 tied imports and raises its precision against SCIP from 0.80 to 0.98; no pair SCIP confirms by a named use is lost
+
+Owner decisions, session `16030105`, AskUserQuestion: transcript line 6937 (2026-09-25T16:56:34Z) **"Tune hand, SCIP as oracle (Recommended)"**; line 7246 (2026-09-26T00:06:50Z) **"Uses only: merge both (Recommended)"**; line 7562 (2026-09-26T05:45:29Z) **"Merge for consistency (Recommended)"** (the shared weighting of finding 52); and line 7583 (2026-09-26T05:47:37Z), which chose **"Go build tags"** as a parallel item with its stated cost: *"Evaluate `//go:build` for linux/amd64 to narrow 100 prometheus imports. Cost: bakes in a platform choice."* This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s follow-up to finding 50, [PR #137](https://github.com/onsager-ai/tolmap/pull/137).
+
+**What changed.**
+- **`src/go_build.rs`** decides whether each Go file is compiled for one target, `GO_BUILD_TARGET`: `linux/amd64`, the gc toolchain's default tags (`unix`, `gc`, `amd64.v1`, release tags `go1.1`–`go1.26`, the toolchain CI installs for scip-go), cgo off and no custom tags. It reads `//go:build` lines as full boolean expressions, legacy `// +build` lines (fields ORed, comma-separated literals ANDed, several lines ANDed), the `_GOOS`, `_GOARCH` and `_GOOS_GOARCH` file name suffixes, `_test` files, names starting with `_` or `.`, and a cgo file (`import "C"`), which `go build` leaves out with cgo off. It follows `go/build`'s `goodOSArchFile`, `parseFileHeader` and `shouldBuild`, and `go/build/constraint`'s grammar.
+- **Evaluation is three-valued.** It answers "unknown" where Go would reject the file or guess: a `//go:build` line that does not parse, two of them, one after a block comment, a `// +build` literal Go would silently read as `ignore` (`!!x`), and any `goexperiment.*` tag, since the experiments a toolchain turns on by default change between releases. An unknown tag decides nothing only where it could change the answer, so `windows && goexperiment.x` is still out.
+- **The target breaks ties and does nothing else** (`narrow_go_import`). A name one file declares resolves to it, as in finding 50, whatever either file's build status: an importer can only name it if both are compiled together. A name several files declare resolves to the one in the target build, when the importer is itself in the build, exactly one declarer is in it, and no declarer's constraint is unknown. Anything else keeps the whole package, as before. So the targets are a subset of finding 50's, and the change removes pairs and never adds one.
+- **An excluded file stays on the map.** It is not a tie-break target, and its own imports are linked like any other file's.
+- **Unchanged:** `S` and `U`, Python, TypeScript. No schema change and no new dependency. The build status is an internal field of `FileRaw::Multi`, computed from the file's name and bytes only, so it cannot depend on visit order.
+
+**Where the spec left room.**
+- *"A name declared in exactly one in-build file narrows to that file"* and *"zero in-build declarers keeps the whole package"* conflict for a name only one file declares when that file is out of the build: finding 50 already narrows it to that file. Keeping the whole package there would add pairs. The target is therefore used only to break a tie between several declarers.
+- An importer outside the build (`tsdb/head_dedupelabels.go`) is not narrowed by the target. Linking a `dedupelabels`-only file to the `stringlabels` implementation would be wrong on the only build that compiles it. It keeps its whole package: 1 import on prometheus.
+- The brief expected `stringlabels` and `dedupelabels` to be the excluded variants. At the fixture's pin the default is `labels_stringlabels.go` (`!slicelabels && !dedupelabels`), and `slicelabels` is the opt-in tag. The evaluator follows the files, not the expectation.
+- cgo is off by the brief. The oracle's runner has a C compiler, so scip-go builds with cgo on. prometheus has no cgo file, so the two agree on it.
+
+**Measurement additions.** `TOLMAP_GO_IMPORT_REPORT` also writes `go-build.<pkg>.json`, each Go file's status for the target. The per-import report gains the outcome `narrowed_by_build` and four reasons a tie was not broken: `ambiguous_name` (several declarers in the build), `excluded_only` (none), `unknown_constraint` and `importer_not_in_build`. `eval/hand_score.py` reports both.
+
+### Before and after, against SCIP
+
+prometheus, finding 48's job. Before is the committed baseline, from finding 50's [CI run 36206406154](https://github.com/onsager-ai/tolmap/actions/runs/36206406154); prometheus's Go graph did not change after it (findings 51 and 52 place it 100.0%, Δq 0.0000). After is [CI run 36222581179](https://github.com/onsager-ai/tolmap/actions/runs/36222581179) (this branch at `b813730`), job `hand-score`. The SCIP fingerprint is unchanged.
+
+| | before | after |
+|---|---:|---:|
+| hand pairs | 2,584 | 1,592 |
+| shared with SCIP (of 5,436) | 2,079 | 1,565 |
+| recall, all | 0.3825 | 0.2879 |
+| precision, all | 0.8046 | **0.9830** |
+| shared by a use (of 1,873 SCIP use pairs) | 1,255 | 1,247 |
+| shared by a named use (gated) | 1,245 | **1,245** |
+| recall, uses | 0.6700 | 0.6658 |
+| precision, uses | 0.4857 | **0.7833** |
+| shared only through a namespace | 824 | 318 |
+| hand-only, `package spread` | 490 | **12** |
+| hand-only, `other` | 15 | 15 |
+| SCIP-only | 3,357 | 3,871 |
+| file gap: use pairs given up (member only / named) | 24 (24 / 0) | 32 (32 / 0) |
+| by directory: hand / shared / precision | 956 / 953 / 0.9969 | 956 / 953 / 0.9969 |
+
+**Precision against all of SCIP's pairs rises from 0.8046 to 0.9830**, and against use pairs from 0.4857 to 0.7833. 992 hand pairs are gone. 514 of them were shared with SCIP: 506 only through a namespace, and 8 by a use.
+
+**No pair SCIP confirms by a named use is lost** (1,245 before and after), so the `hand-score` gate passed without change. The 8 use pairs given up are all member-only, as in finding 50: a method or field reached on a value, which the whole-package link held only by linking every file. The file gap is now 32, all member-only, and its named part is still 0.
+
+**Recall against all pairs falls from 0.3825 to 0.2879** for finding 50's reason: scip-go defines a package's symbol in one of its files, so every import has a namespace pair to that file. For `model/labels` that is not the file the importer's names live in.
+
+**Imports, by outcome** (956 in-repo imports; files linked, summed over imports: whole package 5,574, finding 50 2,584, now 1,592):
+
+| outcome | before | after |
+|---|---:|---:|
+| narrowed (every name declared once) | 791 | 791 |
+| narrowed by the build target | | **96** |
+| opaque (`_`, `.`) | 60 | 60 |
+| undeclared name | 5 | 8 |
+| ambiguous name (several declarers in the build) | 100 | 0 |
+| several declarers, none in the build | | 0 |
+| several declarers, one constraint unknown | | 0 |
+| importer not in the build | | 1 |
+
+- **96 of the 100 tied imports narrow.** The 100 were `model/labels`' `Labels`, `EmptyLabels`, `Compare` and `Builder`, and `tsdb/fileutil`'s `OpenDir`.
+- **3 now stop at an undeclared name.** A tied name used to be reported first, so these were counted as ambiguous: `String` twice and `get` once on `model/labels`. Like finding 50's 5, these are consistent with a local variable shadowing the package's name. Not checked one by one.
+- **1 is an importer outside the build**, `tsdb/head_dedupelabels.go` naming `labels.Labels`.
+- **Files, by build status:** 411 in, 33 out, 0 unknown. The 33 are the opt-in label variants (`slicelabels`, `dedupelabels`), other platforms' `fileutil` and `util/runtime` files, `head_chunks_windows.go`, and three custom-tag files: `internal/tools/tools.go` (`tools`), `util/fuzzing/corpus_gen/main.go` (`fuzzing`) and `web/ui/assets_embed.go` (`builtinassets`). 29 of them were read in the source at the pin, and each is out for the reason the evaluator gives; the other 4 (`tsdb/head_dedupelabels.go`, `util/runtime/{limits_windows,statfs_windows,vmlimits_openbsd}.go`) were not. The 411 in-build files were not checked one by one.
+
+### District churn and re-derivation
+
+| | old fixture | re-derived |
+|---|---|---|
+| placement of this branch's hand map against the old fixture | | 91.7% (407 of 444) |
+| q | 0.5333 | 0.5519 (Δq 0.0186) |
+| districts | 11 | 11 |
+| `E` | 2,584 | 1,592 |
+| `S`, `U` | | identical |
+| placement against the SCIP fixture | 68.5% | 68.2% |
+
+**prometheus moves inside the partitioner's own band.** Finding 47's node-order band for prometheus is 69.1–94.6%, and 91.7% sits inside it, above every random-pairs draw (34.7–66.7%). Δq is within 0.02 and placement below 95%, so the fixture is re-derived. Against its SCIP fixture it stays where it was (68.5% → 68.2%).
+
+`data/prometheus.json` is the map from run 36222581179's `hand-score` job: the full-history clone and a seeded naming cache, the route of findings 49–52. It keeps the committed fixture's key set. `data/fixtures.toml` marks it `generator = "rust-go-build-tags"`. `data/scip/prometheus.json` is unchanged: `scip-fixtures` passed on all nine in the same run. `data/scip/hand_score.json`'s prometheus row is re-recorded from that run's `baseline` output. Its other rows, and its `source`, are unchanged.
+
+Renames, matched through the parity gate's district matching:
+
+| previous name | re-derived name | Jaccard | size |
+|---|---|---:|---|
+| model | model | 0.95 | 62 → 61 |
+| promql | promql | 0.98 | 53 → 52 |
+| storage & remote | storage & remote | 0.82 | 60 → 60 |
+| tsdb | tsdb | 0.71 | 97 → 79 |
+| fileutil & tsdb | (unmatched) | | 4 |
+| (new) | **fileutil & tsdb** | | 24 |
+
+`discovery`, `web & api`, `internal tools`, `promql & promqltest` and both `runtime & util` districts are unchanged (Jaccard 1.00).
+
+**One name moved to a different place.** The old "fileutil & tsdb" was four `direct_io` files, and they joined "storage & remote". The name now belongs to a new 24-file district split from `tsdb`: `tsdb/fileutil`'s platform files (`flock_*`, `mmap_*`, `preallocate_*`, `sync_*`, `dir_windows.go`) and `util/runtime/uname_*`. Most of these files are out of the build, or are variants a tied import used to reach through the whole package, so they lost those inbound links. That is the drift CLAUDE.md's naming rule warns about. As in findings 49–52, it is the product namer's output under a seeded cache, recorded rather than hand-edited.
+
+### Not verified
+- The 3 new undeclared names were not read in the source.
+- Whether any corpus repository besides prometheus has cgo files that break a tie. With cgo on, the oracle would compile them and the resolver would not.
+- Go 1.26's default `goexperiment` set was not modelled. A file gated on one is "unknown", and prometheus has none.
+- `eval/batch_stability.py` was not run. It imports the frozen Python reference, which has no Go, as in findings 23 and 50. The placement above is the churn measurement.
+
 ## 55. `rust-analyzer scip` always runs a `cargo metadata`-driven load and compiles native code for it; offline it degrades to `--no-deps` instead of failing, losing 31–66% of file pairs on a real multi-crate workspace; no sampled third-party derive macro's generated methods showed up in any variant
 
 Owner's go: session `16030105-19f0-4a84-933b-c5953f23c6b3`, "Rust spike (#126)" chosen as a parallel item, 2026-09-26. This is issue [#126](https://github.com/onsager-ai/tolmap/issues/126)'s "measure first" step, modelled on finding 41's P0 spike: CI only, no product change. There is no hand resolver or tree-sitter-rust extractor for Rust yet, so this measures only what `rust-analyzer scip` gives on its own — `eval/rust_scip_stats.py` calls `eval/scip_ingest.py`'s `ingest()` unchanged, with the repo's tracked `.rs` files standing in for the map's `F` and `spans=None` (finding 41's parameter for "no symbols document to credit against").

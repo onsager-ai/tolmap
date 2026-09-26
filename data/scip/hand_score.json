@@ -163,80 +163,166 @@
    "files": 444,
    "go": {
     "file_gap": {
-     "member_only": 24,
+     "member_only": 32,
      "named": 0,
      "named_samples": [],
-     "use_pairs": 24
+     "use_pairs": 32
     },
     "import_outcomes": {
+     "build": {
+      "by_status": {
+       "in": 411,
+       "out": 33
+      },
+      "not_in": [
+       [
+        "internal/tools/tools.go",
+        "out"
+       ],
+       [
+        "model/labels/labels_dedupelabels.go",
+        "out"
+       ],
+       [
+        "model/labels/labels_slicelabels.go",
+        "out"
+       ],
+       [
+        "model/labels/sharding.go",
+        "out"
+       ],
+       [
+        "model/labels/sharding_dedupelabels.go",
+        "out"
+       ],
+       [
+        "tsdb/chunks/head_chunks_windows.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/dir_windows.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/direct_io_force.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/direct_io_unsupported.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/flock_aix.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/flock_js.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/flock_plan9.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/flock_solaris.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/flock_windows.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/mmap_386.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/mmap_amd64.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/mmap_arm64.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/mmap_js.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/mmap_windows.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/preallocate_darwin.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/preallocate_other.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/sync.go",
+        "out"
+       ],
+       [
+        "tsdb/fileutil/sync_darwin.go",
+        "out"
+       ],
+       [
+        "tsdb/head_dedupelabels.go",
+        "out"
+       ],
+       [
+        "util/fuzzing/corpus_gen/main.go",
+        "out"
+       ],
+       [
+        "util/runtime/limits_windows.go",
+        "out"
+       ],
+       [
+        "util/runtime/statfs.go",
+        "out"
+       ],
+       [
+        "util/runtime/statfs_linux_386.go",
+        "out"
+       ],
+       [
+        "util/runtime/statfs_uint32.go",
+        "out"
+       ],
+       [
+        "util/runtime/statfs_windows.go",
+        "out"
+       ],
+       [
+        "util/runtime/uname_default.go",
+        "out"
+       ],
+       [
+        "util/runtime/vmlimits_openbsd.go",
+        "out"
+       ],
+       [
+        "web/ui/assets_embed.go",
+        "out"
+       ]
+      ]
+     },
      "by_outcome": {
-      "ambiguous_name": 100,
+      "importer_not_in_build": 1,
       "narrowed": 791,
+      "narrowed_by_build": 96,
       "opaque": 60,
-      "undeclared_name": 5
+      "undeclared_name": 8
      },
      "imports": 956,
-     "links_after": 2584,
+     "links_after": 1592,
      "links_before": 5574,
      "samples": {
-      "ambiguous_name": [
+      "importer_not_in_build": [
        {
-        "a": "cmd/promtool/sd.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "EmptyLabels"
-       },
-       {
-        "a": "cmd/promtool/tsdb.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "Labels"
-       },
-       {
-        "a": "config/config.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "Labels"
-       },
-       {
-        "a": "model/relabel/relabel.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "Builder"
-       },
-       {
-        "a": "notifier/alert.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "EmptyLabels"
-       },
-       {
-        "a": "schema/labels.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "Builder"
-       },
-       {
-        "a": "storage/fanout.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "Labels"
-       },
-       {
-        "a": "storage/remote/codec.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "Compare"
-       },
-       {
-        "a": "tsdb/agent/series.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "EmptyLabels"
-       },
-       {
-        "a": "tsdb/compact.go",
-        "b": "github.com/prometheus/prometheus/tsdb/fileutil",
-        "name": "OpenDir"
-       },
-       {
-        "a": "tsdb/head_append_v2.go",
-        "b": "github.com/prometheus/prometheus/model/labels",
-        "name": "EmptyLabels"
-       },
-       {
-        "a": "tsdb/querier.go",
+        "a": "tsdb/head_dedupelabels.go",
         "b": "github.com/prometheus/prometheus/model/labels",
         "name": "Labels"
        }
@@ -315,6 +401,11 @@
         "name": "Convert"
        },
        {
+        "a": "scrape/manager.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "String"
+       },
+       {
         "a": "storage/remote/otlptranslator/prometheusremotewrite/helper.go",
         "b": "github.com/prometheus/prometheus/model/timestamp",
         "name": "Add"
@@ -325,6 +416,16 @@
         "name": "AsString"
        },
        {
+        "a": "storage/remote/write_handler.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "String"
+       },
+       {
+        "a": "tsdb/index/postings.go",
+        "b": "github.com/prometheus/prometheus/model/labels",
+        "name": "get"
+       },
+       {
         "a": "tsdb/querier.go",
         "b": "github.com/prometheus/prometheus/tsdb/index",
         "name": "ShardedPostings"
@@ -332,69 +433,19 @@
       ]
      },
      "top_names": {
-      "ambiguous_name": [
+      "ambiguous_name": [],
+      "excluded_only": [],
+      "importer_not_in_build": [
        [
         "Labels",
-        41
-       ],
-       [
-        "EmptyLabels",
-        18
-       ],
-       [
-        "Compare",
-        11
-       ],
-       [
-        "Builder",
-        9
-       ],
-       [
-        "OpenDir",
-        5
-       ],
-       [
-        "Equal",
-        4
-       ],
-       [
-        "FromStrings",
-        3
-       ],
-       [
-        "NewSymbolTable",
-        2
-       ],
-       [
-        "Assets",
-        1
-       ],
-       [
-        "FdLimits",
-        1
-       ],
-       [
-        "FsSize",
-        1
-       ],
-       [
-        "ImplementationName",
-        1
-       ],
-       [
-        "NewBufioWriterWithSize",
-        1
-       ],
-       [
-        "ScratchBuilder",
-        1
-       ],
-       [
-        "UncachedIOSupported",
         1
        ]
       ],
       "undeclared_name": [
+       [
+        "String",
+        2
+       ],
        [
         "Add",
         1
@@ -414,46 +465,51 @@
        [
         "ShardedPostings",
         1
+       ],
+       [
+        "get",
+        1
        ]
-      ]
+      ],
+      "unknown_constraint": []
      }
     },
     "member_only_available": true
    },
-   "hand_fingerprint": "01d545da5450d0ff919d714f9c670e53248433e221fcec4689f6d7a0f6e11f22",
-   "hand_only": 505,
+   "hand_fingerprint": "90b803b4c69f8ae5c4d38aee6b504d4550ff8ab5f95c5b812acdd8ec7ffce1c8",
+   "hand_only": 27,
    "hand_only_by_class": {
     "other": 15,
-    "package spread": 490,
+    "package spread": 12,
     "re-export": 0,
     "star import": 0,
     "submodule via package": 0
    },
-   "hand_pairs": 2584,
+   "hand_pairs": 1592,
    "lang": "go",
    "name": "prometheus",
-   "precision": 0.8046,
-   "precision_counting_reexports": 0.8046,
-   "precision_uses": 0.4857,
-   "recall": 0.3825,
-   "recall_uses": 0.67,
+   "precision": 0.983,
+   "precision_counting_reexports": 0.983,
+   "precision_uses": 0.7833,
+   "recall": 0.2879,
+   "recall_uses": 0.6658,
    "scip_fingerprint": "0e405d1fa79db6fac80844d55be859d2fa0d583f05f9c06e718933a528b37b36",
-   "scip_only": 3357,
+   "scip_only": 3871,
    "scip_only_by_class": {
-    "inferred type": 243,
+    "inferred type": 296,
     "inherited member": 0,
-    "member via value": 24,
-    "other": 2522,
+    "member via value": 32,
+    "other": 2975,
     "re-export": 0,
     "same package": 568
    },
    "scip_pairs": 5436,
    "scip_use_pairs": 1873,
-   "shared": 2079,
+   "shared": 1565,
    "shared_named_uses": 1245,
-   "shared_namespace_only": 824,
+   "shared_namespace_only": 318,
    "shared_namespace_only_to_package": 0,
-   "shared_uses": 1255
+   "shared_uses": 1247
   },
   {
    "files": 100,

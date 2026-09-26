@@ -9,6 +9,7 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Node, Parser};
 
+use crate::go_build::{go_build_status, GoBuild};
 use crate::schema::{FileId, GraphData, ReferenceCoverage, SignalEdge, SourceNode, SymbolRow};
 
 const ALPHA: f64 = 0.45;
@@ -220,7 +221,10 @@ struct ParsedFile {
 /// file declares at package level (`None` when that is not known: a file
 /// the parser gave up on, or TypeScript). With every file's declarations in
 /// hand, phase 2 links an import to the files that declare what the
-/// importer names, instead of to every file of the package.
+/// importer names, instead of to every file of the package. `go_build` is
+/// whether the file is compiled for the one target the resolver evaluates
+/// build constraints for (finding 54, `go_build::GO_BUILD_TARGET`); it
+/// breaks a tie between files that declare the same name.
 ///
 /// TypeScript's `ts_uses` and `ts_exports` are the same idea for barrels
 /// (finding 51): what each import statement takes from its module, and
@@ -239,6 +243,7 @@ enum FileRaw {
         named_candidates: Vec<(String, String)>,
         import_uses: Vec<GoImportUse>,
         declares: Option<BTreeSet<String>>,
+        go_build: GoBuild,
         ts_uses: Vec<TsImportUse>,
         ts_exports: Option<TsExports>,
     },
@@ -744,6 +749,9 @@ fn parse_files_inner(
                         // Unknown, not empty: a package whose files are not
                         // all read cannot say which one declares a name.
                         declares: None,
+                        // Moot: an unread file keeps its package whole
+                        // whatever its build status (`narrow_go_import`).
+                        go_build: GoBuild::Unknown,
                         ts_uses: Vec::new(),
                         // Unknown too: a barrel that was not read cannot
                         // say where a name it exports comes from.
@@ -773,14 +781,19 @@ fn parse_files_inner(
                 exports: python_exports(root, &source),
                 bare_names: python_bare_names(root, &source),
             },
-            LanguageKind::Go => FileRaw::Multi {
-                imports: go_imports(root, &source),
-                named_candidates: go_selectors(root, &source),
-                import_uses: go_import_uses(root, &source),
-                declares: Some(go_declarations(root, &source)),
-                ts_uses: Vec::new(),
-                ts_exports: None,
-            },
+            LanguageKind::Go => {
+                let imports = go_imports(root, &source);
+                let go_build = go_build_status(file, &source, &imports);
+                FileRaw::Multi {
+                    imports,
+                    named_candidates: go_selectors(root, &source),
+                    import_uses: go_import_uses(root, &source),
+                    declares: Some(go_declarations(root, &source)),
+                    go_build,
+                    ts_uses: Vec::new(),
+                    ts_exports: None,
+                }
+            }
             LanguageKind::TypeScript => {
                 // One walk gives both, so `ts_uses` is parallel to `imports`
                 // by construction.
@@ -792,6 +805,8 @@ fn parse_files_inner(
                     named_candidates: typescript_named(root, &source),
                     import_uses: Vec::new(),
                     declares: None,
+                    // Go only; never read for TypeScript.
+                    go_build: GoBuild::In,
                     ts_uses,
                     ts_exports: Some(typescript_exports(root, &source)),
                 }
@@ -3640,12 +3655,23 @@ fn parse_multi_with_progress(
     let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
     let mut fanin = BTreeMap::<FileId, f64>::new();
     let mut uses = BTreeSet::<(FileId, FileId, String)>::new();
-    // Every Go file's package-level declarations, by id, for narrowing an
-    // import to the files that declare what it names (finding 50).
-    let declares = raw
+    // Every Go file's package-level declarations and build status, by id,
+    // for narrowing an import to the files that declare what it names
+    // (findings 50 and 54).
+    let go_files = raw
         .iter()
         .filter_map(|(file, raw)| match raw {
-            FileRaw::Multi { declares, .. } => ids.get(file).map(|&id| (id, declares.as_ref())),
+            FileRaw::Multi {
+                declares, go_build, ..
+            } => ids.get(file).map(|&id| {
+                (
+                    id,
+                    GoPackageFile {
+                        declares: declares.as_ref(),
+                        build: *go_build,
+                    },
+                )
+            }),
             FileRaw::Python { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
@@ -3721,6 +3747,7 @@ fn parse_multi_with_progress(
             imports,
             named_candidates,
             import_uses,
+            go_build,
             ts_uses,
             ..
         } = &raw[file]
@@ -3764,11 +3791,14 @@ fn parse_multi_with_progress(
             // A Go import links the files that declare what the importer
             // names, where every name resolves; otherwise the whole package,
             // as it always did.
-            let narrowed = (language == LanguageKind::Go)
-                .then(|| narrow_go_import(package, import_uses.get(index), &declares));
+            let narrowed = (language == LanguageKind::Go).then(|| {
+                narrow_go_import(package, import_uses.get(index), &go_files, *go_build)
+                    .map(|narrowed| (narrowed.targets, narrowed.by_build))
+            });
             if let (Some(_), Some(outcome)) = (&report_dir, &narrowed) {
                 let (reason, name) = match outcome {
-                    Ok(_) => ("narrowed", None),
+                    Ok((_, false)) => ("narrowed", None),
+                    Ok((_, true)) => ("narrowed_by_build", None),
                     Err(spread) => spread.reason(),
                 };
                 // [file, import, outcome, name, package files, files linked]
@@ -3778,10 +3808,14 @@ fn parse_multi_with_progress(
                     reason,
                     name,
                     package.len(),
-                    outcome.as_ref().map_or(package.len(), BTreeSet::len),
+                    outcome
+                        .as_ref()
+                        .map_or(package.len(), |(targets, _)| targets.len()),
                 ]));
             }
-            let narrowed = narrowed.and_then(std::result::Result::ok);
+            let narrowed = narrowed
+                .and_then(std::result::Result::ok)
+                .map(|(targets, _)| targets);
             // One import keeps its mass of 1, shared among the files it
             // links: a Go import's among the declaring files, as it was
             // shared among the whole package, and a TypeScript import's
@@ -3839,6 +3873,24 @@ fn parse_multi_with_progress(
             .with_context(|| format!("create {}", directory.display()))?;
         fs::write(&path, serde_json::to_vec(&report)?)
             .with_context(|| format!("write {}", path.display()))?;
+        if language == LanguageKind::Go {
+            // Every Go file's build status for the target (finding 54),
+            // [file, "in" | "out" | "unknown"], in file order.
+            let builds = go_files
+                .iter()
+                .map(|(&id, file)| {
+                    let status = match file.build {
+                        GoBuild::In => "in",
+                        GoBuild::Out => "out",
+                        GoBuild::Unknown => "unknown",
+                    };
+                    serde_json::json!([&files[id as usize], status])
+                })
+                .collect::<Vec<_>>();
+            let path = directory.join(format!("go-build.{slug}.json"));
+            fs::write(&path, serde_json::to_vec(&builds)?)
+                .with_context(|| format!("write {}", path.display()))?;
+        }
     }
 
     let module_for = parsed
@@ -4551,8 +4603,19 @@ enum GoSpread {
     Unknown,
     /// No file of the package declares this name.
     Undeclared(String),
-    /// Several files of the package declare this name.
+    /// Several files declare this name, and several of them are in the
+    /// target build.
     Ambiguous(String),
+    /// Several files declare this name, and none of them is in the target
+    /// build (finding 54).
+    ExcludedOnly(String),
+    /// Several files declare this name, and one of them has a build
+    /// constraint that could not be evaluated (finding 54).
+    UnknownConstraint(String),
+    /// Several files declare this name, and the importer is not itself in
+    /// the target build, so the target says nothing about which one it
+    /// compiles against (finding 54).
+    ImporterNotInBuild(String),
 }
 
 impl GoSpread {
@@ -4563,26 +4626,63 @@ impl GoSpread {
             Self::Unknown => ("unknown_declarations", None),
             Self::Undeclared(name) => ("undeclared_name", Some(name)),
             Self::Ambiguous(name) => ("ambiguous_name", Some(name)),
+            Self::ExcludedOnly(name) => ("excluded_only", Some(name)),
+            Self::UnknownConstraint(name) => ("unknown_constraint", Some(name)),
+            Self::ImporterNotInBuild(name) => ("importer_not_in_build", Some(name)),
         }
     }
 }
 
+/// One file of an imported Go package, as `narrow_go_import` sees it: its
+/// package-level declarations (`None` when it was not read) and whether it
+/// is in the target build.
+#[derive(Clone, Copy, Debug)]
+struct GoPackageFile<'a> {
+    declares: Option<&'a BTreeSet<String>>,
+    build: GoBuild,
+}
+
+/// A Go import narrowed to the files that declare what it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GoNarrowed {
+    targets: BTreeSet<FileId>,
+    /// Some name was declared in several files, and the target build broke
+    /// the tie (finding 54). Recorded for the report only.
+    by_build: bool,
+}
+
 /// The files of an imported Go package that declare what the importer
-/// names (finding 50), or why every file of the package stays linked.
+/// names (findings 50 and 54), or why every file of the package stays
+/// linked.
 ///
 /// `package` is the package's parsed files, as `resolve_multi` returns
-/// them. A name resolves when exactly one of those files declares it, the
-/// rule `symbols::lookup` applies to a Go package. The import resolves when
-/// every name does. Anything short of that keeps the whole package, as
-/// before, so the result is always a subset of the old targets and never
-/// adds a pair:
+/// them, and `importer` is the importing file's own build status. A name
+/// resolves:
+/// - when exactly one of those files declares it, the rule
+///   `symbols::lookup` applies to a Go package (finding 50). That file is
+///   the answer whatever its build constraint says: an importer can only
+///   name it if both are compiled together, so the pair is right on the
+///   platform where they are, and it was already the answer before build
+///   constraints were read;
+/// - when several files declare it, as build-tag variants do
+///   (`labels_stringlabels.go` and `labels_slicelabels.go`), to the one of
+///   them in the target build (`go_build::GO_BUILD_TARGET`), provided the
+///   importer is itself in that build, exactly one declarer is in it, and
+///   no declarer's constraint is unknown (finding 54).
+///
+/// The import resolves when every name does. Anything short of that keeps
+/// the whole package, as before, so the result is always a subset of the
+/// old targets and of finding 50's, and never adds a pair:
 /// - an opaque import (`_` or `.`), or one whose local name never appears
 ///   qualified;
 /// - a name no file declares, such as a method called on a local variable
 ///   that shadows the package's name;
-/// - a name several files declare, as build-tag variants do
-///   (`foo_linux.go` and `foo_windows.go`);
-/// - a file of the package whose declarations are unknown.
+/// - a name several files declare that the target build does not settle;
+/// - a file of the package whose declarations are unknown, even one out of
+///   the build: it keeps finding 50's rule rather than a second one.
+///
+/// A file out of the build is not a tie-break target, and it stays on the
+/// map: its own imports are linked like any other file's.
 ///
 /// A method called on a value the package returned (`x := pkg.New();
 /// x.Run()`) is not a name the importer selects from the package, so the
@@ -4592,8 +4692,9 @@ impl GoSpread {
 fn narrow_go_import(
     package: &[FileId],
     uses: Option<&GoImportUse>,
-    declares: &BTreeMap<FileId, Option<&BTreeSet<String>>>,
-) -> std::result::Result<BTreeSet<FileId>, GoSpread> {
+    files: &BTreeMap<FileId, GoPackageFile<'_>>,
+    importer: GoBuild,
+) -> std::result::Result<GoNarrowed, GoSpread> {
     let names = match uses {
         Some(GoImportUse::Names(names)) if !names.is_empty() => names,
         Some(GoImportUse::Names(_)) => return Err(GoSpread::NoNames),
@@ -4603,26 +4704,50 @@ fn narrow_go_import(
     };
     let mut known = Vec::with_capacity(package.len());
     for file in package {
-        let Some(&Some(declared)) = declares.get(file) else {
+        let Some(&GoPackageFile {
+            declares: Some(declared),
+            build,
+        }) = files.get(file)
+        else {
             return Err(GoSpread::Unknown);
         };
-        known.push((*file, declared));
+        known.push((*file, declared, build));
     }
     let mut targets = BTreeSet::new();
+    let mut by_build = false;
     for name in names {
-        let mut declaring = known
+        let declaring = known
             .iter()
-            .filter(|(_, declared)| declared.contains(name))
-            .map(|(file, _)| *file);
-        match (declaring.next(), declaring.next()) {
-            (Some(file), None) => {
-                targets.insert(file);
+            .filter(|(_, declared, _)| declared.contains(name))
+            .map(|&(file, _, build)| (file, build))
+            .collect::<Vec<_>>();
+        let file = match declaring.as_slice() {
+            [] => return Err(GoSpread::Undeclared(name.clone())),
+            [(file, _)] => *file,
+            several => {
+                if importer != GoBuild::In {
+                    return Err(GoSpread::ImporterNotInBuild(name.clone()));
+                }
+                if several.iter().any(|&(_, build)| build == GoBuild::Unknown) {
+                    return Err(GoSpread::UnknownConstraint(name.clone()));
+                }
+                let mut in_build = several
+                    .iter()
+                    .filter(|&&(_, build)| build == GoBuild::In)
+                    .map(|&(file, _)| file);
+                match (in_build.next(), in_build.next()) {
+                    (Some(file), None) => {
+                        by_build = true;
+                        file
+                    }
+                    (None, _) => return Err(GoSpread::ExcludedOnly(name.clone())),
+                    (Some(_), Some(_)) => return Err(GoSpread::Ambiguous(name.clone())),
+                }
             }
-            (None, _) => return Err(GoSpread::Undeclared(name.clone())),
-            (Some(_), Some(_)) => return Err(GoSpread::Ambiguous(name.clone())),
-        }
+        };
+        targets.insert(file);
     }
-    Ok(targets)
+    Ok(GoNarrowed { targets, by_build })
 }
 
 fn typescript_imports(root: Node<'_>, source: &[u8]) -> Vec<String> {
@@ -7543,14 +7668,11 @@ mod tests {
             assert_eq!(edges_from(dir.path(), "cmd/main.go"), whole, "{case}");
         }
 
-        // Build-tag variants: two files declare `C`, so neither is certain.
+        // Two files in the target build both declare `C` (not valid Go,
+        // but the resolver must not pick one), so neither is certain.
         let dir = tempfile::TempDir::new().unwrap();
         write_go_package(dir.path());
-        write(
-            dir.path(),
-            "lib/c_windows.go",
-            "//go:build windows\n\npackage lib\n\nfunc C() {}\n",
-        );
+        write(dir.path(), "lib/d.go", "package lib\n\nfunc C() {}\n");
         write(
             dir.path(),
             "cmd/main.go",
@@ -7560,6 +7682,143 @@ mod tests {
             edges_from(dir.path(), "cmd/main.go").len(),
             4,
             "an ambiguous name keeps all four files"
+        );
+    }
+
+    /// prometheus's `model/labels` at the fixture's pin, cut down: three
+    /// build-tag implementations of `Labels`, of which the default build
+    /// compiles `labels_stringlabels.go`, and a common file.
+    fn write_go_variants(root: &Path) {
+        write(root, "go.mod", "module example.com/repo\n\ngo 1.22\n");
+        write(
+            root,
+            "labels/labels_common.go",
+            "// Copyright\n\npackage labels\n\ntype Label struct{ Name string }\n",
+        );
+        write(
+            root,
+            "labels/labels_stringlabels.go",
+            "// Copyright\n\n//go:build !slicelabels && !dedupelabels\n\npackage labels\n\ntype Labels struct{ data string }\n\nfunc EmptyLabels() Labels { return Labels{} }\n",
+        );
+        write(
+            root,
+            "labels/labels_slicelabels.go",
+            "// Copyright\n\n//go:build slicelabels\n\npackage labels\n\ntype Labels []Label\n\nfunc EmptyLabels() Labels { return nil }\n",
+        );
+        write(
+            root,
+            "labels/labels_dedupelabels.go",
+            "// Copyright\n\n// +build dedupelabels\n\npackage labels\n\ntype Labels struct{ data string }\n\nfunc EmptyLabels() Labels { return Labels{} }\n",
+        );
+    }
+
+    #[test]
+    fn go_import_takes_the_build_tag_variant_the_target_compiles() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_variants(dir.path());
+        // `Labels` and `EmptyLabels` are declared three times each, and
+        // `Label` once.
+        write(
+            dir.path(),
+            "cmd/main.go",
+            "package main\n\nimport \"example.com/repo/labels\"\n\nvar x labels.Labels = labels.EmptyLabels()\nvar y labels.Label\n",
+        );
+        assert_eq!(
+            edges_from(dir.path(), "cmd/main.go"),
+            weights(&[
+                ("labels/labels_common.go", 0.5),
+                ("labels/labels_stringlabels.go", 0.5)
+            ])
+        );
+        // The excluded variants stay on the map as files.
+        let (parsed, _) = parse_files(dir.path(), ".", LanguageKind::Go).unwrap();
+        for file in [
+            "labels/labels_slicelabels.go",
+            "labels/labels_dedupelabels.go",
+        ] {
+            assert!(parsed.contains_key(file), "{file}");
+        }
+    }
+
+    #[test]
+    fn go_import_keeps_finding_50s_answer_where_the_target_does_not_decide() {
+        let whole = |root: &Path| {
+            go_edges(root)
+                .keys()
+                .filter(|(a, b)| a == "cmd/main.go" && b.starts_with("labels/"))
+                .count()
+        };
+        // An importer outside the target build: the target says nothing
+        // about which variant it compiles against.
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_variants(dir.path());
+        write(
+            dir.path(),
+            "cmd/main_windows.go",
+            "package main\n\nimport \"example.com/repo/labels\"\n\nvar x labels.Labels\n",
+        );
+        assert_eq!(
+            edges_from(dir.path(), "cmd/main_windows.go").len(),
+            4,
+            "an importer out of the build keeps the whole package"
+        );
+
+        // A declarer whose constraint cannot be evaluated.
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_variants(dir.path());
+        write(
+            dir.path(),
+            "labels/labels_exp.go",
+            "//go:build goexperiment.x\n\npackage labels\n\ntype Labels struct{}\n",
+        );
+        write(
+            dir.path(),
+            "cmd/main.go",
+            "package main\n\nimport \"example.com/repo/labels\"\n\nvar x labels.Labels\n",
+        );
+        assert_eq!(whole(dir.path()), 5, "an unknown constraint keeps all five");
+
+        // Several declarers, none in the build.
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_variants(dir.path());
+        write(
+            dir.path(),
+            "labels/only_windows.go",
+            "//go:build windows\n\npackage labels\n\nfunc Win() {}\n",
+        );
+        write(
+            dir.path(),
+            "labels/only_darwin.go",
+            "//go:build darwin\n\npackage labels\n\nfunc Win() {}\n",
+        );
+        write(
+            dir.path(),
+            "cmd/main.go",
+            "package main\n\nimport \"example.com/repo/labels\"\n\nvar x = labels.Win\n",
+        );
+        assert_eq!(
+            whole(dir.path()),
+            6,
+            "no declarer in the build keeps all six"
+        );
+
+        // One declarer, out of the build: still finding 50's answer. Only
+        // an importer compiled with it can name it.
+        let dir = tempfile::TempDir::new().unwrap();
+        write_go_variants(dir.path());
+        write(
+            dir.path(),
+            "labels/only_windows.go",
+            "//go:build windows\n\npackage labels\n\nfunc Win() {}\n",
+        );
+        write(
+            dir.path(),
+            "cmd/main_windows.go",
+            "package main\n\nimport \"example.com/repo/labels\"\n\nvar x = labels.Win\n",
+        );
+        assert_eq!(
+            edges_from(dir.path(), "cmd/main_windows.go"),
+            weights(&[("labels/only_windows.go", 1.0)])
         );
     }
 
@@ -7587,25 +7846,52 @@ mod tests {
         let names = GoImportUse::Names(["A".to_owned()].into_iter().collect());
         let declared = ["A".to_owned()].into_iter().collect::<BTreeSet<_>>();
         let empty = BTreeSet::new();
-        let mut declares = BTreeMap::new();
-        declares.insert(0, Some(&declared));
-        declares.insert(1, None);
+        let file = |declares, build| GoPackageFile { declares, build };
+        let narrowed = |targets: &[FileId], by_build| -> std::result::Result<_, GoSpread> {
+            Ok(GoNarrowed {
+                targets: targets.iter().copied().collect(),
+                by_build,
+            })
+        };
+        let mut files = BTreeMap::new();
+        files.insert(0, file(Some(&declared), GoBuild::In));
+        files.insert(1, file(None, GoBuild::Out));
+        let narrow = |files: &BTreeMap<FileId, GoPackageFile<'_>>, importer| {
+            narrow_go_import(&[0, 1], Some(&names), files, importer)
+        };
+        // An unread file keeps the package, even one out of the build.
+        assert_eq!(narrow(&files, GoBuild::In), Err(GoSpread::Unknown));
+        files.insert(1, file(Some(&declared), GoBuild::In));
         assert_eq!(
-            narrow_go_import(&[0, 1], Some(&names), &declares),
-            Err(GoSpread::Unknown)
-        );
-        declares.insert(1, Some(&declared));
-        assert_eq!(
-            narrow_go_import(&[0, 1], Some(&names), &declares),
+            narrow(&files, GoBuild::In),
             Err(GoSpread::Ambiguous("A".to_owned()))
         );
-        declares.insert(1, Some(&empty));
+        files.insert(1, file(Some(&declared), GoBuild::Out));
+        assert_eq!(narrow(&files, GoBuild::In), narrowed(&[0], true));
         assert_eq!(
-            narrow_go_import(&[0, 1], Some(&names), &declares),
-            Ok([0].into_iter().collect::<BTreeSet<FileId>>())
+            narrow(&files, GoBuild::Out),
+            Err(GoSpread::ImporterNotInBuild("A".to_owned()))
         );
         assert_eq!(
-            narrow_go_import(&[0, 1], None, &declares),
+            narrow(&files, GoBuild::Unknown),
+            Err(GoSpread::ImporterNotInBuild("A".to_owned()))
+        );
+        files.insert(1, file(Some(&declared), GoBuild::Unknown));
+        assert_eq!(
+            narrow(&files, GoBuild::In),
+            Err(GoSpread::UnknownConstraint("A".to_owned()))
+        );
+        files.insert(0, file(Some(&declared), GoBuild::Out));
+        files.insert(1, file(Some(&declared), GoBuild::Out));
+        assert_eq!(
+            narrow(&files, GoBuild::In),
+            Err(GoSpread::ExcludedOnly("A".to_owned()))
+        );
+        // One declarer is the answer whatever either build status says.
+        files.insert(1, file(Some(&empty), GoBuild::Unknown));
+        assert_eq!(narrow(&files, GoBuild::Out), narrowed(&[0], false));
+        assert_eq!(
+            narrow_go_import(&[0, 1], None, &files, GoBuild::In),
             Err(GoSpread::Opaque)
         );
     }

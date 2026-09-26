@@ -94,9 +94,17 @@ SCIP-only, from the hand graph plus the source files:
 For Go the row also carries `go` (finding 50):
 - `import_outcomes`: how each in-repo import resolved, from the resolver's
   own report (`TOLMAP_GO_IMPORT_REPORT`, written by `dump-graph --refs
-  hand`): `narrowed` to the declaring files, or why it kept the whole
-  package (`opaque`, `no_names`, `undeclared_name`, `ambiguous_name`,
-  `unknown_declarations`), with the most frequent failing names.
+  hand`): `narrowed` to the declaring files, `narrowed_by_build` when
+  some name was declared in several files and the target build broke the
+  tie (finding 54), or why it kept the whole package (`opaque`,
+  `no_names`, `undeclared_name`, `unknown_declarations`, and for a name
+  several files declare: `ambiguous_name`, several of them in the build;
+  `excluded_only`, none; `unknown_constraint`, one whose constraint could
+  not be evaluated; `importer_not_in_build`), with the most frequent
+  failing names.
+- `build`: how many Go files the target build has in, out and unknown
+  (finding 54, from the resolver's `go-build.*.json`), with every file
+  that is not in.
 - `file_gap`: SCIP use pairs hand lacks although it links the source to the
   target's directory. Before finding 50 the whole-package link covered all
   of them, so this is exactly what narrowing gave up, split into
@@ -619,6 +627,12 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
     return row
 
 
+# Why a name several files declare kept the whole package (finding 54).
+GO_TIE_OUTCOMES = ("ambiguous_name", "excluded_only", "unknown_constraint", "importer_not_in_build")
+GO_OUTCOMES = ("narrowed", "narrowed_by_build", "opaque", "no_names", "undeclared_name") + GO_TIE_OUTCOMES \
+    + ("unknown_declarations",)
+
+
 def go_import_outcomes(work: Path) -> dict | None:
     """Aggregate the resolver's own per-import report (finding 50): rows of
     [file, import, outcome, failing name, package files, files linked]."""
@@ -628,7 +642,8 @@ def go_import_outcomes(work: Path) -> dict | None:
     rows = [row for path in reports for row in load(path)]
     outcomes = Counter(row[2] for row in rows)
     names = {kind: Counter(row[3] for row in rows if row[2] == kind)
-             for kind in ("undeclared_name", "ambiguous_name")}
+             for kind in ("undeclared_name",) + GO_TIE_OUTCOMES}
+    builds = [row for path in sorted(work.glob("go-build.*.json")) for row in load(path)]
     return {
         "imports": len(rows),
         "by_outcome": dict(sorted(outcomes.items())),
@@ -639,7 +654,12 @@ def go_import_outcomes(work: Path) -> dict | None:
         "top_names": {kind: [[n, c] for n, c in sorted(counter.items(), key=lambda x: (-x[1], x[0]))[:15]]
                       for kind, counter in names.items()},
         "samples": {kind: sample([{"a": r[0], "b": r[1], "name": r[3]} for r in rows if r[2] == kind])
-                    for kind in sorted(outcomes) if kind != "narrowed"},
+                    for kind in sorted(outcomes) if not kind.startswith("narrowed")},
+        # Finding 54: each Go file's status for the resolver's one target.
+        "build": {
+            "by_status": dict(sorted(Counter(status for _, status in builds).items())),
+            "not_in": sorted([file, status] for file, status in builds if status != "in"),
+        } if builds else None,
     }
 
 
@@ -1077,19 +1097,22 @@ def markdown(rows: list[dict]) -> str:
                    f"| {r['shared_namespace_only']:,} ({r['shared_namespace_only_to_package']:,}) |")
     go_rows = [r for r in scored if r.get("go")]
     if go_rows:
-        out += ["", "### Go imports (finding 50)", "",
-                "| fixture | imports | narrowed | opaque | no names | undeclared name | ambiguous name "
-                "| unknown | files linked, whole package → narrowed | SCIP use pairs given up (member only / named) |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+        out += ["", "### Go imports (findings 50 and 54)", "",
+                "| fixture | imports | " + " | ".join(k.replace("_", " ") for k in GO_OUTCOMES)
+                + " | files linked, whole package → narrowed | SCIP use pairs given up (member only / named) "
+                "| files in / out / unknown build |",
+                "|---|---:|" + "---:|" * len(GO_OUTCOMES) + "---|---|---|"]
         for r in go_rows:
             o = r["go"].get("import_outcomes") or {}
             by = o.get("by_outcome", {})
             gap = r["go"]["file_gap"]
             links = f"{o['links_before']:,} → {o['links_after']:,}" if o else "—"
-            out.append(f"| {r['name']} | {o.get('imports', 0):,} | " + " | ".join(
-                f"{by.get(k, 0):,}" for k in ("narrowed", "opaque", "no_names", "undeclared_name",
-                                              "ambiguous_name", "unknown_declarations"))
-                + f" | {links} | {gap['use_pairs']:,} ({gap['member_only']:,} / {gap['named']:,}) |")
+            build = (o.get("build") or {}).get("by_status")
+            builds = " / ".join(f"{build.get(k, 0):,}" for k in ("in", "out", "unknown")) if build else "—"
+            out.append(f"| {r['name']} | {o.get('imports', 0):,} | "
+                       + " | ".join(f"{by.get(k, 0):,}" for k in GO_OUTCOMES)
+                       + f" | {links} | {gap['use_pairs']:,} ({gap['member_only']:,} / {gap['named']:,}) "
+                       f"| {builds} |")
     ts_rows = [r for r in scored if (r.get("ts") or {}).get("report")]
     if ts_rows:
         out += ["", "### TypeScript imports (finding 51)", "",
@@ -1424,11 +1447,19 @@ def self_test(_args) -> int:
         assert (gap["use_pairs"], gap["member_only"], gap["named"]) == (2, 1, 1), gap
         (repo / "go-imports.root.json").write_text(json.dumps([
             ["a/x.go", "m/b", "narrowed", None, 3, 1], ["a/y.go", "m/b", "undeclared_name", "Run", 3, 3],
-            ["a/y.go", "m/c", "opaque", None, 2, 2]]))
+            ["a/y.go", "m/c", "opaque", None, 2, 2], ["a/z.go", "m/c", "narrowed_by_build", None, 2, 1],
+            ["a/z_windows.go", "m/c", "importer_not_in_build", "Open", 2, 2]]))
+        (repo / "go-build.root.json").write_text(json.dumps([
+            ["a/x.go", "in"], ["a/z_windows.go", "out"], ["m/c/e.go", "unknown"]]))
         outcomes = go_import_outcomes(repo)
-        assert outcomes["by_outcome"] == {"narrowed": 1, "opaque": 1, "undeclared_name": 1}, outcomes
-        assert (outcomes["links_before"], outcomes["links_after"]) == (8, 6), outcomes
+        assert outcomes["by_outcome"] == {"importer_not_in_build": 1, "narrowed": 1, "narrowed_by_build": 1,
+                                          "opaque": 1, "undeclared_name": 1}, outcomes
+        assert (outcomes["links_before"], outcomes["links_after"]) == (12, 9), outcomes
         assert outcomes["top_names"]["undeclared_name"] == [["Run", 1]], outcomes
+        assert outcomes["top_names"]["importer_not_in_build"] == [["Open", 1]], outcomes
+        assert "narrowed_by_build" not in outcomes["samples"], outcomes
+        assert outcomes["build"] == {"by_status": {"in": 1, "out": 1, "unknown": 1},
+                                     "not_in": [["a/z_windows.go", "out"], ["m/c/e.go", "unknown"]]}, outcomes
 
         # TypeScript (finding 51): a barrel `src/index.ts` passing on `a.ts`
         # by name and `b.ts` by `export *`, an unresolved relative import, a

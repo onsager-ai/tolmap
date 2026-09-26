@@ -3,6 +3,7 @@ pub mod blobs;
 pub mod detect;
 pub mod extract;
 pub mod geometry;
+pub(crate) mod go_build;
 pub mod indexers;
 pub mod naming;
 pub mod neighbourhoods;
