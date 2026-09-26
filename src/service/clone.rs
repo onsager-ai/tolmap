@@ -141,6 +141,17 @@ fn parse_repo_spec(spec: &str) -> Result<RepoRef, ApiError> {
             }
         }
     };
+    // Each becomes one path component under `cache_dir` (the clone cache,
+    // the job directory, the stored maps), so each must be exactly one that
+    // stays inside it. GitHub allows none of these in an owner or a
+    // repository name.
+    if [&owner, &repo].iter().any(|part| {
+        part.as_str() == "." || part.as_str() == ".." || part.contains(['/', '\\', '\0'])
+    }) {
+        return Err(ApiError::invalid_request(
+            "an owner or repository name must be one path component, not \".\" or \"..\"",
+        ));
+    }
     Ok(RepoRef {
         slug: format!("{owner}/{repo}"),
         owner,
@@ -740,6 +751,22 @@ mod tests {
             "the active clone is never rejected or evicted"
         );
         assert!(!old.exists(), "older clones still give up disk space");
+    }
+
+    #[test]
+    fn dot_and_dot_dot_are_not_owner_or_repository_names() {
+        for spec in [
+            "../widgets",
+            "acme/..",
+            "./widgets",
+            "https://example.com/acme/..",
+            "https://example.com/../widgets.git",
+            "acme/widgets/../..",
+            "acme/a\\b",
+        ] {
+            assert!(resolve(Some(spec), None).is_err(), "{spec} was accepted");
+        }
+        assert!(resolve(Some("acme/..widgets"), None).is_ok());
     }
 
     #[test]

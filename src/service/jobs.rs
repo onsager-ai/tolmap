@@ -19,6 +19,7 @@ use crate::service::error::{ApiError, ErrorBody};
 use crate::service::eta::{expected_passes, progress_total, Eta, EtaModel, TimingRow};
 use crate::service::store::MapRow;
 use crate::service::time::now_rfc3339;
+use crate::service::worker_result;
 use crate::service::AppState;
 use crate::worker::{PreviousMap, RepoFeatures, WorkerEvent, WorkerSpec};
 
@@ -656,7 +657,7 @@ fn materialize_job_repo(
     job_repo_dir: &Path,
     tx: &watch::Sender<JobSnapshot>,
     started: Instant,
-) -> Result<(), ErrorBody> {
+) -> Result<clone::Materialized, ErrorBody> {
     let clone_started = Instant::now();
     mark_clone_running(tx, started);
     let materialized = match clone::materialize_with_progress(
@@ -682,7 +683,7 @@ fn materialize_job_repo(
         return Err(ApiError::clone_failed(error.to_string()).body);
     }
     mark_clone_finished(tx, clone_started.elapsed().as_secs_f64(), true);
-    Ok(())
+    Ok(materialized)
 }
 
 fn finish_done(tx: &watch::Sender<JobSnapshot>) {
@@ -765,7 +766,10 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     // See `materialize_job_repo`'s doc comment for the full design (why
     // this runs in the service rather than the worker, the `--no-hardlinks`
     // reasoning, and the cancellation-during-clone gap this doesn't cover).
-    if let Err(error) = materialize_job_repo(
+    // `checkout` is the service's own record of what it handed the worker:
+    // the commit and branch the result is stored under come from here, not
+    // from the worker, whose copy of the checkout is its to change.
+    let checkout = match materialize_job_repo(
         &state.config.cache_dir,
         &repo_ref,
         &state.config.limits,
@@ -773,9 +777,12 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         &tx,
         started,
     ) {
-        let _ = std::fs::remove_dir_all(&job_dir);
-        return finish_failed(&tx, error);
-    }
+        Ok(checkout) => checkout,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&job_dir);
+            return finish_failed(&tx, error);
+        }
+    };
     let names_input = output_dir.join("worker-names-input.json");
     let names = match state.store.load_names(&repo_ref.slug) {
         Ok(names) => names,
@@ -860,59 +867,13 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
         let _ = std::fs::remove_dir_all(&job_dir);
         return;
     }
-    set_commit(&tx, &output.commit);
-    let built_path = PathBuf::from(&output.map_path);
-    let final_path = state
-        .config
-        .cache_dir
-        .join("maps")
-        .join(&repo_ref.owner)
-        .join(&repo_ref.repo)
-        .join(format!("{}.json", output.commit));
-    let save = (|| -> anyhow::Result<()> {
-        let final_parent = final_path.parent().expect("map parent");
-        std::fs::create_dir_all(final_parent)?;
-        // Persistent store, not a per-job scratch dir: owned by the
-        // service's own uid (root in production), not `tolmap-worker` --
-        // even a bug that pointed the worker at this path could not read
-        // every stored map for every repo ever indexed. See the PR body's
-        // "at minimum" floor.
-        harden_persistent_dir(final_parent)?;
-        std::fs::rename(&built_path, &final_path)?;
-        std::fs::rename(
-            &output.symbols_path,
-            final_path.with_extension("symbols.json"),
-        )?;
-        let final_dir = final_path.with_extension("symbols");
-        if final_dir.exists() {
-            std::fs::remove_dir_all(&final_dir)?;
-        }
-        std::fs::rename(&output.symbols_dir, final_dir)?;
-        state.store.save_names(
-            &repo_ref.slug,
-            &crate::naming::load_cache(&PathBuf::from(&output.names_cache)),
-        )?;
-        let row = MapRow {
-            slug: repo_ref.slug.clone(),
-            owner: repo_ref.owner.clone(),
-            repo: repo_ref.repo.clone(),
-            commit: output.commit.clone(),
-            branch: output.branch,
-            lang: output.lang,
-            files: output.files as i64,
-            districts: output.districts as i64,
-            modularity: output.modularity,
-            map_path: final_path,
-            indexed_at: now_rfc3339(),
-        };
-        state.store.insert(&row)?;
-        Ok(())
-    })();
-    if let Err(error) = save {
-        let _ = std::fs::remove_dir_all(&job_dir);
-        return finish_failed(&tx, ApiError::internal(format!("{error:#}")).body);
-    }
+    let job_id = tx.borrow().job_id;
+    let stored = store_worker_result(&state, &repo_ref, job_id, &output_dir, &checkout, &output);
     let _ = std::fs::remove_dir_all(&job_dir);
+    if let Err(error) = stored {
+        return finish_failed(&tx, error);
+    }
+    set_commit(&tx, &checkout.commit);
     if let Err(error) = state
         .store
         .prune(&repo_ref.slug, state.config.retain_commits_per_repo)
@@ -921,6 +882,114 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
     }
     tx.send_modify(|snapshot| snapshot.elapsed_s = started.elapsed().as_secs_f64());
     finish_done(&tx);
+}
+
+/// Moves a finished worker's map, symbols and names cache into the store and
+/// records the map. Nothing the worker reported is used as a path: the commit
+/// must be the service's own checkout commit, and the files are taken from
+/// the job's output directory under the names the service expects there,
+/// checked only once they are out of the worker's reach -- see
+/// `worker_result`. A result that fails a check fails the job with
+/// `invalid_worker_result`; the caller removes the job directory either way.
+fn store_worker_result(
+    state: &AppState,
+    repo_ref: &RepoRef,
+    job_id: Uuid,
+    output_dir: &Path,
+    checkout: &clone::Materialized,
+    output: &WorkerOutput,
+) -> Result<(), ErrorBody> {
+    // The commit names the stored file (`<commit>.json`).
+    if !worker_result::is_object_id(&output.commit) || output.commit != checkout.commit {
+        return Err(invalid_worker_result(
+            "the reported commit is not the commit the service checked out",
+        ));
+    }
+    let internal = |error: std::io::Error| ApiError::internal(error.to_string()).body;
+    let final_path = state
+        .config
+        .cache_dir
+        .join("maps")
+        .join(&repo_ref.owner)
+        .join(&repo_ref.repo)
+        .join(format!("{}.json", checkout.commit));
+    let final_parent = final_path.parent().expect("map parent").to_path_buf();
+    std::fs::create_dir_all(&final_parent).map_err(internal)?;
+    // Persistent store, not a per-job scratch dir: owned by the
+    // service's own uid (root in production), not `tolmap-worker` --
+    // even a bug that pointed the worker at this path could not read
+    // every stored map for every repo ever indexed. See the PR body's
+    // "at minimum" floor.
+    harden_persistent_dir(&final_parent).map_err(internal)?;
+    // Beside the final location, so every rename below stays on one
+    // filesystem, and private to the service from the moment it exists.
+    let staging = final_parent.join(format!(".job-{job_id}"));
+    worker_result::create_private_dir(&staging).map_err(internal)?;
+    let stored = (|| -> Result<(), ErrorBody> {
+        let adopted = worker_result::adopt(
+            output_dir,
+            &staging,
+            &repo_ref.repo,
+            &worker_result::Reported {
+                map_path: &output.map_path,
+                symbols_path: &output.symbols_path,
+                symbols_dir: &output.symbols_dir,
+                names_cache: &output.names_cache,
+            },
+            Some(worker_uid_in_effect(state.config.worker_uid)),
+        )
+        .map_err(|refused| match refused {
+            worker_result::Refused::Invalid(message) => invalid_worker_result(message),
+            worker_result::Refused::Io(error) => internal(error),
+        })?;
+        let save = (|| -> anyhow::Result<()> {
+            std::fs::rename(&adopted.map, &final_path)?;
+            std::fs::rename(&adopted.symbols, final_path.with_extension("symbols.json"))?;
+            let final_dir = final_path.with_extension("symbols");
+            if final_dir.exists() {
+                std::fs::remove_dir_all(&final_dir)?;
+            }
+            std::fs::rename(&adopted.symbols_dir, final_dir)?;
+            state.store.save_names(&repo_ref.slug, &adopted.names)?;
+            let row = MapRow {
+                slug: repo_ref.slug.clone(),
+                owner: repo_ref.owner.clone(),
+                repo: repo_ref.repo.clone(),
+                commit: checkout.commit.clone(),
+                branch: checkout.branch.clone(),
+                lang: output.lang.clone(),
+                files: output.files as i64,
+                districts: output.districts as i64,
+                modularity: output.modularity,
+                map_path: final_path.clone(),
+                indexed_at: now_rfc3339(),
+            };
+            state.store.insert(&row)?;
+            Ok(())
+        })();
+        save.map_err(|error| ApiError::internal(format!("{error:#}")).body)
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    stored
+}
+
+/// A worker result the service will not store (see `store_worker_result`).
+fn invalid_worker_result(message: impl Into<String>) -> ErrorBody {
+    ErrorBody {
+        error: "invalid_worker_result".to_owned(),
+        message: message.into(),
+    }
+}
+
+/// The uid the worker's files are owned by: the configured worker uid when
+/// the service is root and drops to it (`process_worker_exe`), otherwise the
+/// service's own, which the worker then runs as.
+fn worker_uid_in_effect(configured: u32) -> u32 {
+    if is_root() {
+        configured
+    } else {
+        current_uid()
+    }
 }
 
 /// A TypeScript dependency install the service runs for its worker
@@ -975,13 +1044,14 @@ impl ServiceInstall {
     }
 }
 
+/// A worker's `result` event. Its `branch` is not kept: the stored branch is
+/// the one the service's own checkout resolved (`store_worker_result`).
 struct WorkerOutput {
     map_path: String,
     symbols_path: String,
     symbols_dir: String,
     names_cache: String,
     commit: String,
-    branch: Option<String>,
     lang: String,
     files: usize,
     districts: usize,
@@ -1099,14 +1169,20 @@ fn harden_job_dir(_job_dir: &Path, _uid: u32, _gid: u32) -> std::io::Result<()> 
     Ok(())
 }
 
+/// Never follows a symlink: the tree holds a checkout of the repository, and
+/// a committed symlink names whatever its author chose. `symlink_metadata`
+/// decides whether to descend and `lchown` changes the link itself, so the
+/// walk stays inside `path`. Children are done before their directory, so
+/// every directory whose entries are being walked is still the service's
+/// own and nothing else can change them meanwhile.
 #[cfg(unix)]
 fn chown_recursive(path: &Path, uid: u32, gid: u32) -> std::io::Result<()> {
-    if path.is_dir() {
+    if std::fs::symlink_metadata(path)?.file_type().is_dir() {
         for entry in std::fs::read_dir(path)? {
             chown_recursive(&entry?.path(), uid, gid)?;
         }
     }
-    std::os::unix::fs::chown(path, Some(uid), Some(gid))
+    std::os::unix::fs::lchown(path, Some(uid), Some(gid))
 }
 
 /// Floor for the *persistent* parts of `/data` that are safe to lock down
@@ -1485,7 +1561,6 @@ fn process_worker_exe(
                 symbols_dir,
                 names_cache,
                 commit,
-                branch,
                 lang,
                 files,
                 districts,
@@ -1498,7 +1573,6 @@ fn process_worker_exe(
                     symbols_dir,
                     names_cache,
                     commit,
-                    branch,
                     lang,
                     files,
                     districts,
@@ -2707,5 +2781,269 @@ mod tests {
         );
         assert!(!dir.path().join("checkout/node_modules").exists());
         assert!(!dir.path().join("cache/install/job").exists());
+    }
+
+    /// The commit the service's own checkout resolved in the tests below.
+    const RESULT_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// A job directory as a worker leaves it for the repository `test/demo`,
+    /// and a file outside it the worker must never be able to reach.
+    #[cfg(unix)]
+    struct ResultFixture {
+        _dir: tempfile::TempDir,
+        state: Arc<AppState>,
+        repo_ref: RepoRef,
+        job_dir: PathBuf,
+        output_dir: PathBuf,
+        outside: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl ResultFixture {
+        fn new() -> Self {
+            let (dir, state) = state(Limits::default());
+            let repo_ref = repo("demo");
+            let job_dir = state.config.cache_dir.join("work/test/demo/job");
+            let output_dir = job_dir.join("output");
+            std::fs::create_dir_all(output_dir.join("demo.symbols")).unwrap();
+            std::fs::write(output_dir.join("demo.json"), b"{}").unwrap();
+            std::fs::write(output_dir.join("demo.symbols.json"), b"{}").unwrap();
+            std::fs::write(output_dir.join("demo.symbols/0.json"), b"{}").unwrap();
+            std::fs::write(
+                output_dir.join("demo.names.json"),
+                br#"{"0123456789ab": {"name": "core", "district": 0, "size": 1}}"#,
+            )
+            .unwrap();
+            let outside = dir.path().join("outside.json");
+            std::fs::write(&outside, b"keep me").unwrap();
+            ResultFixture {
+                _dir: dir,
+                state,
+                repo_ref,
+                job_dir,
+                output_dir,
+                outside,
+            }
+        }
+
+        /// The `result` event an honest worker sends for this job.
+        fn result(&self) -> serde_json::Value {
+            let path = |name: &str| self.output_dir.join(name).to_string_lossy().into_owned();
+            serde_json::json!({
+                "type": "result",
+                "v": 1,
+                "map_path": path("demo.json"),
+                "symbols_path": path("demo.symbols.json"),
+                "symbols_dir": path("demo.symbols"),
+                "names_cache": path("demo.names.json"),
+                "commit": RESULT_COMMIT,
+                "branch": "reported-by-the-worker",
+                "lang": "py",
+                "files": 1,
+                "districts": 1,
+                "modularity": 0.5
+            })
+        }
+
+        /// Runs a fake worker that sends `result` through the real protocol
+        /// reader, then stores what it reported the way `run_blocking` does.
+        fn store(&self, result: serde_json::Value) -> Result<(), ErrorBody> {
+            use std::os::unix::fs::PermissionsExt;
+            let worker = self.job_dir.parent().unwrap().join("result-worker");
+            let line = serde_json::to_string(&result).unwrap();
+            assert!(!line.contains('\''), "the script quotes the line in ''");
+            std::fs::write(
+                &worker,
+                format!("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{line}'\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let (tx, _rx) = watch::channel(blank_snapshot(&self.repo_ref.slug));
+            let spec = WorkerSpec {
+                v: 1,
+                slug: self.repo_ref.slug.clone(),
+                owner: self.repo_ref.owner.clone(),
+                repo: self.repo_ref.repo.clone(),
+                source: "unused".to_owned(),
+                local: true,
+                all_sources: false,
+                cache_dir: String::new(),
+                output_dir: self.output_dir.to_string_lossy().into_owned(),
+                clone_cache_bytes: 1,
+                prune_variant: "node-relative".to_owned(),
+                namer: "idf".to_owned(),
+                namer_model: String::new(),
+                previous_maps: vec![],
+                names_cache: None,
+                refs: None,
+                install: None,
+            };
+            let output = process_worker_exe(
+                &tx,
+                spec,
+                Instant::now(),
+                &worker,
+                None,
+                &WorkerHardening::for_test(&self.job_dir),
+                None,
+            )?;
+            let checkout = clone::Materialized {
+                path: self.job_dir.join("repo"),
+                commit: RESULT_COMMIT.to_owned(),
+                branch: Some("main".to_owned()),
+            };
+            let job_id = tx.borrow().job_id;
+            store_worker_result(
+                &self.state,
+                &self.repo_ref,
+                job_id,
+                &self.output_dir,
+                &checkout,
+                &output,
+            )
+        }
+
+        fn maps_dir(&self) -> PathBuf {
+            self.state.config.cache_dir.join("maps/test/demo")
+        }
+
+        /// The job failed as an invalid result, and left nothing behind: no
+        /// row, no stored file, no staging directory, the outside file as it
+        /// was.
+        fn assert_refused(&self, stored: Result<(), ErrorBody>) {
+            let error = stored.expect_err("the result must be refused");
+            assert_eq!(error.error, "invalid_worker_result", "{}", error.message);
+            assert!(self
+                .state
+                .store
+                .get(&self.repo_ref.slug, RESULT_COMMIT)
+                .unwrap()
+                .is_none());
+            if let Ok(entries) = std::fs::read_dir(self.maps_dir()) {
+                let left: Vec<_> = entries.map(|entry| entry.unwrap().file_name()).collect();
+                assert!(left.is_empty(), "left in the store: {left:?}");
+            }
+            assert_eq!(std::fs::read(&self.outside).unwrap(), b"keep me");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_well_formed_worker_result_is_stored_under_the_service_commit() {
+        let fixture = ResultFixture::new();
+        fixture.store(fixture.result()).unwrap();
+        let row = fixture
+            .state
+            .store
+            .get(&fixture.repo_ref.slug, RESULT_COMMIT)
+            .unwrap()
+            .expect("stored row");
+        let map = fixture.maps_dir().join(format!("{RESULT_COMMIT}.json"));
+        assert_eq!(row.map_path, map);
+        // The service's checkout names the branch, not the worker.
+        assert_eq!(row.branch.as_deref(), Some("main"));
+        assert!(map.is_file());
+        assert!(map.with_extension("symbols.json").is_file());
+        assert!(map.with_extension("symbols").join("0.json").is_file());
+        let names = fixture
+            .state
+            .store
+            .load_names(&fixture.repo_ref.slug)
+            .unwrap();
+        assert_eq!(names["0123456789ab"].name, "core");
+        let left: Vec<_> = std::fs::read_dir(fixture.maps_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".job-"))
+            .collect();
+        assert!(left.is_empty(), "staging left behind: {left:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_with_a_path_in_it_is_refused() {
+        let fixture = ResultFixture::new();
+        let mut result = fixture.result();
+        result["commit"] = serde_json::json!("../../../outside");
+        fixture.assert_refused(fixture.store(result));
+        assert!(!fixture.state.config.cache_dir.join("maps").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_that_is_not_hex_is_refused() {
+        let fixture = ResultFixture::new();
+        let mut result = fixture.result();
+        result["commit"] = serde_json::json!("g".repeat(40));
+        fixture.assert_refused(fixture.store(result));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_other_than_the_checked_out_one_is_refused() {
+        let fixture = ResultFixture::new();
+        let mut result = fixture.result();
+        result["commit"] = serde_json::json!("f".repeat(40));
+        fixture.assert_refused(fixture.store(result));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_map_path_outside_the_output_directory_is_refused() {
+        let fixture = ResultFixture::new();
+        let mut result = fixture.result();
+        result["map_path"] = serde_json::json!(fixture.outside.to_string_lossy());
+        fixture.assert_refused(fixture.store(result));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_map_file_is_refused() {
+        let fixture = ResultFixture::new();
+        let map = fixture.output_dir.join("demo.json");
+        std::fs::remove_file(&map).unwrap();
+        std::os::unix::fs::symlink(&fixture.outside, &map).unwrap();
+        fixture.assert_refused(fixture.store(fixture.result()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_inside_the_symbols_directory_is_refused() {
+        let fixture = ResultFixture::new();
+        std::os::unix::fs::symlink(
+            &fixture.outside,
+            fixture.output_dir.join("demo.symbols/1.json"),
+        )
+        .unwrap();
+        fixture.assert_refused(fixture.store(fixture.result()));
+    }
+
+    /// The job directory holds a checkout of the repository, so any symlink
+    /// in it was chosen by the repository's author. A dangling one fails a
+    /// walk that follows links; a link to a directory holding one it cannot
+    /// read fails it too (except as root, which reads it anyway).
+    #[cfg(unix)]
+    #[test]
+    fn chown_recursive_changes_symlinks_themselves_and_never_walks_through_them() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let job = dir.path().join("job");
+        std::fs::create_dir_all(job.join("repo")).unwrap();
+        symlink(dir.path().join("missing"), job.join("repo/dangling")).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(outside.join("locked")).unwrap();
+        std::fs::set_permissions(
+            outside.join("locked"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        symlink(&outside, job.join("repo/escape")).unwrap();
+        let result = chown_recursive(&job, current_uid(), current_gid());
+        std::fs::set_permissions(
+            outside.join("locked"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        result.unwrap();
     }
 }
