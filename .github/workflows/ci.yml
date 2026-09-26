@@ -963,6 +963,14 @@ jobs:
             git -C "$dir" checkout --quiet "$sha"
             parcels_arg=""
             [ "$parcels" = "true" ] || parcels_arg="--no-parcels"
+            # Names seeded from the committed fixture, as remote-build.yml's
+            # fixture band does, so this map is also a fixture re-derivation
+            # when an extraction change moves one (CLAUDE.md, "Checks before
+            # a change lands"). It has to be this job's map, on a full-history
+            # clone like `full-fixtures`: remote-build's depth-4000 clone
+            # gives django a different co-change graph, placing 75.2% against
+            # its own committed fixture with an unchanged binary (finding 49).
+            PYTHONPATH="$PWD/src" python3 eval/seed_names.py "$work/map" "$name" > /dev/null
             ./bin/tolmap build "$PWD/$dir" --pkg "$pkg" --lang "$lang" --refs hand $parcels_arg \
               --name "$name" --out "$work/map" > "$work/build.log" 2>&1 || echo "$name build FAILED"
             ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" --lang "$lang" --refs hand \
@@ -1101,9 +1109,10 @@ jobs:
             # not enough -- docs/ARCHITECTURE.md's documented clone strategy.
             git clone --quiet --filter=blob:none "$url" "$dir"
             git -C "$dir" checkout --quiet "$sha"
-            # --refs hand: data/*.json is the frozen Python reference's
-            # output (or, for two fixtures, the Rust hand path's -- see
-            # data/fixtures.toml), and neither knows SCIP. The SCIP path is
+            # --refs hand: data/*.json is the hand path's output -- the
+            # frozen Python reference's for httpx and vue, the Rust
+            # product's for the other seven (data/fixtures.toml's
+            # `generator`) -- and neither knows SCIP. The SCIP path is
             # gated against its own fixtures in `scip-fixtures` below.
             ./target/release/tolmap build "$dir" --pkg "$pkg" --lang "$lang" \
               --refs hand --name "$name" --out full-out --resolution 1.1
