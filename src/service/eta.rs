@@ -399,16 +399,17 @@ const HAND_ANCHORS: [(f64, f64); 4] = [
     (11_991.0, 1_786.7),
 ];
 
-/// The geometric mean of finding 18's four per-band p90/median ratios
-/// (34.1/20.8, 254.5/254.5... i.e. 34.1/20.8=1.639, 254.5/114.2=2.228,
-/// 1266.9/519.8=2.438, 5305.8/1786.7=2.969 -> geometric mean 2.27). Applied
-/// to every seed curve, `hand` and `scip` alike, as the stand-in "upper
-/// quantile" described in the module comment above: findings 44-46 give a
-/// single peak per repository under `scip`, with no p10-p90 spread to draw
-/// its own multiplier from, so reusing finding 18's is the closest measured
+/// The geometric mean of finding 18's four per-band p90/median ratios:
+/// 34.1/20.8 = 1.639, 254.5/114.2 = 2.228, 1266.9/519.8 = 2.438, and
+/// 5305.8/1786.7 = 2.969 -> geometric mean 2.27. Applied once, after
+/// blending in real observations against the *median* curve (see
+/// `MemoryModel::predict_peak`), as the stand-in "upper quantile" described
+/// in the module comment above: findings 44-46 give a single peak per
+/// repository under `scip`, with no p10-p90 spread to draw its own
+/// multiplier from, so reusing finding 18's is the closest measured
 /// evidence rather than an invented number. Once finished `scip` rows
-/// accumulate, the refit loop below moves the prediction from measurement,
-/// not this constant.
+/// accumulate, the refit loop below moves the median from measurement; this
+/// constant still sets how far above that median the prediction sits.
 const UPPER_QUANTILE_MULTIPLIER: f64 = 2.27;
 
 /// `--refs scip` Python peaks, `(files, peak MiB)`. Fixture-scale points are
@@ -449,9 +450,12 @@ const SCIP_TS_ANCHORS: [(f64, f64); 2] = [(239.0, 684.0), (11_991.0, 8_082.0)];
 /// the estimate cannot be file-count-derived the way every other group's is.
 const SCIP_UNKNOWN_PEAK_MIB: f64 = 1_155.0;
 
-/// files per MiB conversion; `ru_maxrss` observations and the findings this
-/// module cites both round-trip through `/usr/bin/time -v`'s "Maximum
-/// resident set size (kbytes)", i.e. binary MiB, not decimal MB.
+/// `ru_maxrss` (`jobs::wait_with_peak`) converts to bytes exactly. The
+/// anchor tables above read off finding 18's and findings 44-46's own
+/// tables, both labeled "MB"; this model treats that unit as MiB (2^20
+/// bytes) for this conversion, which is about 4.9% higher than a strict
+/// decimal MB (10^6) reading would give -- a small, deliberate addition to
+/// the same side as `UPPER_QUANTILE_MULTIPLIER`, not a rounding bug.
 const MIB: f64 = 1_048_576.0;
 
 /// Least-squares slope and intercept of `ln(peak)` on `ln(files)`, in natural
@@ -518,9 +522,13 @@ impl MemoryModel {
         (count > 0).then_some(count as f64)
     }
 
-    /// The upper-quantile seed, in bytes, for a group and a file count. See
-    /// the anchor tables above for what each branch is fit from.
-    fn seed_bytes(group: MemoryGroup<'_>, files: f64) -> f64 {
+    /// The *median* curve, in bytes, for a group and a file count -- no
+    /// upper-quantile margin. Shared by `predict_peak`'s seed and its refit
+    /// loop (both call sites the module comment above and #2.1 ask for), so
+    /// a real observation's ratio is always taken against the same baseline
+    /// the seed itself is built from. See the anchor tables above for what
+    /// each branch is fit from.
+    fn median_bytes(group: MemoryGroup<'_>, files: f64) -> f64 {
         let hand_slope = fit_loglog(&HAND_ANCHORS, None).0;
         let mib = if group.scip {
             match group.language {
@@ -536,21 +544,23 @@ impl MemoryModel {
         } else {
             loglog_predict(&HAND_ANCHORS, None, files)
         };
-        mib * UPPER_QUANTILE_MULTIPLIER * MIB
+        mib * MIB
     }
 
-    /// The reference-mode prior alone, for a queued job whose worker has not
-    /// reported `features` yet (#2.1 point 4). `hand`'s prior reuses
-    /// `seed_bytes` at finding 18's own medium-band median file count -- the
-    /// corpus's own middle, not a magic number -- so it never drifts from
-    /// the same curve a known-file-count `hand` job gets. `scip` has no
-    /// per-file-count curve to evaluate at an arbitrary point without also
-    /// knowing a language, so it is `SCIP_UNKNOWN_PEAK_MIB` directly.
-    fn unknown_prior(scip: bool) -> f64 {
+    /// The reference-mode median prior alone, for a queued job whose worker
+    /// has not reported `features` yet (#2.1 point 4). `hand`'s prior
+    /// reuses `median_bytes` at finding 18's own medium-band median file
+    /// count -- the corpus's own middle, not a magic number -- so it never
+    /// drifts from the same curve a known-file-count `hand` job gets.
+    /// `scip` has no per-file-count curve to evaluate at an arbitrary point
+    /// without also knowing a language, so it is `SCIP_UNKNOWN_PEAK_MIB`
+    /// directly. Neither branch applies `UPPER_QUANTILE_MULTIPLIER`;
+    /// `predict_peak` does, once, on whatever this returns.
+    fn unknown_median(scip: bool) -> f64 {
         if scip {
-            SCIP_UNKNOWN_PEAK_MIB * UPPER_QUANTILE_MULTIPLIER * MIB
+            SCIP_UNKNOWN_PEAK_MIB * MIB
         } else {
-            Self::seed_bytes(
+            Self::median_bytes(
                 MemoryGroup {
                     scip: false,
                     language: None,
@@ -566,9 +576,9 @@ impl MemoryModel {
     /// estimate (#2.1 says so explicitly).
     pub fn predict_peak(&self, features: &RepoFeatures) -> u64 {
         let group = MemoryGroup::of(features);
-        let seed = match Self::file_count(features) {
-            Some(files) => Self::seed_bytes(group, files),
-            None => Self::unknown_prior(group.scip),
+        let median = match Self::file_count(features) {
+            Some(files) => Self::median_bytes(group, files),
+            None => Self::unknown_median(group.scip),
         };
         let mut sum = MEMORY_SEED_WEIGHT;
         let mut weight = MEMORY_SEED_WEIGHT;
@@ -593,14 +603,27 @@ impl MemoryModel {
             let Some(row_files) = Self::file_count(&row.features) else {
                 continue;
             };
-            let predicted = Self::seed_bytes(row_group, row_files);
-            if predicted <= 0.0 {
+            // Against the *median*, not `seed` -- a typical finished job's
+            // peak sits near the median curve, not the upper-quantile one,
+            // so a ratio taken against an already-multiplied seed would be
+            // about 1/2.27 for a typical job, clamp to the 0.5 floor below,
+            // and pull the blended prediction down to roughly half the
+            // seed once enough rows accumulate -- silently discarding the
+            // margin #2.1 asks for ("it errs high on purpose").
+            let predicted_median = Self::median_bytes(row_group, row_files);
+            if predicted_median <= 0.0 {
                 continue;
             }
-            sum += (observed as f64 / predicted).clamp(0.5, 2.0);
+            sum += (observed as f64 / predicted_median).clamp(0.5, 2.0);
             weight += 1.0;
         }
-        (seed * sum / weight).round().max(1.0) as u64
+        // The multiplier is applied exactly once, here, after blending real
+        // observations against the median curve above -- see the comment
+        // in the loop for what goes wrong if it is folded into `median`
+        // (or an equivalent per-row value) before that blend instead.
+        ((median * sum / weight) * UPPER_QUANTILE_MULTIPLIER)
+            .round()
+            .max(1.0) as u64
     }
 }
 
@@ -982,6 +1005,42 @@ mod tests {
         assert!(
             (refit as f64) <= seed as f64 * 2.01,
             "the clamp must keep the refit from exceeding the observed ratio, got {refit} against seed {seed}"
+        );
+    }
+
+    // A regression test for exactly the bug the ratio-against-`seed` version
+    // of `predict_peak` had: a typical finished job's peak sits on the
+    // *median* curve, not the already-multiplied seed, so its ratio against
+    // `seed` was about 1/2.27, clamped to the 0.5 floor, and 20 such rows
+    // pulled the blended prediction down to about half the seed -- silently
+    // discarding `UPPER_QUANTILE_MULTIPLIER` instead of applying it.
+    #[test]
+    fn memory_refit_at_the_median_preserves_the_upper_quantile() {
+        let input = scip_py(851);
+        let group = MemoryGroup::of(&input);
+        let median = MemoryModel::median_bytes(group, 851.0);
+
+        let mut at_median = MemoryModel::default();
+        let seed = at_median.predict_peak(&input);
+        for _ in 0..20 {
+            at_median.record(finished_row(input.clone(), median.round() as u64));
+        }
+        let unchanged = at_median.predict_peak(&input);
+        assert!(
+            (unchanged as i64 - seed as i64).abs() <= 1,
+            "20 rows exactly on the median should leave the prediction at the \
+             seed (within rounding), not halve it: seed {seed}, got {unchanged}"
+        );
+
+        let mut at_double = MemoryModel::default();
+        for _ in 0..20 {
+            at_double.record(finished_row(input.clone(), (median * 2.0).round() as u64));
+        }
+        let raised = at_double.predict_peak(&input);
+        assert!(
+            raised > seed,
+            "rows at 2x the median should raise the prediction above the seed, \
+             got {raised} against seed {seed}"
         );
     }
 
