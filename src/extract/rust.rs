@@ -1741,6 +1741,44 @@ fn tie(reach: &Reach) -> Option<&'static str> {
     }
 }
 
+type Seen<T> = BTreeMap<Vec<String>, BTreeSet<T>>;
+
+/// The identifiers and paths each scope's `use` leaves can be referenced
+/// by: its own, and those of every inline module below it that brings
+/// everything in with `use super::*` (a `mod tests` does). What `super::*`
+/// binds in the child is exactly what the parent binds, so a name the
+/// child uses is one of the parent's `use` leaves in use. Only for judging
+/// the parent's leaves: the child's own paths still resolve from the child.
+fn seen_from_children(syntax: &RustSyntax) -> (Seen<String>, Seen<Vec<String>>) {
+    let mut idents = syntax.idents.clone();
+    let mut paths = syntax.paths.clone();
+    let mut globbing = syntax
+        .uses
+        .iter()
+        .filter(|decl| {
+            !decl.scope.is_empty()
+                && decl
+                    .leaves
+                    .iter()
+                    .any(|leaf| leaf.glob && leaf.segments == ["super"])
+        })
+        .map(|decl| decl.scope.clone())
+        .collect::<Vec<_>>();
+    // Deepest first, so a grandchild's names reach the grandparent.
+    globbing.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    globbing.dedup();
+    for scope in globbing {
+        let parent = scope[..scope.len() - 1].to_vec();
+        if let Some(names) = idents.get(&scope).cloned() {
+            idents.entry(parent.clone()).or_default().extend(names);
+        }
+        if let Some(selected) = paths.get(&scope).cloned() {
+            paths.entry(parent).or_default().extend(selected);
+        }
+    }
+    (idents, paths)
+}
+
 struct Unit {
     targets: BTreeMap<FileId, BTreeSet<String>>,
 }
@@ -1811,6 +1849,7 @@ pub(crate) fn resolve(
 
     for (&file, file_syntax) in &syntax {
         let path_of = |target: FileId| files[target as usize].as_str();
+        let (idents_seen, paths_seen) = seen_from_children(file_syntax);
         // 1. `use` declarations: one unit each.
         for decl in &file_syntax.uses {
             let Some(&module) = resolver.by_scope.get(&(file, decl.scope.clone())) else {
@@ -1824,14 +1863,15 @@ pub(crate) fn resolve(
                             "no_module",
                             null,
                             [],
+                            decl.scope.join("::"),
                         ]));
                     }
                 }
                 continue;
             };
             let importer_in = resolver.modules[module].cfg == Cfg::In;
-            let idents = file_syntax.idents.get(&decl.scope);
-            let selected = file_syntax.paths.get(&decl.scope);
+            let idents = idents_seen.get(&decl.scope);
+            let selected = paths_seen.get(&decl.scope);
             let mut unit = Unit::new();
             for leaf in &decl.leaves {
                 let mut row_targets = BTreeSet::new();
@@ -1934,6 +1974,7 @@ pub(crate) fn resolve(
                             .iter()
                             .map(|&id| path_of(id))
                             .collect::<Vec<_>>(),
+                        decl.scope.join("::"),
                     ]));
                 }
             }
@@ -1977,6 +2018,7 @@ pub(crate) fn resolve(
                             outcome(&reach, false),
                             tie(&reach),
                             [],
+                            scope.join("::"),
                         ]));
                     }
                     continue;
@@ -2005,6 +2047,7 @@ pub(crate) fn resolve(
                             .iter()
                             .map(|&id| path_of(id))
                             .collect::<Vec<_>>(),
+                        scope.join("::"),
                     ]));
                 }
             }
@@ -2418,6 +2461,32 @@ mod tests {
         );
         write(dir.path(), "src/a.rs", "pub struct Shown;\n");
         write(dir.path(), "src/b.rs", "pub struct Hidden;\n");
+        assert_eq!(
+            edges(dir.path()),
+            expected(&[("src/lib.rs", "src/a.rs", 1.0)])
+        );
+    }
+
+    #[test]
+    fn a_test_module_that_globs_super_uses_its_parents_imports() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[package]\nname = \"tested\"\nedition = \"2021\"\n",
+        );
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "mod a;\nmod b;\nuse a::Thing;\nuse b::Other;\n\n\
+             #[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn t() {\n        Thing::new();\n    }\n}\n",
+        );
+        write(
+            dir.path(),
+            "src/a.rs",
+            "pub struct Thing;\nimpl Thing {\n    pub fn new() -> Self {\n        Thing\n    }\n}\n",
+        );
+        write(dir.path(), "src/b.rs", "pub struct Other;\n");
         assert_eq!(
             edges(dir.path()),
             expected(&[("src/lib.rs", "src/a.rs", 1.0)])

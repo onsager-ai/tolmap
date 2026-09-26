@@ -60,9 +60,17 @@ PLACEMENT_THRESHOLD = 0.95  # src/parity.rs PLACEMENT_THRESHOLD
 MODULARITY_THRESHOLD = 0.02  # src/parity.rs MODULARITY_THRESHOLD
 
 
+# Languages the product can take the SCIP path for. Rust has no product
+# indexer (rust-analyzer runs a repository's build scripts and proc macros
+# natively, finding 55): its map fixtures are hand-only, and ci.yml's
+# `hand-score` runs rust-analyzer as their oracle instead (finding 56).
+PRODUCT_SCIP_LANGS = ("py", "go", "ts")
+
+
 def fixtures() -> dict[str, dict]:
     with FIXTURES.open("rb") as handle:
-        return tomllib.load(handle)
+        return {name: row for name, row in tomllib.load(handle).items()
+                if row["lang"] in PRODUCT_SCIP_LANGS}
 
 
 def load(path: Path) -> dict | None:

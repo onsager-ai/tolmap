@@ -6,6 +6,7 @@
     hand_score.py baseline --summary JSON --out data/scip/hand_score.json [--source URL]
     hand_score.py gate     --summary JSON --baseline data/scip/hand_score.json
     hand_score.py ts-variants --work DIR
+    hand_score.py rust-targets
     hand_score.py self-test
 
 Runs on a GitHub-hosted runner (ci.yml `hand-score`); the laptop does not run
@@ -165,6 +166,33 @@ and ordinary-module re-exports were followed, and the files it links now.
   `hand_is_after` checks `after` against the dumped graph.
 - `change`: `after` against `before`, pair by pair, as TypeScript's.
 
+For Rust the row carries `rs` (issue #126, finding 56). Rust has no
+product indexer: rust-analyzer compiles a repository's build scripts and
+proc macros natively, and without network it degrades to `--no-deps`
+(finding 55), so it is the oracle here only, run by the job itself with
+network on the pinned release, on the pins `rust-targets` prints: the Rust
+map fixtures in data/fixtures.toml plus RUST_ORACLE_ONLY. From the
+resolver's own report (`TOLMAP_RUST_IMPORT_REPORT`, written by `dump-graph
+--refs hand`):
+- `outcomes`: every `use` leaf and every written-out path by outcome:
+  `defined` (followed to the defining file), `module` (names selected
+  through an imported module), `uncertain` / `uncertain_glob` (the chain
+  stopped; the module the path named is linked), `module_unselected`,
+  `glob` (a `use x::*`, deliberately unresolved), `unused` (a private `use`
+  the file never names), `unnamed` (`as _`), `glob_scope` (the head may come
+  from a glob or the prelude), `external`, `unresolved` (`Self::`, a module
+  no crate declares), `no_module` (a file no crate reaches); and how many
+  hit a cfg tie, broken or kept.
+- `scip_only_uses_by_class`: SCIP use pairs hand lacks, in this order:
+  `member via value` (only methods or fields support the pair: a trait
+  method or a method called on a value, finding 50's class), `glob import`
+  (the source glob-imports the target's module or one above it), `inferred
+  type` (two hand hops), `other`.
+- `hand_only_by_class`: `uncertain module` (a chain the resolver could not
+  follow linked the module it named), `other`.
+Rust rows are reported and not gated (UNGATED_LANGS) until the owner has
+seen the numbers.
+
 A fixed-seed sample (`random.Random(SEED)`) of up to SAMPLE rows per class
 is kept; the class counts are over every pair.
 
@@ -199,6 +227,19 @@ TS_SCIP_CLASSES = ("barrel, followed", "barrel, not followed", "unresolved relat
 TS_HAND_CLASSES = ("source not indexed", "followed", "other")
 TS_OUTCOMES = ("defined_here", "followed", "partly_followed", "uncertain", "opaque", "no_names", "unresolved")
 PY_OUTCOMES = ("narrowed", "partly", "defined_here", "uncertain", "unused", "value", "ambiguous")
+RS_OUTCOMES = ("defined", "module", "uncertain", "uncertain_glob", "module_unselected", "glob", "unused",
+               "unnamed", "glob_scope", "external", "unresolved", "no_module")
+RS_SCIP_CLASSES = ("member via value", "glob import", "inferred type", "other")
+RS_HAND_CLASSES = ("uncertain module", "other")
+# Languages whose rows are reported but not gated: Rust, until the owner
+# has seen its numbers (issue #126).
+UNGATED_LANGS = ("rs",)
+# Rust repositories scored against rust-analyzer that are not map fixtures:
+# finding 55's ripgrep pin (tag 14.1.1, a small multi-crate workspace).
+RUST_ORACLE_ONLY = {
+    "ripgrep": {"url": "https://github.com/BurntSushi/ripgrep.git",
+                "commit": "0e8390a66fbcf6eeac1aeb0541b367663a597c79", "pkg": ".", "lang": "rs"},
+}
 # The classes that are hand over-attributing to a package: each such pair
 # claims a dependency on a file whose own content is not what is used. They
 # may only go down (CLAUDE.md: numbers must be a lower bound).
@@ -223,9 +264,23 @@ def fingerprint(pairs) -> str:
     return hashlib.sha256(json.dumps(sorted(pairs), separators=(",", ":")).encode()).hexdigest()
 
 
-def fixture_names() -> list[str]:
+def fixture_table() -> dict[str, dict]:
     with (ROOT / "data" / "fixtures.toml").open("rb") as handle:
-        return list(tomllib.load(handle))
+        return tomllib.load(handle)
+
+
+def fixture_names() -> list[str]:
+    return list(fixture_table())
+
+
+def rust_targets(_args) -> int:
+    """`name url commit pkg` for every Rust repository the job scores:
+    the Rust map fixtures, then RUST_ORACLE_ONLY."""
+    rows = {name: row for name, row in fixture_table().items() if row.get("lang") == "rs"}
+    rows.update(RUST_ORACLE_ONLY)
+    for name, row in rows.items():
+        print(name, row["url"], row["commit"], row["pkg"])
+    return 0
 
 
 # --- the Python resolver, replicated (src/extract.rs) ---
@@ -526,7 +581,8 @@ def sample(rows: list[dict]) -> list[dict]:
 
 def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | None, ingest: dict,
                    py: PythonFiles | None, ts_report: list[list] | None = None,
-                   ts_sources: TsSources | None = None, py_report: list[list] | None = None) -> dict:
+                   ts_sources: TsSources | None = None, py_report: list[list] | None = None,
+                   rs_report: tuple[list[list], dict] | None = None) -> dict:
     lang_of = {n["file"]: n.get("lang") or hand_graph["lang"] for n in hand_graph["nodes"]}
     hand = {(a, b) for a, b, _ in hand_graph["imports"] if a != b and lang_of.get(a) == lang}
     scip = {(a, b) for a, b, *_ in ingest["file_edges"] if a != b and lang_of.get(a) == lang}
@@ -609,6 +665,8 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
         row["go"] = {"file_gap": {"use_pairs": len(gap), "member_only": len(gap) - len(named),
                                   "named": len(named), "named_samples": sample(named)},
                      "member_only_available": "member_only_use_pairs" in ingest}
+    if lang == "rs":
+        row["rs"] = score_rs(lang_of, hand, scip, scip_uses, hand_targets, rs_report, member_only)
     if lang == "py" and py_report is not None:
         row["py"] = score_py(lang_of, hand, scip, scip_uses, py_report, py, scip_targets)
     if lang == "ts":
@@ -873,6 +931,97 @@ def score_ts(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: 
 TS_VARIANTS = ("share", "per-file")
 
 
+def load_rs_report(work: Path) -> tuple[list[list], dict] | None:
+    """The Rust resolver's rows (finding 56): [file, "use" | "extern_crate"
+    | "path", path, local name, outcome, cfg tie ("kept" | "broken" |
+    null), files linked, inline-module scope], and each file's module path."""
+    reports = sorted(work.glob("rust-imports.*.json"))
+    if not reports:
+        return None
+    rows = [row for path in reports for row in load(path)]
+    modules = {}
+    for path in sorted(work.glob("rust-modules.*.json")):
+        modules.update({file: module for file, module in load(path)})
+    return rows, modules
+
+
+def rs_absolute(segments: list[str], own: str) -> str | None:
+    """A `use` path made absolute from the module it is written in, for
+    the classifier: `crate`, `self` and `super` only (a leading crate name
+    or local item is not told apart here)."""
+    parts = own.split("::")
+    head, rest = segments[0], segments[1:]
+    if head == "crate":
+        path = parts[:1]
+    elif head == "self":
+        path = parts
+    elif head == "super":
+        if len(parts) < 2:
+            return None
+        path = parts[:-1]
+    else:
+        return None
+    for segment in rest:
+        if segment == "super":
+            if len(path) < 2:
+                return None
+            path = path[:-1]
+        else:
+            path = path + [segment]
+    return "::".join(path)
+
+
+def score_rs(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: dict,
+             report: tuple[list[list], dict] | None, member_only: set) -> dict:
+    """Finding 56's block: the resolver's outcomes and the pairs one side
+    has alone, by class."""
+    if report is None:
+        return {"report": False}
+    rows, modules = report
+    rows = [r for r in rows if lang_of.get(r[0]) == "rs"]
+    outcomes = {"use": Counter(), "path": Counter()}
+    ties = {"use": Counter(), "path": Counter()}
+    for r in rows:
+        kind = "path" if r[1] == "path" else "use"
+        outcomes[kind][r[4]] += 1
+        if r[5]:
+            ties[kind][r[5]] += 1
+    globs = defaultdict(set)
+    for r in rows:
+        if r[1] == "use" and r[4] == "glob" and modules.get(r[0]):
+            own = modules[r[0]] + ("::" + r[7] if len(r) > 7 and r[7] else "")
+            target = rs_absolute(r[2].split("::"), own)
+            if target:
+                globs[r[0]].add(target)
+    uncertain = {(r[0], t) for r in rows if r[4].startswith("uncertain") for t in r[6]}
+
+    def scip_class(a: str, t: str) -> str:
+        if (a, t) in member_only:
+            return "member via value"
+        module = modules.get(t)
+        if module and any(module == g or module.startswith(g + "::") for g in globs.get(a, ())):
+            return "glob import"
+        if any(t in hand_targets.get(c, ()) for c in hand_targets.get(a, ())):
+            return "inferred type"
+        return "other"
+
+    missing = [{"a": a, "b": t, "class": scip_class(a, t)} for a, t in sorted(scip_uses - hand)]
+    hand_only = [{"a": a, "b": b, "class": "uncertain module" if (a, b) in uncertain else "other"}
+                 for a, b in sorted(hand - scip)]
+    return {
+        "report": True,
+        "files_in_a_crate": sum(1 for f, lang in lang_of.items() if lang == "rs" and modules.get(f)),
+        "files": sum(1 for lang in lang_of.values() if lang == "rs"),
+        "outcomes": {k: {o: v.get(o, 0) for o in RS_OUTCOMES} for k, v in outcomes.items()},
+        "ties": {k: dict(sorted(v.items())) for k, v in ties.items()},
+        "scip_only_uses": len(missing),
+        "scip_only_uses_by_class": {c: sum(1 for m in missing if m["class"] == c) for c in RS_SCIP_CLASSES},
+        "scip_only_uses_samples": {c: sample([m for m in missing if m["class"] == c]) for c in RS_SCIP_CLASSES},
+        "hand_only_by_class": {c: sum(1 for h in hand_only if h["class"] == c) for c in RS_HAND_CLASSES},
+        "hand_only_samples": {c: sample([h for h in hand_only if h["class"] == c]) for c in RS_HAND_CLASSES},
+    }
+
+
 def load_py_report(work: Path) -> list[list] | None:
     """The Python resolver's own rows (finding 53): [file, statement index,
     files linked before module objects and ordinary-module re-exports were
@@ -997,7 +1146,8 @@ def score(args) -> int:
             continue
         row = score_language(args.name, lang, hand_graph, scip_graph, load(ingest_path), py,
                              load_ts_report(work) if lang == "ts" else None, TsSources(args.repo),
-                             load_py_report(work) if lang == "py" else None)
+                             load_py_report(work) if lang == "py" else None,
+                             load_rs_report(work) if lang == "rs" else None)
         if lang == "go":
             row["go"]["import_outcomes"] = go_import_outcomes(work)
         row["status"] = "scored"
@@ -1192,6 +1342,26 @@ def markdown(rows: list[dict]) -> str:
             out.append(f"| {r['name']} | {c['removed']:,} | {c['removed_scip']:,} | {c['removed_scip_uses']:,} "
                        f"| {c['removed_to_package']:,} | {c['added']:,} | {c['added_scip_uses']:,} "
                        f"| {c['added_not_scip']:,} |")
+    rs_rows = [r for r in scored if (r.get("rs") or {}).get("report")]
+    if rs_rows:
+        out += ["", "### Rust (finding 56; reported, not gated)", "",
+                "| fixture | kind | " + " | ".join(o.replace("_", " ") for o in RS_OUTCOMES) + " | cfg ties broken / kept |",
+                "|---|---|" + "---:|" * len(RS_OUTCOMES) + "---|"]
+        for r in rs_rows:
+            x = r["rs"]
+            for kind in ("use", "path"):
+                t = x["ties"].get(kind, {})
+                out.append(f"| {r['name']} | {kind} | " + " | ".join(f"{x['outcomes'][kind][o]:,}" for o in RS_OUTCOMES)
+                           + f" | {t.get('broken', 0):,} / {t.get('kept', 0):,} |")
+        out += ["", "| fixture | files (in a crate) | SCIP use pairs hand lacks | " + " | ".join(RS_SCIP_CLASSES)
+                + " | hand-only | " + " | ".join(RS_HAND_CLASSES) + " |",
+                "|---|---|---:|" + "---:|" * len(RS_SCIP_CLASSES) + "---:|" + "---:|" * len(RS_HAND_CLASSES)]
+        for r in rs_rows:
+            x = r["rs"]
+            out.append(f"| {r['name']} | {x['files']:,} ({x['files_in_a_crate']:,}) | {x['scip_only_uses']:,} | "
+                       + " | ".join(f"{x['scip_only_uses_by_class'][c]:,}" for c in RS_SCIP_CLASSES)
+                       + f" | {sum(x['hand_only_by_class'].values()):,} | "
+                       + " | ".join(f"{x['hand_only_by_class'][c]:,}" for c in RS_HAND_CLASSES) + " |")
     out += ["", "### Hand-only pairs by class", "",
             "| fixture | lang | hand-only | " + " | ".join(HAND_CLASSES) + " |",
             "|---|---|---:|" + "---:|" * len(HAND_CLASSES)]
@@ -1217,18 +1387,25 @@ def markdown(rows: list[dict]) -> str:
 
 def summary(args) -> int:
     rows = []
-    for name in fixture_names():
+    table = fixture_table()
+    # Scored repositories that are not map fixtures (RUST_ORACLE_ONLY) follow
+    # the fixtures, in name order.
+    names = list(table) + sorted(p.name for p in args.work.iterdir()
+                                 if (p / "score.json").is_file() and p.name not in table)
+    for name in names:
         path = args.work / name / "score.json"
         if not path.is_file():
-            rows.append({"name": name, "lang": "?", "status": "not scored"})
+            lang = (table.get(name) or {}).get("lang", "?")
+            rows.append({"name": name, "lang": lang, "status": "not scored"})
             continue
         rows.extend(load(path))
     args.out.write_text(json.dumps(rows, indent=1, sort_keys=True) + "\n")
-    table = markdown(rows)
-    print(table)
+    text = markdown(rows)
+    print(text)
     if args.markdown:
-        args.markdown.write_text(table)
-    return 0 if all(r.get("status") == "scored" for r in rows) else 1
+        args.markdown.write_text(text)
+    # An ungated language failing to score is reported, not a failure.
+    return 0 if all(r.get("status") == "scored" or r.get("lang") in UNGATED_LANGS for r in rows) else 1
 
 
 BASELINE_FIELDS = ("name", "lang", "files", "hand_pairs", "scip_pairs", "shared", "recall", "precision",
@@ -1236,7 +1413,8 @@ BASELINE_FIELDS = ("name", "lang", "files", "hand_pairs", "scip_pairs", "shared"
                    "precision_uses", "shared_named_uses", "shared_namespace_only",
                    "shared_namespace_only_to_package",
                    "hand_only", "scip_only", "hand_only_by_class",
-                   "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory", "go", "ts")
+                   "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory", "go", "ts",
+                   "rs")
 
 
 def baseline(args) -> int:
@@ -1297,6 +1475,18 @@ def gate(args) -> int:
     for key, b in sorted(base.items()):
         r = rows.get(key)
         label = f"{key[0]} ({key[1]})"
+        if key[1] in UNGATED_LANGS:
+            # Recorded so a later change can be compared, not gated until
+            # the owner has seen the numbers (issue #126).
+            if r is None or r.get("status") != "scored":
+                print(f"REPORT {label}: not scored (not gated)")
+            else:
+                print(f"REPORT {label} (not gated): recall {pct(b['recall'])} → {pct(r['recall'])}, "
+                      f"precision {pct(b['precision'])} → {pct(r['precision'])}, "
+                      f"recall (uses) {pct(b['recall_uses'])} → {pct(r['recall_uses'])}, "
+                      f"precision (uses) {pct(b['precision_uses'])} → {pct(r['precision_uses'])}, "
+                      f"SCIP fingerprint {'unchanged' if r['scip_fingerprint'] == b['scip_fingerprint'] else 'changed'}")
+            continue
         if r is None or r.get("status") != "scored":
             failed.append(f"{label}: not scored")
             continue
@@ -1530,6 +1720,42 @@ def self_test(_args) -> int:
         assert run_gate(gate_rows("go", 10, 8), gate_rows("go", 10, 7)) == 1
         assert run_gate(gate_rows("go", 10, None), gate_rows("go", 9, 8)) == 1
         assert run_gate(gate_rows("py", 10, 8), gate_rows("py", 9, 8)) == 1
+        # Rust is reported, never gated (issue #126), even on a fall.
+        assert run_gate(gate_rows("rs", 10, 8), gate_rows("rs", 2, 1)) == 0
+
+        # Rust (finding 56): the report's outcomes and both classifiers.
+        rs_files = ["src/lib.rs", "src/a.rs", "src/b.rs", "src/b/c.rs", "src/d.rs"]
+        rs_graph = {"lang": "rs", "nodes": [{"file": f, "lang": "rs"} for f in rs_files],
+                    "imports": [["src/lib.rs", "src/a.rs", 1], ["src/a.rs", "src/b.rs", 1],
+                                ["src/lib.rs", "src/d.rs", 1]]}
+        rs_rows = [
+            ["src/lib.rs", "use", "crate::a::X", "X", "defined", None, ["src/a.rs"], ""],
+            ["src/lib.rs", "use", "crate::d::Y", "Y", "uncertain", None, ["src/d.rs"], ""],
+            ["src/lib.rs", "use", "crate::b", None, "glob", None, [], ""],
+            ["src/a.rs", "path", "super::b::f", None, "defined", "broken", ["src/b.rs"], ""],
+            ["src/a.rs", "use", "crate::gone::Z", "Z", "unused", None, [], ""],
+        ]
+        rs_modules = {"src/lib.rs": "demo", "src/a.rs": "demo::a", "src/b.rs": "demo::b",
+                      "src/b/c.rs": "demo::b::c", "src/d.rs": "demo::d"}
+        rs_ingest = {"file_edges": [
+            ["src/lib.rs", "src/a.rs", 1, 1, 1], ["src/a.rs", "src/b.rs", 1, 1, 1],
+            ["src/lib.rs", "src/b/c.rs", 1, 1, 1], ["src/lib.rs", "src/b.rs", 1, 1, 1],
+            ["src/a.rs", "src/d.rs", 1, 1, 1], ["src/b.rs", "src/a.rs", 1, 1, 1]],
+            "member_only_use_pairs": [["src/b.rs", "src/a.rs"]]}
+        rs_row = score_language("synthetic", "rs", rs_graph, None, rs_ingest, None,
+                                rs_report=(rs_rows, rs_modules))
+        rs = rs_row["rs"]
+        assert rs["outcomes"]["use"]["defined"] == 1 and rs["outcomes"]["use"]["glob"] == 1 \
+            and rs["outcomes"]["use"]["unused"] == 1 and rs["outcomes"]["path"]["defined"] == 1, rs["outcomes"]
+        assert rs["ties"] == {"use": {}, "path": {"broken": 1}}, rs["ties"]
+        # lib.rs globs `crate::b`, and b.rs and b/c.rs are under it; b.rs ->
+        # a.rs is member-only; a.rs -> d.rs has no hand path at all.
+        assert rs["scip_only_uses_by_class"] == {
+            "member via value": 1, "glob import": 2, "inferred type": 0, "other": 1}, rs["scip_only_uses_by_class"]
+        assert rs["hand_only_by_class"] == {"uncertain module": 1, "other": 0}, rs["hand_only_by_class"]
+        assert rs_absolute(["super", "b"], "demo::a") == "demo::b"
+        assert rs_absolute(["crate", "x", "super", "y"], "demo::a") == "demo::y"
+        assert rs_absolute(["other_crate", "x"], "demo::a") is None
     print("hand_score self-test passed")
     return 0
 
@@ -1561,6 +1787,7 @@ def main() -> int:
     run = commands.add_parser("ts-variants")
     run.add_argument("--work", type=Path, required=True, help="hand.graph.json and ts-imports.*.json")
     run.set_defaults(run=ts_variants)
+    commands.add_parser("rust-targets").set_defaults(run=rust_targets)
     commands.add_parser("self-test").set_defaults(run=self_test)
     args = parser.parse_args()
     return args.run(args)

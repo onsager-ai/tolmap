@@ -281,6 +281,38 @@ jobs:
       - name: Hand-score classifier self-test
         run: python3 eval/hand_score.py self-test
 
+      # Issue #126 (finding 56): Rust extraction and module-tree resolution,
+      # three builds of this checkout's own Rust (the resolver's unit tests
+      # hold a synthetic Cargo workspace's exact edges). The map and the
+      # symbols document must be byte-identical every time (CLAUDE.md,
+      # finding 9). A depth-1 checkout has one commit, so co-change is
+      # trivial here; determinism of the resolver is what this checks.
+      - name: Rust determinism (this checkout, --lang rs, 3x sha256)
+        run: |
+          set -euo pipefail
+          hashes=""
+          for i in 1 2 3; do
+            mkdir -p "rust-det-$i"
+            TOLMAP_RUST_IMPORT_REPORT="$PWD/rust-det-$i" ./target/release/tolmap build "$PWD" \
+              --pkg . --lang rs --refs hand --name tolmap --out "rust-det-$i" > "rust-det-$i.log" 2>&1 \
+              || { tail -30 "rust-det-$i.log"; exit 1; }
+            hash=$(sha256sum "rust-det-$i/tolmap.json" "rust-det-$i/tolmap.symbols.json" \
+              "rust-det-$i/rust-imports.root.json" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1)
+            echo "run $i: $hash"
+            hashes="$hashes $hash"
+          done
+          uniq_count=$(echo "$hashes" | tr ' ' '\n' | sort -u | grep -c .)
+          if [ "$uniq_count" -ne 1 ]; then
+            echo "three --lang rs builds produced different output -- determinism regression (CLAUDE.md, finding 9)"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          doc = json.load(open("rust-det-1/tolmap.json"))
+          print(f"three --lang rs builds byte-identical: {len(doc['F'])} files, "
+                f"{len(doc['E'])} edges, {len(set(n[0] for n in doc['N']))} districts, q {doc['q']}")
+          PY
+
       # The `scip` job below reuses this binary rather than compiling again.
       # build.rs bakes $LEIDEN_PREFIX/lib in as the rpath; the libraries
       # travel with it and are restored to the same path there.
@@ -1016,6 +1048,77 @@ jobs:
             rm -rf "$dir" "$work/index" "$work"/map/*.symbols.json "$work"/variants/maps/*.symbols.json
             echo "::endgroup::"
           done < fixtures.txt
+      # Issue #126 (finding 56): Rust's oracle. The product has no Rust
+      # indexer: rust-analyzer's `scip` compiles a repository's build scripts
+      # and proc-macro crates natively and has no flag to stop it, and
+      # offline it silently degrades to `--no-deps` (finding 55). So it runs
+      # here, network mode, at finding 55's pinned release, on the repos
+      # `hand_score.py rust-targets` lists (tolmap, a map fixture, and
+      # ripgrep 14.1.1, scored only). Each is a fresh CARGO_HOME, with
+      # LEIDEN_PREFIX unset as in finding 55's runs. Rust rows are reported,
+      # never gated, until the owner has seen the numbers.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install rust-analyzer (pinned, verified)
+        env:
+          RUST_ANALYZER_TAG: "2026-09-21"
+          RUST_ANALYZER_SHA256: "b2d24ce2bda2ea05b1ad7c2917d205f8111775f703ccd908e6061803ae8257d0"
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o ra.gz \
+            "https://github.com/rust-lang/rust-analyzer/releases/download/${RUST_ANALYZER_TAG}/rust-analyzer-x86_64-unknown-linux-gnu.gz"
+          echo "${RUST_ANALYZER_SHA256}  ra.gz" | sha256sum -c -
+          gunzip ra.gz
+          chmod +x ra
+          sudo mv ra /usr/local/bin/rust-analyzer
+          rust-analyzer --version
+          command -v /usr/bin/time || { sudo apt-get update && sudo apt-get install -y time; }
+      - name: Score Rust against rust-analyzer (reported, not gated)
+        env:
+          LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
+        run: |
+          # Not -e: a repo that fails is reported by `summary`, not a reason
+          # to skip the other.
+          set -uo pipefail
+          mkdir -p score clones
+          python3 eval/hand_score.py rust-targets > rust-targets.txt
+          cat rust-targets.txt
+          while read -r name url sha pkg; do
+            echo "::group::$name (rs)"
+            dir="clones/$name"
+            work="score/$name"
+            mkdir -p "$work/index"
+            git clone --quiet --filter=blob:none "$url" "$dir"
+            git -C "$dir" checkout --quiet "$sha"
+            # As the main loop: names seeded from a committed fixture, on a
+            # full-history clone, so this map is also the fixture's
+            # re-derivation.
+            if [ -f "data/$name.json" ]; then
+              PYTHONPATH="$PWD/src" python3 eval/seed_names.py "$work/map" "$name" > /dev/null
+            fi
+            parcels_arg="--no-parcels"
+            ./bin/tolmap build "$PWD/$dir" --pkg "$pkg" --lang rs --refs hand $parcels_arg \
+              --name "$name" --out "$work/map" > "$work/build.log" 2>&1 || echo "$name build FAILED"
+            TOLMAP_RUST_IMPORT_REPORT="$PWD/$work" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
+              --lang rs --refs hand --out "$work/hand.graph.json" || echo "$name dump-graph --refs hand FAILED"
+            # Last: rust-analyzer runs cargo in the clone and may leave
+            # target/ behind (never mapped).
+            env -u LEIDEN_PREFIX CARGO_HOME="$RUNNER_TEMP/cargo-home-$name" \
+              /usr/bin/time -v -o "$work/rust-analyzer.time.txt" \
+              rust-analyzer scip "$PWD/$dir" --output "$PWD/$work/index/rs.scip" --exclude-vendored-libraries \
+              > "$work/rust-analyzer.log" 2>&1 || echo "$name rust-analyzer FAILED"
+            tail -5 "$work/rust-analyzer.log"
+            grep -E "Elapsed|Maximum resident" "$work/rust-analyzer.time.txt" || true
+            if [ -s "$work/index/rs.scip" ]; then
+              PYTHONPATH="$RUNNER_TEMP/scippb:$PWD/eval" python3 eval/scip_ingest.py --index "$work/index/rs.scip" \
+                --map "$work/map/$name.json" --graph "$work/hand.graph.json" --lang rs \
+                --out "$work/rs.ingest.json" || echo "$name ingest rs FAILED"
+            fi
+            python3 eval/hand_score.py score --name "$name" --work "$work" --repo "$dir" \
+              --out "$work/score.json" || echo "$name score FAILED"
+            rm -rf "$dir" "$work/index"
+            echo "::endgroup::"
+          done < rust-targets.txt
       - name: Summary
         run: |
           set -uo pipefail
