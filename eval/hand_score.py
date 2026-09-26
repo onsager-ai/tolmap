@@ -101,6 +101,37 @@ For Go the row also carries `go` (finding 50):
   of them, so this is exactly what narrowing gave up, split into
   `member_only` (reached only through a method or field) and the rest.
 
+For TypeScript the row also carries `ts` (finding 51), from the resolver's
+own per-specifier report (`TOLMAP_TS_IMPORT_REPORT`, written by `dump-graph
+--refs hand`: where each specifier resolved, and the files its names reach
+when followed through `export ... from` and `export *`):
+- `import_outcomes`: `defined_here`, `followed`, `partly_followed`,
+  `uncertain` (with the failing names), `opaque` (a namespace, side-effect
+  or star form, `require()`, `import()`), `no_names`, `unresolved`.
+- `pairs`: the pairs the report says the resolver links by resolving
+  (`resolved`) and by following names (`followed`), each checked against
+  the hand graph, and each scored against SCIP. On a binary that links the
+  resolved file, `followed` is the prediction of what following would give;
+  on one that follows, `resolved` is the graph it replaced.
+- `change`: `followed` against `resolved`, pair by pair: the pairs
+  following removes and adds, and how many of each SCIP has, by a use.
+- `scip_only_uses_by_class`: SCIP use pairs hand lacks, in this order:
+  - `barrel, followed`: following the source's names reaches the target.
+  - `barrel, not followed`: the source imports an `index.*` file that
+    passes on the target (the `re-export` rule below), but following did not
+    reach it; `barrel_not_followed_by_outcome` says why, from the report.
+  - `unresolved relative import` / `unresolved workspace or alias import`:
+    a specifier the resolver left unresolved names the target (its path, or
+    the name of the workspace package the target sits in).
+  - `ambient or global`: the target is a `.d.ts`, a script with no
+    top-level `import`/`export`, or declares `declare global`, and nothing
+    imports it: its names are global.
+  - `inferred type`, `other`: as below.
+  Each barrel class also counts the pairs reached only through `import
+  type` statements (`type_only`).
+- `hand_only_by_class`: `followed` (following added the pair and SCIP does
+  not have it) and `other`.
+
 A fixed-seed sample (`random.Random(SEED)`) of up to SAMPLE rows per class
 is kept; the class counts are over every pair.
 
@@ -114,7 +145,9 @@ import argparse
 import ast
 import hashlib
 import json
+import posixpath
 import random
+import re
 import sys
 import tempfile
 import tomllib
@@ -128,6 +161,10 @@ EXTENDS_DEPTH = 3
 REEXPORT_DEPTH = 3
 HAND_CLASSES = ("star import", "submodule via package", "re-export", "package spread", "other")
 SCIP_CLASSES = ("re-export", "inherited member", "inferred type", "same package", "member via value", "other")
+TS_SCIP_CLASSES = ("barrel, followed", "barrel, not followed", "unresolved relative import",
+                   "unresolved workspace or alias import", "ambient or global", "inferred type", "other")
+TS_HAND_CLASSES = ("followed", "other")
+TS_OUTCOMES = ("defined_here", "followed", "partly_followed", "uncertain", "opaque", "no_names", "unresolved")
 # The classes that are hand over-attributing to a package: each such pair
 # claims a dependency on a file whose own content is not what is used. They
 # may only go down (CLAUDE.md: numbers must be a lower bound).
@@ -454,7 +491,8 @@ def sample(rows: list[dict]) -> list[dict]:
 
 
 def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | None, ingest: dict,
-                   py: PythonFiles | None) -> dict:
+                   py: PythonFiles | None, ts_report: list[list] | None = None,
+                   ts_sources: TsSources | None = None) -> dict:
     lang_of = {n["file"]: n.get("lang") or hand_graph["lang"] for n in hand_graph["nodes"]}
     hand = {(a, b) for a, b, _ in hand_graph["imports"] if a != b and lang_of.get(a) == lang}
     scip = {(a, b) for a, b, *_ in ingest["file_edges"] if a != b and lang_of.get(a) == lang}
@@ -537,6 +575,10 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
         row["go"] = {"file_gap": {"use_pairs": len(gap), "member_only": len(gap) - len(named),
                                   "named": len(named), "named_samples": sample(named)},
                      "member_only_available": "member_only_use_pairs" in ingest}
+    if lang == "ts":
+        symbols = {(a, b): names for a, b, names in ingest.get("use_pair_symbols", [])}
+        row["ts"] = score_ts(lang_of, hand, scip, scip_uses, hand_targets, ts_report,
+                             ts_sources or TsSources(None), symbols)
     references = ((scip_graph or {}).get("references") or {}).get(lang)
     row["references"] = references
     if references and references.get("path") == "scip":
@@ -572,6 +614,174 @@ def go_import_outcomes(work: Path) -> dict | None:
     }
 
 
+# --- TypeScript (finding 51) ---
+
+TS_TOP_LEVEL_MODULE = re.compile(r"^\s*(import|export)\b", re.MULTILINE)
+TS_SUFFIXES = (".d.ts", ".tsx", ".ts", ".jsx", ".js", ".mts", ".cts", ".mjs", ".cjs")
+
+
+def ts_stem(path: str) -> str:
+    """`a/b.ts` -> `a/b`, `a/index.ts` -> `a/index`."""
+    for suffix in TS_SUFFIXES:
+        if path.endswith(suffix):
+            return path[: -len(suffix)]
+    return path
+
+
+def load_ts_report(work: Path) -> list[list] | None:
+    """The resolver's own rows: [file, specifier, outcome, name, type-only,
+    resolved file or None, files the followed names reach]."""
+    reports = sorted(work.glob("ts-imports.*.json"))
+    if not reports:
+        return None
+    return [row for path in reports for row in load(path)]
+
+
+class TsSources:
+    """What the TypeScript classes read from the clone: the workspace
+    package each file sits in, and whether a file's names are global."""
+
+    def __init__(self, repo: Path | None):
+        self.repo = repo
+        self._package: dict[str, str | None] = {}
+        self._global: dict[str, bool] = {}
+
+    def package_name(self, directory_path: str) -> str | None:
+        if directory_path in self._package:
+            return self._package[directory_path]
+        name = None
+        if self.repo is not None:
+            manifest = self.repo / directory_path / "package.json" if directory_path else self.repo / "package.json"
+            try:
+                name = json.loads(manifest.read_text()).get("name")
+            except (OSError, ValueError, AttributeError):
+                name = None
+            if name is None and directory_path:
+                name = self.package_name(directory(directory_path))
+        self._package[directory_path] = name
+        return name
+
+    def is_global(self, path: str) -> bool:
+        if path in self._global:
+            return self._global[path]
+        answer = path.endswith(".d.ts")
+        if not answer and self.repo is not None:
+            try:
+                text = (self.repo / path).read_text(errors="replace")
+            except OSError:
+                text = None
+            if text is not None:
+                answer = "declare global" in text or not TS_TOP_LEVEL_MODULE.search(text)
+        self._global[path] = answer
+        return answer
+
+
+def unresolved_names(a: str, specifier: str, t: str, sources: TsSources) -> str | None:
+    """The class of an unresolved specifier of `a` that names `t`, if it does."""
+    if specifier.startswith("."):
+        base = posixpath.normpath(posixpath.join(directory(a), specifier))
+        base = ts_stem(base)
+        stem = ts_stem(t)
+        if stem in (base, f"{base}/index") or t.startswith(base + "/"):
+            return "unresolved relative import"
+        return None
+    package = sources.package_name(directory(t))
+    if package and (specifier == package or specifier.startswith(package + "/")):
+        return "unresolved workspace or alias import"
+    return None
+
+
+def score_ts(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: dict,
+             report: list[list] | None, sources: TsSources, symbols: dict) -> dict:
+    """The TypeScript block of a row (finding 51); see the module docstring."""
+    out: dict = {"report": report is not None}
+    if report is None:
+        return out
+    rows = [r for r in report if lang_of.get(r[0]) == "ts"]
+    by_file = defaultdict(list)
+    for r in rows:
+        by_file[r[0]].append(r)
+    outcomes = Counter(r[2] for r in rows)
+    uncertain_names = Counter(r[3] for r in rows if r[2] in ("uncertain", "partly_followed"))
+    resolved = {(r[0], r[5]) for r in rows if r[5] and r[5] != r[0]}
+    followed = {(r[0], t) for r in rows for t in r[6] if t != r[0]}
+
+    def ratio(x, y):
+        return round(x / y, 4) if y else None
+
+    def scores(pairs):
+        return {"pairs": len(pairs), "shared": len(pairs & scip), "shared_uses": len(pairs & scip_uses),
+                "precision": ratio(len(pairs & scip), len(pairs)), "recall": ratio(len(pairs & scip), len(scip)),
+                "precision_uses": ratio(len(pairs & scip_uses), len(pairs)),
+                "recall_uses": ratio(len(pairs & scip_uses), len(scip_uses))}
+
+    removed, added = resolved - followed, followed - resolved
+    out["import_outcomes"] = {
+        "imports": len(rows),
+        "by_outcome": dict(sorted(outcomes.items())),
+        "type_only": sum(1 for r in rows if r[4]),
+        "type_only_by_outcome": dict(sorted(Counter(r[2] for r in rows if r[4]).items())),
+        "top_uncertain_names": [[n, c] for n, c in sorted(uncertain_names.items(),
+                                                           key=lambda x: (-x[1], x[0]))[:15]],
+        "samples": {kind: sample([{"a": r[0], "b": r[1], "name": r[3], "resolved": r[5]}
+                                  for r in rows if r[2] == kind])
+                    for kind in sorted(outcomes) if kind not in ("defined_here", "followed")},
+    }
+    out["pairs"] = {"resolved": scores(resolved), "followed": scores(followed),
+                    "hand_is_resolved": hand == resolved, "hand_is_followed": hand == followed}
+    out["change"] = {
+        "removed": len(removed), "removed_scip": len(removed & scip), "removed_scip_uses": len(removed & scip_uses),
+        "added": len(added), "added_scip": len(added & scip), "added_scip_uses": len(added & scip_uses),
+        "added_not_scip": len(added - scip),
+        "removed_scip_uses_samples": sample([{"a": a, "b": b} for a, b in removed & scip_uses]),
+        "added_not_scip_samples": sample([{"a": a, "b": b} for a, b in added - scip]),
+    }
+
+    classes, barrel_why, type_only, samples = [], Counter(), Counter(), defaultdict(list)
+    for a, t in sorted(scip_uses - hand):
+        mine = by_file.get(a, [])
+        why = None
+        via = [r for r in mine if t in r[6] and r[5] != t]
+        if via:
+            why = "barrel, followed"
+            if all(r[4] for r in via):
+                type_only[why] += 1
+        if why is None:
+            via = [r for r in mine if r[5] and r[5] != t and reexports(r[5], t, hand_targets)]
+            if via:
+                why = "barrel, not followed"
+                barrel_why[via[0][2]] += 1
+                if all(r[4] for r in via):
+                    type_only[why] += 1
+        if why is None:
+            for r in mine:
+                if r[2] == "unresolved":
+                    why = unresolved_names(a, r[1], t, sources)
+                    if why:
+                        break
+        if why is None and sources.is_global(t) and not any(r[5] == t for r in mine):
+            why = "ambient or global"
+        if why is None and any(t in hand_targets.get(c, ()) for c in hand_targets.get(a, ())):
+            why = "inferred type"
+        why = why or "other"
+        classes.append(why)
+        samples[why].append({"a": a, "b": t, "symbols": symbols.get((a, t), []),
+                             "imports": sorted({r[1] for r in mine if r[5] == t or t in r[6]
+                                                or (r[5] and under(t, r[5]))})[:4]})
+    out["scip_only_uses"] = len(classes)
+    out["scip_only_uses_by_class"] = {c: classes.count(c) for c in TS_SCIP_CLASSES}
+    out["barrel_not_followed_by_outcome"] = dict(sorted(barrel_why.items()))
+    out["type_only"] = dict(sorted(type_only.items()))
+    out["scip_only_uses_samples"] = {c: sample(samples[c]) for c in TS_SCIP_CLASSES}
+
+    hand_only = sorted(hand - scip)
+    hand_classes = ["followed" if (a, b) in added else "other" for a, b in hand_only]
+    out["hand_only_by_class"] = {c: hand_classes.count(c) for c in TS_HAND_CLASSES}
+    out["hand_only_samples"] = {c: sample([{"a": a, "b": b} for (a, b), k in zip(hand_only, hand_classes) if k == c])
+                                for c in TS_HAND_CLASSES}
+    return out
+
+
 def score(args) -> int:
     work = args.work
     hand_graph = load(work / "hand.graph.json")
@@ -585,7 +795,8 @@ def score(args) -> int:
         if not ingest_path.is_file():
             rows.append({"name": args.name, "lang": lang, "status": "no index"})
             continue
-        row = score_language(args.name, lang, hand_graph, scip_graph, load(ingest_path), py)
+        row = score_language(args.name, lang, hand_graph, scip_graph, load(ingest_path), py,
+                             load_ts_report(work) if lang == "ts" else None, TsSources(args.repo))
         if lang == "go":
             row["go"]["import_outcomes"] = go_import_outcomes(work)
         row["status"] = "scored"
@@ -659,6 +870,38 @@ def markdown(rows: list[dict]) -> str:
                 f"{by.get(k, 0):,}" for k in ("narrowed", "opaque", "no_names", "undeclared_name",
                                               "ambiguous_name", "unknown_declarations"))
                 + f" | {links} | {gap['use_pairs']:,} ({gap['member_only']:,} / {gap['named']:,}) |")
+    ts_rows = [r for r in scored if (r.get("ts") or {}).get("report")]
+    if ts_rows:
+        out += ["", "### TypeScript imports (finding 51)", "",
+                "| fixture | specifiers | " + " | ".join(TS_OUTCOMES) + " | type-only |",
+                "|---|---:|" + "---:|" * (len(TS_OUTCOMES) + 1)]
+        for r in ts_rows:
+            o = r["ts"]["import_outcomes"]
+            out.append(f"| {r['name']} | {o['imports']:,} | "
+                       + " | ".join(f"{o['by_outcome'].get(k, 0):,}" for k in TS_OUTCOMES)
+                       + f" | {o['type_only']:,} |")
+        out += ["", "| fixture | pairs | hand pairs | shared by a use | precision (uses) | recall (uses) "
+                "| precision | recall | equals hand |", "|---|---|---:|---:|---:|---:|---:|---:|---|"]
+        for r in ts_rows:
+            p = r["ts"]["pairs"]
+            for key, label in (("resolved", "resolved (linking the module)"),
+                               ("followed", "followed (linking the definitions)")):
+                x = p[key]
+                out.append(f"| {r['name']} | {label} | {x['pairs']:,} | {x['shared_uses']:,} "
+                           f"| {pct(x['precision_uses'])} | {pct(x['recall_uses'])} | {pct(x['precision'])} "
+                           f"| {pct(x['recall'])} | {p['hand_is_' + key]} |")
+        out += ["", "| fixture | removed | removed, SCIP has | removed, SCIP has by a use | added "
+                "| added, SCIP has by a use | added, SCIP lacks |", "|---|---:|---:|---:|---:|---:|---:|"]
+        for r in ts_rows:
+            c = r["ts"]["change"]
+            out.append(f"| {r['name']} | {c['removed']:,} | {c['removed_scip']:,} | {c['removed_scip_uses']:,} "
+                       f"| {c['added']:,} | {c['added_scip_uses']:,} | {c['added_not_scip']:,} |")
+        out += ["", "| fixture | SCIP use pairs hand lacks | " + " | ".join(TS_SCIP_CLASSES) + " |",
+                "|---|---:|" + "---:|" * len(TS_SCIP_CLASSES)]
+        for r in ts_rows:
+            t = r["ts"]
+            out.append(f"| {r['name']} | {t['scip_only_uses']:,} | "
+                       + " | ".join(f"{t['scip_only_uses_by_class'][c]:,}" for c in TS_SCIP_CLASSES) + " |")
     out += ["", "### Hand-only pairs by class", "",
             "| fixture | lang | hand-only | " + " | ".join(HAND_CLASSES) + " |",
             "|---|---|---:|" + "---:|" * len(HAND_CLASSES)]
@@ -703,7 +946,7 @@ BASELINE_FIELDS = ("name", "lang", "files", "hand_pairs", "scip_pairs", "shared"
                    "precision_uses", "shared_named_uses", "shared_namespace_only",
                    "shared_namespace_only_to_package",
                    "hand_only", "scip_only", "hand_only_by_class",
-                   "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory", "go")
+                   "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory", "go", "ts")
 
 
 def baseline(args) -> int:
@@ -897,6 +1140,52 @@ def self_test(_args) -> int:
         assert outcomes["by_outcome"] == {"narrowed": 1, "opaque": 1, "undeclared_name": 1}, outcomes
         assert (outcomes["links_before"], outcomes["links_after"]) == (8, 6), outcomes
         assert outcomes["top_names"]["undeclared_name"] == [["Run", 1]], outcomes
+
+        # TypeScript (finding 51): a barrel `src/index.ts` passing on `a.ts`
+        # by name and `b.ts` by `export *`, an unresolved relative import, a
+        # global declaration file and a two-hop type.
+        ts_files = ("src/a.ts", "src/b.ts", "src/c.ts", "src/index.ts", "src/missing.ts", "src/other.ts",
+                    "src/use.ts", "types/global.d.ts")
+        ts_graph = {"lang": "ts", "nodes": [{"file": f, "lang": "ts"} for f in ts_files],
+                    "imports": [["src/use.ts", "src/index.ts", 1.0], ["src/index.ts", "src/a.ts", 1.0],
+                                ["src/index.ts", "src/b.ts", 1.0], ["src/other.ts", "src/c.ts", 1.0],
+                                ["src/c.ts", "src/a.ts", 1.0]]}
+        ts_report = [
+            ["src/c.ts", "./a", "defined_here", None, False, "src/a.ts", ["src/a.ts"]],
+            ["src/index.ts", "./a", "defined_here", None, False, "src/a.ts", ["src/a.ts"]],
+            ["src/index.ts", "./b", "opaque", None, False, "src/b.ts", ["src/b.ts"]],
+            ["src/other.ts", "./c", "defined_here", None, True, "src/c.ts", ["src/c.ts"]],
+            ["src/use.ts", "./index", "followed", None, True, "src/index.ts", ["src/a.ts"]],
+            ["src/use.ts", "./missing", "unresolved", None, False, None, []],
+        ]
+        ts_ingest = {"file_edges": [
+            ["src/c.ts", "src/a.ts", 1, 1, 1], ["src/index.ts", "src/a.ts", 1, 1, 1],
+            ["src/index.ts", "src/b.ts", 1, 1, 1], ["src/other.ts", "src/a.ts", 1, 1, 1],
+            ["src/other.ts", "src/b.ts", 1, 1, 1], ["src/other.ts", "src/c.ts", 1, 1, 1],
+            ["src/use.ts", "src/a.ts", 1, 1, 1], ["src/use.ts", "src/b.ts", 1, 1, 1],
+            ["src/use.ts", "src/index.ts", 1, 1, 0], ["src/use.ts", "src/missing.ts", 1, 1, 1],
+            ["src/use.ts", "types/global.d.ts", 1, 1, 1]],
+            "use_pair_symbols": [["src/use.ts", "src/a.ts", ["npm pkg 1 src/a.ts/f()."]]]}
+        ts_row = score_language("synthetic", "ts", ts_graph, None, ts_ingest, None, ts_report, TsSources(None))
+        ts = ts_row["ts"]
+        assert ts["scip_only_uses_by_class"] == {
+            "barrel, followed": 1, "barrel, not followed": 1, "unresolved relative import": 1,
+            "unresolved workspace or alias import": 0, "ambient or global": 1, "inferred type": 1,
+            "other": 1}, ts["scip_only_uses_by_class"]
+        assert ts["barrel_not_followed_by_outcome"] == {"followed": 1}, ts["barrel_not_followed_by_outcome"]
+        assert ts["type_only"] == {"barrel, followed": 1, "barrel, not followed": 1}, ts["type_only"]
+        assert ts["pairs"]["hand_is_resolved"] and not ts["pairs"]["hand_is_followed"], ts["pairs"]
+        change = {k: v for k, v in ts["change"].items() if not k.endswith("samples")}
+        assert change == {"removed": 1, "removed_scip": 1, "removed_scip_uses": 0, "added": 1, "added_scip": 1,
+                          "added_scip_uses": 1, "added_not_scip": 0}, change
+        assert ts["import_outcomes"]["by_outcome"] == {"defined_here": 3, "followed": 1, "opaque": 1,
+                                                       "unresolved": 1}, ts["import_outcomes"]
+        assert ts["hand_only_by_class"] == {"followed": 0, "other": 0}, ts["hand_only_by_class"]
+        followed_sample = ts["scip_only_uses_samples"]["barrel, followed"][0]
+        assert followed_sample["symbols"] == ["npm pkg 1 src/a.ts/f()."], followed_sample
+        assert unresolved_names("src/x/use.ts", "../lib", "src/lib/index.ts", TsSources(None)) \
+            == "unresolved relative import"
+        assert unresolved_names("src/use.ts", "./lib", "src/other.ts", TsSources(None)) is None
 
         # The gate: Go holds pairs confirmed by a named use, once both sides
         # carry it; Python keeps holding every pair confirmed by a use.

@@ -214,6 +214,12 @@ struct ParsedFile {
 /// the parser gave up on, or TypeScript). With every file's declarations in
 /// hand, phase 2 links an import to the files that declare what the
 /// importer names, instead of to every file of the package.
+///
+/// TypeScript's `ts_uses` and `ts_exports` are the same idea for barrels
+/// (finding 51): what each import statement takes from its module, and
+/// what this file exports at top level and where from. With every file's
+/// exports in hand, phase 2 follows `import { x } from './index'` through
+/// the barrel's `export ... from` chain to the file that defines `x`.
 enum FileRaw {
     Python {
         imports: Vec<PythonImport>,
@@ -225,6 +231,8 @@ enum FileRaw {
         named_candidates: Vec<(String, String)>,
         import_uses: Vec<GoImportUse>,
         declares: Option<BTreeSet<String>>,
+        ts_uses: Vec<TsImportUse>,
+        ts_exports: Option<TsExports>,
     },
 }
 
@@ -727,6 +735,10 @@ fn parse_files_inner(
                         // Unknown, not empty: a package whose files are not
                         // all read cannot say which one declares a name.
                         declares: None,
+                        ts_uses: Vec::new(),
+                        // Unknown too: a barrel that was not read cannot
+                        // say where a name it exports comes from.
+                        ts_exports: None,
                     },
                 },
             );
@@ -756,13 +768,24 @@ fn parse_files_inner(
                 named_candidates: go_selectors(root, &source),
                 import_uses: go_import_uses(root, &source),
                 declares: Some(go_declarations(root, &source)),
+                ts_uses: Vec::new(),
+                ts_exports: None,
             },
-            LanguageKind::TypeScript => FileRaw::Multi {
-                imports: typescript_imports(root, &source),
-                named_candidates: typescript_named(root, &source),
-                import_uses: Vec::new(),
-                declares: None,
-            },
+            LanguageKind::TypeScript => {
+                // One walk gives both, so `ts_uses` is parallel to `imports`
+                // by construction.
+                let (imports, ts_uses) = typescript_import_statements(root, &source)
+                    .into_iter()
+                    .unzip();
+                FileRaw::Multi {
+                    imports,
+                    named_candidates: typescript_named(root, &source),
+                    import_uses: Vec::new(),
+                    declares: None,
+                    ts_uses,
+                    ts_exports: Some(typescript_exports(root, &source)),
+                }
+            }
         };
         let loc = source.iter().filter(|&&byte| byte == b'\n').count() + 1;
         let code_lines = if let Some(spool) = spool.as_deref_mut() {
@@ -3102,11 +3125,69 @@ fn parse_multi_with_progress(
             FileRaw::Python { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
-    // Eval instrumentation only (finding 50): one row per in-repo Go import,
-    // saying whether it was narrowed and, if not, why.
-    let report_dir = (language == LanguageKind::Go)
-        .then(|| std::env::var_os("TOLMAP_GO_IMPORT_REPORT"))
-        .flatten()
+    // Every TypeScript file's exports with their specifiers resolved, for
+    // following an import through barrels to the defining file (finding 51).
+    let ts_table = TsExportTable {
+        files: raw
+            .iter()
+            .filter(|_| language == LanguageKind::TypeScript)
+            .filter_map(|(file, raw)| match raw {
+                FileRaw::Multi {
+                    ts_exports: Some(exports),
+                    ..
+                } => Some((file, exports)),
+                _ => None,
+            })
+            .filter_map(|(file, exports)| {
+                let id = *ids.get(file)?;
+                let resolve = |specifier: &str| match resolve_multi(
+                    repo,
+                    language,
+                    specifier,
+                    file,
+                    modules,
+                    &by_directory,
+                    &ids,
+                ) {
+                    ResolvedTargets::One(target) => Some(target),
+                    ResolvedTargets::Empty | ResolvedTargets::Many(_) => None,
+                };
+                let bindings = exports
+                    .bindings
+                    .iter()
+                    .map(|(name, sources)| {
+                        let sources = sources
+                            .iter()
+                            .map(|(specifier, original)| (resolve(specifier), original.as_deref()))
+                            .collect();
+                        (name.as_str(), sources)
+                    })
+                    .collect();
+                let stars = exports.stars.iter().map(|star| resolve(star)).collect();
+                Some((
+                    id,
+                    ResolvedTsExports {
+                        defined: &exports.defined,
+                        bindings,
+                        stars,
+                        opaque: exports.opaque,
+                    },
+                ))
+            })
+            .collect(),
+        memo: Default::default(),
+    };
+    // Eval instrumentation only (findings 50 and 51): one row per Go import
+    // in the repository, saying whether it was narrowed and, if not, why;
+    // one row per TypeScript module specifier, saying where it resolved and
+    // what following its names through re-exports gave.
+    let report_variable = match language {
+        LanguageKind::Go => Some("TOLMAP_GO_IMPORT_REPORT"),
+        LanguageKind::TypeScript => Some("TOLMAP_TS_IMPORT_REPORT"),
+        LanguageKind::Python => None,
+    };
+    let report_dir = report_variable
+        .and_then(std::env::var_os)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     let mut report = Vec::new();
@@ -3116,6 +3197,7 @@ fn parse_multi_with_progress(
             imports,
             named_candidates,
             import_uses,
+            ts_uses,
             ..
         } = &raw[file]
         else {
@@ -3124,6 +3206,31 @@ fn parse_multi_with_progress(
         for (index, path) in imports.iter().enumerate() {
             let resolved = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
             let package = resolved.as_slice();
+            if language == LanguageKind::TypeScript {
+                let uses = ts_uses.get(index);
+                let followed = package
+                    .first()
+                    .map(|&module| follow_ts_import(module, uses, &ts_table));
+                if report_dir.is_some() {
+                    let (reason, name) = followed
+                        .as_ref()
+                        .map_or(("unresolved", None), |(_, outcome)| outcome.reason());
+                    // [file, specifier, outcome, name, type-only, resolved
+                    // file, files the followed names reach]
+                    report.push(serde_json::json!([
+                        file,
+                        path,
+                        reason,
+                        name,
+                        uses.is_some_and(|uses| uses.type_only),
+                        package.first().map(|&id| &files[id as usize]),
+                        followed.as_ref().map_or(Vec::new(), |(targets, _)| targets
+                            .iter()
+                            .map(|&id| &files[id as usize])
+                            .collect()),
+                    ]));
+                }
+            }
             if package.is_empty() {
                 continue;
             }
@@ -3182,7 +3289,12 @@ fn parse_multi_with_progress(
         } else {
             pkg.replace('/', "_")
         };
-        let path = directory.join(format!("go-imports.{slug}.json"));
+        let prefix = if language == LanguageKind::Go {
+            "go-imports"
+        } else {
+            "ts-imports"
+        };
+        let path = directory.join(format!("{prefix}.{slug}.json"));
         fs::create_dir_all(&directory)
             .with_context(|| format!("create {}", directory.display()))?;
         fs::write(&path, serde_json::to_vec(&report)?)
@@ -3974,12 +4086,26 @@ fn narrow_go_import(
 }
 
 fn typescript_imports(root: Node<'_>, source: &[u8]) -> Vec<String> {
+    typescript_import_statements(root, source)
+        .into_iter()
+        .map(|(specifier, _)| specifier)
+        .collect()
+}
+
+/// Every module specifier the file names, in tree order, with what the
+/// statement takes from that module (finding 51). `typescript_imports` is
+/// the first column; the edges the hand resolver emits come from exactly
+/// these specifiers.
+fn typescript_import_statements(root: Node<'_>, source: &[u8]) -> Vec<(String, TsImportUse)> {
     let mut result = Vec::new();
     for node in walk(root) {
         match node.kind() {
             "import_statement" | "export_statement" => {
                 if let Some(value) = node.child_by_field_name("source") {
-                    result.push(strip_quotes(text(value, source)).to_owned());
+                    result.push((
+                        strip_quotes(text(value, source)).to_owned(),
+                        typescript_statement_use(node, source),
+                    ));
                 }
             }
             "call_expression" => {
@@ -3993,7 +4119,12 @@ fn typescript_imports(root: Node<'_>, source: &[u8]) -> Vec<String> {
                     let mut cursor = arguments.walk();
                     for child in arguments.children(&mut cursor) {
                         if child.kind() == "string" {
-                            result.push(strip_quotes(text(child, source)).to_owned());
+                            // `require()` and `import()` return the module
+                            // object: what is used from it is not named here.
+                            result.push((
+                                strip_quotes(text(child, source)).to_owned(),
+                                TsImportUse::default(),
+                            ));
                         }
                     }
                 }
@@ -4002,6 +4133,495 @@ fn typescript_imports(root: Node<'_>, source: &[u8]) -> Vec<String> {
         }
     }
     result
+}
+
+/// What one TypeScript module specifier takes from its module (finding 51).
+/// A file's list is parallel to its `typescript_imports`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TsImportUse {
+    /// The names taken, by the name the module exports them under
+    /// (`default` for a default import): `import { a as b }` takes `a`, and
+    /// so does `export { a as b } from`. `None` when the statement does not
+    /// say which names are used: a side-effect import, a namespace import
+    /// (`import * as ns`), `export *`, `export * as ns`, `require()` and
+    /// `import()`.
+    names: Option<BTreeSet<String>>,
+    /// `import type`, `export type ... from`, or every specifier marked
+    /// `type`. Recorded for the eval report only: a type is a name used, and
+    /// the graph treats it as one (owner decision, 2026-09-26, "Uses only:
+    /// merge both").
+    type_only: bool,
+}
+
+fn has_token(node: Node<'_>, token: &str) -> bool {
+    let mut cursor = node.walk();
+    let found = node
+        .children(&mut cursor)
+        .any(|child| !child.is_named() && child.kind() == token);
+    found
+}
+
+fn named_children_of(node: Node<'_>) -> Vec<Node<'_>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).collect()
+}
+
+/// A specifier's `name` (or `alias`) field, unquoted: `import { "a-b" as c }`
+/// names the export `a-b`.
+fn specifier_field(node: Node<'_>, field: &str, source: &[u8]) -> Option<String> {
+    node.child_by_field_name(field)
+        .map(|value| strip_quotes(text(value, source)).to_owned())
+}
+
+fn typescript_statement_use(node: Node<'_>, source: &[u8]) -> TsImportUse {
+    let statement_type = has_token(node, "type");
+    let mut names = BTreeSet::new();
+    let mut specifiers = 0usize;
+    let mut type_specifiers = 0usize;
+    let mut opaque = true;
+    if node.kind() == "import_statement" {
+        for clause in named_children_of(node) {
+            if clause.kind() != "import_clause" {
+                continue;
+            }
+            opaque = false;
+            for item in named_children_of(clause) {
+                match item.kind() {
+                    "identifier" => {
+                        names.insert("default".to_owned());
+                        specifiers += 1;
+                    }
+                    "namespace_import" => opaque = true,
+                    "named_imports" => {
+                        for spec in named_children_of(item) {
+                            if spec.kind() != "import_specifier" {
+                                continue;
+                            }
+                            if let Some(name) = specifier_field(spec, "name", source) {
+                                names.insert(name);
+                                specifiers += 1;
+                                type_specifiers += usize::from(has_token(spec, "type"));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    } else {
+        // `export * from` and `export * as ns from` stay opaque; only an
+        // export clause names what it passes on.
+        for clause in named_children_of(node) {
+            if clause.kind() != "export_clause" {
+                continue;
+            }
+            opaque = false;
+            for spec in named_children_of(clause) {
+                if spec.kind() != "export_specifier" {
+                    continue;
+                }
+                if let Some(name) = specifier_field(spec, "name", source) {
+                    names.insert(name);
+                    specifiers += 1;
+                    type_specifiers += usize::from(has_token(spec, "type"));
+                }
+            }
+        }
+    }
+    TsImportUse {
+        type_only: statement_type || (specifiers > 0 && type_specifiers == specifiers),
+        names: (!opaque).then_some(names),
+    }
+}
+
+/// What a TypeScript file exports at its top level, and where each
+/// re-exported name comes from (finding 51). Read from top-level
+/// `export` statements only: an `export` inside `declare module 'x' {}`
+/// or `declare global {}` describes another module, not this file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TsExports {
+    /// Names this file declares and exports itself, `default` included.
+    defined: BTreeSet<String>,
+    /// Exported name -> each place it comes from: the module specifier and
+    /// the name exported there, or `None` for the module object itself
+    /// (`export * as ns from`, or `import * as ns` then `export { ns }`).
+    /// `export { a } from './x'` and `import { a } from './x'` then
+    /// `export { a }` both land here.
+    bindings: BTreeMap<String, Vec<(String, Option<String>)>>,
+    /// `export * from` specifiers, in source order.
+    stars: Vec<String>,
+    /// The file exports something this reader does not name: a
+    /// destructuring `export const { a } = x`, `export =`, or a declaration
+    /// form it does not know. A star re-export through such a file cannot
+    /// say what it binds.
+    opaque: bool,
+}
+
+fn typescript_exports(root: Node<'_>, source: &[u8]) -> TsExports {
+    let top = named_children_of(root);
+    // Top-level import bindings: local name -> (specifier, imported name).
+    let mut imported = BTreeMap::<String, (String, Option<String>)>::new();
+    for node in &top {
+        if node.kind() != "import_statement" {
+            continue;
+        }
+        let Some(value) = node.child_by_field_name("source") else {
+            continue;
+        };
+        let specifier = strip_quotes(text(value, source)).to_owned();
+        for clause in named_children_of(*node) {
+            if clause.kind() != "import_clause" {
+                continue;
+            }
+            for item in named_children_of(clause) {
+                match item.kind() {
+                    "identifier" => {
+                        imported.insert(
+                            text(item, source).to_owned(),
+                            (specifier.clone(), Some("default".to_owned())),
+                        );
+                    }
+                    "namespace_import" => {
+                        if let Some(local) = named_children_of(item).first() {
+                            imported
+                                .insert(text(*local, source).to_owned(), (specifier.clone(), None));
+                        }
+                    }
+                    "named_imports" => {
+                        for spec in named_children_of(item) {
+                            if spec.kind() != "import_specifier" {
+                                continue;
+                            }
+                            let Some(name) = specifier_field(spec, "name", source) else {
+                                continue;
+                            };
+                            let local = specifier_field(spec, "alias", source)
+                                .unwrap_or_else(|| name.clone());
+                            imported.insert(local, (specifier.clone(), Some(name)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut exports = TsExports::default();
+    for node in top {
+        if node.kind() != "export_statement" {
+            continue;
+        }
+        let from = node
+            .child_by_field_name("source")
+            .map(|value| strip_quotes(text(value, source)).to_owned());
+        if has_token(node, "default") {
+            exports.defined.insert("default".to_owned());
+            continue;
+        }
+        if has_token(node, "=") {
+            exports.opaque = true;
+            continue;
+        }
+        if let Some(declaration) = node.child_by_field_name("declaration") {
+            typescript_declared_names(declaration, source, &mut exports);
+            continue;
+        }
+        let mut shaped = false;
+        for child in named_children_of(node) {
+            match child.kind() {
+                "export_clause" => {
+                    shaped = true;
+                    for spec in named_children_of(child) {
+                        if spec.kind() != "export_specifier" {
+                            continue;
+                        }
+                        let Some(name) = specifier_field(spec, "name", source) else {
+                            continue;
+                        };
+                        let exported =
+                            specifier_field(spec, "alias", source).unwrap_or_else(|| name.clone());
+                        let binding = match &from {
+                            Some(specifier) => Some((specifier.clone(), Some(name))),
+                            None => imported.get(&name).cloned(),
+                        };
+                        match binding {
+                            Some(binding) => {
+                                exports.bindings.entry(exported).or_default().push(binding);
+                            }
+                            None => {
+                                exports.defined.insert(exported);
+                            }
+                        }
+                    }
+                }
+                "namespace_export" => {
+                    shaped = true;
+                    let name = named_children_of(child)
+                        .first()
+                        .map(|name| strip_quotes(text(*name, source)).to_owned());
+                    match (name, &from) {
+                        (Some(name), Some(specifier)) => {
+                            exports
+                                .bindings
+                                .entry(name)
+                                .or_default()
+                                .push((specifier.clone(), None));
+                        }
+                        _ => exports.opaque = true,
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !shaped {
+            match (&from, has_token(node, "*")) {
+                (Some(specifier), true) => exports.stars.push(specifier.clone()),
+                // `export as namespace X` and anything unrecognised.
+                _ => exports.opaque = true,
+            }
+        }
+    }
+    exports
+}
+
+/// The names one exported declaration binds, into `exports.defined`.
+fn typescript_declared_names(declaration: Node<'_>, source: &[u8], exports: &mut TsExports) {
+    match declaration.kind() {
+        "function_declaration"
+        | "generator_function_declaration"
+        | "function_signature"
+        | "class_declaration"
+        | "abstract_class_declaration"
+        | "interface_declaration"
+        | "type_alias_declaration"
+        | "enum_declaration"
+        | "module"
+        | "internal_module" => match declaration.child_by_field_name("name") {
+            Some(name) if matches!(name.kind(), "identifier" | "type_identifier") => {
+                exports.defined.insert(text(name, source).to_owned());
+            }
+            // `export namespace A.B {}` or a quoted module name.
+            _ => exports.opaque = true,
+        },
+        "lexical_declaration" | "variable_declaration" => {
+            for declarator in named_children_of(declaration) {
+                if declarator.kind() != "variable_declarator" {
+                    continue;
+                }
+                match declarator.child_by_field_name("name") {
+                    Some(name) if name.kind() == "identifier" => {
+                        exports.defined.insert(text(name, source).to_owned());
+                    }
+                    // A destructuring pattern binds names this reader does
+                    // not list.
+                    _ => exports.opaque = true,
+                }
+            }
+        }
+        // `export declare ...`: the declaration inside.
+        "ambient_declaration" => {
+            let inner = named_children_of(declaration);
+            match inner.first() {
+                Some(inner) if inner.kind() != "statement_block" => {
+                    typescript_declared_names(*inner, source, exports);
+                }
+                _ => exports.opaque = true,
+            }
+        }
+        "import_alias" => match named_children_of(declaration).first() {
+            Some(name) if name.kind() == "identifier" => {
+                exports.defined.insert(text(*name, source).to_owned());
+            }
+            _ => exports.opaque = true,
+        },
+        _ => exports.opaque = true,
+    }
+}
+
+/// How many re-export hops [`TsExportTable::follow`] takes before it stops
+/// and credits the file it has reached: [`PYTHON_REEXPORT_HOPS`]'s depth,
+/// and `symbols::lookup`'s.
+const TS_REEXPORT_HOPS: usize = 4;
+
+/// One file's [`TsExports`] with every specifier resolved to a parsed file
+/// (`None`: outside the parsed set).
+struct ResolvedTsExports<'a> {
+    defined: &'a BTreeSet<String>,
+    bindings: BTreeMap<&'a str, Vec<(Option<FileId>, Option<&'a str>)>>,
+    stars: Vec<Option<FileId>>,
+    opaque: bool,
+}
+
+/// Every parsed TypeScript file's exports, resolved (finding 51).
+struct TsExportTable<'a> {
+    files: BTreeMap<FileId, ResolvedTsExports<'a>>,
+    /// [`Self::binds`]'s answers by `(file, name, depth)`. A barrel of
+    /// barrels asks the same question once per importer and per name; the
+    /// memo keeps nested `export *` fan-out from multiplying across a
+    /// repository with thousands of files. Keyed by depth too, so an answer
+    /// cut short by the depth limit is never reused where the limit is
+    /// further away: the result cannot depend on the order of the queries.
+    memo: std::cell::RefCell<BTreeMap<(FileId, String, usize), Option<bool>>>,
+}
+
+impl TsExportTable<'_> {
+    /// The file that defines `name` as `file` exports it: `file` itself when
+    /// it declares the name, else the file its binding or its one binding
+    /// star re-export takes it from, followed for up to [`TS_REEXPORT_HOPS`]
+    /// hops (at the limit, the file reached, which does pass the name on).
+    ///
+    /// `None` whenever the chain cannot be followed with certainty: the name
+    /// comes from outside the parsed set, is bound twice to different
+    /// places, arrives through a star re-export that cannot say what it
+    /// binds, through two star re-exports (which ECMAScript makes ambiguous,
+    /// not exported), or is not exported visibly at all. The caller then
+    /// credits what it credited before, so an uncertain chain never produces
+    /// a pair of its own -- the rule finding 49 learned on celery.
+    fn follow(&self, file: FileId, name: &str, hops: usize) -> Option<FileId> {
+        if hops >= TS_REEXPORT_HOPS {
+            return Some(file);
+        }
+        let exports = self.files.get(&file)?;
+        if exports.defined.contains(name) {
+            return Some(file);
+        }
+        if let Some(bindings) = exports.bindings.get(name) {
+            let targets = bindings
+                .iter()
+                .map(|&(target, original)| match original {
+                    // A module object bound as a name: the module itself.
+                    None => target,
+                    Some(original) => self.follow(target?, original, hops + 1),
+                })
+                .collect::<Option<BTreeSet<_>>>()?;
+            return match targets.into_iter().collect::<Vec<_>>().as_slice() {
+                [target] => Some(*target),
+                _ => None,
+            };
+        }
+        // `export *` never passes on a default export.
+        if name == "default" {
+            return None;
+        }
+        let mut hits = Vec::new();
+        for &star in &exports.stars {
+            let star = star?;
+            if self.binds(star, name, 0)? {
+                hits.push(star);
+            }
+        }
+        match hits.as_slice() {
+            [star] => self.follow(*star, name, hops + 1),
+            _ => None,
+        }
+    }
+
+    /// Whether `file` exports `name`: `None` when that cannot be known (a
+    /// star re-export from outside the parsed set, an opaque file, or a
+    /// chain deeper than [`TS_REEXPORT_HOPS`]).
+    fn binds(&self, file: FileId, name: &str, depth: usize) -> Option<bool> {
+        if depth >= TS_REEXPORT_HOPS {
+            return None;
+        }
+        let key = (file, name.to_owned(), depth);
+        if let Some(&known) = self.memo.borrow().get(&key) {
+            return known;
+        }
+        let answer = self.binds_uncached(file, name, depth);
+        self.memo.borrow_mut().insert(key, answer);
+        answer
+    }
+
+    fn binds_uncached(&self, file: FileId, name: &str, depth: usize) -> Option<bool> {
+        let exports = self.files.get(&file)?;
+        if exports.defined.contains(name) || exports.bindings.contains_key(name) {
+            return Some(true);
+        }
+        if name == "default" {
+            return Some(false);
+        }
+        if exports.opaque {
+            return None;
+        }
+        let mut found = false;
+        for &star in &exports.stars {
+            found |= self.binds(star?, name, depth + 1)?;
+        }
+        Some(found)
+    }
+}
+
+/// How one TypeScript import resolved against its module's exports
+/// (finding 51). Recorded only for `TOLMAP_TS_IMPORT_REPORT`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TsFollow {
+    /// The statement names nothing: a side-effect, namespace or star form.
+    Opaque,
+    /// `import {} from`.
+    NoNames,
+    /// Every name is declared in the module the specifier resolves to.
+    DefinedHere,
+    /// Every name was followed to its definition, at least one elsewhere.
+    Followed,
+    /// At least one name was followed elsewhere and at least one could not
+    /// be (the first such name); the latter credit the module, as before.
+    PartlyFollowed(String),
+    /// No name was followed elsewhere and at least one could not be.
+    Uncertain(String),
+}
+
+impl TsFollow {
+    fn reason(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::Opaque => ("opaque", None),
+            Self::NoNames => ("no_names", None),
+            Self::DefinedHere => ("defined_here", None),
+            Self::Followed => ("followed", None),
+            Self::PartlyFollowed(name) => ("partly_followed", Some(name)),
+            Self::Uncertain(name) => ("uncertain", Some(name)),
+        }
+    }
+}
+
+/// The files one TypeScript import links (finding 51): for each name the
+/// statement takes, the file that defines it ([`TsExportTable::follow`]),
+/// or `module` -- the file the specifier resolves to, which is what the
+/// resolver linked before -- when the name cannot be followed with
+/// certainty or the statement names nothing. SCIP, the oracle, credits the
+/// defining file: vue's `import { isArray } from '@vue/shared'` is a use of
+/// `packages/shared/src/general.ts`, not of the `index.ts` barrel whose
+/// `export * from './general'` passes it on.
+fn follow_ts_import(
+    module: FileId,
+    uses: Option<&TsImportUse>,
+    table: &TsExportTable<'_>,
+) -> (BTreeSet<FileId>, TsFollow) {
+    let names = match uses.and_then(|uses| uses.names.as_ref()) {
+        Some(names) if !names.is_empty() => names,
+        Some(_) => return (BTreeSet::from([module]), TsFollow::NoNames),
+        None => return (BTreeSet::from([module]), TsFollow::Opaque),
+    };
+    let mut targets = BTreeSet::new();
+    let mut moved = false;
+    let mut uncertain = None;
+    for name in names {
+        match table.follow(module, name, 0) {
+            Some(target) => {
+                moved |= target != module;
+                targets.insert(target);
+            }
+            None => {
+                uncertain.get_or_insert_with(|| name.clone());
+                targets.insert(module);
+            }
+        }
+    }
+    let outcome = match (moved, uncertain) {
+        (false, None) => TsFollow::DefinedHere,
+        (true, None) => TsFollow::Followed,
+        (true, Some(name)) => TsFollow::PartlyFollowed(name),
+        (false, Some(name)) => TsFollow::Uncertain(name),
+    };
+    (targets, outcome)
 }
 
 fn typescript_named(root: Node<'_>, source: &[u8]) -> Vec<(String, String)> {
@@ -6799,5 +7419,126 @@ mod tests {
             Some(&2),
             "both annotations are references"
         );
+    }
+
+    // -- TypeScript barrels (finding 51) -----------------------------------
+
+    fn ts_tree(source: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&grammar_for_file(LanguageKind::TypeScript, "x.ts"))
+            .unwrap();
+        parser.parse(source, None).unwrap()
+    }
+
+    fn names(values: &[&str]) -> Option<BTreeSet<String>> {
+        Some(values.iter().map(|&value| value.to_owned()).collect())
+    }
+
+    #[test]
+    fn typescript_import_statements_name_what_each_statement_takes() {
+        let source = "import D, { a, b as c, type T } from './m'\n\
+                      import type { U } from './u'\n\
+                      import { type V } from './v'\n\
+                      import * as ns from './ns'\n\
+                      import './side'\n\
+                      export { x as y } from './x'\n\
+                      export type { W } from './w'\n\
+                      export * from './s'\n\
+                      export * as q from './q'\n\
+                      const r = require('./r')\n\
+                      const i = import('./i')\n\
+                      import {} from './empty'\n";
+        let tree = ts_tree(source);
+        let statements = typescript_import_statements(tree.root_node(), source.as_bytes());
+        let taken =
+            |names: Option<BTreeSet<String>>, type_only: bool| TsImportUse { names, type_only };
+        assert_eq!(
+            statements,
+            vec![
+                (
+                    "./m".to_owned(),
+                    taken(names(&["T", "a", "b", "default"]), false)
+                ),
+                ("./u".to_owned(), taken(names(&["U"]), true)),
+                ("./v".to_owned(), taken(names(&["V"]), true)),
+                ("./ns".to_owned(), taken(None, false)),
+                ("./side".to_owned(), taken(None, false)),
+                ("./x".to_owned(), taken(names(&["x"]), false)),
+                ("./w".to_owned(), taken(names(&["W"]), true)),
+                ("./s".to_owned(), taken(None, false)),
+                ("./q".to_owned(), taken(None, false)),
+                ("./r".to_owned(), taken(None, false)),
+                ("./i".to_owned(), taken(None, false)),
+                ("./empty".to_owned(), taken(names(&[]), false)),
+            ]
+        );
+        // The specifiers are exactly what the resolver has always read.
+        assert_eq!(
+            typescript_imports(tree.root_node(), source.as_bytes()),
+            statements
+                .iter()
+                .map(|(specifier, _)| specifier.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn typescript_exports_reads_top_level_exports_and_where_they_come_from() {
+        let source = "import { a as localA, b } from './ab'\n\
+                      import * as ns from './ns'\n\
+                      import def from './def'\n\
+                      export { x, y as z } from './xy'\n\
+                      export type { T } from './types'\n\
+                      export * from './star'\n\
+                      export * as space from './space'\n\
+                      export { localA as A, ns, def as D, own }\n\
+                      export const c = 1, d = 2\n\
+                      export function f() {}\n\
+                      export class K {}\n\
+                      export abstract class L {}\n\
+                      export interface I {}\n\
+                      export type Alias = string\n\
+                      export enum E { One }\n\
+                      export namespace N {}\n\
+                      export declare const g: number\n\
+                      export default function () {}\n\
+                      const own = 1\n\
+                      declare module 'other' { export const hidden: number }\n";
+        let tree = ts_tree(source);
+        let exports = typescript_exports(tree.root_node(), source.as_bytes());
+        assert_eq!(
+            Some(exports.defined.clone()),
+            names(&["Alias", "E", "I", "K", "L", "N", "c", "d", "default", "f", "g", "own"])
+        );
+        let from = |specifier: &str, original: Option<&str>| {
+            vec![(specifier.to_owned(), original.map(str::to_owned))]
+        };
+        let expected = BTreeMap::from([
+            ("A".to_owned(), from("./ab", Some("a"))),
+            ("D".to_owned(), from("./def", Some("default"))),
+            ("T".to_owned(), from("./types", Some("T"))),
+            ("ns".to_owned(), from("./ns", None)),
+            ("space".to_owned(), from("./space", None)),
+            ("x".to_owned(), from("./xy", Some("x"))),
+            ("z".to_owned(), from("./xy", Some("y"))),
+        ]);
+        assert_eq!(exports.bindings, expected);
+        assert_eq!(exports.stars, vec!["./star".to_owned()]);
+        assert!(!exports.opaque);
+    }
+
+    #[test]
+    fn typescript_exports_marks_what_it_cannot_name() {
+        for source in [
+            "export const { a, b } = value\n",
+            "const a = 1\nexport = a\n",
+        ] {
+            let tree = ts_tree(source);
+            assert!(
+                typescript_exports(tree.root_node(), source.as_bytes()).opaque,
+                "{source}"
+            );
+        }
     }
 }

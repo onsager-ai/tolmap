@@ -502,6 +502,14 @@ def ingest(
         "file_edges": file_edges,
         # Not in `fingerprint`, so every earlier fingerprint still compares.
         "member_only_use_pairs": sorted([a, b] for (a, b) in pair_uses - pair_named_uses),
+        # Also outside `fingerprint` (finding 51): up to three of the
+        # non-namespace symbols behind each use pair, sorted, so a pair one
+        # side has alone can be read against the source that names them.
+        "use_pair_symbols": sorted(
+            [a, b, sorted(symbol_names[sid] for sid in pair_symbols[(a, b)]
+                          if categories[sid] not in (NAMESPACE, META))[:3]]
+            for (a, b) in pair_uses
+        ),
         "symbol_edges": edges_out,
         "relationship_pairs": relationship_rows,
         "relationship_file_pairs": relationship_file_rows,
@@ -551,6 +559,8 @@ def self_test() -> None:
         path.unlink(missing_ok=True)
     assert result["file_edges"] == [["pkg/b.py", "pkg/a.py", 3, 4, 1]], result["file_edges"]
     assert result["member_only_use_pairs"] == [], result["member_only_use_pairs"]
+    assert result["use_pair_symbols"] == [
+        ["pkg/b.py", "pkg/a.py", ["p `pkg.a`/C#", "p `pkg.a`/f()."]]], result["use_pair_symbols"]
     assert is_member("scip-go gomod example.com/m v1 `example.com/m/lib`/T#Run().")
     assert is_member("scip-go gomod example.com/m v1 `example.com/m/lib`/T#Field.")
     assert not is_member("scip-go gomod example.com/m v1 `example.com/m/lib`/T#")

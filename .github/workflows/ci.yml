@@ -943,6 +943,8 @@ jobs:
             -o "$RUNNER_TEMP/scippb/scip.proto"
           python -m grpc_tools.protoc -I "$RUNNER_TEMP/scippb" \
             --python_out="$RUNNER_TEMP/scippb" "$RUNNER_TEMP/scippb/scip.proto"
+      - name: Oracle ingest self-test
+        run: PYTHONPATH="$RUNNER_TEMP/scippb:$PWD/eval" python3 eval/scip_ingest.py --self-test
       - name: Score each fixture
         env:
           LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
@@ -975,7 +977,11 @@ jobs:
               --name "$name" --out "$work/map" > "$work/build.log" 2>&1 || echo "$name build FAILED"
             # TOLMAP_GO_IMPORT_REPORT: the Go resolver's own per-import report
             # (narrowed, or why it kept the whole package; finding 50).
-            TOLMAP_GO_IMPORT_REPORT="$PWD/$work" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
+            # TOLMAP_TS_IMPORT_REPORT: the TypeScript resolver's, per module
+            # specifier (where it resolved, and what following its names
+            # through re-exports reached; finding 51).
+            TOLMAP_GO_IMPORT_REPORT="$PWD/$work" TOLMAP_TS_IMPORT_REPORT="$PWD/$work" \
+              ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
               --lang "$lang" --refs hand \
               --out "$work/hand.graph.json" || echo "$name dump-graph --refs hand FAILED"
             TOLMAP_SCIP_INDEX_DIR="$PWD/$work/index" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
