@@ -62,6 +62,15 @@
 # same way, by `hand-score` at its pin with its naming cache seeded first,
 # and `generator = "rust-go-declarations"` marks it. The Python and
 # TypeScript fixtures are unchanged.
+#
+# Later still on 2026-09-26 the Rust hand resolver began following a
+# TypeScript import's names through barrel re-exports (`export { x } from`,
+# `export *`, import-then-export) to the files that define them, sharing
+# the import's mass of 1 among those files (issue #110, owner decision
+# "TypeScript gap first"; finding 51). The frozen Python reference does not,
+# so vue was rebuilt the same way, by `hand-score` at its pin with its
+# naming cache seeded first, and `generator = "rust-ts-reexports"` marks it.
+# httpx is now the only Python-reference fixture.
 
 [celery]
 url = "https://github.com/celery/celery.git"
@@ -156,6 +165,7 @@ commit = "4ab865a848a1da3d10fb674f857e5fff13094644"
 pkg = "packages"
 lang = "ts"
 parcels = false
+generator = "rust-ts-reexports"
 files = 239
-districts = 8
-q = 0.5389
+districts = 7
+q = 0.5058

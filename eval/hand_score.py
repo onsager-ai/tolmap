@@ -5,6 +5,7 @@
     hand_score.py summary  --work DIR --out JSON --markdown MD
     hand_score.py baseline --summary JSON --out data/scip/hand_score.json [--source URL]
     hand_score.py gate     --summary JSON --baseline data/scip/hand_score.json
+    hand_score.py ts-variants --work DIR
     hand_score.py self-test
 
 Runs on a GitHub-hosted runner (ci.yml `hand-score`); the laptop does not run
@@ -101,6 +102,46 @@ For Go the row also carries `go` (finding 50):
   of them, so this is exactly what narrowing gave up, split into
   `member_only` (reached only through a method or field) and the rest.
 
+For TypeScript the row also carries `ts` (finding 51), from the resolver's
+own per-specifier report (`TOLMAP_TS_IMPORT_REPORT`, written by `dump-graph
+--refs hand`: where each specifier resolved, and the files its names reach
+when followed through `export ... from` and `export *`):
+- `import_outcomes`: `defined_here`, `followed`, `partly_followed`,
+  `uncertain` (with the failing names), `opaque` (a namespace, side-effect
+  or star form, `require()`, `import()`), `no_names`, `unresolved`.
+- `pairs`: the pairs the report says the resolver links by resolving
+  (`resolved`) and by following names (`followed`), each checked against
+  the hand graph, and each scored against SCIP. On a binary that links the
+  resolved file, `followed` is the prediction of what following would give;
+  on one that follows, `resolved` is the graph it replaced.
+- `change`: `followed` against `resolved`, pair by pair: the pairs
+  following removes and adds, and how many of each SCIP has, by a use.
+- `scip_only_uses_by_class`: SCIP use pairs hand lacks, in this order:
+  - `barrel, followed`: following the source's names reaches the target.
+  - `barrel, not followed`: the source imports an `index.*` file that
+    passes on the target (the `re-export` rule below), but following did not
+    reach it; `barrel_not_followed_by_outcome` says why, from the report.
+  - `unresolved relative import` / `unresolved workspace or alias import`:
+    a specifier the resolver left unresolved names the target (its path, or
+    the name of the workspace package the target sits in).
+  - `ambient or global`: the target is a `.d.ts`, a script with no
+    top-level `import`/`export`, or declares `declare global`, and nothing
+    imports it: its names are global.
+  - `inferred type`, `other`: as below.
+  Each barrel class also counts the pairs reached only through `import
+  type` statements (`type_only`).
+- `hand_only_by_class`: `source not indexed` (the indexer never read the
+  source, so SCIP has no pairs from it), `followed` (following added the
+  pair and SCIP does not have it) and `other`.
+- `weight_variants`: `ts-variants` rebuilds the dumped graph's static
+  signal from the report two ways and the job partitions each through
+  `tolmap build --graph`: `share` (one import's mass of 1 shared among the
+  files it reaches, what the resolver does, so it must place 100% against
+  the job's own map, which checks the construction) and `per file` (1 on
+  each file an import reaches, what a direct import of each would weigh,
+  the alternative finding 51 measured). Each is placed against the job's
+  map, the committed fixture and the SCIP fixture.
+
 A fixed-seed sample (`random.Random(SEED)`) of up to SAMPLE rows per class
 is kept; the class counts are over every pair.
 
@@ -114,7 +155,9 @@ import argparse
 import ast
 import hashlib
 import json
+import posixpath
 import random
+import re
 import sys
 import tempfile
 import tomllib
@@ -128,6 +171,10 @@ EXTENDS_DEPTH = 3
 REEXPORT_DEPTH = 3
 HAND_CLASSES = ("star import", "submodule via package", "re-export", "package spread", "other")
 SCIP_CLASSES = ("re-export", "inherited member", "inferred type", "same package", "member via value", "other")
+TS_SCIP_CLASSES = ("barrel, followed", "barrel, not followed", "unresolved relative import",
+                   "unresolved workspace or alias import", "ambient or global", "inferred type", "other")
+TS_HAND_CLASSES = ("source not indexed", "followed", "other")
+TS_OUTCOMES = ("defined_here", "followed", "partly_followed", "uncertain", "opaque", "no_names", "unresolved")
 # The classes that are hand over-attributing to a package: each such pair
 # claims a dependency on a file whose own content is not what is used. They
 # may only go down (CLAUDE.md: numbers must be a lower bound).
@@ -454,7 +501,8 @@ def sample(rows: list[dict]) -> list[dict]:
 
 
 def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | None, ingest: dict,
-                   py: PythonFiles | None) -> dict:
+                   py: PythonFiles | None, ts_report: list[list] | None = None,
+                   ts_sources: TsSources | None = None) -> dict:
     lang_of = {n["file"]: n.get("lang") or hand_graph["lang"] for n in hand_graph["nodes"]}
     hand = {(a, b) for a, b, _ in hand_graph["imports"] if a != b and lang_of.get(a) == lang}
     scip = {(a, b) for a, b, *_ in ingest["file_edges"] if a != b and lang_of.get(a) == lang}
@@ -537,6 +585,11 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
         row["go"] = {"file_gap": {"use_pairs": len(gap), "member_only": len(gap) - len(named),
                                   "named": len(named), "named_samples": sample(named)},
                      "member_only_available": "member_only_use_pairs" in ingest}
+    if lang == "ts":
+        symbols = {(a, b): names for a, b, names in ingest.get("use_pair_symbols", [])}
+        row["ts"] = score_ts(lang_of, hand, scip, scip_uses, hand_targets, ts_report,
+                             ts_sources or TsSources(None), symbols, member_only,
+                             set(ingest.get("unindexed_lang_files", [])))
     references = ((scip_graph or {}).get("references") or {}).get(lang)
     row["references"] = references
     if references and references.get("path") == "scip":
@@ -572,6 +625,250 @@ def go_import_outcomes(work: Path) -> dict | None:
     }
 
 
+def district_matches(candidate: dict, reference: dict) -> list[list]:
+    """The parity gate's greedy best-Jaccard district matching (the rule in
+    eval/remote_build_result.py `placement`), as [reference name, candidate
+    name, Jaccard, reference size, candidate size] rows; an unmatched
+    district has None on the other side. For the rename table a fixture
+    re-derivation records."""
+    def groups(document):
+        out = defaultdict(set)
+        for file, node in zip(document.get("F", []), document.get("N", [])):
+            out[int(node[0])].add(file)
+        return out
+
+    def name(document, district):
+        return (document.get("names") or {}).get(str(district), str(district))
+
+    cand, ref = groups(candidate), groups(reference)
+    common = set().union(*cand.values()) & set().union(*ref.values()) if cand and ref else set()
+    cand = {k: v & common for k, v in cand.items()}
+    ref = {k: v & common for k, v in ref.items()}
+    pairs = sorted(((len(c & r) / len(c | r), ci, ri) for ci, c in cand.items() for ri, r in ref.items() if c & r),
+                   reverse=True)
+    used_c, used_r, rows = set(), set(), []
+    for jaccard, ci, ri in pairs:
+        if ci in used_c or ri in used_r or jaccard < 0.35:
+            continue
+        used_c.add(ci)
+        used_r.add(ri)
+        rows.append([name(reference, ri), name(candidate, ci), round(jaccard, 2), len(ref[ri]), len(cand[ci])])
+    rows += [[name(reference, ri), None, None, len(ref[ri]), None] for ri in sorted(ref) if ri not in used_r]
+    rows += [[None, name(candidate, ci), None, None, len(cand[ci])] for ci in sorted(cand) if ci not in used_c]
+    return rows
+
+
+# --- TypeScript (finding 51) ---
+
+TS_TOP_LEVEL_MODULE = re.compile(r"^\s*(import|export)\b", re.MULTILINE)
+TS_SUFFIXES = (".d.ts", ".tsx", ".ts", ".jsx", ".js", ".mts", ".cts", ".mjs", ".cjs")
+
+
+def ts_stem(path: str) -> str:
+    """`a/b.ts` -> `a/b`, `a/index.ts` -> `a/index`."""
+    for suffix in TS_SUFFIXES:
+        if path.endswith(suffix):
+            return path[: -len(suffix)]
+    return path
+
+
+def load_ts_report(work: Path) -> list[list] | None:
+    """The resolver's own rows: [file, specifier, outcome, name, type-only,
+    resolved file or None, files the followed names reach]."""
+    reports = sorted(work.glob("ts-imports.*.json"))
+    if not reports:
+        return None
+    return [row for path in reports for row in load(path)]
+
+
+class TsSources:
+    """What the TypeScript classes read from the clone: the workspace
+    package each file sits in, and whether a file's names are global."""
+
+    def __init__(self, repo: Path | None):
+        self.repo = repo
+        self._package: dict[str, str | None] = {}
+        self._global: dict[str, bool] = {}
+
+    def package_name(self, directory_path: str) -> str | None:
+        if directory_path in self._package:
+            return self._package[directory_path]
+        name = None
+        if self.repo is not None:
+            manifest = self.repo / directory_path / "package.json" if directory_path else self.repo / "package.json"
+            try:
+                name = json.loads(manifest.read_text()).get("name")
+            except (OSError, ValueError, AttributeError):
+                name = None
+            if name is None and directory_path:
+                name = self.package_name(directory(directory_path))
+        self._package[directory_path] = name
+        return name
+
+    def is_global(self, path: str) -> bool:
+        if path in self._global:
+            return self._global[path]
+        answer = path.endswith(".d.ts")
+        if not answer and self.repo is not None:
+            try:
+                text = (self.repo / path).read_text(errors="replace")
+            except OSError:
+                text = None
+            if text is not None:
+                answer = "declare global" in text or not TS_TOP_LEVEL_MODULE.search(text)
+        self._global[path] = answer
+        return answer
+
+
+def unresolved_names(a: str, specifier: str, t: str, sources: TsSources) -> str | None:
+    """The class of an unresolved specifier of `a` that names `t`, if it does."""
+    if specifier.startswith("."):
+        base = posixpath.normpath(posixpath.join(directory(a), specifier))
+        base = ts_stem(base)
+        stem = ts_stem(t)
+        if stem in (base, f"{base}/index") or t.startswith(base + "/"):
+            return "unresolved relative import"
+        return None
+    package = sources.package_name(directory(t))
+    if package and (specifier == package or specifier.startswith(package + "/")):
+        return "unresolved workspace or alias import"
+    return None
+
+
+def score_ts(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: dict,
+             report: list[list] | None, sources: TsSources, symbols: dict, member_only: set,
+             unindexed: set) -> dict:
+    """The TypeScript block of a row (finding 51); see the module docstring."""
+    out: dict = {"report": report is not None}
+    if report is None:
+        return out
+    rows = [r for r in report if lang_of.get(r[0]) == "ts"]
+    by_file = defaultdict(list)
+    for r in rows:
+        by_file[r[0]].append(r)
+    outcomes = Counter(r[2] for r in rows)
+    uncertain_names = Counter(r[3] for r in rows if r[2] in ("uncertain", "partly_followed"))
+    resolved = {(r[0], r[5]) for r in rows if r[5] and r[5] != r[0]}
+    followed = {(r[0], t) for r in rows for t in r[6] if t != r[0]}
+
+    def ratio(x, y):
+        return round(x / y, 4) if y else None
+
+    def scores(pairs):
+        return {"pairs": len(pairs), "shared": len(pairs & scip), "shared_uses": len(pairs & scip_uses),
+                "precision": ratio(len(pairs & scip), len(pairs)), "recall": ratio(len(pairs & scip), len(scip)),
+                "precision_uses": ratio(len(pairs & scip_uses), len(pairs)),
+                "recall_uses": ratio(len(pairs & scip_uses), len(scip_uses))}
+
+    removed, added = resolved - followed, followed - resolved
+    out["import_outcomes"] = {
+        "imports": len(rows),
+        "by_outcome": dict(sorted(outcomes.items())),
+        "type_only": sum(1 for r in rows if r[4]),
+        "type_only_by_outcome": dict(sorted(Counter(r[2] for r in rows if r[4]).items())),
+        "top_uncertain_names": [[n, c] for n, c in sorted(uncertain_names.items(),
+                                                           key=lambda x: (-x[1], x[0]))[:15]],
+        "samples": {kind: sample([{"a": r[0], "b": r[1], "name": r[3], "resolved": r[5]}
+                                  for r in rows if r[2] == kind])
+                    for kind in sorted(outcomes) if kind not in ("defined_here", "followed")},
+    }
+    out["pairs"] = {"resolved": scores(resolved), "followed": scores(followed),
+                    "hand_is_resolved": hand == resolved, "hand_is_followed": hand == followed}
+    out["change"] = {
+        "removed": len(removed), "removed_scip": len(removed & scip), "removed_scip_uses": len(removed & scip_uses),
+        "added": len(added), "added_scip": len(added & scip), "added_scip_uses": len(added & scip_uses),
+        "added_not_scip": len(added - scip),
+        "removed_scip_uses_samples": sample([{"a": a, "b": b} for a, b in removed & scip_uses]),
+        "added_not_scip_samples": sample([{"a": a, "b": b} for a, b in added - scip]),
+    }
+
+    classes, barrel_why, type_only, members, samples = [], Counter(), Counter(), Counter(), defaultdict(list)
+    for a, t in sorted(scip_uses - hand):
+        mine = by_file.get(a, [])
+        why = None
+        via = [r for r in mine if t in r[6] and r[5] != t]
+        if via:
+            why = "barrel, followed"
+            if all(r[4] for r in via):
+                type_only[why] += 1
+        if why is None:
+            via = [r for r in mine if r[5] and r[5] != t and reexports(r[5], t, hand_targets)]
+            if via:
+                why = "barrel, not followed"
+                barrel_why[via[0][2]] += 1
+                if all(r[4] for r in via):
+                    type_only[why] += 1
+        if why is None:
+            for r in mine:
+                if r[2] == "unresolved":
+                    why = unresolved_names(a, r[1], t, sources)
+                    if why:
+                        break
+        if why is None and sources.is_global(t) and not any(r[5] == t for r in mine):
+            why = "ambient or global"
+        if why is None and any(t in hand_targets.get(c, ()) for c in hand_targets.get(a, ())):
+            why = "inferred type"
+        why = why or "other"
+        classes.append(why)
+        # Reached only through a method or field (`Type#member`): a value's
+        # member, which the source never names (finding 50's Go class).
+        members[why] += (a, t) in member_only
+        samples[why].append({"a": a, "b": t, "symbols": symbols.get((a, t), []),
+                             "imports": sorted({r[1] for r in mine if r[5] == t or t in r[6]
+                                                or (r[5] and under(t, r[5]))})[:4]})
+    out["scip_only_uses"] = len(classes)
+    out["scip_only_uses_by_class"] = {c: classes.count(c) for c in TS_SCIP_CLASSES}
+    out["barrel_not_followed_by_outcome"] = dict(sorted(barrel_why.items()))
+    out["type_only"] = dict(sorted(type_only.items()))
+    out["member_only"] = {c: members[c] for c in TS_SCIP_CLASSES}
+    out["scip_only_uses_samples"] = {c: sample(samples[c]) for c in TS_SCIP_CLASSES}
+
+    hand_only = sorted(hand - scip)
+    hand_classes = ["source not indexed" if a in unindexed else "followed" if (a, b) in added else "other"
+                    for a, b in hand_only]
+    out["hand_only_by_class"] = {c: hand_classes.count(c) for c in TS_HAND_CLASSES}
+    out["hand_only_samples"] = {c: sample([{"a": a, "b": b} for (a, b), k in zip(hand_only, hand_classes) if k == c])
+                                for c in TS_HAND_CLASSES}
+    return out
+
+
+TS_VARIANTS = ("share", "per-file")
+
+
+def ts_variants(args) -> int:
+    """Write `variants/{share,per-file}.graph.json` for a TypeScript fixture:
+    the dumped hand graph with its static signal recomputed from the
+    resolver's report (see the module docstring, `weight_variants`)."""
+    work = args.work
+    report = load_ts_report(work)
+    if report is None:
+        print("no TypeScript report; nothing to write")
+        return 0
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from scip_churn import Graph, assemble
+    graph = Graph(load(work / "hand.graph.json"))
+    per_file, share = defaultdict(float), defaultdict(float)
+    for row in report:
+        a, targets = row[0], row[6]
+        if a not in graph.index or not targets:
+            continue
+        for t in targets:
+            if t == a or t not in graph.index:
+                continue
+            # src/extract.rs `parse_multi`: static edges are undirected, and
+            # the share divides by every file the import reaches, the source
+            # included.
+            per_file[graph.key(a, t)] += 1.0
+            share[graph.key(a, t)] += 1.0 / len(targets)
+    out = work / "variants"
+    out.mkdir(parents=True, exist_ok=True)
+    for name, static in (("share", share), ("per-file", per_file)):
+        document = assemble(graph, graph, dict(static), graph.raw["imports"])
+        (out / f"{name}.graph.json").write_text(json.dumps(document, separators=(",", ":")))
+    print(f"wrote {len(TS_VARIANTS)} variants: {len(share)} static pairs")
+    return 0
+
+
 def score(args) -> int:
     work = args.work
     hand_graph = load(work / "hand.graph.json")
@@ -585,7 +882,8 @@ def score(args) -> int:
         if not ingest_path.is_file():
             rows.append({"name": args.name, "lang": lang, "status": "no index"})
             continue
-        row = score_language(args.name, lang, hand_graph, scip_graph, load(ingest_path), py)
+        row = score_language(args.name, lang, hand_graph, scip_graph, load(ingest_path), py,
+                             load_ts_report(work) if lang == "ts" else None, TsSources(args.repo))
         if lang == "go":
             row["go"]["import_outcomes"] = go_import_outcomes(work)
         row["status"] = "scored"
@@ -598,14 +896,46 @@ def score(args) -> int:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from remote_build_result import placement
         built = load(hand_map)
-        fraction, delta = placement(built, load(committed))
+        fixture = load(committed)
+        fraction, delta = placement(built, fixture)
+        # Agreement with the SCIP fixture (data/scip, the `--refs scip` map
+        # at the same pin), for this hand map and for the committed hand
+        # fixture: whether a resolver change moves hand's districts toward
+        # the oracle's or away from them (finding 51). Placement, not
+        # correctness, as everywhere else.
+        scip_summary = ROOT / "data" / "scip" / f"{args.name}.json"
+        towards = None
+        if scip_summary.is_file():
+            from scip_fixtures import summary_as_map
+            oracle = summary_as_map(load(scip_summary))
+            now, now_delta = placement(built, oracle)
+            was, was_delta = placement(fixture, oracle)
+            towards = {"fixture": round(was, 4), "fixture_q_delta": round(was_delta, 4),
+                       "hand_map": round(now, 4), "hand_map_q_delta": round(now_delta, 4)}
+        variants = {}
+        for variant in TS_VARIANTS:
+            path = work / "variants" / "maps" / f"{args.name}.{variant}.json"
+            if not path.is_file():
+                continue
+            candidate = load(path)
+            entry = {"q": candidate["q"], "districts": len({int(n[0]) for n in candidate["N"]})}
+            for label, reference in (("vs_hand_map", built), ("vs_fixture", fixture)) + (
+                    (("vs_scip_fixture", oracle),) if towards else ()):
+                placed, q_delta = placement(candidate, reference)
+                entry[label] = [round(placed, 4), round(q_delta, 4)]
+            variants[variant] = entry
         for row in rows:
+            if variants and row.get("ts") is not None:
+                row["ts"]["weight_variants"] = variants
             row["hand_map_vs_fixture"] = {"placement": round(fraction, 4), "q_delta": round(delta, 4),
                                           "q": built["q"], "districts": len({int(n[0]) for n in built["N"]}),
-                                          "edges": len(built.get("E", []))}
+                                          "edges": len(built.get("E", [])),
+                                          "districts_matched": district_matches(built, fixture)}
+            row["placement_vs_scip_fixture"] = towards
     args.out.write_text(json.dumps(rows, indent=1, sort_keys=True) + "\n")
     brief = ("name", "lang", "status", "hand_pairs", "scip_pairs", "shared", "recall", "precision",
-             "hand_only_by_class", "scip_only_by_class", "oracle_check", "hand_map_vs_fixture")
+             "hand_only_by_class", "scip_only_by_class", "oracle_check", "hand_map_vs_fixture",
+             "placement_vs_scip_fixture")
     for row in rows:
         print(json.dumps({k: row[k] for k in brief if k in row}, sort_keys=True))
     return 0
@@ -637,6 +967,13 @@ def markdown(rows: list[dict]) -> str:
             d = r["by_directory"]
             out.append(f"| {r['name']} (by directory) | {r['lang']} | {d['hand_pairs']:,} | {d['scip_pairs']:,} "
                        f"| {d['shared']:,} | {pct(d['recall'])} | {pct(d['precision'])} | | | | |")
+    out += ["", "### Placement against the SCIP fixture (data/scip)", "",
+            "| fixture | committed hand fixture | this hand map |", "|---|---|---|"]
+    for r in scored:
+        v = r.get("placement_vs_scip_fixture")
+        if v and r is next(x for x in scored if x["name"] == r["name"]):
+            out.append(f"| {r['name']} | {100 * v['fixture']:.1f}%, Δq {v['fixture_q_delta']:.4f} "
+                       f"| {100 * v['hand_map']:.1f}%, Δq {v['hand_map_q_delta']:.4f} |")
     out += ["", "### Against SCIP's use pairs (namespace-only pairs set aside)", "",
             "| fixture | lang | SCIP use pairs | shared by a use | recall (uses) | precision (uses) | confirmed only by a namespace (to a package) |",
             "|---|---|---:|---:|---:|---:|---:|"]
@@ -659,6 +996,54 @@ def markdown(rows: list[dict]) -> str:
                 f"{by.get(k, 0):,}" for k in ("narrowed", "opaque", "no_names", "undeclared_name",
                                               "ambiguous_name", "unknown_declarations"))
                 + f" | {links} | {gap['use_pairs']:,} ({gap['member_only']:,} / {gap['named']:,}) |")
+    ts_rows = [r for r in scored if (r.get("ts") or {}).get("report")]
+    if ts_rows:
+        out += ["", "### TypeScript imports (finding 51)", "",
+                "| fixture | specifiers | " + " | ".join(TS_OUTCOMES) + " | type-only |",
+                "|---|---:|" + "---:|" * (len(TS_OUTCOMES) + 1)]
+        for r in ts_rows:
+            o = r["ts"]["import_outcomes"]
+            out.append(f"| {r['name']} | {o['imports']:,} | "
+                       + " | ".join(f"{o['by_outcome'].get(k, 0):,}" for k in TS_OUTCOMES)
+                       + f" | {o['type_only']:,} |")
+        out += ["", "| fixture | pairs | hand pairs | shared by a use | precision (uses) | recall (uses) "
+                "| precision | recall | equals hand |", "|---|---|---:|---:|---:|---:|---:|---:|---|"]
+        for r in ts_rows:
+            p = r["ts"]["pairs"]
+            for key, label in (("resolved", "resolved (linking the module)"),
+                               ("followed", "followed (linking the definitions)")):
+                x = p[key]
+                out.append(f"| {r['name']} | {label} | {x['pairs']:,} | {x['shared_uses']:,} "
+                           f"| {pct(x['precision_uses'])} | {pct(x['recall_uses'])} | {pct(x['precision'])} "
+                           f"| {pct(x['recall'])} | {p['hand_is_' + key]} |")
+        out += ["", "| fixture | removed | removed, SCIP has | removed, SCIP has by a use | added "
+                "| added, SCIP has by a use | added, SCIP lacks |", "|---|---:|---:|---:|---:|---:|---:|"]
+        for r in ts_rows:
+            c = r["ts"]["change"]
+            out.append(f"| {r['name']} | {c['removed']:,} | {c['removed_scip']:,} | {c['removed_scip_uses']:,} "
+                       f"| {c['added']:,} | {c['added_scip_uses']:,} | {c['added_not_scip']:,} |")
+        out += ["", "| fixture | SCIP use pairs hand lacks | " + " | ".join(TS_SCIP_CLASSES) + " |",
+                "|---|---:|" + "---:|" * len(TS_SCIP_CLASSES)]
+        for r in ts_rows:
+            t = r["ts"]
+            out.append(f"| {r['name']} | {t['scip_only_uses']:,} | "
+                       + " | ".join(f"{t['scip_only_uses_by_class'][c]:,}" for c in TS_SCIP_CLASSES) + " |")
+            out.append(f"| {r['name']}, member only | {sum(t['member_only'].values()):,} | "
+                       + " | ".join(f"{t['member_only'][c]:,}" for c in TS_SCIP_CLASSES) + " |")
+        variant_rows = [(r, v, x) for r in ts_rows for v, x in (r["ts"].get("weight_variants") or {}).items()]
+        if variant_rows:
+            out += ["", "| fixture | static weight | districts | q | vs this job's map | vs committed fixture "
+                    "| vs SCIP fixture |", "|---|---|---:|---:|---|---|---|"]
+            for r, v, x in variant_rows:
+                cell = lambda key: f"{100 * x[key][0]:.1f}%, Δq {x[key][1]:.4f}" if key in x else "—"
+                out.append(f"| {r['name']} | {v} | {x['districts']} | {x['q']:.4f} | {cell('vs_hand_map')} "
+                           f"| {cell('vs_fixture')} | {cell('vs_scip_fixture')} |")
+        out += ["", "| fixture | hand-only | " + " | ".join(TS_HAND_CLASSES) + " |",
+                "|---|---:|" + "---:|" * len(TS_HAND_CLASSES)]
+        for r in ts_rows:
+            h = r["ts"]["hand_only_by_class"]
+            out.append(f"| {r['name']} | {sum(h.values()):,} | " + " | ".join(f"{h[c]:,}" for c in TS_HAND_CLASSES)
+                       + " |")
     out += ["", "### Hand-only pairs by class", "",
             "| fixture | lang | hand-only | " + " | ".join(HAND_CLASSES) + " |",
             "|---|---|---:|" + "---:|" * len(HAND_CLASSES)]
@@ -703,7 +1088,7 @@ BASELINE_FIELDS = ("name", "lang", "files", "hand_pairs", "scip_pairs", "shared"
                    "precision_uses", "shared_named_uses", "shared_namespace_only",
                    "shared_namespace_only_to_package",
                    "hand_only", "scip_only", "hand_only_by_class",
-                   "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory", "go")
+                   "scip_only_by_class", "scip_fingerprint", "hand_fingerprint", "by_directory", "go", "ts")
 
 
 def baseline(args) -> int:
@@ -898,6 +1283,59 @@ def self_test(_args) -> int:
         assert (outcomes["links_before"], outcomes["links_after"]) == (8, 6), outcomes
         assert outcomes["top_names"]["undeclared_name"] == [["Run", 1]], outcomes
 
+        # TypeScript (finding 51): a barrel `src/index.ts` passing on `a.ts`
+        # by name and `b.ts` by `export *`, an unresolved relative import, a
+        # global declaration file and a two-hop type.
+        ts_files = ("src/a.ts", "src/b.ts", "src/bench.ts", "src/c.ts", "src/index.ts", "src/missing.ts", "src/other.ts",
+                    "src/use.ts", "types/global.d.ts")
+        ts_graph = {"lang": "ts", "nodes": [{"file": f, "lang": "ts"} for f in ts_files],
+                    "imports": [["src/use.ts", "src/index.ts", 1.0], ["src/index.ts", "src/a.ts", 1.0],
+                                ["src/index.ts", "src/b.ts", 1.0], ["src/other.ts", "src/c.ts", 1.0],
+                                ["src/c.ts", "src/a.ts", 1.0], ["src/bench.ts", "src/index.ts", 1.0]]}
+        ts_report = [
+            ["src/bench.ts", "./index", "followed", None, False, "src/index.ts", ["src/a.ts"]],
+            ["src/c.ts", "./a", "defined_here", None, False, "src/a.ts", ["src/a.ts"]],
+            ["src/index.ts", "./a", "defined_here", None, False, "src/a.ts", ["src/a.ts"]],
+            ["src/index.ts", "./b", "opaque", None, False, "src/b.ts", ["src/b.ts"]],
+            ["src/other.ts", "./c", "defined_here", None, True, "src/c.ts", ["src/c.ts"]],
+            ["src/use.ts", "./index", "followed", None, True, "src/index.ts", ["src/a.ts"]],
+            ["src/use.ts", "./missing", "unresolved", None, False, None, []],
+        ]
+        ts_ingest = {"file_edges": [
+            ["src/c.ts", "src/a.ts", 1, 1, 1], ["src/index.ts", "src/a.ts", 1, 1, 1],
+            ["src/index.ts", "src/b.ts", 1, 1, 1], ["src/other.ts", "src/a.ts", 1, 1, 1],
+            ["src/other.ts", "src/b.ts", 1, 1, 1], ["src/other.ts", "src/c.ts", 1, 1, 1],
+            ["src/use.ts", "src/a.ts", 1, 1, 1], ["src/use.ts", "src/b.ts", 1, 1, 1],
+            ["src/use.ts", "src/index.ts", 1, 1, 0], ["src/use.ts", "src/missing.ts", 1, 1, 1],
+            ["src/use.ts", "types/global.d.ts", 1, 1, 1]],
+            "use_pair_symbols": [["src/use.ts", "src/a.ts", ["npm pkg 1 src/a.ts/f()."]]],
+            "member_only_use_pairs": [["src/other.ts", "src/b.ts"]],
+            # The indexer never read src/bench.ts: its hand pairs are not
+            # evidence against hand.
+            "unindexed_lang_files": ["src/bench.ts"]}
+        ts_row = score_language("synthetic", "ts", ts_graph, None, ts_ingest, None, ts_report, TsSources(None))
+        ts = ts_row["ts"]
+        assert ts["scip_only_uses_by_class"] == {
+            "barrel, followed": 1, "barrel, not followed": 1, "unresolved relative import": 1,
+            "unresolved workspace or alias import": 0, "ambient or global": 1, "inferred type": 1,
+            "other": 1}, ts["scip_only_uses_by_class"]
+        assert ts["barrel_not_followed_by_outcome"] == {"followed": 1}, ts["barrel_not_followed_by_outcome"]
+        assert ts["type_only"] == {"barrel, followed": 1, "barrel, not followed": 1}, ts["type_only"]
+        assert ts["pairs"]["hand_is_resolved"] and not ts["pairs"]["hand_is_followed"], ts["pairs"]
+        change = {k: v for k, v in ts["change"].items() if not k.endswith("samples")}
+        assert change == {"removed": 2, "removed_scip": 1, "removed_scip_uses": 0, "added": 2, "added_scip": 1,
+                          "added_scip_uses": 1, "added_not_scip": 1}, change
+        assert ts["import_outcomes"]["by_outcome"] == {"defined_here": 3, "followed": 2, "opaque": 1,
+                                                       "unresolved": 1}, ts["import_outcomes"]
+        assert ts["hand_only_by_class"] == {"source not indexed": 1, "followed": 0, "other": 0}, \
+            ts["hand_only_by_class"]
+        assert ts["member_only"]["other"] == 1 and sum(ts["member_only"].values()) == 1, ts["member_only"]
+        followed_sample = ts["scip_only_uses_samples"]["barrel, followed"][0]
+        assert followed_sample["symbols"] == ["npm pkg 1 src/a.ts/f()."], followed_sample
+        assert unresolved_names("src/x/use.ts", "../lib", "src/lib/index.ts", TsSources(None)) \
+            == "unresolved relative import"
+        assert unresolved_names("src/use.ts", "./lib", "src/other.ts", TsSources(None)) is None
+
         # The gate: Go holds pairs confirmed by a named use, once both sides
         # carry it; Python keeps holding every pair confirmed by a use.
         def gate_rows(lang, shared_uses, named):
@@ -942,6 +1380,9 @@ def main() -> int:
     run.add_argument("--summary", type=Path, required=True)
     run.add_argument("--baseline", type=Path, required=True)
     run.set_defaults(run=gate)
+    run = commands.add_parser("ts-variants")
+    run.add_argument("--work", type=Path, required=True, help="hand.graph.json and ts-imports.*.json")
+    run.set_defaults(run=ts_variants)
     commands.add_parser("self-test").set_defaults(run=self_test)
     args = parser.parse_args()
     return args.run(args)

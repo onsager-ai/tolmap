@@ -943,6 +943,8 @@ jobs:
             -o "$RUNNER_TEMP/scippb/scip.proto"
           python -m grpc_tools.protoc -I "$RUNNER_TEMP/scippb" \
             --python_out="$RUNNER_TEMP/scippb" "$RUNNER_TEMP/scippb/scip.proto"
+      - name: Oracle ingest self-test
+        run: PYTHONPATH="$RUNNER_TEMP/scippb:$PWD/eval" python3 eval/scip_ingest.py --self-test
       - name: Score each fixture
         env:
           LD_LIBRARY_PATH: ${{ env.LEIDEN_PREFIX }}/lib
@@ -975,9 +977,26 @@ jobs:
               --name "$name" --out "$work/map" > "$work/build.log" 2>&1 || echo "$name build FAILED"
             # TOLMAP_GO_IMPORT_REPORT: the Go resolver's own per-import report
             # (narrowed, or why it kept the whole package; finding 50).
-            TOLMAP_GO_IMPORT_REPORT="$PWD/$work" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
+            # TOLMAP_TS_IMPORT_REPORT: the TypeScript resolver's, per module
+            # specifier (where it resolved, and what following its names
+            # through re-exports reached; finding 51).
+            TOLMAP_GO_IMPORT_REPORT="$PWD/$work" TOLMAP_TS_IMPORT_REPORT="$PWD/$work" \
+              ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
               --lang "$lang" --refs hand \
               --out "$work/hand.graph.json" || echo "$name dump-graph --refs hand FAILED"
+            # Finding 51: the TypeScript static signal rebuilt from the
+            # resolver's report, as the resolver weighs it (`share`, a
+            # construction check) and with 1 on each file an import reaches
+            # (`per-file`), each partitioned by the product.
+            if [ "$lang" = "ts" ]; then
+              python3 eval/hand_score.py ts-variants --work "$work" || echo "$name ts-variants FAILED"
+              for variant in share per-file; do
+                [ -f "$work/variants/$variant.graph.json" ] || continue
+                ./bin/tolmap build --graph "$work/variants/$variant.graph.json" --name "$name.$variant" \
+                  --no-parcels --refs hand --out "$work/variants/maps" > "$work/variants/$variant.log" 2>&1 \
+                  || echo "$name $variant build FAILED"
+              done
+            fi
             TOLMAP_SCIP_INDEX_DIR="$PWD/$work/index" ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
               --lang "$lang" --refs scip --out "$work/scip.graph.json" \
               || echo "$name dump-graph --refs scip FAILED"
@@ -990,7 +1009,7 @@ jobs:
             done
             python3 eval/hand_score.py score --name "$name" --work "$work" --repo "$dir" \
               --out "$work/score.json" || echo "$name score FAILED"
-            rm -rf "$dir" "$work/index" "$work"/map/*.symbols.json
+            rm -rf "$dir" "$work/index" "$work"/map/*.symbols.json "$work"/variants/maps/*.symbols.json
             echo "::endgroup::"
           done < fixtures.txt
       - name: Summary

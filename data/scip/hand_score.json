@@ -568,41 +568,646 @@
   },
   {
    "files": 239,
-   "hand_fingerprint": "4e42c67706f2f36b717a063ad74f1e358304c3f16d6b421072af5545720b2822",
-   "hand_only": 3,
+   "hand_fingerprint": "1230df8e6be020b09ac580e881f014bb610bee6baf3ece6d8bddcc3c36d91b0a",
+   "hand_only": 4,
    "hand_only_by_class": {
-    "other": 3,
+    "other": 4,
     "package spread": 0,
     "re-export": 0,
     "star import": 0,
     "submodule via package": 0
    },
-   "hand_pairs": 1186,
+   "hand_pairs": 1531,
    "lang": "ts",
    "name": "vue",
-   "precision": 0.9975,
-   "precision_counting_reexports": 0.9975,
-   "precision_uses": 0.7825,
-   "recall": 0.619,
-   "recall_uses": 0.5851,
+   "precision": 0.9974,
+   "precision_counting_reexports": 0.9974,
+   "precision_uses": 0.9752,
+   "recall": 0.7991,
+   "recall_uses": 0.9414,
    "scip_fingerprint": "a2be0b10b95d49e65db6f41f5f266b5b8b8fc91b44e83a716d9e9bf1c7c222fe",
-   "scip_only": 728,
+   "scip_only": 384,
    "scip_only_by_class": {
-    "inferred type": 80,
+    "inferred type": 94,
     "inherited member": 0,
     "member via value": 0,
-    "other": 201,
-    "re-export": 447,
+    "other": 277,
+    "re-export": 13,
     "same package": 0
    },
    "scip_pairs": 1911,
    "scip_use_pairs": 1586,
-   "shared": 1183,
-   "shared_named_uses": 928,
-   "shared_namespace_only": 255,
-   "shared_namespace_only_to_package": 233,
-   "shared_uses": 928
+   "shared": 1527,
+   "shared_named_uses": 1493,
+   "shared_namespace_only": 34,
+   "shared_namespace_only_to_package": 12,
+   "shared_uses": 1493,
+   "ts": {
+    "barrel_not_followed_by_outcome": {
+     "defined_here": 1,
+     "followed": 28
+    },
+    "change": {
+     "added": 569,
+     "added_not_scip": 4,
+     "added_not_scip_samples": [
+      {
+       "a": "packages/reactivity/__benchmarks__/computed.bench.ts",
+       "b": "packages/reactivity/src/computed.ts"
+      },
+      {
+       "a": "packages/reactivity/__benchmarks__/computed.bench.ts",
+       "b": "packages/reactivity/src/ref.ts"
+      },
+      {
+       "a": "packages/reactivity/__benchmarks__/effect.bench.ts",
+       "b": "packages/reactivity/src/ref.ts"
+      },
+      {
+       "a": "packages/reactivity/__benchmarks__/reactiveMap.bench.ts",
+       "b": "packages/reactivity/src/computed.ts"
+      }
+     ],
+     "added_scip": 565,
+     "added_scip_uses": 565,
+     "removed": 224,
+     "removed_scip": 221,
+     "removed_scip_uses": 0,
+     "removed_scip_uses_samples": []
+    },
+    "hand_only_by_class": {
+     "followed": 0,
+     "other": 0,
+     "source not indexed": 4
+    },
+    "hand_only_samples": {
+     "followed": [],
+     "other": [],
+     "source not indexed": [
+      {
+       "a": "packages/reactivity/__benchmarks__/computed.bench.ts",
+       "b": "packages/reactivity/src/computed.ts"
+      },
+      {
+       "a": "packages/reactivity/__benchmarks__/computed.bench.ts",
+       "b": "packages/reactivity/src/ref.ts"
+      },
+      {
+       "a": "packages/reactivity/__benchmarks__/effect.bench.ts",
+       "b": "packages/reactivity/src/ref.ts"
+      },
+      {
+       "a": "packages/reactivity/__benchmarks__/reactiveMap.bench.ts",
+       "b": "packages/reactivity/src/computed.ts"
+      }
+     ]
+    },
+    "import_outcomes": {
+     "by_outcome": {
+      "defined_here": 942,
+      "followed": 278,
+      "opaque": 40,
+      "unresolved": 82
+     },
+     "imports": 1342,
+     "samples": {
+      "opaque": [
+       {
+        "a": "packages/compiler-core/src/index.ts",
+        "b": "./utils",
+        "name": null,
+        "resolved": "packages/compiler-core/src/utils.ts"
+       },
+       {
+        "a": "packages/compiler-dom/src/index.ts",
+        "b": "./runtimeHelpers",
+        "name": null,
+        "resolved": "packages/compiler-dom/src/runtimeHelpers.ts"
+       },
+       {
+        "a": "packages/compiler-sfc/src/compileTemplate.ts",
+        "b": "@vue/compiler-dom",
+        "name": null,
+        "resolved": "packages/compiler-dom/src/index.ts"
+       },
+       {
+        "a": "packages/compiler-sfc/src/template/resolveTemplateAST.ts",
+        "b": "@vue/compiler-dom",
+        "name": null,
+        "resolved": "packages/compiler-dom/src/index.ts"
+       },
+       {
+        "a": "packages/server-renderer/src/helpers/ssrCompile.ts",
+        "b": "../internal",
+        "name": null,
+        "resolved": "packages/server-renderer/src/internal.ts"
+       },
+       {
+        "a": "packages/shared/src/index.ts",
+        "b": "./cssVars",
+        "name": null,
+        "resolved": "packages/shared/src/cssVars.ts"
+       },
+       {
+        "a": "packages/shared/src/index.ts",
+        "b": "./escapeHtml",
+        "name": null,
+        "resolved": "packages/shared/src/escapeHtml.ts"
+       },
+       {
+        "a": "packages/shared/src/index.ts",
+        "b": "./globalsAllowList",
+        "name": null,
+        "resolved": "packages/shared/src/globalsAllowList.ts"
+       },
+       {
+        "a": "packages/shared/src/index.ts",
+        "b": "./shapeFlags",
+        "name": null,
+        "resolved": "packages/shared/src/shapeFlags.ts"
+       },
+       {
+        "a": "packages/vue-compat/src/createCompatVue.ts",
+        "b": "@vue/runtime-dom",
+        "name": null,
+        "resolved": "packages/runtime-dom/src/index.ts"
+       },
+       {
+        "a": "packages/vue-compat/src/esm-index.ts",
+        "b": "@vue/runtime-dom",
+        "name": null,
+        "resolved": "packages/runtime-dom/src/index.ts"
+       },
+       {
+        "a": "packages/vue-compat/src/index.ts",
+        "b": "@vue/runtime-dom",
+        "name": null,
+        "resolved": "packages/runtime-dom/src/index.ts"
+       }
+      ],
+      "unresolved": [
+       {
+        "a": "packages/compiler-core/src/options.ts",
+        "b": "@babel/parser",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-core/src/parser.ts",
+        "b": "entities/decode",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-core/src/tokenizer.ts",
+        "b": "entities/decode",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-core/src/transforms/transformExpression.ts",
+        "b": "@babel/types",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-sfc/src/cache.ts",
+        "b": "lru-cache",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-sfc/src/compileTemplate.ts",
+        "b": "@vue/consolidate",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-sfc/src/parse.ts",
+        "b": "source-map-js",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-sfc/src/script/definePropsDestructure.ts",
+        "b": "@babel/types",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-sfc/src/script/resolveType.ts",
+        "b": "@babel/parser",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-sfc/src/script/resolveType.ts",
+        "b": "process",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/compiler-sfc/src/template/transformAssetUrl.ts",
+        "b": "path",
+        "name": null,
+        "resolved": null
+       },
+       {
+        "a": "packages/reactivity/__benchmarks__/effect.bench.ts",
+        "b": "../dist/reactivity.esm-browser.prod",
+        "name": null,
+        "resolved": null
+       }
+      ]
+     },
+     "top_uncertain_names": [],
+     "type_only": 275,
+     "type_only_by_outcome": {
+      "defined_here": 223,
+      "followed": 23,
+      "unresolved": 29
+     }
+    },
+    "member_only": {
+     "ambient or global": 0,
+     "barrel, followed": 0,
+     "barrel, not followed": 29,
+     "inferred type": 61,
+     "other": 0,
+     "unresolved relative import": 0,
+     "unresolved workspace or alias import": 0
+    },
+    "pairs": {
+     "followed": {
+      "pairs": 1531,
+      "precision": 0.9974,
+      "precision_uses": 0.9752,
+      "recall": 0.7991,
+      "recall_uses": 0.9414,
+      "shared": 1527,
+      "shared_uses": 1493
+     },
+     "hand_is_followed": true,
+     "hand_is_resolved": false,
+     "resolved": {
+      "pairs": 1186,
+      "precision": 0.9975,
+      "precision_uses": 0.7825,
+      "recall": 0.619,
+      "recall_uses": 0.5851,
+      "shared": 1183,
+      "shared_uses": 928
+     }
+    },
+    "report": true,
+    "scip_only_uses": 93,
+    "scip_only_uses_by_class": {
+     "ambient or global": 0,
+     "barrel, followed": 0,
+     "barrel, not followed": 29,
+     "inferred type": 61,
+     "other": 3,
+     "unresolved relative import": 0,
+     "unresolved workspace or alias import": 0
+    },
+    "scip_only_uses_samples": {
+     "ambient or global": [],
+     "barrel, followed": [],
+     "barrel, not followed": [
+      {
+       "a": "packages/compiler-dom/src/transforms/ignoreSideEffectTags.ts",
+       "b": "packages/compiler-core/src/options.ts",
+       "imports": [
+        "@vue/compiler-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/ErrorHandlingOptions#onError."
+       ]
+      },
+      {
+       "a": "packages/compiler-dom/src/transforms/vHtml.ts",
+       "b": "packages/compiler-core/src/options.ts",
+       "imports": [
+        "@vue/compiler-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/ErrorHandlingOptions#onError."
+       ]
+      },
+      {
+       "a": "packages/compiler-dom/src/transforms/vModel.ts",
+       "b": "packages/compiler-core/src/options.ts",
+       "imports": [
+        "@vue/compiler-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/ErrorHandlingOptions#onError.",
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/TransformOptions#isCustomElement."
+       ]
+      },
+      {
+       "a": "packages/compiler-dom/src/transforms/vShow.ts",
+       "b": "packages/compiler-core/src/ast.ts",
+       "imports": [
+        "@vue/compiler-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`ast.ts`/DirectiveNode#exp.",
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`ast.ts`/Node#loc."
+       ]
+      },
+      {
+       "a": "packages/compiler-sfc/src/template/transformSrcset.ts",
+       "b": "packages/compiler-core/src/options.ts",
+       "imports": [
+        "@vue/compiler-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/TransformOptions#hoistStatic."
+       ]
+      },
+      {
+       "a": "packages/runtime-core/src/apiSetupHelpers.ts",
+       "b": "packages/reactivity/src/effectScope.ts",
+       "imports": [
+        "@vue/reactivity"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/reactivity 3.5.43 src/`effectScope.ts`/EffectScope#off()."
+       ]
+      },
+      {
+       "a": "packages/runtime-core/src/compat/global.ts",
+       "b": "packages/reactivity/src/effectScope.ts",
+       "imports": [
+        "@vue/reactivity"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/reactivity 3.5.43 src/`effectScope.ts`/EffectScope#stop()."
+       ]
+      },
+      {
+       "a": "packages/runtime-dom/src/components/TransitionGroup.ts",
+       "b": "packages/runtime-core/src/compat/compatConfig.ts",
+       "imports": [
+        "@vue/runtime-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/compat/`compatConfig.ts`/DeprecationTypes#TRANSITION_GROUP_ROOT."
+       ]
+      },
+      {
+       "a": "packages/runtime-dom/src/directives/vOn.ts",
+       "b": "packages/runtime-core/src/apiCreateApp.ts",
+       "imports": [
+        "@vue/runtime-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`apiCreateApp.ts`/AppContext#config."
+       ]
+      },
+      {
+       "a": "packages/runtime-dom/src/directives/vOn.ts",
+       "b": "packages/runtime-core/src/compat/compatConfig.ts",
+       "imports": [
+        "@vue/runtime-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/compat/`compatConfig.ts`/DeprecationTypes#CONFIG_KEY_CODES.",
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/compat/`compatConfig.ts`/DeprecationTypes#V_ON_KEYCODE_MODIFIER."
+       ]
+      },
+      {
+       "a": "packages/runtime-dom/src/directives/vShow.ts",
+       "b": "packages/runtime-core/src/vnode.ts",
+       "imports": [
+        "@vue/runtime-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`vnode.ts`/VNode#transition."
+       ]
+      },
+      {
+       "a": "packages/runtime-dom/src/modules/attrs.ts",
+       "b": "packages/runtime-core/src/compat/compatConfig.ts",
+       "imports": [
+        "@vue/runtime-core"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/compat/`compatConfig.ts`/DeprecationTypes#ATTR_ENUMERATED_COERCION.",
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/compat/`compatConfig.ts`/DeprecationTypes#ATTR_FALSE_VALUE."
+       ]
+      }
+     ],
+     "inferred type": [
+      {
+       "a": "packages/compiler-core/src/transforms/transformSlotOutlet.ts",
+       "b": "packages/compiler-core/src/options.ts",
+       "imports": [
+        "../ast",
+        "../errors",
+        "../runtimeHelpers",
+        "../transform"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/ErrorHandlingOptions#onError.",
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/TransformOptions#prefixIdentifiers.",
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/TransformOptions#scopeId."
+       ]
+      },
+      {
+       "a": "packages/compiler-core/src/transforms/transformText.ts",
+       "b": "packages/compiler-core/src/options.ts",
+       "imports": [
+        "../ast",
+        "../runtimeHelpers",
+        "../transform",
+        "../utils"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/SharedTransformCodegenOptions#ssr.",
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/TransformOptions#directiveTransforms."
+       ]
+      },
+      {
+       "a": "packages/compiler-core/src/transforms/vBind.ts",
+       "b": "packages/compiler-core/src/options.ts",
+       "imports": [
+        "../ast",
+        "../errors",
+        "../runtimeHelpers",
+        "../transform"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/ErrorHandlingOptions#onError.",
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/SharedTransformCodegenOptions#inSSR."
+       ]
+      },
+      {
+       "a": "packages/compiler-core/src/transforms/vMemo.ts",
+       "b": "packages/compiler-core/src/options.ts",
+       "imports": [
+        "../ast",
+        "../runtimeHelpers",
+        "../transform",
+        "../utils"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-core 3.5.43 src/`options.ts`/SharedTransformCodegenOptions#inSSR."
+       ]
+      },
+      {
+       "a": "packages/compiler-sfc/src/script/definePropsDestructure.ts",
+       "b": "packages/compiler-sfc/src/compileScript.ts",
+       "imports": [],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-sfc 3.5.43 src/`compileScript.ts`/SFCScriptCompileOptions#propsDestructure."
+       ]
+      },
+      {
+       "a": "packages/compiler-sfc/src/script/normalScript.ts",
+       "b": "packages/compiler-sfc/src/compileTemplate.ts",
+       "imports": [
+        "../parse",
+        "../rewriteDefault"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-sfc 3.5.43 src/`compileTemplate.ts`/SFCTemplateCompileOptions#ssr."
+       ]
+      },
+      {
+       "a": "packages/compiler-sfc/src/script/topLevelAwait.ts",
+       "b": "packages/compiler-sfc/src/parse.ts",
+       "imports": [],
+       "symbols": [
+        "scip-typescript npm @vue/compiler-sfc 3.5.43 src/`parse.ts`/SFCDescriptor#source."
+       ]
+      },
+      {
+       "a": "packages/runtime-core/src/compat/componentFunctional.ts",
+       "b": "packages/runtime-core/src/vnode.ts",
+       "imports": [
+        "../component",
+        "../componentOptions",
+        "../componentSlots"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`vnode.ts`/VNode#children.",
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`vnode.ts`/VNode#props."
+       ]
+      },
+      {
+       "a": "packages/runtime-core/src/compat/renderHelpers.ts",
+       "b": "packages/runtime-core/src/apiCreateApp.ts",
+       "imports": [
+        "../component",
+        "../componentSlots",
+        "../vnode"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`apiCreateApp.ts`/AppContext#config."
+       ]
+      },
+      {
+       "a": "packages/runtime-core/src/componentPublicInstance.ts",
+       "b": "packages/runtime-core/src/components/Suspense.ts",
+       "imports": [
+        "./apiWatch",
+        "./component",
+        "./componentEmits",
+        "./componentOptions"
+       ],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/components/`Suspense.ts`/SuspenseBoundary#activeBranch."
+       ]
+      },
+      {
+       "a": "packages/server-renderer/src/helpers/ssrCompile.ts",
+       "b": "packages/runtime-core/src/apiCreateApp.ts",
+       "imports": [],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`apiCreateApp.ts`/AppConfig#compilerOptions.",
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`apiCreateApp.ts`/AppConfig#isCustomElement.",
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`apiCreateApp.ts`/AppContext#config."
+       ]
+      },
+      {
+       "a": "packages/vue-compat/src/createCompatVue.ts",
+       "b": "packages/runtime-core/src/compat/compatConfig.ts",
+       "imports": [],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/compat/`compatConfig.ts`/DeprecationTypes#RENDER_FUNCTION."
+       ]
+      }
+     ],
+     "other": [
+      {
+       "a": "packages/reactivity/src/ref.ts",
+       "b": "packages/runtime-core/src/index.ts",
+       "imports": [],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-core 3.5.43 src/`index.ts`/`'@vue/reactivity'`/RefUnwrapBailTypes#"
+       ]
+      },
+      {
+       "a": "packages/reactivity/src/ref.ts",
+       "b": "packages/runtime-dom/src/index.ts",
+       "imports": [],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-dom 3.5.43 src/`index.ts`/`'@vue/reactivity'`/RefUnwrapBailTypes#"
+       ]
+      },
+      {
+       "a": "packages/runtime-core/src/component.ts",
+       "b": "packages/runtime-dom/src/index.ts",
+       "imports": [],
+       "symbols": [
+        "scip-typescript npm @vue/runtime-dom 3.5.43 src/`index.ts`/`'@vue/runtime-core'`/AllowedAttrs#"
+       ]
+      }
+     ],
+     "unresolved relative import": [],
+     "unresolved workspace or alias import": []
+    },
+    "type_only": {
+     "barrel, not followed": 10
+    },
+    "weight_variants": {
+     "per-file": {
+      "districts": 7,
+      "q": 0.5005,
+      "vs_fixture": [
+       0.7322,
+       0.0384
+      ],
+      "vs_hand_map": [
+       0.8536,
+       0.0053
+      ],
+      "vs_scip_fixture": [
+       0.8452,
+       0.0266
+      ]
+     },
+     "share": {
+      "districts": 7,
+      "q": 0.5058,
+      "vs_fixture": [
+       0.8703,
+       0.0331
+      ],
+      "vs_hand_map": [
+       1.0,
+       0.0
+      ],
+      "vs_scip_fixture": [
+       0.8661,
+       0.0319
+      ]
+     }
+    }
+   }
   }
  ],
- "source": "https://github.com/onsager-ai/tolmap/actions/runs/36206406154"
+ "source": "https://github.com/onsager-ai/tolmap/actions/runs/36212421647"
 }
