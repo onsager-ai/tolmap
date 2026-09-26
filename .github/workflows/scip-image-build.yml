@@ -37,6 +37,7 @@ on:
       # the job directory the service hands its worker (issue #141).
       - "src/worker.rs"
       - "src/service/jobs.rs"
+      - "src/service/executor.rs"
       - "src/service/worker_result.rs"
       - ".github/workflows/scip-image-build.yml"
   workflow_dispatch:
