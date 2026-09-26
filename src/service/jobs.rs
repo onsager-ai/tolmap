@@ -164,6 +164,15 @@ struct RegistryInner {
     /// process is exiting, not pausing. Checked by `enqueue_job` so no job
     /// is admitted after a shutdown signal starts draining the registry.
     stopping: bool,
+    /// `TOLMAP_WORKERS=loopback:N` (#97 phase 1): the worker hub every job
+    /// runs through instead of a local child, and the number of worker
+    /// slots, which is the number of agents rather than
+    /// `TOLMAP_MAX_CONCURRENT_JOBS`. Both `None` in local mode, which is
+    /// every registry `new_registry` builds until `set_remote` runs, so
+    /// local mode and every existing test see exactly the registry they
+    /// saw before.
+    remote: Option<Arc<crate::service::workers::WorkerHub>>,
+    slots_override: Option<usize>,
 }
 
 impl RegistryInner {
@@ -181,9 +190,14 @@ impl RegistryInner {
         if !self.classes.is_empty() {
             return;
         }
+        // Loopback mode: each agent is one slot of the one local class, and
+        // `TOLMAP_MAX_CONCURRENT_JOBS` does not apply (docs/API.md).
         let mut classes = vec![Class {
             usable_memory: None,
-            slots: limits.max_concurrent_jobs.max(1),
+            slots: self
+                .slots_override
+                .unwrap_or(limits.max_concurrent_jobs)
+                .max(1),
         }];
         schedule::order_classes(&mut classes);
         self.slots = schedule::worker_classes(&classes)
@@ -277,7 +291,31 @@ impl JobRegistry {
             .remove(&id);
     }
 
-    fn is_cancelled(&self, id: Uuid) -> bool {
+    /// Loopback mode (#97 phase 1): every job from now on runs through
+    /// `hub`'s agents, which are `slots` worker slots in the one local
+    /// class. Called once by `service::serve` before the first admission;
+    /// `ensure_classes` builds the slots on that first admission.
+    pub fn set_remote(&self, hub: Arc<crate::service::workers::WorkerHub>, slots: usize) {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        registry.remote = Some(hub);
+        registry.slots_override = Some(slots.max(1));
+    }
+
+    pub(crate) fn remote(&self) -> Option<Arc<crate::service::workers::WorkerHub>> {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .remote
+            .clone()
+    }
+
+    /// Whether [`JobRegistry::shutdown`] has run: a remote job cancelled by
+    /// it tells its agent `server_stopping` rather than `cancelled`.
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.0.lock().expect("job registry mutex poisoned").stopping
+    }
+
+    pub(crate) fn is_cancelled(&self, id: Uuid) -> bool {
         self.0
             .lock()
             .expect("job registry mutex poisoned")
@@ -290,7 +328,7 @@ impl JobRegistry {
     /// reaps the child,
     /// on every path that reaches a reap -- success, failure and cancel
     /// alike.
-    fn set_peak_rss(&self, id: Uuid, bytes: u64) {
+    pub(crate) fn set_peak_rss(&self, id: Uuid, bytes: u64) {
         self.0
             .lock()
             .expect("job registry mutex poisoned")
@@ -487,7 +525,16 @@ pub fn spawn_job(
     repo_ref: RepoRef,
     commit: String,
 ) -> Result<Uuid, ApiError> {
-    enqueue_job(state, repo_ref, commit, Arc::new(run_blocking))
+    // Loopback mode runs the job through an agent (`workers::run_remote`);
+    // with no hub, which is local mode, the runner is `run_blocking` as it
+    // always was.
+    let runner: JobRunner = match state.jobs.remote() {
+        Some(hub) => Arc::new(move |state, repo_ref, tx| {
+            crate::service::workers::run_remote(state, &hub, repo_ref, tx)
+        }),
+        None => Arc::new(run_blocking),
+    };
+    enqueue_job(state, repo_ref, commit, runner)
 }
 
 fn enqueue_job(
@@ -710,7 +757,7 @@ fn format_mib(bytes: u64) -> String {
     format!("{:.0} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
-fn is_terminal(snapshot: &JobSnapshot) -> bool {
+pub(crate) fn is_terminal(snapshot: &JobSnapshot) -> bool {
     matches!(snapshot.status, JobStatus::Done | JobStatus::Failed)
 }
 
@@ -821,7 +868,7 @@ fn finish_done(tx: &watch::Sender<JobSnapshot>) {
     });
 }
 
-fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
+pub(crate) fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
     tx.send_modify(|snapshot| {
         if is_terminal(snapshot) {
             return;
@@ -884,7 +931,7 @@ fn run_blocking(state: Arc<AppState>, repo_ref: RepoRef, tx: watch::Sender<JobSn
 /// not use it yet: the executor checks out whatever the clone resolves HEAD
 /// to, as before this split (docs/WORKER_TIER.md §3.3). Remote mode will
 /// check out this commit.
-fn prepare(
+pub(crate) fn prepare(
     state: &AppState,
     repo_ref: &RepoRef,
     tx: &watch::Sender<JobSnapshot>,
@@ -950,18 +997,45 @@ fn register(
     started: Instant,
     executed: executor::Executed,
 ) {
+    // A refused result has already failed the job's snapshot.
+    let _ = register_owned(
+        state,
+        repo_ref,
+        tx,
+        started,
+        executed,
+        Some(worker_uid_in_effect(state.config.worker_uid)),
+    );
+}
+
+/// [`register`], with the uid the result's files must be owned by named by
+/// the caller: the job child's in local mode, where the child wrote them
+/// into its own output directory, and the master's own in loopback mode
+/// (`workers::run_remote`), where the master wrote them itself from
+/// uploads it verified. Returns whether the map row was stored, which is
+/// when loopback mode may send `result_accepted` (docs/WORKER_TIER.md §2.3).
+pub(crate) fn register_owned(
+    state: &AppState,
+    repo_ref: &RepoRef,
+    tx: &watch::Sender<JobSnapshot>,
+    started: Instant,
+    executed: executor::Executed,
+    owner: Option<u32>,
+) -> Result<(), ErrorBody> {
     let job_id = tx.borrow().job_id;
-    let stored = store_worker_result(
+    let stored = store_worker_result_owned(
         state,
         repo_ref,
         job_id,
         &executed.output_dir,
         &executed.checkout,
         &executed.output,
+        owner,
     );
     let _ = std::fs::remove_dir_all(&executed.job_dir);
     if let Err(error) = stored {
-        return finish_failed(tx, error);
+        finish_failed(tx, error.clone());
+        return Err(error);
     }
     set_commit(tx, &executed.checkout.commit);
     if let Err(error) = state
@@ -972,6 +1046,7 @@ fn register(
     }
     tx.send_modify(|snapshot| snapshot.elapsed_s = started.elapsed().as_secs_f64());
     finish_done(tx);
+    Ok(())
 }
 
 /// The store's warm-start rows as the executor's inputs: which stored map,
@@ -1013,6 +1088,28 @@ fn store_worker_result(
     checkout: &clone::Materialized,
     output: &WorkerOutput,
 ) -> Result<(), ErrorBody> {
+    store_worker_result_owned(
+        state,
+        repo_ref,
+        job_id,
+        output_dir,
+        checkout,
+        output,
+        Some(worker_uid_in_effect(state.config.worker_uid)),
+    )
+}
+
+/// [`store_worker_result`] with the files' owner named by the caller -- see
+/// [`register_owned`].
+fn store_worker_result_owned(
+    state: &AppState,
+    repo_ref: &RepoRef,
+    job_id: Uuid,
+    output_dir: &Path,
+    checkout: &clone::Materialized,
+    output: &WorkerOutput,
+    owner: Option<u32>,
+) -> Result<(), ErrorBody> {
     // The commit names the stored file (`<commit>.json`).
     if !worker_result::is_object_id(&output.commit) || output.commit != checkout.commit {
         return Err(invalid_worker_result(
@@ -1050,7 +1147,7 @@ fn store_worker_result(
                 symbols_dir: &output.symbols_dir,
                 names_cache: &output.names_cache,
             },
-            Some(worker_uid_in_effect(state.config.worker_uid)),
+            owner,
         )
         .map_err(|refused| match refused {
             worker_result::Refused::Invalid(message) => invalid_worker_result(message),
@@ -1098,7 +1195,7 @@ fn invalid_worker_result(message: impl Into<String>) -> ErrorBody {
 /// The uid the worker's files are owned by: the configured worker uid when
 /// the service is root and drops to it (`executor::run_child`), otherwise the
 /// service's own, which the worker then runs as.
-fn worker_uid_in_effect(configured: u32) -> u32 {
+pub(crate) fn worker_uid_in_effect(configured: u32) -> u32 {
     if is_root() {
         configured
     } else {
@@ -1111,7 +1208,7 @@ fn worker_uid_in_effect(configured: u32) -> u32 {
 /// unchanged. It keeps the per-stage counters that turn the child's raw
 /// events into monotone progress and a running ETA; the executor only
 /// relays events.
-struct SnapshotSink<'a> {
+pub(crate) struct SnapshotSink<'a> {
     tx: &'a watch::Sender<JobSnapshot>,
     started: Instant,
     registry: Option<&'a JobRegistry>,
@@ -1128,7 +1225,7 @@ struct SnapshotSink<'a> {
 }
 
 impl<'a> SnapshotSink<'a> {
-    fn new(
+    pub(crate) fn new(
         tx: &'a watch::Sender<JobSnapshot>,
         started: Instant,
         registry: Option<&'a JobRegistry>,

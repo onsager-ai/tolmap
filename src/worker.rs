@@ -400,6 +400,16 @@ pub struct WelcomeResume {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct PreviousMapUrl {
     pub branch: Option<String>,
+    // Issue #97 phase 1, the loopback PR: the commit the stored map was
+    // built from. The agent needs it for the same reason local mode does:
+    // `executor::stage_previous_map` names the job child's copy
+    // `<commit>.json`, and the child logs `warm start from <commit>` from
+    // that name, which the image e2e asserts on. A URL is opaque to the
+    // agent, so the commit travels beside it. Absent on the wire from a
+    // master that predates it, which the agent treats as a cold start (the
+    // empty string is not an object id).
+    #[serde(default)]
+    pub commit: String,
     pub url: String,
 }
 
@@ -439,6 +449,16 @@ pub enum WorkerMessage {
         epoch: u64,
         seq: u64,
         event: WorkerEvent,
+        // Issue #97 phase 1, the loopback PR: the job child's own peak RSS
+        // (`wait4`, docs/WORKER_TIER.md §2.1), set on the terminal event --
+        // the forwarded `result` or `error` -- once the agent has reaped the
+        // child. In local mode the master reaps the child itself and records
+        // the peak next to the job's timings (#149); an agent reaps it on
+        // another host, so the figure has to cross the channel, and the
+        // envelope is where it can without touching the v1 event inside.
+        // `released` already carries the same field for a stopped job.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peak_rss_bytes: Option<u64>,
     },
     Heartbeat {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -918,6 +938,7 @@ mod tests {
                 v: 1,
                 stage: StageId::Clone,
             },
+            peak_rss_bytes: Some(3_000_000),
         });
         round_trips(&WorkerMessage::Heartbeat {
             jobs: vec![HeartbeatJob {
@@ -958,6 +979,7 @@ mod tests {
                 names_cache: Some("https://master/artifacts/names".to_owned()),
                 previous_maps: vec![PreviousMapUrl {
                     branch: Some("main".to_owned()),
+                    commit: "d".repeat(40),
                     url: "https://master/artifacts/prev".to_owned(),
                 }],
             },
@@ -1025,6 +1047,7 @@ mod tests {
             epoch: 2,
             seq: 5,
             event: event.clone(),
+            peak_rss_bytes: None,
         };
         let value = serde_json::to_value(&wrapped).unwrap();
         assert_eq!(value["event"], serde_json::to_value(&event).unwrap());

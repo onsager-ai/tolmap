@@ -185,7 +185,23 @@ enum Command {
     /// other `tolmap` invocation.
     Serve,
     /// One JSON job spec on stdin; versioned JSON events on stdout.
-    Worker,
+    ///
+    /// With `--connect`, `--token-file` and `--cache-dir` instead: the
+    /// worker agent (docs/WORKER_TIER.md, #97 phase 1), a long-lived
+    /// process that dials the master's worker listener and runs the jobs it
+    /// is assigned, each as a plain `tolmap worker` child. `tolmap serve`
+    /// starts these itself under `TOLMAP_WORKERS=loopback:N`.
+    Worker {
+        /// The master's channel URL, `ws://<loopback address>/workers/connect`.
+        #[arg(long)]
+        connect: Option<String>,
+        /// A file holding this agent's bearer token (mode 0600).
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// This agent's own clone cache and job directories.
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+    },
     #[command(hide = true)]
     EtaReplay { timeline: PathBuf },
     /// Runs COMMAND inside the dependency-install sandbox (issue #110 P1c)
@@ -638,7 +654,23 @@ fn main() -> Result<()> {
             let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
             runtime.block_on(tolmap::service::serve(config))
         }
-        Command::Worker => tolmap::worker::run_stdio(),
+        Command::Worker {
+            connect,
+            token_file,
+            cache_dir,
+        } => match (connect, token_file, cache_dir) {
+            // Plain `tolmap worker`: the job child, unchanged.
+            (None, None, None) => tolmap::worker::run_stdio(),
+            (Some(connect), Some(token_file), Some(cache_dir)) => {
+                tolmap::service::agent::run(tolmap::service::agent::AgentConfig {
+                    connect,
+                    token_file,
+                    cache_dir,
+                    worker_exe: std::env::current_exe().context("locate this binary")?,
+                })
+            }
+            _ => anyhow::bail!("--connect, --token-file and --cache-dir go together"),
+        },
         Command::EtaReplay { timeline } => {
             let report = tolmap::service::eta::replay_timeline(&timeline)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
