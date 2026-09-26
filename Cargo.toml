@@ -53,11 +53,32 @@ ts-rs = { version = "=12.0.1", features = ["serde-compat"] }
 #                    channel GET /api/jobs/{id}/events relays a job's
 #                    `watch::Receiver` through into the `Stream` axum's SSE
 #                    response wants.
-axum = "=0.8.9"
+# Issue #97 phase 1 (owner decision, WORKER_TIER.md §10.2 "WebSocket on
+# axum"): the agent dials the master over WebSocket. "ws" is the axum-side
+# half (the upgrade extractor in src/service/http.rs); it pulls in axum's own
+# `tokio-tungstenite` (currently 0.29.0 -- see the direct dependency below,
+# which pins the client half to the exact same version and unifies on it).
+axum = { version = "=0.8.9", features = ["ws"] }
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "fs", "signal"] }
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 uuid = { version = "=1.26.1", features = ["v4", "serde"] }
 tokio-stream = "=0.1.19"
+# Issue #97 phase 1: the agent's client side of the worker WebSocket channel
+# (dialing the master, per WORKER_TIER.md §10.2). Pinned "=0.29.0" because
+# that is the exact version axum 0.8.9's own "ws" feature resolves
+# `tokio-tungstenite = "0.29.0"` to today (0.30.0 exists on crates.io but is
+# outside axum's `^0.29.0` requirement) -- pinning the same version keeps one
+# copy in Cargo.lock instead of two. TLS: `ureq =3.4.2`'s "rustls" feature
+# already locks rustls 0.23.45 on the `ring` crypto provider with
+# `webpki-roots` 1.0.9 as the trust store (ureq's own features:
+# `_ring = ["rustls?/ring"]` and `rustls-webpki-roots = ["dep:webpki-roots"]`,
+# and neither `aws-lc-rs` nor `rustls-native-certs` appears in Cargo.lock).
+# `rustls-tls-webpki-roots` reuses that same `rustls` package (feature
+# unification keeps `ring`, no `aws-lc-rs` is added) and its "webpki-roots"
+# adds only webpki-roots 0.26.11, which as of that release is itself a thin
+# forwarding shim depending on the already-locked webpki-roots 1.0.9 -- so
+# there is one rustls, one crypto provider and one root store, not two.
+tokio-tungstenite = { version = "=0.29.0", features = ["rustls-tls-webpki-roots"] }
 # Fly.io deployment (2026-09-20): tolmap serves the built web bundle from
 # the same axum process as the API when TOLMAP_STATIC_DIR is set, so a
 # single always-on machine is one origin instead of two (see
@@ -82,6 +103,13 @@ ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
 # default build: this is product code now, not a measurement feature.
 protobuf = "=3.7.2"
 scip = "=0.10.0"
+# Issue #97 phase 1, owner decision "Add sha2, per-file uploads": the agent
+# hashes each uploaded artifact file with SHA-256 so the master can verify
+# what it received. RustCrypto's sha2 on the 0.10 line, not 0.11: 0.11 is a
+# coordinated major bump of RustCrypto's trait crates and would lock a second
+# `digest` stack (7 crates) next to the 0.10 one `sha1` above already uses.
+# 0.10.9 reuses that stack and adds only itself.
+sha2 = "=0.10.9"
 
 [build-dependencies]
 cc = "=1.4.7"

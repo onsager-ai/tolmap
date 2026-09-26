@@ -295,12 +295,13 @@ The forwarded `result` event keeps every v1 field and adds one optional field, s
  "artifacts": [
    {"name": "map", "sha256": "<hex>", "bytes": <n>},
    {"name": "symbols", "sha256": "<hex>", "bytes": <n>},
-   {"name": "symbols_dir", "sha256": "<hex>", "bytes": <n>},
+   {"name": "symbols_dir/0.json", "sha256": "<hex>", "bytes": <n>},
+   {"name": "symbols_dir/1.json", "sha256": "<hex>", "bytes": <n>},
    {"name": "names", "sha256": "<hex>", "bytes": <n>}
  ]}
 ```
 
-`symbols_dir` is uploaded as one uncompressed tar with entries in sorted order and zeroed metadata, so its digest is reproducible. The master unpacks it into the store. In remote mode the master refuses a `result` whose path fields are anything but `artifact:` names.
+Owner's change (phase 1): `symbols_dir` is not uploaded as a tar. Each entry the worker wrote into it (`<digits>.json`, see `src/service/worker_result.rs`) is its own artifact, named `symbols_dir/<file name>`, so one failed upload costs one district, not the whole result. An artifact name accepts only `map`, `symbols`, `names` and `symbols_dir/<digits>.json` (`worker::is_valid_artifact_name`); anything else, including one with an extra `/` or a `..` component, is refused. In remote mode the master refuses a `result` whose path fields are anything but `artifact:` names.
 
 ### 3.5 Ordering, acknowledgement and resume
 

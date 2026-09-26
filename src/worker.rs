@@ -76,6 +76,40 @@ pub struct LanguageFeatures {
     pub bytes: u64,
 }
 
+// A named file a worker agent uploaded on the artifact channel (docs/
+// WORKER_TIER.md §3.4, §4.2), reported in a `result` so the master can
+// register it without trusting a path the worker chose. Issue #97 phase 1,
+// owner's change: `symbols_dir` is no longer one tar; each district file
+// under it becomes its own artifact, named `symbols_dir/<file name>`, so
+// one failed upload costs one district, not the whole result. A plain `//`
+// comment, not `///`: exported to TypeScript (it is now reachable from
+// `WorkerEvent::Result.artifacts`), and none of this file's other wire
+// structs carry a doc comment onto the wire either.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct Artifact {
+    pub name: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// Whether `name` is one a `result` event's `artifacts` list may use: the
+/// three fixed names, or one district file inside `symbols_dir`. Mirrors
+/// `service::worker_result::is_district_file`'s digits-only rule -- both
+/// sides must agree on what an entry there can be named -- and, like it,
+/// rejects anything with an extra `/` or a `..` component by construction:
+/// `strip_prefix`/`strip_suffix` leave those out of the all-digits check.
+pub fn is_valid_artifact_name(name: &str) -> bool {
+    match name {
+        "map" | "symbols" | "names" => true,
+        _ => name
+            .strip_prefix("symbols_dir/")
+            .and_then(|entry| entry.strip_suffix(".json"))
+            .is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+            }),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerEvent {
@@ -113,6 +147,15 @@ pub enum WorkerEvent {
         files: usize,
         districts: usize,
         modularity: f64,
+        // Issue #97 phase 1: the remote agent's uploaded artifacts (docs/
+        // WORKER_TIER.md §3.4), absent when this event comes straight from
+        // a job child's own stdout (today's only path) or from local mode.
+        // `skip_serializing_if` keeps a v1-only result byte-identical to
+        // before this field existed, which
+        // `a_result_without_artifacts_serializes_exactly_as_before` checks
+        // against a literal.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        artifacts: Vec<Artifact>,
     },
     Error {
         v: u8,
@@ -141,6 +184,327 @@ impl WorkerEvent {
             | Self::InstallRequest { v } => *v,
         }
     }
+}
+
+/// The portable half of `WorkerSpec` (docs/WORKER_TIER.md §3.3): what the
+/// job is, with no filesystem path in it, so `assign` can carry it over the
+/// network. A remote agent turns it into an ordinary v1 `WorkerSpec` after
+/// cloning and checking out `commit` itself; the job child then cannot tell
+/// whether it runs under `tolmap serve` or under an agent.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct JobSpec {
+    pub slug: String,
+    pub owner: String,
+    pub repo: String,
+    pub source: String,
+    pub local: bool,
+    // The commit the master resolved and admitted the job against (§3.3):
+    // the agent checks out this commit, not whatever the branch points to
+    // by the time it clones, so `(slug, commit)` stays the cache key even
+    // if the branch moved on in between. `WorkerSpec` has no field for this
+    // -- by the time `to_worker_spec` runs, whatever needed the pin has
+    // already happened -- so it never crosses into the v1 spec.
+    pub commit: String,
+    pub all_sources: bool,
+    pub prune_variant: String,
+    pub namer: String,
+    pub namer_model: String,
+    #[serde(default)]
+    pub refs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<String>,
+}
+
+/// The filesystem half of a v1 `WorkerSpec` (docs/WORKER_TIER.md §3.3):
+/// local mode already has all of this on hand, and a remote agent derives
+/// it after fetching the job's inputs (§4.2). Never serialized itself --
+/// only `JobSpec` and the artifact/input URLs cross the network -- so it
+/// carries no serde or ts-rs derive.
+#[derive(Clone, Debug)]
+pub struct LocalInputs {
+    pub cache_dir: String,
+    pub output_dir: String,
+    pub clone_cache_bytes: u64,
+    pub previous_maps: Vec<PreviousMap>,
+    pub names_cache: Option<String>,
+}
+
+impl JobSpec {
+    /// Builds the v1 `WorkerSpec` a job child reads from stdin: the same
+    /// shape `tolmap serve` builds today for a local job (`src/service/
+    /// jobs.rs`), assembled in this one place so a remote agent and local
+    /// mode cannot drift apart on it.
+    pub fn to_worker_spec(&self, local: LocalInputs) -> WorkerSpec {
+        WorkerSpec {
+            v: 1,
+            slug: self.slug.clone(),
+            owner: self.owner.clone(),
+            repo: self.repo.clone(),
+            source: self.source.clone(),
+            local: self.local,
+            all_sources: self.all_sources,
+            cache_dir: local.cache_dir,
+            output_dir: local.output_dir,
+            clone_cache_bytes: local.clone_cache_bytes,
+            prune_variant: self.prune_variant.clone(),
+            namer: self.namer.clone(),
+            namer_model: self.namer_model.clone(),
+            previous_maps: local.previous_maps,
+            names_cache: local.names_cache,
+            refs: self.refs.clone(),
+            install: self.install.clone(),
+        }
+    }
+}
+
+// --- Issue #97 phase 1: the channel protocol between a remote worker agent
+// and the master (docs/WORKER_TIER.md §3). Distinct from `v` above, which
+// stays the job child's own protocol version and is carried unchanged
+// inside `WorkerMessage::JobEvent`.
+
+/// The channel protocol version (§3.1): negotiated once in `hello`/
+/// `welcome`, separate from the job child's `WorkerEvent::version`.
+pub const PROTO: u32 = 1;
+
+/// The largest control frame the master accepts (§4.3). Bounds the
+/// protocol, not a job -- the largest legitimate frame today is a
+/// `features` or `log` event -- so it never limits a repository's size.
+pub const MAX_CONTROL_FRAME_BYTES: usize = 1 << 20;
+
+/// `hello.features` values a worker may advertise (§3.6). A peer sends a
+/// message type gated on one of these only if the other side listed it
+/// first, so a new feature never needs a `proto` bump.
+pub const FEATURE_INSTALL_SANDBOX: &str = "install_sandbox";
+pub const FEATURE_RESUME: &str = "resume";
+pub const FEATURE_LOCAL_PATHS: &str = "local_paths";
+
+/// Why `negotiate` could not agree on a `proto`: the wire error code the
+/// master then sends in `MasterMessage::Error` before closing (§3.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnsupportedProto;
+
+impl std::fmt::Display for UnsupportedProto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("unsupported_proto")
+    }
+}
+
+impl std::error::Error for UnsupportedProto {}
+
+/// The channel protocol version both sides can speak: the highest version
+/// at most both `proto_max`s allow and at least both `proto_min`s require
+/// (§3.6). `ours` and `theirs` are each `(proto_min, proto_max)`.
+pub fn negotiate(ours: (u32, u32), theirs: (u32, u32)) -> Result<u32, UnsupportedProto> {
+    let (our_min, our_max) = ours;
+    let (their_min, their_max) = theirs;
+    let highest = our_max.min(their_max);
+    if highest >= our_min.max(their_min) {
+        Ok(highest)
+    } else {
+        Err(UnsupportedProto)
+    }
+}
+
+/// `hello.build` (§3.2): identifies the exact build a worker runs, since a
+/// different build or indexer version can produce a different map for the
+/// same `(slug, commit)` (§3.6, "build identity is a scheduling
+/// constraint"). The master only assigns jobs to agents whose `build`
+/// matches its own.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct WorkerBuild {
+    pub version: String,
+    pub commit: String,
+    pub indexers: BTreeMap<String, String>,
+}
+
+/// `hello.class` (§3.2): the worker host's capacity, used for scheduling.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct WorkerClass {
+    pub memory_bytes: u64,
+    pub cpus: u32,
+}
+
+/// One entry of `hello.resume[]` (§3.2, §3.5): a job this worker still holds
+/// across a reconnect, so the master can answer `continue` or `cancel`.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct ResumeEntry {
+    pub job_id: String,
+    pub epoch: u64,
+    pub last_seq: u64,
+}
+
+/// One entry of `heartbeat.jobs[]` (§3.2): distinct from `ResumeEntry`
+/// because the two tables describe different frames, even though today
+/// their fields coincide.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct HeartbeatJob {
+    pub job_id: String,
+    pub epoch: u64,
+    pub last_seq: u64,
+}
+
+/// `released.reason` (§3.2): why the agent stopped a job and freed its
+/// memory. A worker-originated set, distinct from `CancelReason` -- `oom`
+/// and `worker_stopping` never arrive as a reason to cancel, since the
+/// master does not originate them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleasedReason {
+    Cancelled,
+    LeaseLost,
+    ServerStopping,
+    Reroute,
+    WorkerStopping,
+    Oom,
+}
+
+/// `cancel.reason` (§3.2): why the master is stopping a job now. A
+/// master-originated set, distinct from `ReleasedReason`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelReason {
+    Cancelled,
+    LeaseLost,
+    ServerStopping,
+    Reroute,
+}
+
+/// `shutdown.mode` (§3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ShutdownMode {
+    Drain,
+    Now,
+}
+
+/// `welcome.resume[].action` (§3.2, §3.5): whether the master still honours
+/// a job the worker reported holding in its `hello`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeAction {
+    Continue,
+    Cancel,
+}
+
+/// One entry of `welcome.resume[]` (§3.2, §3.5).
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct WelcomeResume {
+    pub job_id: String,
+    pub action: ResumeAction,
+    pub acked_seq: u64,
+}
+
+/// One entry of `assign.inputs.previous_maps[]` (§3.3): the same shape as
+/// `PreviousMap`, but a fetchable URL rather than a local path, since only
+/// `JobSpec` and its input URLs cross the network.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct PreviousMapUrl {
+    pub branch: Option<String>,
+    pub url: String,
+}
+
+/// `assign.inputs` (§3.3): the input URLs a remote agent downloads before it
+/// can write the job child's own `WorkerSpec`.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct AssignInputs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub names_cache: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_maps: Vec<PreviousMapUrl>,
+}
+
+/// A session message a worker agent sends the master (§3.1, §3.2). Not
+/// exported to TypeScript: the web client never opens this channel, only
+/// `tolmap-agent` does, so there is nothing here for `generate-types` to
+/// give it.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkerMessage {
+    Hello {
+        proto_min: u32,
+        proto_max: u32,
+        worker_id: String,
+        build: WorkerBuild,
+        class: WorkerClass,
+        slots: u32,
+        features: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resume: Vec<ResumeEntry>,
+    },
+    Ready {
+        slots_free: u32,
+    },
+    JobEvent {
+        job_id: String,
+        epoch: u64,
+        seq: u64,
+        event: WorkerEvent,
+    },
+    Heartbeat {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        jobs: Vec<HeartbeatJob>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rss_bytes: Option<u64>,
+    },
+    Released {
+        job_id: String,
+        epoch: u64,
+        reason: ReleasedReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peak_rss_bytes: Option<u64>,
+    },
+    Draining,
+}
+
+/// A session message the master sends a worker agent (§3.1, §3.2). Not
+/// exported to TypeScript, for the same reason as `WorkerMessage`.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MasterMessage {
+    Welcome {
+        proto: u32,
+        heartbeat_s: u64,
+        lease_ttl_s: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resume: Vec<WelcomeResume>,
+    },
+    Assign {
+        job_id: String,
+        epoch: u64,
+        lease_ttl_s: u64,
+        job: JobSpec,
+        inputs: AssignInputs,
+        outputs: String,
+    },
+    LeaseRenewed {
+        job_id: String,
+        epoch: u64,
+        expires_in_s: u64,
+        acked_seq: u64,
+    },
+    Cancel {
+        job_id: String,
+        epoch: u64,
+        reason: CancelReason,
+    },
+    ResultAccepted {
+        job_id: String,
+        epoch: u64,
+        reason: String,
+    },
+    ResultRejected {
+        job_id: String,
+        epoch: u64,
+        reason: String,
+    },
+    Shutdown {
+        mode: ShutdownMode,
+        reason: String,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 pub fn run_stdio() -> Result<()> {
@@ -428,6 +792,9 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         files: document.files.len(),
         districts: document.districts.len(),
         modularity: document.q,
+        // The job child never uploads; only a remote agent forwarding this
+        // event fills `artifacts` in (a sibling PR).
+        artifacts: Vec::new(),
     })
 }
 
@@ -489,5 +856,323 @@ mod tests {
             serde_json::to_value(event).unwrap(),
             serde_json::to_value(decoded).unwrap()
         );
+    }
+
+    fn round_trips<T: Serialize + for<'de> Deserialize<'de>>(value: &T) -> serde_json::Value {
+        let decoded: T = serde_json::from_slice(&serde_json::to_vec(value).unwrap()).unwrap();
+        let original = serde_json::to_value(value).unwrap();
+        assert_eq!(original, serde_json::to_value(decoded).unwrap());
+        original
+    }
+
+    fn sample_job_spec() -> JobSpec {
+        JobSpec {
+            slug: "django/django".to_owned(),
+            owner: "django".to_owned(),
+            repo: "django".to_owned(),
+            source: "https://github.com/django/django.git".to_owned(),
+            local: false,
+            commit: "a".repeat(40),
+            all_sources: false,
+            prune_variant: "node-relative".to_owned(),
+            namer: "idf".to_owned(),
+            namer_model: String::new(),
+            refs: Some("hand".to_owned()),
+            install: None,
+        }
+    }
+
+    /// Every `WorkerMessage` variant round-trips through JSON unchanged.
+    #[test]
+    fn worker_message_variants_round_trip() {
+        round_trips(&WorkerMessage::Hello {
+            proto_min: 1,
+            proto_max: 1,
+            worker_id: "w-1".to_owned(),
+            build: WorkerBuild {
+                version: "0.1.0".to_owned(),
+                commit: "b".repeat(40),
+                indexers: BTreeMap::from([("scip-python".to_owned(), "0.6.6".to_owned())]),
+            },
+            class: WorkerClass {
+                memory_bytes: 8_000_000_000,
+                cpus: 4,
+            },
+            slots: 2,
+            features: vec![
+                FEATURE_RESUME.to_owned(),
+                FEATURE_INSTALL_SANDBOX.to_owned(),
+            ],
+            resume: vec![ResumeEntry {
+                job_id: "job-1".to_owned(),
+                epoch: 1,
+                last_seq: 12,
+            }],
+        });
+        round_trips(&WorkerMessage::Ready { slots_free: 2 });
+        round_trips(&WorkerMessage::JobEvent {
+            job_id: "job-1".to_owned(),
+            epoch: 1,
+            seq: 1,
+            event: WorkerEvent::StageStarted {
+                v: 1,
+                stage: StageId::Clone,
+            },
+        });
+        round_trips(&WorkerMessage::Heartbeat {
+            jobs: vec![HeartbeatJob {
+                job_id: "job-1".to_owned(),
+                epoch: 1,
+                last_seq: 12,
+            }],
+            rss_bytes: Some(1_000_000),
+        });
+        round_trips(&WorkerMessage::Released {
+            job_id: "job-1".to_owned(),
+            epoch: 1,
+            reason: ReleasedReason::Oom,
+            peak_rss_bytes: Some(2_000_000),
+        });
+        round_trips(&WorkerMessage::Draining);
+    }
+
+    /// Every `MasterMessage` variant round-trips through JSON unchanged.
+    #[test]
+    fn master_message_variants_round_trip() {
+        round_trips(&MasterMessage::Welcome {
+            proto: PROTO,
+            heartbeat_s: 15,
+            lease_ttl_s: 60,
+            resume: vec![WelcomeResume {
+                job_id: "job-1".to_owned(),
+                action: ResumeAction::Continue,
+                acked_seq: 3,
+            }],
+        });
+        round_trips(&MasterMessage::Assign {
+            job_id: "job-1".to_owned(),
+            epoch: 1,
+            lease_ttl_s: 60,
+            job: sample_job_spec(),
+            inputs: AssignInputs {
+                names_cache: Some("https://master/artifacts/names".to_owned()),
+                previous_maps: vec![PreviousMapUrl {
+                    branch: Some("main".to_owned()),
+                    url: "https://master/artifacts/prev".to_owned(),
+                }],
+            },
+            outputs: "https://master/workers/artifacts/job-1/1".to_owned(),
+        });
+        round_trips(&MasterMessage::LeaseRenewed {
+            job_id: "job-1".to_owned(),
+            epoch: 1,
+            expires_in_s: 60,
+            acked_seq: 3,
+        });
+        round_trips(&MasterMessage::Cancel {
+            job_id: "job-1".to_owned(),
+            epoch: 1,
+            reason: CancelReason::Reroute,
+        });
+        round_trips(&MasterMessage::ResultAccepted {
+            job_id: "job-1".to_owned(),
+            epoch: 1,
+            reason: "ok".to_owned(),
+        });
+        round_trips(&MasterMessage::ResultRejected {
+            job_id: "job-1".to_owned(),
+            epoch: 1,
+            reason: "digest mismatch".to_owned(),
+        });
+        round_trips(&MasterMessage::Shutdown {
+            mode: ShutdownMode::Drain,
+            reason: "rolling upgrade".to_owned(),
+        });
+        round_trips(&MasterMessage::Error {
+            code: "unsupported_proto".to_owned(),
+            message: "no proto overlap".to_owned(),
+        });
+    }
+
+    #[test]
+    fn an_unknown_optional_field_is_ignored() {
+        let message: WorkerMessage = serde_json::from_str(
+            r#"{"type":"ready","slots_free":3,"a_field_from_the_future":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(message, WorkerMessage::Ready { slots_free: 3 }));
+    }
+
+    #[test]
+    fn an_unknown_type_fails_to_parse() {
+        assert!(serde_json::from_str::<WorkerMessage>(r#"{"type":"bogus"}"#).is_err());
+        assert!(serde_json::from_str::<MasterMessage>(r#"{"type":"bogus"}"#).is_err());
+    }
+
+    /// The v1 `WorkerEvent` stream parses unchanged inside `job_event`: the
+    /// envelope adds `job_id`/`epoch`/`seq` around it but does not reshape
+    /// the event itself.
+    #[test]
+    fn a_v1_worker_event_parses_unchanged_inside_job_event() {
+        let event = WorkerEvent::StageFinished {
+            v: 1,
+            stage: StageId::Detect,
+            duration_s: 1.5,
+            success: true,
+        };
+        let wrapped = WorkerMessage::JobEvent {
+            job_id: "job-1".to_owned(),
+            epoch: 2,
+            seq: 5,
+            event: event.clone(),
+        };
+        let value = serde_json::to_value(&wrapped).unwrap();
+        assert_eq!(value["event"], serde_json::to_value(&event).unwrap());
+        let WorkerMessage::JobEvent {
+            event: decoded_event,
+            ..
+        } = serde_json::from_value::<WorkerMessage>(value).unwrap()
+        else {
+            panic!("expected a job_event");
+        };
+        assert_eq!(
+            serde_json::to_value(decoded_event).unwrap(),
+            serde_json::to_value(&event).unwrap()
+        );
+    }
+
+    /// Adding `artifacts` must not move a single byte of a result that does
+    /// not use it: the literal is what a v1-only consumer parsed before this
+    /// field existed.
+    #[test]
+    fn a_result_without_artifacts_serializes_exactly_as_before() {
+        let event = WorkerEvent::Result {
+            v: 1,
+            map_path: "output/django.json".to_owned(),
+            symbols_path: "output/django.symbols.json".to_owned(),
+            symbols_dir: "output/django.symbols".to_owned(),
+            names_cache: "output/django.names.json".to_owned(),
+            commit: "a".repeat(40),
+            branch: Some("main".to_owned()),
+            lang: "py".to_owned(),
+            files: 851,
+            districts: 12,
+            modularity: 0.5061,
+            artifacts: Vec::new(),
+        };
+        let literal = concat!(
+            r#"{"type":"result","v":1,"map_path":"output/django.json","#,
+            r#""symbols_path":"output/django.symbols.json","#,
+            r#""symbols_dir":"output/django.symbols","#,
+            r#""names_cache":"output/django.names.json","#,
+            r#""commit":""#,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            r#"","branch":"main","lang":"py","files":851,"#,
+            r#""districts":12,"modularity":0.5061}"#,
+        );
+        assert_eq!(serde_json::to_string(&event).unwrap(), literal);
+        // And the reverse: a pre-artifacts line on the wire still parses,
+        // with an empty `artifacts`.
+        let decoded: WorkerEvent = serde_json::from_str(literal).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            serde_json::to_value(&event).unwrap()
+        );
+    }
+
+    /// A `WorkerSpec` built today by the service (`src/service/jobs.rs`'s
+    /// local dispatch) round-trips through `JobSpec` + `LocalInputs` to an
+    /// equal `WorkerSpec`, split by hand here the way a future caller would.
+    #[test]
+    fn a_worker_spec_round_trips_through_job_spec_and_local_inputs() {
+        let original = WorkerSpec {
+            v: 1,
+            slug: "django/django".to_owned(),
+            owner: "django".to_owned(),
+            repo: "django".to_owned(),
+            source: "/work/checkout".to_owned(),
+            local: true,
+            all_sources: false,
+            cache_dir: "/work/cache".to_owned(),
+            output_dir: "/work/output".to_owned(),
+            clone_cache_bytes: 20_000_000_000,
+            prune_variant: "node-relative".to_owned(),
+            namer: "idf".to_owned(),
+            namer_model: "gpt".to_owned(),
+            previous_maps: vec![PreviousMap {
+                branch: Some("main".to_owned()),
+                path: "/work/maps/main.json".to_owned(),
+            }],
+            names_cache: Some("/work/names.json".to_owned()),
+            refs: Some("scip".to_owned()),
+            install: Some("sandbox".to_owned()),
+        };
+        let job = JobSpec {
+            slug: original.slug.clone(),
+            owner: original.owner.clone(),
+            repo: original.repo.clone(),
+            source: original.source.clone(),
+            local: original.local,
+            commit: "c".repeat(40),
+            all_sources: original.all_sources,
+            prune_variant: original.prune_variant.clone(),
+            namer: original.namer.clone(),
+            namer_model: original.namer_model.clone(),
+            refs: original.refs.clone(),
+            install: original.install.clone(),
+        };
+        let local = LocalInputs {
+            cache_dir: original.cache_dir.clone(),
+            output_dir: original.output_dir.clone(),
+            clone_cache_bytes: original.clone_cache_bytes,
+            previous_maps: original.previous_maps.clone(),
+            names_cache: original.names_cache.clone(),
+        };
+        let rebuilt = job.to_worker_spec(local);
+        assert_eq!(
+            serde_json::to_value(&original).unwrap(),
+            serde_json::to_value(&rebuilt).unwrap()
+        );
+    }
+
+    #[test]
+    fn negotiate_picks_the_highest_common_version() {
+        assert_eq!(negotiate((1, 3), (2, 5)), Ok(3));
+        assert_eq!(negotiate((1, 5), (1, 1)), Ok(1));
+        assert_eq!(negotiate((1, 1), (1, 1)), Ok(1));
+    }
+
+    #[test]
+    fn negotiate_fails_with_no_overlap() {
+        assert_eq!(negotiate((1, 2), (3, 4)), Err(UnsupportedProto));
+        assert_eq!(negotiate((3, 4), (1, 2)), Err(UnsupportedProto));
+        assert_eq!(UnsupportedProto.to_string(), "unsupported_proto");
+    }
+
+    #[test]
+    fn artifact_names_are_the_fixed_three_or_a_digits_only_district_file() {
+        for name in [
+            "map",
+            "symbols",
+            "names",
+            "symbols_dir/0.json",
+            "symbols_dir/12345.json",
+        ] {
+            assert!(is_valid_artifact_name(name), "{name} should be valid");
+        }
+        for name in [
+            "symbols_dir",
+            "symbols_dir/",
+            "symbols_dir/0",
+            "symbols_dir/0.json.bak",
+            "symbols_dir/0a.json",
+            "symbols_dir/../map",
+            "symbols_dir/0.json/extra",
+            "unknown",
+            "",
+            "map/",
+        ] {
+            assert!(!is_valid_artifact_name(name), "{name} should be invalid");
+        }
     }
 }
