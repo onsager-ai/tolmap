@@ -81,6 +81,7 @@ A request names a repository three ways:
   `local/<basename>`, so `/tmp/tolmap-fixtures/flask` becomes `local/flask`.
 
 Every repository has a canonical `slug` of the form `owner/repo`.
+An `owner` or `repo` of `.` or `..`, or one holding a `/` or `\`, is rejected with `invalid_request`.
 `owner`/`repo` are lowercased on input (GitHub treats them
 case-insensitively, so `Owner/Repo` and `owner/repo` must resolve to the
 same cache entry rather than being cloned and indexed twice -- see
@@ -217,6 +218,7 @@ starts. Stage IDs are stable, in pipeline order; clone sub-stages may start
 more than once during a fetch and checkout. Repeated stage durations are
 summed in `stages`. A child that exits without a result or error event
 fails the job with `worker_crashed`, including its exit status and last stage.
+A result the service does not accept (see "Worker isolation") fails the job with `invalid_worker_result`.
 `stage` is a short
 free-text description of what is happening right now (e.g. `"cloning
 github.com/django/django"`, `"indexing (partition)"`) -- it is for display,
@@ -307,6 +309,8 @@ slug, or that commit of it, has never been indexed.
 ## Worker isolation
 
 The `tolmap worker` child every index job spawns (`src/service/jobs.rs::process_worker_exe`) runs as an unprivileged `tolmap-worker` user (fixed uid/gid `10001:10001`, baked into the runtime image as `TOLMAP_WORKER_UID`/`TOLMAP_WORKER_GID` — see the Dockerfile's runtime stage), with an empty environment plus a short explicit allowlist (`PATH`, `LANG`, the `TOLMAP_NAMER_*` budget/ledger knobs, the `TOLMAP_SCIP_*` indexer locations in the configuration table above, and `OPENROUTER_API_KEY` only when `TOLMAP_NAMER=model`), and its own per-job directory instead of the shared `cache_dir` — see that function's doc comments for the full reasoning. The shared clone cache under `cache_dir/repos` is still fetched/updated and reused across jobs for the same repo; the service (at its own uid) does that clone/fetch itself and then hands the worker a fresh, non-hardlinked local-clone copy in its own job directory (`service::jobs::run_blocking`, `service::clone::local_clone_into`) rather than the shared cache directory itself. The uid switch only applies when the service itself runs as root, which is the runtime image's case (no `USER` in the Dockerfile, deliberately); locally and in CI the service is not root, so the worker runs as the current user.
+
+The service validates the worker's result before storing it: the commit id must be a git object id (40 or 64 lowercase hex digits) equal to the commit of the service's own checkout, and every file it takes must be a regular file (a directory of regular files for the district symbols) at the expected name inside the job's output directory, with symlinks refused. The stored commit and branch are the service's own. The service chowns the job directory to the worker without following symlinks.
 
 ### Dependency installs (issue #110 P1c)
 
