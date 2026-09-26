@@ -2261,3 +2261,153 @@ Renames, matched through the parity gate's district matching:
 - Whether evaluating `//go:build` constraints would narrow the 100 ambiguous imports without guessing. That is a follow-up.
 - `data/ci/synthetic_polyglot.graph.json` was not re-dumped. It is a pre-extracted graph that `gate` only runs through `build --graph`, and no parity check reads it. The synthetic polyglot fixture's live build (determinism, `polyglot-report` ceilings) passed under the new resolver in `gate`.
 - `eval/batch_stability.py` was not run. It imports the frozen Python reference, which has no Go, as in findings 23 and 49. The placement above is the churn measurement.
+
+## 51. Following a TypeScript import through barrel re-exports raises vue's use-pair recall against SCIP from 0.59 to 0.94 and loses no pair SCIP confirms by a use; vue moves outside its noise band, towards SCIP's districts
+
+Owner decisions, session `16030105`, AskUserQuestion: transcript line 6937 (2026-09-25T16:56:34Z) **"Tune hand, SCIP as oracle (Recommended)"**; (2026-09-26) **"Uses only: merge both (Recommended)"**, which defines a reference edge as a name being used; and (2026-09-26) **"TypeScript gap first"**. `hand` stays the default. This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s TypeScript follow-up to findings 49 and 50, [PR #134](https://github.com/onsager-ai/tolmap/pull/134).
+
+Finding 48's job had vue at 0.5851 recall against SCIP's use pairs: 658 of SCIP's 1,586 use pairs were missing from hand's 1,186 pairs. (Finding 47's 673 is the undirected count of all SCIP-only pairs; this finding counts directed use pairs, as findings 48–50 do.)
+
+### Diagnosis, before any change
+
+[CI run 36209784696](https://github.com/onsager-ai/tolmap/actions/runs/36209784696), job `hand-score`, at `bc574c4`. The graph is main's: the hand fingerprint equals the baseline's, and `full-fixtures` placed 9/9 at 100.0%. The resolver's new report (`TOLMAP_TS_IMPORT_REPORT`, below) supplies each import's resolution. `eval/hand_score.py` classifies every SCIP use pair hand lacks, in this order:
+
+| class | vue | what it is |
+|---|---:|---|
+| barrel, followed | 565 | following the importer's names through `export { x } from`, `export *` or import-then-export reaches the target |
+| barrel, not followed | 29 | the importer imports an `index.ts` that passes the target on, but no name it takes leads there (28 of the 29 imports did follow other names elsewhere) |
+| unresolved relative import | 0 | |
+| unresolved workspace or alias import | 0 | |
+| ambient or global (`.d.ts`, script files, `declare global`) | 0 | `packages/global.d.ts` is not in the mapped set |
+| inferred type (two import hops) | 42 | |
+| other | 22 | |
+| **all** | **658** | |
+
+The brief's other candidate classes are not there:
+- **Type-only imports are already counted.** 275 of vue's 1,342 module specifiers are type-only, and `typescript_imports` has always read `import type` and `import { type X }`, because they are `import_statement`s with a `source`. Following names applies to them like any other import: 23 of the 565 and 10 of the 29 are reached only through `import type`.
+- **`paths` aliases and workspace names already resolve** (findings 15 and 42). All 82 unresolved specifiers are external packages (`@babel/parser`, `entities/decode`, `lru-cache`, `path`) or built output (`../dist/...`). None names a mapped file.
+
+Hand-only pairs were 3. All three come from `packages/reactivity/__benchmarks__`, whose six files scip-typescript never indexes, because they are outside the root `tsconfig.json`'s `include`.
+
+### What changed
+
+`src/extract.rs`, in `parse_files` and `parse_multi`:
+- **What each statement takes.** `typescript_import_statements` walks the tree exactly as `typescript_imports` did, so the specifiers are unchanged. It also records the names each statement takes, by their exported name: `import { a as b }` takes `a`, a default import takes `default`, and `export { a } from` takes `a`. A namespace import, a side-effect import, `export *`, `export * as ns`, `require()` and `import()` take no named names.
+- **What each file exports.** `typescript_exports` reads top-level `export` statements only; exports inside `declare module 'x' {}` describe another module. It collects:
+  - the names a file declares itself;
+  - `export { x as y } from`, `export * as ns from`, and import-then-export (`import { x } from './m'; export { x }`) as bindings to a specifier;
+  - `export *` specifiers.
+  A destructuring export, `export =` and unknown shapes mark the file opaque.
+- **Following a name** (`TsExportTable::follow`):
+  - A name the module declares credits the module.
+  - A binding is followed to its source.
+  - A name no binding covers is followed through the one `export *` that binds it.
+  - Chains go up to four hops, the depth of `PYTHON_REEXPORT_HOPS` and `symbols::lookup`.
+  - It gives up, and the module the specifier resolved to stays linked exactly as before, when the name:
+    - comes from outside the parsed set, including through a star re-export from an external package;
+    - is bound twice to different places;
+    - is bound by two star re-exports (ECMAScript leaves that ambiguous, not exported);
+    - passes through an opaque file;
+    - is not exported visibly at all.
+  - `export *` never passes on `default`.
+  - A statement that takes no named names keeps the module.
+  - An uncertain chain therefore never creates a pair of its own: finding 49's celery lesson.
+- **Weight.** One import keeps its mass of 1, shared among the files it links, as Go's narrowing does (finding 50). The alternative, 1 per defining file, is what a direct import of each file would weigh and what Python's re-exports do (finding 49). It was measured and rejected; see the churn section below.
+- **Unchanged:** `S` and `U` (`typescript_named` still feeds the symbol uses; `full-fixtures` reports both identical on vue), Python, Go, and SCIP admission, which compares TypeScript by file. There is no schema change and no new dependency. The two new `FileRaw::Multi` fields are internal. Everything iterates BTreeMaps and sorted vectors. `binds`'s memo is keyed by depth, so no answer depends on the order of queries.
+
+**Eval additions.**
+- `TOLMAP_TS_IMPORT_REPORT=<dir>` writes one row per module specifier: where it resolved, the outcome of following it, and the files the followed names reach.
+- `eval/hand_score.py` adds the TypeScript block described in its docstring: import outcomes, the pair sets by resolution and by following (each checked against the hand graph and scored against SCIP), the pair-by-pair change, the classes above with member-only and type-only cross-cuts, and hand-only classes (`source not indexed`, `followed`, `other`).
+- `hand_score.py ts-variants` rebuilds the static signal from the report under both weightings, for `tolmap build --graph`.
+- Every fixture's hand map is also placed against its SCIP fixture.
+- `eval/scip_ingest.py` records `use_pair_symbols` (up to three symbols per use pair) and `unindexed_lang_files`, both outside its fingerprint. Its self-test now runs in `hand-score`.
+
+### Before and after, against SCIP
+
+vue's TypeScript, finding 48's job. Before is run 36209784696 at `bc574c4`. After is [CI run 36212421647](https://github.com/onsager-ai/tolmap/actions/runs/36212421647) at `2ac35da`. The before run's report-based prediction ("followed") matched the after run's graph pair for pair.
+
+| | before | after |
+|---|---:|---:|
+| hand pairs | 1,186 | 1,531 |
+| shared by a use (of 1,586 SCIP use pairs) | 928 | **1,493** |
+| recall, uses | 0.5851 | **0.9414** |
+| precision, uses | 0.7825 | **0.9752** |
+| shared (of 1,911 SCIP pairs) | 1,183 | 1,527 |
+| recall, all | 0.6190 | 0.7991 |
+| precision, all (the product gate's recall) | 0.9975 | 0.9974 |
+| shared only through a namespace (to a package) | 255 (233) | 34 (12) |
+| hand-only | 3 | 4 |
+| SCIP-only | 728 | 384 |
+
+The change, pair by pair:
+
+| pairs removed | of them SCIP has | of them SCIP has by a use | pairs added | added, SCIP has by a use | added, SCIP lacks |
+|---:|---:|---:|---:|---:|---:|
+| 224 | 221 | **0** | 569 | 565 | 4 |
+
+- **No pair SCIP confirms by a use is lost.** The 221 removed pairs SCIP has are importer → `index.ts` pairs that only a module symbol supports: the import statement naming the package. This is finding 49's namespace case.
+- **The 4 added pairs SCIP lacks all come from the unindexed `__benchmarks__` files** (hand-only `source not indexed`: 4, `followed`: 0, `other`: 0). SCIP has no pairs from those files at all, so they are not evidence either way.
+- **The gate did not change.** `hand-score` passed against the committed baseline: TypeScript's `shared_uses` rose (928 → 1,493), and the gated over-attribution classes stayed at 0. The only baseline change is vue's row, now lowered to these numbers. Every other row, and every SCIP fingerprint, is unchanged.
+
+Specifier outcomes (1,342):
+- 942 are `defined_here`: every name is declared in the module the specifier resolves to.
+- 278 are `followed`.
+- 40 are `opaque`: 23 are the barrels' own `export *` lines, and the rest are namespace imports.
+- 82 are `unresolved`.
+- None are `uncertain` or `partly_followed`.
+
+### What is left
+
+After the change, 93 SCIP use pairs are still missing:
+
+| class | pairs | member only |
+|---|---:|---:|
+| barrel, not followed | 29 | 29 |
+| inferred type | 61 | 61 |
+| other | 3 | 0 |
+
+- **90 of the 93 are member-only**: SCIP supports them only through a method, field or enum member reached on a value. Examples are `ErrorHandlingOptions#onError`, `AppContext#config` and `DeprecationTypes#TRANSITION_GROUP_ROOT`, the last reached through runtime-core's `export const DeprecationTypes = ... as typeof _DeprecationTypes`. This is Go's `member via value` (finding 50). The importer never names the member's type, so crediting its file means inferring types, which the brief rules out.
+  - "inferred type" grows from 42 to 61 because 19 of the 22 former "other" pairs now have a two-hop path.
+- **The other 3 are module augmentation.** An example is `declare module '@vue/reactivity' { interface RefUnwrapBailTypes }` in `runtime-core/src/index.ts` and `runtime-dom/src/index.ts`, which SCIP credits to the augmenting file from `reactivity/src/ref.ts`. Syntax could see these, but they are declaration merging, not imports, and three pairs did not justify a rule here.
+
+### District churn and re-derivation
+
+vue's hand map against the committed fixture, and against the SCIP fixture (`data/scip/vue.json`, the `--refs scip` map at the same pin). Both weightings were partitioned by the product from the dumped graph (`ts-variants`). `share` places 100.0% against the job's own map, which checks the construction. Runs 36211438405 (per-file as the product, at `b6fdad6`) and 36212421647 (share as the product) give identical tables.
+
+| static weight | districts | q | vs old fixture | vs SCIP fixture |
+|---|---:|---:|---|---|
+| old fixture | 8 | 0.5389 | | 74.5%, Δq 0.0650 |
+| 1 per defining file | 7 | 0.5005 | 73.2%, Δq 0.0384 | 84.5%, Δq 0.0266 |
+| **shared (shipped)** | 7 | 0.5058 | **87.0%**, Δq 0.0331 | **86.6%**, Δq 0.0319 |
+
+- **vue moves outside its noise band.** Finding 47's bands for vue are 95.8–100% for node order and 87.4–95.8% for random pairs. The shipped map places 87.0% (208 of 239), below both. Δq is 0.0331, above the 0.02 gate. This is a structural change, as SCIP's was: finding 47 found vue the one fixture where SCIP's pairs move the districts beyond noise.
+- **It moves towards the oracle's districts.** Placement against the SCIP fixture rises from 74.5% to 86.6%, and Δq falls from 0.0650 to 0.0319. Placement measures agreement, not correctness, but the change closes about half of the old gap to SCIP's partition.
+- **Why sharing, not 1 per file.** Per-file weighting moves 33 more files (73.2%) and agrees slightly less with SCIP (84.5% against 86.6%). That was the first version of the fix; the variants measured it, and the weighting was changed to sharing. Sharing also keeps each import statement's mass where it was.
+- **What moved.** The 28-file "ssr compiler" district merges into "compiler-core", which becomes "compiler-core & transforms" (64 files, Jaccard 0.55). Every other district matches at 0.94–1.00:
+
+| previous name | re-derived name | Jaccard |
+|---|---|---:|
+| test runtime | test runtime | 1.00 |
+| compat & runtime-core | compat & runtime-core | 1.00 |
+| reactivity | reactivity | 1.00 |
+| runtime-core | runtime-core | 0.98 |
+| sfc compiler | compiler-sfc | 0.97 |
+| runtime-dom & server-renderer | runtime-dom & server-renderer | 0.94 |
+| compiler-core | compiler-core & transforms | 0.55 |
+| ssr compiler (28 files) | (unmatched, merged into the row above) | |
+
+"sfc compiler" → "compiler-sfc" at Jaccard 0.97 is the product namer's output under the seeded cache. It is recorded here rather than hand-edited, as in findings 49 and 50.
+
+**Re-derivation.**
+- Placement is below 95% and Δq above 0.02, so vue is re-derived, by finding 49's route.
+- `data/vue.json` is the map from run 36212421647's `hand-score` job: the full-history clone, with its naming cache seeded from the committed map. It keeps the committed fixture's key set.
+- `F`, `S` and `U` are identical to the old fixture. `E` goes from 1,186 to 1,531 and `L` from 12 to 11.
+- `data/fixtures.toml` marks it `generator = "rust-ts-reexports"`. httpx is now the only frozen-Python-reference fixture.
+- `data/scip/vue.json` is re-recorded from the same run's `scip-fixtures` `record/` artifact. Only its recorded hand pair count (1,186 → 1,531) and gate recall (0.9975 → 0.9974) change. The SCIP map placed 100.0%, Δq 0.0000, in the same run.
+- The synthetic TypeScript fixtures do not change by construction. `module_resolution`'s imports are all side-effect imports (opaque), and `synthetic_polyglot`'s named imports name files that declare those names (`defined_here`). The `gate` job's polyglot determinism and ceiling checks passed.
+
+### Not verified
+- The 29 "barrel, not followed" and 61 "inferred type" pairs were read only through the job's samples (12 per class). The member-only count, from the ingest's descriptors, covers all 90.
+- Whether a rule for module augmentation (the 3 "other" pairs) would hold beyond vue.
+- vue is the only TypeScript fixture, so the effect on larger TypeScript monorepos (n8n, dify's `web/`) was not measured.
+- `eval/batch_stability.py` was not run. It imports the frozen Python reference, which does not follow re-exports, as in findings 23, 49 and 50. The placements above are the churn measurement.
