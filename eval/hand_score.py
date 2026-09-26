@@ -142,6 +142,21 @@ when followed through `export ... from` and `export *`):
   the alternative finding 51 measured). Each is placed against the job's
   map, the committed fixture and the SCIP fixture.
 
+For Python the row also carries `py` (finding 53), from the resolver's own
+per-statement report (`TOLMAP_PY_IMPORT_REPORT`, written by `dump-graph
+--refs hand`): the files each import statement linked before module objects
+and ordinary-module re-exports were followed, and the files it links now.
+- `module_object_outcomes`: each module a statement binds as an object
+  (`from .. import util`, `import a.b as s`): `narrowed` (every `util.x`
+  credited to another file), `partly`, `defined_here`, `uncertain`,
+  `unused` (no attribute use), `value` (also used bare), `ambiguous`
+  (bound more than once); the last four keep the module, as before.
+- `before` / `after`: each pair set scored against SCIP, with its hand-only
+  classes, from one run. `before`'s fingerprint should equal the committed
+  baseline's `hand_fingerprint`, which checks that it is main's graph;
+  `hand_is_after` checks `after` against the dumped graph.
+- `change`: `after` against `before`, pair by pair, as TypeScript's.
+
 A fixed-seed sample (`random.Random(SEED)`) of up to SAMPLE rows per class
 is kept; the class counts are over every pair.
 
@@ -175,6 +190,7 @@ TS_SCIP_CLASSES = ("barrel, followed", "barrel, not followed", "unresolved relat
                    "unresolved workspace or alias import", "ambient or global", "inferred type", "other")
 TS_HAND_CLASSES = ("source not indexed", "followed", "other")
 TS_OUTCOMES = ("defined_here", "followed", "partly_followed", "uncertain", "opaque", "no_names", "unresolved")
+PY_OUTCOMES = ("narrowed", "partly", "defined_here", "uncertain", "unused", "value", "ambiguous")
 # The classes that are hand over-attributing to a package: each such pair
 # claims a dependency on a file whose own content is not what is used. They
 # may only go down (CLAUDE.md: numbers must be a lower bound).
@@ -502,7 +518,7 @@ def sample(rows: list[dict]) -> list[dict]:
 
 def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | None, ingest: dict,
                    py: PythonFiles | None, ts_report: list[list] | None = None,
-                   ts_sources: TsSources | None = None) -> dict:
+                   ts_sources: TsSources | None = None, py_report: list[list] | None = None) -> dict:
     lang_of = {n["file"]: n.get("lang") or hand_graph["lang"] for n in hand_graph["nodes"]}
     hand = {(a, b) for a, b, _ in hand_graph["imports"] if a != b and lang_of.get(a) == lang}
     scip = {(a, b) for a, b, *_ in ingest["file_edges"] if a != b and lang_of.get(a) == lang}
@@ -585,6 +601,8 @@ def score_language(name: str, lang: str, hand_graph: dict, scip_graph: dict | No
         row["go"] = {"file_gap": {"use_pairs": len(gap), "member_only": len(gap) - len(named),
                                   "named": len(named), "named_samples": sample(named)},
                      "member_only_available": "member_only_use_pairs" in ingest}
+    if lang == "py" and py_report is not None:
+        row["py"] = score_py(lang_of, hand, scip, scip_uses, py_report, py, scip_targets)
     if lang == "ts":
         symbols = {(a, b): names for a, b, names in ingest.get("use_pair_symbols", [])}
         row["ts"] = score_ts(lang_of, hand, scip, scip_uses, hand_targets, ts_report,
@@ -835,6 +853,81 @@ def score_ts(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: 
 TS_VARIANTS = ("share", "per-file")
 
 
+def load_py_report(work: Path) -> list[list] | None:
+    """The Python resolver's own rows (finding 53): [file, statement index,
+    files linked before module objects and ordinary-module re-exports were
+    followed, files linked now, module objects: [local name, module file,
+    outcome, attributes used, attributes whose chain was uncertain]]."""
+    reports = sorted(work.glob("py-imports.*.json"))
+    if not reports:
+        return None
+    return [row for path in reports for row in load(path)]
+
+
+def score_py(lang_of: dict, hand: set, scip: set, scip_uses: set, report: list[list] | None,
+             py: PythonFiles | None, scip_targets: dict) -> dict:
+    """Finding 53's block: both graphs of one binary, from its report.
+
+    `before` is what main's resolver linked (packages only, no module
+    objects), `after` what this one links. Each is checked, and scored
+    against SCIP here, so the before and after numbers come from one run
+    and one oracle. `before_fingerprint` should equal the committed
+    baseline's `hand_fingerprint` (main's graph): that is the check that
+    `before` really is main's resolution.
+    """
+    if report is None:
+        return {"report": False}
+    before = {(r[0], t) for r in report for t in r[2] if lang_of.get(r[0]) == "py" and t != r[0]}
+    after = {(r[0], t) for r in report for t in r[3] if lang_of.get(r[0]) == "py" and t != r[0]}
+
+    def ratio(x, y):
+        return round(x / y, 4) if y else None
+
+    def scores(pairs):
+        targets = defaultdict(set)
+        for a, b in pairs:
+            targets[a].add(b)
+        classes = Counter(classify_hand_only("py", a, b, scip_targets[a], targets, py)[0]
+                          for a, b in sorted(pairs - scip))
+        return {"pairs": len(pairs), "shared": len(pairs & scip), "shared_uses": len(pairs & scip_uses),
+                "recall": ratio(len(pairs & scip), len(scip)), "precision": ratio(len(pairs & scip), len(pairs)),
+                "recall_uses": ratio(len(pairs & scip_uses), len(scip_uses)),
+                "precision_uses": ratio(len(pairs & scip_uses), len(pairs)),
+                "hand_only_by_class": {c: classes.get(c, 0) for c in HAND_CLASSES},
+                "fingerprint": fingerprint(pairs)}
+
+    removed, added = before - after, after - before
+    objects = [o for r in report if lang_of.get(r[0]) == "py" for o in r[4]]
+    outcomes = Counter(o[2] for o in objects)
+    uncertain = Counter(name for o in objects for name in o[4])
+    changed = [r for r in report if lang_of.get(r[0]) == "py"
+               and set(r[2]) - {r[0]} != set(r[3]) - {r[0]}]
+    by_object = sum(1 for r in changed if any(o[2] in ("narrowed", "partly") for o in r[4]))
+    return {
+        "report": True,
+        "statements": sum(1 for r in report if lang_of.get(r[0]) == "py"),
+        "statements_changed": len(changed),
+        "statements_changed_by_a_module_object": by_object,
+        "statements_changed_by_names_only": len(changed) - by_object,
+        "module_objects": len(objects),
+        "module_object_outcomes": {k: outcomes.get(k, 0) for k in PY_OUTCOMES},
+        "uncertain_attributes_top": uncertain.most_common(SAMPLE),
+        "hand_is_after": "equal" if after == hand else (
+            f"differs: {len(after - hand)} only in the report, {len(hand - after)} only in the graph"),
+        "before": scores(before),
+        "after": scores(after),
+        "change": {
+            "removed": len(removed), "removed_scip": len(removed & scip),
+            "removed_scip_uses": len(removed & scip_uses),
+            "removed_to_package": sum(1 for _, b in removed if b.endswith("__init__.py")),
+            "added": len(added), "added_scip": len(added & scip), "added_scip_uses": len(added & scip_uses),
+            "added_not_scip": len(added - scip),
+            "removed_scip_uses_samples": sample([{"a": a, "b": b} for a, b in removed & scip_uses]),
+            "added_not_scip_samples": sample([{"a": a, "b": b} for a, b in added - scip]),
+        },
+    }
+
+
 def ts_variants(args) -> int:
     """Write `variants/{share,per-file}.graph.json` for a TypeScript fixture:
     the dumped hand graph with its static signal recomputed from the
@@ -883,7 +976,8 @@ def score(args) -> int:
             rows.append({"name": args.name, "lang": lang, "status": "no index"})
             continue
         row = score_language(args.name, lang, hand_graph, scip_graph, load(ingest_path), py,
-                             load_ts_report(work) if lang == "ts" else None, TsSources(args.repo))
+                             load_ts_report(work) if lang == "ts" else None, TsSources(args.repo),
+                             load_py_report(work) if lang == "py" else None)
         if lang == "go":
             row["go"]["import_outcomes"] = go_import_outcomes(work)
         row["status"] = "scored"
@@ -1044,6 +1138,37 @@ def markdown(rows: list[dict]) -> str:
             h = r["ts"]["hand_only_by_class"]
             out.append(f"| {r['name']} | {sum(h.values()):,} | " + " | ".join(f"{h[c]:,}" for c in TS_HAND_CLASSES)
                        + " |")
+    py_rows = [r for r in scored if (r.get("py") or {}).get("report")]
+    if py_rows:
+        out += ["", "### Python module objects and module re-exports (finding 53)", "",
+                "| fixture | statements | changed (module object / names only) | module objects | "
+                + " | ".join(PY_OUTCOMES) + " | equals hand |",
+                "|---|---:|---|---:|" + "---:|" * len(PY_OUTCOMES) + "---|"]
+        for r in py_rows:
+            x = r["py"]
+            out.append(f"| {r['name']} | {x['statements']:,} | {x['statements_changed']:,} "
+                       f"({x['statements_changed_by_a_module_object']:,} / {x['statements_changed_by_names_only']:,}) "
+                       f"| {x['module_objects']:,} | "
+                       + " | ".join(f"{x['module_object_outcomes'][k]:,}" for k in PY_OUTCOMES)
+                       + f" | {x['hand_is_after']} |")
+        out += ["", "| fixture | graph | hand pairs | shared by a use | recall (uses) | precision (uses) "
+                "| recall | precision | submodule via package | re-export | other | fingerprint |",
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
+        for r in py_rows:
+            for key in ("before", "after"):
+                x = r["py"][key]
+                h = x["hand_only_by_class"]
+                out.append(f"| {r['name']} | {key} | {x['pairs']:,} | {x['shared_uses']:,} "
+                           f"| {pct(x['recall_uses'])} | {pct(x['precision_uses'])} | {pct(x['recall'])} "
+                           f"| {pct(x['precision'])} | {h['submodule via package']:,} | {h['re-export']:,} "
+                           f"| {h['other']:,} | {x['fingerprint'][:12]} |")
+        out += ["", "| fixture | removed | removed, SCIP has | removed, SCIP has by a use | removed, to a package "
+                "| added | added, SCIP has by a use | added, SCIP lacks |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        for r in py_rows:
+            c = r["py"]["change"]
+            out.append(f"| {r['name']} | {c['removed']:,} | {c['removed_scip']:,} | {c['removed_scip_uses']:,} "
+                       f"| {c['removed_to_package']:,} | {c['added']:,} | {c['added_scip_uses']:,} "
+                       f"| {c['added_not_scip']:,} |")
     out += ["", "### Hand-only pairs by class", "",
             "| fixture | lang | hand-only | " + " | ".join(HAND_CLASSES) + " |",
             "|---|---|---:|" + "---:|" * len(HAND_CLASSES)]
@@ -1243,6 +1368,28 @@ def self_test(_args) -> int:
         assert row["recall"] == round(5 / 7, 4) and row["precision"] == round(5 / 8, 4), row
         assert (row["scip_use_pairs"], row["shared_uses"], row["shared_namespace_only"]) == (6, 4, 1), row
         assert row["shared_namespace_only_to_package"] == 0, row
+        # Finding 53's report: `after` is the graph; `before` differs on one
+        # statement, whose name used to reach types.py and now core.py.
+        py_report = [
+            ["pkg/__init__.py", 0, ["pkg/core.py"], ["pkg/core.py"], []],
+            ["pkg/__init__.py", 1, ["pkg/_api.py"], ["pkg/_api.py"], []],
+            ["pkg/core.py", 0, ["pkg/base.py"], ["pkg/base.py"], []],
+            ["pkg/base.py", 0, ["pkg/types.py"], ["pkg/types.py"], []],
+            ["pkg/cli.py", 0, ["pkg/util.py"], ["pkg/util.py"], [["util", "pkg/util.py", "defined_here", 1, []]]],
+            ["pkg/cli.py", 1, ["pkg/__init__.py"], ["pkg/__init__.py"], []],
+            ["pkg/cli.py", 2, ["pkg/types.py"], ["pkg/core.py"], []],
+            ["pkg/star.py", 0, ["pkg/__init__.py", "pkg/star.py"], ["pkg/__init__.py"], []],
+        ]
+        x = score_language("synthetic", "py", graph, None, {"file_edges": edges}, py,
+                           py_report=py_report)["py"]
+        assert x["hand_is_after"] == "equal", x["hand_is_after"]
+        assert x["after"]["fingerprint"] == row["hand_fingerprint"], x["after"]
+        assert (x["before"]["pairs"], x["before"]["shared_uses"], x["after"]["shared_uses"]) == (8, 3, 4), x
+        change = {k: v for k, v in x["change"].items() if not k.endswith("samples")}
+        assert change == {"removed": 1, "removed_scip": 0, "removed_scip_uses": 0, "removed_to_package": 0,
+                          "added": 1, "added_scip": 1, "added_scip_uses": 1, "added_not_scip": 0}, change
+        assert (x["statements"], x["statements_changed"], x["statements_changed_by_names_only"]) == (8, 1, 1), x
+        assert x["module_object_outcomes"]["defined_here"] == 1 and x["module_objects"] == 1, x
 
         # Without the Engine import the package link is submodule-only.
         (repo / "pkg/cli.py").write_text("from . import util\nfrom .core import Engine as E\n")

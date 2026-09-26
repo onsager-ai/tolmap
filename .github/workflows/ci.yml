@@ -980,6 +980,10 @@ jobs:
             # TOLMAP_TS_IMPORT_REPORT: the TypeScript resolver's, per module
             # specifier (where it resolved, and what following its names
             # through re-exports reached; finding 51).
+            # TOLMAP_PY_IMPORT_REPORT: the Python resolver's, per statement
+            # (the files it linked before module objects and module
+            # re-exports were followed, and now; finding 53).
+            TOLMAP_PY_IMPORT_REPORT="$PWD/$work" \
             TOLMAP_GO_IMPORT_REPORT="$PWD/$work" TOLMAP_TS_IMPORT_REPORT="$PWD/$work" \
               ./bin/tolmap dump-graph "$PWD/$dir" --pkg "$pkg" \
               --lang "$lang" --refs hand \
