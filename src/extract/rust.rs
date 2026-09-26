@@ -1,4 +1,4 @@
-//! Rust as a source language (issue #126, finding 56).
+//! Rust as a source language (issue #126, finding 57).
 //!
 //! Phase 1 ([`syntax`], [`metrics`]) reads one file's tree while it is alive:
 //! its `mod` declarations, module-level items, `use` declarations, inherent

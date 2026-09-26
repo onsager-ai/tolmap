@@ -166,7 +166,7 @@ and ordinary-module re-exports were followed, and the files it links now.
   `hand_is_after` checks `after` against the dumped graph.
 - `change`: `after` against `before`, pair by pair, as TypeScript's.
 
-For Rust the row carries `rs` (issue #126, finding 56). Rust has no
+For Rust the row carries `rs` (issue #126, finding 57). Rust has no
 product indexer: rust-analyzer compiles a repository's build scripts and
 proc macros natively, and without network it degrades to `--no-deps`
 (finding 55), so it is the oracle here only, run by the job itself with
@@ -937,7 +937,7 @@ TS_VARIANTS = ("share", "per-file")
 
 
 def load_rs_report(work: Path) -> tuple[list[list], dict] | None:
-    """The Rust resolver's rows (finding 56): [file, "use" | "extern_crate"
+    """The Rust resolver's rows (finding 57): [file, "use" | "extern_crate"
     | "path", path, local name, outcome, cfg tie ("kept" | "broken" |
     null), files linked, inline-module scope], and each file's module path."""
     reports = sorted(work.glob("rust-imports.*.json"))
@@ -979,7 +979,7 @@ def rs_absolute(segments: list[str], own: str) -> str | None:
 def score_rs(lang_of: dict, hand: set, scip: set, scip_uses: set, hand_targets: dict,
              report: tuple[list[list], dict] | None, member_only: set,
              symbols: dict | None = None) -> dict:
-    """Finding 56's block: the resolver's outcomes and the pairs one side
+    """Finding 57's block: the resolver's outcomes and the pairs one side
     has alone, by class."""
     if report is None:
         return {"report": False}
@@ -1354,7 +1354,7 @@ def markdown(rows: list[dict]) -> str:
                        f"| {c['added_not_scip']:,} |")
     rs_rows = [r for r in scored if (r.get("rs") or {}).get("report")]
     if rs_rows:
-        out += ["", "### Rust (finding 56; reported, not gated)", "",
+        out += ["", "### Rust (finding 57; reported, not gated)", "",
                 "| fixture | kind | " + " | ".join(o.replace("_", " ") for o in RS_OUTCOMES) + " | cfg ties broken / kept |",
                 "|---|---|" + "---:|" * len(RS_OUTCOMES) + "---|"]
         for r in rs_rows:
@@ -1733,7 +1733,7 @@ def self_test(_args) -> int:
         # Rust is reported, never gated (issue #126), even on a fall.
         assert run_gate(gate_rows("rs", 10, 8), gate_rows("rs", 2, 1)) == 0
 
-        # Rust (finding 56): the report's outcomes and both classifiers.
+        # Rust (finding 57): the report's outcomes and both classifiers.
         rs_files = ["src/lib.rs", "src/a.rs", "src/b.rs", "src/b/c.rs", "src/d.rs"]
         rs_graph = {"lang": "rs", "nodes": [{"file": f, "lang": "rs"} for f in rs_files],
                     "imports": [["src/lib.rs", "src/a.rs", 1], ["src/a.rs", "src/b.rs", 1],

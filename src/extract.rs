@@ -95,7 +95,7 @@ const BRANCHY: &[&str] = &[
     "binary_expression",
 ];
 
-// Rust (issue #126): extraction and module-tree resolution, finding 56.
+// Rust (issue #126): extraction and module-tree resolution, finding 57.
 pub(crate) mod rust;
 
 const KIND_CLASS: usize = 0;
@@ -254,7 +254,7 @@ enum FileRaw {
         ts_uses: Vec<TsImportUse>,
         ts_exports: Option<TsExports>,
     },
-    /// Rust's `mod`, `use`, item and path syntax (issue #126, finding 56):
+    /// Rust's `mod`, `use`, item and path syntax (issue #126, finding 57):
     /// a crate's module tree only exists once every file is read, so phase
     /// 2 (`rust::resolve`) builds it and resolves against it.
     Rust(rust::RustSyntax),

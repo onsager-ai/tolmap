@@ -281,7 +281,7 @@ jobs:
       - name: Hand-score classifier self-test
         run: python3 eval/hand_score.py self-test
 
-      # Issue #126 (finding 56): Rust extraction and module-tree resolution,
+      # Issue #126 (finding 57): Rust extraction and module-tree resolution,
       # three builds of this checkout's own Rust (the resolver's unit tests
       # hold a synthetic Cargo workspace's exact edges). The map and the
       # symbols document must be byte-identical every time (CLAUDE.md,
@@ -1048,7 +1048,7 @@ jobs:
             rm -rf "$dir" "$work/index" "$work"/map/*.symbols.json "$work"/variants/maps/*.symbols.json
             echo "::endgroup::"
           done < fixtures.txt
-      # Issue #126 (finding 56): Rust's oracle. The product has no Rust
+      # Issue #126 (finding 57): Rust's oracle. The product has no Rust
       # indexer: rust-analyzer's `scip` compiles a repository's build scripts
       # and proc-macro crates natively and has no flag to stop it, and
       # offline it silently degrades to `--no-deps` (finding 55). So it runs
