@@ -337,6 +337,13 @@ jobs:
             echo "::error::the second job had no cached district names in hand (issue #141)"
             exit 1
           fi
+          # #97 phase 0: a plausible non-zero peak here, through the uid
+          # drop this service runs its worker under, is the proof `wait4`
+          # (not `RUSAGE_CHILDREN`) works end to end -- print it so it
+          # lands in this step's own log rather than only the discarded
+          # `sandbox/service.log`.
+          echo "--- peak memory log lines ---"
+          grep -E "peak memory|no peak memory measured" sandbox/service.log || true
           docker rm -f tolmap-service
 
       - name: Size and time summary
