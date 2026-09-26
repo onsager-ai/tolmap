@@ -2000,10 +2000,11 @@ fn parse_python_with_progress(
         };
         let is_pkg = file.rsplit('/').next() == Some("__init__.py");
         for import in imports {
-            let mut target_files = resolve_python_import(import, module, &scope, is_pkg)
-                .into_iter()
-                .map(|target| file_of[&target].clone())
-                .collect::<BTreeSet<_>>();
+            let mut links = PythonLinks::default();
+            links.add(
+                resolve_python_import(import, module, &scope, is_pkg),
+                &file_of,
+            );
             if let Some(project) = project_for.get(file) {
                 let scoped = &project_modules[project];
                 let current = python_project_module(file, project);
@@ -2013,21 +2014,22 @@ fn parse_python_with_progress(
                         file_of: scoped,
                         exports: &exports,
                     };
-                    for target in resolve_python_import(import, &current, &project_scope, is_pkg) {
-                        target_files.insert(scoped[&target].clone());
-                    }
+                    links.add(
+                        resolve_python_import(import, &current, &project_scope, is_pkg),
+                        scoped,
+                    );
                 }
             }
-            for target_file in target_files {
-                let target_id = ids[&target_file];
+            for (target_file, weight) in links.weights() {
+                let target_id = ids[target_file];
                 if target_id == file_id {
                     continue;
                 }
                 *static_edges
                     .entry(ordered_file_pair(file_id, target_id))
-                    .or_default() += 1.0;
-                *directed.entry((file_id, target_id)).or_default() += 1.0;
-                *fanin.entry(target_id).or_default() += 1.0;
+                    .or_default() += weight;
+                *directed.entry((file_id, target_id)).or_default() += weight;
+                *fanin.entry(target_id).or_default() += weight;
             }
         }
         let mut resolved_uses = python_uses_from_raw(
@@ -2640,12 +2642,17 @@ impl PythonScope<'_> {
 /// itself -- resolves exactly as before. Symbol uses (`python_uses_from_raw`)
 /// keep the unrefined resolution: the map's `U` already follows re-exports
 /// by name (`geometry::define_site`), so only the file graph changes here.
+///
+/// The result separates the two kinds of link for their weights
+/// ([`PythonLinks`]): a submodule, and everything [`resolve_python`]
+/// links, is a module the statement imports; the modules its names reach
+/// are one import of the package, whose mass is shared among them.
 fn resolve_python_import(
     import: &PythonImport,
     current_module: &str,
     scope: &PythonScope<'_>,
     is_pkg: bool,
-) -> BTreeSet<String> {
+) -> PythonTargets {
     let head = python_head(import, current_module, is_pkg);
     if !import.from
         || head.is_empty()
@@ -2653,24 +2660,91 @@ fn resolve_python_import(
         || !scope.known.contains(&head)
         || !scope.is_package(&head)
     {
-        return resolve_python(import, current_module, scope.known, is_pkg);
+        return PythonTargets {
+            modules: resolve_python(import, current_module, scope.known, is_pkg),
+            names: BTreeSet::new(),
+        };
     }
-    let mut result = BTreeSet::new();
+    let mut result = PythonTargets::default();
     for (name, _) in &import.names {
         if name == "*" {
-            result.insert(head.clone());
+            result.names.insert(head.clone());
             continue;
         }
         let full = format!("{head}.{name}");
         if scope.known.contains(&full) {
-            result.insert(full);
+            result.modules.insert(full);
         } else {
             // Uncertain: credit the package, as before.
-            result.insert(scope.follow(&head, name, 0).unwrap_or_else(|| head.clone()));
+            result
+                .names
+                .insert(scope.follow(&head, name, 0).unwrap_or_else(|| head.clone()));
         }
     }
-    result.remove(current_module);
+    // The importing module stays among the names: like a TypeScript
+    // import's, the share divides by every module the names reach, the
+    // importer included, and `PythonLinks::weights`' caller skips the
+    // self-pair. A module the statement imports is dropped when it is the
+    // importer, as before.
+    result.modules.remove(current_module);
     result
+}
+
+/// What one Python import statement links, by module name
+/// ([`resolve_python_import`]).
+#[derive(Default)]
+struct PythonTargets {
+    /// Modules the statement imports: submodules, and whatever
+    /// [`resolve_python`] links where the package rule does not apply.
+    modules: BTreeSet<String>,
+    /// The modules the names taken from a package reach: the defining files,
+    /// or the package itself for a name it defines, a name whose chain is
+    /// uncertain, and `*`.
+    names: BTreeSet<String>,
+}
+
+/// One statement's links by file, over every scope it resolves in (the
+/// source root, and a nested project for a relative import), with the
+/// weight each carries.
+#[derive(Default)]
+struct PythonLinks {
+    modules: BTreeSet<String>,
+    names: BTreeSet<String>,
+}
+
+impl PythonLinks {
+    fn add(&mut self, targets: PythonTargets, file_of: &BTreeMap<String, String>) {
+        self.modules
+            .extend(targets.modules.iter().map(|module| file_of[module].clone()));
+        self.names
+            .extend(targets.names.iter().map(|module| file_of[module].clone()));
+    }
+
+    /// Each linked file with its weight, in file order within each kind.
+    ///
+    /// A module the statement imports weighs 1, what the frozen reference
+    /// gives every file an import resolves to (`extract.py`), and what
+    /// `import pkg.sub` gives `pkg/sub.py`. The names taken from a package
+    /// were one import of the package, weight 1 on its `__init__.py`,
+    /// before re-exports were followed (finding 49); that mass of 1 is now
+    /// shared among the files the names reach, as a TypeScript import's is
+    /// among its defining files and a Go import's among its declaring files
+    /// (findings 50 and 51; finding 52 measures it on the Python fixtures).
+    /// Finding 49 first gave each defining file 1, which lets one statement
+    /// weigh as much as the number of files a package spreads its names
+    /// over; finding 1's rule is to normalise on mass, and vue measured the
+    /// per-file weighting moving more files for no better agreement with
+    /// SCIP (finding 51). A file the statement
+    /// already imports as a submodule keeps its 1 and takes no share, so a
+    /// statement that links one file weighs exactly 1, as before.
+    fn weights(&self) -> impl Iterator<Item = (&String, f64)> {
+        let shared = self.names.difference(&self.modules).collect::<Vec<_>>();
+        let share = 1.0 / shared.len() as f64;
+        self.modules
+            .iter()
+            .map(|file| (file, 1.0))
+            .chain(shared.into_iter().map(move |file| (file, share)))
+    }
 }
 
 /// Diagnostic for files left with no edge after pruning. This reparses only
@@ -3264,10 +3338,12 @@ fn parse_multi_with_progress(
             // among the defining files, as it all went to the one file the
             // specifier resolved to. Weighing each defining file 1 instead
             // (what importing each directly would weigh, and what Python's
-            // re-exports do, finding 49) was measured on vue and moved more
-            // files for no better agreement with SCIP's districts: 73.2%
+            // re-exports did until finding 52) was measured on vue and moved
+            // more files for no better agreement with SCIP's districts: 73.2%
             // placement against the old fixture against 87.0% shared, and
             // 84.5% against the SCIP fixture against 86.6% (finding 51).
+            // Python's names now share their mass the same way
+            // (`PythonLinks::weights`).
             let targets = match (narrowed, followed) {
                 (Some(narrowed), _) => narrowed.into_iter().collect::<Vec<_>>(),
                 (None, Some((followed, _))) => followed.into_iter().collect(),
@@ -5897,6 +5973,146 @@ mod tests {
             ("use.py", "from p import X\n"),
         ]);
         assert_eq!(targets_of(&edges, "use.py"), ["p/d.py"]);
+    }
+
+    fn python_weights(files: &[(&str, &str)], source: &str) -> BTreeMap<String, f64> {
+        let dir = tempfile::TempDir::new().unwrap();
+        for (path, contents) in files {
+            write(dir.path(), path, contents);
+        }
+        let (parsed, raw) = parse_files(dir.path(), ".", LanguageKind::Python).unwrap();
+        let intermediate = parse_python(dir.path(), ".", parsed, raw).unwrap();
+        let weights = intermediate
+            .directed
+            .iter()
+            .filter(|((a, _), _)| intermediate.files[*a as usize] == source)
+            .map(|(&(_, b), &weight)| (intermediate.files[b as usize].clone(), weight))
+            .collect::<BTreeMap<_, _>>();
+        // Static edges are undirected; no target in these fixtures imports
+        // its importer back, so each pair carries the directed weight.
+        let id = |name: &str| {
+            intermediate
+                .files
+                .iter()
+                .position(|file| file == name)
+                .unwrap() as FileId
+        };
+        for (target, weight) in &weights {
+            assert_eq!(
+                intermediate.static_edges[&ordered_file_pair(id(source), id(target))],
+                *weight,
+                "static weight of {source} - {target}"
+            );
+        }
+        weights
+    }
+
+    fn weights_of(pairs: &[(&str, f64)]) -> BTreeMap<String, f64> {
+        pairs
+            .iter()
+            .map(|(file, weight)| ((*file).to_owned(), *weight))
+            .collect()
+    }
+
+    /// A package whose `__init__` defines one name, re-exports two from
+    /// other files, re-exports one uncertainly and has one submodule.
+    const PYTHON_PACKAGE: &[(&str, &str)] = &[
+        (
+            "pkg/__init__.py",
+            "from .core import Engine\nfrom .sub import Session\n\
+             from kombu import uuid\nVERSION = 1\n",
+        ),
+        ("pkg/core.py", "class Engine:\n    pass\n"),
+        ("pkg/sub.py", "class Session:\n    pass\n"),
+    ];
+
+    fn with_use(source: &str) -> Vec<(&str, &str)> {
+        let mut files = PYTHON_PACKAGE.to_vec();
+        files.push(("use.py", source));
+        files
+    }
+
+    #[test]
+    fn a_python_import_that_links_one_file_weighs_one() {
+        // Followed to its definition, a submodule, a name the package defines
+        // and an uncertain chain: each statement links one file, at 1.
+        for (source, target) in [
+            ("from pkg import Engine\n", "pkg/core.py"),
+            ("from pkg import sub\n", "pkg/sub.py"),
+            ("from pkg import VERSION\n", "pkg/__init__.py"),
+            ("from pkg import uuid, VERSION\n", "pkg/__init__.py"),
+            ("from pkg import *\n", "pkg/__init__.py"),
+            // The name leads into the submodule the statement also imports.
+            ("from pkg import sub, Session\n", "pkg/sub.py"),
+        ] {
+            assert_eq!(
+                python_weights(&with_use(source), "use.py"),
+                weights_of(&[(target, 1.0)]),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_python_import_shares_its_mass_among_the_files_its_names_reach() {
+        // Two defining files: 1/2 each, not 1 each (finding 52).
+        assert_eq!(
+            python_weights(&with_use("from pkg import Engine, Session\n"), "use.py"),
+            weights_of(&[("pkg/core.py", 0.5), ("pkg/sub.py", 0.5)])
+        );
+        // The package, for a name it defines and an uncertain one, plus a
+        // defining file.
+        assert_eq!(
+            python_weights(
+                &with_use("from pkg import VERSION, uuid, Engine\n"),
+                "use.py"
+            ),
+            weights_of(&[("pkg/__init__.py", 0.5), ("pkg/core.py", 0.5)])
+        );
+        // A submodule is a module the statement imports, as `import pkg.sub`
+        // would, and keeps its 1; the names share theirs. Statements add up.
+        assert_eq!(
+            python_weights(
+                &with_use("from pkg import sub, Engine, VERSION\nfrom pkg import Engine\n"),
+                "use.py"
+            ),
+            weights_of(&[
+                ("pkg/__init__.py", 0.5),
+                ("pkg/core.py", 1.5),
+                ("pkg/sub.py", 1.0),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_python_import_that_reaches_the_importer_counts_it_in_the_share() {
+        // As a TypeScript import's share does: `pkg/core.py` takes `Engine`
+        // back from its own package along with `Session`.
+        let mut files = PYTHON_PACKAGE.to_vec();
+        files[1] = (
+            "pkg/core.py",
+            "from pkg import Engine, Session\nclass Engine:\n    pass\n",
+        );
+        assert_eq!(
+            python_weights(&files, "pkg/core.py"),
+            weights_of(&[("pkg/sub.py", 0.5)])
+        );
+    }
+
+    #[test]
+    fn python_imports_outside_the_package_rule_weigh_one_per_file() {
+        // The frozen reference's resolution, and its weights: a plain import
+        // of two modules, and a package importing its own submodules.
+        let mut files = PYTHON_PACKAGE.to_vec();
+        files.push(("use.py", "import pkg.core, pkg.sub\n"));
+        files[0] = ("pkg/__init__.py", "from . import core, sub\n");
+        for source in ["use.py", "pkg/__init__.py"] {
+            assert_eq!(
+                python_weights(&files, source),
+                weights_of(&[("pkg/core.py", 1.0), ("pkg/sub.py", 1.0)]),
+                "{source}"
+            );
+        }
     }
 
     #[test]

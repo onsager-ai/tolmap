@@ -2411,3 +2411,77 @@ vue's hand map against the committed fixture, and against the SCIP fixture (`dat
 - Whether a rule for module augmentation (the 3 "other" pairs) would hold beyond vue.
 - vue is the only TypeScript fixture, so the effect on larger TypeScript monorepos (n8n, dify's `web/`) was not measured.
 - `eval/batch_stability.py` was not run. It imports the frozen Python reference, which does not follow re-exports, as in findings 23, 49 and 50. The placements above are the churn measurement.
+
+## 52. Sharing a Python import's mass among the files its names reach moves celery, django and scrapy and no pair; scrapy falls below its node-order band and away from SCIP's districts
+
+Owner decision, session `16030105`, AskUserQuestion, transcript line 7454 (2026-09-26T03:19:11Z): **"Merge; align Python later (Recommended)"**: after #134, "a small follow-up switches Python's re-export edges to the same shared weighting, so all three languages normalise the same way (finding 1), with the six Python fixtures re-measured." This is issue [#110](https://github.com/onsager-ai/tolmap/issues/110)'s follow-up to findings 49 and 51, [PR #135](https://github.com/onsager-ai/tolmap/pull/135).
+
+**What changed** (`src/extract.rs`, `resolve_python_import` and `PythonLinks`). Finding 49 gave every file a `from pkg import ...` reaches weight 1. One statement taking two names that `pkg/__init__.py` re-exports from two files weighed 2, where before re-exports were followed it weighed 1 on the package. The statement's links now come in two kinds:
+- **Modules the statement imports weigh 1 each, as before.** These are submodules (`from pkg import sub`), and everything the fallback resolution links (a plain `import`, a `from` a module that is not a package, a package importing from itself). That is what the frozen reference gives every file an import resolves to, and what `import pkg.sub` gives `pkg/sub.py`.
+- **The names taken from a package share one mass of 1** among the files they reach. These are the defining files, and the package itself for a name it defines, an uncertain chain, or `*`. This is the TypeScript rule (finding 51) and the Go rule (finding 50). As in TypeScript, the share divides by every file the names reach, the importer included, and the self-pair is then skipped.
+- A file the statement already imports as a submodule keeps its 1 and takes no share. So every statement that links one file weighs exactly 1, as before. The unit tests pin both cases.
+
+**Where the spec left room.** "Share the import's mass" could also have meant 1 per statement across everything it links, submodules included. That would make `from .. import util, exc` weigh 1/2 per file, although neither link is a re-export. The owner's words name "Python's re-export edges", so submodules keep their 1.
+
+- **Unchanged:** every pair, including `S` and `U`. No schema change and no new dependency. The two new structs are internal, and both iterate BTreeSets.
+
+### Measurement
+
+[CI run 36214815371](https://github.com/onsager-ai/tolmap/actions/runs/36214815371), dispatched on this branch at `75e0fc7`: jobs `hand-score`, `full-fixtures` and `scip-fixtures`.
+
+**No pair moved.** On all nine fixtures, `hand-score`'s hand and SCIP pair fingerprints equal the committed baseline's (`data/scip/hand_score.json`), and so does every gated count. The gate passed unchanged, and `data/scip/hand_score.json` is not re-recorded. `scip-fixtures` passed on all nine. Admission compares pairs, not weights, so no SCIP fixture changes.
+
+**The graph moved on three fixtures.** Placement of this branch's hand map against the committed fixture, from `hand-score`'s `hand_map_vs_fixture`. `full-fixtures` in the same run reports the same placements through `tolmap parity`. The bands are finding 47's: node order is the partitioner's spread on an unchanged graph, and random pairs is a change of SCIP's size carrying no information.
+
+| fixture | placement vs old fixture | Δq | districts old → new | node-order band | random-pairs band | placement vs SCIP fixture, old → new |
+|---|---:|---:|---|---|---|---|
+| celery | 74.5% (120/161) | 0.0050 | 7 → 7 | 71.4–100.0 | 53.4–88.2 | 50.9% → 59.6% |
+| django | 82.4% (701/851) | 0.0005 | 14 → 13 | 79.2–93.3 | 37.5–77.4 | 82.6% → 78.4% |
+| scrapy | 68.1% (128/188) | 0.0047 | 7 → 8 | 72.9–97.3 | 60.1–94.1 | 76.1% → 50.5% |
+| flask, rich, sqlalchemy | 100.0% | 0.0000 | unchanged | | | unchanged |
+| httpx, prometheus, vue | 100.0% | 0.0000 | unchanged | | | unchanged |
+
+- **The bands are a rough yardstick.** Finding 47 measured them on the graphs before finding 49, with eight draws each.
+- **celery and django move inside the partitioner's own node-order band.** Every Δq is within 0.02, and every placement is below 95%, so the three fixtures are re-derived.
+- **scrapy moves beyond its node-order band**, 68.1% against 72.9–97.3%, though inside the random-pairs band.
+- **Unlike vue under the same rule (finding 51), two of the three move away from SCIP's districts.** scrapy falls from 76.1% to 50.5% against its SCIP fixture, and django from 82.6% to 78.4%. celery rises from 50.9% to 59.6%. Placement measures agreement, not correctness. SCIP's own weights are distinct-symbol counts, heavier-tailed than either hand weighting (finding 47), so hand sharing a statement's mass is not expected to track them. The per-file weighting was not partitioned as a variant here, so this finding cannot say whether 1 per file would have agreed better with SCIP on Python.
+- **flask, httpx and rich have byte-identical graphs.** Their dumped hand graphs' edges equal the base run's, [CI run 36212421647](https://github.com/onsager-ai/tolmap/actions/runs/36212421647) at `2ac35da`, whose Python resolver is main's. So, by inference, none of their statements takes names from a package that reach more than one file. `data/ci/{flask,httpx}.graph.json` are therefore unchanged. Whether sqlalchemy's weights moved was not checked, because its graph is too large to diff on this machine; its map did not move.
+
+### Re-derivation
+
+This is finding 49's route. The maps are those of the same run's `hand-score` job: a full-history clone and a naming cache seeded from the committed map. `data/{celery,django,scrapy}.json` keep the committed fixtures' key set, which drops the product's `C` and `coverage`. `F`, `E`, `S` and `U` are identical to the old fixtures. `data/fixtures.toml` marks the three `generator = "rust-python-shared-weight"` and records their new `districts` and `q`.
+
+Renames, matched through the parity gate's district matching. Sizes are in files, old → new:
+
+| fixture | previous name | re-derived name | Jaccard | size |
+|---|---|---|---:|---|
+| celery | utils & contrib | utils & contrib 2 | 0.87 | 27 → 29 |
+| celery | events & utils | **utils & contrib** | 0.65 | 38 → 33 |
+| celery | worker & consumer | worker & concurrency | 0.53 | 20 → 32 |
+| celery | concurrency | (unmatched) | | 27 |
+| celery | (new) | events & apps | | 18 |
+| django | db & models | models & db | 0.91 | 79 → 87 |
+| django | sessions & views | sessions & middleware | 0.52 | 62 → 58 |
+| django | admin & contrib | contrib & admin | 0.42 | 66 → 129 |
+| django | checks | (unmatched, 13 districts from 14) | | 75 |
+| scrapy | http | http & response | 0.91 | 22 → 22 |
+| scrapy | downloader & handlers | downloader & _http2 | 0.69 | 25 → 19 |
+| scrapy | pipelines & utils | utils & pipelines | 0.62 | 24 → 36 |
+| scrapy | downloadermiddlewares & spidermi | downloadermiddlewares & extensio | 0.41 | 37 → 42 |
+| scrapy | extensions | (unmatched) | | 35 |
+| scrapy | (new) | spiders | | 16 |
+| scrapy | (new) | **downloader & handlers** | | 8 |
+
+Every other district keeps its name: celery's backends, bin and security (Jaccard 0.80–1.00), ten of django's, and scrapy's commands and utils.
+
+**Two names moved to a different place.** They are in bold above:
+- celery's "utils & contrib" now names the successor of "events & utils", and the district that held the name is "utils & contrib 2".
+- scrapy's "downloader & handlers" now names a new 8-file district, and its 25-file holder is "downloader & _http2".
+
+That is the drift CLAUDE.md's naming rule warns about. The namer's cache is keyed on exact membership, so when membership changes it runs afresh. As in findings 49–51, these are the product namer's output under a seeded cache, recorded rather than hand-edited. django's word swaps ("db & models" → "models & db", "admin & contrib" → "contrib & admin") come from the same cause, and "models & db" is the name finding 49 replaced.
+
+### Not verified
+- How many Python statements take names that reach more than one file, per fixture. The resolver has no Python import report like Go's and TypeScript's, and the placements above were used as the change measure.
+- Whether sqlalchemy's static weights changed (its map did not).
+- How a per-file-weighted Python graph would place against the SCIP fixtures. The TypeScript variants in `hand_score.py ts-variants` were not ported to Python.
+- `eval/batch_stability.py` was not run. It imports the frozen Python reference, which does not follow re-exports, as in findings 23 and 49–51.

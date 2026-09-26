@@ -71,6 +71,16 @@
 # so vue was rebuilt the same way, by `hand-score` at its pin with its
 # naming cache seeded first, and `generator = "rust-ts-reexports"` marks it.
 # httpx is now the only Python-reference fixture.
+#
+# Later still on 2026-09-26 the Rust hand resolver stopped weighing each file
+# a Python `from pkg import A, B` reaches through re-exports 1: the names'
+# mass of 1 is shared among the files they reach, as TypeScript's and Go's
+# is (issue #110, owner decision "Merge; align Python later"; finding 52).
+# Submodules keep their 1. No pair changed, only weights. celery, django and
+# scrapy moved and were rebuilt the same way, by `hand-score` at their pins
+# with their naming caches seeded first, and `generator =
+# "rust-python-shared-weight"` marks them. flask, rich and sqlalchemy placed
+# 100.0% with Δq 0.0000 under the new weights and are unchanged.
 
 [celery]
 url = "https://github.com/celery/celery.git"
@@ -78,10 +88,10 @@ commit = "208a803655672d63cf2a257d30f39c672a5b4bcf"
 pkg = "celery"
 lang = "py"
 parcels = false
-generator = "rust-python-reexports"
+generator = "rust-python-shared-weight"
 files = 161
 districts = 7
-q = 0.3499
+q = 0.3549
 
 [django]
 url = "https://github.com/django/django.git"
@@ -89,10 +99,10 @@ commit = "a3f0642f69277f01611d0d3e829fc3b85aded2ec"
 pkg = "django"
 lang = "py"
 parcels = false
-generator = "rust-python-reexports"
+generator = "rust-python-shared-weight"
 files = 851
-districts = 14
-q = 0.5226
+districts = 13
+q = 0.5231
 
 [flask]
 url = "https://github.com/pallets/flask.git"
@@ -143,10 +153,10 @@ commit = "fe30c1882a12651c19c5a94d71e9f14e442456c7"
 pkg = "scrapy"
 lang = "py"
 parcels = false
-generator = "rust-python-reexports"
+generator = "rust-python-shared-weight"
 files = 188
-districts = 7
-q = 0.3355
+districts = 8
+q = 0.3308
 
 [sqlalchemy]
 url = "https://github.com/sqlalchemy/sqlalchemy.git"
