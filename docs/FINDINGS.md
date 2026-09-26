@@ -2548,7 +2548,7 @@ prometheus, finding 48's job. Before is the committed baseline, from finding 50'
 - **96 of the 100 tied imports narrow.** The 100 were `model/labels`' `Labels`, `EmptyLabels`, `Compare` and `Builder`, and `tsdb/fileutil`'s `OpenDir`.
 - **3 now stop at an undeclared name.** A tied name used to be reported first, so these were counted as ambiguous: `String` twice and `get` once on `model/labels`. Like finding 50's 5, these are consistent with a local variable shadowing the package's name. Not checked one by one.
 - **1 is an importer outside the build**, `tsdb/head_dedupelabels.go` naming `labels.Labels`.
-- **Files, by build status:** 411 in, 33 out, 0 unknown. The 33 are the opt-in label variants (`slicelabels`, `dedupelabels`), other platforms' `fileutil` and `util/runtime` files, `head_chunks_windows.go`, and three custom-tag files: `internal/tools/tools.go` (`tools`), `util/fuzzing/corpus_gen/main.go` (`fuzzing`) and `web/ui/assets_embed.go` (`builtinassets`). Eight of them were read in the source at the pin and matched.
+- **Files, by build status:** 411 in, 33 out, 0 unknown. The 33 are the opt-in label variants (`slicelabels`, `dedupelabels`), other platforms' `fileutil` and `util/runtime` files, `head_chunks_windows.go`, and three custom-tag files: `internal/tools/tools.go` (`tools`), `util/fuzzing/corpus_gen/main.go` (`fuzzing`) and `web/ui/assets_embed.go` (`builtinassets`). 29 of them were read in the source at the pin, and each is out for the reason the evaluator gives; the other 4 (`tsdb/head_dedupelabels.go`, `util/runtime/{limits_windows,statfs_windows,vmlimits_openbsd}.go`) were not. The 411 in-build files were not checked one by one.
 
 ### District churn and re-derivation
 
