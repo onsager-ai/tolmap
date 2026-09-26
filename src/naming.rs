@@ -793,11 +793,17 @@ fn numbered_name(base: &str, taken: &BTreeSet<String>) -> String {
 /// The same IDF weighting as [`auto_name`], but the document frequency is
 /// taken over the two districts only, so a directory both share scores near
 /// zero and the newcomer's own directories win. Terms are still admitted by
-/// the whole map's frequency, so the package root cannot name it. The
-/// candidates are the usual one-or-two-term name over those scores, then each
-/// term alone, in rank order; the first that carries a term the collided name
-/// lacks, and repeats no taken name's terms, wins. `None` when nothing
-/// qualifies, which leaves the caller a number.
+/// the whole map's frequency, so the package root cannot name it.
+///
+/// The candidates, in order: the usual one-or-two-term name over those
+/// scores; each term the collided name lacks, paired with the collided name's
+/// lead term (`tsdb & runtime` beside `runtime & util`); each term alone. The
+/// pairing is there because the best term the collided name lacks can be a
+/// minor one -- celery's `loaders`, 2 of 29 files -- and alone it would claim
+/// the whole district. Then the same three over [`ranked_words`]. The first
+/// that carries a term the collided name lacks, and repeats no taken name's
+/// terms, wins. `None` when nothing qualifies, which leaves the caller a
+/// number.
 fn distinguishing_name(
     members: &[String],
     sibling: &[String],
@@ -816,9 +822,21 @@ fn distinguishing_name(
         pair_total,
     );
     let collided_terms = name_terms(collided);
-    name_from_ranked(&ranked)
+    let anchor = collided.split(" & ").next().unwrap_or(collided).trim();
+    let words = ranked_words(members, sibling);
+    let mut candidates = Vec::new();
+    for ranked in [&ranked, &words] {
+        candidates.extend(name_from_ranked(ranked));
+        candidates.extend(
+            ranked
+                .iter()
+                .filter(|(term, _)| !collided_terms.contains(term.as_str()))
+                .map(|(term, _)| format!("{term} & {anchor}")),
+        );
+        candidates.extend(ranked.iter().map(|(term, _)| term.clone()));
+    }
+    candidates
         .into_iter()
-        .chain(ranked.iter().map(|(term, _)| term.clone()))
         .map(|candidate| candidate.trim().chars().take(32).collect::<String>())
         .find(|candidate| {
             !candidate.is_empty()
@@ -827,6 +845,59 @@ fn distinguishing_name(
                     .any(|term| !collided_terms.contains(term))
                 && !key_holder.contains_key(&name_key(candidate))
         })
+}
+
+/// Filename words of `members`, best first, weighted against `sibling`: a
+/// word counts once per file stem, must be as common in `members` as
+/// [`filename_name`] requires (two stems, and 30% of them), and is weighted
+/// by its inverse frequency among both districts' stems. For two districts
+/// under the same directories, where no directory tells them apart
+/// (prometheus's `util/runtime` split by `statfs` against `limits`).
+fn ranked_words(members: &[String], sibling: &[String]) -> Vec<(String, f64)> {
+    let own = file_stems(members);
+    let other = file_stems(sibling);
+    let words = |stem: &str| {
+        stem.replace('-', "_")
+            .split('_')
+            .filter(|word| word.len() > 3)
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+    };
+    let mut frequency = BTreeMap::<String, usize>::new();
+    for stem in own.iter().chain(&other) {
+        for word in words(stem.as_str()) {
+            *frequency.entry(word).or_default() += 1;
+        }
+    }
+    let total = own.len() + other.len();
+    let mut count = BTreeMap::<String, (usize, usize)>::new();
+    for stem in &own {
+        for word in words(stem.as_str()) {
+            let next = count.len();
+            count.entry(word).or_insert((0, next)).0 += 1;
+        }
+    }
+    let floor = 2.0_f64.max(own.len() as f64 * 0.3);
+    let mut ranked = count
+        .into_iter()
+        .filter(|(_, (count, _))| *count as f64 >= floor)
+        .map(|(word, (count, order))| {
+            let idf = ((total + 1) as f64 / (frequency[&word] + 1) as f64).ln();
+            (word, count as f64 * idf, order)
+        })
+        .filter(|(_, score, _)| *score > 0.08)
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(Ordering::Equal)
+            .then(left.2.cmp(&right.2))
+    });
+    ranked
+        .into_iter()
+        .map(|(word, score, _)| (word, score))
+        .collect()
 }
 
 fn segment_df(files: &[String]) -> (BTreeMap<String, usize>, usize) {
@@ -923,8 +994,8 @@ fn name_from_ranked(ranked: &[(String, f64)]) -> Option<String> {
     Some(first.clone())
 }
 
-fn filename_name(members: &[String]) -> String {
-    let mut stems = members
+fn file_stems(members: &[String]) -> Vec<String> {
+    members
         .iter()
         .filter_map(|file| {
             let stem = file
@@ -937,7 +1008,11 @@ fn filename_name(members: &[String]) -> String {
             (!stem.is_empty() && !matches!(stem, "init" | "main" | "index" | "base" | "common"))
                 .then(|| stem.to_owned())
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn filename_name(members: &[String]) -> String {
+    let mut stems = file_stems(members);
     if stems.is_empty() {
         return "misc".to_owned();
     }
@@ -1266,6 +1341,79 @@ mod tests {
         assert_eq!(names["1"], "a & x 2");
         save_cache(&path, &cache).unwrap();
         assert_eq!(before, fs::read(&path).unwrap());
+    }
+
+    #[test]
+    fn a_minor_distinguishing_term_is_anchored_to_the_collided_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo.names.json");
+        let mut larger = (0..8)
+            .map(|index| format!("utils/x{index}.py"))
+            .collect::<Vec<_>>();
+        larger.extend((0..6).map(|index| format!("contrib/y{index}.py")));
+        larger.push("loaders/z1.py".to_owned());
+        let mut holder = (0..8)
+            .map(|index| format!("utils/a{index}.py"))
+            .collect::<Vec<_>>();
+        holder.extend((0..2).map(|index| format!("contrib/b{index}.py")));
+        let groups = vec![
+            (
+                2,
+                (0..30).map(|index| format!("http/k{index}.go")).collect(),
+            ),
+            (1, larger),
+            (0, holder),
+        ];
+        let (files, membership) = layout(&groups);
+        // The numbered copy is the larger district: holding the base, not
+        // size, decides which one keeps the name.
+        save_cache(
+            &path,
+            &seed(&groups[1..], &["utils & contrib 2", "utils & contrib"]),
+        )
+        .unwrap();
+        let (names, _) = name_districts(&files, &membership, Some(&path));
+        assert_eq!(names["0"], "utils & contrib");
+        // Against the holder, `contrib` scores first and `utils` falls below
+        // the pairing threshold, so the usual name is `contrib`, which says
+        // nothing new. `loaders` (1 of 15 files) is the term the holder
+        // lacks; it is paired with the collided name's lead term rather than
+        // left to name the district alone.
+        assert_eq!(names["1"], "loaders & utils");
+    }
+
+    #[test]
+    fn filename_words_separate_districts_in_the_same_directories() {
+        let groups = vec![
+            (
+                2,
+                (0..10).map(|index| format!("http/k{index}.go")).collect(),
+            ),
+            (
+                0,
+                paths(&[
+                    "util/runtime/limits_default.go",
+                    "util/runtime/limits_windows.go",
+                    "util/runtime/vmlimits_default.go",
+                    "util/runtime/vmlimits_openbsd.go",
+                ]),
+            ),
+            (
+                1,
+                paths(&[
+                    "util/runtime/statfs.go",
+                    "util/runtime/statfs_default.go",
+                    "util/runtime/statfs_linux_386.go",
+                    "util/runtime/statfs_uint32.go",
+                ]),
+            ),
+        ];
+        let (files, membership) = layout(&groups);
+        let (names, _) = name_districts(&files, &membership, None);
+        assert_eq!(names["0"], "util & runtime");
+        // `statfs` is on every stem; `default` is on one, and on two of the
+        // holder's, so it does not qualify.
+        assert_eq!(names["1"], "statfs");
     }
 
     #[test]
