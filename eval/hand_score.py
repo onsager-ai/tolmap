@@ -194,8 +194,9 @@ resolver's own report (`TOLMAP_RUST_IMPORT_REPORT`, written by `dump-graph
   `other`.
 - `hand_only_by_class`: `uncertain module` (a chain the resolver could not
   follow linked the module it named), `other`.
-Rust rows are reported and not gated (UNGATED_LANGS) until the owner has
-seen the numbers.
+Rust rows are gated like the others since the owner saw the numbers
+(issue #126, AskUserQuestion "Gate Rust now", session 16030105, 2026-09-26).
+UNGATED_LANGS stays as the switch for a future language's first rows.
 
 A fixed-seed sample (`random.Random(SEED)`) of up to SAMPLE rows per class
 is kept; the class counts are over every pair.
@@ -237,7 +238,7 @@ RS_SCIP_CLASSES = ("member via value", "macro", "glob import", "inferred type", 
 RS_HAND_CLASSES = ("uncertain module", "other")
 # Languages whose rows are reported but not gated: Rust, until the owner
 # has seen its numbers (issue #126).
-UNGATED_LANGS = ("rs",)
+UNGATED_LANGS: tuple[str, ...] = ()
 # Rust repositories scored against rust-analyzer that are not map fixtures:
 # finding 55's ripgrep pin (tag 14.1.1, a small multi-crate workspace).
 RUST_ORACLE_ONLY = {
