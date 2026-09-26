@@ -26,6 +26,12 @@ toml = "=0.8.23"
 tree-sitter = "=0.25.10"
 tree-sitter-go = "=0.25.0"
 tree-sitter-python = "=0.25.0"
+# Issue #126: Rust as a source language. 0.24.2 is the first release built
+# against tree-sitter 0.25 (its dev-dependency is `tree-sitter = "^0.25"` and
+# its parser.c is ABI 15, inside 0.25.10's 13..=15 window). It depends only on
+# `tree-sitter-language ^0.1` and `cc ^1.1`, both already locked here, so the
+# lockfile gains exactly this one package.
+tree-sitter-rust = "=0.24.2"
 tree-sitter-typescript = "=0.23.2"
 ts-rs = { version = "=12.0.1", features = ["serde-compat"] }
 # Milestone 3 (job service, issue #5) additions below. Kept to five crates:
