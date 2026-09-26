@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::progress::{ProgressValue, StageId};
 use crate::service::clone::{self, RepoRef};
 use crate::service::error::{ApiError, ErrorBody};
-use crate::service::eta::{expected_passes, progress_total, Eta, EtaModel, TimingRow};
+use crate::service::eta::{expected_passes, progress_total, Eta, EtaModel, MemoryModel, TimingRow};
 use crate::service::schedule::{self, Class};
 use crate::service::store::MapRow;
 use crate::service::time::now_rfc3339;
@@ -124,7 +124,17 @@ struct RegistryInner {
     children: HashMap<Uuid, u32>,
     cancelled: HashSet<Uuid>,
     features: HashMap<Uuid, RepoFeatures>,
+    /// Set once, from `process_worker_exe`'s `wait_with_peak`, right after
+    /// the job child is reaped -- including a failed or cancelled job,
+    /// whose peak is the out-of-memory evidence (#97 phase 0). Consumed and
+    /// removed exactly once, in `worker_loop`'s `TimingRow` construction,
+    /// same lifecycle as `features` above. Unlike `features`, nothing ever
+    /// pre-inserts an entry here (a queued job that never spawns a child has
+    /// none to remove), so there is no analogous queued-cancel/shutdown
+    /// cleanup to do.
+    peak_rss: HashMap<Uuid, u64>,
     eta_model: EtaModel,
+    memory_model: MemoryModel,
     /// Set once by [`JobRegistry::shutdown`] and never cleared -- the
     /// process is exiting, not pausing. Checked by `enqueue_job` so no job
     /// is admitted after a shutdown signal starts draining the registry.
@@ -179,10 +189,9 @@ pub struct JobRegistry(Mutex<RegistryInner>);
 impl JobRegistry {
     pub fn load_timings(&self, store: &crate::service::store::Store) -> anyhow::Result<()> {
         let rows = store.recent_timings()?;
-        self.0
-            .lock()
-            .expect("job registry mutex poisoned")
-            .eta_model = EtaModel::from_rows(rows);
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        registry.memory_model = MemoryModel::from_rows(rows.clone());
+        registry.eta_model = EtaModel::from_rows(rows);
         Ok(())
     }
 
@@ -249,6 +258,18 @@ impl JobRegistry {
             .expect("job registry mutex poisoned")
             .cancelled
             .contains(&id)
+    }
+
+    /// See `peak_rss`'s doc comment on `RegistryInner`. Called from
+    /// `process_worker_exe`, right after `wait_with_peak` reaps the child,
+    /// on every path that reaches a reap -- success, failure and cancel
+    /// alike.
+    fn set_peak_rss(&self, id: Uuid, bytes: u64) {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .peak_rss
+            .insert(id, bytes);
     }
 
     fn set_features(&self, id: Uuid, features: RepoFeatures) {
@@ -398,6 +419,69 @@ fn kill_worker_group(pid: u32) {
         .status();
 }
 
+/// Reaps the job child and returns its own peak RSS in bytes, alongside its
+/// exit status -- `process_worker_exe`'s replacement for a plain
+/// `child.wait()`.
+///
+/// **Why not `getrusage(RUSAGE_CHILDREN)`**, which docs/WORKER_TIER.md #2.1
+/// and #8 said to use before this PR: that call reports the maximum over
+/// *every* child this process has ever reaped, not this one. A small job
+/// reaped after a large one would report the large one's peak, and this
+/// process also reaps the service's own git clone/fetch children
+/// (`service::clone`) and, when it runs as root, the nsjail dependency
+/// install (`ServiceInstall::run`) -- both would leak into the figure.
+/// `wait4` reports only the named child's own usage, which on Linux also
+/// covers whatever grandchildren *it* reaps itself (the SCIP indexers a
+/// `--refs scip` job spawns as its own children), and excludes everything
+/// else this process runs.
+///
+/// After this returns `Ok`, `child` has been reaped. Nothing may call
+/// `child.wait()` or `child.try_wait()` on it again -- `std` would see no
+/// such process and return `ECHILD`. `process_worker_exe`'s two call sites
+/// are the only places this child is ever reaped.
+#[cfg(unix)]
+fn wait_with_peak(
+    child: &mut std::process::Child,
+) -> std::io::Result<(std::process::ExitStatus, Option<u64>)> {
+    use std::os::unix::process::ExitStatusExt;
+    let pid = child.id() as libc::pid_t;
+    let mut status: libc::c_int = 0;
+    let mut rusage: libc::rusage = unsafe { std::mem::zeroed() };
+    loop {
+        // SAFETY: `pid` names this process's own child, spawned above and
+        // not yet reaped by anything else (see the doc comment: this is the
+        // one and only reap of this child); `status` and `rusage` are
+        // correctly-typed, writable out-parameters valid for the call.
+        let reaped = unsafe { libc::wait4(pid, &mut status, 0, &mut rusage) };
+        if reaped == -1 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        break;
+    }
+    // `ru_maxrss` is kibibytes on Linux and bytes on macOS -- there is no
+    // portable unit, so the conversion is a `cfg`, per the platform's own
+    // `getrusage(2)`/`wait4(2)` manual page.
+    #[cfg(target_os = "macos")]
+    let peak_bytes = rusage.ru_maxrss as u64;
+    #[cfg(not(target_os = "macos"))]
+    let peak_bytes = (rusage.ru_maxrss as u64).saturating_mul(1024);
+    let peak_bytes = (peak_bytes > 0).then_some(peak_bytes);
+    // SAFETY: `status` was just filled in by the successful `wait4` above,
+    // in the same encoding `libc::waitpid`/`std::process` itself produces.
+    Ok((std::process::ExitStatus::from_raw(status), peak_bytes))
+}
+
+#[cfg(not(unix))]
+fn wait_with_peak(
+    child: &mut std::process::Child,
+) -> std::io::Result<(std::process::ExitStatus, Option<u64>)> {
+    Ok((child.wait()?, None))
+}
+
 /// Writes `queue_position`, `eta_start_s` and `eta` into every queued
 /// snapshot from `schedule::simulate` (docs/WORKER_TIER.md §7.2).
 ///
@@ -488,10 +572,23 @@ fn enqueue_job(
         return Ok(*id);
     }
     registry.ensure_classes(&state.config.limits);
-    // Phase 0 has no peak-memory prediction wired in yet, and `None` binds
-    // to the largest class -- local mode's only one. When the memory model
-    // lands this becomes its prediction for `prior` below.
-    let class = schedule::bind(None, &registry.classes);
+    // Until the worker reports the repository's features, all the ETA
+    // and memory models know is the service's reference mode. Recording it
+    // now lets a queued job under `TOLMAP_REFS=scip` be costed with
+    // indexing, while one on the hand default keeps the hand prior (`refs`
+    // absent, exactly as before #110 P2a). The worker's own `Features`
+    // event replaces this row, and `worker_loop` (or a queued cancel)
+    // removes it.
+    let prior = RepoFeatures {
+        refs: (state.config.refs == crate::extract::RefsMode::Scip)
+            .then(|| state.config.refs.to_string()),
+        ..RepoFeatures::default()
+    };
+    // The class comes from the memory model's reference-mode prior (§2.1,
+    // step 2). Local mode has one class, so every job still binds to it;
+    // the prediction matters the day a second class exists.
+    let predicted_peak = registry.memory_model.predict_peak(&prior);
+    let class = schedule::bind(Some(predicted_peak), &registry.classes);
     let idle_slot = registry.idle_slot_for(class);
     // §7.3: the queue bound applies per class, so a backlog of large jobs
     // cannot fill the queue small ones need. With one class this is the
@@ -529,17 +626,6 @@ fn enqueue_job(
             .collect(),
     };
     let (tx, _rx) = watch::channel(snapshot);
-    // Until the worker reports the repository's features, all the ETA
-    // model knows is the service's reference mode. Recording it now lets a
-    // queued job under `TOLMAP_REFS=scip` be costed with indexing, while one
-    // on the hand default keeps the hand prior (`refs` absent, exactly as
-    // before #110 P2a). The worker's own `Features` event replaces this
-    // row, and `worker_loop` (or a queued cancel) removes it.
-    let prior = RepoFeatures {
-        refs: (state.config.refs == crate::extract::RefsMode::Scip)
-            .then(|| state.config.refs.to_string()),
-        ..RepoFeatures::default()
-    };
     let initial_eta = registry
         .eta_model
         .predict(&prior, &[false; StageId::ALL.len()], None);
@@ -614,8 +700,11 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
         }
         let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
         let snapshot = tx.borrow().clone();
+        let peak_rss_bytes = registry.peak_rss.remove(&id);
+        let features = registry.features.remove(&id).unwrap_or_default();
+        log_peak_memory(id, &features, peak_rss_bytes, &registry.memory_model);
         let row = TimingRow {
-            features: registry.features.remove(&id).unwrap_or_default(),
+            features,
             elapsed_s: snapshot.elapsed_s,
             stage_s: snapshot
                 .stages
@@ -626,10 +715,12 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
                         .flatten()
                 })
                 .collect(),
+            peak_rss_bytes,
         };
         if let Err(error) = state.store.save_timing(&id.to_string(), &row) {
             eprintln!("timing store warning for {id}: {error:#}");
         } else {
+            registry.memory_model.record(row.clone());
             registry.eta_model.record(row);
         }
         registry.cancelled.remove(&id);
@@ -653,6 +744,35 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
             break;
         }
     }
+}
+
+/// One stderr line per finished job (#97 phase 0 point 4): the human-visible
+/// evidence that `wait_with_peak` measured something real, in particular
+/// through the uid drop (see the image e2e run cited in the PR body). Never
+/// prints 0 for "nothing was measured" -- that would read as a real, tiny
+/// peak rather than a missing one.
+fn log_peak_memory(
+    id: Uuid,
+    features: &RepoFeatures,
+    peak_rss_bytes: Option<u64>,
+    memory_model: &MemoryModel,
+) {
+    let Some(peak) = peak_rss_bytes else {
+        eprintln!("job {id}: no peak memory measured for this job");
+        return;
+    };
+    let predicted = memory_model.predict_peak(features);
+    let files: u64 = features.languages.values().map(|lang| lang.files).sum();
+    let refs = features.refs.as_deref().unwrap_or("hand");
+    eprintln!(
+        "job {id} peak memory {} (predicted \u{2264} {}, files {files}, refs {refs})",
+        format_mib(peak),
+        format_mib(predicted),
+    );
+}
+
+fn format_mib(bytes: u64) -> String {
+    format!("{:.0} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 fn is_terminal(snapshot: &JobSnapshot) -> bool {
@@ -1552,7 +1672,16 @@ fn process_worker_exe(
     if let Err(error) = write_spec {
         kill_worker_group(child.id());
         let _ = child.kill();
-        let _ = child.wait();
+        // The child never produced a `features` event on this path, so
+        // there is nothing informative to log yet, but a peak is still
+        // real evidence if the platform reports one -- see
+        // `wait_with_peak`'s doc comment. This is also the reap: nothing
+        // below may call `child.wait()`/`try_wait()` again.
+        if let Ok((_, Some(peak))) = wait_with_peak(&mut child) {
+            if let Some(registry) = registry {
+                registry.set_peak_rss(id, peak);
+            }
+        }
         let _ = stderr_reader.join();
         return Err(ErrorBody {
             error: "worker_crashed".to_owned(),
@@ -1818,10 +1947,17 @@ fn process_worker_exe(
     if error.is_some() || registry.is_some_and(|r| r.is_cancelled(id)) {
         kill_worker_group(child.id());
     }
-    let status = child.wait().map_err(|reason| ErrorBody {
+    // The reap: record the peak for every path that reaches here, including
+    // a failed or a cancelled job (its peak is the out-of-memory evidence,
+    // #97 phase 0 point 1). Nothing below may call `child.wait()`/
+    // `try_wait()` on `child` again -- see `wait_with_peak`'s doc comment.
+    let (status, peak) = wait_with_peak(&mut child).map_err(|reason| ErrorBody {
         error: "worker_crashed".to_owned(),
         message: format!("wait for worker: {reason}"),
     })?;
+    if let (Some(registry), Some(peak)) = (registry, peak) {
+        registry.set_peak_rss(id, peak);
+    }
     let stderr = stderr_reader.join().unwrap_or_default();
     if registry.is_some_and(|r| r.is_cancelled(id)) {
         return Err(cancelled_error());
