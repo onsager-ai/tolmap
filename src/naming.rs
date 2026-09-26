@@ -125,7 +125,10 @@ pub fn names_for_membership(files: &[String], membership: &[usize]) -> BTreeMap<
 /// cache (CLAUDE.md: "never rename a district without the previous name in
 /// hand"). A cache miss -- membership genuinely changed, or there is no
 /// cache at all -- falls through to the same IDF namer `names_for_membership`
-/// always used.
+/// always used. Two exceptions, both collisions, are [`assign_unique`]'s: a
+/// cache hit repeating a name a larger cache hit holds, and a cached numbered
+/// copy of a name another district holds (`runtime & util 2`), which is given
+/// a distinguishing name once when one exists.
 pub fn name_districts(
     files: &[String],
     membership: &[usize],
@@ -160,36 +163,37 @@ pub fn name_districts(
         )
     });
 
-    let mut used = BTreeSet::<String>::new();
+    let proposals = ordered
+        .iter()
+        .map(|&district| {
+            let members = &groups[&district];
+            let proposal = match cache.get(&fingerprint(members)) {
+                Some(hit) => Proposal {
+                    name: hit.name.clone(),
+                    source: hit.namer.clone(),
+                    cached: true,
+                    numbered: hit.numbered,
+                },
+                None => Proposal {
+                    name: auto_name(members, &document_frequency, total)
+                        .trim()
+                        .chars()
+                        .take(32)
+                        .collect(),
+                    source: idf_source(),
+                    cached: false,
+                    numbered: false,
+                },
+            };
+            (district, proposal)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let assigned = assign_unique(&ordered, &groups, &proposals, &document_frequency, total);
     let mut output = BTreeMap::new();
     for district in ordered {
-        let members = &groups[&district];
-        let key = fingerprint(members);
-        let name = match cache.get(&key) {
-            Some(hit) => hit.name.clone(),
-            None => {
-                let mut name = auto_name(members, &document_frequency, total);
-                name = name.trim().chars().take(32).collect();
-                if used.contains(&name) {
-                    let base = name.clone();
-                    let number = used.iter().filter(|value| value.starts_with(&base)).count() + 1;
-                    name = format!("{base} {number}");
-                }
-                cache.insert(
-                    key,
-                    CacheEntry {
-                        name: name.clone(),
-                        district,
-                        size: members.len(),
-                        namer: idf_source(),
-                        numbered: false,
-                    },
-                );
-                name
-            }
-        };
-        used.insert(name.clone());
-        output.insert(district.to_string(), name);
+        let name = &assigned[&district];
+        write_back(&mut cache, &groups[&district], district, name);
+        output.insert(district.to_string(), name.name.clone());
     }
     (output, cache)
 }
@@ -524,60 +528,305 @@ pub fn name_districts_with(
     let suggestions = model_namer.suggest(&selected, &taken);
     let idf = IdfNamer;
     let fallback = idf.suggest(&selected, &taken).unwrap_or_default();
-    let mut output = BTreeMap::new();
-    let mut used = BTreeSet::new();
-    for id in ordered {
-        let key = fingerprint(&groups[&id]);
-        let (mut name, source) = if let Some(hit) = cache.get(&key) {
-            (hit.name.clone(), hit.namer.clone())
-        } else if let Some(name) = suggestions.as_ref().and_then(|map| map.get(&id)) {
-            (name.clone(), "model".to_owned())
-        } else {
-            (
-                fallback
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| contexts[&id].fallback.clone()),
-                "idf".to_owned(),
-            )
-        };
-        // Keep the first cached name, then number any collision. The suffix
-        // must fit the same 32-character display limit.
-        let mut numbered = false;
-        if used.contains(&name) {
-            numbered = true;
-            let base = name.clone();
-            let mut n = 2;
-            loop {
-                let suffix = format!(" {n}");
-                let candidate = format!(
-                    "{}{}",
-                    base.chars().take(32 - suffix.len()).collect::<String>(),
-                    suffix
-                );
-                if !used.contains(&candidate) {
-                    name = candidate;
-                    break;
+    let proposals = ordered
+        .iter()
+        .map(|&id| {
+            let proposal = if let Some(hit) = cache.get(&fingerprint(&groups[&id])) {
+                Proposal {
+                    name: hit.name.clone(),
+                    source: hit.namer.clone(),
+                    cached: true,
+                    numbered: hit.numbered,
                 }
-                n += 1;
-            }
-        }
-        used.insert(name.clone());
-        output.insert(id.to_string(), name.clone());
-        if !cache.contains_key(&key) || numbered {
-            cache.insert(
-                key,
-                CacheEntry {
-                    name,
-                    district: id,
-                    size: groups[&id].len(),
-                    namer: source,
-                    numbered,
-                },
-            );
-        }
+            } else if let Some(name) = suggestions.as_ref().and_then(|map| map.get(&id)) {
+                Proposal {
+                    name: name.clone(),
+                    source: "model".to_owned(),
+                    cached: false,
+                    numbered: false,
+                }
+            } else {
+                Proposal {
+                    name: fallback
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| contexts[&id].fallback.clone()),
+                    source: idf_source(),
+                    cached: false,
+                    numbered: false,
+                }
+            };
+            (id, proposal)
+        })
+        .collect::<BTreeMap<_, _>>();
+    // A model reply that repeats a taken name goes through the same rule as
+    // an IDF name: the holder keeps it and the newcomer gets the terms that
+    // set it apart from the holder. The model is told the taken names but
+    // is not trusted to have avoided them.
+    let assigned = assign_unique(&ordered, &groups, &proposals, &df, total);
+    let mut output = BTreeMap::new();
+    for id in ordered {
+        let name = &assigned[&id];
+        write_back(&mut cache, &groups[&id], id, name);
+        output.insert(id.to_string(), name.name.clone());
     }
     (output, cache)
+}
+
+/// A district's name as it enters [`assign_unique`].
+#[derive(Clone, Debug)]
+struct Proposal {
+    name: String,
+    /// The cache entry's `namer` for a hit, else this build's namer.
+    source: String,
+    /// `name` is this membership's previous name: a cache hit.
+    cached: bool,
+    /// The cache entry says `name` was itself a last-resort numbered name.
+    numbered: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Assigned {
+    name: String,
+    source: String,
+    numbered: bool,
+    /// The cache does not already hold this name for this membership.
+    changed: bool,
+}
+
+fn write_back(cache: &mut NameCache, members: &[String], district: usize, assigned: &Assigned) {
+    if !assigned.changed {
+        return;
+    }
+    cache.insert(
+        fingerprint(members),
+        CacheEntry {
+            name: assigned.name.clone(),
+            district,
+            size: members.len(),
+            namer: assigned.source.clone(),
+            numbered: assigned.numbered,
+        },
+    );
+}
+
+/// The terms of a name, order-free: `db & models` and `models & db` are the
+/// same name to a reader, so a new name may not repeat a taken one's terms in
+/// another order.
+fn name_terms(name: &str) -> BTreeSet<&str> {
+    name.split(" & ")
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+fn name_key(name: &str) -> String {
+    name_terms(name).into_iter().collect::<Vec<_>>().join(" & ")
+}
+
+/// The name a numbered collision name was numbered from: `runtime & util 2`
+/// from `runtime & util`. The model path cut the base to fit the suffix in
+/// 32 characters, so a 32-character name also matches a held name it is a
+/// prefix of. Only a name some other district holds counts as a base; a name
+/// that merely ends in a number is not a collision.
+fn numbered_base<'a>(name: &str, own: usize, held: &'a [(String, usize)]) -> Option<&'a str> {
+    let (stem, number) = name.rsplit_once(' ')?;
+    if number.starts_with('0') || number.parse::<usize>().ok()? < 2 {
+        return None;
+    }
+    let cut = name.chars().count() == 32;
+    held.iter()
+        .find(|(base, id)| {
+            *id != own && base != name && (base == stem || (cut && base.starts_with(stem)))
+        })
+        .map(|(base, _)| base.as_str())
+}
+
+/// Makes every district's name unique without moving a previous name.
+///
+/// Names are claimed in `ordered` (largest district first). Every cache hit
+/// claims its previous name before any new name is considered, so a newcomer
+/// can never take a smaller district's previous name. Two cache hits with the
+/// same name keep it for the first. A district whose name is taken -- a new
+/// name, or a later cache hit's duplicate -- gets [`distinguishing_name`]
+/// against the district holding it, and a number only when no term sets it
+/// apart.
+///
+/// Before this, a collision was numbered (`runtime & util 2`). A number names
+/// nothing, so a cached name that is a numbered copy of a name another
+/// district holds in this build is not treated as a previous name to keep: it
+/// is given a distinguishing name once, if one exists, and keeps its number
+/// otherwise. That is the only change to a cache hit's name. Once replaced,
+/// the new name is cached and held like any other.
+fn assign_unique(
+    ordered: &[usize],
+    groups: &BTreeMap<usize, Vec<String>>,
+    proposals: &BTreeMap<usize, Proposal>,
+    document_frequency: &BTreeMap<String, usize>,
+    total: usize,
+) -> BTreeMap<usize, Assigned> {
+    let mut first_holder = BTreeMap::<&str, usize>::new();
+    let mut held = Vec::<(String, usize)>::new();
+    for &id in ordered {
+        let proposal = &proposals[&id];
+        if proposal.cached && !first_holder.contains_key(proposal.name.as_str()) {
+            first_holder.insert(&proposal.name, id);
+            held.push((proposal.name.clone(), id));
+        }
+    }
+    let placeholders = held
+        .iter()
+        .filter_map(|(name, id)| {
+            numbered_base(name, *id, &held).map(|base| (*id, (base.to_owned(), first_holder[base])))
+        })
+        .collect::<BTreeMap<_, _>>();
+    // Every taken name, and the district that holds each term set. Held
+    // names are all taken up front; a placeholder's number stays taken even
+    // when it is replaced, so no later numbered name reuses it in the same
+    // build.
+    let mut taken = held
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut key_holder = BTreeMap::<String, usize>::new();
+    for (name, id) in &held {
+        key_holder.entry(name_key(name)).or_insert(*id);
+    }
+
+    let mut output = BTreeMap::new();
+    for &id in ordered {
+        let proposal = &proposals[&id];
+        let members = &groups[&id];
+        let holds = proposal.cached && first_holder.get(proposal.name.as_str()) == Some(&id);
+        let assigned = if let Some((base, sibling)) = placeholders.get(&id) {
+            match distinguishing_name(
+                members,
+                &groups[sibling],
+                base,
+                document_frequency,
+                total,
+                &key_holder,
+            ) {
+                Some(name) => Assigned {
+                    name,
+                    source: idf_source(),
+                    numbered: false,
+                    changed: true,
+                },
+                None => Assigned {
+                    name: proposal.name.clone(),
+                    source: proposal.source.clone(),
+                    numbered: proposal.numbered,
+                    changed: false,
+                },
+            }
+        } else if holds {
+            Assigned {
+                name: proposal.name.clone(),
+                source: proposal.source.clone(),
+                numbered: proposal.numbered,
+                changed: false,
+            }
+        } else if let Some(&sibling) = key_holder
+            .get(&name_key(&proposal.name))
+            .or_else(|| first_holder.get(proposal.name.as_str()))
+        {
+            match distinguishing_name(
+                members,
+                &groups[&sibling],
+                &proposal.name,
+                document_frequency,
+                total,
+                &key_holder,
+            ) {
+                Some(name) => Assigned {
+                    name,
+                    source: idf_source(),
+                    numbered: false,
+                    changed: true,
+                },
+                None => Assigned {
+                    name: numbered_name(&proposal.name, &taken),
+                    source: proposal.source.clone(),
+                    numbered: true,
+                    changed: true,
+                },
+            }
+        } else {
+            Assigned {
+                name: proposal.name.clone(),
+                source: proposal.source.clone(),
+                numbered: false,
+                changed: !proposal.cached,
+            }
+        };
+        taken.insert(assigned.name.clone());
+        key_holder.entry(name_key(&assigned.name)).or_insert(id);
+        output.insert(id, assigned);
+    }
+    output
+}
+
+/// The last resort: `name 2`, `name 3`, ..., the base cut so the suffix
+/// still fits the 32-character display limit.
+fn numbered_name(base: &str, taken: &BTreeSet<String>) -> String {
+    let mut number = 2;
+    loop {
+        let suffix = format!(" {number}");
+        let candidate = format!(
+            "{}{}",
+            base.chars()
+                .take(32usize.saturating_sub(suffix.len()))
+                .collect::<String>(),
+            suffix
+        );
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+        number += 1;
+    }
+}
+
+/// A name for `members` that sets it apart from `sibling`, the district
+/// holding the name it collided on.
+///
+/// The same IDF weighting as [`auto_name`], but the document frequency is
+/// taken over the two districts only, so a directory both share scores near
+/// zero and the newcomer's own directories win. Terms are still admitted by
+/// the whole map's frequency, so the package root cannot name it. The
+/// candidates are the usual one-or-two-term name over those scores, then each
+/// term alone, in rank order; the first that carries a term the collided name
+/// lacks, and repeats no taken name's terms, wins. `None` when nothing
+/// qualifies, which leaves the caller a number.
+fn distinguishing_name(
+    members: &[String],
+    sibling: &[String],
+    collided: &str,
+    document_frequency: &BTreeMap<String, usize>,
+    total: usize,
+    key_holder: &BTreeMap<String, usize>,
+) -> Option<String> {
+    let pair = members.iter().chain(sibling).cloned().collect::<Vec<_>>();
+    let (pair_frequency, pair_total) = segment_df(&pair);
+    let ranked = ranked_terms(
+        members,
+        document_frequency,
+        total,
+        &pair_frequency,
+        pair_total,
+    );
+    let collided_terms = name_terms(collided);
+    name_from_ranked(&ranked)
+        .into_iter()
+        .chain(ranked.iter().map(|(term, _)| term.clone()))
+        .map(|candidate| candidate.trim().chars().take(32).collect::<String>())
+        .find(|candidate| {
+            !candidate.is_empty()
+                && name_terms(candidate)
+                    .iter()
+                    .any(|term| !collided_terms.contains(term))
+                && !key_holder.contains_key(&name_key(candidate))
+        })
 }
 
 fn segment_df(files: &[String]) -> (BTreeMap<String, usize>, usize) {
@@ -596,6 +845,28 @@ fn auto_name(
     document_frequency: &BTreeMap<String, usize>,
     total: usize,
 ) -> String {
+    name_from_ranked(&ranked_terms(
+        members,
+        document_frequency,
+        total,
+        document_frequency,
+        total,
+    ))
+    .unwrap_or_else(|| filename_name(members))
+}
+
+/// The directory terms of `members`, best first. A term is admitted by
+/// `admit` (a segment in more than 60% of those files is the package root and
+/// names nothing) and weighted by its inverse document frequency in `weight`.
+/// [`auto_name`] passes the whole map for both; [`distinguishing_name`]
+/// weights against the colliding pair only.
+fn ranked_terms(
+    members: &[String],
+    admit_frequency: &BTreeMap<String, usize>,
+    admit_total: usize,
+    weight_frequency: &BTreeMap<String, usize>,
+    weight_total: usize,
+) -> Vec<(String, f64)> {
     let mut score = BTreeMap::<String, (f64, usize)>::new();
     let mut order = 0;
     for file in members {
@@ -605,12 +876,13 @@ fn auto_name(
             .filter(|part| !STOP.contains(part))
             .enumerate()
         {
-            let frequency = document_frequency.get(*part).copied().unwrap_or(0);
-            if total > 0 && frequency as f64 > total as f64 * 0.6 {
+            let admitted = admit_frequency.get(*part).copied().unwrap_or(0);
+            if admit_total > 0 && admitted as f64 > admit_total as f64 * 0.6 {
                 continue;
             }
-            let idf = if total > 0 {
-                ((total + 1) as f64 / (frequency + 1) as f64).ln()
+            let frequency = weight_frequency.get(*part).copied().unwrap_or(0);
+            let idf = if weight_total > 0 {
+                ((weight_total + 1) as f64 / (frequency + 1) as f64).ln()
             } else {
                 1.0
             };
@@ -634,15 +906,21 @@ fn auto_name(
             .unwrap_or(Ordering::Equal)
             .then(left.1 .1.cmp(&right.1 .1))
     });
-    if let Some((first, (first_score, _))) = ranked.first() {
-        if let Some((second, (second_score, _))) = ranked.get(1) {
-            if second_score > &(first_score * 0.55) {
-                return format!("{first} & {second}");
-            }
+    ranked
+        .into_iter()
+        .map(|(term, (value, _))| (term, value))
+        .collect()
+}
+
+/// One term, or two when the second scores more than 0.55 of the first.
+fn name_from_ranked(ranked: &[(String, f64)]) -> Option<String> {
+    let (first, first_score) = ranked.first()?;
+    if let Some((second, second_score)) = ranked.get(1) {
+        if *second_score > first_score * 0.55 {
+            return Some(format!("{first} & {second}"));
         }
-        return first.clone();
     }
-    filename_name(members)
+    Some(first.clone())
 }
 
 fn filename_name(members: &[String]) -> String {
@@ -765,6 +1043,272 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(before, fs::read(&path).unwrap());
         assert!(!dir.path().join("repo.names.spend.json").exists());
+    }
+
+    /// Files and membership from `(district, files)` groups, in that order.
+    fn layout(groups: &[(usize, Vec<String>)]) -> (Vec<String>, Vec<usize>) {
+        let mut files = Vec::new();
+        let mut membership = Vec::new();
+        for (district, members) in groups {
+            for file in members {
+                files.push(file.clone());
+                membership.push(*district);
+            }
+        }
+        (files, membership)
+    }
+
+    fn paths(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    /// A 10-file `http` district, and two districts whose own names are both
+    /// `runtime & util`; only the smaller one has a `tsdb` directory.
+    fn shared_top_terms() -> Vec<(usize, Vec<String>)> {
+        vec![
+            (
+                2,
+                (0..10).map(|index| format!("http/k{index}.go")).collect(),
+            ),
+            (
+                0,
+                paths(&[
+                    "runtime/a.go",
+                    "runtime/b.go",
+                    "runtime/c.go",
+                    "util/d.go",
+                    "util/e.go",
+                    "util/f.go",
+                ]),
+            ),
+            (
+                1,
+                paths(&[
+                    "runtime/tsdb/g.go",
+                    "runtime/h.go",
+                    "util/i.go",
+                    "util/j.go",
+                ]),
+            ),
+        ]
+    }
+
+    /// Two districts under the same two directories: nothing tells them apart.
+    fn identical_terms() -> Vec<(usize, Vec<String>)> {
+        vec![
+            (2, (0..6).map(|index| format!("b/f{index}.py")).collect()),
+            (0, paths(&["a/x/f1.py", "a/x/f2.py", "a/x/f5.py"])),
+            (1, paths(&["a/x/f3.py", "a/x/f4.py"])),
+        ]
+    }
+
+    fn seed(groups: &[(usize, Vec<String>)], names: &[&str]) -> NameCache {
+        groups
+            .iter()
+            .zip(names)
+            .map(|((district, members), name)| {
+                (
+                    fingerprint(members),
+                    CacheEntry {
+                        name: (*name).to_owned(),
+                        district: *district,
+                        size: members.len(),
+                        namer: idf_source(),
+                        // `eval/seed_names.py` does not carry the flag.
+                        numbered: false,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_collision_is_named_by_the_terms_that_set_it_apart() {
+        let groups = shared_top_terms();
+        let (files, membership) = layout(&groups);
+        let (df, total) = segment_df(&files);
+        // Both districts' own names are the same: the collision is real.
+        assert_eq!(auto_name(&groups[1].1, &df, total), "runtime & util");
+        assert_eq!(auto_name(&groups[2].1, &df, total), "runtime & util");
+        let (names, cache) = name_districts(&files, &membership, None);
+        assert_eq!(names["2"], "http");
+        assert_eq!(names["0"], "runtime & util");
+        // `tsdb` is the one directory the sibling lacks; `runtime` scores
+        // above `util` against the sibling only by file order.
+        assert_eq!(names["1"], "tsdb & runtime");
+        let entry = &cache[&fingerprint(&groups[2].1)];
+        assert_eq!(entry.name, "tsdb & runtime");
+        assert!(!entry.numbered);
+    }
+
+    #[test]
+    fn a_reordered_repeat_of_a_taken_name_is_a_collision() {
+        let groups = shared_top_terms();
+        let (files, _) = layout(&groups);
+        let (df, total) = segment_df(&files);
+        let group_map = groups.iter().cloned().collect::<BTreeMap<_, _>>();
+        let ordered = vec![2, 0, 1];
+        // The model path: the holder's name is cached, the model repeats it
+        // for the newcomer with its terms swapped.
+        let proposals = [
+            (2, "http", true),
+            (0, "runtime & util", true),
+            (1, "util & runtime", false),
+        ]
+        .into_iter()
+        .map(|(id, name, cached)| {
+            (
+                id,
+                Proposal {
+                    name: name.to_owned(),
+                    source: "model".to_owned(),
+                    cached,
+                    numbered: false,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+        let assigned = assign_unique(&ordered, &group_map, &proposals, &df, total);
+        assert_eq!(assigned[&0].name, "runtime & util");
+        assert!(!assigned[&0].changed);
+        assert_eq!(assigned[&1].name, "tsdb & runtime");
+        assert_eq!(assigned[&1].source, "idf");
+        assert!(assigned[&1].changed);
+    }
+
+    #[test]
+    fn a_cached_name_is_never_given_to_a_larger_newcomer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo.names.json");
+        let mut http = (0..8)
+            .map(|index| format!("http/k{index}.go"))
+            .collect::<Vec<_>>();
+        http.extend(paths(&["http/server/s1.go", "http/server/s2.go"]));
+        let groups = vec![
+            (1, http),
+            (
+                0,
+                paths(&[
+                    "runtime/a.go",
+                    "runtime/b.go",
+                    "runtime/c.go",
+                    "util/d.go",
+                    "util/e.go",
+                    "util/f.go",
+                ]),
+            ),
+            // Its previous name is `http`, though its files say `web`.
+            (2, paths(&["web/x1.go", "web/x2.go"])),
+        ];
+        let (files, membership) = layout(&groups);
+        let (df, total) = segment_df(&files);
+        assert_eq!(auto_name(&groups[0].1, &df, total), "http");
+        let cache = seed(&groups[2..], &["http"]);
+        save_cache(&path, &cache).unwrap();
+        let (names, written) = name_districts(&files, &membership, Some(&path));
+        assert_eq!(names["2"], "http");
+        assert_eq!(names["1"], "server & http");
+        assert_eq!(names["0"], "runtime & util");
+        let kept = &written[&fingerprint(&groups[2].1)];
+        assert_eq!(
+            (kept.name.as_str(), kept.namer.as_str(), kept.numbered),
+            ("http", "idf", false)
+        );
+    }
+
+    #[test]
+    fn a_number_is_the_last_resort() {
+        let groups = identical_terms();
+        let (files, membership) = layout(&groups);
+        let (names, cache) = name_districts(&files, &membership, None);
+        assert_eq!(names["2"], "b");
+        assert_eq!(names["0"], "a & x");
+        assert_eq!(names["1"], "a & x 2");
+        assert!(cache[&fingerprint(&groups[2].1)].numbered);
+        assert!(!cache[&fingerprint(&groups[1].1)].numbered);
+    }
+
+    #[test]
+    fn a_cached_numbered_copy_gets_a_distinguishing_name_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo.names.json");
+        let groups = shared_top_terms();
+        let (files, membership) = layout(&groups);
+        save_cache(
+            &path,
+            &seed(&groups, &["http", "runtime & util", "runtime & util 2"]),
+        )
+        .unwrap();
+        let (names, cache) = name_districts(&files, &membership, Some(&path));
+        assert_eq!(names["2"], "http");
+        assert_eq!(names["0"], "runtime & util");
+        assert_eq!(names["1"], "tsdb & runtime");
+        assert_eq!(cache[&fingerprint(&groups[2].1)].name, "tsdb & runtime");
+        // The replacement is now an ordinary previous name: a rerun keeps it
+        // and writes the cache back byte for byte.
+        save_cache(&path, &cache).unwrap();
+        let before = fs::read(&path).unwrap();
+        let (again, cache) = name_districts(&files, &membership, Some(&path));
+        assert_eq!(again, names);
+        save_cache(&path, &cache).unwrap();
+        assert_eq!(before, fs::read(&path).unwrap());
+    }
+
+    #[test]
+    fn a_cached_numbered_copy_with_nothing_better_keeps_its_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo.names.json");
+        let groups = identical_terms();
+        let (files, membership) = layout(&groups);
+        save_cache(&path, &seed(&groups, &["b", "a & x", "a & x 2"])).unwrap();
+        let before = fs::read(&path).unwrap();
+        let (names, cache) = name_districts(&files, &membership, Some(&path));
+        assert_eq!(names["1"], "a & x 2");
+        save_cache(&path, &cache).unwrap();
+        assert_eq!(before, fs::read(&path).unwrap());
+    }
+
+    #[test]
+    fn a_name_that_only_ends_in_a_number_is_not_a_collision() {
+        let held = vec![("http".to_owned(), 0), ("runtime & util".to_owned(), 1)];
+        assert_eq!(
+            numbered_base("runtime & util 2", 2, &held),
+            Some("runtime & util")
+        );
+        assert_eq!(numbered_base("http 3", 2, &held), Some("http"));
+        assert_eq!(numbered_base("python 3", 2, &held), None);
+        assert_eq!(numbered_base("http 1", 2, &held), None);
+        assert_eq!(numbered_base("http 02", 2, &held), None);
+        // The model path cut the base to fit its suffix in 32 characters.
+        let long = vec![("downloadermiddlewares & extensio".to_owned(), 0)];
+        assert_eq!(
+            numbered_base("downloadermiddlewares & extens 2", 1, &long),
+            Some("downloadermiddlewares & extensio")
+        );
+        assert_eq!(
+            numbered_name("downloadermiddlewares & extensio", &BTreeSet::new()),
+            "downloadermiddlewares & extens 2"
+        );
+    }
+
+    #[test]
+    fn collision_naming_is_deterministic() {
+        let groups = shared_top_terms();
+        let (files, membership) = layout(&groups);
+        let (first, first_cache) = name_districts(&files, &membership, None);
+        let (second, second_cache) = name_districts(&files, &membership, None);
+        assert_eq!(first, second);
+        assert_eq!(
+            serde_json::to_string(&first_cache).unwrap(),
+            serde_json::to_string(&second_cache).unwrap()
+        );
+        // District ids are an artefact of one clustering run: relabelling them
+        // must not move a name between memberships.
+        let relabelled = membership.iter().map(|id| 9 - id).collect::<Vec<_>>();
+        let (third, _) = name_districts(&files, &relabelled, None);
+        for id in 0..3 {
+            assert_eq!(third[&(9 - id).to_string()], first[&id.to_string()]);
+        }
     }
 
     #[test]

@@ -28,6 +28,8 @@ python -m tolmap.cli build ~/src/scrapy --pkg scrapy --lang py --name scrapy --o
 
 The fingerprint is a sha1 of the sorted member paths, so the cache hits only while membership is unchanged. If membership genuinely moved, the namer runs — that is the signal, not a failure.
 
+Two districts never share a name, and a new name never takes one a district already holds from the cache. When a new name collides, the district holding the name keeps it and the newcomer is named from the terms that set it apart from that district: the same IDF weighting, with document frequency taken over the two districts only (`runtime & util` beside a holder of that name becomes `tsdb & runtime`). A number (`runtime & util 2`) is the last resort, when no term tells the two apart. A cached numbered name whose base another district holds is given a distinguishing name once, if one exists (finding 56).
+
 ## 5 · place
 Two tiers, and the tiering is what sidesteps non-planarity: **edges are only ever drawn within one tier**. Tier 1 is a force layout on ~10 district nodes. Tier 2 is a squarified treemap inside each district, order frozen from the previous layout and areas quantised to `round(loc/25)` so ordinary edits do not reflow the packing.
 
