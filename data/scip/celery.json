@@ -338,7 +338,7 @@
    "files": 161,
    "files_indexed": 161,
    "granularity": "file",
-   "hand_pairs": 600,
+   "hand_pairs": 602,
    "indexer": "scip-python 0.6.6",
    "min_recall": 0.8,
    "path": "scip",
@@ -347,5 +347,5 @@
    "scip_pairs": 710
   }
  },
- "source": "https://github.com/onsager-ai/tolmap/actions/runs/36184125477"
+ "source": "https://github.com/onsager-ai/tolmap/actions/runs/36222918694"
 }
