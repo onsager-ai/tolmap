@@ -200,3 +200,11 @@ generator = "rust-ts-reexports"
 files = 239
 districts = 7
 q = 0.5058
+
+[tolmap]
+url = "https://github.com/onsager-ai/tolmap.git"
+commit = "c62a96869a86940dcdb8eaa251f43e31b481c181"
+pkg = "."
+lang = "rs"
+parcels = false
+generator = "rust-rs-hand"

@@ -899,6 +899,9 @@ pub(crate) struct CrateTarget {
     edition_2015: bool,
     /// Extern crate name -> the key of a workspace library it names.
     deps: BTreeMap<String, String>,
+    /// Every dependency's extern name, workspace or not: a path headed by
+    /// one is another crate's, never a glob-imported name.
+    externs: BTreeSet<String>,
 }
 
 fn crate_ident(name: &str) -> String {
@@ -1026,8 +1029,13 @@ pub(crate) fn crate_targets(repo: &Path) -> Vec<CrateTarget> {
                 }
             }
         }
+        let mut externs = ["std", "core", "alloc", "proc_macro", "test"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
         for table in tables {
             for (key, spec) in table {
+                externs.insert(crate_ident(key));
                 let (base, spec) =
                     if spec.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
                         let Some((root, workspace)) = workspace_of(directory, &manifests) else {
@@ -1072,6 +1080,7 @@ pub(crate) fn crate_targets(repo: &Path) -> Vec<CrateTarget> {
                     root: join_slash(directory, &path),
                     edition_2015: *edition_2015,
                     deps: deps.clone(),
+                    externs: externs.clone(),
                 },
             ));
         }
@@ -1138,6 +1147,7 @@ pub(crate) fn crate_targets(repo: &Path) -> Vec<CrateTarget> {
                     root: join_slash(directory, &path),
                     edition_2015: *edition_2015,
                     deps: bin_deps.clone(),
+                    externs: externs.clone(),
                 },
             ));
         }
@@ -1158,6 +1168,7 @@ pub(crate) fn crate_targets(repo: &Path) -> Vec<CrateTarget> {
                     root: join_slash(directory, &path),
                     edition_2015: *edition_2015,
                     deps: BTreeMap::new(),
+                    externs: externs.clone(),
                 },
             ));
         }
@@ -1486,10 +1497,20 @@ impl<'a> Resolver<'a> {
     /// What `name` means in module `module`: its child modules, its items
     /// and its `use` bindings, followed. A name bound in several files is a
     /// tie, broken as the module comment says.
+    ///
+    /// `intermediate` is a segment more segments follow, which Rust looks up
+    /// in the type namespace only: modules, types and traits. Where the
+    /// module declares one of those, its `use` bindings are not consulted.
+    /// Without that, `mod escape; pub use crate::escape::escape;` (a module
+    /// and a function re-exported from it under one name, which ripgrep
+    /// does in five crates) sent `crate::escape` round the `use` binding it
+    /// was resolving until the hop limit, and every path through the module
+    /// stopped as uncertain.
     fn lookup(
         &self,
         module: usize,
         name: &str,
+        intermediate: bool,
         depth: usize,
         reach: &mut Reach,
     ) -> std::result::Result<Vec<Res>, Missing> {
@@ -1499,6 +1520,9 @@ impl<'a> Resolver<'a> {
             found.push((Res::Module(child), self.modules[child].cfg));
         }
         for &(kind, cfg) in m.items.get(name).into_iter().flatten() {
+            if intermediate && !matches!(kind, ItemKind::Type | ItemKind::Trait) {
+                continue;
+            }
             found.push((
                 Res::Item(ItemRef {
                     module,
@@ -1508,7 +1532,12 @@ impl<'a> Resolver<'a> {
                 cfg,
             ));
         }
-        for &(use_index, leaf_index) in m.uses.get(name).into_iter().flatten() {
+        let bindings = if intermediate && !found.is_empty() {
+            None
+        } else {
+            m.uses.get(name)
+        };
+        for &(use_index, leaf_index) in bindings.into_iter().flatten() {
             if depth >= RUST_REEXPORT_HOPS {
                 return Err(Missing::Uncertain);
             }
@@ -1609,7 +1638,9 @@ impl<'a> Resolver<'a> {
                     Some(from)
                 };
                 let local = match base {
-                    Some(base) if !extern_only => self.lookup(base, name, depth, reach),
+                    Some(base) if !extern_only => {
+                        self.lookup(base, name, !rest.is_empty(), depth, reach)
+                    }
                     _ => Err(Missing::Undeclared),
                 };
                 match local {
@@ -1623,7 +1654,11 @@ impl<'a> Resolver<'a> {
                     Err(missing) => match self.extern_crate(from, name) {
                         Some(root) => vec![Res::Module(root)],
                         None => {
-                            if missing == Missing::Glob {
+                            // A glob could bind the head, unless it names a
+                            // crate: std, core, alloc, or a dependency.
+                            let known_crate =
+                                self.crates[self.modules[from].krate].externs.contains(name);
+                            if missing == Missing::Glob && !known_crate {
                                 reach.glob = true;
                             } else {
                                 reach.external = true;
@@ -1660,7 +1695,7 @@ impl<'a> Resolver<'a> {
                     }
                     return;
                 }
-                match self.lookup(module, name, depth, reach) {
+                match self.lookup(module, name, !tail.is_empty(), depth, reach) {
                     Ok(found) => {
                         for next in found {
                             self.descend(next, tail, Some(module), depth, reach);
@@ -1879,7 +1914,23 @@ pub(crate) fn resolve(
                     ("glob", None)
                 } else if let Some(local) = &leaf.local {
                     if !decl.public && !idents.is_some_and(|names| names.contains(local)) {
-                        ("unused", None)
+                        // Not linked. Followed only to tell a name from
+                        // this repository (a possible miss: a trait used
+                        // for its methods, or a name only a macro expands
+                        // to) from another crate's.
+                        let mut reach = Reach::for_importer(importer_in);
+                        resolver.follow(
+                            module,
+                            &leaf.segments,
+                            decl.extern_crate,
+                            true,
+                            0,
+                            &mut reach,
+                        );
+                        let in_repo = !reach.targets.is_empty()
+                            || !reach.modules.is_empty()
+                            || !reach.uncertain.is_empty();
+                        (if in_repo { "unused" } else { "unused_external" }, None)
                     } else {
                         let mut reach = Reach::for_importer(importer_in);
                         resolver.follow(
@@ -2490,6 +2541,43 @@ mod tests {
         assert_eq!(
             edges(dir.path()),
             expected(&[("src/lib.rs", "src/a.rs", 1.0)])
+        );
+    }
+
+    #[test]
+    fn a_module_and_the_function_it_re_exports_under_one_name_both_resolve() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[package]\nname = \"cli\"\nedition = \"2021\"\n",
+        );
+        // ripgrep's crates/cli: `escape` is a module and the function it
+        // re-exports.
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "mod escape;\nmod pattern;\n\npub use crate::{escape::{escape, unescape}, pattern::pattern};\n",
+        );
+        write(
+            dir.path(),
+            "src/escape.rs",
+            "pub fn escape() {}\npub fn unescape() {}\n",
+        );
+        write(
+            dir.path(),
+            "src/pattern.rs",
+            "use crate::escape::unescape;\n\npub fn pattern() {\n    unescape();\n    crate::escape();\n}\n",
+        );
+        assert_eq!(
+            edges(dir.path()),
+            expected(&[
+                ("src/lib.rs", "src/escape.rs", 0.5),
+                ("src/lib.rs", "src/pattern.rs", 0.5),
+                // The `use` weighs 1; `crate::escape()` is the function,
+                // through lib.rs's re-export, in the same file.
+                ("src/pattern.rs", "src/escape.rs", 2.0),
+            ])
         );
     }
 

@@ -179,10 +179,12 @@ resolver's own report (`TOLMAP_RUST_IMPORT_REPORT`, written by `dump-graph
   through an imported module), `uncertain` / `uncertain_glob` (the chain
   stopped; the module the path named is linked), `module_unselected`,
   `glob` (a `use x::*`, deliberately unresolved), `unused` (a private `use`
-  the file never names), `unnamed` (`as _`), `glob_scope` (the head may come
-  from a glob or the prelude), `external`, `unresolved` (`Self::`, a module
-  no crate declares), `no_module` (a file no crate reaches); and how many
-  hit a cfg tie, broken or kept.
+  of a name in this repository the file never names: a trait used for its
+  methods, or a name only a macro expands to), `unused_external` (the same,
+  of another crate's name), `unnamed` (`as _`), `glob_scope` (the head may
+  come from a glob or the prelude), `external`, `unresolved` (`Self::`, a
+  module no crate declares), `no_module` (a file no crate reaches); and
+  how many hit a cfg tie, broken or kept.
 - `scip_only_uses_by_class`: SCIP use pairs hand lacks, in this order:
   `member via value` (only methods or fields support the pair: a trait
   method or a method called on a value, finding 50's class), `glob import`
@@ -228,7 +230,7 @@ TS_HAND_CLASSES = ("source not indexed", "followed", "other")
 TS_OUTCOMES = ("defined_here", "followed", "partly_followed", "uncertain", "opaque", "no_names", "unresolved")
 PY_OUTCOMES = ("narrowed", "partly", "defined_here", "uncertain", "unused", "value", "ambiguous")
 RS_OUTCOMES = ("defined", "module", "uncertain", "uncertain_glob", "module_unselected", "glob", "unused",
-               "unnamed", "glob_scope", "external", "unresolved", "no_module")
+               "unused_external", "unnamed", "glob_scope", "external", "unresolved", "no_module")
 RS_SCIP_CLASSES = ("member via value", "glob import", "inferred type", "other")
 RS_HAND_CLASSES = ("uncertain module", "other")
 # Languages whose rows are reported but not gated: Rust, until the owner
