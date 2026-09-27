@@ -204,6 +204,16 @@ struct PyMeta {
     /// it explicitly (sqlalchemy: `where = ["lib"]`). Ground truth when
     /// present -- takes precedence over the src/root default guess.
     where_dirs: Vec<String>,
+    /// Package directories the build backend is told to ship, relative to
+    /// the manifest (issue #162): hatch's `[tool.hatch.build.targets.wheel]`
+    /// `packages` and `only-include`, and setuptools' literal
+    /// `[tool.setuptools] packages` list (top-level entries, under
+    /// `package-dir`'s `""` when it names one). Read only as hints for a
+    /// nested project whose declared name matches no directory -- the
+    /// distribution `hindsight-api-slim` ships the package `hindsight_api`
+    /// -- and trusted only where the path exists and holds parsed files.
+    /// The root match does not read them, so no root detection changes.
+    package_hints: Vec<String>,
     source_file: &'static str,
 }
 
@@ -309,6 +319,91 @@ fn read_python_metadata(repo: &Path) -> Option<PyMeta> {
     read_python_metadata_in(repo)
 }
 
+/// The package directories a pyproject.toml tells its build backend to ship
+/// ([`PyMeta::package_hints`]), in the order declared, deduplicated.
+fn pyproject_package_hints(value: &toml::Value) -> Vec<String> {
+    let strings = |value: Option<&toml::Value>| {
+        value
+            .and_then(toml::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let tool = value.get("tool");
+    let wheel = tool
+        .and_then(|t| t.get("hatch"))
+        .and_then(|h| h.get("build"))
+        .and_then(|b| b.get("targets"))
+        .and_then(|t| t.get("wheel"));
+    let mut hints = strings(wheel.and_then(|w| w.get("packages")));
+    hints.extend(strings(wheel.and_then(|w| w.get("only-include"))));
+    let setuptools = tool.and_then(|t| t.get("setuptools"));
+    let package_dir = setuptools
+        .and_then(|s| s.get("package-dir"))
+        .and_then(|d| d.get(""))
+        .and_then(toml::Value::as_str)
+        .map(|dir| dir.trim_end_matches('/').to_owned());
+    for package in strings(setuptools.and_then(|s| s.get("packages"))) {
+        // `foo.bar` ships inside `foo`: only a top-level package names a
+        // directory to try.
+        if package.contains('.') {
+            continue;
+        }
+        hints.push(match &package_dir {
+            Some(dir) if !dir.is_empty() && dir != "." => format!("{dir}/{package}"),
+            _ => package,
+        });
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    hints.retain(|hint| seen.insert(hint.clone()));
+    hints
+}
+
+/// The `[project]` or `[tool.poetry]` name the pyproject.toml in `dir`
+/// declares, if any.
+fn pyproject_declared_name(dir: &Path) -> Option<String> {
+    let value = fs::read_to_string(dir.join("pyproject.toml"))
+        .ok()?
+        .parse::<toml::Value>()
+        .ok()?;
+    value
+        .get("project")
+        .and_then(|p| p.get("name"))
+        .or_else(|| {
+            value
+                .get("tool")
+                .and_then(|t| t.get("poetry"))
+                .and_then(|p| p.get("name"))
+        })
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Whether `dir` is a Python project root: it holds a `pyproject.toml` or a
+/// `setup.py`, and it is not itself a package. A directory with an
+/// `__init__.py` is a package; a `setup.py` inside one is a module like any
+/// other (langgenius/dify's `api/controllers/console/setup.py` is a Flask
+/// controller), and a `pyproject.toml` inside one makes it a project only
+/// when it declares a `[project]` or `[tool.poetry]` name. The one rule
+/// for detection's nested-manifest walk and the extractor's
+/// `python_project_root` (issue #162), so the projects detection counts
+/// are the projects the extractor scopes imports by.
+pub(crate) fn is_python_project_dir(dir: &Path) -> bool {
+    let pyproject = dir.join("pyproject.toml").is_file();
+    if !pyproject && !dir.join("setup.py").is_file() {
+        return false;
+    }
+    if !dir.join("__init__.py").is_file() {
+        return true;
+    }
+    pyproject && pyproject_declared_name(dir).is_some()
+}
+
 /// Whether the `pyproject.toml`/`setup.py`/`setup.cfg` in `dir` declares a
 /// project name, read exactly as detection reads one. The extractor's
 /// cross-project fallback (issue #162) lets only such a project own a
@@ -357,6 +452,7 @@ fn read_python_metadata_in(dir: &Path) -> Option<PyMeta> {
                 return Some(PyMeta {
                     name,
                     where_dirs,
+                    package_hints: pyproject_package_hints(&value),
                     source_file: "pyproject.toml",
                 });
             }
@@ -372,6 +468,7 @@ fn read_python_metadata_in(dir: &Path) -> Option<PyMeta> {
             return Some(PyMeta {
                 name: Some(name),
                 where_dirs: Vec::new(),
+                package_hints: Vec::new(),
                 source_file: "setup.py",
             });
         }
@@ -381,6 +478,7 @@ fn read_python_metadata_in(dir: &Path) -> Option<PyMeta> {
             return Some(PyMeta {
                 name: Some(name),
                 where_dirs: Vec::new(),
+                package_hints: Vec::new(),
                 source_file: "setup.cfg",
             });
         }
@@ -552,6 +650,8 @@ struct NestedPythonProject {
     pkg: String,
     name: String,
     where_dirs: Vec<String>,
+    /// The package came from [`PyMeta::package_hints`], not the name rule.
+    via_hint: bool,
     source_file: &'static str,
     file_count: usize,
 }
@@ -581,8 +681,16 @@ fn nested_python_projects_candidate(repo: &Path, total: usize) -> Result<Option<
                 confidence: Confidence::High,
                 file_count: project.file_count,
                 evidence: format!(
-                    "no package match at the repository root; {}/{} declares name {:?}{where_note}; matched {}",
-                    project.dir, project.source_file, project.name, project.pkg
+                    "no package match at the repository root; {}/{} declares name {:?}{where_note}; matched {}{}",
+                    project.dir,
+                    project.source_file,
+                    project.name,
+                    project.pkg,
+                    if project.via_hint {
+                        " (a package the manifest's build backend ships)"
+                    } else {
+                        ""
+                    }
                 ),
             }))
         }
@@ -628,7 +736,7 @@ fn nested_python_projects(repo: &Path) -> Result<Vec<NestedPythonProject>> {
         let rel = dir
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        if rel.is_empty() {
+        if rel.is_empty() || !is_python_project_dir(&repo.join(&dir)) {
             continue;
         }
         let Some(meta) = read_python_metadata_in(&repo.join(&dir)) else {
@@ -637,12 +745,13 @@ fn nested_python_projects(repo: &Path) -> Result<Vec<NestedPythonProject>> {
         let Some(name) = meta.name.clone() else {
             continue;
         };
-        if let Some((pkg, file_count)) = match_nested_package(repo, &rel, &meta, &name)? {
+        if let Some((pkg, file_count, via_hint)) = match_nested_package(repo, &rel, &meta, &name)? {
             projects.push(NestedPythonProject {
                 dir: rel,
                 pkg,
                 name,
                 where_dirs: meta.where_dirs,
+                via_hint,
                 source_file: meta.source_file,
                 file_count,
             });
@@ -654,14 +763,17 @@ fn nested_python_projects(repo: &Path) -> Result<Vec<NestedPythonProject>> {
 /// The package directory a nested manifest's declared name matches: under
 /// its declared `where` directories when it has them, otherwise under
 /// `src/` and then beside the manifest -- the root rule in
-/// [`detect_python`], applied relative to the manifest's directory. A
-/// `where` entry that climbs out of the project (`..`) is not followed.
+/// [`detect_python`], applied relative to the manifest's directory. When
+/// the name matches nothing, the packages the build backend is told to ship
+/// ([`PyMeta::package_hints`]) are tried in declared order; the flag in the
+/// result says a hint matched. A `where` entry or hint that climbs out of
+/// the project (`..`) is not followed.
 fn match_nested_package(
     repo: &Path,
     project: &str,
     meta: &PyMeta,
     name: &str,
-) -> Result<Option<(String, usize)>> {
+) -> Result<Option<(String, usize, bool)>> {
     let where_dirs = if meta.where_dirs.is_empty() {
         vec!["src".to_owned(), ".".to_owned()]
     } else {
@@ -681,8 +793,20 @@ fn match_nested_package(
             let candidate = format!("{base}/{variant}");
             if let Ok(files) = extract::source_files(repo, &candidate, LanguageKind::Python) {
                 if !files.is_empty() {
-                    return Ok(Some((candidate, files.len())));
+                    return Ok(Some((candidate, files.len(), false)));
                 }
+            }
+        }
+    }
+    for hint in &meta.package_hints {
+        let hint = hint.trim_start_matches("./").trim_end_matches('/');
+        if hint.is_empty() || hint == "." || hint.split('/').any(|part| part == "..") {
+            continue;
+        }
+        let candidate = format!("{project}/{hint}");
+        if let Ok(files) = extract::source_files(repo, &candidate, LanguageKind::Python) {
+            if !files.is_empty() {
+                return Ok(Some((candidate, files.len(), true)));
             }
         }
     }
@@ -1225,10 +1349,13 @@ mod tests {
             "pyproject.toml",
             "[tool.uv.workspace]\nmembers = [\"hindsight-api-slim\"]\n",
         );
+        // The distribution is `hindsight-api-slim`; the package it ships,
+        // named only in hatch's wheel target, is `hindsight_api`.
         write(
             root,
             "hindsight-api-slim/pyproject.toml",
-            "[project]\nname = \"hindsight-api\"\n",
+            "[project]\nname = \"hindsight-api-slim\"\n\n\
+             [tool.hatch.build.targets.wheel]\npackages = [\"hindsight_api\"]\n",
         );
         write(root, "hindsight-api-slim/hindsight_api/__init__.py", "");
         write(root, "hindsight-api-slim/hindsight_api/server.py", "");
@@ -1364,6 +1491,76 @@ mod tests {
         let candidate = detect_python(dir.path()).unwrap().unwrap();
         assert_eq!(candidate.pkg, "service/service");
         assert_eq!(candidate.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn nested_projects_count_through_the_packages_their_build_backend_ships() {
+        let dir = TempDir::new().unwrap();
+        // hatch: a hint that names nothing on disk is skipped, the next one
+        // counts.
+        write(
+            dir.path(),
+            "api-slim/pyproject.toml",
+            "[project]\nname = \"hindsight-api-slim\"\n\n\
+             [tool.hatch.build.targets.wheel]\npackages = [\"missing\", \"hindsight_api\"]\n",
+        );
+        write(dir.path(), "api-slim/hindsight_api/__init__.py", "");
+        write(dir.path(), "api-slim/hindsight_api/server.py", "");
+        let candidate = detect_python(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, "api-slim/hindsight_api");
+        assert_eq!(candidate.confidence, Confidence::High);
+        assert!(candidate.evidence.ends_with(
+            "matched api-slim/hindsight_api (a package the manifest's build backend ships)"
+        ));
+
+        // setuptools: a literal packages list under `package-dir = {"" = "src"}`.
+        write(
+            dir.path(),
+            "lib/pyproject.toml",
+            "[project]\nname = \"distname\"\n\n\
+             [tool.setuptools]\npackages = [\"realpkg\", \"realpkg.sub\"]\n\
+             package-dir = {\"\" = \"src\"}\n",
+        );
+        write(dir.path(), "lib/src/realpkg/__init__.py", "");
+        let candidate = detect_python(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, ".");
+        assert_eq!(candidate.confidence, Confidence::Medium);
+        assert!(
+            candidate
+                .evidence
+                .contains("2 projects declare a package below the root (api-slim/hindsight_api, lib/src/realpkg)"),
+            "{}",
+            candidate.evidence
+        );
+    }
+
+    #[test]
+    fn a_package_holding_a_setup_py_is_not_a_nested_project() {
+        // dify's shape: a package (it has an `__init__.py`) whose module
+        // happens to be called `setup.py`. Were it a project, its `name`
+        // would match `ctl/` and make this a two-project monorepo.
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "svc/pyproject.toml",
+            "[project]\nname = \"svc\"\n",
+        );
+        write(dir.path(), "svc/svc/__init__.py", "");
+        write(dir.path(), "web/ctl/__init__.py", "");
+        write(dir.path(), "web/ctl/setup.py", "name = \"ctl\"\n");
+        write(dir.path(), "web/ctl/ctl/__init__.py", "");
+        write(dir.path(), "web/ctl/ctl/views.py", "");
+        let candidate = detect_python(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, "svc/svc");
+        assert_eq!(candidate.confidence, Confidence::High);
+        assert!(!is_python_project_dir(&dir.path().join("web/ctl")));
+        // A package whose pyproject.toml declares a name is a project.
+        write(
+            dir.path(),
+            "web/ctl/pyproject.toml",
+            "[project]\nname = \"ctl\"\n",
+        );
+        assert!(is_python_project_dir(&dir.path().join("web/ctl")));
     }
 
     #[test]

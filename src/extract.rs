@@ -2484,12 +2484,16 @@ fn python_project_src_layout(repo: &Path, project: &str) -> bool {
     src.is_dir() && !src.join("__init__.py").is_file()
 }
 
+/// The nearest directory above `file` that is a Python project root
+/// (`detect::is_python_project_dir`): it holds a `pyproject.toml` or
+/// `setup.py` and is not itself a package. Issue #162: before that rule a
+/// Flask controller named `setup.py` (langgenius/dify's
+/// `api/controllers/console/setup.py`) made its package a project, cutting
+/// its files off from the project that imports them as `controllers.x`.
 fn python_project_root(repo: &Path, file: &str) -> Option<String> {
     let mut directory = Path::new(file).parent()?;
     while !directory.as_os_str().is_empty() {
-        if repo.join(directory).join("pyproject.toml").is_file()
-            || repo.join(directory).join("setup.py").is_file()
-        {
+        if crate::detect::is_python_project_dir(&repo.join(directory)) {
             return Some(directory.to_string_lossy().replace('\\', "/"));
         }
         directory = directory.parent()?;
@@ -7085,10 +7089,10 @@ mod tests {
 
     #[test]
     fn a_directory_whose_setup_py_declares_no_name_owns_no_top_level_name() {
-        // dify's shape: `app/controllers/console/setup.py` is a controller,
-        // not a manifest, yet it makes its directory a project to
-        // `python_project_root`. Its `socketio/` must not answer for the
-        // external `socketio` library imported elsewhere.
+        // A directory with no `__init__.py` holding a `setup.py` that
+        // declares no name (here a controller) is still a project root to
+        // `python_project_root`, but it owns no top-level name: its
+        // `socketio/` must not answer for the external `socketio` library.
         let intermediate = python_root_intermediate(&[
             ("app/pyproject.toml", "[project]\nname = 'dify-api'\n"),
             ("app/factory.py", "import socketio\n"),
@@ -7100,6 +7104,51 @@ mod tests {
         ]);
         let edges = intermediate_edges(&intermediate);
         assert!(targets_of(&edges, "app/factory.py").is_empty(), "{edges:?}");
+        assert_eq!(intermediate.python_cross_project, 0);
+    }
+
+    #[test]
+    fn a_package_holding_a_setup_py_is_not_a_project_root() {
+        // dify's shape: `api/controllers/console/` is a package (it has an
+        // `__init__.py`) holding a Flask controller named `setup.py`. Its
+        // files stay in the `api` project and resolve `controllers.x`
+        // there, as the running application imports them.
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        write(root, "api/pyproject.toml", "[project]\nname = 'dify-api'\n");
+        write(root, "api/controllers/__init__.py", "");
+        write(root, "api/controllers/console/__init__.py", "");
+        write(root, "api/controllers/console/setup.py", "name = 'setup'\n");
+        write(
+            root,
+            "api/controllers/console/wraps.py",
+            "from controllers.common import helper\n",
+        );
+        write(root, "api/controllers/common/__init__.py", "");
+        write(root, "api/controllers/common/helper.py", "VALUE = 1\n");
+        assert_eq!(
+            python_project_root(root, "api/controllers/console/wraps.py").as_deref(),
+            Some("api")
+        );
+        // A package whose pyproject.toml declares a name is still one.
+        write(root, "tools/named/__init__.py", "");
+        write(
+            root,
+            "tools/named/pyproject.toml",
+            "[project]\nname = 'named'\n",
+        );
+        write(root, "tools/named/x.py", "");
+        assert_eq!(
+            python_project_root(root, "tools/named/x.py").as_deref(),
+            Some("tools/named")
+        );
+        let (parsed, raw) = parse_files(root, ".", LanguageKind::Python).unwrap();
+        let intermediate = parse_python(root, ".", parsed, raw).unwrap();
+        let edges = intermediate_edges(&intermediate);
+        assert!(edges.contains(&(
+            "api/controllers/console/wraps.py".to_owned(),
+            "api/controllers/common/helper.py".to_owned()
+        )));
         assert_eq!(intermediate.python_cross_project, 0);
     }
 
