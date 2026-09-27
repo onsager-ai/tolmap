@@ -1194,10 +1194,13 @@ pub fn restore(state: &Arc<AppState>) -> anyhow::Result<()> {
                 unreadable.push(row);
                 continue;
             };
+            // A class the configuration no longer has (fewer
+            // `TOLMAP_LOOPBACK_CLASSES` across the restart) is read as the
+            // largest there is, where a job that fits nowhere goes (§2.1).
+            let largest = registry.classes.len().saturating_sub(1);
             let class = usize::try_from(row.class)
                 .ok()
-                .filter(|class| *class < registry.classes.len())
-                .unwrap_or(0);
+                .map_or(largest, |class| class.min(largest));
             let (tx, _rx) = watch::channel(snapshot);
             registry.jobs.insert(id, tx.clone());
             registry.active.insert(key.clone(), id);
