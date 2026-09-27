@@ -45,7 +45,7 @@ on:
         required: false
         default: "main"
       repos:
-        description: "slugs, band, all, stability, or stability:owner/repo,... (300 commits back; httpx 200)"
+        description: "slugs (or owner/repo@<sha> for a repo outside eval/corpus.toml, plain detection), band, all, stability, or stability:owner/repo,... (300 commits back; httpx 200)"
         required: false
         default: "all"
       extra_args:

@@ -1384,6 +1384,7 @@ mod tests {
             nodes: Vec::new(),
             references: None,
             build_output_mirror: 0,
+            python_cross_project: 0,
             edges: vec![
                 edge("a", "b", 10.0),
                 edge("b", "c", 10.0),
@@ -1450,6 +1451,7 @@ mod tests {
             nodes: Vec::new(),
             references: None,
             build_output_mirror: 0,
+            python_cross_project: 0,
             edges: vec![SignalEdge {
                 a: "a".to_owned(),
                 b: "b".to_owned(),

@@ -79,6 +79,9 @@ function statusForStage(stageId) {
 // distinct too-large state to model any more, just an ordinary failure.
 function classify(slug) {
   if (/crashes/i.test(slug)) return "worker_crashed";
+  // Issue #162: detection refuses a low-confidence source root, at the
+  // detect stage, with the chosen candidate's evidence as `error`.
+  if (/uncertain/i.test(slug)) return "detection_uncertain";
   if (/fails|toolong|huge/i.test(slug)) return "generic";
   return null;
 }
@@ -207,10 +210,18 @@ function runStages(job, stageIndex) {
   const failure = classify(job.slug);
   // Fails partway through a representative early stage (parse, index 5),
   // late enough that the timeline and progress bar have something to show
-  // first.
-  if (failure && stageIndex === 5) {
+  // first. A detection refusal fails where the real worker does, at detect.
+  const failAt = failure === "detection_uncertain" ? STAGE_DEFS.findIndex((stage) => stage.id === "detect") : 5;
+  if (failure && stageIndex === failAt) {
     job._timer = setTimeout(() => {
-      if (failure === "worker_crashed") {
+      if (failure === "detection_uncertain") {
+        finishJob(job, {
+          status: "failed",
+          error:
+            "py at . (972 files, low confidence) -- no pyproject.toml/setup.py package match and no directory with __init__.py; mapping the repository root directly",
+          error_code: "detection_uncertain",
+        });
+      } else if (failure === "worker_crashed") {
         finishJob(job, {
           status: "failed",
           error: "worker exited unexpectedly (signal 9)",

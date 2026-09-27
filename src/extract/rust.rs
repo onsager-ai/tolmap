@@ -2181,6 +2181,7 @@ pub(crate) fn resolve(
         uses,
         module_for,
         build_output_mirror: 0,
+        python_cross_project: 0,
     })
 }
 
