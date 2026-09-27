@@ -120,6 +120,14 @@ pub trait EventSink {
     /// The child's own peak RSS, from `wait_with_peak`, on every path that
     /// reaps it -- success, failure and cancel alike.
     fn peak_rss(&mut self, bytes: u64);
+    /// How the child ended, once reaped after its events (#97 phase 2,
+    /// step 4), and whether this executor itself had just sent its process
+    /// group SIGKILL (a cancel, or a stream it could not read). An agent
+    /// needs both to tell an out-of-memory kill from a kill of its own
+    /// (docs/WORKER_TIER.md §6 "job child OOM-killed"). Local mode keeps
+    /// the default, which ignores it: there an OOM fails the job as it
+    /// always has.
+    fn child_exited(&mut self, _status: std::process::ExitStatus, _killed_here: bool) {}
 }
 
 /// Whether to stop, and which process to kill when told to. In local mode
@@ -1030,7 +1038,8 @@ pub(crate) fn run_child(
         }
         sink.event(event);
     }
-    if error.is_some() || probe.is_cancelled() {
+    let killed_here = error.is_some() || probe.is_cancelled();
+    if killed_here {
         kill_worker_group(child.id());
     }
     // The reap: record the peak for every path that reaches here, including
@@ -1044,6 +1053,7 @@ pub(crate) fn run_child(
     if let Some(peak) = peak {
         sink.peak_rss(peak);
     }
+    sink.child_exited(status, killed_here);
     let stderr = stderr_reader.join().unwrap_or_default();
     if probe.is_cancelled() {
         return Err(cancelled_error());

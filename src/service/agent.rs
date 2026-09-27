@@ -47,6 +47,18 @@
 //!   the buffer grows with the number of stages a job runs, not with how
 //!   long it runs (`Outbox`).
 //!
+//! **Classes and out-of-memory kills (#97 phase 2, step 4; §2.1, §6).** A
+//! loopback agent advertises the usable memory its master gives it
+//! (`--class-memory`, from `TOLMAP_LOOPBACK_CLASSES`) instead of its host's,
+//! so one runner can hold a "small" and a "large" agent. It reports its
+//! job's resident memory in every heartbeat (`rss_bytes`: the job child's
+//! process group, read from `/proc`), and it tells an out-of-memory kill of
+//! its job child from any other death: the child died of SIGKILL that the
+//! agent did not send, and, where the memory cgroup's `oom_kill` count can
+//! be read, that count rose while the job ran. It then answers `released`
+//! `oom` with the child's peak instead of an `error`, and the master moves
+//! the job to a larger class.
+//!
 //! **Limits, on purpose.** Plain `ws://` to a loopback master only; one
 //! slot.
 
@@ -116,6 +128,16 @@ pub struct AgentConfig {
     pub cache_dir: PathBuf,
     /// The binary each job child runs as `tolmap worker`: this one.
     pub worker_exe: PathBuf,
+    /// `--class-memory`: the usable memory to advertise in `hello.class`
+    /// instead of this host's (#97 phase 2, step 4). A loopback master sets
+    /// it from `TOLMAP_LOOPBACK_CLASSES`; unset, the host's physical memory
+    /// less the reserve, as before.
+    pub class_memory: Option<u64>,
+    /// The file whose `oom_kill` count tells an out-of-memory kill from
+    /// another SIGKILL. `None` finds the memory cgroup's own
+    /// (`memory_events_path`); tests name a file they write themselves,
+    /// the "marker" a fake out-of-memory job child raises (§9).
+    pub memory_events: Option<PathBuf>,
 }
 
 /// The master this agent dials.
@@ -314,6 +336,129 @@ fn result_hold() -> Duration {
     )
 }
 
+/// Whether a job child that ended with `signal` died of an out-of-memory
+/// kill (docs/WORKER_TIER.md §6 "job child OOM-killed"). The kernel's OOM
+/// killer, global or a cgroup's, sends SIGKILL, so it must be SIGKILL and
+/// one this agent did not send: not the executor's own kill (`killed_here`,
+/// a stream it could not read) and not a cancel (`cancelled`: the master's
+/// `cancel`, `shutdown now`, a lost lease). Where the memory cgroup's
+/// `oom_kill` count was read before the job and after the child died, it
+/// must have risen: that tells the OOM killer from anything else on the
+/// host that sends SIGKILL. Where it could not be read (no cgroup v1 or v2
+/// memory controller, or no permission), SIGKILL not sent by the agent is
+/// all the evidence there is, and it is taken, as §6 allows.
+fn killed_by_oom(
+    signal: Option<i32>,
+    killed_here: bool,
+    cancelled: bool,
+    oom_kills_before: Option<u64>,
+    oom_kills_after: Option<u64>,
+) -> bool {
+    const SIGKILL: i32 = 9;
+    if signal != Some(SIGKILL) || killed_here || cancelled {
+        return false;
+    }
+    match (oom_kills_before, oom_kills_after) {
+        (Some(before), Some(after)) => after > before,
+        _ => true,
+    }
+}
+
+/// The `oom_kill` count in a memory cgroup's event file: `memory.events`
+/// on cgroup v2, `memory.oom_control` on v1 (Linux 4.13 and later), both
+/// `oom_kill <n>` lines.
+fn read_oom_kills(path: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_oom_kills(&text)
+}
+
+fn parse_oom_kills(text: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("oom_kill "))
+        .and_then(|count| count.trim().parse().ok())
+}
+
+/// This process's memory cgroup event file, which its job children share
+/// (they inherit the cgroup). v2 first (`0::<path>` in `/proc/self/cgroup`),
+/// then v1's `memory` controller. `None` where neither is readable.
+fn memory_events_path() -> Option<PathBuf> {
+    let cgroups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    memory_events_candidates(&cgroups)
+        .into_iter()
+        .find(|path| read_oom_kills(path).is_some())
+}
+
+fn memory_events_candidates(cgroups: &str) -> Vec<PathBuf> {
+    let under = |root: &str, path: &str| Path::new(root).join(path.trim_start_matches('/'));
+    let mut candidates = Vec::new();
+    for line in cgroups.lines() {
+        let mut fields = line.splitn(3, ':');
+        let (Some(id), Some(controllers), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if id == "0" && controllers.is_empty() {
+            candidates.insert(0, under("/sys/fs/cgroup", path).join("memory.events"));
+        } else if controllers
+            .split(',')
+            .any(|controller| controller == "memory")
+        {
+            candidates.push(under("/sys/fs/cgroup/memory", path).join("memory.oom_control"));
+        }
+    }
+    candidates
+}
+
+/// The resident memory of every process in the process group `pgid` (the
+/// job child leads its own group, and its indexers and git children join
+/// it), from `/proc/<pid>/stat`. Linux only; `None` elsewhere, or when no
+/// process of the group is left.
+fn process_group_rss(pgid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `sysconf` reads a system constant and has no
+        // preconditions.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page = u64::try_from(page).ok().filter(|page| *page > 0)?;
+        let mut total = None;
+        for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name
+                .to_str()
+                .filter(|name| name.bytes().all(|b| b.is_ascii_digit()))
+            else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                continue;
+            };
+            if let Some((group, pages)) = stat_group_and_rss(&stat) {
+                if group == pgid {
+                    total = Some(total.unwrap_or(0) + pages.saturating_mul(page));
+                }
+            }
+        }
+        total
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pgid;
+        None
+    }
+}
+
+/// `pgrp` (field 5) and `rss` in pages (field 24) of a `/proc/<pid>/stat`
+/// line. The command name (field 2) may hold spaces and parentheses, so
+/// fields are counted after its last `)`: field 3 is the first there.
+fn stat_group_and_rss(stat: &str) -> Option<(u32, u64)> {
+    let tail = stat.rsplit_once(") ")?.1;
+    let fields: Vec<&str> = tail.split(' ').collect();
+    let group = fields.get(5 - 3)?.parse().ok()?;
+    let rss = fields.get(24 - 3)?.parse().ok()?;
+    Some((group, rss))
+}
+
 /// Runs the agent until the master sends `shutdown` (`Ok`) or something
 /// redialling cannot mend happens (`Err`, so the process exits non-zero
 /// and its supervisor restarts it).
@@ -342,12 +487,19 @@ pub fn run(config: AgentConfig) -> Result<()> {
     };
     let (to_main, from_jobs) = mpsc::channel();
     let now = Instant::now();
+    let mut class = host_class();
+    if let Some(memory_bytes) = config.class_memory {
+        class.memory_bytes = memory_bytes;
+    }
+    let memory_events = config.memory_events.clone().or_else(memory_events_path);
     let mut agent = Agent {
         link: None,
         endpoint,
         token,
         host,
         worker_id: format!("agent-{}", std::process::id()),
+        class,
+        memory_events,
         // Both replaced by the master's `welcome`.
         heartbeat: Duration::from_secs(1),
         lease_ttl: Duration::from_secs(crate::service::workers::DEFAULT_LEASE_TTL_S),
@@ -667,6 +819,9 @@ enum Outcome {
     Result(WorkerEvent, PathBuf),
     Failed(ErrorBody),
     Cancelled,
+    /// The job child was killed for memory (`killed_by_oom`): released as
+    /// `oom`, and the master moves the job to a larger class (§6).
+    OutOfMemory,
 }
 
 fn discard(outcome: &Outcome) {
@@ -747,6 +902,11 @@ struct Agent {
     token: String,
     host: HostEnv,
     worker_id: String,
+    /// `hello.class`, fixed for the process: every redial advertises the
+    /// same class, so the master never sees the agent change class.
+    class: WorkerClass,
+    /// Where the memory cgroup's `oom_kill` count is read, if anywhere.
+    memory_events: Option<PathBuf>,
     heartbeat: Duration,
     lease_ttl: Duration,
     hold: Duration,
@@ -893,7 +1053,7 @@ impl Agent {
             proto_max: PROTO,
             worker_id: self.worker_id.clone(),
             build: own_build(),
-            class: host_class(),
+            class: self.class.clone(),
             slots: 1,
             // `local_paths`: this agent shares the master's host (it only
             // ever dials loopback). `resume`: it keeps its job across a
@@ -1034,10 +1194,15 @@ impl Agent {
                     last_seq: current.outbox.last_seq,
                 })
                 .collect();
-            let beat = WorkerMessage::Heartbeat {
-                jobs,
-                rss_bytes: None,
-            };
+            // The job child's process group's resident memory now, so a
+            // master that loses this agent can tell whether it died of
+            // memory (§6 "worker host dies"). Nothing while no child runs.
+            let rss_bytes = self
+                .current
+                .as_ref()
+                .and_then(|current| *current.child.lock().expect("agent child mutex poisoned"))
+                .and_then(process_group_rss);
+            let beat = WorkerMessage::Heartbeat { jobs, rss_bytes };
             let sent = send(self.link.as_mut().expect("checked above"), &beat);
             if let Err(error) = sent {
                 self.disconnect(&format!("{error:#}"));
@@ -1302,6 +1467,17 @@ impl Agent {
             // with no `released` set -- the hold running out, or `fail` --
             // and both have let the job go already; release it all the same.
             Outcome::Cancelled => self.let_go(Some(ReleasedReason::Cancelled), peak_rss_bytes),
+            // §6: `released` `oom` with the peak the child reached, which the
+            // master records so the memory model learns from it. It goes
+            // through `pending`, like any `released`, so a channel that is
+            // down meanwhile delivers it on the next one.
+            Outcome::OutOfMemory => {
+                eprintln!(
+                    "job {}: the job child was killed for memory; releasing it for a larger                      worker class",
+                    current.job_id
+                );
+                self.let_go(Some(ReleasedReason::Oom), peak_rss_bytes)
+            }
         }
     }
 
@@ -1333,6 +1509,7 @@ impl Agent {
             token: self.token.clone(),
             host: self.host.clone(),
             hold: self.hold,
+            memory_events: self.memory_events.clone(),
             cancel,
             child,
             out: self.to_main.clone(),
@@ -1353,6 +1530,9 @@ impl Agent {
 struct AgentSink {
     out: mpsc::Sender<FromJob>,
     peak_rss_bytes: Option<u64>,
+    /// How the job child ended: the signal that killed it, if one did, and
+    /// whether the executor sent that kill itself.
+    exit: Option<(Option<i32>, bool)>,
 }
 
 impl AgentSink {
@@ -1392,6 +1572,17 @@ impl EventSink for AgentSink {
     fn peak_rss(&mut self, bytes: u64) {
         self.peak_rss_bytes = Some(bytes);
     }
+
+    fn child_exited(&mut self, status: std::process::ExitStatus, killed_here: bool) {
+        #[cfg(unix)]
+        let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+        #[cfg(not(unix))]
+        let signal = {
+            let _ = status;
+            None
+        };
+        self.exit = Some((signal, killed_here));
+    }
 }
 
 /// The agent's [`CancelProbe`]: the master's `cancel` sets the flag and
@@ -1430,6 +1621,8 @@ struct JobContext {
     host: HostEnv,
     /// Uploads are retried for at most this long (§3.5).
     hold: Duration,
+    /// Where the memory cgroup's `oom_kill` count is read, if anywhere.
+    memory_events: Option<PathBuf>,
     cancel: Arc<AtomicBool>,
     child: Arc<Mutex<Option<u32>>>,
     out: mpsc::Sender<FromJob>,
@@ -1452,6 +1645,7 @@ impl JobContext {
         let mut sink = AgentSink {
             out: self.out.clone(),
             peak_rss_bytes: None,
+            exit: None,
         };
         let probe = AgentProbe {
             cancel: self.cancel.clone(),
@@ -1475,6 +1669,10 @@ impl JobContext {
             return Outcome::Failed(internal("the job id is not a UUID"));
         };
         let http = http_agent();
+        // Read before the job starts: an out-of-memory kill of this job
+        // raises the count past this (§6). Clone and child alike run after
+        // it, and only the child's death is ever read as out of memory.
+        let oom_kills_before = self.memory_events.as_deref().and_then(read_oom_kills);
         let inputs_dir = self.host.cache_dir.join("inputs").join(id.to_string());
         let inputs = self.fetch_inputs(&http, &inputs_dir);
         let executed = inputs.and_then(|inputs| {
@@ -1490,7 +1688,21 @@ impl JobContext {
         let _ = std::fs::remove_dir_all(&inputs_dir);
         let executed = match executed {
             Ok(executed) => executed,
-            Err(error) => return Outcome::Failed(error),
+            Err(error) => {
+                if let Some((signal, killed_here)) = sink.exit {
+                    let oom_kills_after = self.memory_events.as_deref().and_then(read_oom_kills);
+                    if killed_by_oom(
+                        signal,
+                        killed_here,
+                        probe.is_cancelled(),
+                        oom_kills_before,
+                        oom_kills_after,
+                    ) {
+                        return Outcome::OutOfMemory;
+                    }
+                }
+                return Outcome::Failed(error);
+            }
         };
         let outcome = self.upload(&http, id, &executed, probe);
         // The checkout and whatever the child left go now; a result's files
@@ -1904,6 +2116,55 @@ mod tests {
             "-:log 11 log line(s) dropped while the channel to the master was down"
         );
         assert!(shape[LOG_BOUND + 1].contains("start"), "{shape:?}");
+    }
+
+    /// §6: only a SIGKILL the agent did not send is an out-of-memory kill,
+    /// and where the cgroup's count was read it must have risen.
+    #[test]
+    fn only_an_unasked_sigkill_is_an_out_of_memory_kill() {
+        const KILL: Option<i32> = Some(9);
+        // No cgroup to read: an unasked SIGKILL is taken.
+        assert!(killed_by_oom(KILL, false, false, None, None));
+        assert!(killed_by_oom(KILL, false, false, Some(3), None));
+        // A cgroup read both times: only a raised count.
+        assert!(killed_by_oom(KILL, false, false, Some(3), Some(4)));
+        assert!(!killed_by_oom(KILL, false, false, Some(3), Some(3)));
+        // The agent's own kills, and anything but SIGKILL.
+        assert!(!killed_by_oom(KILL, true, false, None, None));
+        assert!(!killed_by_oom(KILL, false, true, Some(3), Some(4)));
+        assert!(!killed_by_oom(Some(15), false, false, Some(3), Some(4)));
+        assert!(!killed_by_oom(None, false, false, Some(3), Some(4)));
+    }
+
+    #[test]
+    fn the_oom_kill_count_and_the_memory_cgroup_are_read_from_their_files() {
+        let v2 = "low 0\nhigh 0\nmax 12\noom 2\noom_kill 2\noom_group_kill 0\n";
+        assert_eq!(parse_oom_kills(v2), Some(2));
+        let v1 = "oom_kill_disable 0\nunder_oom 0\noom_kill 7\n";
+        assert_eq!(parse_oom_kills(v1), Some(7));
+        assert_eq!(parse_oom_kills("oom 1\n"), None);
+        assert_eq!(
+            memory_events_candidates("0::/system.slice/runner.service\n"),
+            [PathBuf::from(
+                "/sys/fs/cgroup/system.slice/runner.service/memory.events"
+            )]
+        );
+        assert_eq!(
+            memory_events_candidates("12:cpu,cpuacct:/a\n9:memory:/docker/x\n0::/\n"),
+            [
+                PathBuf::from("/sys/fs/cgroup/memory.events"),
+                PathBuf::from("/sys/fs/cgroup/memory/docker/x/memory.oom_control"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_process_group_and_its_resident_pages_are_read_from_proc_stat() {
+        // `comm` with a space and a parenthesis in it, as a script may have.
+        let stat = "4242 (my (odd) job) S 1 4240 4240 0 -1 4194304 100 0 0 0 1 2 0 0 20 0 \
+                    1 0 123 45678 321 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3";
+        assert_eq!(stat_group_and_rss(stat), Some((4240, 321)));
+        assert_eq!(stat_group_and_rss("garbage"), None);
     }
 
     /// Written entries are dropped as the master acknowledges them, and a

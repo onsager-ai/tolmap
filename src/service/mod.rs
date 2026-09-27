@@ -44,6 +44,16 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
     // error rather than a half-started service. Unset is local mode,
     // exactly as before it existed.
     let workers_mode = workers::WorkersMode::from_env()?;
+    // Local mode starts no agents, so it has no classes to give them; the
+    // variable is read, and a malformed one refused, by `start_loopback`.
+    if workers_mode == workers::WorkersMode::Local
+        && std::env::var_os("TOLMAP_LOOPBACK_CLASSES").is_some()
+    {
+        eprintln!(
+            "tolmap serve: TOLMAP_LOOPBACK_CLASSES is ignored: it applies only with \
+             TOLMAP_WORKERS=loopback:N"
+        );
+    }
     let store = Store::open(&config.db_path)
         .with_context(|| format!("open store at {}", config.db_path.display()))?;
     let bind = config.bind;
