@@ -533,10 +533,10 @@ try {
       await page.waitForTimeout(300);
       await shot(page, `${tag}-layers-sheet`);
 
-      // Search from the pill (phase 2's interim search layer).
+      // Search from the pill (phase 3 frames below cover it in full).
       await open(page);
       await page.locator("[data-open-search]").click();
-      await page.locator('[data-search-layer] input[aria-label="Search files"]').fill("types");
+      await page.locator('[data-search-layer] input[data-search-input]').fill("types");
       await page.waitForTimeout(300);
       await shot(page, `${tag}-search-open`);
 
@@ -559,6 +559,97 @@ try {
       await setSheetDetent(page, "half");
       await page.waitForTimeout(500);
       await shot(page, "phone-file-selected-half-light");
+      await context.close();
+    }
+  }
+
+  // docs/UX.md §11 phase 3: search. Focused with results on the district
+  // layer and the package layer, phone and desktop, dark (the approved
+  // "Search active" artboard) and light; the empty and no-results states; a
+  // result picked with the sheet at Peek and the target above it; the
+  // desktop dropdown with a row highlighted from the keyboard.
+  if (slugs.includes(DIFY_SLUG)) {
+    const stem = `${out}/phase3`;
+    const shot = async (page, name) => {
+      await page.screenshot({ path: `${stem}-${name}.png` });
+      console.log(`${stem}-${name}.png`);
+    };
+    const load = async (page, query = "") => {
+      await page.goto(`${base}/${DIFY_SLUG}${query}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(700);
+    };
+    const type = async (page, text) => {
+      await page.locator("input[data-search-input]").fill(text);
+      await page.waitForTimeout(300);
+    };
+    const phones = [
+      PROFILES.find((p) => p.name === "phone"),
+      { name: "phone320", viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+    ];
+    for (const colorScheme of ["dark", "light"]) {
+      for (const profile of phones) {
+        if (profile.name === "phone320" && colorScheme === "light") continue;
+        const context = await browser.newContext({ ...profile, colorScheme });
+        const page = await context.newPage();
+        const tag = `${profile.name}-${colorScheme}`;
+        const openSearch = async () => {
+          await page.locator("[data-open-search]").click();
+          await page.locator("[data-search-layer] input[data-search-input]").waitFor();
+          await page.waitForTimeout(250);
+        };
+        await load(page);
+        await openSearch();
+        await shot(page, `${tag}-search-empty`);
+        await type(page, "workflow");
+        await shot(page, `${tag}-search-workflow-district-layer`);
+        await type(page, "zzqqxxj");
+        await shot(page, `${tag}-search-no-results`);
+        await load(page, "?layer=p");
+        await openSearch();
+        await type(page, "workflow");
+        await shot(page, `${tag}-search-workflow-package-layer`);
+        // Picked: a file from the results, framed above the sheet at Peek.
+        await load(page);
+        await openSearch();
+        await type(page, "workflow/types.ts");
+        const doc = await (await fetch(`${base}/maps/${DIFY_SLUG}.json`)).json();
+        const i = doc.F.indexOf("web/app/components/workflow/types.ts");
+        const row = page.locator(`[data-search-key="f${i}"]`);
+        if (i >= 0 && (await row.count())) {
+          await row.click();
+          await page.waitForTimeout(900);
+          await shot(page, `${tag}-search-picked-file-peek`);
+        }
+        // Picked: a district.
+        await openSearch();
+        await type(page, "workflow");
+        const dRow = page.locator('[data-search-option="district"]').first();
+        if (await dRow.count()) {
+          await dRow.click();
+          await page.waitForTimeout(900);
+          await shot(page, `${tag}-search-picked-district-peek`);
+        }
+        await context.close();
+      }
+      // Desktop: the dropdown on the district and package layers, a row
+      // highlighted from the keyboard.
+      const desktop = PROFILES.find((p) => p.name === "desktop");
+      const context = await browser.newContext({ ...desktop, colorScheme });
+      const page = await context.newPage();
+      await load(page);
+      await page.keyboard.press("/");
+      await page.waitForTimeout(200);
+      await shot(page, `desktop-${colorScheme}-search-empty`);
+      await type(page, "workflow");
+      await page.locator("input[data-search-input]").press("ArrowDown");
+      await page.locator("input[data-search-input]").press("ArrowDown");
+      await page.waitForTimeout(150);
+      await shot(page, `desktop-${colorScheme}-search-workflow-district-layer`);
+      await load(page, "?layer=p");
+      await page.locator("input[data-search-input]").click();
+      await type(page, "a");
+      await shot(page, `desktop-${colorScheme}-search-a-package-layer`);
       await context.close();
     }
   }

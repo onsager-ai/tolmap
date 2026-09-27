@@ -486,9 +486,9 @@ async function setLayer(page, profile, layer) {
 async function searchFor(page, profile, text) {
   if (profile.isMobile) {
     await page.locator("[data-open-search]").click();
-    await page.waitForSelector('[data-search-layer] input[aria-label="Search files"]');
+    await page.waitForSelector('[data-search-layer] input[data-search-input]');
   }
-  await page.locator('input[aria-label="Search files"]').fill(text);
+  await page.locator('input[data-search-input]').fill(text);
   await page.waitForTimeout(150);
 }
 
@@ -2038,7 +2038,7 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   await page.goto(`${base}/${slug}`);
   await page.waitForSelector("svg.map-svg path.hit");
   await searchFor(page, profile, doc.F[index]);
-  await page.locator('input[aria-label="Search files"]').press("Enter");
+  await page.locator('input[data-search-input]').press("Enter");
   report(new URL(page.url()).searchParams.get("file") === doc.F[index],
     `${label}: search result opens the unconnected file card`);
 
@@ -2618,9 +2618,9 @@ async function checkSearchPanOffscreen(browser, base) {
 
   const before = await readDot(page, picked.companionKey);
   const beforeTarget = await readDot(page, `f:${picked.index}`);
-  await page.locator('input[aria-label="Search files"]').fill(picked.file.split("/").pop());
+  await page.locator('input[data-search-input]').fill(picked.file.split("/").pop());
   await page.waitForTimeout(150);
-  await page.locator('input[aria-label="Search files"]').press("Enter");
+  await page.locator('input[data-search-input]').press("Enter");
   await page.waitForTimeout(650); // glide()/settle
   const after = await readDot(page, picked.companionKey);
   const afterTarget = await readDot(page, `f:${picked.index}`);
@@ -4979,7 +4979,7 @@ async function checkPhoneBackStack(browser, base, profile) {
   await page.waitForTimeout(380);
   await page.locator("[data-open-search]").click();
   await page.waitForSelector("[data-search-layer]");
-  const input = await page.locator('[data-search-layer] input[aria-label="Search files"]').evaluate((el) => ({
+  const input = await page.locator('[data-search-layer] input[data-search-input]').evaluate((el) => ({
     focused: document.activeElement === el,
     size: parseFloat(getComputedStyle(el).fontSize),
   }));
@@ -5313,6 +5313,307 @@ async function checkDetectionUncertainJobPage(browser, base) {
   await context.close();
 }
 
+// ---------------------------------------------------------------------------
+// docs/UX.md phase 3: search (§4.8, §7.2) on both profiles. The pure parts
+// (grouping, district ranking, highlighting, the keyboard reducer) are
+// unit-tested in check-search.ts; these drive the real page: the combobox
+// and its listbox, grouped rows with counts and highlights, the empty and
+// no-results states, nothing covering the results on the district and the
+// package layer, a pick framed above the sheet at Peek (phone), and on
+// desktop `/`, the arrows, Enter, Esc, an outside click and focus return.
+// ---------------------------------------------------------------------------
+
+/** The search state as the page renders it: the combobox's ARIA, the
+ * groups (kind, header count, row count) and the rows. */
+async function searchState(page) {
+  return page.evaluate(() => {
+    const input = document.querySelector("input[data-search-input]");
+    if (!input) return null;
+    const listId = input.getAttribute("aria-controls");
+    const list = listId ? document.getElementById(listId) : null;
+    const groups = [...document.querySelectorAll("[data-search-group]")].map((g) => ({
+      kind: g.getAttribute("data-search-group"),
+      header: g.querySelector("[data-search-group-header]")?.textContent ?? "",
+      rows: g.querySelectorAll('[role="option"]').length,
+    }));
+    const options = [...document.querySelectorAll('[role="listbox"] [role="option"]')].map((o) => {
+      const r = o.getBoundingClientRect();
+      return {
+        id: o.id,
+        key: o.getAttribute("data-search-key"),
+        kind: o.getAttribute("data-search-option"),
+        selected: o.getAttribute("aria-selected"),
+        h: r.height,
+        fits: o.scrollWidth <= o.clientWidth + 1,
+        marks: [...o.querySelectorAll("mark")].map((m) => m.textContent),
+        visible: r.bottom > 0 && r.top < innerHeight,
+      };
+    });
+    return {
+      role: input.getAttribute("role"),
+      expanded: input.getAttribute("aria-expanded"),
+      active: input.getAttribute("aria-activedescendant"),
+      focused: document.activeElement === input,
+      fontSize: parseFloat(getComputedStyle(input).fontSize),
+      listRole: list?.getAttribute("role") ?? null,
+      groups,
+      options,
+      state: document.querySelector("[data-search-state]")?.getAttribute("data-search-state") ?? null,
+    };
+  });
+}
+
+/** Every visible result row hit-tests to itself at its centre and at both
+ * ends: nothing (the pill, the control column, the sheet, the package
+ * legend, the selection panel) draws over the results (§4.8). */
+async function resultsUncovered(page) {
+  return page.evaluate(() => {
+    const out = [];
+    let tested = 0;
+    for (const o of document.querySelectorAll('[role="listbox"] [role="option"]')) {
+      const r = o.getBoundingClientRect();
+      // Only rows wholly inside the scrolling list's own box: one scrolled
+      // past its edge is clipped by the list, not covered by other chrome.
+      const clip = o.closest("[data-search-dropdown], [data-search-results]")?.getBoundingClientRect();
+      if (!clip || r.top < clip.top || r.bottom > clip.bottom || r.bottom > innerHeight || r.height === 0) continue;
+      const y = Math.min(r.top + r.height / 2, innerHeight - 1);
+      tested++;
+      for (const x of [r.left + 4, r.left + r.width / 2, r.right - 4]) {
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || hit.closest('[role="option"]') !== o) out.push({ key: o.getAttribute("data-search-key"), x: Math.round(x), y: Math.round(y), hit: hit?.outerHTML.slice(0, 80) ?? null });
+      }
+    }
+    return { tested, covered: out };
+  });
+}
+
+async function checkSearch(browser, base, profile) {
+  const phone = !!profile.isMobile;
+  const label = `search (dify) / ${profile.name} ${profile.viewport.width}x${profile.viewport.height}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  const minRow = phone ? 56 : 32;
+  const load = async (query = "") => {
+    await page.goto(`${base}/langgenius/dify${query}`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("svg.map-svg path.hit");
+    await page.waitForTimeout(600);
+  };
+  const open = async (query = "") => {
+    await load(query);
+    if (phone) {
+      await page.locator("[data-open-search]").click();
+      await page.waitForSelector("[data-search-layer] input[data-search-input]");
+    } else {
+      await page.locator("input[data-search-input]").click();
+    }
+    await page.waitForTimeout(200);
+  };
+  const type = async (text) => {
+    await page.locator("input[data-search-input]").fill(text);
+    await page.waitForTimeout(200);
+  };
+
+  // Opened, empty: the combobox is focused (16 px on a phone) and shows the
+  // empty state -- a hint and the largest districts -- not a blank layer.
+  await open();
+  let s = await searchState(page);
+  report(!!s && s.role === "combobox" && s.expanded === "true" && s.listRole === "listbox" && s.focused,
+    `${label}: search opens as a focused combobox controlling a listbox (§7.2)`, JSON.stringify(s && { role: s.role, expanded: s.expanded, listRole: s.listRole, focused: s.focused }));
+  if (phone) report(s.fontSize >= 16, `${label}: the input is 16 px (no iPhone focus zoom, §4.8)`, String(s.fontSize));
+  report(s.state === "empty" && s.groups.length === 1 && s.groups[0].kind === "district" && s.groups[0].rows > 0,
+    `${label}: empty query shows the empty state and the largest districts`, JSON.stringify({ state: s.state, groups: s.groups }));
+  if (phone) {
+    const box = await page.locator("[data-search-layer]").boundingBox();
+    report(!!box && box.x === 0 && box.y === 0 && Math.abs(box.width - profile.viewport.width) <= 1 && Math.abs(box.height - profile.viewport.height) <= 1,
+      `${label}: the search layer fills the visible viewport`, JSON.stringify(box));
+  }
+
+  // "workflow": grouped District, Files, Symbols, each header with its count,
+  // rows tall enough, the match highlighted, names shown in full.
+  await type("workflow");
+  s = await searchState(page);
+  const order = s.groups.map((g) => g.kind);
+  report(order.length >= 2 && order[0] === "district" && order.includes("file") && order.join() === ["district", "file", "symbol"].filter((k) => order.includes(k)).join(),
+    `${label}: results are grouped District, Files, Symbols in that order`, JSON.stringify(s.groups));
+  report(s.groups.every((g) => g.header.replace(/\s+/g, " ").endsWith(String(g.rows)) && /^(districts?|files?|symbols?)/i.test(g.header)),
+    `${label}: every group has a header with its count`, JSON.stringify(s.groups.map((g) => g.header)));
+  report(s.options.length > 0 && s.options.every((o) => o.h >= minRow),
+    `${label}: every result row is at least ${minRow} px tall`, JSON.stringify(s.options.map((o) => Math.round(o.h))));
+  report(s.options.some((o) => o.marks.length) && s.options.every((o) => o.marks.every((m) => m.toLowerCase() === "workflow")),
+    `${label}: the match is highlighted, and only the match`, JSON.stringify(s.options.map((o) => o.marks).slice(0, 6)));
+  report(s.options.every((o) => o.fits),
+    `${label}: long names and paths wrap inside the row instead of being cut (§7.2)`, JSON.stringify(s.options.filter((o) => !o.fits).map((o) => o.key)));
+  report(s.options.every((o) => o.selected === "false") && !s.active, `${label}: no row is highlighted before the keyboard moves`);
+  const covered = await resultsUncovered(page);
+  report(covered.tested > 0 && covered.covered.length === 0, `${label}: nothing covers the results on the district layer`, JSON.stringify({ tested: covered.tested, covered: covered.covered.slice(0, 4) }));
+
+  // Arrow keys move the highlight (aria-activedescendant), wrapping.
+  const input = page.locator("input[data-search-input]");
+  await input.press("ArrowDown");
+  await input.press("ArrowDown");
+  s = await searchState(page);
+  report(s.active === s.options[1]?.id && s.options[1]?.selected === "true" && s.focused,
+    `${label}: ArrowDown moves through the results, focus stays in the input`, JSON.stringify({ active: s.active, second: s.options[1]?.id }));
+  await input.press("ArrowUp");
+  await input.press("ArrowUp");
+  s = await searchState(page);
+  report(s.active === s.options[s.options.length - 1]?.id, `${label}: ArrowUp from the first wraps to the last`, JSON.stringify({ active: s.active }));
+
+  // No results.
+  await type("zzqqxxj");
+  s = await searchState(page);
+  report(s.state === "no-results" && s.options.length === 0, `${label}: a query with no match says so`, JSON.stringify({ state: s.state, n: s.options.length }));
+
+  if (phone) {
+    // The clear button empties the field and keeps the keyboard up.
+    await page.locator("[data-search-clear]").click();
+    s = await searchState(page);
+    report((await input.inputValue()) === "" && s.focused && s.state === "empty", `${label}: the clear button empties the query, focus kept`);
+    const clearBox = await page.locator("[data-search-clear]").count();
+    report(clearBox === 0, `${label}: the clear button is gone with the query`);
+
+    // Esc and the back arrow close search; focus returns to the pill.
+    await input.press("Escape");
+    await page.waitForTimeout(200);
+    report((await page.locator("[data-search-layer]").count()) === 0 &&
+      (await page.evaluate(() => document.activeElement?.hasAttribute("data-open-search"))),
+      `${label}: Esc closes search and focus returns to the pill`);
+    await page.locator("[data-open-search]").click();
+    await page.locator('[data-search-layer] button[aria-label="Close search"]').click();
+    await page.waitForTimeout(200);
+    report((await page.locator("[data-search-layer]").count()) === 0, `${label}: the back arrow closes search`);
+    // OS back closes search first and stays on the map.
+    await page.locator("[data-open-search]").click();
+    await page.waitForSelector("[data-search-layer]");
+    await page.goBack({ waitUntil: "commit", timeout: 5000 }).catch(() => null);
+    await page.waitForTimeout(500);
+    report((await page.locator("[data-search-layer]").count()) === 0 && new URL(page.url()).pathname === "/langgenius/dify",
+      `${label}: back closes search first and stays on the map (§3.4)`, page.url());
+
+    // A picked file: search closes, the file is selected with the sheet at
+    // Peek, and it sits in the safe rect above the sheet (§4.8, §3.3).
+    const workflowFile = doc.F.indexOf("web/app/components/workflow/types.ts");
+    await load();
+    await setSheetDetent(page, "half");
+    await page.locator("[data-open-search]").click();
+    await type("workflow/types.ts");
+    const row = page.locator(`[data-search-key="f${workflowFile}"]`);
+    if (workflowFile < 0 || !(await row.count())) {
+      report(false, `${label}: a file result is listed for its path`, `index=${workflowFile}`);
+    } else {
+      await row.click();
+      await page.waitForTimeout(900);
+      const dot = await readDot(page, `f:${workflowFile}`);
+      const rect = await mapFrameRect(page, "safe");
+      const top = await page.locator("[data-phone-sheet]").evaluate((el) => el.getBoundingClientRect().top);
+      report((await page.locator("[data-search-layer]").count()) === 0 && new URL(page.url()).searchParams.get("file") === doc.F[workflowFile] &&
+        (await sheetDetent(page)) === "peek" && (await page.locator('[data-sheet-card="file"]').count()) === 1,
+        `${label}: picking a file closes search and selects it with the sheet at Peek (even from Half)`, page.url());
+      report(!!dot && dot.cx >= rect[0] && dot.cx <= rect[2] && dot.cy >= rect[1] && dot.cy <= rect[3] && dot.cy < top,
+        `${label}: the picked file is in the safe rect, above the sheet`, JSON.stringify({ dot, rect, top }));
+    }
+
+    // A picked district: selected, card at Peek, its label above the sheet.
+    await page.locator("[data-open-search]").click();
+    await type("workflow");
+    const dRow = page.locator('[data-search-option="district"]').first();
+    const dKey = await dRow.getAttribute("data-search-key");
+    await dRow.click();
+    await page.waitForTimeout(900);
+    const d = dKey?.slice(1);
+    const top2 = await page.locator("[data-phone-sheet]").evaluate((el) => el.getBoundingClientRect().top);
+    // The district's outline and name (every element keyed d:<id>), as one
+    // box: how much of it shows between the pill and the sheet.
+    const shown = await page.evaluate(({ d, top }) => {
+      let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+      for (const el of document.querySelectorAll(`svg.map-svg [data-k="d:${d}"]`)) {
+        const q = el.getBoundingClientRect();
+        if (!q.width && !q.height) continue;
+        l = Math.min(l, q.left); t = Math.min(t, q.top); r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+      }
+      if (!Number.isFinite(l)) return null;
+      const w = Math.min(r, innerWidth) - Math.max(l, 0);
+      const h = Math.min(b, top) - Math.max(t, 60);
+      return { box: [l, t, r, b].map(Math.round), visibleArea: Math.max(0, w) * Math.max(0, h) };
+    }, { d, top: top2 });
+    report(new URL(page.url()).searchParams.get("d") === d && (await sheetDetent(page)) === "peek" && (await page.locator('[data-sheet-card="district"]').count()) === 1,
+      `${label}: picking a district selects it with its card at Peek`, page.url());
+    report(!!shown && shown.visibleArea >= 2000,
+      `${label}: the picked district is on screen above the sheet`, JSON.stringify({ shown, top2 }));
+  } else {
+    // Esc closes the dropdown; a click in the box keeps focus there.
+    await input.press("Escape");
+    await page.waitForTimeout(150);
+    report((await page.locator("[data-search-dropdown]").count()) === 0 && (await searchState(page)).expanded === "false",
+      `${label}: Esc closes the dropdown`);
+
+    // `/` from a button opens search; Esc hands focus back to that button.
+    const zoomIn = page.locator('button[aria-label="Zoom in"]');
+    await zoomIn.focus();
+    await page.keyboard.press("/");
+    await page.waitForTimeout(150);
+    s = await searchState(page);
+    report(s.focused && s.expanded === "true" && (await page.locator("[data-search-dropdown]").count()) === 1,
+      `${label}: / focuses search and opens its dropdown`);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+    report((await page.locator("[data-search-dropdown]").count()) === 0 &&
+      (await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))) === "Zoom in",
+      `${label}: Esc closes it and focus returns to the opener`);
+
+    // Enter picks the highlighted row; focus returns to the opener.
+    await zoomIn.focus();
+    await page.keyboard.press("/");
+    await type("workflow");
+    s = await searchState(page);
+    const target = s.options.find((o) => o.kind === "file");
+    const steps = s.options.findIndex((o) => o.kind === "file") + 1;
+    for (let k = 0; k < steps; k++) await input.press("ArrowDown");
+    await input.press("Enter");
+    await page.waitForTimeout(500);
+    const pickedFile = target ? doc.F[Number(target.key.slice(1))] : null;
+    report(!!target && new URL(page.url()).searchParams.get("file") === pickedFile && (await page.locator("[data-search-dropdown]").count()) === 0,
+      `${label}: Enter picks the highlighted result and closes the dropdown`, JSON.stringify({ target, url: page.url() }));
+    report((await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))) === "Zoom in", `${label}: after a pick, focus is back on the opener`);
+
+    // A pointerdown outside closes it.
+    await input.click();
+    await type("types");
+    report((await page.locator("[data-search-dropdown]").count()) === 1, `${label}: typing opens the dropdown`);
+    const bar = await page.locator('select[aria-label="Repository"]').boundingBox();
+    await page.mouse.click(bar.x + bar.width + 40, bar.y + bar.height / 2);
+    await page.waitForTimeout(150);
+    report((await page.locator("[data-search-dropdown]").count()) === 0, `${label}: a click outside closes the dropdown`);
+
+    // A picked district is selected and panned to.
+    await input.click();
+    await type("workflow");
+    await page.locator('[data-search-option="district"]').first().click();
+    await page.waitForTimeout(600);
+    report(new URL(page.url()).searchParams.has("d") && (await page.locator("[data-search-dropdown]").count()) === 0,
+      `${label}: clicking a district result selects the district`, page.url());
+  }
+
+  // The package layer: its legend (desktop, bottom-left; phone, in the
+  // Layers sheet) and every other chrome layer stay under the results.
+  await open("?layer=p");
+  await type("a");
+  const coveredP = await resultsUncovered(page);
+  s = await searchState(page);
+  report(s.options.length > 0 && coveredP.tested > 0 && coveredP.covered.length === 0, `${label}: nothing covers the results on the package layer`, JSON.stringify({ tested: coveredP.tested, covered: coveredP.covered.slice(0, 4) }));
+  if (!phone) {
+    report((await page.locator("[data-package-legend]").count()) === 1, `${label}: (the package legend is on screen under the dropdown)`);
+  }
+  await context.close();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   await preflight(args.base);
@@ -5389,6 +5690,9 @@ async function main() {
     await checkPhoneBackStack(browser, args.base, phoneProfile);
     await checkPhoneLayersSheet(browser, args.base, phoneProfile);
     await checkPhonePathMode(browser, args.base, phoneProfile);
+    // docs/UX.md phase 3: search on both profiles, and the narrowest phone.
+    for (const profile of PROFILES) await checkSearch(browser, args.base, profile);
+    await checkSearch(browser, args.base, PHONE_SIZES.find((p) => p.name === "phone-320"));
     // Issue #97: live job progress, ETA and cancel (mock-api-server.mjs).
     await checkJobProgressPage(browser, args.base);
     await checkQueuedJobPage(browser, args.base);

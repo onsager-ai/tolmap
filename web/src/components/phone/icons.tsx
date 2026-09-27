@@ -65,3 +65,30 @@ export const ChevronIcon = () => (
     <path d="M9 6l6 6-6 6" />
   </Icon>
 );
+export const BackIcon = () => (
+  <Icon size={22}>
+    <path d="M15 5l-7 7 7 7" />
+  </Icon>
+);
+export const ClearIcon = () => (
+  <Icon size={14}>
+    <path d="M6 6l12 12M18 6L6 18" />
+  </Icon>
+);
+/** docs/UX.md §4.8's result-row glyphs: a district (a folded map), a file,
+ * a symbol (braces). Drawn as the "Search active" artboard draws them. */
+export const DistrictIcon = ({ size = 20 }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M4 6l5-2 6 2 5-2v14l-5 2-6-2-5 2z" />
+  </Icon>
+);
+export const FileIcon = ({ size = 20 }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M6 3h8l4 4v14H6z" />
+  </Icon>
+);
+export const SymbolIcon = ({ size = 20 }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M8 4c-2 0-3 1-3 3v2c0 1.5-1 2.5-2 3 1 .5 2 1.5 2 3v2c0 2 1 3 3 3M16 4c2 0 3 1 3 3v2c0 1.5 1 2.5 2 3-1 .5-2 1.5-2 3v2c0 2-1 3-3 3" />
+  </Icon>
+);
