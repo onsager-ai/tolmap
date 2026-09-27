@@ -3036,6 +3036,8 @@ The first is the controllers joining the services they call, which is what the r
 
 ## 60. `tolmap check` on 600 real commits: breadth has a clean knee above 4 districts, Δq has a co-change drift floor near 0.004, and the defaults `--max-districts 4 --max-dq 0.01` fire on 1% or less
 
+**Corrected by finding 61.** The Δq floor below was co-change drift from reading head's own history, not a property of Δq. With co-change held at the base it is gone, and the `--max-dq` default is now 0.0001. The districts numbers and `--max-districts 4` stand.
+
 Issue [#170](https://github.com/onsager-ai/tolmap/issues/170) PR 2, PR [#175](https://github.com/onsager-ai/tolmap/pull/175). Owner's go: session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 12006, 2026-09-27T12:52:25Z, AskUserQuestion answer **"Go, as planned (Recommended)"** to a plan whose PR 2 is "default thresholds from replaying about 200 real commits on 3 corpus repos". The replay ran on GitHub Actions only.
 
 **The replay.** `remote-build.yml` `command=check-calibrate` ([run 36323487975](https://github.com/onsager-ai/tolmap/actions/runs/36323487975)) took the last 200 first-parent commits at each corpus pin and ran `tolmap check --base <c>^ --head <c> --format json` on every one, which is what a CI gate on that change would run (`eval/check_replay.py`). For a merge commit, `<c>^` is the mainline before the merge, so the diff is the whole merged change. `eval/check_calibration.py` summarises the uploaded reports, from a run or a download.
@@ -3107,3 +3109,66 @@ So the narrow coupling changes in the sample (one to three new cross-district im
 - The top ten were judged from their subjects, file counts and heaviest added edge, not by reading the diffs.
 - Nothing measured how often the defaults fire on changes written by agents, the case Ostrom and Duhem gate. Human mainline commits are the only population here.
 - `eval/batch_stability.py` was not run: nothing in clustering, layout or extraction changed.
+
+## 61. With co-change held at the base, Δq is exactly 0 on every commit that changes no mapped file, a single new cross-district import is visible at about −0.0001, and `--max-dq` drops from 0.01 to 0.0001
+
+Issue [#176](https://github.com/onsager-ai/tolmap/issues/176), PR [#178](https://github.com/onsager-ai/tolmap/pull/178), correcting finding 60. It works under #170's go (session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 12006, 2026-09-27T12:52:25Z).
+
+**The correction.** `tolmap check` built its head graph from head's own `git log`. That history is one commit longer than the base's: extraction's 4000-commit window slides by one, and the diff's own commit counts as co-change. Δq therefore moved on commits that change no mapped file, down to −0.0042 on django (finding 60).
+- **What the head graph reads now.** Its imports, symbol uses, identifiers and paths come from head. Its co-change comes from the base commit's history (`extract::CochangeHistory`), with renamed files credited under their head paths.
+- **The result.** The two graphs differ only in what the diff changed, and the edge lists come from the same two graphs.
+- **The contract.** `version` stays 1: no consumer had shipped. docs/CHECK.md records the correction.
+
+**The same 600 commits** ([run 36326130506](https://github.com/onsager-ai/tolmap/actions/runs/36326130506)): the last 200 first-parent commits of django, prometheus and vuejs/core, as in finding 60.
+- `districts_crossed`, the changed files and `modularity_base` are identical in all 600 reports. None of them reads the head's history.
+- `delta_q` changed on 317 of the 600.
+
+| delta_q | min | p1 | p5 | p10 | p50 | p90 | p95 | p99 | max | Δq < 0 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| django/django | −0.000374 | −0.000371 | −0.000013 | −0.000001 | 0 | 0 | +0.000001 | +0.000119 | +0.000240 | 23 (was 59) |
+| prometheus/prometheus | −0.000008 | −0.000008 | −0.000001 | 0 | 0 | +0.000001 | +0.000004 | +0.000019 | +0.000576 | 15 (was 59) |
+| vuejs/core | −0.000572 | −0.000226 | −0.000051 | −0.000004 | 0 | +0.000001 | +0.000009 | +0.000322 | +0.000406 | 30 (was 59) |
+
+**The floor is gone.** Δq is exactly 0 on all 335 commits that change no mapped file (115 django, 118 prometheus, 102 vuejs/core); in finding 60, 106 of them moved. What remains comes from the diff:
+- **No cross-district edge added.** A commit that changes mapped files but adds no cross-district edge moves Δq by at most 0.000064. The largest are 0.000064 and 0.000053 on vuejs/core, and 0.000013 on django. These come from changed identifiers (the semantic signal) and from pruning rebalancing around edited files.
+- **Cross-district imports added.** Commits that add them drop Δq further. django has 9 such commits with a drop: −0.000083 to −0.000374, with 1–3 imports each except `MiddlewareMixin`'s move, which adds 10. vuejs/core has 4: −0.000146 to −0.000572, with 1–2 imports each. django has one more that raised Δq (+0.000240, 1 import, 3 districts).
+- **prometheus.** Only one commit adds cross-district imports: a merge adding 3, which raised Δq by 0.000576 because it added more coupling inside districts than across them. Prometheus's most negative Δq is −0.000008.
+
+**Finding 60's top drops were mostly history.** The warning alias (−0.017309 there) is −0.000003 here, and it adds no cross-district edge at all. Finding 60 counted 13 of its added edges as imports. By inference, those were existing imports that the head's co-change pushed through the node-relative prune, not new ones; the diffs were not read. The typo sweep (−0.005940) and the flaky-test commit (−0.004191) are exactly 0. prometheus's Go 1.27 merge (−0.005021) is +0.000016. The judgment in finding 60 that the alias was "real coupling, to a deprecation shim" was wrong.
+
+**Fire rate by `--max-dq` candidate** (of 200 commits; Δq alone)
+
+| `--max-dq` | django | prometheus | vuejs/core |
+|---|---:|---:|---:|
+| 0.00005 | 9 | 0 | 10 |
+| **0.0001** | **8** | **0** | **6** |
+| 0.00015 | 6 | 0 | 4 |
+| 0.0002 | 2 | 0 | 3 |
+| 0.0003 | 2 | 0 | 1 |
+| 0.0005 and above | 0 | 0 | 1 at 0.0005, then 0 |
+
+**The default: `--max-dq 0.0001`.** It sits between the largest move from a commit adding no cross-district edge (0.000064) and the smallest drop from a new cross-district import (0.000083, one import on django).
+- **Imports caught.** It catches 8 of django's 9 import-adding drops. It misses `d992705f9e` (1 import, −0.000083). It catches all 4 on vuejs/core.
+- **What else it fails.** 2 vuejs/core commits (−0.00016 and −0.00015), each adding one cross-district edge made of naming similarity, not an import.
+- **The next candidate down.** 0.00005 would also catch the django miss, but it fails 6 vuejs/core commits that add no cross-district import.
+- **Absolute, again.** A single import moves `Q` by roughly its weight over the graph's total weight, and the largest repository here has 851 files, so a larger repository may need a smaller value. Three repositories give no basis to fit a scaling rule, so the default stays absolute.
+
+**Both defaults, `--max-districts 4 --max-dq 0.0001`.** Predicted from run 36326130506, and confirmed by [run 36326973271](https://github.com/onsager-ai/tolmap/actions/runs/36326973271), which replayed the same 600 commits with the shipped binary. That run exited 1 on exactly the 19 predicted commits and 0 on the other 581. Its reports were identical to the first run's apart from `thresholds` and `verdict`.
+
+| repo | districts fired | Δq fired | either fired |
+|---|---:|---:|---:|
+| django/django | 2 | 8 | 10 (5.0%) |
+| prometheus/prometheus | 2 | 0 | 2 (1.0%) |
+| vuejs/core | 1 | 6 | 7 (3.5%) |
+
+This is a deliberate move away from finding 60's rare-outlier target: #176 asked for a Δq default that catches narrow regressions. On these mainline histories, a CI gate with the defaults fails about 1 commit in 20 on django and 1 in 30 on vuejs/core. On django, each of those failures adds a cross-district import or crosses more than 4 districts; on vuejs/core, 2 of the 7 are naming-similarity edges. Whether a new cross-district import should fail CI or only be reported is for the consumer to decide, with `--max-dq` or `--report-only`.
+
+**`--max-districts 4` stands.** Districts do not read history, and all 600 `districts_crossed` values are unchanged.
+
+**Tests.** `extract::tests::git_history_reads_the_named_revision_and_follows_renames` reads co-change from a named commit, not HEAD, and credits a renamed file's base co-change to its new path. `check_cli`: a commit touching only a README gives Δq exactly 0, with no edges. A second commit editing two files in different districts together, with no import or identifier changed, gives Δq exactly 0 and adds no co-change edge; read from head's own history it would have made them a pair (count 2 of 3). The docs/CHECK.md example ([run 36326976734](https://github.com/onsager-ai/tolmap/actions/runs/36326976734), django against 30 commits back) now reads Δq −0.000174 from `core/validators.py`'s two new imports into `utils`, where it read +0.000162 with four co-change-only edges beside them.
+
+### Not verified
+- Three repositories of at most 851 files and 600 human-written mainline commits. The import-adding sample is 13 drops (9 django, 4 vuejs/core, none on prometheus). A repository much larger than django may put a single import under 0.0001; none was measured.
+- The 13 "import" edges finding 60 listed for the warning alias were not traced one by one. That they were pruning artifacts is inferred from the fixed run listing no added cross-district edge for that commit.
+- The fire rate on agent-written changes, the case Ostrom and Duhem gate, is still unmeasured.
+- `eval/batch_stability.py` was not run: `tolmap build` still reads the checkout's own history, so no map changes. Only `tolmap check`'s head graph reads another commit's.

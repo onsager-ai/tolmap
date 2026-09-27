@@ -157,7 +157,7 @@ enum Command {
     /// partition held fixed, with the cross-district edges behind it. Exits
     /// 0 pass, 1 a threshold crossed, 2 usage or input error, 3 internal
     /// error. With no threshold flag the calibrated defaults apply
-    /// (--max-districts 4 --max-dq 0.01); --report-only applies none.
+    /// (--max-districts 4 --max-dq 0.0001); --report-only applies none.
     Check {
         /// Any path inside the git repository; the check runs on its top
         /// level.

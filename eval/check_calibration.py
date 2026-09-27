@@ -39,7 +39,9 @@ PERCENTILES = (50, 90, 95, 99)
 # The lower tail is where a Δq threshold fires, so Δq also gets these.
 LOW_PERCENTILES = (1, 5, 10)
 DISTRICT_CANDIDATES = tuple(range(1, 13))
-DQ_CANDIDATES = (0.0005, 0.001, 0.002, 0.003, 0.004, 0.005, 0.0075, 0.01, 0.02)
+# Finding 61: with co-change held at the base, a single new cross-district
+# import moves Δq by about 1e-4, so the scan starts well below that.
+DQ_CANDIDATES = (0.00005, 0.0001, 0.00015, 0.0002, 0.0003, 0.0005, 0.001, 0.005, 0.01)
 TOP_DROPS = 10
 
 

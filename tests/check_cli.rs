@@ -240,7 +240,7 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
     assert_eq!(report["verdict"], "pass");
     assert_eq!(
         report["thresholds"],
-        serde_json::json!({"max_districts": 4, "max_dq": 0.01, "source": "default"}),
+        serde_json::json!({"max_districts": 4, "max_dq": 0.0001, "source": "default"}),
         "no threshold flag: the calibrated defaults apply"
     );
     assert_eq!(report["lower_bound"], true);
@@ -263,7 +263,7 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
     assert!(lines[1].starts_with("delta q: +0.000000"), "{}", run.stdout);
     assert_eq!(
         lines[2],
-        "verdict: pass (districts 1 <= 4, delta q +0.000000 >= -0.010000; default thresholds)",
+        "verdict: pass (districts 1 <= 4, delta q +0.000000 >= -0.000100; default thresholds)",
         "{}",
         run.stdout
     );
@@ -366,7 +366,7 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
 fn the_default_thresholds_fail_a_heavy_coupling_change_without_any_flag() {
     let (_dir, repo, base) = fixture();
     // billing's invoice imports every module of the two other packages: on
-    // a graph this small, far more cross-district weight than 0.01 of q.
+    // a graph this small, far more cross-district weight than 0.0001 of q.
     let modules = PACKAGES[0].1;
     let mut source = module_source("billing", &modules, 0, 1);
     let mut uses = String::new();
@@ -384,7 +384,7 @@ fn the_default_thresholds_fail_a_heavy_coupling_change_without_any_flag() {
     expect_code(&run, 1);
     let report = run.json();
     assert!(
-        report["delta_q"].as_f64().unwrap() < -0.01,
+        report["delta_q"].as_f64().unwrap() < -0.0001,
         "the change must drop q past the default: {report:#}"
     );
     assert_eq!(report["verdict"], "fail");
@@ -630,6 +630,79 @@ fn a_bad_ref_and_an_unverifiable_or_mismatched_base_map_exit_2() {
     expect_code(&from_store, 0);
     assert_eq!(from_store.stdout, built_here.stdout);
     assert_eq!(built_here.json()["districts_crossed"], 2);
+}
+
+/// Issue #176: a commit that changes no file on the map changes no signal
+/// the check compares -- co-change is the base's on both sides -- so Δq is
+/// exactly 0, not the drift of a history one commit longer (finding 60).
+#[test]
+fn a_commit_that_changes_no_mapped_file_leaves_q_exactly_alone() {
+    let (_dir, repo, _base) = fixture();
+    write(
+        &repo,
+        "README.md",
+        "# town\n\nNothing here is on the map.\n",
+    );
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "docs only"]);
+
+    let run = check(
+        &repo,
+        &["--base", "HEAD~1", "--head", "HEAD", "--format", "json"],
+    );
+    expect_code(&run, 0);
+    let report = run.json();
+    assert_eq!(report["districts_crossed"], 0, "{report:#}");
+    assert!(report["files"].as_array().unwrap().is_empty(), "{report:#}");
+    assert_eq!(report["delta_q"].as_f64(), Some(0.0), "{report:#}");
+    assert_eq!(report["modularity_base"], report["modularity_head"]);
+    assert!(report["edges_added"].as_array().unwrap().is_empty());
+    assert!(report["edges_removed"].as_array().unwrap().is_empty());
+}
+
+/// Issue #176: the diff's own commit adds no co-change to the head side.
+/// Two files in different packages are edited together a second time, with
+/// no import or identifier changed. Read from head's own history, that
+/// second commit would make them a co-change pair (count 2 of 3); read from
+/// the base's, as the check now does, nothing the check compares moved.
+#[test]
+fn the_diffs_own_commit_adds_no_cochange_to_the_head_side() {
+    let (_dir, repo, _base) = fixture();
+    let (billing, catalog) = (PACKAGES[0].1, PACKAGES[1].1);
+    for constant in [7, 8] {
+        write(
+            &repo,
+            "town/billing/tax.py",
+            &module_source("billing", &billing, 4, constant),
+        );
+        write(
+            &repo,
+            "town/catalog/category.py",
+            &module_source("catalog", &catalog, 4, constant),
+        );
+        git(
+            &repo,
+            &[
+                "commit",
+                "-qam",
+                &format!("retune tax and category {constant}"),
+            ],
+        );
+    }
+
+    let run = check(
+        &repo,
+        &["--base", "HEAD~1", "--head", "HEAD", "--format", "json"],
+    );
+    expect_code(&run, 0);
+    let report = run.json();
+    assert_eq!(report["districts_crossed"], 2, "{report:#}");
+    assert_eq!(report["delta_q"].as_f64(), Some(0.0), "{report:#}");
+    assert!(
+        report["edges_added"].as_array().unwrap().is_empty(),
+        "no co-change edge from the diff's own commit: {report:#}"
+    );
+    assert!(report["edges_removed"].as_array().unwrap().is_empty());
 }
 
 #[test]
