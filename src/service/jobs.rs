@@ -214,11 +214,12 @@ struct RegistryInner {
     /// lost worker that died of memory -- by that class. The store has the
     /// new class already (`Store::rebind_job`).
     rebind: HashMap<Uuid, usize>,
-    /// Worker modes: jobs a restarted master found leased or running, by
-    /// the epoch of that lease. Their runner adopts the lease instead of
-    /// asking for a new one, and it expires as any lease does (§6 "master
-    /// restarts mid-job").
-    orphans: HashMap<Uuid, u64>,
+    /// Worker modes: jobs a restarted master found leased or running, with
+    /// the epoch of that lease and the lease `restore` adopted for it
+    /// (`WorkerHub::adopt`). Their runner takes the lease instead of asking
+    /// for a new one; it expires as any lease does (§6 "master restarts
+    /// mid-job"), unless, in remote mode, its worker resumes it.
+    orphans: HashMap<Uuid, (u64, crate::service::workers::Claimed)>,
     /// §7.4, `GET /workers/capacity`: the last time each class had a
     /// running or queued job, by class index -- possibly longer than
     /// `classes` (`class_load` grows it to the hub's own class count,
@@ -560,8 +561,9 @@ impl JobRegistry {
         }
     }
 
-    /// The epoch of the lease a restarted master found `id` holding, once.
-    pub(crate) fn take_orphan(&self, id: Uuid) -> Option<u64> {
+    /// The epoch of the lease a restarted master found `id` holding, and
+    /// that lease, adopted; once.
+    pub(crate) fn take_orphan(&self, id: Uuid) -> Option<(u64, crate::service::workers::Claimed)> {
         self.0
             .lock()
             .expect("job registry mutex poisoned")
@@ -684,8 +686,10 @@ impl JobRegistry {
         // Admission stops (the flag above); queued jobs stay queued in the
         // table; running ones are released by the agents on `shutdown now`
         // (`workers::Loopback::shutdown`) and their runners put them back
-        // to `queued` without counting an attempt. A restarted master runs
-        // them all. Local mode continues below, unchanged.
+        // to `queued` without counting an attempt, or, in remote mode, stay
+        // leased for their agents to resume with the next process
+        // (`workers::Remote::shutdown`). A restarted master runs them all.
+        // Local mode continues below, unchanged.
         if registry.remote.is_some() {
             return;
         }
@@ -1277,7 +1281,17 @@ pub fn restore(state: &Arc<AppState>) -> anyhow::Result<()> {
             if matches!(row.status.as_str(), "leased" | "running") {
                 running += 1;
                 if let Some(slot) = registry.idle_slot_for(class) {
-                    registry.orphans.insert(id, epoch);
+                    // Adopted here, before the worker listener serves, not
+                    // when the runner gets to it: a remote agent that redials
+                    // the moment the listener opens must find its lease to
+                    // resume (#97 phase 3), not an unknown job it would be
+                    // told to kill. The hub's lock is taken under the
+                    // registry's, the permitted order, and the lease
+                    // directory is made under it: nothing else runs yet.
+                    if let Some(hub) = registry.remote.clone() {
+                        let lease = hub.adopt(id, epoch, row.lease_holder.as_deref());
+                        registry.orphans.insert(id, (epoch, lease));
+                    }
                     registry.slots[slot].running = Some((id, tx));
                     to_start.push((slot, job));
                     continue;

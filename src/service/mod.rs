@@ -44,9 +44,9 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
     // error rather than a half-started service. Unset is local mode,
     // exactly as before it existed.
     let workers_mode = workers::WorkersMode::from_env()?;
-    // Local mode starts no agents, so it has no classes to give them; the
+    // Only loopback mode starts agents it could give classes to; the
     // variable is read, and a malformed one refused, by `start_loopback`.
-    if workers_mode == workers::WorkersMode::Local
+    if !matches!(workers_mode, workers::WorkersMode::Loopback(_))
         && std::env::var_os("TOLMAP_LOOPBACK_CLASSES").is_some()
     {
         eprintln!(
@@ -115,12 +115,16 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
     // into a clean, observable failure.
 
     // `TOLMAP_WORKERS=loopback:N` (#97 phase 1, docs/WORKER_TIER.md §8):
-    // the worker listener on loopback and N agents. Local mode starts
-    // neither.
-    let loopback = match workers_mode {
-        workers::WorkersMode::Local => None,
+    // the worker listener on loopback and N agents. `remote[:N]` (#97
+    // phase 3): the worker listener, with TLS off loopback, for agents on
+    // other hosts, and none of its own. Local mode starts neither.
+    let (loopback, remote) = match workers_mode {
+        workers::WorkersMode::Local => (None, None),
         workers::WorkersMode::Loopback(agents) => {
-            Some(workers::start_loopback(&state, agents).await?)
+            (Some(workers::start_loopback(&state, agents).await?), None)
+        }
+        workers::WorkersMode::Remote(slots) => {
+            (None, Some(workers::start_remote(&state, slots).await?))
         }
     };
 
@@ -161,6 +165,12 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
         // (`http::get_job_events`), and the next process runs the jobs.
         if let Some(loopback) = loopback {
             loopback.shutdown().await;
+        }
+        // Remote mode (#97 phase 3): no agent is stopped; their channels
+        // close, their jobs stay leased in the store, and they resume them
+        // with the next process.
+        if let Some(remote) = remote {
+            remote.shutdown().await;
         }
     })
     .await

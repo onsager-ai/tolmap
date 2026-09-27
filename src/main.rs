@@ -187,17 +187,32 @@ enum Command {
     /// One JSON job spec on stdin; versioned JSON events on stdout.
     ///
     /// With `--connect`, `--token-file` and `--cache-dir` instead: the
-    /// worker agent (docs/WORKER_TIER.md, #97 phase 1), a long-lived
-    /// process that dials the master's worker listener and runs the jobs it
-    /// is assigned, each as a plain `tolmap worker` child. `tolmap serve`
-    /// starts these itself under `TOLMAP_WORKERS=loopback:N`.
+    /// worker agent (docs/WORKER_TIER.md, #97 phases 1 and 3), a
+    /// long-lived process that dials the master's worker listener and runs
+    /// the jobs it is assigned, each as a plain `tolmap worker` child.
+    /// `tolmap serve` starts these itself under `TOLMAP_WORKERS=loopback:N`;
+    /// a remote worker host runs one against `TOLMAP_WORKERS=remote`.
     Worker {
-        /// The master's channel URL, `ws://<loopback address>/workers/connect`.
+        /// The master's channel URL: `wss://<host:port>/workers/connect`,
+        /// or `ws://` to a master on this host's loopback.
         #[arg(long)]
         connect: Option<String>,
-        /// A file holding this agent's bearer token (mode 0600).
+        /// A file holding this agent's bearer token, mode 0600.
         #[arg(long)]
         token_file: Option<PathBuf>,
+        /// The worker id the token was issued for (`tolmap worker-token
+        /// new --id <id>`); the master refuses a hello naming another.
+        /// Required unless `--loopback`.
+        #[arg(long)]
+        worker_id: Option<String>,
+        /// PEM certificates to verify a `wss://` master against, in place
+        /// of the public roots: the owner's private certificate or its CA.
+        #[arg(long)]
+        ca_file: Option<PathBuf>,
+        /// Set by `tolmap serve` on the agents it starts itself: exit once
+        /// that master is gone instead of redialling.
+        #[arg(long, hide = true)]
+        loopback: bool,
         /// This agent's own clone cache and job directories.
         #[arg(long)]
         cache_dir: Option<PathBuf>,
@@ -206,6 +221,12 @@ enum Command {
         /// from `TOLMAP_LOOPBACK_CLASSES`.
         #[arg(long)]
         class_memory: Option<u64>,
+    },
+    /// Worker tokens for `TOLMAP_WORKERS=remote` (docs/WORKER_TIER.md
+    /// §5.1).
+    WorkerToken {
+        #[command(subcommand)]
+        command: WorkerTokenCommand,
     },
     #[command(hide = true)]
     EtaReplay { timeline: PathBuf },
@@ -222,6 +243,20 @@ enum Command {
         repo: PathBuf,
         #[arg(last = true, required = true)]
         command: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkerTokenCommand {
+    /// Prints a new random 256-bit token on the first line, for the worker
+    /// host's `--token-file`, and on the second the line to add to the
+    /// master's `TOLMAP_WORKER_TOKENS` file (`<sha256> <id>`). Nothing is
+    /// written or kept: the token is shown this once.
+    New {
+        /// The worker id the token is for: 1 to 64 ASCII letters, digits,
+        /// `.`, `_` or `-`.
+        #[arg(long)]
+        id: String,
     },
 }
 
@@ -662,25 +697,52 @@ fn main() -> Result<()> {
         Command::Worker {
             connect,
             token_file,
+            worker_id,
+            ca_file,
+            loopback,
             cache_dir,
             class_memory,
         } => match (connect, token_file, cache_dir) {
             // Plain `tolmap worker`: the job child, unchanged.
-            (None, None, None) if class_memory.is_none() => tolmap::worker::run_stdio(),
-            (Some(connect), Some(token_file), Some(cache_dir)) => {
-                tolmap::service::agent::run(tolmap::service::agent::AgentConfig {
+            (None, None, None)
+                if class_memory.is_none()
+                    && worker_id.is_none()
+                    && ca_file.is_none()
+                    && !loopback =>
+            {
+                tolmap::worker::run_stdio()
+            }
+            (Some(connect), Some(token_file), Some(cache_dir)) => tolmap::service::agent::run_with(
+                tolmap::service::agent::AgentConfig {
                     connect,
                     token_file,
                     cache_dir,
                     worker_exe: std::env::current_exe().context("locate this binary")?,
                     class_memory,
                     memory_events: None,
-                })
-            }
+                },
+                tolmap::service::agent::AgentOptions {
+                    loopback,
+                    ca_file,
+                    worker_id,
+                },
+            ),
             _ => anyhow::bail!(
-                "--connect, --token-file and --cache-dir go together, and --class-memory needs them"
+                "--connect, --token-file and --cache-dir go together, and --worker-id, --ca-file \
+                 and --class-memory need them"
             ),
         },
+        Command::WorkerToken {
+            command: WorkerTokenCommand::New { id },
+        } => {
+            let (token, line) =
+                tolmap::service::workers::issue_worker_token(&id).map_err(anyhow::Error::msg)?;
+            // Exactly two lines on stdout and nothing else, so a script can
+            // take them apart; the token is never written to a file or a log.
+            println!("{token}");
+            println!("{line}");
+            Ok(())
+        }
         Command::EtaReplay { timeline } => {
             let report = tolmap::service::eta::replay_timeline(&timeline)?;
             println!("{}", serde_json::to_string_pretty(&report)?);

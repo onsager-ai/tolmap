@@ -1,9 +1,10 @@
-//! The worker tier's master side for #97 phases 1 and 2 (docs/WORKER_TIER.md
+//! The worker tier's master side for #97 phases 1 to 3 (docs/WORKER_TIER.md
 //! §2, §2.2–§2.5, §3, §4, §5.1, §5.6, §6): the private worker listener, the
 //! channel sessions with agents, leases, the lease-scoped artifact
-//! endpoints, the job runner loopback mode uses in place of the in-process
-//! executor, and the supervisor that keeps `TOLMAP_WORKERS=loopback:N`'s
-//! agents running.
+//! endpoints, the job runner the worker modes use in place of the
+//! in-process executor, the supervisor that keeps `TOLMAP_WORKERS=
+//! loopback:N`'s agents running, and remote mode's TLS listener and token
+//! file.
 //!
 //! **Durable jobs (phase 2, step 2).** Each job has a row in the store's
 //! `jobs` table (`store::JobRow`), and the table is the truth for its state,
@@ -12,9 +13,17 @@
 //! went quiet -- puts the job back at the head of its class queue with a new
 //! epoch to come, counting one lost worker; past the retry bound (§10.6)
 //! the job fails `worker_crashed`. A restart or a graceful stop re-queues
-//! without counting. Only loopback agents exist: the listener binds to
-//! loopback only, the agents are this binary started by this process, and
-//! their tokens are minted here at startup.
+//! without counting.
+//!
+//! **Remote mode (phase 3; §5.1, §5.6).** `TOLMAP_WORKERS=remote` starts no
+//! agents: agents on other hosts dial a listener that has TLS unless it is
+//! on loopback, holding tokens the owner issued, whose hashes the owner's
+//! token file binds to worker ids (`TokenFile`). A lease's holder is then a
+//! worker id, so a restarted master hands an adopted lease back to that
+//! worker (`WorkerHub::adopt`), and a graceful stop closes the channels
+//! without stopping the agents (`Remote::shutdown`). Loopback mode keeps
+//! its own rules: the listener on loopback only, the agents this binary
+//! started by this process, their tokens minted here at startup.
 //!
 //! **Resume (phase 2, step 3; §2.5, §3.5).** A dropped channel only
 //! detaches its lease. An agent that advertised `resume` and comes back
@@ -72,12 +81,20 @@
 //!   their slots first, then queued jobs in admission order.
 //!
 //! **Trust decisions**, each also stated where the code makes it:
-//! - The listener is separate from the public router and loopback-only
-//!   (§5.6). The public router has no `/workers` route.
+//! - The listener is separate from the public router (§5.6), loopback-only
+//!   in loopback mode, and TLS-only off loopback in remote mode with no
+//!   plaintext fallback (`remote_tls_files`); its key must be private. The
+//!   public router has no `/workers` route.
 //! - Every channel upgrade and artifact request is authenticated by a
 //!   bearer token in the `Authorization` header, never a query string,
 //!   compared as SHA-256 digests in constant time (§5.1). The token is the
-//!   agent's identity; `hello.worker_id` is only a label for logs.
+//!   agent's identity. In loopback mode `hello.worker_id` is only a label
+//!   for logs; in remote mode it must be the worker id the token file
+//!   binds the token to, and a token whose line is deleted is refused at
+//!   its next request and its channel closed at its next heartbeat. The
+//!   token file fails closed.
+//! - Each channel has a frame budget (§4.3, `FrameBudget`), past which it
+//!   is closed with `rate_limited`.
 //! - An agent is assigned work only if its `hello.build` equals this
 //!   master's (§3.6), and a `local/<name>` job only if it advertised
 //!   `local_paths` (§3.3).
@@ -207,12 +224,17 @@ pub enum WorkersMode {
     Local,
     /// `loopback:N`: N agents on this host, dialling a loopback listener.
     Loopback(usize),
+    /// `remote` or `remote:N` (#97 phase 3): the worker listener, with TLS
+    /// and the owner's token file, and no agents of its own; agents dial in
+    /// from other hosts. N is how many jobs run at once (one slot per
+    /// expected worker, 1 by default: §10.1's fleet is one worker).
+    Remote(usize),
 }
 
 impl WorkersMode {
-    /// Anything but the three documented forms is a startup error rather
-    /// than a fallback: this variable decides whether a listener opens and
-    /// child processes start, so a typo must not quietly pick either mode.
+    /// Anything but the documented forms is a startup error rather than a
+    /// fallback: this variable decides whether a listener opens and child
+    /// processes start, so a typo must not quietly pick either mode.
     pub fn parse(value: Option<&str>) -> Result<Self, String> {
         let Some(value) = value.map(str::trim) else {
             return Ok(WorkersMode::Local);
@@ -220,15 +242,24 @@ impl WorkersMode {
         if value.is_empty() || value == "local" {
             return Ok(WorkersMode::Local);
         }
-        if let Some(count) = value
-            .strip_prefix("loopback:")
-            .and_then(|count| count.parse::<usize>().ok())
-            .filter(|count| *count >= 1)
-        {
+        let count = |prefix: &str| {
+            value
+                .strip_prefix(prefix)
+                .and_then(|count| count.parse::<usize>().ok())
+                .filter(|count| *count >= 1)
+        };
+        if let Some(count) = count("loopback:") {
             return Ok(WorkersMode::Loopback(count));
         }
+        if value == "remote" {
+            return Ok(WorkersMode::Remote(1));
+        }
+        if let Some(count) = count("remote:") {
+            return Ok(WorkersMode::Remote(count));
+        }
         Err(format!(
-            "TOLMAP_WORKERS must be unset, `local`, or `loopback:N` with N at least 1; got {value:?}"
+            "TOLMAP_WORKERS must be unset, `local`, `loopback:N`, `remote` or `remote:N` with N \
+             at least 1; got {value:?}"
         ))
     }
 
@@ -249,18 +280,24 @@ pub struct LoopbackSettings {
 
 impl LoopbackSettings {
     pub fn from_env() -> anyhow::Result<Self> {
+        Self::read(false)
+    }
+
+    /// `remote`: whether the listener may take a non-loopback address.
+    /// Remote mode checks TLS for one itself (`RemoteSettings::from_env`).
+    fn read(remote: bool) -> anyhow::Result<Self> {
         let listen = match std::env::var("TOLMAP_WORKER_LISTEN") {
             Ok(value) => value.trim().parse::<SocketAddr>().with_context(|| {
                 format!("TOLMAP_WORKER_LISTEN {value:?} is not an address:port")
             })?,
             Err(_) => SocketAddr::from(([127, 0, 0, 1], 0)),
         };
-        // Trust decision (§5.6): in phase 1 the only agents are this
+        // Trust decision (§5.6): in loopback mode the only agents are this
         // process's own children, so the worker endpoint has no reason to
         // be reachable from anywhere but this host. A non-loopback address
-        // is refused rather than honoured: exposing it is the owner's
-        // phase 3 decision (private network, TLS), not a setting.
-        if !listen.ip().is_loopback() {
+        // is refused rather than honoured: exposing it is remote mode's
+        // job, which requires TLS for it (`remote_tls_files`).
+        if !remote && !listen.ip().is_loopback() {
             bail!(
                 "TOLMAP_WORKER_LISTEN {listen} is not a loopback address; loopback agents need \
                  the worker listener on loopback only"
@@ -373,6 +410,540 @@ fn positive_env(key: &str, default: u64) -> u64 {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+// ---- remote mode: TLS, the token file, frame limits (#97 phase 3) ----------
+
+/// §4.3: the default bound on an agent's control frames, per channel, as a
+/// sustained rate per second and a burst. It bounds the protocol, not jobs:
+/// a job child's progress is throttled to four events a second per stage
+/// (`progress::StageCounter`), log lines are few, and the largest honest
+/// burst is a resumed agent replaying its buffer, which `agent::Outbox`
+/// bounds by the stages a job runs. So an agent over this is broken or
+/// hostile, never a large repository.
+pub const DEFAULT_FRAME_RATE: u32 = 200;
+pub const DEFAULT_FRAME_BURST: u32 = 1000;
+
+/// A TLS handshake on the worker listener that takes longer than this is
+/// dropped, so a peer that connects and stalls holds nothing for long.
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `TOLMAP_WORKER_FRAME_RATE` and `TOLMAP_WORKER_FRAME_BURST`.
+fn frame_limit_from_env() -> (u32, u32) {
+    let read = |key: &str, default: u32| {
+        u32::try_from(positive_env(key, u64::from(default))).unwrap_or(default)
+    };
+    (
+        read("TOLMAP_WORKER_FRAME_RATE", DEFAULT_FRAME_RATE),
+        read("TOLMAP_WORKER_FRAME_BURST", DEFAULT_FRAME_BURST),
+    )
+}
+
+/// What remote mode reads at startup, on top of the lease settings loopback
+/// mode reads too.
+pub struct RemoteSettings {
+    pub lease: LoopbackSettings,
+    /// `TOLMAP_WORKER_TLS_CERT` and `TOLMAP_WORKER_TLS_KEY`, both PEM.
+    pub tls: Option<(PathBuf, PathBuf)>,
+    /// `TOLMAP_WORKER_TOKENS`: the owner's token file.
+    pub tokens: PathBuf,
+}
+
+impl RemoteSettings {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let lease = LoopbackSettings::read(true)?;
+        let var = |key: &str| {
+            std::env::var(key)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        let tls = remote_tls_files(
+            lease.listen,
+            var("TOLMAP_WORKER_TLS_CERT"),
+            var("TOLMAP_WORKER_TLS_KEY"),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let tokens = var("TOLMAP_WORKER_TOKENS").map(PathBuf::from).context(
+            "TOLMAP_WORKERS=remote needs TOLMAP_WORKER_TOKENS: the file of `<sha256> <worker_id>` \
+             lines naming the workers that may connect",
+        )?;
+        Ok(RemoteSettings { lease, tls, tokens })
+    }
+}
+
+/// Trust decision (§5.1, §5.6): every bearer token crosses TLS except on
+/// loopback. A listener on any other address -- the private network's, or
+/// every interface -- starts only with both a certificate and a key, and
+/// there is no fallback to plaintext: a missing file stops startup rather
+/// than opening the listener without TLS. A loopback listener may run
+/// without TLS, since nothing leaves the host (CI runs the protocol so).
+/// Half a configuration is refused too, so a typo in one name cannot
+/// quietly leave the other unused.
+pub fn remote_tls_files(
+    listen: SocketAddr,
+    cert: Option<String>,
+    key: Option<String>,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    match (cert, key) {
+        (Some(cert), Some(key)) => Ok(Some((PathBuf::from(cert), PathBuf::from(key)))),
+        (None, None) if listen.ip().is_loopback() => Ok(None),
+        (None, None) => Err(format!(
+            "TOLMAP_WORKER_LISTEN {listen} is not a loopback address, so the worker listener \
+             needs TLS: set TOLMAP_WORKER_TLS_CERT and TOLMAP_WORKER_TLS_KEY (worker tokens never \
+             cross a network in plaintext)"
+        )),
+        _ => Err(
+            "TOLMAP_WORKER_TLS_CERT and TOLMAP_WORKER_TLS_KEY go together: set both, or \
+                  neither on a loopback listener"
+                .to_owned(),
+        ),
+    }
+}
+
+/// Refuses a file that its group or anyone else may read, write or run:
+/// the listener's private key (and, on a worker host, the agent's token).
+/// Trust decision: a key others can read is a key others hold, and one they
+/// can write is a listener they can impersonate. Refused at startup with
+/// the fix, never repaired behind the owner's back.
+pub(crate) fn check_private_file(path: &Path, what: &str) -> anyhow::Result<()> {
+    let metadata = std::fs::metadata(path).with_context(|| format!("{what} {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("{what} {} is not a regular file", path.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            bail!(
+                "{what} {} has mode {mode:o}, so its group or others can use it; make it 0600 \
+                 (`chmod 600`), owned by the user tolmap runs as",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The worker listener's TLS configuration (§5.1): the certificate chain
+/// and key from PEM files, TLS 1.3 only, no client certificates (workers
+/// authenticate with their bearer token, §10.4 rules out mutual TLS).
+/// Trust decisions: rustls on the `ring` provider, the only one this build
+/// has; TLS 1.3 only, since both ends are this binary and nothing older
+/// needs to connect; and the key file must be private
+/// (`check_private_file`).
+pub(crate) fn server_tls(
+    cert: &Path,
+    key: &Path,
+) -> anyhow::Result<Arc<tokio_rustls::rustls::ServerConfig>> {
+    use tokio_rustls::rustls;
+    use tokio_rustls::rustls::pki_types::pem::PemObject;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    check_private_file(key, "TOLMAP_WORKER_TLS_KEY")?;
+    let chain = CertificateDer::pem_file_iter(cert)
+        .and_then(|certs| certs.collect::<Result<Vec<_>, _>>())
+        .with_context(|| format!("read TOLMAP_WORKER_TLS_CERT {}", cert.display()))?;
+    if chain.is_empty() {
+        bail!(
+            "TOLMAP_WORKER_TLS_CERT {} holds no PEM certificate",
+            cert.display()
+        );
+    }
+    let private = PrivateKeyDer::from_pem_file(key)
+        .with_context(|| format!("read TOLMAP_WORKER_TLS_KEY {}", key.display()))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .context("configure TLS 1.3 for the worker listener")?
+        .with_no_client_auth()
+        .with_single_cert(chain, private)
+        .context("the worker listener's certificate and key do not make a usable pair")?;
+    Ok(Arc::new(config))
+}
+
+/// The worker listener with TLS, for `axum::serve`. Handshakes run in
+/// tasks of their own, each bounded by `TLS_HANDSHAKE_TIMEOUT`, so one
+/// slow or silent peer never holds up the next connection; only a finished
+/// handshake is handed to axum. A failed one is logged (that line is how an
+/// operator finds an agent that does not trust the certificate) and
+/// dropped.
+struct TlsListener {
+    accepted: tokio::sync::mpsc::Receiver<(
+        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        SocketAddr,
+    )>,
+    local: SocketAddr,
+}
+
+impl TlsListener {
+    fn start(
+        listener: tokio::net::TcpListener,
+        config: Arc<tokio_rustls::rustls::ServerConfig>,
+    ) -> std::io::Result<Self> {
+        let local = listener.local_addr()?;
+        let acceptor = tokio_rustls::TlsAcceptor::from(config);
+        let (sender, accepted) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            loop {
+                let (tcp, peer) = match listener.accept().await {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        eprintln!("worker listener: accept failed: {error}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
+                if sender.is_closed() {
+                    return;
+                }
+                let (acceptor, sender) = (acceptor.clone(), sender.clone());
+                tokio::spawn(async move {
+                    match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
+                        Ok(Ok(stream)) => {
+                            let _ = sender.send((stream, peer)).await;
+                        }
+                        Ok(Err(error)) => {
+                            eprintln!("worker listener: TLS handshake with {peer} failed: {error}")
+                        }
+                        Err(_) => eprintln!("worker listener: TLS handshake with {peer} timed out"),
+                    }
+                });
+            }
+        });
+        Ok(TlsListener { accepted, local })
+    }
+}
+
+impl axum::serve::Listener for TlsListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        match self.accepted.recv().await {
+            Some(accepted) => accepted,
+            // The accept loop holds a sender for as long as it runs, and it
+            // runs for the process's life.
+            None => std::future::pending().await,
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        Ok(self.local)
+    }
+}
+
+/// A worker id (§5.1): what a token file line binds a token to, and what an
+/// agent must name in `hello.worker_id`. 1 to 64 ASCII letters, digits,
+/// `.`, `_` or `-`: it lands in logs and in the store's `lease_holder`, so
+/// it is kept to characters that cannot break either.
+pub fn is_valid_worker_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// `tolmap worker-token new --id <id>` (§5.1): a fresh random 256-bit token
+/// and the line binding its SHA-256 to `id` in the master's token file. The
+/// caller prints both once; nothing is written or logged here.
+pub fn issue_worker_token(id: &str) -> Result<(String, String), String> {
+    if !is_valid_worker_id(id) {
+        return Err(format!(
+            "worker id {id:?} must be 1 to 64 ASCII letters, digits, `.`, `_` or `-`"
+        ));
+    }
+    let token = new_token();
+    let line = format!("{} {id}", hex(&token_digest(token.as_bytes())));
+    Ok((token, line))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// 64 hex digits as the 32 bytes they spell.
+fn unhex32(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 || !text.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// A token file (§5.1): one `<sha256 hex> <worker_id>` per line, blank
+/// lines and `#` comments allowed. A worker id may appear on several lines
+/// (rotation adds the new token's line before the old one goes); a hash may
+/// not, since it would bind one token to two workers. Anything malformed
+/// refuses the whole file. Messages never echo a line's first field: an
+/// owner who pasted the token itself instead of its hash would otherwise
+/// find it in a log.
+fn parse_token_file(text: &str) -> Result<Vec<([u8; 32], String)>, String> {
+    let mut entries = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (index, line) in text.lines().enumerate() {
+        let number = index + 1;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let (Some(hash), Some(id), None) = (fields.next(), fields.next(), fields.next()) else {
+            return Err(format!(
+                "line {number}: expected `<sha256 hex> <worker_id>`"
+            ));
+        };
+        let Some(digest) = unhex32(&hash.to_ascii_lowercase()) else {
+            return Err(format!(
+                "line {number}: the first field is not a SHA-256 as 64 hex digits"
+            ));
+        };
+        if !is_valid_worker_id(id) {
+            return Err(format!(
+                "line {number}: worker id {id:?} must be 1 to 64 ASCII letters, digits, `.`, `_` \
+                 or `-`"
+            ));
+        }
+        if !seen.insert(digest) {
+            return Err(format!(
+                "line {number}: the same token hash is on an earlier line"
+            ));
+        }
+        entries.push((digest, id.to_owned()));
+    }
+    Ok(entries)
+}
+
+/// What a token file looked like when it was last read: a change in any of
+/// these re-reads it. A rename over it (the safe way to edit it) changes
+/// the inode; an edit in place changes the size or the modification time;
+/// a `chmod` changes the mode, which `TokenFile::read` checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    inode: u64,
+    device: u64,
+    mode: u32,
+}
+
+fn stamp_of(metadata: &std::fs::Metadata) -> FileStamp {
+    #[cfg(unix)]
+    let (inode, device, mode) = {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.ino(), metadata.dev(), metadata.mode())
+    };
+    #[cfg(not(unix))]
+    let (inode, device, mode) = (0, 0, 0);
+    FileStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        inode,
+        device,
+        mode,
+    }
+}
+
+/// Remote mode's tokens (§5.1): the owner's token file, holding only
+/// hashes. It is checked for a change (one `stat`) on every authenticated
+/// request -- each channel upgrade, each artifact request -- and on every
+/// heartbeat, and re-read when it changed, so deleting a line revokes that
+/// worker on its next connection, its next artifact request and its next
+/// heartbeat, with no restart.
+///
+/// Trust decision: it fails closed. A file that cannot be read, is
+/// malformed, or can be written by its group or others refuses every token
+/// until it is fixed, rather than keeping the tokens it held before: an
+/// edit meant to revoke a worker must never leave that worker in. Replace
+/// the file by renaming a new one over it, so no request reads it half
+/// written.
+pub(crate) struct TokenFile {
+    path: PathBuf,
+    state: Mutex<TokenFileState>,
+}
+
+#[derive(Default)]
+struct TokenFileState {
+    /// The file as last read; `None` while it could not be.
+    stamp: Option<FileStamp>,
+    /// Its entries; `None` while it is unusable, when every token is
+    /// refused.
+    entries: Option<Vec<([u8; 32], String)>>,
+    /// The last problem logged, so an unusable file is reported once per
+    /// problem, not once per request.
+    problem: Option<String>,
+    /// A number per worker id for this process's life: the `agent` a
+    /// channel, a lease and a settled result record (`Conn::agent`). Two
+    /// tokens for one worker id -- mid-rotation -- are the same agent, and
+    /// an adopted lease names its holder by worker id, so a restarted
+    /// master knows which agent may resume it.
+    ids: BTreeMap<String, usize>,
+}
+
+impl TokenFileState {
+    fn agent(&mut self, id: &str) -> usize {
+        let next = self.ids.len();
+        *self.ids.entry(id.to_owned()).or_insert(next)
+    }
+}
+
+impl TokenFile {
+    /// Reads the file at startup, where a problem stops the service instead
+    /// of refusing every worker.
+    pub(crate) fn open(path: &Path) -> anyhow::Result<Self> {
+        let (stamp, entries) = Self::read(path).map_err(anyhow::Error::msg)?;
+        if entries.is_empty() {
+            eprintln!(
+                "worker tokens: {} lists no worker yet; no agent can connect until a line is added",
+                path.display()
+            );
+        }
+        Ok(TokenFile {
+            path: path.to_path_buf(),
+            state: Mutex::new(TokenFileState {
+                stamp: Some(stamp),
+                entries: Some(entries),
+                ..TokenFileState::default()
+            }),
+        })
+    }
+
+    fn read(path: &Path) -> Result<(FileStamp, Vec<([u8; 32], String)>), String> {
+        let shown = path.display();
+        let metadata = std::fs::metadata(path)
+            .map_err(|error| format!("TOLMAP_WORKER_TOKENS {shown}: {error}"))?;
+        // Trust decision: a file others can write is a file others can add
+        // a worker to. Its contents are hashes, so reading is harmless.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o022 != 0 {
+                return Err(format!(
+                    "TOLMAP_WORKER_TOKENS {shown} has mode {mode:o}, so its group or others can \
+                     write it; make it writable by its owner only (`chmod go-w`)"
+                ));
+            }
+        }
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| format!("TOLMAP_WORKER_TOKENS {shown}: {error}"))?;
+        let entries = parse_token_file(&text)
+            .map_err(|why| format!("TOLMAP_WORKER_TOKENS {shown}: {why}"))?;
+        Ok((stamp_of(&metadata), entries))
+    }
+
+    /// Re-reads the file if it changed since it was last read.
+    fn refresh(&self, state: &mut TokenFileState) {
+        let stamp = std::fs::metadata(&self.path)
+            .ok()
+            .map(|metadata| stamp_of(&metadata));
+        if stamp.is_some() && stamp == state.stamp && state.entries.is_some() {
+            return;
+        }
+        match Self::read(&self.path) {
+            Ok((stamp, entries)) => {
+                eprintln!(
+                    "worker tokens: re-read {} ({} line(s))",
+                    self.path.display(),
+                    entries.len()
+                );
+                state.stamp = Some(stamp);
+                state.entries = Some(entries);
+                state.problem = None;
+            }
+            Err(problem) => {
+                if state.problem.as_deref() != Some(problem.as_str()) {
+                    eprintln!(
+                        "worker tokens: {problem}; refusing every worker token until it is fixed"
+                    );
+                }
+                state.stamp = stamp;
+                state.entries = None;
+                state.problem = Some(problem);
+            }
+        }
+    }
+
+    /// The agent and worker id `presented` (a token's digest) is bound to
+    /// now, compared with every line without stopping early.
+    fn lookup(&self, presented: &[u8; 32]) -> Option<(usize, String)> {
+        let mut state = self.state.lock().expect("token file mutex poisoned");
+        self.refresh(&mut state);
+        let mut found = None;
+        for (digest, id) in state.entries.as_deref().unwrap_or_default() {
+            if digests_equal(presented, digest) {
+                found = Some(id.clone());
+            }
+        }
+        let id = found?;
+        Some((state.agent(&id), id))
+    }
+
+    /// The agent number of worker `id`, whether or not it holds a token now.
+    fn agent(&self, id: &str) -> usize {
+        self.state
+            .lock()
+            .expect("token file mutex poisoned")
+            .agent(id)
+    }
+}
+
+/// How the hub authenticates agents.
+enum Tokens {
+    /// Loopback mode: one token per agent, minted at startup; an agent is
+    /// its index here.
+    Minted(Vec<[u8; 32]>),
+    /// Remote mode: the owner's token file.
+    File(TokenFile),
+}
+
+/// Who a request's bearer token says it is.
+#[derive(Clone, Debug)]
+pub(crate) struct Identity {
+    /// `Conn::agent`: the minted token's index, or the worker id's number.
+    agent: usize,
+    /// The presented token's SHA-256, to check it is still listed.
+    digest: [u8; 32],
+    /// The token file's worker id for it; `None` for a minted token.
+    worker_id: Option<String>,
+}
+
+/// §4.3's per-channel frame bound: a token bucket holding up to `burst`
+/// frames, refilled at `rate` a second.
+struct FrameBudget {
+    rate: f64,
+    burst: f64,
+    tokens: f64,
+    at: Instant,
+}
+
+impl FrameBudget {
+    fn new(rate: u32, burst: u32) -> Self {
+        let burst = f64::from(burst.max(1));
+        FrameBudget {
+            rate: f64::from(rate.max(1)),
+            burst,
+            tokens: burst,
+            at: Instant::now(),
+        }
+    }
+
+    /// Spends one frame; `false` when the budget is gone.
+    fn take(&mut self) -> bool {
+        let now = Instant::now();
+        let refill = now.duration_since(self.at).as_secs_f64() * self.rate;
+        self.tokens = (self.tokens + refill).min(self.burst);
+        self.at = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
 }
 
 // ---- build identity and tokens ---------------------------------------------
@@ -567,6 +1138,9 @@ struct Conn {
     /// The job whose lease this channel holds, including a cancelled job
     /// until `released` arrives or the lease expires (§2.4).
     holding: Option<Uuid>,
+    /// The origin the agent dialled (`WorkerHub::origin`): the base of the
+    /// artifact URLs in its `assign`s.
+    base_url: String,
     out: tokio::sync::mpsc::UnboundedSender<Outgoing>,
 }
 
@@ -744,15 +1318,23 @@ pub(crate) struct Claimed {
 pub struct WorkerHub {
     inner: Mutex<HubInner>,
     changed: Condvar,
-    /// SHA-256 of each agent's token; an agent is its index here.
-    tokens: Vec<[u8; 32]>,
+    /// Loopback mode: SHA-256 of each agent's token, an agent being its
+    /// index there. Remote mode: the owner's token file.
+    tokens: Tokens,
+    /// `http`, or `https` behind the TLS listener: the scheme of every
+    /// artifact URL.
+    scheme: &'static str,
+    /// §4.3: each channel's frame budget, per second and as a burst.
+    frame_rate: u32,
+    frame_burst: u32,
     build: WorkerBuild,
     heartbeat_s: u64,
     lease_ttl: Duration,
     /// Lost-worker retries before a job fails (§10.6).
     retries: u32,
     staging: PathBuf,
-    /// `http://<listener address>`, the base of every artifact URL.
+    /// `<scheme>://<listener address>`: the base of the artifact URLs of an
+    /// agent whose request named no usable `Host` (`WorkerHub::origin`).
     base_url: String,
     /// Each class's usable memory, smallest first, the registry's classes
     /// in the registry's order (`JobRegistry::set_remote`); `None` is one
@@ -779,7 +1361,10 @@ impl WorkerHub {
         WorkerHub {
             inner: Mutex::new(HubInner::default()),
             changed: Condvar::new(),
-            tokens: token_digests,
+            tokens: Tokens::Minted(token_digests),
+            scheme: "http",
+            frame_rate: DEFAULT_FRAME_RATE,
+            frame_burst: DEFAULT_FRAME_BURST,
             build,
             heartbeat_s,
             lease_ttl,
@@ -789,6 +1374,36 @@ impl WorkerHub {
             classes,
             on_agents: OnceLock::new(),
         }
+    }
+
+    /// Remote mode (#97 phase 3): agents authenticate against the owner's
+    /// token file instead of minted tokens, a token binds its agent to a
+    /// worker id (`hello.worker_id` must name it), and an adopted lease
+    /// remembers its holder by that id so its agent can resume it after a
+    /// restart. `tls`: the listener terminates TLS, so artifact URLs are
+    /// `https`.
+    pub(crate) fn with_token_file(mut self, tokens: TokenFile, tls: bool) -> Self {
+        self.tokens = Tokens::File(tokens);
+        self.scheme = if tls { "https" } else { "http" };
+        self
+    }
+
+    /// §4.3: the frame budget of each channel.
+    pub(crate) fn with_frame_limit(mut self, rate: u32, burst: u32) -> Self {
+        self.frame_rate = rate;
+        self.frame_burst = burst;
+        self
+    }
+
+    /// Whether agents are remote workers holding the owner's tokens.
+    fn remote(&self) -> bool {
+        matches!(self.tokens, Tokens::File(_))
+    }
+
+    /// Whether this master has begun stopping (`shutdown_now`,
+    /// `detach_all`).
+    fn is_stopping(&self) -> bool {
+        self.lock().stopping
     }
 
     /// Sets what `agents_changed` calls; once, before the listener serves.
@@ -851,26 +1466,79 @@ impl WorkerHub {
         self.lease_ttl.as_secs().max(1)
     }
 
-    /// The agent a request's bearer token names, if any. Trust decision
-    /// (§5.1): only the `Authorization` header is read -- a token in a URL
-    /// would land in logs -- and the presented token is hashed and compared
-    /// with every stored digest without stopping early.
+    /// The agent a request's bearer token names, if any.
     pub(crate) fn authenticate(&self, headers: &HeaderMap) -> Option<usize> {
+        self.identify(headers).map(|identity| identity.agent)
+    }
+
+    /// Who a request's bearer token says it is. Trust decision (§5.1): only
+    /// the `Authorization` header is read -- a token in a URL would land in
+    /// logs -- and the presented token is hashed and compared with every
+    /// stored digest without stopping early. In remote mode the token file
+    /// is checked for a change first, so a line deleted a moment ago
+    /// refuses its token now.
+    pub(crate) fn identify(&self, headers: &HeaderMap) -> Option<Identity> {
         let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
         let token = value.strip_prefix("Bearer ")?.trim();
         if token.is_empty() {
             return None;
         }
         let presented = token_digest(token.as_bytes());
-        let mut found = None;
-        for (agent, digest) in self.tokens.iter().enumerate() {
-            if digests_equal(&presented, digest) {
-                found = Some(agent);
+        match &self.tokens {
+            Tokens::Minted(digests) => {
+                let mut found = None;
+                for (agent, digest) in digests.iter().enumerate() {
+                    if digests_equal(&presented, digest) {
+                        found = Some(agent);
+                    }
+                }
+                found.map(|agent| Identity {
+                    agent,
+                    digest: presented,
+                    worker_id: None,
+                })
             }
+            Tokens::File(file) => file.lookup(&presented).map(|(agent, id)| Identity {
+                agent,
+                digest: presented,
+                worker_id: Some(id),
+            }),
         }
-        found
     }
 
+    /// Whether `identity`'s token is still in the token file, for the same
+    /// worker (§5.1: revoking a worker is deleting its line). Minted tokens
+    /// live as long as the process.
+    fn still_authorized(&self, identity: &Identity) -> bool {
+        match &self.tokens {
+            Tokens::Minted(_) => true,
+            Tokens::File(file) => file
+                .lookup(&identity.digest)
+                .is_some_and(|(_, id)| Some(&id) == identity.worker_id.as_ref()),
+        }
+    }
+
+    /// The origin an agent dialled, from its upgrade request's `Host`: the
+    /// base of the artifact URLs its `assign`s name. The agent sends its
+    /// token only to the origin it dialled (`agent::Endpoint::owns`), and a
+    /// remote master is dialled by a name or address of the private
+    /// network that its listener's own address (often every interface)
+    /// does not spell. Trust decision: `Host` is the agent's own word, and
+    /// the URLs made from it go back to that agent only, so an agent that
+    /// lies misdirects itself and no one else; it must still be a bare
+    /// authority, with no user info, path or query, or the listener's own
+    /// address is used.
+    fn origin(&self, headers: &HeaderMap) -> String {
+        headers
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .filter(|host| !host.contains('@'))
+            .and_then(|host| host.parse::<axum::http::uri::Authority>().ok())
+            .map(|authority| format!("{}://{authority}", self.scheme))
+            .unwrap_or_else(|| self.base_url.clone())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn add_conn(
         &self,
         agent: usize,
@@ -878,6 +1546,7 @@ impl WorkerHub {
         eligible: bool,
         class: Option<usize>,
         local_paths: bool,
+        base_url: String,
         out: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     ) -> u64 {
         let mut inner = self.lock();
@@ -894,6 +1563,7 @@ impl WorkerHub {
                 ready: false,
                 draining: false,
                 holding: None,
+                base_url,
                 out,
             },
         );
@@ -1193,7 +1863,6 @@ impl WorkerHub {
         worker_result::create_private_dir(&dir.join("blobs")).map_err(internal)?;
         let names = dir.join("names.json");
         crate::naming::save_cache(&names, &inputs.names).map_err(internal)?;
-        let base = format!("{}/workers/artifacts/{job_id}/{epoch}", self.base_url);
         let mut input_files = BTreeMap::new();
         input_files.insert("inputs/names".to_owned(), names);
         // Only the maps the job child could choose: the newest on each
@@ -1202,30 +1871,38 @@ impl WorkerHub {
         // on its own branch). The agent learns its branch only after it
         // clones, so it gets one per branch; the files stay in the store
         // and are read at GET time, by the master, under its own uid.
-        let mut previous_maps = Vec::new();
+        let mut previous = Vec::new();
         let mut branches = BTreeSet::new();
         for row in &inputs.previous_maps {
             if !branches.insert(row.branch.clone()) {
                 continue;
             }
-            let name = format!("inputs/previous/{}.json", previous_maps.len());
-            previous_maps.push(PreviousMapUrl {
-                branch: row.branch.clone(),
-                commit: row.commit.clone(),
-                url: format!("{base}/{name}"),
-            });
+            let name = format!("inputs/previous/{}.json", previous.len());
+            previous.push((row.branch.clone(), row.commit.clone(), name.clone()));
             input_files.insert(name, row.path.clone());
         }
-        let assign = MasterMessage::Assign {
-            job_id: job_id.to_string(),
-            epoch,
-            lease_ttl_s: self.lease_ttl_s(),
-            job: job.clone(),
-            inputs: AssignInputs {
-                names_cache: Some(format!("{base}/inputs/names")),
-                previous_maps,
-            },
-            outputs: base,
+        // The URLs name the origin the chosen agent dialled
+        // (`Conn::base_url`), so the `assign` is made once it is chosen.
+        let assign = |origin: &str| {
+            let base = format!("{origin}/workers/artifacts/{job_id}/{epoch}");
+            MasterMessage::Assign {
+                job_id: job_id.to_string(),
+                epoch,
+                lease_ttl_s: self.lease_ttl_s(),
+                job: job.clone(),
+                inputs: AssignInputs {
+                    names_cache: Some(format!("{base}/inputs/names")),
+                    previous_maps: previous
+                        .iter()
+                        .map(|(branch, commit, name)| PreviousMapUrl {
+                            branch: branch.clone(),
+                            commit: commit.clone(),
+                            url: format!("{base}/{name}"),
+                        })
+                        .collect(),
+                },
+                outputs: base,
+            }
         };
         let me = (order, job_id);
         self.lock().waiting.insert(me, (job.local, class));
@@ -1253,8 +1930,18 @@ impl WorkerHub {
                 conn.ready = false;
                 conn.holding = Some(job_id);
                 let agent = conn.agent;
-                let holder = format!("agent {agent} ({})", conn.worker_id);
-                let _ = conn.out.send(Outgoing::Message(assign.clone()));
+                // The store's `lease_holder`. In remote mode it is the
+                // worker id the agent's token is bound to (`serve_agent`
+                // checked `hello.worker_id` against it), which is what lets
+                // a restarted master hand the lease back to that worker
+                // (`adopt`). A loopback agent's is only a label.
+                let holder = if self.remote() {
+                    conn.worker_id.clone()
+                } else {
+                    format!("agent {agent} ({})", conn.worker_id)
+                };
+                let message = assign(&conn.base_url);
+                let _ = conn.out.send(Outgoing::Message(message));
                 inner.leases.insert(
                     job_id,
                     Lease {
@@ -1293,15 +1980,32 @@ impl WorkerHub {
     /// Takes over the lease a restarted master found in the store (§6
     /// "master restarts mid-job"): the same epoch, no channel, and a
     /// deadline one TTL from now, so the agent that held it has that long
-    /// to come back. It has no holder (`agent: None`), so `resume` never
-    /// hands it back: the master cannot tell which token held it before the
-    /// restart, and loopback agents, this process's children, are new
-    /// processes after one and hold nothing. The lease runs out and the
-    /// runner re-queues the job, uncounted.
-    pub(crate) fn adopt(&self, job_id: Uuid, epoch: u64) -> Claimed {
+    /// to come back. `holder` is the store's `lease_holder`.
+    ///
+    /// Remote mode (#97 phase 3, lifting #156's first departure): the
+    /// holder is a worker id bound to a token in the owner's file, so the
+    /// lease records that worker as its agent, and `resume` hands it back
+    /// to an agent presenting a token for the same worker id at the same
+    /// epoch -- the job carries on, no re-run, no attempt counted. Loopback
+    /// mode: no holder (`agent: None`), so `resume` never hands it back: a
+    /// minted token names no one after a restart, and loopback agents, this
+    /// process's children, are new processes after one and hold nothing.
+    /// Either way, a lease no one resumes runs out and the runner re-queues
+    /// the job, uncounted.
+    pub(crate) fn adopt(&self, job_id: Uuid, epoch: u64, holder: Option<&str>) -> Claimed {
+        let agent = match (&self.tokens, holder) {
+            (Tokens::File(file), Some(holder)) if is_valid_worker_id(holder) => {
+                Some(file.agent(holder))
+            }
+            _ => None,
+        };
         let dir = self.lease_dir(job_id, epoch);
         let _ = std::fs::remove_dir_all(&dir);
-        if let Err(error) = worker_result::create_private_dir(&dir) {
+        // `blobs` too, as `claim` makes it: a lease resumed in remote mode
+        // takes uploads, which land there.
+        let made = worker_result::create_private_dir(&dir)
+            .and_then(|()| worker_result::create_private_dir(&dir.join("blobs")));
+        if let Err(error) = made {
             eprintln!("job {job_id}: could not create {}: {error}", dir.display());
         }
         let (events, receiver) = std_mpsc::channel();
@@ -1310,7 +2014,7 @@ impl WorkerHub {
             job_id,
             Lease {
                 conn: None,
-                agent: None,
+                agent,
                 epoch,
                 deadline: Instant::now() + self.lease_ttl,
                 next_seq: 1,
@@ -1333,7 +2037,10 @@ impl WorkerHub {
         Claimed {
             events: receiver,
             dir,
-            holder: "none since the restart".to_owned(),
+            holder: match (agent, holder) {
+                (Some(_), Some(holder)) => holder.to_owned(),
+                _ => "none since the restart".to_owned(),
+            },
         }
     }
 
@@ -1416,8 +2123,9 @@ impl WorkerHub {
     /// verdict is then sent again after the `welcome`. `cancel` for
     /// everything else: `cancelled` for a job the user cancelled meanwhile,
     /// `lease_lost` otherwise -- another epoch holds the job, its lease ran
-    /// out, it ended, or a restarted master adopted it (an adopted lease
-    /// has no holder whose token could be checked).
+    /// out, it ended, or a restarted loopback master adopted it (an adopted
+    /// lease has a holder only in remote mode, where it is a worker id:
+    /// `adopt`).
     fn resume(&self, conn_id: u64, agent: usize, entries: Vec<ResumeEntry>) -> Vec<WelcomeResume> {
         let mut guard = self.lock();
         let inner = &mut *guard;
@@ -1573,6 +2281,31 @@ impl WorkerHub {
         self.changed.notify_all();
     }
 
+    /// Remote mode's graceful stop (§6 "master graceful stop"): no job is
+    /// assigned after this, and every channel is closed without `shutdown`,
+    /// so remote agents keep running their jobs and redial. A closed channel
+    /// only detaches its lease; the stopping runner then lets it go and the
+    /// job's row stays `leased`/`running` (`run_remote`), for the next
+    /// process to adopt and the agent to resume. `connect` refuses new
+    /// channels meanwhile, so no agent resumes a lease here that this
+    /// process is about to let go.
+    pub fn detach_all(&self) {
+        let mut inner = self.lock();
+        inner.stopping = true;
+        for conn in inner.conns.values() {
+            let _ = conn.out.send(Outgoing::Close);
+        }
+        self.changed.notify_all();
+    }
+
+    /// Waits up to `grace` for every lease to end.
+    fn wait_for_no_leases(&self, grace: Duration) {
+        let deadline = Instant::now() + grace;
+        while !self.lock().leases.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// The lease an artifact request may act on. Trust decision (§4.2): a
     /// URL is honoured only for the token that holds the job's lease, at
     /// the lease's epoch, while the lease is live and neither cancelled nor
@@ -1671,24 +2404,35 @@ fn unauthorized() -> Response {
 }
 
 /// Trust decision (§5.1): the token is checked before anything else about
-/// the request, and before the upgrade -- a missing or wrong token gets a
-/// 401 and never a channel.
+/// the request, and before the upgrade -- a missing, wrong or revoked token
+/// gets a 401 and never a channel.
 async fn connect(
     State(hub): State<Arc<WorkerHub>>,
     headers: HeaderMap,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
-    let Some(agent) = hub.authenticate(&headers) else {
+    let Some(identity) = hub.identify(&headers) else {
         return unauthorized();
     };
+    // A stopping master takes no new channel (`detach_all`): an agent that
+    // resumed a lease here would lose it when this process lets it go. A
+    // remote agent reads the 503 as a failed dial and tries again, which
+    // finds the next process.
+    if hub.is_stopping() {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the master is stopping; dial again",
+        );
+    }
     let upgrade = match upgrade {
         Ok(upgrade) => upgrade,
         Err(rejection) => return rejection.into_response(),
     };
+    let origin = hub.origin(&headers);
     upgrade
         .max_message_size(WS_MESSAGE_LIMIT)
         .max_frame_size(WS_MESSAGE_LIMIT)
-        .on_upgrade(move |socket| serve_agent(hub, agent, socket))
+        .on_upgrade(move |socket| serve_agent(hub, identity, origin, socket))
 }
 
 /// §7.4: the default per-class maximum a provider-specific autoscaler
@@ -1832,7 +2576,13 @@ fn parse_frame(text: &str) -> Result<WorkerMessage, Violation> {
         .map_err(|error| Violation::protocol(format!("unreadable or unknown message: {error}")))
 }
 
-async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
+async fn serve_agent(
+    hub: Arc<WorkerHub>,
+    identity: Identity,
+    origin: String,
+    mut socket: WebSocket,
+) {
+    let agent = identity.agent;
     let first = match tokio::time::timeout(HELLO_TIMEOUT, socket.recv()).await {
         Ok(Some(Ok(Message::Text(text)))) => text,
         Ok(Some(Ok(_))) => {
@@ -1872,6 +2622,22 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
         .await;
         return;
     };
+    // Trust decision (§5.1): in remote mode a token is bound to one worker
+    // id, and an agent names that id in its `hello` or gets no channel. The
+    // id is what the store records as a lease's holder and what a restarted
+    // master hands an adopted lease back to, so one worker's token must not
+    // pass for another worker.
+    if let Some(bound) = &identity.worker_id {
+        if worker_id != *bound {
+            close_with_error(
+                &mut socket,
+                "worker_id_mismatch",
+                format!("this token is worker {bound:?}'s, and the hello names {worker_id:?}"),
+            )
+            .await;
+            return;
+        }
+    }
     let proto = match negotiate((PROTO, PROTO), (proto_min, proto_max)) {
         Ok(proto) => proto,
         Err(unsupported) => {
@@ -1934,6 +2700,7 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
         eligible,
         worker_class,
         local_paths,
+        origin,
         out,
     );
     eprintln!(
@@ -1954,10 +2721,25 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
     };
     // Off the hub's lock: a new agent may let a queued job start.
     hub.agents_changed();
+    // §4.3: every frame after the `hello` spends from this channel's budget.
+    let mut budget = FrameBudget::new(hub.frame_rate, hub.frame_burst);
     if send_message(&mut socket, &welcome).await.is_ok() {
         loop {
             tokio::select! {
                 incoming = socket.recv() => {
+                    if matches!(incoming, Some(Ok(_))) && !budget.take() {
+                        close_with_error(
+                            &mut socket,
+                            "rate_limited",
+                            format!(
+                                "more than {} control frames a second (bursts of {}); the \
+                                 protocol never needs that many",
+                                hub.frame_rate, hub.frame_burst
+                            ),
+                        )
+                        .await;
+                        break;
+                    }
                     let text = match incoming {
                         Some(Ok(Message::Text(text))) => text,
                         Some(Ok(Message::Binary(_))) => {
@@ -1972,8 +2754,24 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
                         Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
                         Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                     };
-                    let handled = parse_frame(text.as_str())
-                        .and_then(|message| hub.handle(conn, message));
+                    let handled = parse_frame(text.as_str()).and_then(|message| {
+                        // §5.1: a worker whose token line was deleted while
+                        // its channel was up loses the channel at its next
+                        // heartbeat (and its next dial gets a 401). Checked
+                        // here, off the hub's lock, since it may read the
+                        // token file.
+                        if matches!(message, WorkerMessage::Heartbeat { .. })
+                            && !hub.still_authorized(&identity)
+                        {
+                            return Err(Violation {
+                                code: "token_revoked",
+                                message: "this worker's token is no longer in the master's token \
+                                          file"
+                                    .to_owned(),
+                            });
+                        }
+                        hub.handle(conn, message)
+                    });
                     if let Err(violation) = handled {
                         close_with_error(&mut socket, violation.code, violation.message).await;
                         break;
@@ -2259,11 +3057,13 @@ pub(crate) fn run_remote(
     // and escalation compare against this, not the job's class: a small job
     // killed for memory on a large agent needs a class larger than that.
     let running_class = registry.slot_class(job_id).unwrap_or(0);
-    // A lease a restarted master found in the store (§6): adopted, not
-    // asked for again. Its expiry is a restart, not a lost worker.
+    // A lease a restarted master found in the store (§6), adopted by
+    // `jobs::restore` before any agent could connect: not asked for again.
+    // Its expiry is a restart, not a lost worker.
     let orphan = registry.take_orphan(job_id);
+    let adopted = orphan.is_some();
     let (lease, epoch, mut table) = match orphan {
-        Some(epoch) => (hub.adopt(job_id, epoch), epoch, "running"),
+        Some((epoch, lease)) => (lease, epoch, "running"),
         None => {
             let (job, inputs) = match jobs::prepare(&state, &repo_ref, &tx) {
                 Ok(prepared) => prepared,
@@ -2304,7 +3104,15 @@ pub(crate) fn run_remote(
         }
     };
     let mut sink = SnapshotSink::new(&tx, started, Some(registry));
-    let mut clone = ExecutorClone::NotStarted;
+    // An adopted lease that its agent resumes (remote mode) carries on from
+    // the snapshot the store kept, which may be past the executor's clone
+    // already; the child's own `clone` stage that follows must not be taken
+    // for the executor's.
+    let mut clone = if adopted {
+        executor_clone_of(&tx.borrow())
+    } else {
+        ExecutorClone::NotStarted
+    };
     let mut cancel_sent = false;
     // Set once `cancel` `reroute` is sent: the class the job moves to.
     // Asked at most once per lease, whatever further `features` say.
@@ -2343,6 +3151,31 @@ pub(crate) fn run_remote(
                         sink.clone_finished(duration_s, success);
                     }
                     WorkerEvent::Result { .. } => {
+                        // An adopted lease starts with no uploads: they went
+                        // to the previous process's staging, which this one
+                        // cleared. A result whose artifacts were uploaded
+                        // before the restart is refused and the job runs
+                        // again, uncounted, rather than failing for the
+                        // restart.
+                        if adopted && !uploads_cover(&event, &hub.uploads(job_id)) {
+                            hub.verdict(
+                                job_id,
+                                false,
+                                "its artifacts were uploaded before the master restarted"
+                                    .to_owned(),
+                            );
+                            return requeue(
+                                &state,
+                                hub,
+                                &tx,
+                                job_id,
+                                epoch,
+                                false,
+                                jobs::RESTARTED,
+                                false,
+                                None,
+                            );
+                        }
                         let registered = register_result(
                             &state,
                             hub,
@@ -2501,9 +3334,10 @@ pub(crate) fn run_remote(
             if cancel_sent || registry.is_stopping() {
                 return hub.end_lease(job_id, true);
             }
-            let (counted, why) = match orphan {
-                Some(_) => (false, jobs::RESTARTED),
-                None => (true, WORKER_LOST),
+            let (counted, why) = if adopted {
+                (false, jobs::RESTARTED)
+            } else {
+                (true, WORKER_LOST)
             };
             // §6 "worker host dies": a worker whose last heartbeat had its
             // job within 10% of the class's memory most likely died of it,
@@ -2531,6 +3365,33 @@ pub(crate) fn run_remote(
             );
         }
     }
+}
+
+/// Where a restored snapshot has the executor's clone: the state `run_remote`
+/// starts from for a lease it adopted.
+fn executor_clone_of(snapshot: &JobSnapshot) -> ExecutorClone {
+    let state = snapshot
+        .stages
+        .iter()
+        .find(|stage| stage.id == StageId::Clone)
+        .map(|stage| stage.state);
+    match state {
+        Some(jobs::StageState::Running) => ExecutorClone::Running,
+        Some(jobs::StageState::Done | jobs::StageState::Failed) => ExecutorClone::Finished,
+        Some(jobs::StageState::Pending) | None => ExecutorClone::NotStarted,
+    }
+}
+
+/// Whether every artifact a `result` lists was uploaded under this lease
+/// with the SHA-256 and size it lists.
+fn uploads_cover(event: &WorkerEvent, uploads: &BTreeMap<String, Upload>) -> bool {
+    result_artifacts(event).iter().all(|artifact| {
+        uploads.get(&artifact.name)
+            == Some(&Upload {
+                sha256: artifact.sha256.clone(),
+                bytes: artifact.bytes,
+            })
+    })
 }
 
 /// Puts a job whose lease ended without a result back at the head of its
@@ -3128,16 +3989,20 @@ pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Res
         .await
         .with_context(|| format!("bind the worker listener on {}", settings.listen))?;
     let address = listener.local_addr()?;
-    let hub = Arc::new(WorkerHub::new(
-        digests,
-        build,
-        settings.heartbeat_s,
-        settings.lease_ttl,
-        settings.retries,
-        staging,
-        format!("http://{address}"),
-        classes.iter().map(|class| class.usable_memory).collect(),
-    ));
+    let (frame_rate, frame_burst) = frame_limit_from_env();
+    let hub = Arc::new(
+        WorkerHub::new(
+            digests,
+            build,
+            settings.heartbeat_s,
+            settings.lease_ttl,
+            settings.retries,
+            staging,
+            format!("http://{address}"),
+            classes.iter().map(|class| class.usable_memory).collect(),
+        )
+        .with_frame_limit(frame_rate, frame_burst),
+    );
     // Weak: the registry holds the hub, so a strong reference back would
     // keep both alive forever. Set before the listener serves anyone.
     let weak = Arc::downgrade(state);
@@ -3171,6 +4036,9 @@ pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Res
             .arg(&token_files[agent])
             .arg("--cache-dir")
             .arg(agents_dir.join(agent.to_string()))
+            // This master's own child: it exits when this master is gone,
+            // rather than redialling a successor that minted new tokens.
+            .arg("--loopback")
             .stdin(Stdio::null());
         if let Some(memory) = agent_memory[agent] {
             command.arg("--class-memory").arg(memory.to_string());
@@ -3203,6 +4071,115 @@ pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Res
         described.join(", ")
     );
     Ok(Loopback { hub, supervisor })
+}
+
+/// A running remote worker tier: the hub. Its agents run on other hosts
+/// and are not this process's to stop.
+pub struct Remote {
+    hub: Arc<WorkerHub>,
+}
+
+impl Remote {
+    /// The master's half of graceful shutdown in remote mode, after
+    /// `JobRegistry::shutdown` has stopped admission (§6 "master graceful
+    /// stop": "jobs stay in the store, agents keep running and reconnect
+    /// when the master is back"). Unlike loopback mode, no agent is told to
+    /// stop: every channel is closed (`WorkerHub::detach_all`), each
+    /// running job's row stays `leased`/`running`, and the next process
+    /// adopts it and its agent resumes it. Waits a moment for the runners
+    /// to let their leases go.
+    pub async fn shutdown(self) {
+        self.hub.detach_all();
+        let hub = self.hub.clone();
+        let _ = tokio::task::spawn_blocking(move || hub.wait_for_no_leases(REAP_GRACE)).await;
+    }
+}
+
+/// `TOLMAP_WORKERS=remote[:N]` (#97 phase 3, docs/WORKER_TIER.md §5.1,
+/// §5.6, §8 "Phase 3"): opens the worker listener -- with TLS unless it is
+/// on loopback (`remote_tls_files`) -- for agents holding the owner's
+/// tokens (`TokenFile`), points the registry at the hub with N slots in one
+/// class, and starts no agents. Everything is read and checked before the
+/// listener opens, so a bad certificate, key or token file stops startup.
+pub async fn start_remote(state: &Arc<AppState>, slots: usize) -> anyhow::Result<Remote> {
+    let settings = RemoteSettings::from_env()?;
+    let tls = match &settings.tls {
+        Some((cert, key)) => Some(server_tls(cert, key)?),
+        None => None,
+    };
+    let tokens = TokenFile::open(&settings.tokens)?;
+    // One class of unknown size: every agent fits it. The decided phase 3
+    // fleet is one class (§10.1); classes built from remote workers'
+    // `hello`s are for a fleet that has more than one.
+    let classes = vec![Class {
+        usable_memory: None,
+        slots,
+    }];
+    let cache_dir = state.config.cache_dir.clone();
+    std::fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("create {}", cache_dir.display()))?;
+    let staging = cache_dir.join("worker-artifacts");
+    fresh_private_dir(&staging)?;
+    let build = tokio::task::spawn_blocking(own_build)
+        .await
+        .context("hash this binary for its build identity")?;
+    let listen = settings.lease.listen;
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("bind the worker listener on {listen}"))?;
+    let address = listener.local_addr()?;
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    let (frame_rate, frame_burst) = frame_limit_from_env();
+    let hub = Arc::new(
+        WorkerHub::new(
+            Vec::new(),
+            build,
+            settings.lease.heartbeat_s,
+            settings.lease.lease_ttl,
+            settings.lease.retries,
+            staging,
+            format!("{scheme}://{address}"),
+            classes.iter().map(|class| class.usable_memory).collect(),
+        )
+        .with_token_file(tokens, tls.is_some())
+        .with_frame_limit(frame_rate, frame_burst),
+    );
+    let weak = Arc::downgrade(state);
+    hub.on_agents_changed(Box::new(move || {
+        if let Some(state) = weak.upgrade() {
+            jobs::agents_changed(&state);
+        }
+    }));
+    state.jobs.set_remote(hub.clone(), classes);
+    // Restart order, as in loopback mode: the store's live jobs, and the
+    // leases a previous process left, are reloaded before any agent can
+    // connect, so a remote agent that redials finds its lease adopted and
+    // resumes it.
+    jobs::restore(state).context("reload jobs from the store")?;
+    let app = router(hub.clone());
+    match tls {
+        Some(config) => {
+            let listener = TlsListener::start(listener, config)?;
+            tokio::spawn(async move {
+                if let Err(error) = axum::serve(listener, app).await {
+                    eprintln!("tolmap serve: the worker listener stopped: {error}");
+                }
+            });
+        }
+        None => {
+            tokio::spawn(async move {
+                if let Err(error) = axum::serve(listener, app).await {
+                    eprintln!("tolmap serve: the worker listener stopped: {error}");
+                }
+            });
+        }
+    }
+    eprintln!(
+        "tolmap serve: worker listener on {scheme}://{address} for remote agents, {slots} \
+         slot(s), tokens from {}",
+        settings.tokens.display()
+    );
+    Ok(Remote { hub })
 }
 
 #[cfg(all(test, unix))]
@@ -3335,6 +4312,21 @@ mod tests {
             limits: Limits,
             relayed: bool,
         ) -> Self {
+            Self::build_with(dir, lease_ttl, build, classes, limits, relayed, &|hub| hub)
+        }
+
+        /// `build`, with `customize` applied to the hub before it serves:
+        /// remote mode's token file, a frame limit.
+        #[allow(clippy::too_many_arguments)]
+        fn build_with(
+            dir: tempfile::TempDir,
+            lease_ttl: Duration,
+            build: WorkerBuild,
+            classes: Vec<Class>,
+            limits: Limits,
+            relayed: bool,
+            customize: &dyn Fn(WorkerHub) -> WorkerHub,
+        ) -> Self {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -3373,7 +4365,7 @@ mod tests {
                 Some(relay) => format!("http://127.0.0.1:{}", relay.port),
                 None => format!("http://{address}"),
             };
-            let hub = Arc::new(WorkerHub::new(
+            let hub = Arc::new(customize(WorkerHub::new(
                 TOKENS
                     .iter()
                     .map(|token| token_digest(token.as_bytes()))
@@ -3388,7 +4380,7 @@ mod tests {
                 staging,
                 base_url,
                 classes.iter().map(|class| class.usable_memory).collect(),
-            ));
+            )));
             // As `start_loopback` wires it.
             let weak = Arc::downgrade(&state);
             hub.on_agents_changed(Box::new(move || {
@@ -3929,13 +4921,25 @@ mod tests {
             WorkersMode::parse(Some("loopback:3")),
             Ok(WorkersMode::Loopback(3))
         );
+        // #97 phase 3: `remote` is one slot, `remote:N` N.
+        assert_eq!(
+            WorkersMode::parse(Some("remote")),
+            Ok(WorkersMode::Remote(1))
+        );
+        assert_eq!(
+            WorkersMode::parse(Some(" remote:2 ")),
+            Ok(WorkersMode::Remote(2))
+        );
         for bad in [
             "loopback:0",
             "loopback:",
             "loopback",
             "loopback:-1",
             "loopback:two",
-            "remote",
+            "remote:0",
+            "remote:",
+            "remote:x",
+            "REMOTE",
             "LOCAL",
         ] {
             assert!(WorkersMode::parse(Some(bad)).is_err(), "{bad}");
@@ -6368,5 +7372,407 @@ printf '{"type":"result","v":1,"map_path":"%s/demo.json","symbols_path":"%s/demo
             let outcome = agent.join().unwrap();
             assert!(outcome.is_ok(), "{outcome:?}");
         }
+    }
+
+    // ---- remote mode (#97 phase 3) -----------------------------------------
+
+    /// The worker ids `TOKENS` are bound to in a remote fixture's token file.
+    const WORKER_IDS: [&str; 2] = ["w0", "w1"];
+
+    /// Writes a token file binding each token's SHA-256 to its worker id,
+    /// the way the docs ask for an edit: a new file renamed over the old.
+    /// `0600` whatever the umask, since a group-writable file is refused.
+    fn write_token_file(path: &Path, tokens: &[(&str, &str)]) {
+        use std::os::unix::fs::PermissionsExt;
+        let lines: String = tokens
+            .iter()
+            .map(|(token, id)| format!("{} {id}\n", hex(&token_digest(token.as_bytes()))))
+            .collect();
+        let temp = path.with_extension("new");
+        std::fs::write(&temp, format!("# test workers\n\n{lines}")).unwrap();
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(&temp, path).unwrap();
+    }
+
+    impl Fixture {
+        /// A remote-mode master on loopback without TLS, as CI runs one: one
+        /// slot, and a token file binding `TOKENS[i]` to `WORKER_IDS[i]` at
+        /// `<dir>/worker-tokens`. `frames`: a frame limit other than the
+        /// default.
+        fn remote(dir: tempfile::TempDir, lease_ttl: Duration, frames: Option<(u32, u32)>) -> Self {
+            let tokens = dir.path().join("worker-tokens");
+            write_token_file(
+                &tokens,
+                &[(TOKENS[0], WORKER_IDS[0]), (TOKENS[1], WORKER_IDS[1])],
+            );
+            Self::build_with(
+                dir,
+                lease_ttl,
+                test_build(),
+                one_class(1),
+                Limits::default(),
+                false,
+                &|hub| {
+                    let hub = hub.with_token_file(TokenFile::open(&tokens).unwrap(), false);
+                    match frames {
+                        Some((rate, burst)) => hub.with_frame_limit(rate, burst),
+                        None => hub,
+                    }
+                },
+            )
+        }
+    }
+
+    /// A remote worker's `hello`: its worker id, `resume`, no `local_paths`.
+    fn remote_hello(worker_id: &str, resume: Vec<ResumeEntry>) -> WorkerMessage {
+        let mut hello = hello_with(test_build(), (PROTO, PROTO), &[FEATURE_RESUME], resume);
+        if let WorkerMessage::Hello { worker_id: id, .. } = &mut hello {
+            *id = worker_id.to_owned();
+        }
+        hello
+    }
+
+    impl FakeAgent {
+        /// A new channel with `token` that sends `hello`; the master's
+        /// first answer.
+        fn hello_as(port: u16, token: &str, hello: &WorkerMessage) -> (Self, MasterMessage) {
+            let mut agent = FakeAgent::raw(port, token);
+            agent.send(hello);
+            let first = agent.recv();
+            (agent, first)
+        }
+
+        /// A remote worker `worker_id` joining with `resume`; the welcome's
+        /// answers.
+        fn rejoin_remote(
+            port: u16,
+            token: &str,
+            worker_id: &str,
+            resume: Vec<ResumeEntry>,
+        ) -> (Self, Vec<WelcomeResume>) {
+            match Self::hello_as(port, token, &remote_hello(worker_id, resume)) {
+                (agent, MasterMessage::Welcome { resume, .. }) => (agent, resume),
+                (_, other) => panic!("expected welcome, got {other:?}"),
+            }
+        }
+    }
+
+    fn empty_heartbeat() -> WorkerMessage {
+        WorkerMessage::Heartbeat {
+            jobs: Vec::new(),
+            rss_bytes: None,
+        }
+    }
+
+    #[test]
+    fn workers_mode_remote_needs_tls_off_loopback_and_both_files_or_neither() {
+        let loopback: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let private: SocketAddr = "10.1.2.3:7000".parse().unwrap();
+        let every: SocketAddr = "0.0.0.0:7000".parse().unwrap();
+        let (cert, key) = (Some("cert.pem".to_owned()), Some("key.pem".to_owned()));
+        assert_eq!(remote_tls_files(loopback, None, None), Ok(None));
+        for listen in [private, every] {
+            let error = remote_tls_files(listen, None, None).unwrap_err();
+            assert!(error.contains("needs TLS"), "{error}");
+            assert_eq!(
+                remote_tls_files(listen, cert.clone(), key.clone()),
+                Ok(Some((PathBuf::from("cert.pem"), PathBuf::from("key.pem"))))
+            );
+        }
+        for listen in [loopback, private] {
+            assert!(remote_tls_files(listen, cert.clone(), None).is_err());
+            assert!(remote_tls_files(listen, None, key.clone()).is_err());
+        }
+    }
+
+    /// §5.1: the listener's key must be private; the committed test pair
+    /// makes a usable TLS 1.3 configuration once it is.
+    #[test]
+    fn the_listener_refuses_a_key_its_group_or_others_can_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls");
+        let cert = fixtures.join("test-only-server.pem");
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("server.key");
+        std::fs::copy(fixtures.join("test-only-server.key"), &key).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = format!("{:#}", server_tls(&cert, &key).unwrap_err());
+        assert!(error.contains("mode 644"), "{error}");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(server_tls(&cert, &key).is_err());
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        server_tls(&cert, &key).unwrap();
+        // A certificate file with no certificate in it is refused, not
+        // served as an empty chain.
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "no certificate here\n").unwrap();
+        assert!(server_tls(&empty, &key).is_err());
+    }
+
+    #[test]
+    fn a_token_file_binds_hashes_to_worker_ids_and_refuses_anything_malformed() {
+        let (a, b) = (hex(&token_digest(b"a")), hex(&token_digest(b"b")));
+        // Comments, blank lines, spacing, upper-case hex, and one worker id
+        // on two lines (a rotation in progress).
+        let text = format!("# workers\n\n{a} w0\n  {}   w0  \n", b.to_uppercase());
+        assert_eq!(
+            parse_token_file(&text).unwrap(),
+            vec![
+                (token_digest(b"a"), "w0".to_owned()),
+                (token_digest(b"b"), "w0".to_owned())
+            ]
+        );
+        assert_eq!(parse_token_file("# none yet\n").unwrap(), vec![]);
+        for bad in [
+            a.clone(),
+            format!("{a} w0 extra"),
+            "abc w0".to_owned(),
+            format!("{a}0 w0"),
+            format!("{a} bad/id"),
+            format!("{a} {}", "x".repeat(65)),
+            format!("{a} w0\n{a} w1"),
+        ] {
+            assert!(parse_token_file(&bad).is_err(), "{bad:?}");
+        }
+        // A token pasted where its hash belongs is never echoed back.
+        let pasted = new_token();
+        let error = parse_token_file(&format!("{pasted}ff w0")).unwrap_err();
+        assert!(!error.contains(&pasted), "{error}");
+        let (longest, too_long) = ("x".repeat(64), "x".repeat(65));
+        for good in ["w0", "worker-1", "gpu_16.a", longest.as_str()] {
+            assert!(is_valid_worker_id(good), "{good}");
+        }
+        for bad in ["", "a b", "a/b", "a:b", "é", too_long.as_str()] {
+            assert!(!is_valid_worker_id(bad), "{bad}");
+        }
+    }
+
+    /// `tolmap worker-token new`: a 256-bit token and the line binding its
+    /// SHA-256 to the id, which the token file parser reads back.
+    #[test]
+    fn a_new_worker_token_comes_with_the_line_that_binds_its_hash() {
+        let (token, line) = issue_worker_token("worker-1").unwrap();
+        assert_eq!(token.len(), 64);
+        assert!(is_sha256_hex(&token));
+        let (hash, id) = line.split_once(' ').unwrap();
+        assert_eq!((hash, id), (sha(token.as_bytes()).as_str(), "worker-1"));
+        assert_eq!(
+            parse_token_file(&line).unwrap(),
+            vec![(token_digest(token.as_bytes()), "worker-1".to_owned())]
+        );
+        assert_ne!(issue_worker_token("worker-1").unwrap().0, token);
+        assert!(issue_worker_token("bad id").is_err());
+        assert!(issue_worker_token("").is_err());
+    }
+
+    /// The token file fails closed: unreadable, group-writable or malformed
+    /// refuses every token until it is fixed, and a worker keeps its number
+    /// across it.
+    #[test]
+    fn an_unusable_token_file_refuses_every_token_until_it_is_fixed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens");
+        write_token_file(&path, &[(TOKENS[0], "w0"), (TOKENS[1], "w1")]);
+        let file = TokenFile::open(&path).unwrap();
+        let (zero, one) = (
+            token_digest(TOKENS[0].as_bytes()),
+            token_digest(TOKENS[1].as_bytes()),
+        );
+        let (agent, id) = file.lookup(&zero).unwrap();
+        assert_eq!(id, "w0");
+        assert_eq!(file.lookup(&one).unwrap().1, "w1");
+        assert!(file.lookup(&token_digest(b"stranger")).is_none());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o620)).unwrap();
+        assert!(file.lookup(&zero).is_none(), "a group-writable file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(file.lookup(&zero), Some((agent, "w0".to_owned())));
+        std::fs::write(&path, "not a token file\n").unwrap();
+        assert!(file.lookup(&zero).is_none(), "a malformed file");
+        std::fs::remove_file(&path).unwrap();
+        assert!(file.lookup(&zero).is_none(), "a missing file");
+        write_token_file(&path, &[(TOKENS[0], "w0")]);
+        assert_eq!(file.lookup(&zero), Some((agent, "w0".to_owned())));
+        assert!(file.lookup(&one).is_none(), "revoked by the rewrite");
+        // At startup a bad file stops the service instead.
+        std::fs::write(&path, "not a token file\n").unwrap();
+        assert!(TokenFile::open(&path).is_err());
+    }
+
+    /// §5.1: in remote mode a token is one worker's, and its `hello` must
+    /// name that worker.
+    #[test]
+    fn a_remote_hello_must_name_the_worker_its_token_was_issued_for() {
+        let fixture = Fixture::remote(tempfile::tempdir().unwrap(), Duration::from_secs(5), None);
+        let (mut agent, first) = FakeAgent::hello_as(
+            fixture.port,
+            TOKENS[0],
+            &remote_hello(WORKER_IDS[1], vec![]),
+        );
+        match first {
+            MasterMessage::Error { code, .. } => assert_eq!(code, "worker_id_mismatch"),
+            other => panic!("expected error, got {other:?}"),
+        }
+        assert!(agent.closed(), "the master must close after an error");
+        let (_agent, first) = FakeAgent::hello_as(
+            fixture.port,
+            TOKENS[0],
+            &remote_hello(WORKER_IDS[0], vec![]),
+        );
+        assert!(matches!(first, MasterMessage::Welcome { .. }), "{first:?}");
+        // A token the file does not list gets no channel.
+        let refused = dial(fixture.port, "not-a-listed-token").unwrap_err();
+        assert!(refused.contains("401"), "{refused}");
+    }
+
+    /// §5.1 "revoking a worker means deleting its line": the next dial gets
+    /// a 401, so does an artifact request, and the channel that is up is
+    /// closed at its next heartbeat. The other worker is untouched.
+    #[test]
+    fn a_revoked_token_is_refused_at_its_next_dial_and_closed_at_its_next_heartbeat() {
+        let fixture = Fixture::remote(tempfile::tempdir().unwrap(), Duration::from_secs(5), None);
+        let (mut agent, _) =
+            FakeAgent::rejoin_remote(fixture.port, TOKENS[0], WORKER_IDS[0], vec![]);
+        agent.send(&empty_heartbeat());
+        assert!(
+            agent.recv_within(Duration::from_millis(500)).is_none(),
+            "a listed worker's heartbeat is not refused"
+        );
+        write_token_file(
+            &fixture.dir.path().join("worker-tokens"),
+            &[(TOKENS[1], WORKER_IDS[1])],
+        );
+        let refused = dial(fixture.port, TOKENS[0]).unwrap_err();
+        assert!(refused.contains("401"), "{refused}");
+        let (status, _) = request(
+            fixture.port,
+            "GET",
+            &format!("/workers/artifacts/{}/1/inputs/names", Uuid::new_v4()),
+            &[bearer(TOKENS[0])],
+            b"",
+            None,
+        );
+        assert_eq!(status, 401);
+        agent.send(&empty_heartbeat());
+        agent.expect_error("token_revoked");
+        let (_other, _) = FakeAgent::rejoin_remote(fixture.port, TOKENS[1], WORKER_IDS[1], vec![]);
+    }
+
+    /// §4.3: a channel that floods the master past its frame budget is
+    /// closed with `rate_limited`; a burst within it is not.
+    #[test]
+    fn a_flood_of_frames_is_closed_with_rate_limited() {
+        let fixture = Fixture::remote(
+            tempfile::tempdir().unwrap(),
+            Duration::from_secs(5),
+            Some((5, 10)),
+        );
+        let (mut agent, _) =
+            FakeAgent::rejoin_remote(fixture.port, TOKENS[0], WORKER_IDS[0], vec![]);
+        for _ in 0..10 {
+            agent.send(&empty_heartbeat());
+        }
+        assert!(
+            agent.recv_within(Duration::from_millis(200)).is_none(),
+            "a burst within the budget is accepted"
+        );
+        // One frame at a time from here, each given a moment for an answer,
+        // so the master has read everything by the time it closes.
+        let mut sent = 0;
+        let refused = loop {
+            agent.send(&empty_heartbeat());
+            sent += 1;
+            if let Some(message) = agent.recv_within(Duration::from_millis(30)) {
+                break message;
+            }
+            assert!(
+                sent < 10,
+                "no rate_limited after {sent} frames past the burst"
+            );
+        };
+        match refused {
+            MasterMessage::Error { code, .. } => assert_eq!(code, "rate_limited"),
+            other => panic!("expected error, got {other:?}"),
+        }
+        assert!(agent.closed(), "the master must close after an error");
+    }
+
+    /// #156's first departure, lifted (§6 "master restarts mid-job"): a
+    /// restarted remote master adopts the lease its store names with the
+    /// worker id that held it, and hands it back to that worker -- to no
+    /// other -- so the job finishes at the same epoch and attempt, with no
+    /// re-run.
+    #[test]
+    fn a_restarted_remote_master_hands_an_adopted_lease_back_to_its_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let running = Uuid::new_v4();
+        {
+            let store = Store::open(&dir.path().join("store.sqlite3")).unwrap();
+            let mut row = stored_job(running, "running", "running", 1, 1);
+            row.lease_holder = Some(WORKER_IDS[0].to_owned());
+            store.insert_job(&row).unwrap();
+        }
+        let fixture = Fixture::remote(dir, Duration::from_secs(5), None);
+        assert_eq!(fixture.snapshot(running).status, JobStatus::Indexing);
+        // Another worker naming the job is told to let it go.
+        let (_other, answers) = FakeAgent::rejoin_remote(
+            fixture.port,
+            TOKENS[1],
+            WORKER_IDS[1],
+            vec![resume_entry(running, 1, 3)],
+        );
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].action, ResumeAction::Cancel);
+        // Its holder resumes it from what this master applied: nothing.
+        let (mut agent, answers) = FakeAgent::rejoin_remote(
+            fixture.port,
+            TOKENS[0],
+            WORKER_IDS[0],
+            vec![resume_entry(running, 1, 3)],
+        );
+        assert_eq!(answers.len(), 1);
+        assert_eq!(
+            (answers[0].action, answers[0].acked_seq),
+            (ResumeAction::Continue, 0)
+        );
+        agent.event(
+            running,
+            WorkerEvent::StageStarted {
+                v: 1,
+                stage: StageId::Parse,
+            },
+        );
+        agent.deliver(fixture.port, TOKENS[0], running);
+        match agent.recv() {
+            MasterMessage::ResultAccepted { epoch, .. } => assert_eq!(epoch, 1),
+            other => panic!("expected result_accepted, got {other:?}"),
+        }
+        let row = fixture.wait_for_row(running, "done", |row| row.status == "done");
+        assert_eq!((row.attempt, row.epoch), (1, 1), "{row:?}");
+        assert!(fixture
+            .state
+            .store
+            .get("test/running", COMMIT)
+            .unwrap()
+            .is_some());
+    }
+
+    /// The loopback side of the same restart is unchanged: an adopted lease
+    /// has no holder there, so its old agent's resume is answered `cancel`.
+    #[test]
+    fn a_restarted_loopback_master_still_never_hands_an_adopted_lease_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let running = Uuid::new_v4();
+        {
+            let store = Store::open(&dir.path().join("store.sqlite3")).unwrap();
+            let mut row = stored_job(running, "running", "running", 1, 1);
+            row.lease_holder = Some("agent 0 (fake)".to_owned());
+            store.insert_job(&row).unwrap();
+        }
+        let fixture = Fixture::with(dir, Duration::from_secs(5), test_build(), 1);
+        let (_agent, answers) =
+            FakeAgent::rejoin(fixture.port, TOKENS[0], vec![resume_entry(running, 1, 3)]);
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].action, ResumeAction::Cancel);
     }
 }
