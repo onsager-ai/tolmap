@@ -712,7 +712,7 @@ export function PathSheetCard({
   const [from, to] = ends;
   const hops = route ? route.path.length - 1 : 0;
   return (
-    <div data-sheet-card="path" data-path-state={route ? "found" : "none"}>
+    <div data-sheet-card="path" data-path-state={route ? "found" : "none"} data-path-ends={`${from},${to}`}>
       <div data-sheet-dragzone>
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">

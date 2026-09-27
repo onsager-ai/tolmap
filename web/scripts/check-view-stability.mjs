@@ -5113,9 +5113,12 @@ async function checkPhonePathMode(browser, base, profile) {
   await tap(page, profile, target.x, target.y);
   const card = page.locator('[data-sheet-card="path"]');
   const state = await card.getAttribute("data-path-state");
+  const ends = await card.getAttribute("data-path-ends");
   const text = await card.innerText();
-  report((state === "found" || state === "none") && text.includes(doc.F[anchor].split("/").pop()) && text.includes(doc.F[target.index].split("/").pop()),
-    `${label}: tapping a file on the map sets the destination and shows the path`, `${state}: ${text}`);
+  const tapped = new URL(page.url()).searchParams.get("file") === doc.F[anchor];
+  report((state === "found" || state === "none") && ends === `${anchor},${target.index}` && tapped,
+    `${label}: tapping a file on the map sets the destination and shows the path`,
+    JSON.stringify({ state, ends, expected: `${anchor},${target.index}`, anchor: doc.F[anchor], target: doc.F[target.index], text: text.replace(/\s+/g, " ") }));
   report(!/\broute\b/i.test(text) && new URL(page.url()).searchParams.get("file") === doc.F[anchor], `${label}: the path card says "path", and the selection is unchanged`);
   if (state === "found") {
     await setSheetDetent(page, "half");
