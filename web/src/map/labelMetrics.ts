@@ -15,10 +15,11 @@
 // map could place different labels on two visits. The table makes placement
 // a pure function of the text, as it was with the 0.62 estimate.
 //
-// Source: the advance widths (hmtx) of the static Archivo instances Google
-// Fonts serves for wght 400, 500 and 600 (v25, units per em 1000, the same
-// family and version index.html loads), read for U+0020-U+007E. Kerning is
-// ignored, which only ever makes a box slightly wider than the text.
+// Source: the advance widths (hmtx) of the Archivo files the app ships
+// (web/public/fonts/archivo, Omnibus-Type/Archivo commit 2111276, v2.001,
+// units per em 1000) at wght 400, 500 and 600, read for U+0020-U+007E and
+// checked identical to that release's TTFs. Kerning is ignored, which only
+// ever makes a box slightly wider than the text.
 
 // Advance widths in thousandths of an em, for char codes 0x20..0x7E.
 const ARCHIVO_400 = [

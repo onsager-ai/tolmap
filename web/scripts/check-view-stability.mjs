@@ -3094,6 +3094,13 @@ async function checkLabelsFitTheirBoxes(browser, base, profile) {
     deviceScaleFactor: profile.deviceScaleFactor ?? 1,
   });
   const page = await context.newPage();
+  // The fonts are self-hosted (web/public/fonts): nothing the page loads
+  // may come from another origin.
+  const origin = new URL(base).origin;
+  const foreign = [];
+  page.on("request", (req) => {
+    if (!req.url().startsWith("data:") && new URL(req.url()).origin !== origin) foreign.push(req.url());
+  });
   const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
   const workflowFile = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
   const workflowDistrict = doc.N[workflowFile][0];
@@ -3122,6 +3129,9 @@ async function checkLabelsFitTheirBoxes(browser, base, profile) {
     return { faces: [...new Set(faces)].sort(), measured, families, over: over.slice(0, 6), overCount: over.length };
   });
   console.log(`  info  ${label}: loaded faces ${JSON.stringify(result.faces)}; measured ${JSON.stringify(result.families)}`);
+  const needed = ["Archivo 400", "Archivo 600", "IBM Plex Mono 400", "IBM Plex Mono 700"];
+  report(needed.every((f) => result.faces.includes(f)), `${label}: the self-hosted Archivo and IBM Plex Mono faces load`, JSON.stringify(result.faces));
+  report(foreign.length === 0, `${label}: no request leaves the app's own origin (fonts are self-hosted)`, JSON.stringify(foreign.slice(0, 5)));
   report(result.measured > 0 && result.overCount === 0, `${label}: no label is drawn wider than the box it reserved`, JSON.stringify(result));
   await context.close();
 }

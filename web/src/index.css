@@ -3,6 +3,85 @@
 @tailwind utilities;
 
 /* ---------------------------------------------------------------------------
+ * Fonts (docs/UX.md §8.1), self-hosted, no third-party request. Each file is
+ * the copyright holder's own release file, unmodified -- IBM Plex Mono's OFL
+ * reserves the name "Plex" for modified versions, so nothing here is
+ * re-subset; the Latin1 files are IBM's own split. Licences sit beside the
+ * files (web/public/fonts/<family>/OFL.txt); sources and sha256s are in the
+ * PR that added them (#165).
+ *   Archivo: Omnibus-Type/Archivo fonts/webfonts, commit 2111276 (v2.001).
+ *   IBM Plex Mono: IBM/plex release @ibm/plex-mono@2.5.0, fonts/split/woff2
+ *     *-Latin1, with IBM's own unicode-range for that subset.
+ * Weights are the ones the app uses: Archivo 400/500/600/700; Plex Mono 400,
+ * 500 (folder and symbol labels), 600 (font-semibold mono: file titles, pin
+ * numerals) and 700 (hub labels, bold symbol labels, <b> in mono rows).
+ * ------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/archivo/Archivo-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/archivo/Archivo-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/archivo/Archivo-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/archivo/Archivo-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-Regular-Latin1.woff2") format("woff2");
+  unicode-range: U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014, U+2018-201A,
+    U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-Medium-Latin1.woff2") format("woff2");
+  unicode-range: U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014, U+2018-201A,
+    U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-SemiBold-Latin1.woff2") format("woff2");
+  unicode-range: U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014, U+2018-201A,
+    U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-Bold-Latin1.woff2") format("woff2");
+  unicode-range: U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014, U+2018-201A,
+    U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+
+/* ---------------------------------------------------------------------------
  * Map palette — copied verbatim from viewer/template.html's :root block.
  * These are NOT shadcn/Tailwind tokens: the renderer reads them directly with
  * getComputedStyle, the same way the reference does, so district colour stays
@@ -270,8 +349,8 @@ body {
   background: var(--chrome);
   color: var(--on);
   /* docs/UX.md §8.1: Archivo for UI text; IBM Plex Mono only where a class
-   * asks for it (identifiers and data -- `font-mono`). Fonts load from
-   * index.html. 14 px is the scale's secondary size; components set the
+   * asks for it (identifiers and data -- `font-mono`). @font-face is at the
+   * top of this file. 14 px is the scale's secondary size; components set the
    * rest from the named sizes in tailwind.config.ts. */
   font-family: Archivo, ui-sans-serif, system-ui, sans-serif;
   font-size: 14px;
