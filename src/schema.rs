@@ -469,13 +469,24 @@ pub struct CheckLandmark {
     pub detail: String,
 }
 
-// The thresholds this run applied; null means the flag was not given.
-// `max_dq` is the largest modularity drop allowed: the check fails when
-// `delta_q < -max_dq`.
+// The thresholds this run applied; null means that threshold was not
+// applied. `max_dq` is the largest modularity drop allowed: the check fails
+// when `delta_q < -max_dq`. `source` says where they came from: the
+// calibrated defaults (no threshold flag given), the flags (which replace
+// the defaults as a set), or `--report-only` (both null).
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 pub struct CheckThresholds {
     pub max_districts: Option<usize>,
     pub max_dq: Option<f64>,
+    pub source: CheckThresholdSource,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckThresholdSource {
+    Default,
+    Flags,
+    ReportOnly,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]

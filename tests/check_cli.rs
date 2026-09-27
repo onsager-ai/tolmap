@@ -238,6 +238,11 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
     assert_eq!(report["modularity_base"], report["modularity_head"]);
     assert!(report["modularity_base"].as_f64().unwrap() > 0.0);
     assert_eq!(report["verdict"], "pass");
+    assert_eq!(
+        report["thresholds"],
+        serde_json::json!({"max_districts": 4, "max_dq": 0.01, "source": "default"}),
+        "no threshold flag: the calibrated defaults apply"
+    );
     assert_eq!(report["lower_bound"], true);
     assert!(report["edges_added"].as_array().unwrap().is_empty());
     assert!(report["edges_removed"].as_array().unwrap().is_empty());
@@ -256,7 +261,12 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
         run.stdout
     );
     assert!(lines[1].starts_with("delta q: +0.000000"), "{}", run.stdout);
-    assert!(lines[2].starts_with("verdict: pass"), "{}", run.stdout);
+    assert_eq!(
+        lines[2],
+        "verdict: pass (districts 1 <= 4, delta q +0.000000 >= -0.010000; default thresholds)",
+        "{}",
+        run.stdout
+    );
     assert!(
         lines
             .last()
@@ -276,7 +286,10 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
     source.push_str("\n    def holder(self):\n        return Account()\n");
     write(&repo, "town/billing/invoice.py", &source);
 
-    let run = check(&repo, &["--base", &base, "--format", "json"]);
+    let run = check(
+        &repo,
+        &["--base", &base, "--format", "json", "--report-only"],
+    );
     expect_code(&run, 0);
     let report = run.json();
     let delta_q = report["delta_q"].as_f64().unwrap();
@@ -284,7 +297,11 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
         delta_q < 0.0,
         "a cross-district import must lower q: {report:#}"
     );
-    assert_eq!(report["verdict"], "pass", "no threshold: report only");
+    assert_eq!(report["verdict"], "pass", "--report-only: report only");
+    assert_eq!(
+        report["thresholds"],
+        serde_json::json!({"max_districts": null, "max_dq": null, "source": "report_only"})
+    );
     let edges = report["edges_added"].as_array().unwrap();
     let edge = edges
         .iter()
@@ -307,7 +324,11 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
     );
     expect_code(&run, 1);
     assert_eq!(run.json()["verdict"], "fail");
-    assert_eq!(run.json()["thresholds"]["max_dq"].as_f64(), Some(0.0));
+    assert_eq!(
+        run.json()["thresholds"],
+        serde_json::json!({"max_districts": null, "max_dq": 0.0, "source": "flags"}),
+        "a flag replaces the defaults as a set"
+    );
     let run = check(&repo, &["--base", &base, "--max-dq", "1"]);
     expect_code(&run, 0);
     assert!(run
@@ -325,7 +346,10 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
     // Determinism: three runs, one sha256.
     let hashes = (0..3)
         .map(|_| {
-            let run = check(&repo, &["--base", &base, "--format", "json"]);
+            let run = check(
+                &repo,
+                &["--base", &base, "--format", "json", "--report-only"],
+            );
             expect_code(&run, 0);
             format!("{:x}", Sha256::digest(run.stdout.as_bytes()))
         })
@@ -334,6 +358,63 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
         hashes.iter().all(|hash| *hash == hashes[0]),
         "three runs, different reports: {hashes:?}"
     );
+}
+
+/// Issue #170 PR 2: the calibrated defaults fail a change by themselves,
+/// `--report-only` turns them off, and any threshold flag replaces them.
+#[test]
+fn the_default_thresholds_fail_a_heavy_coupling_change_without_any_flag() {
+    let (_dir, repo, base) = fixture();
+    // billing's invoice imports every module of the two other packages: on
+    // a graph this small, far more cross-district weight than 0.01 of q.
+    let modules = PACKAGES[0].1;
+    let mut source = module_source("billing", &modules, 0, 1);
+    let mut uses = String::new();
+    for (package, others) in &PACKAGES[1..] {
+        for other in others {
+            let class = class_name(other);
+            source.insert_str(0, &format!("from ..{package}.{other} import {class}\n"));
+            uses.push_str(&format!("        {class}()\n"));
+        }
+    }
+    source.push_str(&format!("\n    def reach(self):\n{uses}"));
+    write(&repo, "town/billing/invoice.py", &source);
+
+    let run = check(&repo, &["--base", &base, "--format", "json"]);
+    expect_code(&run, 1);
+    let report = run.json();
+    assert!(
+        report["delta_q"].as_f64().unwrap() < -0.01,
+        "the change must drop q past the default: {report:#}"
+    );
+    assert_eq!(report["verdict"], "fail");
+    assert_eq!(report["thresholds"]["source"], "default");
+    let run = check(&repo, &["--base", &base]);
+    expect_code(&run, 1);
+    assert!(
+        run.stdout
+            .lines()
+            .nth(2)
+            .unwrap()
+            .starts_with("verdict: fail (districts 1 <= 4, delta q -"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("; default thresholds)"),
+        "{}",
+        run.stdout
+    );
+
+    let run = check(&repo, &["--base", &base, "--report-only"]);
+    expect_code(&run, 0);
+    assert_eq!(
+        run.stdout.lines().nth(2).unwrap(),
+        "verdict: pass (report only: --report-only)"
+    );
+    // A flag the change stays inside replaces both defaults: pass.
+    let run = check(&repo, &["--base", &base, "--max-dq", "1"]);
+    expect_code(&run, 0);
 }
 
 #[test]
@@ -376,7 +457,10 @@ fn a_new_file_is_placed_by_its_imports_and_one_without_imports_is_unplaced() {
     );
     write(&repo, "town/billing/notes.py", "NOTES_HEADER = \"notes\"\n");
 
-    let run = check(&repo, &["--base", &base, "--format", "json"]);
+    let run = check(
+        &repo,
+        &["--base", &base, "--format", "json", "--report-only"],
+    );
     expect_code(&run, 0);
     let report = run.json();
     let refund = file_entry(&report, "town/billing/refund.py");
@@ -399,7 +483,7 @@ fn a_new_file_is_placed_by_its_imports_and_one_without_imports_is_unplaced() {
     assert_eq!(report["districts_crossed"], 1, "{report:#}");
     assert!(run.stdout.contains("\"town/billing/notes.py\""));
 
-    let run = check(&repo, &["--base", &base]);
+    let run = check(&repo, &["--base", &base, "--report-only"]);
     expect_code(&run, 0);
     assert!(run
         .stdout
@@ -433,7 +517,15 @@ fn a_rename_is_followed_and_a_deletion_is_handled() {
 
     let run = check(
         &repo,
-        &["--base", &base, "--head", "HEAD", "--format", "json"],
+        &[
+            "--base",
+            &base,
+            "--head",
+            "HEAD",
+            "--format",
+            "json",
+            "--report-only",
+        ],
     );
     expect_code(&run, 0);
     let report = run.json();
@@ -463,6 +555,9 @@ fn a_bad_ref_and_an_unverifiable_or_mismatched_base_map_exit_2() {
     expect_code(&run, 2);
     let run = check(&repo, &["--base", &base, "--max-dq", "NaN"]);
     expect_code(&run, 2);
+    let run = check(&repo, &["--base", &base, "--report-only", "--max-dq", "0"]);
+    expect_code(&run, 2);
+    assert!(run.stdout.is_empty());
     let run = check(&dir.path().join("not-a-repo"), &["--base", &base]);
     expect_code(&run, 2);
 
@@ -515,7 +610,10 @@ fn a_bad_ref_and_an_unverifiable_or_mismatched_base_map_exit_2() {
     // The matching stored map gives the same report the check's own base
     // build gives: the stored map was built from the same graph, cold.
     touch(&repo, "billing", 3);
-    let built_here = check(&repo, &["--base", &base, "--format", "json"]);
+    let built_here = check(
+        &repo,
+        &["--base", &base, "--format", "json", "--report-only"],
+    );
     expect_code(&built_here, 0);
     let from_store = check(
         &repo,
@@ -526,6 +624,7 @@ fn a_bad_ref_and_an_unverifiable_or_mismatched_base_map_exit_2() {
             &stored_arg,
             "--format",
             "json",
+            "--report-only",
         ],
     );
     expect_code(&from_store, 0);

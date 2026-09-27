@@ -46,7 +46,7 @@ use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
 use crate::schema::{
     CheckDistrict, CheckEdge, CheckFile, CheckFileStatus, CheckLandmark, CheckReport,
-    CheckThresholds, CheckVerdict, GraphData, MapDocument,
+    CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument,
 };
 
 /// `CheckReport::version`. Bumped on any change to a field's meaning or
@@ -68,6 +68,26 @@ pub const TEXT_EDGE_LIMIT: usize = 20;
 /// Landmark kinds reported as context (issue #170: hazard and bridge).
 const TOUCHED_LANDMARKS: [&str; 2] = ["bridge", "hazard"];
 
+/// The default `--max-districts`, applied when no threshold flag is given.
+/// Calibrated on 600 real commits (docs/FINDINGS.md finding 60): the last
+/// 200 first-parent commits of django, prometheus and vuejs/core. Their p99
+/// is 3 or 4 districts, and the tail above it is a clear knee (one commit
+/// at 5, then only 7s), so 4 fires on 2, 2 and 1 of the 200 (1%, 1%,
+/// 0.5%). It is absolute rather than a share of the map's districts: the
+/// three maps have 6-8 and 11-15 districts, yet their tails are the same in
+/// absolute terms, and a share would fire most on the map with the fewest
+/// districts (3 of vue's 200 at 40%, against 2 and 2).
+pub const DEFAULT_MAX_DISTRICTS: usize = 4;
+
+/// The default `--max-dq`, applied when no threshold flag is given.
+/// Calibrated with [`DEFAULT_MAX_DISTRICTS`] (finding 60). `delta_q` moves
+/// on commits that change no file on the map, because the head's co-change
+/// history is one commit longer: that drift reached -0.004191 on django.
+/// The default sits above it, in the knee of django's tail (-0.017309, then
+/// -0.005940), and fires on 1, 0 and 0 of the 200 commits alone; every
+/// commit it fires on there also crossed more than 4 districts.
+pub const DEFAULT_MAX_DQ: f64 = 0.01;
+
 pub const LOWER_BOUND_NOTE: &str = "numbers are a lower bound: tolmap's graph holds only the references it can resolve (calls through variables, dynamic imports and reflection are missed), so the change couples at least this much";
 
 #[derive(Clone, Debug)]
@@ -78,6 +98,47 @@ pub struct CheckOptions {
     pub base_map: Option<PathBuf>,
     pub max_districts: Option<usize>,
     pub max_dq: Option<f64>,
+    /// No threshold at all: the check reports and exits 0 (PR 1's
+    /// behaviour). Cannot be combined with a threshold flag.
+    pub report_only: bool,
+}
+
+/// The thresholds a run applies. Any threshold flag replaces the defaults
+/// as a set, so a caller that names only `--max-dq` gets only `--max-dq`:
+/// the defaults never mix with an explicit choice.
+pub fn resolve_thresholds(options: &CheckOptions) -> Result<CheckThresholds, CheckError> {
+    let given = options.max_districts.is_some() || options.max_dq.is_some();
+    if options.report_only && given {
+        return Err(input(
+            "--report-only applies no threshold; it cannot be combined with --max-districts or --max-dq",
+        ));
+    }
+    if let Some(max_dq) = options.max_dq {
+        if !(max_dq.is_finite() && max_dq >= 0.0) {
+            return Err(input(format!(
+                "--max-dq {max_dq} is not a modularity drop: pass a number >= 0 (0.005 fails a change that lowers q by more than 0.005)"
+            )));
+        }
+    }
+    Ok(if options.report_only {
+        CheckThresholds {
+            max_districts: None,
+            max_dq: None,
+            source: CheckThresholdSource::ReportOnly,
+        }
+    } else if given {
+        CheckThresholds {
+            max_districts: options.max_districts,
+            max_dq: options.max_dq.map(round),
+            source: CheckThresholdSource::Flags,
+        }
+    } else {
+        CheckThresholds {
+            max_districts: Some(DEFAULT_MAX_DISTRICTS),
+            max_dq: Some(DEFAULT_MAX_DQ),
+            source: CheckThresholdSource::Default,
+        }
+    })
 }
 
 /// Why a check produced no report. The variant is the exit code's class:
@@ -167,13 +228,7 @@ pub fn render_json(report: &CheckReport) -> String {
 
 pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
     let started = Instant::now();
-    if let Some(max_dq) = options.max_dq {
-        if !(max_dq.is_finite() && max_dq >= 0.0) {
-            return Err(input(format!(
-                "--max-dq {max_dq} is not a modularity drop: pass a number >= 0 (0.005 fails a change that lowers q by more than 0.005)"
-            )));
-        }
-    }
+    let thresholds = resolve_thresholds(options)?;
     let top = toplevel(&options.repo)?;
     let base = resolve_commit(&top, &options.base, "--base")?;
     let head = options
@@ -223,10 +278,6 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
     let head_graph_s = stage.elapsed().as_secs_f64();
     drop(scratch);
 
-    let thresholds = CheckThresholds {
-        max_districts: options.max_districts,
-        max_dq: options.max_dq.map(round),
-    };
     let report = compare(
         base, head, &changes, &base_map, base_graph, head_graph, thresholds,
     )?;
@@ -827,10 +878,12 @@ fn verdict_line(report: &CheckReport) -> String {
             if over { "<" } else { ">=" }
         ));
     }
-    if checks.is_empty() {
-        format!("{verdict} (report only: no threshold given)")
-    } else {
-        format!("{verdict} ({})", checks.join(", "))
+    match report.thresholds.source {
+        CheckThresholdSource::ReportOnly => format!("{verdict} (report only: --report-only)"),
+        CheckThresholdSource::Default => {
+            format!("{verdict} ({}; default thresholds)", checks.join(", "))
+        }
+        CheckThresholdSource::Flags => format!("{verdict} ({})", checks.join(", ")),
     }
 }
 
@@ -1238,5 +1291,52 @@ mod tests {
     fn rounding_never_prints_negative_zero() {
         assert_eq!(round(-0.000_000_1).to_bits(), 0.0_f64.to_bits());
         assert_eq!(round(-0.123_456_7), -0.123_457);
+    }
+
+    fn options(
+        max_districts: Option<usize>,
+        max_dq: Option<f64>,
+        report_only: bool,
+    ) -> CheckOptions {
+        CheckOptions {
+            repo: PathBuf::from("."),
+            base: "HEAD".to_owned(),
+            head: None,
+            base_map: None,
+            max_districts,
+            max_dq,
+            report_only,
+        }
+    }
+
+    #[test]
+    fn defaults_apply_only_when_no_threshold_flag_is_given() {
+        let thresholds = resolve_thresholds(&options(None, None, false)).unwrap();
+        assert_eq!(thresholds.max_districts, Some(DEFAULT_MAX_DISTRICTS));
+        assert_eq!(thresholds.max_dq, Some(DEFAULT_MAX_DQ));
+        assert_eq!(thresholds.source, CheckThresholdSource::Default);
+
+        // One flag replaces both defaults: no default mixes in.
+        let thresholds = resolve_thresholds(&options(None, Some(0.002), false)).unwrap();
+        assert_eq!(thresholds.max_districts, None);
+        assert_eq!(thresholds.max_dq, Some(0.002));
+        assert_eq!(thresholds.source, CheckThresholdSource::Flags);
+        let thresholds = resolve_thresholds(&options(Some(9), None, false)).unwrap();
+        assert_eq!(thresholds.max_districts, Some(9));
+        assert_eq!(thresholds.max_dq, None);
+
+        let thresholds = resolve_thresholds(&options(None, None, true)).unwrap();
+        assert_eq!(thresholds.max_districts, None);
+        assert_eq!(thresholds.max_dq, None);
+        assert_eq!(thresholds.source, CheckThresholdSource::ReportOnly);
+
+        for bad in [
+            options(Some(1), None, true),
+            options(None, Some(0.0), true),
+            options(None, Some(f64::NAN), false),
+            options(None, Some(-0.1), false),
+        ] {
+            assert_eq!(resolve_thresholds(&bad).unwrap_err().exit_code(), 2);
+        }
     }
 }

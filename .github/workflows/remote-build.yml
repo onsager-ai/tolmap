@@ -812,7 +812,9 @@ jobs:
           path: replay
 
       - name: Distributions, fire rates and the largest drops
-        run: python3 eval/check_calibration.py --dir replay --json check-calibration.json --summary "$GITHUB_STEP_SUMMARY"
+        # The fire rates of the defaults src/check.rs ships (finding 60);
+        # with a binary that has them, the exit codes' 1s must match.
+        run: python3 eval/check_calibration.py --dir replay --max-districts 4 --max-dq 0.01 --json check-calibration.json --summary "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
