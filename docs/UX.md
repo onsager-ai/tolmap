@@ -341,7 +341,9 @@ Each phase ships a coherent slice behind no flag, with the CI screenshot states 
 
 After phases 2 and 3 the owner checks on an iPhone on staging, because some behaviour cannot be settled in CI: focus zoom, the edge-swipe back gesture, real finger jitter against the 10 px slop, pointer capture after node removal in WebKit, the keyboard's effect on `visualViewport`, and safe-area insets in landscape.
 
-## 12. Open questions for the owner
+## 12. Owner decisions
 
-- **"Route" in the UI.** GLOSSARY reserves Route for an aggregated dependency between repositories (future), but the viewer already says "Route from / Route to" for a path between two files. This design keeps the existing wording; renaming it is a copy decision.
-- **Opening the map before details finish** (§6.2): whether the page should hand over to the map when the Map phase finishes rather than when the whole job is done.
+Settled by the owner on 2026-09-27 (session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 11067, 08:01:09Z, AskUserQuestion), when this design was approved with "Approve, start phase 1":
+
+- **"Route" in the UI:** renamed to **"Path from / Path to"** (and "path mode" for route mode). GLOSSARY keeps Route for an aggregated dependency between repositories. §4.7 and every "route" in the viewer's copy follow this. Code identifiers such as `RouteBox` may keep their names.
+- **Opening the map before details finish:** yes. The indexing page hands over to the map when the Map phase finishes, and symbols fill in at close zoom when the Detail phase lands. Phase 4 first confirms against `src/service` that the map is published before symbols, and makes the smallest service change needed if it isn't.
