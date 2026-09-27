@@ -8997,6 +8997,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            build_output_mirror: 0,
         };
 
         let mut py_parsed = BTreeMap::new();
@@ -9013,6 +9014,7 @@ mod tests {
             module_for: [("shared.txt".to_owned(), "shared".to_owned())]
                 .into_iter()
                 .collect(),
+            build_output_mirror: 0,
         };
 
         let merged = union_sources(vec![go_source, py_source]).unwrap();
