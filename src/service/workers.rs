@@ -2339,6 +2339,9 @@ mod tests {
         port: u16,
         dir: tempfile::TempDir,
         runtime: Option<tokio::runtime::Runtime>,
+        /// Set by `relayed`: the relay every artifact URL and the agents'
+        /// channel go through.
+        relay: Option<Relay>,
     }
 
     impl Fixture {
@@ -2354,6 +2357,29 @@ mod tests {
             lease_ttl: Duration,
             build: WorkerBuild,
             slots: usize,
+        ) -> Self {
+            Self::build(dir, lease_ttl, build, slots, false)
+        }
+
+        /// A master whose listener is reached through a `Relay`: the agent
+        /// only sends its token to the origin it dialled, so the artifact
+        /// URLs name the relay too.
+        fn relayed(lease_ttl: Duration, build: WorkerBuild) -> Self {
+            Self::build(
+                tempfile::tempdir().unwrap(),
+                lease_ttl,
+                build,
+                TOKENS.len(),
+                true,
+            )
+        }
+
+        fn build(
+            dir: tempfile::TempDir,
+            lease_ttl: Duration,
+            build: WorkerBuild,
+            slots: usize,
+            relayed: bool,
         ) -> Self {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -2388,6 +2414,11 @@ mod tests {
                 .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
                 .unwrap();
             let address = listener.local_addr().unwrap();
+            let relay = relayed.then(|| Relay::start(address.port()));
+            let base_url = match &relay {
+                Some(relay) => format!("http://127.0.0.1:{}", relay.port),
+                None => format!("http://{address}"),
+            };
             let hub = Arc::new(WorkerHub::new(
                 TOKENS
                     .iter()
@@ -2401,7 +2432,7 @@ mod tests {
                 lease_ttl,
                 DEFAULT_RETRIES,
                 staging,
-                format!("http://{address}"),
+                base_url,
             ));
             state.jobs.set_remote(hub.clone(), slots);
             {
@@ -2418,6 +2449,7 @@ mod tests {
                 port: address.port(),
                 dir,
                 runtime: Some(runtime),
+                relay,
             }
         }
 
@@ -3942,10 +3974,10 @@ mod tests {
     /// epoch 2.
     #[test]
     fn a_cut_channel_lets_the_lease_run_out_and_the_job_reruns_on_another_agent() {
-        let fixture = Fixture::new(Duration::from_secs(3), own_build());
+        let fixture = Fixture::relayed(Duration::from_secs(3), own_build());
         let root = fixture.dir.path();
         let (repo, worker, pid_file) = scripted_job(root);
-        let relay = Relay::start(fixture.port);
+        let relay = fixture.relay.as_ref().unwrap();
         let token_file = root.join("agent.token");
         std::fs::write(&token_file, TOKENS[0]).unwrap();
         let config = crate::service::agent::AgentConfig {

@@ -574,8 +574,9 @@ impl Store {
             return Ok(Requeued::Unchanged);
         };
         // `attempt` counts the workers the job has been on; the retries
-        // used so far are one fewer.
-        if counted && attempt - 1 >= i64::from(retries) {
+        // used so far are one fewer, so the bound is reached once
+        // `attempt - 1 >= retries`.
+        if counted && attempt > i64::from(retries) {
             return Ok(Requeued::Exhausted { lost: attempt });
         }
         let attempt = attempt + i64::from(counted);
