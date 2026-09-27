@@ -3074,6 +3074,56 @@ async function checkNeighbourhoodLabelsAtDeeperZoom(browser, base, profile) {
   await context.close();
 }
 
+// docs/UX.md §8.1 phase 1: the map's labels now render in the real web
+// fonts (Archivo, IBM Plex Mono) instead of whatever the runner's fallback
+// was. Every label placer reserves a collision box before drawing; a label
+// whose rendered text is wider than its box can overlap a neighbour without
+// hits() ever knowing. Mono labels reserve `length * size * 0.62`; this
+// measures what Chromium actually drew, once the fonts have loaded, on the
+// focused-district view where hub (bold), folder and file labels crowd
+// together. It also reports which font faces loaded, since a missing face
+// (synthetic bold) is what widens bold mono text.
+async function checkLabelsFitTheirBoxes(browser, base, profile) {
+  const label = `map labels render within their collision boxes (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  const workflowFile = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
+  const workflowDistrict = doc.N[workflowFile][0];
+  await page.goto(`${base}/langgenius/dify?d=${workflowDistrict}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('button[aria-label="Zoom to district"]');
+  await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
+  await page.waitForTimeout(850);
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(300);
+  const result = await page.evaluate(() => {
+    const faces = [...document.fonts].filter((f) => /Plex|Archivo/.test(f.family) && f.status === "loaded")
+      .map((f) => `${f.family.replace(/"/g, "")} ${f.weight}`);
+    const over = [];
+    let mono = 0;
+    for (const t of document.querySelectorAll("svg.map-svg text")) {
+      if (!/Plex/.test(t.getAttribute("font-family") ?? "")) continue;
+      const text = t.textContent ?? "";
+      const size = Number(t.getAttribute("font-size"));
+      if (!text || !size) continue;
+      mono++;
+      const box = text.length * size * 0.62;
+      const drawn = t.getComputedTextLength();
+      if (drawn > box + 0.5) over.push({ text, size, weight: t.getAttribute("font-weight"), drawn: +drawn.toFixed(1), box: +box.toFixed(1) });
+    }
+    return { faces: [...new Set(faces)].sort(), mono, over: over.slice(0, 6), overCount: over.length };
+  });
+  console.log(`  info  ${label}: loaded faces ${JSON.stringify(result.faces)}`);
+  report(result.mono > 0 && result.overCount === 0, `${label}: every mono label is no wider than its length * size * 0.62 box`, JSON.stringify(result));
+  await context.close();
+}
+
 // 9(f): an old map with no `P` at all (any committed data/ fixture the
 // catalogue still serves) renders dots, unchanged -- footprint mode is opt-in
 // per document, never forced.
@@ -4531,6 +4581,7 @@ async function main() {
     await checkImportLinesAnchorOnFootprintCentroids(browser, args.base);
     for (const profile of PROFILES) await checkStreetsAndTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkNeighbourhoodLabelsAtDeeperZoom(browser, args.base, profile);
+    for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
     for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);
