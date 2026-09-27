@@ -367,6 +367,135 @@ pub struct MapDocument {
     pub neighbourhoods: Option<BTreeMap<String, Neighbourhood>>,
 }
 
+// `tolmap check`'s report (issue #170, docs/CHECK.md). A consumer (CI,
+// Ostrom, Duhem) depends only on the exit code and on `version`; any change
+// to the meaning or shape of a field below bumps `version`. The field order
+// here is the JSON key order, and the report is byte-identical for the same
+// inputs (CLAUDE.md's determinism rule), so nothing here is a timing, a
+// temporary path or a count that depends on iteration order.
+//
+// Plain `//` comments throughout rather than doc comments: ts-rs copies doc
+// comments into the bindings, and docs/CHECK.md is where the contract is
+// written down.
+//
+// `base` is the full commit id of `--base`; `head` is `--head`'s, or null
+// for the working tree (uncommitted and untracked files included).
+// `base_files` and `base_districts` are the base map's size: its files and
+// its distinct districts. They are what a threshold scaled to the
+// repository would read, and they let a consumer see how large the map a
+// `districts_crossed` was counted on is. Every
+// float is rounded to 6 decimal places; `delta_q` is computed before that
+// rounding, and the thresholds compare the rounded values that are printed.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct CheckReport {
+    pub version: u32,
+    pub base: String,
+    pub head: Option<String>,
+    pub base_files: usize,
+    pub base_districts: usize,
+    pub districts_crossed: usize,
+    pub districts: Vec<CheckDistrict>,
+    pub files: Vec<CheckFile>,
+    pub unplaced_files: Vec<String>,
+    pub modularity_base: f64,
+    pub modularity_head: f64,
+    pub delta_q: f64,
+    pub edges_added: Vec<CheckEdge>,
+    pub edges_removed: Vec<CheckEdge>,
+    pub landmark_touches: Vec<CheckLandmark>,
+    pub thresholds: CheckThresholds,
+    pub verdict: CheckVerdict,
+    pub lower_bound: bool,
+}
+
+// One base district a changed file sits in (or, for a new file, was placed
+// in). `id` is the map's district id (`N` rows' first column), `name` its
+// entry in the base map's `names`, and `changed_files` how many of `files`
+// count toward it.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct CheckDistrict {
+    pub id: usize,
+    pub name: String,
+    pub changed_files: usize,
+}
+
+// A changed file that is on the map: in the base map, or in the head graph.
+// Files the map never indexes (docs, tests, other languages) are left out.
+// `path` is the head path (the base path for a deleted file); `base_path`
+// is set only for a rename. `district` is the base district the file counts
+// toward, or null for a new file that is unplaced; `placed` is true when
+// that district came from new-file placement rather than the base map.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct CheckFile {
+    pub path: String,
+    pub base_path: Option<String>,
+    pub status: CheckFileStatus,
+    pub district: Option<usize>,
+    pub placed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckFileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+// An edge of the blended, pruned graph (the graph the partition stage
+// sees) whose two files sit in different base districts, present on one
+// side and not the other. `source` -> `target` follows the import when the
+// edge carries one, and path order otherwise. `weight` is the edge's
+// blended weight on its own side (max-rescaled, so comparable within one
+// graph); `static_import` is true when an import contributes to it, false
+// for an edge made of co-change, proximity or naming similarity alone.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct CheckEdge {
+    pub source: String,
+    pub target: String,
+    pub source_district: usize,
+    pub target_district: usize,
+    pub weight: f64,
+    pub static_import: bool,
+}
+
+// A changed file that is a base-map landmark of kind `hazard` or `bridge`.
+// Context only: it never counts toward a threshold.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct CheckLandmark {
+    pub file: String,
+    pub kind: String,
+    pub detail: String,
+}
+
+// The thresholds this run applied; null means that threshold was not
+// applied. `max_dq` is the largest modularity drop allowed: the check fails
+// when `delta_q < -max_dq`. `source` says where they came from: the
+// calibrated defaults (no threshold flag given), the flags (which replace
+// the defaults as a set), or `--report-only` (both null).
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct CheckThresholds {
+    pub max_districts: Option<usize>,
+    pub max_dq: Option<f64>,
+    pub source: CheckThresholdSource,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckThresholdSource {
+    Default,
+    Flags,
+    ReportOnly,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckVerdict {
+    Pass,
+    Fail,
+}
+
 // GraphData and its parts derive Serialize/Deserialize so a graph can be
 // pre-extracted and checked in: CI cannot clone nine large repositories on
 // every push (see docs/ARCHITECTURE.md's CI section), but it can run

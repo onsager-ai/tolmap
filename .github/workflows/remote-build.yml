@@ -57,7 +57,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0), scip-ingest (P1a), scip-install (P1c) or rust-scip-spike (issue #126); the scip-*/rust-scip-spike commands ignore repos/extra_args/compare_ref"
+        description: "operation: build, dump-blend, stability, sequential name-eval, check (issue #170: `tolmap check` of the pinned commit against its parent, or against extra_args such as `--base HEAD~30`, timed), check-calibrate (issue #170 PR 2: `tolmap check` over the last 200 first-parent commits of django, prometheus and vuejs/core, or repos=check-calibration:owner/repo,...), scip-spike (issue #110 P0), scip-ingest (P1a), scip-install (P1c) or rust-scip-spike (issue #126); the scip-*/rust-scip-spike commands ignore repos/extra_args/compare_ref"
         required: false
         type: choice
         options:
@@ -65,6 +65,8 @@ on:
           - dump-blend
           - stability
           - name-eval
+          - check
+          - check-calibrate
           - scip-spike
           - scip-ingest
           - scip-install
@@ -236,8 +238,14 @@ jobs:
         env:
           REPOS_INPUT: ${{ inputs.repos }}
           COMPARE_REF: ${{ inputs.compare_ref }}
+          COMMAND: ${{ inputs.command }}
         run: |
           set -euo pipefail
+          # check-calibrate plans its own matrix (repositories x shards);
+          # `repos` left at its default means issue #170's three.
+          if [ "$COMMAND" = "check-calibrate" ] && [[ "$REPOS_INPUT" != check-calibration* ]]; then
+            REPOS_INPUT="check-calibration"
+          fi
           matrix="$(python3 eval/remote_matrix.py --repos "$REPOS_INPUT")"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           if [ -n "$COMPARE_REF" ]; then
@@ -249,7 +257,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike'
+    if: inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -408,6 +416,22 @@ jobs:
               --out "out-primary/${STEM}.json" \
               > primary.log 2>&1
             rc=$?
+          elif [ "$COMMAND" = "check" ]; then
+            # Issue #170: the pinned commit against its parent (or against
+            # whatever `extra_args` names instead, e.g. `--base HEAD~30`),
+            # the wall time a CI gate on one change would pay: base and
+            # head graphs, base map built cold. Detection picks the source,
+            # as the service does; REPO_ARGS are build flags and do not
+            # apply. The JSON report stands in for the map in result.json
+            # (sha256 and wall time); the text report is kept beside it.
+            check_args="${EXTRA_ARGS:---base HEAD~1}"
+            /usr/bin/time -v -o primary.time.txt \
+              prlimit "--as=${BUILD_MEM_BYTES}" -- \
+              ./bin-primary/tolmap check "$PWD/clone" $check_args --format json \
+              > "out-primary/${STEM}.json" 2> primary.log
+            rc=$?
+            ./bin-primary/tolmap check "$PWD/clone" $check_args \
+              > "out-primary/${STEM}.check.txt" 2>> primary.log || true
           elif [ "$COMMAND" = "stability" ]; then
             mkdir -p out-previous
             git -C clone checkout --quiet --detach "$COMMIT"
@@ -593,6 +617,7 @@ jobs:
           cp -f worker-timeline.stderr artifact/worker-timeline.stderr 2>/dev/null || true
           cp -f progress_overhead.json artifact/progress_overhead.json 2>/dev/null || true
           cp -f "out-primary/${STEM}.json" "artifact/${STEM}.json" 2>/dev/null || true
+          cp -f "out-primary/${STEM}.check.txt" "artifact/${STEM}.check.txt" 2>/dev/null || true
           cp -f "out-primary/${STEM}.symbols.json" "artifact/${STEM}.symbols.json" 2>/dev/null || true
           if [ -d "out-primary/${STEM}.symbols" ]; then
             cp -a "out-primary/${STEM}.symbols" "artifact/${STEM}.symbols"
@@ -665,7 +690,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -691,6 +716,110 @@ jobs:
           path: |
             results.json
             eta_accuracy.json
+
+  # Issue #170 PR 2: calibrate `tolmap check`'s default thresholds on real
+  # history. Each job replays one shard of one repository's last 200
+  # first-parent commits through `tolmap check --base <c>^ --head <c>`
+  # (eval/check_replay.py has why nothing is reused between checks) and
+  # uploads every JSON report; `check-calibrate-summary` combines them with
+  # eval/check_calibration.py, which also runs locally on a download.
+  check-calibrate:
+    name: check replay ${{ matrix.slug }} shard ${{ matrix.shard }}
+    needs: setup
+    if: inputs.command == 'check-calibrate'
+    runs-on: ubuntu-latest
+    # 50 checks per shard at django's measured 5.6 s is under ten minutes;
+    # 120 leaves room for a slower repository or runner without letting a
+    # stuck job run to the 6h ceiling.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: bin-primary
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+
+      # Deeper than the build job's clone by the replay window, so the
+      # oldest base still sees extraction's full 4000-commit co-change
+      # horizon (depth counts generations, and the window's oldest commit
+      # is `commits` first-parent generations below the pin). No blob
+      # filter: every check checks out two worktrees, and a partial clone
+      # would fetch blobs lazily, over the network, 400 times per job.
+      - name: Clone at pinned commit, deep enough for the window
+        env:
+          SLUG: ${{ matrix.slug }}
+          COMMIT: ${{ matrix.commit }}
+          COMMITS: ${{ matrix.commits }}
+        run: |
+          set -euo pipefail
+          chmod +x bin-primary/tolmap
+          mkdir -p clone
+          git -C clone init --quiet
+          git -C clone remote add origin "https://github.com/${SLUG}.git"
+          git -C clone fetch --quiet --depth="$((CLONE_DEPTH + COMMITS + 100))" origin "$COMMIT"
+          git -C clone checkout --quiet --detach FETCH_HEAD
+
+      - name: Replay tolmap check over the shard
+        env:
+          SLUG: ${{ matrix.slug }}
+          STEM: ${{ matrix.stem }}
+          COMMIT: ${{ matrix.commit }}
+          COMMITS: ${{ matrix.commits }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+        run: |
+          python3 eval/check_replay.py --bin bin-primary/tolmap --clone clone \
+            --slug "$SLUG" --pin "$COMMIT" --commits "$COMMITS" \
+            --shard "$SHARD" --shards "$SHARDS" --out "replay"
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-cal-${{ matrix.stem }}-${{ matrix.shard }}
+          path: replay
+          if-no-files-found: warn
+
+  check-calibrate-summary:
+    name: combine check replay
+    needs: check-calibrate
+    if: always() && inputs.command == 'check-calibrate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            eval
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: check-cal-*
+          path: replay
+
+      - name: Distributions, fire rates and the largest drops
+        # The fire rates of the defaults src/check.rs ships (findings 60, 61);
+        # with a binary that has them, the exit codes' 1s must match.
+        run: python3 eval/check_calibration.py --dir replay --max-districts 4 --max-dq 0.0001 --json check-calibration.json --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: check-calibration-summary
+          path: check-calibration.json
 
   name-eval:
     name: sequential name evaluation (20 repos, $5 reserved cap)

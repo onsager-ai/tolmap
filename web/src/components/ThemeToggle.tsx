@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import { useThemeChoice, type ThemeChoice } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 
 const NEXT: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" };
 const LABEL: Record<ThemeChoice, string> = { system: "System", light: "Light", dark: "Dark" };
@@ -56,15 +57,18 @@ const ICON: Record<ThemeChoice, () => ReactElement> = { system: MonitorIcon, lig
  * System -- rather than a plain on/off switch, since "system" is a real,
  * distinct state (chrome and map both track the OS) and not just a synonym
  * for whichever of light/dark it happens to resolve to right now. One tap
- * always advances to the NEXT state instead of opening a menu -- the same
- * interaction GeoLayerControls' phone cycle-button already uses for the same
- * reason (one thumb, one tap, nothing to dismiss), and it works identically
- * on desktop and phone without a separate narrow-width branch.
+ * always advances to the NEXT state instead of opening a menu (one tap,
+ * nothing to dismiss).
  *
  * No native `title` (owner correction on the fit-map icon, issue #82: "it
  * would show a second, redundant tooltip" -- the same reasoning applies
- * here): the icon plus `aria-label` is the whole affordance. */
-export function ThemeToggle() {
+ * here): the icon plus `aria-label` is the whole affordance.
+ *
+ * `className` lets a caller override the default 28px desktop-pointer
+ * sizing -- Home (docs/UX.md §4.9) is a phone-first page, and §8.2's touch
+ * target rule names "the theme button" among the controls with no
+ * exception, so it needs the full 44x44 there. */
+export function ThemeToggle({ className }: { className?: string } = {}) {
   const [choice, setChoice] = useThemeChoice();
   const Icon = ICON[choice];
   return (
@@ -74,7 +78,10 @@ export function ThemeToggle() {
       data-theme-choice={choice}
       aria-label={`Theme: ${LABEL[choice]}. Click to switch to ${LABEL[NEXT[choice]]}.`}
       onClick={() => setChoice(NEXT[choice])}
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[var(--rule)] bg-[var(--chrome2)] text-[var(--on)]"
+      className={cn(
+        "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[var(--rule)] bg-[var(--chrome2)] text-[var(--on)]",
+        className,
+      )}
     >
       <Icon />
     </button>

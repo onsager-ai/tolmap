@@ -8,16 +8,36 @@ import { useState } from "react";
  *
  * Transient chrome over the map, which §3 otherwise keeps clear: it exists
  * only for the minutes between the handover and the job's end. */
-export function DetailStatusNote({ pending, failed, narrow }: { pending: boolean; failed: string | null; narrow: boolean }) {
+export function DetailStatusNote({
+  pending,
+  failed,
+  narrow,
+  mapLeft = "env(safe-area-inset-left, 0px)",
+}: {
+  pending: boolean;
+  failed: string | null;
+  narrow: boolean;
+  /** Phone shell: where the map starts on the left (§9: beside the side
+   * sheet in landscape), the same edge the search pill floats from. */
+  mapLeft?: string;
+}) {
   const [dismissed, setDismissed] = useState(false);
   if (!pending && (failed == null || dismissed)) return null;
-  const position = narrow
-    ? "left-3 right-[68px] top-[calc(max(env(safe-area-inset-top),0px)+72px)]"
-    : "left-1/2 top-2.5 w-max max-w-[min(380px,max(200px,calc(100%-600px)))] -translate-x-1/2";
+  // Phone: below the 48 px pill (12 px from the top safe inset), clear of the
+  // 44 px control column on the right. Desktop: centred at the map's top.
+  const position = narrow ? "" : "left-1/2 top-2.5 w-max max-w-[min(380px,max(200px,calc(100%-600px)))] -translate-x-1/2";
+  const style = narrow
+    ? {
+        top: "calc(72px + env(safe-area-inset-top, 0px))",
+        left: `calc(${mapLeft} + 12px)`,
+        right: "calc(68px + env(safe-area-inset-right, 0px))",
+      }
+    : undefined;
   return (
     <div
       role="status"
       data-detail-status={pending ? "pending" : "failed"}
+      style={style}
       className={`pointer-events-auto absolute z-20 flex items-center gap-2.5 rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] px-3 py-2 text-small text-[var(--on)] shadow-md ${position}`}
     >
       {pending ? (

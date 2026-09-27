@@ -6,7 +6,8 @@ import type { JobSnapshot } from "@/types";
 import type { ProgressValue } from "@bindings/ProgressValue";
 import type { StageId } from "@bindings/StageId";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { useIsNarrow } from "@/hooks/useIsNarrow";
+import { useLayoutProfile } from "@/hooks/useLayoutProfile";
+import { isPhoneShell } from "@/map/layoutProfile";
 import {
   foundSoFar,
   formatDuration,
@@ -498,7 +499,7 @@ function ProgressPage({
     );
   }
   return (
-    <main className="mx-auto grid w-full max-w-[1180px] grid-cols-[minmax(0,1fr)_minmax(300px,380px)] gap-12 px-8 py-12" data-job-state={job.status}>
+    <main className="mx-auto grid w-full max-w-[1180px] grid-cols-1 gap-10 px-8 py-12 min-[960px]:grid-cols-[minmax(0,1fr)_minmax(300px,380px)] min-[960px]:gap-12" data-job-state={job.status}>
       <div className="min-w-0">
         {header}
         {phaseList}
@@ -646,7 +647,9 @@ function FailurePage({ job, slug, narrow }: { job: JobSnapshot; slug: string | u
 export function IndexJobView() {
   const search = useSearch({ strict: false }) as { job?: string; slug?: string };
   const navigate = useNavigate();
-  const narrow = useIsNarrow();
+  // docs/UX.md §9: the phone layout on a phone in either orientation, the
+  // desktop one (§6.4's "Desktop indexing") on tablets and desktops.
+  const narrow = isPhoneShell(useLayoutProfile());
   const { job, error: transportError, seen } = useJobProgress(search.job);
 
   const status = job?.status;

@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import plugin from "tailwindcss/plugin";
 
 // Chrome/panel/card tokens only. The map surface never reads Tailwind classes —
 // it is drawn by the imperative SVG renderer against the CSS custom properties
@@ -77,5 +78,14 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // docs/UX.md §8.2/§9: `touch:` applies inside a touch-first layout (the
+    // phone shell in either orientation, and the tablet layout), which marks
+    // its root with `data-touch`. Replaces the old `max-[820px]:` variant,
+    // which keyed 44 px targets on the window width and so missed a 1024 px
+    // tablet and a landscape phone wider than 820 px.
+    plugin(({ addVariant }) => {
+      addVariant("touch", "[data-touch] &");
+    }),
+  ],
 } satisfies Config;

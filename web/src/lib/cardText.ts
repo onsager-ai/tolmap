@@ -26,7 +26,7 @@ export function compactCount(count: number): string {
   return `${digits}${unit === 1000 ? "k" : "m"}`;
 }
 
-/** One line on which way a found path runs (RouteBox, the phone's path card). */
+/** One line on which way a found path runs (the path card, phone/SheetCards.tsx). */
 export const PATH_KIND_TEXT: Record<Route["kind"], string> = {
   imports: "follows imports, source → target",
   "imported-by": "reverse direction — the target imports the source",

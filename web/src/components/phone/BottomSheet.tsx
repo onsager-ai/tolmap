@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { SIDE_SHEET_WIDTH_PX } from "@/map/layoutProfile";
 import {
   SHEET_DRAG_SLOP_PX,
   dragHeight,
@@ -127,6 +128,48 @@ export function BottomSheet({ detent, heights, onDetent, children }: Props) {
         style={{
           paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))",
           touchAction: detent === "full" ? "pan-y" : "none",
+          overscrollBehavior: "contain",
+        }}
+      >
+        {children}
+      </div>
+    </section>
+  );
+}
+
+/** docs/UX.md §9: a phone held sideways (height <= 500) gets the sheet as a
+ * side sheet on the left -- 360 px wide, full height -- with the detents
+ * mapped to widths: collapsed 0, open 360 (the control column's panel
+ * button toggles it; a new selection opens it). The detent still says how
+ * much of a card to show (a file's key symbols, or all of them at Full), but
+ * the sheet's box no longer changes with it: the whole height is there at
+ * every detent, so the content always scrolls and there is nothing to drag.
+ * Same data attributes as the bottom sheet, so the checks and the back
+ * stack read one contract. The left safe inset is padded inside it (the
+ * notch side of a landscape phone), the top and bottom ones too. */
+export function SideSheet({ open, detent, children }: { open: boolean; detent: Detent; children: ReactNode }) {
+  return (
+    <section
+      aria-label="Map details"
+      data-phone-sheet
+      data-side-sheet
+      data-selection-panel
+      data-detent={detent}
+      data-side-open={open}
+      className={`absolute inset-y-0 left-0 z-30 flex flex-col border-r border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-[8px_0_24px_rgba(0,0,0,.3)] transition-[transform,visibility] duration-300 ease-[cubic-bezier(.2,.8,.2,1)] motion-reduce:transition-none ${open ? "" : "invisible"}`}
+      style={{
+        width: `calc(${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px))`,
+        paddingLeft: "env(safe-area-inset-left, 0px)",
+        transform: open ? "none" : "translateX(-100%)",
+      }}
+    >
+      <div
+        data-sheet-body
+        className="min-h-0 flex-1 overflow-y-auto px-5"
+        style={{
+          paddingTop: "calc(16px + env(safe-area-inset-top, 0px))",
+          paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))",
+          touchAction: "pan-y",
           overscrollBehavior: "contain",
         }}
       >

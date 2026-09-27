@@ -152,6 +152,44 @@ enum Command {
     /// (see docs/FINDINGS.md finding 7: a wrong `--pkg` fails silently, not
     /// loudly, so this exists to make the choice visible and overridable).
     Detect { repo: PathBuf },
+    /// What a change does to the map (issue #170, docs/CHECK.md): the
+    /// districts it crosses and the change in modularity with the base
+    /// partition held fixed, with the cross-district edges behind it. Exits
+    /// 0 pass, 1 a threshold crossed, 2 usage or input error, 3 internal
+    /// error. With no threshold flag the calibrated defaults apply
+    /// (--max-districts 4 --max-dq 0.0001); --report-only applies none.
+    Check {
+        /// Any path inside the git repository; the check runs on its top
+        /// level.
+        repo: PathBuf,
+        /// The commit the change is measured against: its map supplies the
+        /// districts. Checked out into a temporary worktree.
+        #[arg(long)]
+        base: String,
+        /// The changed commit. Defaults to the working tree, uncommitted
+        /// and untracked files included.
+        #[arg(long)]
+        head: Option<String>,
+        /// A stored map of --base, named `<full commit id>.json` as the
+        /// service store names it, instead of building the base map. The
+        /// base graph is still extracted: a map keeps no edge weights.
+        #[arg(long)]
+        base_map: Option<PathBuf>,
+        /// Fail (exit 1) when the change crosses more than N districts.
+        /// Any threshold flag replaces both defaults.
+        #[arg(long)]
+        max_districts: Option<usize>,
+        /// Fail (exit 1) when modularity drops by more than X, that is when
+        /// delta q < -X. X is a number >= 0. Any threshold flag replaces
+        /// both defaults.
+        #[arg(long)]
+        max_dq: Option<f64>,
+        /// Apply no threshold: report, and exit 0 whatever the numbers.
+        #[arg(long, conflicts_with_all = ["max_districts", "max_dq"])]
+        report_only: bool,
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
     /// Step 2 of the polyglot union-extraction work (docs/FINDINGS.md
     /// finding 13): measures what `--all-sources` (or an explicit
     /// `--pkg`/`--lang` set) actually produces on a repository -- candidate
@@ -655,6 +693,29 @@ fn main() -> Result<()> {
                 );
             }
             Ok(())
+        }
+        Command::Check {
+            repo,
+            base,
+            head,
+            base_map,
+            max_districts,
+            max_dq,
+            report_only,
+            format,
+        } => {
+            let options = tolmap::check::CheckOptions {
+                repo,
+                base,
+                head,
+                base_map,
+                max_districts,
+                max_dq,
+                report_only,
+            };
+            // Not `?`: the exit code is the contract (0/1/2/3), and
+            // `main`'s own error path would exit 1 for every failure.
+            std::process::exit(tolmap::check::run_cli(&options, &format));
         }
         Command::PolyglotReport {
             repo,

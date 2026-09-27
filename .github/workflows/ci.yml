@@ -1192,12 +1192,31 @@ jobs:
       # stack reducer, sheet detents and snap, and the safe rectangle the
       # map frames into (map/backStack.ts, map/phoneShell.ts).
       - run: npx --yes tsx@4.23.15 scripts/check-phone-shell.ts
+      # docs/UX.md §5/§9 (phase 5): the layout profile table, the landscape
+      # side sheet's and the desktop/tablet safe rectangles with every
+      # safe-area inset, and the repository select's counts (issue #171)
+      # (map/layoutProfile.ts, lib/repoOptions.ts).
+      - run: npx --yes tsx@4.23.15 scripts/check-layout-profile.ts
+      # docs/UX.md §4.8/§7.2 (phase 3): search's pure parts -- grouping,
+      # district ranking, highlighting and the keyboard reducer
+      # (map/searchResults.ts).
+      - run: npx --yes tsx@4.23.15 scripts/check-search.ts
       # docs/UX.md §6 (phase 4): the indexing page's pure parts -- the
       # stage -> phase table, phase states and shares, "Found so far", the
       # ETA wording, and the failure pages' error-code table
       # (lib/indexPhases.ts, lib/jobFailure.ts).
       - run: npx --yes tsx@4.23.15 scripts/check-index-page.ts
       - run: npx --yes tsx@4.23.15 scripts/check-pinch-math.ts
+      # docs/UX.md §4.9 (phase 6): Home's repository field -- parsing and
+      # validation (src/api/repoInput.ts), including the reserved-name
+      # refusal it shares with the router (routes/reserved.ts). Needs
+      # TSX_TSCONFIG_PATH: repoInput.ts's `@/routes/reserved` import is a
+      # real (non type-only) one, and tsx's default tsconfig discovery reads
+      # the solution-style root tsconfig.json, which has no `paths` of its
+      # own (they live in tsconfig.app.json) -- every other check script here
+      # only reaches `@/...` modules through `import type`, which the
+      # compiler erases before this would matter.
+      - run: TSX_TSCONFIG_PATH=tsconfig.app.json npx --yes tsx@4.23.15 scripts/check-repo-input.ts
       - run: pnpm build
 
   full-fixtures:
