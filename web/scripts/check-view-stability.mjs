@@ -5092,7 +5092,12 @@ async function checkPhonePathMode(browser, base, profile) {
     `${label}: path mode at Peek: "From <file> · pick a destination"`, (await picking.count()) ? await picking.innerText() : "");
   // The next file tapped on the map is the destination -- even in another
   // district (no two-step district tap while picking).
+  // The largest tappable file target on screen: Chromium's touch
+  // adjustment retargets a tap on a tiny dot to a bigger neighbour (a CI run
+  // tapped registry.py's dot and got exceptions.py), which is the browser
+  // choosing the file, not path mode.
   const target = await page.evaluate((a) => {
+    let best = null;
     for (const el of document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')) {
       const k = el.getAttribute("data-k");
       if (k === `f:${a}`) continue;
@@ -5101,9 +5106,10 @@ async function checkPhonePathMode(browser, base, profile) {
       const y = r.top + r.height / 2;
       if (y < 90 || y > innerHeight - 220 || x < 20 || x > innerWidth - 80) continue;
       if (document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k") !== k) continue;
-      return { x, y, index: Number(k.slice(2)) };
+      const area = r.width * r.height;
+      if (!best || area > best.area) best = { x, y, index: Number(k.slice(2)), area };
     }
-    return null;
+    return best;
   }, anchor);
   if (!target) {
     report(false, `${label}: a destination file is tappable`, "none found");
