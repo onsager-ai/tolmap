@@ -2032,8 +2032,14 @@ mod tests {
         }
 
         fn spawn(&self, repo: RepoRef) -> Uuid {
+            self.spawn_at(repo, COMMIT)
+        }
+
+        /// For a test whose agent really clones: the executor checks out
+        /// the admitted commit, so it must exist in the repository.
+        fn spawn_at(&self, repo: RepoRef, commit: &str) -> Uuid {
             let _entered = self.runtime.as_ref().unwrap().enter();
-            jobs::spawn_job(self.state.clone(), repo, COMMIT.to_owned()).unwrap()
+            jobs::spawn_job(self.state.clone(), repo, commit.to_owned()).unwrap()
         }
 
         fn snapshot(&self, id: Uuid) -> JobSnapshot {
@@ -3135,12 +3141,21 @@ mod tests {
         };
         let agent = std::thread::spawn(move || crate::service::agent::run(config));
 
-        let id = fixture.spawn(RepoRef {
-            slug: "local/demo".to_owned(),
-            owner: "local".to_owned(),
-            repo: "demo".to_owned(),
-            source: RepoSource::Local(repo.clone()),
-        });
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+        let id = fixture.spawn_at(
+            RepoRef {
+                slug: "local/demo".to_owned(),
+                owner: "local".to_owned(),
+                repo: "demo".to_owned(),
+                source: RepoSource::Local(repo.clone()),
+            },
+            &head,
+        );
         let snapshot = fixture.wait_for(id, "the child starts parsing", |s| {
             s.status == JobStatus::Indexing
         });
