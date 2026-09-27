@@ -111,8 +111,12 @@ export function MapView() {
   // measured against; `safe` follows the sheet. Desktop keeps its margins
   // until phase 5.
   const peekInsets = safeInsets(metrics, heights.peek);
+  // At Full the sheet covers the map up to the pill, leaving no rect to
+  // frame into; a camera move made then (Zoom to district from the card)
+  // frames as at Half, so it lands where the map shows again once the sheet
+  // comes down.
   const frameInsets: FrameInsets = narrow
-    ? { frame: peekInsets, safe: safeInsets(metrics, heights[detent]), centreInSafe: true }
+    ? { frame: peekInsets, safe: safeInsets(metrics, heights[detent === "full" ? "half" : detent]), centreInSafe: true }
     : { frame: DESKTOP_INSETS, safe: DESKTOP_INSETS, centreInSafe: false };
   /** Before a camera move made together with a selection (which always
    * lands the sheet at Peek, §3.2): the renderer frames into the Peek rect
@@ -557,9 +561,10 @@ export function MapView() {
   useEffect(() => {
     const prev = prevDetentRef.current;
     prevDetentRef.current = detent;
-    if (!narrow || !doc) return;
-    const order = { peek: 0, half: 1, full: 2 };
-    if (order[detent] <= order[prev]) return;
+    // Only on the way up to Half: at Full the map is covered, and moving it
+    // there (into a rect that no longer exists) would only leave it
+    // displaced when the sheet comes back down.
+    if (!narrow || !doc || detent !== "half" || prev !== "peek") return;
     if (sel != null) {
       if (districtClass(doc.districts[String(D_(doc, sel))]) !== "unconnected") canvasRef.current?.panTo(sel);
     } else if (selD != null) canvasRef.current?.panToDistrict(selD);
