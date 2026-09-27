@@ -2895,12 +2895,13 @@ async function checkRoadTap(browser, base, profile) {
     report((await card.count()) === 1 && /import/i.test(cardText) && (await page.locator(".tolmap-hover-card:visible").count()) === 0,
       `${label}: tapping a road shows its import-count explanation in the sheet`, cardText);
     report((await page.locator('[data-structure-card="road"] [data-sheet-close]').count()) === 1, `${label}: the road card has a close button`);
-    const empty = await findEmptyPoint(page, profile.viewport.width, profile.viewport.height);
-    const from = empty ?? [profile.viewport.width / 2, 300];
-    // Toward the middle of the screen: a drag that leaves the viewport
-    // stops delivering pointer moves before it ever becomes a pan.
-    const dx = from[0] > profile.viewport.width / 2 ? -60 : 60;
-    const dy = from[1] > profile.viewport.height / 2 ? -20 : 20;
+    // Start well inside the map, away from the pill, the control column
+    // and the sheet: an uncaptured pointer that slides onto chrome delivers
+    // its moves there, and the drag never becomes a pan. (Any map element
+    // under the finger is fine -- a drag pans whatever it starts on.)
+    const from = [Math.round(profile.viewport.width * 0.4), Math.round(profile.viewport.height * 0.35)];
+    const dx = 60;
+    const dy = 20;
     const beforePan = await stableBox(page);
     await page.mouse.move(from[0], from[1]);
     await page.mouse.down();
