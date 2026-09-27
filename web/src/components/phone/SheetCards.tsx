@@ -310,7 +310,9 @@ export function DistrictSheetCard({
   packageLayout: PackageLayout;
   onClose(): void;
   onZoomDistrict(d: number): void;
-  onDetails(): void;
+  /** The phone's "Details" (raise the sheet to Half). The desktop inspector
+   * shows the Half content already, so it passes none. */
+  onDetails?(): void;
   onSelectFile(i: number): void;
   onSelectDistrict(d: number): void;
   onSelectDirectory(path: string): void;
@@ -343,9 +345,11 @@ export function DistrictSheetCard({
             <FitIcon size={18} />
             Zoom to district
           </SheetButton>
-          <SheetButton primary onClick={onDetails} data-sheet-details="">
-            Details
-          </SheetButton>
+          {onDetails && (
+            <SheetButton primary onClick={onDetails} data-sheet-details="">
+              Details
+            </SheetButton>
+          )}
         </div>
       </div>
       <div className="mt-4 text-small">
@@ -424,6 +428,7 @@ export function FileSheetCard({
   onSelectFile,
   onSelectSymbol,
   onSelectHierSymbol,
+  onHoverHierSymbol,
   onSelectDistrict,
   onBreadcrumbRepo,
   onBreadcrumbFile,
@@ -443,6 +448,8 @@ export function FileSheetCard({
   onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
   onSelectHierSymbol(global: number): void;
+  /** Desktop: hovering an outline row highlights its card on the map. */
+  onHoverHierSymbol?(global: number | null): void;
   onSelectDistrict(d: number): void;
   onBreadcrumbRepo(): void;
   onBreadcrumbFile(i: number): void;
@@ -587,14 +594,14 @@ export function FileSheetCard({
       <BlastLine blast={blast} doc={doc} />
       {decoded ? (
         detent === "full" ? (
-          <HierOutline outline={outline} external={external} selHSym={selHSym} onSelectHierSymbol={onSelectHierSymbol} onHoverHierSymbol={undefined} nested={false} />
+          <HierOutline outline={outline} external={external} selHSym={selHSym} onSelectHierSymbol={onSelectHierSymbol} onHoverHierSymbol={onHoverHierSymbol} nested={false} />
         ) : (
           keyRows.length > 0 && (
             <>
               <Section
                 title="Key symbols"
                 aside={
-                  <button type="button" onClick={() => onDetent("full")} className="min-h-[44px] px-1 text-small text-[var(--accent)]">
+                  <button type="button" data-all-symbols onClick={() => onDetent("full")} className="min-h-[44px] px-1 text-small text-[var(--accent)]">
                     All {symbolCount}
                   </button>
                 }
@@ -604,6 +611,8 @@ export function FileSheetCard({
                   key={r.global}
                   type="button"
                   data-outline-row={r.global}
+                  onMouseEnter={() => onHoverHierSymbol?.(r.global)}
+                  onMouseLeave={() => onHoverHierSymbol?.(null)}
                   onClick={() => onSelectHierSymbol(r.global)}
                   className={`flex min-h-[44px] w-full items-center justify-between gap-2 border-b border-[var(--rule)] text-left ${selHSym === r.global ? "text-[var(--accent)]" : ""}`}
                 >
@@ -628,7 +637,7 @@ export function FileSheetCard({
             <Section
               title="Key symbols"
               aside={
-                <button type="button" onClick={() => onDetent("full")} className="min-h-[44px] px-1 text-small text-[var(--accent)]">
+                <button type="button" data-all-symbols onClick={() => onDetent("full")} className="min-h-[44px] px-1 text-small text-[var(--accent)]">
                   All {sy.length}
                 </button>
               }
@@ -821,4 +830,105 @@ export function StructureSheetCard({
       )}
     </div>
   );
+}
+
+// ---------- which card, by map state (§3.2) ----------
+
+export interface SelectionCardProps {
+  doc: MapDocument;
+  packageLayout: PackageLayout;
+  sel: number | null;
+  selSym: number | null;
+  selD: number | null;
+  selHSym: number | null;
+  symbolsDoc?: DistrictSymbols;
+  symbolsLoading: boolean;
+  adj: AdjMap;
+  radj: AdjMap;
+  /** The phone sheet's detent; the inspector's own "Half, or Full once All
+   * N was asked for" (docs/UX.md §5: the inspector shows the Half content). */
+  detent: Detent;
+  onDetent(d: Detent): void;
+  quality: boolean;
+  onCloseQuality(): void;
+  structure: StructureCardState | null;
+  onCloseStructure(): void;
+  pathPick: PathPick | null;
+  pathEnds: [number, number] | null;
+  route: Route | null;
+  onPath(i: number, dir: "from" | "to"): void;
+  onPathCancel(): void;
+  onClearSelection(): void;
+  onSelectFile(i: number): void;
+  onSelectSymbol(i: number, s: number): void;
+  onSelectHierSymbol(global: number): void;
+  onHoverHierSymbol?(global: number | null): void;
+  /** Pan-free: breadcrumb and "near" links (issue #82 A1). */
+  onSelectDistrict(d: number): void;
+  onZoomDistrict(d: number): void;
+  onSelectDirectory(path?: string): void;
+  onBreadcrumbRepo(): void;
+  onBreadcrumbFile(i: number): void;
+  /** The district card's "Details" (the phone only). */
+  onDistrictDetails?(): void;
+}
+
+/** docs/UX.md principle 10, "one component, two containers": the card for
+ * the current map state -- a path, a road/street/neighborhood, map quality,
+ * a file or symbol, a district -- hosted by the phone's sheet (portrait and
+ * the landscape side sheet) and by the desktop/tablet inspector alike.
+ * Null when nothing is selected: the phone sheet then shows its overview,
+ * and the inspector closes. */
+export function SelectionCard(p: SelectionCardProps) {
+  if (p.pathPick) {
+    return <PathSheetCard doc={p.doc} pick={p.pathPick} route={p.route} ends={p.pathEnds} onCancel={p.onPathCancel} onSelectFile={p.onSelectFile} onDetent={p.onDetent} />;
+  }
+  if (p.structure) {
+    return <StructureSheetCard doc={p.doc} card={p.structure} onClose={p.onCloseStructure} onSelectFile={p.onSelectFile} onSelectDistrict={p.onSelectDistrict} />;
+  }
+  if (p.quality) {
+    return <QualityCard doc={p.doc} packageLayout={p.packageLayout} onClose={p.onCloseQuality} onSelectFile={p.onSelectFile} />;
+  }
+  if (p.sel != null) {
+    return (
+      <FileSheetCard
+        key={p.sel}
+        doc={p.doc}
+        i={p.sel}
+        selSym={p.selSym}
+        selHSym={p.selHSym}
+        symbolsDoc={p.symbolsDoc}
+        symbolsLoading={p.symbolsLoading}
+        adj={p.adj}
+        radj={p.radj}
+        detent={p.detent}
+        onClose={p.onClearSelection}
+        onDetent={p.onDetent}
+        onSelectFile={p.onSelectFile}
+        onSelectSymbol={p.onSelectSymbol}
+        onSelectHierSymbol={p.onSelectHierSymbol}
+        onHoverHierSymbol={p.onHoverHierSymbol}
+        onSelectDistrict={p.onSelectDistrict}
+        onBreadcrumbRepo={p.onBreadcrumbRepo}
+        onBreadcrumbFile={p.onBreadcrumbFile}
+        onPath={p.onPath}
+      />
+    );
+  }
+  if (p.selD != null) {
+    return (
+      <DistrictSheetCard
+        doc={p.doc}
+        d={p.selD}
+        packageLayout={p.packageLayout}
+        onClose={p.onClearSelection}
+        onZoomDistrict={p.onZoomDistrict}
+        onDetails={p.onDistrictDetails}
+        onSelectFile={p.onSelectFile}
+        onSelectDistrict={p.onSelectDistrict}
+        onSelectDirectory={p.onSelectDirectory}
+      />
+    );
+  }
+  return null;
 }

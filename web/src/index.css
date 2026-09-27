@@ -123,8 +123,8 @@
   --on-accent: #ffffff;
   --grabber: #b9c0bb;
   --warn: #87681b;
-  /* Floating map overlays (FooterStats, PackageLegend, SelectionSummaryBar,
-   * RouteBox) draw a translucent chrome panel OVER the canvas -- a plain
+  /* Floating map overlays (the desktop map-quality strip, PackageLegend,
+   * the inspector) draw a translucent chrome panel OVER the canvas -- a plain
    * `--chrome` token can't do that (it's opaque), and each caller wants a
    * slightly different alpha (.94 vs .96), so this carries just the RGB
    * triple (no alpha) for `rgba(var(--chrome-float-rgb), <alpha>)` at the
@@ -142,8 +142,8 @@
      --link-out for what the selected file imports (solid), --link-in for
      what imports it (dashed) -- direction is never colour ALONE. Renderer
      tokens (principle 7): MapRenderer's selection-links block and symbol
-     reference lines read them for the map, and the file card's LinkLegend
-     reads the same tokens, which is what makes its two counts a legend.
+     reference lines read them for the map, and the file card's two link
+     counts (phone/SheetCards.tsx) read the same tokens, which is what makes its two counts a legend.
      Dark values are lighter because #c0472f and #4f8fc4 fall under 3:1
      against the dark chrome and canvas. Light values are the spec's
      darkened just enough to clear 4.5:1 as text on --chrome and --chrome2
@@ -357,11 +357,12 @@ body {
   line-height: 1.45;
 }
 /* docs/UX.md §4.8/§8.1: iPhone Safari zooms the page when an input under
- * 16 px takes focus, and stays zoomed. The narrow breakpoint is the app's
- * existing 820 px one (hooks/useIsNarrow.ts). A floor for every input,
- * select and textarea, not only the ones whose classes say so, so a new
- * control can't bring the bug back. */
-@media (max-width: 820px) {
+ * 16 px takes focus, and stays zoomed. Narrow windows, short ones (a
+ * landscape phone is 844 x 390: wider than the old 820 px breakpoint, and
+ * docs/UX.md §9 gives it the phone shell) and any coarse pointer (a
+ * tablet) get it. A floor for every input, select and textarea, not only
+ * the ones whose classes say so, so a new control can't bring the bug back. */
+@media (max-width: 820px), (max-height: 500px), (pointer: coarse) {
   input,
   select,
   textarea {

@@ -1192,6 +1192,11 @@ jobs:
       # stack reducer, sheet detents and snap, and the safe rectangle the
       # map frames into (map/backStack.ts, map/phoneShell.ts).
       - run: npx --yes tsx@4.23.15 scripts/check-phone-shell.ts
+      # docs/UX.md §5/§9 (phase 5): the layout profile table, the landscape
+      # side sheet's and the desktop/tablet safe rectangles with every
+      # safe-area inset, and the repository select's counts (issue #171)
+      # (map/layoutProfile.ts, lib/repoOptions.ts).
+      - run: npx --yes tsx@4.23.15 scripts/check-layout-profile.ts
       # docs/UX.md §4.8/§7.2 (phase 3): search's pure parts -- grouping,
       # district ranking, highlighting and the keyboard reducer
       # (map/searchResults.ts).

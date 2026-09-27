@@ -10,16 +10,20 @@ import {
   type SearchPick,
   type SearchResults,
 } from "@/map/searchResults";
-import { BackIcon, ClearIcon, DistrictIcon, FileIcon, SymbolIcon } from "@/components/phone/icons";
+import { BackIcon, ClearIcon, DistrictIcon, FileIcon, SearchIcon, SymbolIcon } from "@/components/phone/icons";
 
 interface SearchBoxProps {
   doc: MapDocument;
   onPick(pick: SearchPick): void;
   /** "overlay": the phone's full-screen search layer (docs/UX.md §4.8).
-   * "float" (default): the desktop box with its dropdown (§5, §7.2). */
+   * "float" (default): the desktop and tablet box with its dropdown (§5,
+   * §7.2) -- in the top bar, or floating over the map in fullscreen. It
+   * fills the width its container gives it. */
   variant?: "float" | "overlay";
   /** Overlay only: the back button and Esc close the layer. */
   onClose?(): void;
+  /** Float only: 44 px (a tablet is touch, §9) instead of 36. */
+  touch?: boolean;
 }
 
 /** What the input is called, for people and for check:view: it searches
@@ -32,7 +36,7 @@ const PLACEHOLDER = "Districts, files, classes…";
  * stays in the input while the arrow keys move through the results; the
  * results are grouped District / Files / Symbols (map/searchResults.ts,
  * whose file and symbol ranking is map/search.ts's, unchanged). */
-export function SearchBox({ doc, onPick, variant = "float", onClose }: SearchBoxProps) {
+export function SearchBox({ doc, onPick, variant = "float", onClose, touch = false }: SearchBoxProps) {
   const [value, setValue] = useState("");
   const [cursor, setCursor] = useState(-1);
   const [open, setOpen] = useState(false);
@@ -230,10 +234,7 @@ export function SearchBox({ doc, onPick, variant = "float", onClose }: SearchBox
     <div
       ref={rootRef}
       data-search-box
-      // z-40: above every other layer on the map (the selection panel and
-      // package legend are z-10, the coverage popover z-30), so nothing
-      // covers the dropdown's edges (§4.8, audit defect 8).
-      className="absolute left-2.5 top-2.5 z-40 w-[340px] max-w-[calc(100%-20px)]"
+      className="relative w-full"
       onBlur={(e) => {
         if (open && !rootRef.current?.contains(e.relatedTarget as Node | null)) {
           setOpen(false);
@@ -241,16 +242,26 @@ export function SearchBox({ doc, onPick, variant = "float", onClose }: SearchBox
         }
       }}
     >
-      <input
-        {...comboProps}
-        type="text"
-        onFocus={() => setOpen(true)}
-        className="flex h-10 w-full rounded-md border border-[var(--rule)] bg-[var(--chrome)] px-3 py-1.5 text-small text-[var(--on)] shadow-sm outline-none placeholder:text-[var(--dim)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-      />
+      {/* docs/UX.md §5's search field: magnifier, the input, and the `/`
+          shortcut it answers to. */}
+      <label
+        className={`flex w-full items-center gap-2 rounded-[10px] border border-[var(--rule)] bg-[var(--canvas)] px-2.5 text-[var(--dim)] focus-within:ring-2 focus-within:ring-[var(--accent)] ${touch ? "h-11" : "h-9"}`}
+      >
+        <SearchIcon size={16} />
+        <input
+          {...comboProps}
+          type="text"
+          onFocus={() => setOpen(true)}
+          className="h-full min-w-0 flex-1 bg-transparent text-small text-[var(--on)] outline-none placeholder:text-[var(--dim)]"
+        />
+        <kbd aria-hidden="true" className="rounded-[5px] border border-[var(--rule)] px-1.5 font-mono text-label font-normal text-[var(--dim)] max-[899px]:hidden">
+          /
+        </kbd>
+      </label>
       {open && (
         <div
           data-search-dropdown
-          className="mt-1 max-h-[min(460px,calc(100vh-140px))] overflow-y-auto rounded-md border border-[var(--rule)] bg-[var(--chrome)] pb-1 shadow-lg"
+          className="absolute left-0 top-full mt-1 max-h-[min(460px,calc(100vh-140px))] w-full min-w-[min(360px,calc(100vw-24px))] overflow-y-auto rounded-[10px] border border-[var(--rule)] bg-[var(--chrome)] pb-1 shadow-lg"
           style={{ overscrollBehavior: "contain" }}
         >
           {list}
@@ -343,7 +354,7 @@ function ResultList({ id, results, value, cursor, optionId, variant, onPick, onH
                   onMouseMove={onHover ? () => at !== cursor && onHover(at) : undefined}
                   onClick={() => onPick(it)}
                   className={`flex w-full items-center text-left text-[var(--on)] outline-none ${
-                    phone ? "min-h-[56px] gap-3 border-b border-[var(--rule)] px-5 py-2" : "min-h-[40px] gap-2.5 px-3 py-1.5"
+                    phone ? "min-h-[56px] gap-3 border-b border-[var(--rule)] px-5 py-2" : "min-h-[40px] gap-2.5 px-3 py-1.5 touch:min-h-[44px]"
                   }`}
                   style={active ? { background: "color-mix(in srgb, var(--accent) 14%, transparent)" } : undefined}
                 >

@@ -293,8 +293,8 @@ try {
   // default, per CLAUDE.md's "keep all existing checks green, run in the
   // default theme"). Four kinds of frame, named with a `-light`/`-dark`
   // suffix: the opening zoom, the district rail/drawer, a selected file's
-  // card (the link-colour legend -- also where the owner's three-digit-
-  // count wrap fix lives, see LinkLegend.tsx), and a deep-zoom symbol-card
+  // card (the link counts that are the legend, docs/UX.md §4.5 -- also
+  // where the owner's three-digit-count wrap fix lives), and a deep-zoom symbol-card
   // frame.
   if (slugs.includes(DIFY_SLUG)) {
     const doc = await (await fetch(`${base}/maps/${DIFY_SLUG}.json`)).json();
@@ -563,6 +563,103 @@ try {
     }
   }
 
+  // docs/UX.md §11 phase 5: landscape, tablet and desktop (§5, §9). The
+  // landscape side sheet at 667 x 375 and 844 x 390; the tablet at 768 x 1024
+  // (rail collapsed, then open) and 1024 x 768; the desktop at 1440 x 900
+  // with the inspector open (the "Desktop map · file selected" artboard);
+  // and the CSS fullscreen fallback with requestFullscreen stubbed out.
+  if (slugs.includes(DIFY_SLUG)) {
+    const doc = await (await fetch(`${base}/maps/${DIFY_SLUG}.json`)).json();
+    const workflowFile = doc.F.findIndex((p) => p === "web/app/components/workflow/types.ts");
+    const workflowDistrict = workflowFile >= 0 ? doc.N[workflowFile][0] : null;
+    const stem = `${out}/phase5`;
+    const shot = async (page, name) => {
+      await page.screenshot({ path: `${stem}-${name}.png` });
+      console.log(`${stem}-${name}.png`);
+    };
+    const open = async (page, query = "") => {
+      await page.goto(`${base}/${DIFY_SLUG}${query}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(800);
+    };
+    const fileQuery = workflowFile >= 0 ? `?file=${encodeURIComponent(doc.F[workflowFile])}` : "";
+    const districtQuery = workflowDistrict != null ? `?d=${workflowDistrict}` : "";
+    const layouts = [
+      { name: "landscape-667x375", viewport: { width: 667, height: 375 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+      { name: "landscape-844x390", viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+      { name: "tablet-768x1024", viewport: { width: 768, height: 1024 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+      { name: "tablet-1024x768", viewport: { width: 1024, height: 768 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+      { name: "desktop-1440x900", viewport: { width: 1440, height: 900 }, isMobile: false, hasTouch: false, deviceScaleFactor: 1 },
+    ];
+    for (const colorScheme of ["dark", "light"]) {
+      for (const profile of layouts) {
+        const context = await browser.newContext({ ...profile, colorScheme });
+        const page = await context.newPage();
+        const tag = `${profile.name}-${colorScheme}`;
+        await open(page);
+        await shot(page, `${tag}-overview`);
+        if (colorScheme === "dark") {
+          if (profile.name.startsWith("landscape")) {
+            await page.locator("[data-side-toggle]").click();
+            await page.waitForTimeout(450);
+            await shot(page, `${tag}-side-sheet-collapsed`);
+            await page.locator("[data-side-toggle]").click();
+            await page.waitForTimeout(450);
+            await page.locator('button[aria-label="Map layers"]').click();
+            await page.waitForTimeout(300);
+            await shot(page, `${tag}-layers`);
+          }
+          if (profile.name === "tablet-768x1024") {
+            await page.locator("[data-rail-toggle]").click();
+            await page.waitForTimeout(400);
+            await shot(page, `${tag}-rail-open`);
+          }
+          await open(page, districtQuery);
+          await shot(page, `${tag}-district-selected`);
+          if (!profile.name.startsWith("landscape")) {
+            await page.locator("[data-map-quality]").click();
+            await page.waitForTimeout(300);
+            await shot(page, `${tag}-map-quality`);
+          }
+        }
+        await open(page, fileQuery);
+        await shot(page, `${tag}-file-selected`);
+        if (colorScheme === "dark" && profile.name === "desktop-1440x900") {
+          await open(page, `?layer=p${fileQuery ? `&${fileQuery.slice(1)}` : ""}`);
+          await shot(page, `${tag}-package-layer-file-selected`);
+          await open(page, "?layer=c");
+          await shot(page, `${tag}-churn-layer`);
+          await page.locator("input[data-search-input]").click();
+          await page.locator("input[data-search-input]").fill("workflow");
+          await page.waitForTimeout(300);
+          await shot(page, `${tag}-search`);
+        }
+        await context.close();
+      }
+    }
+
+    // §9: the CSS fullscreen fallback, requestFullscreen stubbed to
+    // undefined (iPad Safari has no element Fullscreen API): the top bar and
+    // rail go, search floats in the corner below the top inset.
+    for (const profile of [layouts[4], layouts[3]]) {
+      const context = await browser.newContext({ ...profile, colorScheme: "dark" });
+      await context.addInitScript(() => {
+        Object.defineProperty(Element.prototype, "requestFullscreen", { value: undefined, configurable: true, writable: true });
+      });
+      const page = await context.newPage();
+      await open(page);
+      await page.locator('button[aria-label="Enter fullscreen"]').click();
+      await page.waitForTimeout(500);
+      await shot(page, `${profile.name}-dark-fullscreen-fallback`);
+      await open(page, fileQuery);
+      await page.locator('button[aria-label="Enter fullscreen"]').click();
+      await page.waitForTimeout(500);
+      await shot(page, `${profile.name}-dark-fullscreen-fallback-file-selected`);
+      await context.close();
+    }
+  }
+
+
   // docs/UX.md §11 phase 3: search. Focused with results on the district
   // layer and the package layer, phone and desktop, dark (the approved
   // "Search active" artboard) and light; the empty and no-results states; a
@@ -764,9 +861,10 @@ try {
         const page = await context.newPage();
         await page.goto(`${base}/${SLUG}`, { waitUntil: "domcontentloaded" });
         await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
-        // Phone: docs/UX.md §4.2's map-quality row in the sheet opens the
-        // same explanation as a Full sheet (the floating chip is gone).
-        const trigger = profile.isMobile ? page.locator("[data-map-quality]") : page.locator("[data-reference-coverage] button");
+        // docs/UX.md §4.2 and §5: the map-quality row in the phone sheet, the
+        // map-quality strip on desktop; each opens the same Map quality card
+        // (a Full sheet, the inspector).
+        const trigger = page.locator("[data-map-quality]");
         await trigger.waitFor({ timeout: 10_000 });
         await page.waitForTimeout(300);
         await page.screenshot({ path: `${stem}-${profile.name}-collapsed-${colorScheme}.png` });

@@ -41,9 +41,13 @@ export interface PhoneMetrics {
   /** Visible viewport, CSS px (visualViewport, falling back to inner*). */
   width: number;
   height: number;
-  /** env(safe-area-inset-top/bottom), measured. */
+  /** env(safe-area-inset-*), measured. Left and right are 0 on a portrait
+   * phone; a landscape one has the notch on one side (docs/UX.md §9:
+   * insets apply on every side in every profile). */
   safeTop: number;
   safeBottom: number;
+  safeLeft?: number;
+  safeRight?: number;
 }
 
 /** Bottom edge of the search pill, from the top of the page. */
@@ -64,12 +68,13 @@ export function detentHeights(m: PhoneMetrics): DetentHeights {
 
 /** §3.3: `[left 12, top pillBottom + 8, right W - 12 - 44 - 8, bottom H -
  * sheetHeight - 8]`, expressed as insets from the map box's edges (the map
- * fills the page on a phone, so the page edges are the map's). */
+ * fills the page on a phone, so the page edges are the map's), plus the
+ * left and right safe-area insets (§9). */
 export function safeInsets(m: PhoneMetrics, sheetHeight: number): Insets {
   return {
-    left: FLOAT_GUTTER_PX,
+    left: (m.safeLeft ?? 0) + FLOAT_GUTTER_PX,
     top: pillBottom(m) + SAFE_GAP_PX,
-    right: FLOAT_GUTTER_PX + CONTROL_SIZE_PX + SAFE_GAP_PX,
+    right: (m.safeRight ?? 0) + FLOAT_GUTTER_PX + CONTROL_SIZE_PX + SAFE_GAP_PX,
     bottom: sheetHeight + SAFE_GAP_PX,
   };
 }

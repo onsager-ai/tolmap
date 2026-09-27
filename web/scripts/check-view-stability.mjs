@@ -194,24 +194,39 @@ function fitsWithinRect(box, rect, eps = 2) {
  * selection panel, or the phone bottom drawer regardless of which corner
  * those occupy at this viewport size. Returns its data-k so later steps can
  * re-find the exact same element after a repaint. */
-async function pickTarget(page, vw, vh) {
+async function pickTarget(page, vw, vh, avoidRight = 0) {
   return page.evaluate(
-    ({ vw, vh }) => {
+    ({ vw, vh, avoidRight }) => {
+      // docs/UX.md §5: on desktop and tablet a selection opens the inspector
+      // over the map's top-right corner, and a target it would cover is
+      // panned out from under it (§3.3's rule, the inspector's safe rect).
+      // `avoidRight` keeps the pick where the inspector will not be, so a
+      // tap that must not move the view has no reason to.
+      const svg = document.querySelector("svg.map-svg").getBoundingClientRect();
       const els = [...document.querySelectorAll('svg.map-svg [data-k^="f:"], svg.map-svg [data-k^="s:"]')];
       for (const el of els) {
         const r = el.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         const cx = r.x + r.width / 2;
         const cy = r.y + r.height / 2;
+        if (cx > svg.right - avoidRight) continue;
         if (cx > vw * 0.25 && cx < vw * 0.75 && cy > vh * 0.3 && cy < vh * 0.65) {
           return { x: cx, y: cy, dataK: el.getAttribute("data-k") };
         }
       }
       return null;
     },
-    { vw, vh },
+    { vw, vh, avoidRight },
   );
 }
+
+/** docs/UX.md §5/§9: the page's layout profile, as the app chose it. */
+async function layoutProfileOf(page) {
+  return page.evaluate(() => document.querySelector("[data-profile]")?.getAttribute("data-profile") ?? null);
+}
+/** The strip of the map box the desktop/tablet inspector covers once
+ * something is selected: its width, its 20 px inset and a margin. */
+const INSPECTOR_ZONE_PX = 440;
 
 /** A point that resolves (via elementFromPoint) to something inside the map
  * SVG but with no data-k ancestor -- i.e. actually empty map, not a
@@ -469,15 +484,16 @@ async function closeLayersSheet(page) {
   await page.waitForTimeout(150);
 }
 const LAYER_TEXT = { d: "district", c: "churn", x: "complexity", p: "package" };
-/** Switches the map layer through the real control: the desktop segmented
- * group, or the phone's Layers sheet (§4.6). */
+/** Switches the map layer through the real control: the desktop/tablet top
+ * bar's segmented group, or the phone's Layers sheet (§4.6). */
 async function setLayer(page, profile, layer) {
   if (profile.isMobile) {
     await openLayersSheet(page);
     await page.locator(`[data-layer-option="${layer}"]`).click();
     await closeLayersSheet(page);
   } else {
-    await page.locator('[aria-label="Layer"] button', { hasText: LAYER_TEXT[layer] }).click();
+    // docs/UX.md §5: the top bar's layer segmented control.
+    await page.locator('[aria-label="Map layer"] button', { hasText: LAYER_TEXT[layer] }).click();
   }
   await page.waitForTimeout(200);
 }
@@ -586,7 +602,7 @@ async function runOne({ browser, base, slug, profile }) {
   let current = baseline;
 
   // Step 1: tap a file dot.
-  const target = await pickTarget(page, vw, vh);
+  const target = await pickTarget(page, vw, vh, profile.isMobile ? 0 : INSPECTOR_ZONE_PX);
   if (!target) {
     report(false, `${label}: tap a file dot`, "no dot found in the safe central region");
   } else {
@@ -982,12 +998,11 @@ async function checkPackageLayout(browser, base, profile) {
     return;
   }
 
-  if (profile.isMobile) {
-    // docs/UX.md §4.3: the folder tree is the sheet's second tab.
-    await setSheetDetent(page, "full");
-    await page.locator('[data-index-tab="folders"]').click();
-    await page.waitForSelector("[data-folder-browser]");
-  }
+  // docs/UX.md §4.3 and §5: the folder tree is the district index's second
+  // tab -- in the phone's sheet, and in the desktop rail.
+  if (profile.isMobile) await setSheetDetent(page, "full");
+  await page.locator('[data-index-tab="folders"]').click();
+  await page.waitForSelector("[data-folder-browser]");
   const treeRow = page.locator('[data-folder-browser] button[data-folder-path]').first();
   const rootPath = await treeRow.getAttribute("data-folder-path");
   const rootCount = await page.evaluate(async (path) => {
@@ -1621,10 +1636,10 @@ async function checkDistrictIndex(browser, base, profile) {
 // circles?"). The file card's "imported by N"/"imports M" line now doubles
 // as the legend for the map's own selection rings/lines -- colour-coded to
 // match (var(--link-in) dashed for imported-by, var(--link-out) solid for imports)
-// with a tiny line glyph per half. Checked on the file card (desktop panel /
-// phone sheet -- same markup, SelectionPanel's FileHead) and the fullscreen
-// summary bar (SelectionSummaryBar), both of which render the shared
-// LinkCountsLabel component.
+// with a tiny line glyph per half. docs/UX.md §4.5 made the two counts the
+// legend (a ring per count, the map's own strokes); checked on the file
+// card, which the phone sheet and the desktop/tablet inspector share (§5,
+// principle 10).
 async function checkLinkColourLegend(browser, base, profile) {
   const label = `link colour legend (django) / ${profile.name}`;
   console.log(`\n${label}`);
@@ -1651,11 +1666,12 @@ async function checkLinkColourLegend(browser, base, profile) {
 
   await page.goto(`${base}/django/django?file=${encodeURIComponent(file)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-selection-panel]");
-  if (profile.isMobile) {
+  {
     // docs/UX.md §4.5: "the two counts are the legend" -- a solid ring in
     // --link-out for Imports, a dashed ring in --link-in for Imported by,
-    // the same strokes the map draws for those directions.
-    await setSheetDetent(page, "half");
+    // the same strokes the map draws for those directions. The desktop
+    // inspector hosts the same card (§5, principle 10).
+    if (profile.isMobile) await setSheetDetent(page, "half");
     const counts = page.locator("[data-selection-panel] [data-link-counts]");
     await counts.waitFor();
     const info = await counts.evaluate((el) => {
@@ -1692,27 +1708,6 @@ async function checkLinkColourLegend(browser, base, profile) {
     await context.close();
     return;
   }
-  await page.waitForSelector("[data-selection-panel] [data-link-legend]");
-
-  const legend = page.locator("[data-selection-panel] [data-link-legend]").first();
-  const legendText = (await legend.innerText()).replace(/\s+/g, " ");
-  report(
-    /imported by \d+ files?/.test(legendText) && /imports \d+/.test(legendText),
-    `${label}: file card states imported-by and imports counts in plain words`,
-    legendText,
-  );
-  const glyphs = await legend.locator("svg line").evaluateAll((els) =>
-    els.map((el) => ({ dashed: !!el.getAttribute("stroke-dasharray"), stroke: el.getAttribute("stroke") })),
-  );
-  report(
-    glyphs.length === 2 && glyphs.some((g) => g.dashed) && glyphs.some((g) => !g.dashed),
-    `${label}: legend shows one dashed and one solid line glyph`,
-    JSON.stringify(glyphs),
-  );
-  const colours = await legend.evaluate((el) => [...el.querySelectorAll("span")].map((s) => getComputedStyle(s).color));
-  report(new Set(colours).size >= 2, `${label}: imported-by and imports halves use two different colours`, JSON.stringify(colours));
-
-  await context.close();
 }
 
 // Issue #82 "fit icon": the ZoomControls "fit" button is now an inline SVG
@@ -1995,9 +1990,10 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   const workflowDistrict = doc.N[workflowFile][0];
   const unconnected = doc.N.flatMap((row, i) => doc.districts[String(row[0])].class === "unconnected" ? [i] : []);
   report((await page.locator("[data-folder-label]").count()) === 0, `${label}: no folder labels at fit`);
-  // Desktop: the footer chip. Phone: docs/UX.md §4.2's map-quality row in
-  // the sheet's Peek summary (the floating chips are gone).
-  const chip = page.locator(profile.isMobile ? "[data-map-quality] [data-unconnected-count]" : "[data-unconnected-chip]");
+  // docs/UX.md §4.2 and §5: the map-quality row in the phone sheet's Peek
+  // summary, the map-quality strip at the desktop map's bottom-left (the
+  // floating chips are gone).
+  const chip = page.locator("[data-map-quality] [data-unconnected-count]");
   report((await chip.textContent())?.trim() === `${unconnected.length} unconnected files`, `${label}: chip counts files, not districts`);
   if (doc.coverage) {
     report(await page.locator('[data-coverage-detail]').count() === 0,
@@ -2016,6 +2012,10 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
     await page.waitForTimeout(380);
     report((await sheetDetent(page)) === "full" && (await page.locator('[data-sheet-card="quality"]').count()) === 1,
       `${label}: the map-quality row opens a Full sheet (§4.2)`);
+  } else {
+    await page.waitForTimeout(200);
+    report((await page.locator('[data-inspector] [data-sheet-card="quality"]').count()) === 1,
+      `${label}: the map-quality strip opens the Map quality card in the inspector (§5)`);
   }
   report((await page.locator("[data-unconnected-list] details").count()) > 0, `${label}: chip opens grouped folders`);
   if (doc.coverage) report((await page.locator('[data-coverage-detail]').innerText()).includes("py:") &&
@@ -2084,9 +2084,9 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
       `${label}: workflow folder label remains on ${layer} layer`);
     if (layer === "p" && !profile.isMobile) {
       const legend = await page.locator("[data-package-legend]").boundingBox();
-      const footerChip = await chip.boundingBox();
-      report(!!legend && !!footerChip && footerChip.x >= legend.x + legend.width,
-        `${label}: package legend leaves room for the unconnected chip`);
+      const strip = await page.locator("[data-quality-strip]").boundingBox();
+      report(!!legend && !!strip && legend.y + legend.height <= strip.y + 1,
+        `${label}: package legend sits above the map-quality strip, clear of it`, JSON.stringify({ legend, strip }));
     }
   }
   await setLayer(page, profile, "d");
@@ -2151,26 +2151,26 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
 // pan-only behaviour; these are all new checks instead.
 // ---------------------------------------------------------------------------
 
-/** Issue #82 A1 scope item 2: an empty map tap steps back one level at a
- * time -- symbol -> its file -> the file's district -> nothing -- instead
- * of clearing everything in one step. Drives it from a `?file=&sym=` deep
- * link on a file/symbol known to be in a normal (non-unconnected) district,
- * so the district level is actually reachable. */
+/** docs/UX.md §3.5 and §7.1 rule 5, now on desktop too (phase 5): a tap on
+ * empty map clears the selection in ONE step -- symbol, file and district
+ * together -- and the view stays. (Issue #82 A1 scope item 2 had made it
+ * step back one level at a time; phase 2 kept that on desktop only, its
+ * departure 6, until this phase aligned desktop with the spec. Stepping up
+ * a level is the breadcrumb's job, checkBreadcrumbNoMove.) Drives it from a
+ * `?file=&sym=` deep link on a file/symbol in a normal district, where the
+ * old rule would have taken three taps. */
 async function checkEmptyTapStepBack(browser, base) {
-  const label = "empty tap steps back one level at a time (django)";
+  const label = "empty tap clears the selection in one step (django, desktop)";
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
   const doc = await (await fetch(`${base}/maps/django/django.json`)).json();
   let fileIndex = null;
-  let districtId = null;
   for (let i = 0; i < doc.F.length; i++) {
     const syms = doc.S?.[String(i)];
     if (!syms || syms.length === 0) continue;
-    const d = doc.N[i][0];
-    if (doc.districts[String(d)].class === "unconnected") continue;
+    if (doc.districts[String(doc.N[i][0])].class === "unconnected") continue;
     fileIndex = i;
-    districtId = d;
     break;
   }
   if (fileIndex == null) {
@@ -2197,22 +2197,11 @@ async function checkEmptyTapStepBack(browser, base) {
   };
 
   await step((url, stepLabel) => report(
-    url.searchParams.get("file") === doc.F[fileIndex] && !url.searchParams.has("sym"),
+    !url.searchParams.has("file") && !url.searchParams.has("sym") && !url.searchParams.has("d"),
     `${label}: ${stepLabel}`,
     url.toString(),
-  ), "symbol -> file (drops the symbol, keeps the file)");
-
-  await step((url, stepLabel) => report(
-    !url.searchParams.has("file") && url.searchParams.get("d") === String(districtId),
-    `${label}: ${stepLabel}`,
-    url.toString(),
-  ), "file -> district (its own district)");
-
-  await step((url, stepLabel) => report(
-    !url.searchParams.has("file") && !url.searchParams.has("d"),
-    `${label}: ${stepLabel}`,
-    url.toString(),
-  ), "district -> nothing");
+  ), "symbol selected -> nothing, in one tap (no district or file left behind)");
+  report((await page.locator("[data-inspector]").count()) === 0, `${label}: the inspector closes with the selection`);
 
   // One more empty tap once nothing is selected: no-op, not an error --
   // matches the prototype's own `else return;` (arch20.body.html).
@@ -2284,16 +2273,16 @@ async function checkBreadcrumbNoMove(browser, base, profile) {
   report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after the district segment`);
 
   before = await stableBox(page);
-  // The phone's district card leads with "District" and its name instead
-  // of a breadcrumb (docs/UX.md §3.2's Peek), so there the repo segment's
-  // job -- clear everything -- is the card's close button (§3.5).
-  if (profile.isMobile) await page.locator('[data-selection-panel] button[aria-label="Clear selection"]').click();
-  else await buttons.nth(0).click(); // repo segment
+  // The district card leads with "District" and its name instead of a
+  // breadcrumb (docs/UX.md §3.2's Peek; the desktop inspector hosts the
+  // same card, §5), so the repo segment's job -- clear everything -- is the
+  // card's close button (§3.5).
+  await page.locator('[data-selection-panel] button[aria-label="Clear selection"]').click();
   await page.waitForTimeout(300);
   url = new URL(page.url());
   report(!url.searchParams.has("file") && !url.searchParams.has("d"),
-    `${label}: ${profile.isMobile ? "the district card's close button" : "repo segment"} clears the selection`, url.toString());
-  report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after ${profile.isMobile ? "closing the card" : "the repo segment"}`);
+    `${label}: the district card's close button clears the selection`, url.toString());
+  report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after closing the card`);
   await context.close();
 }
 
@@ -2432,15 +2421,20 @@ async function checkFileLabelTapSelects(browser, base) {
   await page.waitForTimeout(700);
   await zoomIn(page, 600, 400); // file labels only appear once zf > 1.5 (drawLabels)
 
-  const target = await page.evaluate(() => {
+  // docs/UX.md §5: the first tap selects the district and opens the
+  // inspector over the map's top-right corner, so the label tapped twice is
+  // one the inspector will not cover (INSPECTOR_ZONE_PX).
+  const target = await page.evaluate((avoidRight) => {
+    const svg = document.querySelector("svg.map-svg").getBoundingClientRect();
     const els = [...document.querySelectorAll("svg.map-svg text[data-file-label]")];
     for (const el of els) {
       const r = el.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
+      if (r.right > svg.right - avoidRight) continue;
       return { x: r.x + r.width / 2, y: r.y + r.height / 2, index: Number(el.getAttribute("data-file-label")) };
     }
     return null;
-  });
+  }, INSPECTOR_ZONE_PX);
   if (!target) {
     report(false, `${label}: setup`, "no file label found after zooming in");
     await context.close();
@@ -4042,6 +4036,12 @@ async function checkOutlineHoverHighlightsCard(browser, base) {
     await page.waitForTimeout(30);
   }
   await page.waitForTimeout(650); // glide()/settle
+  // docs/UX.md §5: the inspector shows the file card's Half content (key
+  // symbols); the whole outline tree is behind "All N", as on the phone.
+  await page.waitForSelector("[data-all-symbols], [data-outline-tree]", { timeout: 15_000 }).catch(() => null);
+  if (!(await page.locator("[data-outline-tree]").count()) && (await page.locator("[data-all-symbols]").count())) {
+    await page.locator("[data-all-symbols]").first().click();
+  }
   await page.waitForSelector("[data-outline-tree]", { timeout: 15_000 }).catch(() => null);
   const drawnGlobals = await page.evaluate(() =>
     [...document.querySelectorAll('svg.map-svg [data-k^="hs:"]')].map((el) => el.getAttribute("data-k").slice(3)),
@@ -4196,7 +4196,7 @@ async function checkSymbolCardsSingleSubpath(browser, base) {
 
 // 9(g): step-back goes symbol -> parent symbol -> file -> district -> none.
 async function checkStepBackThroughSymbolLevels(browser, base) {
-  const label = "step-back walks symbol -> parent symbol -> file -> district -> none (dify)";
+  const label = "an empty tap clears a nested symbol selection in one step (dify, desktop)";
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
@@ -4213,7 +4213,6 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
     return;
   }
   const path = mapDoc.F[target.file];
-  const districtId = String(mapDoc.N[target.file][0]);
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}&hsym=${target.childGlobal}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
@@ -4229,30 +4228,22 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
     assertFn(new URL(page.url()), stepLabel);
   };
 
+  // docs/UX.md §3.5 / §7.1 rule 5 (phase 5 applies it on desktop): the
+  // method, its class, its file and its district all go in one tap.
   await step((url, stepLabel) => report(
-    Number(url.searchParams.get("hsym")) === target.classGlobal && url.searchParams.get("file") === path,
+    !url.searchParams.has("hsym") && !url.searchParams.has("file") && !url.searchParams.has("d"),
     `${label}: ${stepLabel}`,
     url.toString(),
-  ), "method -> its class (parent symbol)");
-
-  await step((url, stepLabel) => report(
-    !url.searchParams.has("hsym") && url.searchParams.get("file") === path,
-    `${label}: ${stepLabel}`,
-    url.toString(),
-  ), "class -> file (drops hsym, keeps the file)");
-
-  await step((url, stepLabel) => report(
-    !url.searchParams.has("file") && url.searchParams.get("d") === districtId,
-    `${label}: ${stepLabel}`,
-    url.toString(),
-  ), "file -> its district");
-
-  await step((url, stepLabel) => report(
-    !url.searchParams.has("file") && !url.searchParams.has("d"),
-    `${label}: ${stepLabel}`,
-    url.toString(),
-  ), "district -> nothing");
-
+  ), "method -> nothing, in one tap");
+  // The breadcrumb still walks up a level at a time without moving the view.
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}&hsym=${target.childGlobal}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-breadcrumb]");
+  await page.waitForTimeout(700);
+  const exact = new RegExp(`^${String(target.className).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  await page.locator("[data-breadcrumb] button", { hasText: exact }).first().click({ timeout: 5000 }).catch(() => null);
+  await page.waitForTimeout(300);
+  report(Number(new URL(page.url()).searchParams.get("hsym")) === target.classGlobal && new URL(page.url()).searchParams.get("file") === path,
+    `${label}: the breadcrumb's class segment steps up to the parent symbol`, page.url());
   await context.close();
 }
 
@@ -4557,44 +4548,18 @@ async function checkLinkLegendWrapsAtHighDegree(browser, base, profile) {
 
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(doc.F[bestFile])}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-selection-panel]");
-  if (profile.isMobile) {
-    // docs/UX.md §4.5: the phone's two counts are side by side, each a
-    // label over a number; the full count must show, unclipped.
-    await setSheetDetent(page, "half");
-    const cell = page.locator('[data-link-count="in"]');
-    await cell.waitFor();
-    const shape = await cell.evaluate((el) => ({
-      text: (el.textContent ?? "").replace(/\s+/g, " "),
-      clipped: [...el.querySelectorAll("span")].some((s) => s.scrollWidth > s.clientWidth + 1),
-    }));
-    report(shape.text.includes(bestDeg.toLocaleString("en-US")) && !shape.text.includes("…"), `${label}: full three-digit imported-by count is visible, not ellipsised`, JSON.stringify(shape));
-    report(!shape.clipped, `${label}: the count's text is not clipped`, JSON.stringify(shape));
-    await context.close();
-    return;
-  }
-  await page.waitForSelector("[data-selection-panel] [data-link-legend]");
-
-  const legend = page.locator("[data-selection-panel] [data-link-legend]").first();
-  const shape = await legend.evaluate((el) => {
-    const lines = [...el.children].map((child) => child.getBoundingClientRect());
-    return {
-      lineCount: lines.length,
-      // Two lines never share a vertical centre -- a real second row, not
-      // wrapped-but-overlapping inline content.
-      stacked: lines.length === 2 && Math.abs(lines[0].top - lines[1].top) > 2,
-      clipped: [...el.querySelectorAll("span")].some((s) => s.scrollWidth > s.clientWidth + 1),
-    };
-  });
-  report(shape.stacked, `${label}: imported-by and imports render on two separate lines`, JSON.stringify(shape));
-  report(!shape.clipped, `${label}: neither line's text is clipped`, JSON.stringify(shape));
-
-  const legendText = (await legend.innerText()).replace(/\s+/g, " ");
-  report(
-    new RegExp(`imported by ${bestDeg} files?`).test(legendText) && !legendText.includes("…"),
-    `${label}: full three-digit imported-by count is visible, not ellipsised`,
-    legendText,
-  );
-
+  // docs/UX.md §4.5: the two counts are side by side, each a label over a
+  // number; the full count must show, unclipped -- in the phone sheet and in
+  // the desktop inspector, which hosts the same card (§5).
+  if (profile.isMobile) await setSheetDetent(page, "half");
+  const cell = page.locator('[data-link-count="in"]');
+  await cell.waitFor();
+  const shape = await cell.evaluate((el) => ({
+    text: (el.textContent ?? "").replace(/\s+/g, " "),
+    clipped: [...el.querySelectorAll("span")].some((s) => s.scrollWidth > s.clientWidth + 1),
+  }));
+  report(shape.text.includes(bestDeg.toLocaleString("en-US")) && !shape.text.includes("…"), `${label}: full three-digit imported-by count is visible, not ellipsised`, JSON.stringify(shape));
+  report(!shape.clipped, `${label}: the count's text is not clipped`, JSON.stringify(shape));
   await context.close();
 }
 
@@ -5707,8 +5672,9 @@ async function checkSearch(browser, base, profile) {
     await input.click();
     await type("types");
     report((await page.locator("[data-search-dropdown]").count()) === 1, `${label}: typing opens the dropdown`);
-    const bar = await page.locator('select[aria-label="Repository"]').boundingBox();
-    await page.mouse.click(bar.x + bar.width + 40, bar.y + bar.height / 2);
+    // The wordmark: top-bar chrome outside the search box (docs/UX.md §5
+    // moved search into the top bar, beside the repository select).
+    await page.locator("[data-wordmark]").click();
     await page.waitForTimeout(150);
     report((await page.locator("[data-search-dropdown]").count()) === 0, `${label}: a click outside closes the dropdown`);
 
@@ -5733,6 +5699,265 @@ async function checkSearch(browser, base, profile) {
   }
   await context.close();
 }
+
+// ---------------------------------------------------------------------------
+// docs/UX.md phase 5: landscape, tablet and desktop (§5, §9). The pure
+// parts -- the profile table, the safe rectangles with every safe-area
+// inset, the repository select's counts (issue #171) -- are unit-tested in
+// check-layout-profile.ts; these drive the real page at each profile's
+// sizes: the layout the page chose and its chrome, the fit, and CLAUDE.md's
+// acceptance bar (districts named, landmarks listed, tapping or clicking a
+// district, a file and a symbol each produces a card) on every profile.
+// ---------------------------------------------------------------------------
+
+const LAYOUT_PROFILES = [
+  { name: "landscape-667x375", expect: "landscape", viewport: { width: 667, height: 375 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+  { name: "landscape-844x390", expect: "landscape", viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+  { name: "tablet-768x1024", expect: "tablet", viewport: { width: 768, height: 1024 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+  { name: "tablet-1024x768", expect: "tablet", viewport: { width: 1024, height: 768 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+  { name: "desktop-1440x900", expect: "desktop", viewport: { width: 1440, height: 900 }, isMobile: false, hasTouch: false },
+];
+
+/** A file that hit-tests to itself, with symbols, on the visible map. */
+async function pickFileTarget(page, doc) {
+  return page.evaluate((doc) => {
+    const els = [...document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')];
+    const withSymbols = els.filter((el) => doc.S?.[el.getAttribute("data-k").slice(2)]?.length);
+    for (const el of [...withSymbols, ...els]) {
+      const index = Number(el.getAttribute("data-k").slice(2));
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) continue;
+      if (document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k") !== `f:${index}`) continue;
+      return { x, y, index, file: doc.F[index] };
+    }
+    return null;
+  }, doc);
+}
+
+async function checkProfileLayout(browser, base, profile) {
+  const label = `layout and acceptance bar (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  const { width: vw, height: vh } = profile.viewport;
+  const doc = await (await context.request.get(`${base}/maps/django/django.json`)).json();
+  await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(800);
+
+  const got = await layoutProfileOf(page);
+  report(got === profile.expect, `${label}: the page chose the ${profile.expect} layout (§9)`, String(got));
+  report(fitsWithinRect(await districtUnionBox(page), await mapFrameRect(page)), `${label}: the opening fit lies within the safe rect`);
+  const heights = (sel) => page.locator(sel).evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().height)));
+
+  if (profile.expect === "landscape") {
+    const sheet = await page.locator("[data-side-sheet]").boundingBox();
+    const pill = await page.locator("[data-search-pill]").boundingBox();
+    const column = await page.locator("[data-control-column]").boundingBox();
+    report(!!sheet && Math.abs(sheet.x) <= 1 && Math.abs(sheet.width - 360) <= 1 && Math.abs(sheet.height - vh) <= 1,
+      `${label}: the sheet is a 360 px side sheet on the left, full height`, JSON.stringify(sheet));
+    report(!!pill && !!sheet && pill.x >= sheet.x + sheet.width && pill.x + pill.width <= vw && pill.height === 48,
+      `${label}: the search pill sits over the map beside the sheet, as in portrait`, JSON.stringify(pill));
+    report(!!column && column.x + column.width <= vw - 11 && column.y + column.height <= vh && (await page.locator("[data-side-toggle]").count()) === 1,
+      `${label}: the control column is on screen, with the side-sheet toggle`, JSON.stringify(column));
+    const ctl = await heights("[data-control-column] button");
+    report(ctl.length === 5 && ctl.every((h) => h >= 44), `${label}: control buttons are 44 px`, JSON.stringify(ctl));
+    report((await page.locator('[data-top-bar], aside, button[aria-label="Enter fullscreen"]').count()) === 0,
+      `${label}: never the desktop layout below 500 px of height (no top bar, rail or fullscreen button)`);
+    const safe = await mapFrameRect(page, "safe");
+    report(!!sheet && safe[0] >= sheet.x + sheet.width, `${label}: the map's safe rect is the rest of the screen, right of the sheet`, JSON.stringify(safe));
+    await page.locator("[data-side-toggle]").click();
+    await page.waitForTimeout(450);
+    const shut = await page.locator("[data-side-sheet]").evaluate((el) => el.getBoundingClientRect().right);
+    const safeShut = await mapFrameRect(page, "safe");
+    report(shut <= 1 && safeShut[0] < 60, `${label}: the toggle collapses the side sheet and the map takes its width`, JSON.stringify({ shut, safeShut }));
+    await page.locator("[data-side-toggle]").click();
+    await page.waitForTimeout(450);
+  } else {
+    const bar = await page.locator("[data-top-bar]").boundingBox();
+    report(!!bar && Math.abs(bar.height - 56) <= 1 && Math.abs(bar.width - vw) <= 1, `${label}: a 56 px top bar (§5)`, JSON.stringify(bar));
+    report((await page.locator("[data-top-bar] input[data-search-input]").count()) === 1, `${label}: search is in the top bar`);
+    if (profile.expect === "tablet") {
+      const railOpen = (await page.locator("aside[data-rail]").count()) === 1;
+      report(railOpen === vw >= 900, `${label}: the rail starts ${vw >= 900 ? "open" : "collapsed"} and is collapsible from the top bar (§9)`, `open=${railOpen}`);
+      const targets = await page.evaluate(() => [
+        ...document.querySelectorAll("[data-rail-toggle], [data-map-controls] button, [data-theme-toggle], [data-layer-segmented] button, [data-repo-switcher], [data-top-bar] [data-search-box] label"),
+      ].map((el) => ({ what: el.getAttribute("aria-label") ?? el.textContent?.trim().slice(0, 12), h: Math.round(el.getBoundingClientRect().height), w: Math.round(el.getBoundingClientRect().width) })));
+      report(targets.length >= 10 && targets.every((t) => t.h >= 44), `${label}: touch targets are 44 px (§9: tablets are touch)`, JSON.stringify(targets.filter((t) => t.h < 44)));
+      const fits = await page.evaluate(() => [...document.querySelectorAll("[data-top-bar] > *")].every((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width === 0 || (r.left >= 0 && r.right <= innerWidth + 0.5);
+      }));
+      report(fits, `${label}: everything in the top bar fits across the screen`);
+    } else {
+      const rail = await page.locator("aside[data-rail]").boundingBox();
+      const searchBox = await page.locator("[data-top-bar] [data-search-box]").boundingBox();
+      const zoom = await page.locator('button[aria-label="Zoom in"]').boundingBox();
+      report(!!rail && Math.abs(rail.width - 320) <= 1, `${label}: a 320 px rail`, JSON.stringify(rail));
+      report(!!searchBox && Math.abs(searchBox.width - 460) <= 1, `${label}: search is 460 px`, JSON.stringify(searchBox));
+      report(!!zoom && Math.abs(zoom.height - 40) <= 1, `${label}: 40 px controls`, JSON.stringify(zoom));
+      report((await page.locator("[data-rail] [role=tab]").count()) === 2, `${label}: the rail has Districts / Folders tabs`);
+    }
+  }
+
+  // CLAUDE.md's acceptance bar on this profile. Districts named and
+  // landmarks listed: the district index (the landscape side sheet's
+  // overview; the rail, opened for the check on a portrait tablet).
+  const toggle = page.locator("[data-rail-toggle]");
+  const openedRail = profile.expect === "tablet" && (await page.locator("aside[data-rail]").count()) === 0;
+  if (openedRail) {
+    await toggle.click();
+    await page.waitForTimeout(400);
+  }
+  const indexText = (await page.locator("[data-district-index]").first().innerText().catch(() => "")) ?? "";
+  const biggest = Object.keys(doc.districts).filter((d) => doc.districts[d].class !== "island" && doc.districts[d].class !== "unconnected")
+    .sort((a, b) => doc.districts[b].size - doc.districts[a].size)[0];
+  const keyFiles = await page.locator("[data-district-index-key-file]").count();
+  report(indexText.includes(doc.names[biggest]) && keyFiles > 0, `${label}: districts are named and landmarks listed (key files)`, `keyFiles=${keyFiles}`);
+  if (openedRail) {
+    await toggle.click();
+    await page.waitForTimeout(400);
+  }
+
+  const dpt = await pickDistrictPoint(page, profile.hasTouch);
+  if (!dpt) {
+    report(false, `${label}: tapping a district produces its card`, "no unobstructed district label");
+  } else {
+    await tap(page, profile, dpt.x, dpt.y);
+    report(new URL(page.url()).searchParams.get("d") === dpt.key.split(":")[1] && (await page.locator('[data-selection-panel] [data-sheet-card="district"]').count()) === 1,
+      `${label}: tapping a district produces its card`, page.url());
+  }
+  const ft = await pickFileTarget(page, doc);
+  if (!ft) {
+    report(false, `${label}: tapping a file produces its card`, "no unobstructed file on the map");
+  } else {
+    await tap(page, profile, ft.x, ft.y);
+    // Issue #82 C2's two-step tap: the first tap may select its district.
+    if (new URL(page.url()).searchParams.get("file") !== ft.file) {
+      const again = await page.evaluate((k) => {
+        const el = document.querySelector(`svg.map-svg .hit[data-k="${k}"]`);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        return document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k") === k ? { x, y } : null;
+      }, `f:${ft.index}`);
+      if (again) await tap(page, profile, again.x, again.y);
+    }
+    report(new URL(page.url()).searchParams.get("file") === ft.file && (await page.locator('[data-selection-panel] [data-sheet-card="file"]').count()) === 1,
+      `${label}: tapping a file produces its card`, `expected=${ft.file} url=${page.url()}`);
+    if (profile.expect === "desktop") {
+      const insp = await page.locator("[data-inspector]").boundingBox();
+      const area = await page.locator("[data-map-area]").boundingBox();
+      report(!!insp && !!area && Math.abs(insp.width - 380) <= 1 && Math.abs(area.x + area.width - 20 - (insp.x + insp.width)) <= 1 && Math.abs(insp.y - area.y - 20) <= 1,
+        `${label}: the inspector is 380 px, top-right with 20 px insets (§5)`, JSON.stringify({ insp, area }));
+      const safe = await mapFrameRect(page, "safe");
+      report(!!insp && !!area && area.x + safe[2] <= insp.x, `${label}: the safe rect excludes the open inspector`, JSON.stringify(safe));
+    }
+    if (profile.expect === "tablet") {
+      const insp = await page.locator("[data-inspector]").boundingBox();
+      report(!!insp && Math.abs(insp.width - 360) <= 1, `${label}: the inspector is a 360 px panel (§9)`, JSON.stringify(insp));
+    }
+    await page.waitForSelector("button[data-outline-row]", { timeout: 15_000 }).catch(() => null);
+    const row = page.locator("button[data-outline-row]").first();
+    if (await row.count()) {
+      const global = await row.getAttribute("data-outline-row");
+      if (profile.hasTouch) await row.tap();
+      else await row.click();
+      await page.waitForTimeout(400);
+      report(new URL(page.url()).searchParams.get("hsym") === global && (await page.locator('[data-selection-panel] [data-sheet-card="symbol"]').count()) === 1,
+        `${label}: tapping a symbol produces its card`, page.url());
+    } else {
+      report(false, `${label}: tapping a symbol produces its card`, "the file card lists no symbol");
+    }
+  }
+  if (profile.expect !== "landscape") {
+    // §5: Esc closes the inspector (and the selection with it).
+    await page.locator("[data-wordmark], [data-rail-toggle]").first().focus().catch(() => null);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
+    const url = new URL(page.url());
+    report((await page.locator("[data-inspector]").count()) === 0 && !url.searchParams.has("file") && !url.searchParams.has("hsym"),
+      `${label}: Esc closes the inspector`, page.url());
+  }
+  await context.close();
+}
+
+/** Issue #171: the desktop repository select counts the files of the map
+ * on screen -- dify is served from check-fixtures/ and so is never in
+ * /maps/index.json here, which is exactly the case that printed
+ * "langgenius/dify · 0 files". */
+async function checkRepoSelectCounts(browser, base) {
+  const label = "repository select file counts (issue #171) / desktop";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(500);
+  const options = await page.locator('select[aria-label="Repository"] option').evaluateAll((els) => els.map((o) => ({ value: o.value, text: o.textContent, selected: o.selected })));
+  const current = options.find((o) => o.selected);
+  report(current?.text === `langgenius/dify · ${doc.F.length.toLocaleString("en-US")} files`, `${label}: the current map's option counts its ${doc.F.length} files`, JSON.stringify(current));
+  report(options.length > 1 && options.every((o) => !/ 0 files$/.test(o.text ?? "")), `${label}: no option says "0 files"`, JSON.stringify(options));
+  await context.close();
+}
+
+/** §9: the CSS fullscreen fallback, with the Fullscreen API stubbed out
+ * (iPad Safari has no element requestFullscreen). The map covers the whole
+ * screen, the top bar and rail go, search floats in the map's corner below
+ * the top inset (CI has no notch, so the inset itself is the unit check's;
+ * this checks the chrome is there and works), and Esc leaves it. */
+async function checkFullscreenFallback(browser, base, profile) {
+  const label = `CSS fullscreen fallback (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(Element.prototype, "requestFullscreen", { value: undefined, configurable: true, writable: true });
+  });
+  const page = await context.newPage();
+  const { width: vw, height: vh } = profile.viewport;
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(600);
+  report(await page.evaluate(() => typeof document.documentElement.requestFullscreen === "undefined"), `${label}: requestFullscreen is stubbed out`);
+  await page.locator('button[aria-label="Enter fullscreen"]').click();
+  await page.waitForTimeout(500);
+  const area = await page.locator("[data-map-area]").boundingBox();
+  report(!!area && area.x === 0 && area.y === 0 && Math.abs(area.width - vw) <= 1 && Math.abs(area.height - vh) <= 1,
+    `${label}: the map covers the whole screen`, JSON.stringify(area));
+  report((await page.locator("[data-top-bar], aside[data-rail]").count()) === 0 && (await page.locator('button[aria-label="Exit fullscreen"]').count()) === 1,
+    `${label}: the top bar and rail are gone; the controls offer an exit`);
+  const box = await page.locator("[data-fullscreen-search]").boundingBox();
+  report(!!box && box.y >= 20 - 1 && box.x >= 20 - 1 && box.x + box.width <= vw, `${label}: search floats in the map's top-left corner, below the top inset`, JSON.stringify(box));
+  const insets = await page.locator("[data-fit-insets]").getAttribute("data-fit-insets");
+  report(Number(insets.split(",")[1]) >= 20 + 44 + 12, `${label}: the fit rect starts below the floating search`, insets);
+  await page.locator("[data-fullscreen-search] input[data-search-input]").fill("workflow");
+  await page.waitForTimeout(250);
+  const covered = await resultsUncovered(page);
+  report(covered.tested > 0 && covered.covered.length === 0, `${label}: its results drop down, uncovered`, JSON.stringify({ tested: covered.tested, covered: covered.covered.slice(0, 3) }));
+  await page.locator("[data-fullscreen-search] input[data-search-input]").press("Escape");
+  await page.locator('button[aria-label="Exit fullscreen"]').focus();
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  report((await page.locator("[data-top-bar]").count()) === 1 && (await page.locator('button[aria-label="Enter fullscreen"]').count()) === 1,
+    `${label}: Esc leaves the fallback`);
+  await context.close();
+}
+
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -5813,6 +6038,12 @@ async function main() {
     // docs/UX.md phase 3: search on both profiles, and the narrowest phone.
     for (const profile of PROFILES) await checkSearch(browser, args.base, profile);
     await checkSearch(browser, args.base, PHONE_SIZES.find((p) => p.name === "phone-320"));
+    // docs/UX.md phase 5: landscape, tablet and desktop (§5, §9), issue
+    // #171, and the CSS fullscreen fallback.
+    for (const profile of LAYOUT_PROFILES) await checkProfileLayout(browser, args.base, profile);
+    await checkRepoSelectCounts(browser, args.base);
+    await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.expect === "desktop"));
+    await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.name === "tablet-1024x768"));
     // docs/UX.md phase 6: Home (§4.9) -- loaded, empty, service-unavailable
     // with a retry, and input validation.
     await checkHomeLoaded(browser, args.base);

@@ -1,14 +1,9 @@
-import { useMemo, useState, type ReactNode } from "react";
-import type { DistrictSymbols, MapDocument, SymbolRow } from "@/types";
-import { CH, CODE_LINES, CX_, D_, FI, LOC, districtClass, districtColor, symbolsOf } from "@/map/geometry";
-import { neighbourhoodOf } from "@/map/neighbourhoods";
-import { KCOL, KIND, LINK_PREVIEW_MAX } from "@/map/constants";
-import { computeBlast, type AdjMap } from "@/map/graph";
+import { useMemo, useState } from "react";
+import type { MapDocument, SymbolRow } from "@/types";
+import { D_, FI, LOC, districtColor } from "@/map/geometry";
+import { KCOL } from "@/map/constants";
+import type { computeBlast } from "@/map/graph";
 import {
-  countOutlineSymbols,
-  decodeDistrictSymbols,
-  externalReferences,
-  fileOutline,
   isBoldKind,
   KIND_CLASS,
   KIND_INTERFACE,
@@ -22,43 +17,21 @@ import {
   type HierarchyRelation,
   type OutlineRow,
 } from "@/map/symbolCards";
-import { useIsNarrow } from "@/hooks/useIsNarrow";
-import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Breadcrumb } from "@/components/Breadcrumb";
 import type { DirectoryNode, DistrictPathRow, PackageLayout } from "@/map/packageLayout";
 import { formatDirectory } from "@/map/packageLayout";
 import { Input } from "@/components/ui/input";
-import { LinkCountsLabel } from "@/components/LinkLegend";
-import { WHY_COLOR, compactCount } from "@/lib/cardText";
 
+// The detail blocks of the district, file and symbol cards (docs/UX.md
+// principle 10, "one component, two containers"): the phone sheet and the
+// desktop/tablet inspector both render the cards in phone/SheetCards.tsx,
+// which compose these. The old desktop-only SelectionPanel card that used to
+// live here (a 260 px corner card with its own header and body per
+// selection) is gone with docs/UX.md phase 5; the inspector hosts the same
+// cards as the phone sheet's Half content instead.
+
+/** The callbacks the blocks below share. */
 interface Props {
-  doc: MapDocument;
-  sel: number | null;
-  selSym: number | null;
-  selD: number | null;
-  /** Issue #82 C2: the GLOBAL hierarchical-symbol index (search.ts's `hsym`)
-   * and the selected file's district symbols document (undecoded -- this
-   * component and Breadcrumb each decode their own copy for their own
-   * purpose). `symbolsDoc` is `undefined` while unfetched or for a map with
-   * no symbols sibling at all -- every reader below degrades to what it
-   * showed before this feature. */
-  selHSym?: number | null;
-  symbolsDoc?: DistrictSymbols;
-  /** Issue #82 C2 follow-up: true while `symbolsDoc` for the selected
-   * file's district is being fetched (or is about to be) -- lets the file
-   * card show "loading symbols…" instead of flashing the old flat list
-   * before the outline tree is ready. `undefined`/`false` otherwise,
-   * including when nothing is selected or the map has no symbols sibling
-   * at all. */
-  symbolsLoading?: boolean;
-  adj: AdjMap;
-  radj: AdjMap;
-  packageLayout: PackageLayout;
-  activeDirectory?: string;
-  showUnconnected: boolean;
-  open: boolean;
-  onToggleOpen(): void;
   onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
   /** A card tap or an outline-tree row click -- selects the symbol and pans
@@ -68,159 +41,7 @@ interface Props {
    * `null` on mouse-leave. */
   onHoverHierSymbol?(global: number | null): void;
   onSelectDistrict(d: number): void;
-  onZoomDistrict(d: number): void;
-  onRouteFrom(i: number): void;
-  onRouteTo(i: number): void;
   onSelectDirectory(path?: string): void;
-  /** Breadcrumb-only (issue #82 A1 scope item 3): jump straight to "nothing
-   * selected", and drop the symbol while keeping the same file, respectively
-   * -- both guaranteed not to move the view, unlike onSelectFile/
-   * onSelectDistrict above whose OTHER callers (sidebar, search) may pan.
-   * The district segment reuses onSelectDistrict directly, since that one's
-   * already pan-free for every caller in this file. */
-  onBreadcrumbRepo(): void;
-  onBreadcrumbFile(i: number): void;
-}
-
-/** District, file and symbol cards — one component, three bodies, because
- * the reference's #panel is a single DOM node whose innerHTML is one of
- * three shapes depending on what's selected (selD / sel+selSym / sel alone).
- * On a phone it opens as a single line (.phead) and expands only when
- * tapped; anything more covers the map before the reader has touched it. */
-export function SelectionPanel({
-  doc,
-  sel,
-  selSym,
-  selD,
-  selHSym,
-  symbolsDoc,
-  symbolsLoading,
-  adj,
-  radj,
-  packageLayout,
-  activeDirectory,
-  showUnconnected,
-  open,
-  onToggleOpen,
-  onSelectFile,
-  onSelectSymbol,
-  onSelectHierSymbol,
-  onHoverHierSymbol,
-  onSelectDistrict,
-  onZoomDistrict,
-  onRouteFrom,
-  onRouteTo,
-  onSelectDirectory,
-  onBreadcrumbRepo,
-  onBreadcrumbFile,
-}: Props) {
-  const narrow = useIsNarrow();
-  const unconnectedTotal = packageLayout.unconnectedFiles.length;
-  const [foldersExpanded, setFoldersExpanded] = useState(false);
-  const [filesExpanded, setFilesExpanded] = useState(false);
-
-  const isOpen = narrow ? open : true;
-
-  return (
-    <Card
-      data-selection-panel
-      className={`absolute z-10 border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-lg max-[820px]:flex max-[820px]:flex-col max-[820px]:inset-x-2.5 max-[820px]:bottom-[calc(58px+env(safe-area-inset-bottom,0px))] max-[820px]:top-auto max-[820px]:w-auto max-[820px]:overflow-hidden max-[820px]:p-0 min-[821px]:right-2.5 min-[821px]:top-2.5 min-[821px]:w-[260px] min-[821px]:p-3`}
-      style={narrow ? { maxHeight: isOpen ? "58vh" : "46px" } : undefined}
-    >
-      <div
-        onClick={narrow ? onToggleOpen : undefined}
-        // py-1.5 (was py-2.5): the collapsed phone sheet is 46 px tall, and
-        // at the docs/UX.md §8.1 sizes a 13 px breadcrumb line plus a 14 px
-        // title line only fit it with the smaller padding.
-        className={narrow ? "grid shrink-0 cursor-pointer grid-cols-[1fr_auto] items-center gap-2.5 px-3.5 py-1.5" : ""}
-      >
-        <div className="overflow-hidden">
-          {!showUnconnected && (
-            <Breadcrumb
-              doc={doc}
-              sel={sel}
-              selSym={selSym}
-              selD={selD}
-              selHSym={selHSym}
-              symbolsDoc={symbolsDoc}
-              onSelectRepo={onBreadcrumbRepo}
-              onSelectDistrict={onSelectDistrict}
-              onSelectFile={onBreadcrumbFile}
-              onSelectHierSymbol={onSelectHierSymbol}
-            />
-          )}
-          {showUnconnected ? (
-            <><h3 className="text-small font-semibold min-[821px]:text-row">Unconnected files</h3>
-              {doc.coverage && <p className="text-meta text-[var(--dim)]" data-coverage-detail>
-                {/* Two different counts: the list is files in unconnected
-                    districts (not placed on the map); coverage counts every
-                    file with no kept edge, including ones merge_tiny placed
-                    into a district by folder (#46). Say which is which. */}
-                {unconnectedTotal.toLocaleString("en-US")} not placed on the map. {doc.coverage.zero_edge_files.toLocaleString("en-US")} files have no detected link in all ({Object.entries(doc.coverage.by_language).map(([lang, row]) =>
-                  `${lang}: ${row.zero_edge_files.toLocaleString("en-US")}/${row.total_files.toLocaleString("en-US")}`).join(" · ")}); the rest sit in districts by folder.
-              </p>}
-            </>
-          ) : selD == null && sel == null ? (
-            <FolderHead layout={packageLayout} activeDirectory={activeDirectory} />
-          ) : selD != null ? (
-            <DistrictHead doc={doc} d={selD} onZoomDistrict={onZoomDistrict} />
-          ) : (
-            <FileHead doc={doc} i={sel!} selSym={selSym} selHSym={selHSym} symbolsDoc={symbolsDoc} adj={adj} radj={radj} />
-          )}
-        </div>
-        {narrow && (
-          <span className={`text-meta text-[var(--dim)] transition-transform ${isOpen ? "rotate-180" : ""}`}>⌄</span>
-        )}
-      </div>
-      {(!narrow || isOpen) && (
-        // On a phone the card is a flex column capped at 58vh and this body
-        // takes whatever the header leaves (was a fixed 44vh): the header
-        // grew with the §8.1 type, and header + a fixed-height body
-        // overflowed the card, clipping the route buttons instead of
-        // scrolling to them.
-        <div className={narrow ? "min-h-0 flex-1 overflow-y-auto px-3.5 pb-3" : ""}>
-          {showUnconnected ? (
-            <UnconnectedList layout={packageLayout} doc={doc} onSelectFile={onSelectFile} />
-          ) : selD == null && sel == null ? (
-            <FolderBody
-              layout={packageLayout}
-              activeDirectory={activeDirectory}
-              onSelectDirectory={onSelectDirectory}
-            />
-          ) : selD != null ? (
-            <DistrictBody
-              doc={doc}
-              d={selD}
-              paths={packageLayout.districtPaths.get(selD) ?? []}
-              onSelectFile={onSelectFile}
-              onSelectDistrict={onSelectDistrict}
-              onSelectDirectory={onSelectDirectory}
-              foldersExpanded={foldersExpanded}
-              filesExpanded={filesExpanded}
-              onToggleFolders={() => setFoldersExpanded((value) => !value)}
-              onToggleFiles={() => setFilesExpanded((value) => !value)}
-            />
-          ) : (
-            <FileBody
-              doc={doc}
-              i={sel!}
-              selSym={selSym}
-              selHSym={selHSym}
-              symbolsDoc={symbolsDoc}
-              symbolsLoading={symbolsLoading}
-              adj={adj}
-              radj={radj}
-              onSelectSymbol={onSelectSymbol}
-              onSelectHierSymbol={onSelectHierSymbol}
-              onHoverHierSymbol={onHoverHierSymbol}
-              onRouteFrom={onRouteFrom}
-              onRouteTo={onRouteTo}
-            />
-          )}
-        </div>
-      )}
-    </Card>
-  );
 }
 
 /** `nested={false}` (the phone sheet, docs/UX.md §3.1): no scroller of its
@@ -235,17 +56,6 @@ export function UnconnectedList({ layout, doc, onSelectFile, nested = true }: { 
         onClick={() => onSelectFile(i)}>{doc.F[i].split("/").pop()}</button>)}
     </details>)}
   </div>;
-}
-
-function FolderHead({ layout, activeDirectory }: { layout: PackageLayout; activeDirectory?: string }) {
-  return (
-    <>
-      <h3 className="truncate text-small font-semibold min-[821px]:text-row">Folders</h3>
-      <p className="mt-0.5 truncate text-meta text-[var(--dim)]">
-        {activeDirectory ? formatDirectory(activeDirectory) : `${layout.directories.length} directories`}
-      </p>
-    </>
-  );
 }
 
 /** `nested={false}`: the phone sheet's Folders tab -- no inner scroller
@@ -340,7 +150,7 @@ function FolderPickRow({
       data-folder-path={directory.path}
       onClick={() => onPick(directory.path)}
       aria-pressed={active}
-      className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-2 border-t border-[var(--rule)] px-1 py-1 text-left font-mono text-meta first:border-t-0 max-[820px]:min-h-[44px] ${active ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
+      className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-2 border-t border-[var(--rule)] px-1 py-1 text-left font-mono text-meta first:border-t-0 touch:min-h-[44px] ${active ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
     >
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">{formatDirectory(directory.path)}</span>
       <span className="text-[var(--dim)]">{repositoryShare(directory.count, totalFiles)}</span>
@@ -372,7 +182,7 @@ function FolderTreeRow({
             type="button"
             aria-label={`${expanded ? "Collapse" : "Expand"} ${directory.path}`}
             onClick={() => setExpanded((value) => !value)}
-            className="h-6 text-meta text-[var(--dim)] max-[820px]:h-11"
+            className="h-6 text-meta text-[var(--dim)] touch:h-11"
           >
             <span className={`inline-block transition-transform ${expanded ? "rotate-90" : ""}`}>›</span>
           </button>
@@ -384,7 +194,7 @@ function FolderTreeRow({
           data-folder-path={directory.path}
           aria-pressed={activeDirectory === directory.path}
           onClick={() => onPick(directory.path)}
-          className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap py-1 text-left font-mono text-meta max-[820px]:min-h-[44px] ${activeDirectory === directory.path ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
+          className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap py-1 text-left font-mono text-meta touch:min-h-[44px] ${activeDirectory === directory.path ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
           style={{ paddingLeft: `${depth * 7}px` }}
         >
           {directory.name}/
@@ -412,30 +222,6 @@ function repositoryShare(count: number, total: number): string {
   return `${share < 10 ? share.toFixed(1) : Math.round(share)}%`;
 }
 
-
-function DistrictHead({ doc, d, onZoomDistrict }: { doc: MapDocument; d: number; onZoomDistrict: Props["onZoomDistrict"] }) {
-  const files = [...doc.N.keys()].filter((i) => D_(doc, i) === d);
-  const lines = files.reduce((a, i) => a + LOC(doc, i), 0);
-  return (
-    <>
-      <div className="flex items-center gap-1">
-        <h3 className="min-w-0 flex-1 truncate text-small font-semibold min-[821px]:text-row">{doc.names[d]}</h3>
-        <button
-          type="button"
-          aria-label="Zoom to district"
-          title="Zoom to district"
-          onClick={(event) => { event.stopPropagation(); onZoomDistrict(d); }}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[15px] text-[var(--dim)] hover:text-[var(--on)]"
-        >
-          ⤢
-        </button>
-      </div>
-      <p className="mt-0.5 truncate text-meta text-[var(--dim)]">
-        {compactCount(files.length)} files · {compactCount(lines)} lines
-      </p>
-    </>
-  );
-}
 
 export function DistrictBody({
   doc,
@@ -489,7 +275,7 @@ export function DistrictBody({
           {nb.map((neighbour, index) => (
             <span key={neighbour.id}>
               {index > 0 ? ", " : ""}
-              <button type="button" data-neighbour-district={neighbour.id} className="text-[var(--on)] hover:text-[var(--accent)] max-[820px]:inline-flex max-[820px]:min-h-[44px] max-[820px]:items-center" onClick={() => onSelectDistrict(neighbour.id)}>
+              <button type="button" data-neighbour-district={neighbour.id} className="text-[var(--on)] hover:text-[var(--accent)] touch:inline-flex touch:min-h-[44px] touch:items-center" onClick={() => onSelectDistrict(neighbour.id)}>
                 {neighbour.name}
               </button>
             </span>
@@ -498,7 +284,7 @@ export function DistrictBody({
       )}
       {paths.length > 0 && (
         <div data-district-path-breakdown>
-          <button type="button" data-district-folders-toggle aria-expanded={foldersExpanded} onClick={onToggleFolders} className="w-full text-left text-[var(--on)] max-[820px]:min-h-[44px] max-[820px]:text-small">
+          <button type="button" data-district-folders-toggle aria-expanded={foldersExpanded} onClick={onToggleFolders} className="w-full text-left text-[var(--on)] touch:min-h-[44px] touch:text-small">
             <span className="text-[var(--dim)]">{foldersExpanded ? "⌄" : "›"}</span> folders ({paths.filter((path) => !path.other).length})
           </button>
           {foldersExpanded && paths.map((path, index) =>
@@ -518,7 +304,7 @@ export function DistrictBody({
                 data-district-path={path.path}
                 aria-label={`Highlight folder ${path.path}`}
                 onClick={() => onSelectDirectory(path.path!)}
-                className="grid w-full grid-cols-[36px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)] max-[820px]:min-h-[44px]"
+                className="grid w-full grid-cols-[36px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)] touch:min-h-[44px]"
               >
                 <b className="font-mono">{path.share}%</b>
                 <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono">{formatDirectory(path.path!)}</span>
@@ -529,7 +315,7 @@ export function DistrictBody({
         </div>
       )}
       <div>
-        <button type="button" data-district-files-toggle aria-expanded={filesExpanded} onClick={onToggleFiles} className="w-full text-left text-[var(--on)] max-[820px]:min-h-[44px] max-[820px]:text-small">
+        <button type="button" data-district-files-toggle aria-expanded={filesExpanded} onClick={onToggleFiles} className="w-full text-left text-[var(--on)] touch:min-h-[44px] touch:text-small">
           <span className="text-[var(--dim)]">{filesExpanded ? "⌄" : "›"}</span> key files ({top.length})
         </button>
         {filesExpanded && top.map((i) => (
@@ -537,7 +323,7 @@ export function DistrictBody({
             key={i}
             data-district-key-file={i}
             onClick={() => onSelectFile(i)}
-            className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)] max-[820px]:min-h-[44px]"
+            className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)] touch:min-h-[44px]"
           >
             <i className="h-2 w-2 rounded-sm" style={{ background: districtColor(doc, d) }} />
             <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono">{doc.F[i].split("/").slice(1).join("/")}</span>
@@ -545,231 +331,6 @@ export function DistrictBody({
           </button>
         ))}
       </div>
-    </div>
-  );
-}
-
-// Issue #82 A1 scope item 5: the subtitle here is also what the phone's
-// collapsed sheet shows (SelectionPanel renders this same header whether or
-// not the body below it is expanded) -- checking it against the fullscreen
-// summary bar's own spec ("e.g. for a file: 'imported by N files · imports
-// M'") is what caught that it used to show the district name instead, which
-// isn't a one-line SUMMARY of the file so much as a second name. Reusing the
-// exact line SelectionSummaryBar.tsx shows means the phone sheet and the
-// fullscreen bar can't drift apart the way two independent implementations
-// would.
-function FileHead({
-  doc,
-  i,
-  selSym,
-  selHSym,
-  symbolsDoc,
-  adj,
-  radj,
-}: {
-  doc: MapDocument;
-  i: number;
-  selSym: number | null;
-  selHSym?: number | null;
-  symbolsDoc?: DistrictSymbols;
-  adj: AdjMap;
-  radj: AdjMap;
-}) {
-  const sy = symbolsOf(doc, i);
-  const sm = selSym != null ? sy[selSym] : null;
-  const outDeg = adj.get(i)?.length ?? 0;
-  const inDeg = radj.get(i)?.length ?? 0;
-  // #103 build item 4: the legend gains the hollow-triangle "extends /
-  // implements" segment only when the currently selected hierarchical
-  // symbol actually has one of those relations -- decoded independently
-  // here the same way Breadcrumb decodes its own copy (this file's own
-  // props doc comment), rather than threading a shared decode down from
-  // SelectionPanel.
-  const decoded = useMemo(() => (symbolsDoc ? decodeDistrictSymbols(symbolsDoc) : null), [symbolsDoc]);
-  const hasInheritance = useMemo(() => {
-    if (!decoded || selHSym == null) return false;
-    const local = decoded.globalToLocal.get(selHSym);
-    if (local == null) return false;
-    const info = symbolHierarchy(decoded, local);
-    return info.extends.length > 0 || info.implements.length > 0;
-  }, [decoded, selHSym]);
-  return (
-    <>
-      <h3 className="truncate font-mono text-small font-semibold min-[821px]:text-row">{sm ? sm[0] : doc.F[i].split("/").pop()}</h3>
-      <p className={`mt-0.5 text-meta text-[var(--dim)] ${sm ? "truncate" : ""}`}>
-        {sm ? (
-          `${doc.F[i].split("/").pop()}:${sm[2]} · ${KIND[sm[1]]}`
-        ) : (
-          <LinkCountsLabel inDeg={inDeg} outDeg={outDeg} stacked hasInheritance={hasInheritance} />
-        )}
-      </p>
-    </>
-  );
-}
-
-function FileBody({
-  doc,
-  i,
-  selSym,
-  selHSym,
-  symbolsDoc,
-  symbolsLoading,
-  adj,
-  radj,
-  onSelectSymbol,
-  onSelectHierSymbol,
-  onHoverHierSymbol,
-  onRouteFrom,
-  onRouteTo,
-}: {
-  doc: MapDocument;
-  i: number;
-  selSym: number | null;
-  selHSym?: number | null;
-  symbolsDoc?: DistrictSymbols;
-  symbolsLoading?: boolean;
-  adj: AdjMap;
-  radj: AdjMap;
-  onSelectSymbol: Props["onSelectSymbol"];
-  onSelectHierSymbol: Props["onSelectHierSymbol"];
-  onHoverHierSymbol: Props["onHoverHierSymbol"];
-  onRouteFrom: Props["onRouteFrom"];
-  onRouteTo: Props["onRouteTo"];
-}) {
-  const sy = symbolsOf(doc, i);
-  const sm = selSym != null ? sy[selSym] : null;
-  const lm = doc.L.find((l) => l[0] === i);
-  const blast = computeBlast(doc, i, selSym);
-  // Total degree only (O(1) -- adj/radj are already-built adjacency maps,
-  // no sort needed for a count); MapRenderer's own selNeighbours branch on
-  // the map only draws these links when blast is ALSO null (a symbol's
-  // blast radius takes precedence there, same as here), so this line
-  // states a fact about exactly what's currently drawn, never something
-  // the map isn't showing.
-  const linkTotal = blast ? 0 : (adj.get(i)?.length ?? 0) + (radj.get(i)?.length ?? 0);
-  // Issue #82 C2 follow-up: the file card used to show BOTH the old flat,
-  // span-sorted SymbolDirectory (built from the map's truncated `S`) and the
-  // new hierarchical outline tree at once. Once a district's symbols have
-  // loaded, the outline is strictly the richer view of the SAME
-  // information (source order, real nesting, real reference counts), so it
-  // replaces the flat list entirely rather than sitting below it. The flat
-  // list stays only as the fallback: a map with no symbols sibling at all,
-  // or a fetch that's genuinely settled with nothing for this district.
-  const decoded = useMemo(() => (symbolsDoc ? decodeDistrictSymbols(symbolsDoc) : null), [symbolsDoc]);
-  const outline = useMemo(() => (decoded ? fileOutline(decoded, i) : []), [decoded, i]);
-  const external = useMemo(() => (decoded ? externalReferences(decoded, doc, i) : []), [decoded, doc, i]);
-  // The "symbols" count below switches to this hierarchical total the
-  // moment `decoded` exists -- "where a count is still shown, it should be
-  // the hierarchical count." `sy.length` only backs it while there's no
-  // hierarchical data to ask instead (including while it's still loading).
-  const symbolCount = decoded ? countOutlineSymbols(outline) : sy.length;
-  return (
-    <div>
-      {districtClass(doc.districts[String(D_(doc, i))]) === "unconnected" &&
-        <p className="my-2 text-meta text-[var(--dim)]">not connected to anything, so it isn't placed on the map</p>}
-      <p className="break-all font-mono text-meta text-[var(--dim)]">
-        {doc.F[i]}
-        {sm ? `:${sm[2]}` : ""}
-      </p>
-      {sm && (
-        <>
-          <Row label="kind">
-            <b style={{ color: KCOL[sm[1]] }}>{KIND[sm[1]]}</b>
-          </Row>
-          <Row label="lines">
-            <b>
-              {sm[2]}–{sm[3]}
-            </b>
-          </Row>
-        </>
-      )}
-      {decoded && selHSym != null && (
-        <SymbolRelationsCard decoded={decoded} global={selHSym} onSelectHierSymbol={onSelectHierSymbol} />
-      )}
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-        {lm && (
-          <Row label="landmark">
-            <b className="text-label uppercase" style={{ color: WHY_COLOR[lm[1]] }}>
-              {lm[1]}
-            </b>
-          </Row>
-        )}
-        <Row label="district">
-          <b>{doc.names[String(D_(doc, i))]}</b>
-        </Row>
-        {/* B4 (nested footprints, issue #82 scope item 8): "the file card
-            shows the file's neighbourhood label." Absent for a document with
-            no neighbourhood data at all (pre-#85 maps) -- neighbourhoodOf
-            returns null there and the row is simply omitted, the same
-            pattern the "near" row above already uses for a repo with no
-            roads. */}
-        {neighbourhoodOf(doc, i) && (
-          <Row label="neighbourhood">
-            <b>{neighbourhoodOf(doc, i)!.label}</b>
-          </Row>
-        )}
-        <Row label="file lines">
-          <b>{LOC(doc, i)} lines · {CODE_LINES(doc, i)} code</b>
-        </Row>
-        {symbolCount > 0 && (
-          <Row label="symbols">
-            <b>{symbolCount}</b>
-          </Row>
-        )}
-      </div>
-      <BlastLine blast={blast} doc={doc} />
-      {linkTotal > LINK_PREVIEW_MAX && (
-        <p className="mt-1 text-meta text-[var(--dim)]">
-          links: showing <b className="text-[var(--on)]">{LINK_PREVIEW_MAX}</b> of {linkTotal}
-        </p>
-      )}
-      {decoded ? (
-        <HierOutline
-          outline={outline}
-          external={external}
-          selHSym={selHSym ?? null}
-          onSelectHierSymbol={onSelectHierSymbol}
-          onHoverHierSymbol={onHoverHierSymbol}
-        />
-      ) : symbolsLoading ? (
-        <p className="my-2 text-meta text-[var(--dim)]" data-symbols-loading>
-          loading symbols…
-        </p>
-      ) : (
-        <SymbolDirectory doc={doc} i={i} sy={sy} cur={selSym} onSelectSymbol={onSelectSymbol} />
-      )}
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-        <Row label="commits">
-          <b>{CH(doc, i)}</b>
-        </Row>
-        <Row label="branches">
-          <b>{CX_(doc, i)}</b>
-        </Row>
-        <Row label="imported by">
-          <b>{FI(doc, i)}</b>
-        </Row>
-      </div>
-      <div className="mt-2 flex gap-1.5">
-        {/* docs/UX.md §12: "route" is renamed to "path" in the viewer's
-            copy (the glossary keeps Route for a dependency between
-            repositories). */}
-        <Button size="sm" variant="outline" className="flex-1" onClick={() => onRouteFrom(i)}>
-          Path from here
-        </Button>
-        <Button size="sm" variant="outline" className="flex-1" onClick={() => onRouteTo(i)}>
-          Path to here
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex justify-between gap-2 border-t border-[var(--rule)] py-0.5 text-meta first:border-t-0">
-      <span className="text-[var(--dim)]">{label}</span>
-      {children}
     </div>
   );
 }

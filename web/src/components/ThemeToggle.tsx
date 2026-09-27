@@ -57,10 +57,8 @@ const ICON: Record<ThemeChoice, () => ReactElement> = { system: MonitorIcon, lig
  * System -- rather than a plain on/off switch, since "system" is a real,
  * distinct state (chrome and map both track the OS) and not just a synonym
  * for whichever of light/dark it happens to resolve to right now. One tap
- * always advances to the NEXT state instead of opening a menu -- the same
- * interaction GeoLayerControls' phone cycle-button already uses for the same
- * reason (one thumb, one tap, nothing to dismiss), and it works identically
- * on desktop and phone without a separate narrow-width branch.
+ * always advances to the NEXT state instead of opening a menu (one tap,
+ * nothing to dismiss).
  *
  * No native `title` (owner correction on the fit-map icon, issue #82: "it
  * would show a second, redundant tooltip" -- the same reasoning applies

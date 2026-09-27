@@ -11,18 +11,10 @@ import { SearchBox } from "@/components/SearchBox";
 import { useVisualViewportBox } from "@/hooks/useVisualViewportBox";
 import { PackageLegend } from "@/components/PackageLegend";
 import { ThemeSegmented } from "@/components/ThemeToggle";
-import { BottomSheet } from "./BottomSheet";
-import { CloseIcon, FitIcon, LayersIcon, MinusIcon, PlusIcon, SearchIcon, SwitchIcon } from "./icons";
-import {
-  DistrictSheetCard,
-  FileSheetCard,
-  OverviewCard,
-  PathSheetCard,
-  QualityCard,
-  StructureSheetCard,
-  type PathPick,
-  type StructureCardState,
-} from "./SheetCards";
+import { SIDE_SHEET_WIDTH_PX } from "@/map/layoutProfile";
+import { BottomSheet, SideSheet } from "./BottomSheet";
+import { CloseIcon, FitIcon, LayersIcon, MinusIcon, PanelIcon, PlusIcon, SearchIcon, SwitchIcon } from "./icons";
+import { OverviewCard, SelectionCard, type PathPick, type StructureCardState } from "./SheetCards";
 
 export interface PhoneChromeProps {
   doc: MapDocument;
@@ -45,6 +37,13 @@ export interface PhoneChromeProps {
   radj: AdjMap;
   activeDirectory?: string;
 
+  /** docs/UX.md §9 phone landscape: the sheet is a 360 px side sheet on the
+   * left, full height; the pill and the control column sit over the map
+   * beside it. */
+  landscape: boolean;
+  /** Landscape: the side sheet is open (360) or collapsed (0). */
+  sideOpen: boolean;
+  onToggleSide(): void;
   heights: DetentHeights;
   /** The visible viewport height (map/phoneShell.ts's PhoneMetrics). */
   viewportHeight: number;
@@ -104,10 +103,13 @@ const LAYERS: { id: Layer; name: string; meaning: string }[] = [
 
 /** docs/UX.md §3: the phone shell -- the search pill, the control column,
  * the one bottom sheet, the Layers sheet and the search layer. Everything
- * here floats over the full-screen map; nothing else does (§3: RouteBox,
- * legends, chips and road cards are sheet content). The desktop layout is
- * untouched by this component (phase 5 realigns it). State lives in
- * MapView, which also owns the back stack (map/backStack.ts). */
+ * here floats over the full-screen map; nothing else does (§3: the path,
+ * legends, chips and road cards are sheet content). The same component
+ * serves a phone held sideways (§9): the sheet becomes a side sheet and the
+ * pill and control column move over the map beside it. The desktop and
+ * tablet layout is MapView's (top bar, rail, inspector), hosting the same
+ * cards (SheetCards.tsx's SelectionCard). State lives in MapView, which
+ * also owns the back stack (map/backStack.ts). */
 export function PhoneChrome(p: PhoneChromeProps) {
   const navigate = useNavigate();
   const slug = `${p.owner}/${p.repo}`;
@@ -123,74 +125,66 @@ export function PhoneChrome(p: PhoneChromeProps) {
   }, [p.searchOpen]);
   // TopBar's fix, kept: the current repo always has an option, or a native
   // select silently shows a stale one.
-  const options = p.catalogue ?? [];
-  const withCurrent = options.some((m) => m.slug === slug)
-    ? options
-    : [{ slug, owner: p.owner, repo: p.repo, file: "", files: 0, districts: 0, modularity: 0, lang: "" }, ...options];
+  const options = (p.catalogue ?? []).map((m) => m.slug);
+  const withCurrent = options.includes(slug) ? options : [slug, ...options];
 
-  let content;
-  if (p.pathPick) {
-    content = (
-      <PathSheetCard doc={p.doc} pick={p.pathPick} route={p.route} ends={p.pathEnds} onCancel={p.onPathCancel} onSelectFile={p.onSelectFile} onDetent={p.onDetent} />
-    );
-  } else if (p.structure) {
-    content = <StructureSheetCard doc={p.doc} card={p.structure} onClose={p.onCloseStructure} onSelectFile={p.onSelectFile} onSelectDistrict={p.onSelectDistrict} />;
-  } else if (p.quality) {
-    content = <QualityCard doc={p.doc} packageLayout={p.packageLayout} onClose={() => p.onQuality(false)} onSelectFile={p.onSelectFile} />;
-  } else if (p.sel != null) {
-    content = (
-      <FileSheetCard
-        key={p.sel}
-        doc={p.doc}
-        i={p.sel}
-        selSym={p.selSym}
-        selHSym={p.selHSym}
-        symbolsDoc={p.symbolsDoc}
-        symbolsLoading={p.symbolsLoading}
-        adj={p.adj}
-        radj={p.radj}
-        detent={p.detent}
-        onClose={p.onClearSelection}
-        onDetent={p.onDetent}
-        onSelectFile={p.onSelectFile}
-        onSelectSymbol={p.onSelectSymbol}
-        onSelectHierSymbol={p.onSelectHierSymbol}
-        onSelectDistrict={p.onSelectDistrict}
-        onBreadcrumbRepo={p.onBreadcrumbRepo}
-        onBreadcrumbFile={p.onBreadcrumbFile}
-        onPath={p.onPath}
-      />
-    );
-  } else if (p.selD != null) {
-    content = (
-      <DistrictSheetCard
-        doc={p.doc}
-        d={p.selD}
-        packageLayout={p.packageLayout}
-        onClose={p.onClearSelection}
-        onZoomDistrict={p.onZoomDistrict}
-        onDetails={() => p.onDetent("half")}
-        onSelectFile={p.onSelectFile}
-        onSelectDistrict={p.onSelectDistrict}
-        onSelectDirectory={p.onSelectDirectory}
-      />
-    );
-  } else {
-    content = (
-      <OverviewCard
-        doc={p.doc}
-        slug={slug}
-        packageLayout={p.packageLayout}
-        activeDirectory={p.activeDirectory}
-        tab={p.indexTab}
-        onTab={p.onIndexTab}
-        onOpenQuality={() => p.onQuality(true)}
-        onSelectDistrict={p.onPickDistrict}
-        onPickKeyFile={p.onPickKeyFile}
-        onSelectDirectory={p.onSelectDirectory}
-      />
-    );
-  }
+  const content = (
+    <SelectionCard
+      doc={p.doc}
+      packageLayout={p.packageLayout}
+      sel={p.sel}
+      selSym={p.selSym}
+      selD={p.selD}
+      selHSym={p.selHSym}
+      symbolsDoc={p.symbolsDoc}
+      symbolsLoading={p.symbolsLoading}
+      adj={p.adj}
+      radj={p.radj}
+      detent={p.detent}
+      onDetent={p.onDetent}
+      quality={p.quality}
+      onCloseQuality={() => p.onQuality(false)}
+      structure={p.structure}
+      onCloseStructure={p.onCloseStructure}
+      pathPick={p.pathPick}
+      pathEnds={p.pathEnds}
+      route={p.route}
+      onPath={p.onPath}
+      onPathCancel={p.onPathCancel}
+      onClearSelection={p.onClearSelection}
+      onSelectFile={p.onSelectFile}
+      onSelectSymbol={p.onSelectSymbol}
+      onSelectHierSymbol={p.onSelectHierSymbol}
+      onSelectDistrict={p.onSelectDistrict}
+      onZoomDistrict={p.onZoomDistrict}
+      onSelectDirectory={p.onSelectDirectory}
+      onBreadcrumbRepo={p.onBreadcrumbRepo}
+      onBreadcrumbFile={p.onBreadcrumbFile}
+      // Landscape: the side sheet already shows the whole card (§9), so
+      // there is no "Details" to raise it to.
+      onDistrictDetails={p.landscape ? undefined : () => p.onDetent("half")}
+    />
+  );
+  const overview = (
+    <OverviewCard
+      doc={p.doc}
+      slug={slug}
+      packageLayout={p.packageLayout}
+      activeDirectory={p.activeDirectory}
+      tab={p.indexTab}
+      onTab={p.onIndexTab}
+      onOpenQuality={() => p.onQuality(true)}
+      onSelectDistrict={p.onPickDistrict}
+      onPickKeyFile={p.onPickKeyFile}
+      onSelectDirectory={p.onSelectDirectory}
+    />
+  );
+  const somethingShown = !!p.pathPick || !!p.structure || p.quality || p.sel != null || p.selD != null;
+  const sheetContent = somethingShown ? content : overview;
+  // §9: in landscape the pill and the control column float over the map
+  // beside the side sheet (the sheet's width plus the left safe inset when
+  // open; the left inset alone when collapsed).
+  const mapLeft = p.landscape && p.sideOpen ? `${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px)` : "env(safe-area-inset-left, 0px)";
 
   const controlBtn = "flex h-11 w-11 items-center justify-center border-b border-[var(--rule)] text-[var(--on)] last:border-b-0";
   return (
@@ -198,8 +192,12 @@ export function PhoneChrome(p: PhoneChromeProps) {
       {/* §3: the search pill -- search and the repository, one 48 px row. */}
       <div
         data-search-pill
-        className="absolute inset-x-3 z-20 flex h-12 items-center gap-0.5 rounded-[24px] border border-[var(--rule)] bg-[var(--chrome2)] px-0.5 shadow-[0_6px_18px_rgba(0,0,0,.25)]"
-        style={{ top: "calc(12px + env(safe-area-inset-top, 0px))" }}
+        className="absolute z-20 flex h-12 items-center gap-0.5 rounded-[24px] border border-[var(--rule)] bg-[var(--chrome2)] px-0.5 shadow-[0_6px_18px_rgba(0,0,0,.25)]"
+        style={{
+          top: "calc(12px + env(safe-area-inset-top, 0px))",
+          left: `calc(${mapLeft} + 12px)`,
+          right: "calc(12px + env(safe-area-inset-right, 0px))",
+        }}
       >
         <button
           type="button"
@@ -231,8 +229,8 @@ export function PhoneChrome(p: PhoneChromeProps) {
             className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0"
           >
             {withCurrent.map((m) => (
-              <option key={m.slug} value={m.slug}>
-                {m.slug}
+              <option key={m} value={m}>
+                {m}
               </option>
             ))}
           </select>
@@ -241,12 +239,14 @@ export function PhoneChrome(p: PhoneChromeProps) {
 
       {/* §3: the control column. No fullscreen button on phones. Hidden
           whenever the sheet reaches up into it (always at Full; at Half on a
-          short phone). */}
-      {p.viewportHeight - p.heights[p.detent] >= p.safeTop + 68 + CONTROL_COLUMN_PX + 8 && (
+          short phone) -- never in landscape, where the sheet is beside it.
+          Landscape adds a fifth button that shows and hides the side sheet
+          (§9: "collapsed 0, peek 360"). */}
+      {(p.landscape || p.viewportHeight - p.heights[p.detent] >= p.safeTop + 68 + CONTROL_COLUMN_PX + 8) && (
         <div
           data-control-column
-          className="absolute right-3 z-20 flex w-[46px] flex-col overflow-hidden rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] shadow-[0_6px_18px_rgba(0,0,0,.25)]"
-          style={{ top: "calc(68px + env(safe-area-inset-top, 0px))" }}
+          className="absolute z-20 flex w-[46px] flex-col overflow-hidden rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] shadow-[0_6px_18px_rgba(0,0,0,.25)]"
+          style={{ top: "calc(68px + env(safe-area-inset-top, 0px))", right: "calc(12px + env(safe-area-inset-right, 0px))" }}
         >
           <button type="button" className={controlBtn} onClick={p.onZoomIn} aria-label="Zoom in">
             <PlusIcon />
@@ -260,22 +260,58 @@ export function PhoneChrome(p: PhoneChromeProps) {
           <button type="button" className={controlBtn} onClick={p.onOpenLayers} aria-label="Map layers" aria-expanded={p.layersOpen}>
             <LayersIcon />
           </button>
+          {p.landscape && (
+            <button
+              type="button"
+              className={controlBtn}
+              onClick={p.onToggleSide}
+              data-side-toggle
+              aria-label={p.sideOpen ? "Hide the side sheet" : "Show the side sheet"}
+              aria-expanded={p.sideOpen}
+              style={p.sideOpen ? { color: "var(--accent)" } : undefined}
+            >
+              <PanelIcon />
+            </button>
+          )}
         </div>
       )}
 
-      <BottomSheet detent={p.detent} heights={p.heights} onDetent={p.onDetent}>
-        {content}
-      </BottomSheet>
+      {p.landscape ? (
+        <SideSheet open={p.sideOpen} detent={p.detent}>
+          {sheetContent}
+        </SideSheet>
+      ) : (
+        <BottomSheet detent={p.detent} heights={p.heights} onDetent={p.onDetent}>
+          {sheetContent}
+        </BottomSheet>
+      )}
 
       {/* §4.6: the Layers sheet, modal over the map sheet. */}
       {p.layersOpen && (
         <>
           <div data-layers-scrim className="absolute inset-0 z-40 bg-[rgba(4,8,10,.55)]" onClick={p.onCloseLayers} />
+          {/* §9: in landscape the Layers sheet takes the side sheet's place
+              (left, 360 px, full height) rather than rising over a 390 px
+              tall screen. */}
           <section
             aria-label="Map layers and display"
             data-layers-sheet
-            className="absolute inset-x-0 bottom-0 z-40 max-h-[88%] overflow-y-auto rounded-t-[20px] border-t border-[var(--rule)] bg-[var(--chrome)] px-5 text-[var(--on)] shadow-[0_-8px_24px_rgba(0,0,0,.3)]"
-            style={{ paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))", overscrollBehavior: "contain" }}
+            className={`absolute z-40 overflow-y-auto border-[var(--rule)] bg-[var(--chrome)] px-5 text-[var(--on)] ${
+              p.landscape
+                ? "inset-y-0 left-0 border-r shadow-[8px_0_24px_rgba(0,0,0,.3)]"
+                : "inset-x-0 bottom-0 max-h-[88%] rounded-t-[20px] border-t shadow-[0_-8px_24px_rgba(0,0,0,.3)]"
+            }`}
+            style={{
+              paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))",
+              overscrollBehavior: "contain",
+              ...(p.landscape
+                ? {
+                    width: `calc(${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px))`,
+                    paddingLeft: "calc(20px + env(safe-area-inset-left, 0px))",
+                    paddingTop: "env(safe-area-inset-top, 0px)",
+                  }
+                : {}),
+            }}
           >
             <div className="flex justify-center">
               <span className="mb-3 mt-[11px] block h-[5px] w-9 rounded-[3px] bg-[var(--grabber)]" />
