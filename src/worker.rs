@@ -392,6 +392,14 @@ pub struct WelcomeResume {
     pub job_id: String,
     pub action: ResumeAction,
     pub acked_seq: u64,
+    // Issue #97 phase 2, step 3 (resume): why a `cancel` answer cancels --
+    // `lease_lost` (another epoch holds the job, or its lease ran out) or
+    // `cancelled` (the user cancelled it while the channel was down), as
+    // §2.5's diagram has it ("resume cancel, reason lease_lost"). §3.2's
+    // table lists no reason, so it is optional and absent on `continue`;
+    // an agent that finds none reads `lease_lost`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CancelReason>,
 }
 
 /// One entry of `assign.inputs.previous_maps[]` (§3.3): the same shape as
@@ -964,11 +972,20 @@ mod tests {
             proto: PROTO,
             heartbeat_s: 15,
             lease_ttl_s: 60,
-            resume: vec![WelcomeResume {
-                job_id: "job-1".to_owned(),
-                action: ResumeAction::Continue,
-                acked_seq: 3,
-            }],
+            resume: vec![
+                WelcomeResume {
+                    job_id: "job-1".to_owned(),
+                    action: ResumeAction::Continue,
+                    acked_seq: 3,
+                    reason: None,
+                },
+                WelcomeResume {
+                    job_id: "job-2".to_owned(),
+                    action: ResumeAction::Cancel,
+                    acked_seq: 0,
+                    reason: Some(CancelReason::LeaseLost),
+                },
+            ],
         });
         round_trips(&MasterMessage::Assign {
             job_id: "job-1".to_owned(),
