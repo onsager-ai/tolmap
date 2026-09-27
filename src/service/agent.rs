@@ -59,8 +59,20 @@
 //! `oom` with the child's peak instead of an `error`, and the master moves
 //! the job to a larger class.
 //!
-//! **Limits, on purpose.** Plain `ws://` to a loopback master only; one
-//! slot.
+//! **Remote agents (#97 phase 3; §5.1, §6).** `tolmap worker --connect
+//! wss://<host:port>/workers/connect --token-file <file> --worker-id <id>
+//! [--ca-file <pem>]` dials a master on another host over TLS, with the
+//! token the owner issued for that worker id. It verifies the master
+//! against `--ca-file` alone when one is given (the owner's private
+//! certificate), else against the public webpki roots, for the channel and
+//! every artifact request alike. Unlike a loopback master's child
+//! (`--loopback`), it keeps redialling a master that refuses connections --
+//! one restarting, or not up yet -- and exits only on `shutdown`, a 401 or a
+//! protocol `error`. A master restarted mid-job hands its lease back when
+//! it redials (`workers::WorkerHub::adopt`).
+//!
+//! **Limits, on purpose.** `ws://` to a loopback master only, `wss://` to
+//! any; one slot.
 
 use std::collections::VecDeque;
 use std::io::Read;
@@ -73,8 +85,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use tokio_tungstenite::tungstenite::http::Uri;
+use tokio_tungstenite::tungstenite::stream::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::{
-    self, ClientRequestBuilder, HandshakeError, Message, WebSocket,
+    self, ClientRequestBuilder, Connector, HandshakeError, Message, WebSocket,
 };
 use uuid::Uuid;
 
@@ -140,31 +153,113 @@ pub struct AgentConfig {
     pub memory_events: Option<PathBuf>,
 }
 
+/// How `tolmap worker --connect` was started, beyond `AgentConfig`
+/// (#97 phase 3).
+#[derive(Clone, Debug, Default)]
+pub struct AgentOptions {
+    /// `--loopback`: a loopback master started this agent as its child. It
+    /// exits once nothing listens at its master's port, since a successor
+    /// mints new tokens it could never present, and it reads a token file
+    /// its master wrote `0600` in a `0700` directory. Without it the agent
+    /// is a remote worker's: it redials a master that refuses connections,
+    /// first dial included, and refuses a token file others can read.
+    pub loopback: bool,
+    /// `--ca-file`: the PEM certificates to verify a `wss://` master
+    /// against instead of the public webpki roots.
+    pub ca_file: Option<PathBuf>,
+    /// `--worker-id`: the worker id the token was issued for, sent in
+    /// `hello.worker_id`; a remote master refuses any other. Required for
+    /// a remote worker's agent; a loopback master's child is `agent-<pid>`.
+    pub worker_id: Option<String>,
+}
+
+impl AgentOptions {
+    /// A loopback master's child, as `agent::run` has always run.
+    pub fn loopback() -> Self {
+        AgentOptions {
+            loopback: true,
+            ..AgentOptions::default()
+        }
+    }
+}
+
+/// `--ca-file`'s certificates, as the channel's TLS and the artifact
+/// requests' TLS each take them.
+struct PrivateRoots {
+    channel: Arc<tokio_rustls::rustls::ClientConfig>,
+    http: Vec<ureq::tls::Certificate<'static>>,
+}
+
+/// `--ca-file` (§5.1): the certificates a remote agent trusts for its
+/// master. Trust decisions: when a private CA is given it is the only
+/// root -- a certificate some public CA issued for the master's name is not
+/// the owner's master -- and the channel and every artifact request verify
+/// against the same roots; rustls on the `ring` provider, TLS 1.3, which is
+/// all the master's listener speaks.
+fn private_roots(path: &Path) -> Result<PrivateRoots> {
+    use tokio_rustls::rustls;
+    use tokio_rustls::rustls::pki_types::pem::PemObject;
+    use tokio_rustls::rustls::pki_types::CertificateDer;
+    let certs = CertificateDer::pem_file_iter(path)
+        .and_then(|certs| certs.collect::<Result<Vec<_>, _>>())
+        .with_context(|| format!("read --ca-file {}", path.display()))?;
+    if certs.is_empty() {
+        bail!("--ca-file {} holds no PEM certificate", path.display());
+    }
+    let mut store = rustls::RootCertStore::empty();
+    for cert in &certs {
+        store.add(cert.clone()).with_context(|| {
+            format!(
+                "--ca-file {}: a certificate is not a usable trust root",
+                path.display()
+            )
+        })?;
+    }
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let channel = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .context("configure TLS 1.3 for the channel")?
+        .with_root_certificates(store)
+        .with_no_client_auth();
+    let http = certs
+        .iter()
+        .map(|cert| ureq::tls::Certificate::from_der(cert.as_ref()).to_owned())
+        .collect();
+    Ok(PrivateRoots {
+        channel: Arc::new(channel),
+        http,
+    })
+}
+
 /// The master this agent dials.
 #[derive(Clone)]
 struct Endpoint {
     uri: Uri,
     host: String,
     port: u16,
-    /// `http://<host:port>`: the only origin artifact requests may go to.
+    /// `http://<host:port>`, or `https://` for a `wss://` master: the only
+    /// origin artifact requests may go to.
     origin: String,
-    /// The master is on this host (always, until phase 3's remote workers).
+    /// The master is on this host: a loopback address.
     loopback: bool,
+    /// `--ca-file`'s roots; `None` verifies a `wss://` master against the
+    /// public webpki roots.
+    roots: Option<Arc<PrivateRoots>>,
 }
 
 impl Endpoint {
-    fn parse(url: &str) -> Result<Self> {
+    fn parse(url: &str, ca_file: Option<&Path>) -> Result<Self> {
         let uri: Uri = url
             .parse()
             .with_context(|| format!("--connect {url:?} is not a URL"))?;
         // Trust decision (§5.1): the bearer token crosses this connection,
-        // and TLS is required for anything but loopback. Phase 1 has only
-        // loopback agents, so it speaks plain `ws://` to a loopback master
-        // and nothing else; `wss://` and remote masters arrive with the
-        // first remote worker (phase 3).
-        if uri.scheme_str() != Some("ws") {
-            bail!("--connect must be a ws:// URL: phase 1 agents dial a loopback master only");
-        }
+        // so it is TLS (`wss://`) to anything but loopback. Plain `ws://` is
+        // refused for any other host rather than tried.
+        let tls = match uri.scheme_str() {
+            Some("wss") => true,
+            Some("ws") => false,
+            _ => bail!("--connect must be a wss:// URL, or ws:// to a loopback master"),
+        };
         let authority = uri
             .authority()
             .context("--connect has no host")?
@@ -181,16 +276,26 @@ impl Endpoint {
             .to_owned();
         let loopback =
             host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
-        if !loopback {
-            bail!("--connect {url:?} is not a loopback address: phase 1 agents dial a loopback master only");
+        if !tls && !loopback {
+            bail!(
+                "--connect {url:?}: ws:// reaches a loopback master only; a master on another \
+                 host is dialled with wss://"
+            );
         }
-        let port = uri.port_u16().unwrap_or(80);
+        let roots = match ca_file {
+            Some(path) if tls => Some(Arc::new(private_roots(path)?)),
+            Some(_) => bail!("--ca-file applies to a wss:// master only"),
+            None => None,
+        };
+        let (scheme, default_port) = if tls { ("https", 443) } else { ("http", 80) };
+        let port = uri.port_u16().unwrap_or(default_port);
         Ok(Endpoint {
-            origin: format!("http://{authority}"),
+            origin: format!("{scheme}://{authority}"),
             uri,
             host,
             port,
             loopback,
+            roots,
         })
     }
 
@@ -236,7 +341,17 @@ impl HostEnv {
     }
 }
 
-type Socket = WebSocket<TcpStream>;
+type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// The TCP stream under a channel, TLS or not, for its timeouts.
+fn tcp(socket: &Socket) -> &TcpStream {
+    match socket.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::Rustls(stream) => stream.get_ref(),
+        // `MaybeTlsStream` is non-exhaustive; this build's only TLS is rustls.
+        _ => unreachable!("tungstenite is built with rustls only"),
+    }
+}
 
 fn send(socket: &mut Socket, message: &WorkerMessage) -> Result<()> {
     let text = serde_json::to_string(message).context("serialize a channel message")?;
@@ -252,7 +367,13 @@ fn would_block(error: &std::io::Error) -> bool {
     )
 }
 
-fn read_token(path: &Path) -> Result<String> {
+/// `private`: refuse a file its group or others may use
+/// (`workers::check_private_file`) -- a remote worker's token file, which
+/// §5.1 puts in a root-only `0600` file.
+fn read_token(path: &Path, private: bool) -> Result<String> {
+    if private {
+        crate::service::workers::check_private_file(path, "--token-file")?;
+    }
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read the token file {}", path.display()))?;
     let token = raw.trim().to_owned();
@@ -459,12 +580,28 @@ fn stat_group_and_rss(stat: &str) -> Option<(u32, u64)> {
     Some((group, rss))
 }
 
+/// Runs a loopback master's agent: `run_with` and `AgentOptions::loopback`.
+pub fn run(config: AgentConfig) -> Result<()> {
+    run_with(config, AgentOptions::loopback())
+}
+
 /// Runs the agent until the master sends `shutdown` (`Ok`) or something
 /// redialling cannot mend happens (`Err`, so the process exits non-zero
 /// and its supervisor restarts it).
-pub fn run(config: AgentConfig) -> Result<()> {
-    let token = read_token(&config.token_file)?;
-    let endpoint = Endpoint::parse(&config.connect)?;
+pub fn run_with(config: AgentConfig, options: AgentOptions) -> Result<()> {
+    let token = read_token(&config.token_file, !options.loopback)?;
+    let endpoint = Endpoint::parse(&config.connect, options.ca_file.as_deref())?;
+    let worker_id = match (&options.worker_id, options.loopback) {
+        (Some(id), _) if crate::service::workers::is_valid_worker_id(id) => id.clone(),
+        (Some(id), _) => {
+            bail!("--worker-id {id:?} must be 1 to 64 ASCII letters, digits, `.`, `_` or `-`")
+        }
+        (None, true) => format!("agent-{}", std::process::id()),
+        (None, false) => bail!(
+            "--worker-id is required: the worker id the token was issued for (`tolmap \
+             worker-token new --id <id>`)"
+        ),
+    };
     std::fs::create_dir_all(&config.cache_dir)
         .with_context(|| format!("create {}", config.cache_dir.display()))?;
     // A starting agent holds no job, so any job or input directory under
@@ -497,7 +634,9 @@ pub fn run(config: AgentConfig) -> Result<()> {
         endpoint,
         token,
         host,
-        worker_id: format!("agent-{}", std::process::id()),
+        worker_id,
+        loopback_child: options.loopback,
+        connected: false,
         class,
         memory_events,
         // Both replaced by the master's `welcome`.
@@ -515,10 +654,20 @@ pub fn run(config: AgentConfig) -> Result<()> {
         backoff: REDIAL_FIRST,
         next_dial: now,
     };
-    // The first dial is not retried: an agent that cannot reach its master
-    // at all exits for its supervisor to restart, as in phase 1. Only a
-    // channel that was up is redialled, because only then may a job be
-    // waiting on the other side.
+    // A remote worker's agent dials as it redials, with backoff, until the
+    // master answers (§6: it may be restarting, or not up yet), and exits
+    // only on what redialling cannot mend.
+    if !agent.loopback_child {
+        eprintln!(
+            "worker agent {}: dialling {}",
+            agent.worker_id, agent.endpoint.origin
+        );
+        return agent.run();
+    }
+    // A loopback master's child: the first dial is not retried. An agent
+    // that cannot reach its master at all exits for its supervisor to
+    // restart, as in phase 1. Only a channel that was up is redialled,
+    // because only then may a job be waiting on the other side.
     if let Err(Dial::Fatal(error) | Dial::Retry(error)) = agent.dial() {
         return Err(error);
     }
@@ -545,7 +694,13 @@ struct Session {
     resume: Vec<WelcomeResume>,
 }
 
-fn dial(endpoint: &Endpoint, token: &str, hello: &WorkerMessage) -> Result<Session, Dial> {
+/// `loopback_child`: see `AgentOptions::loopback`.
+fn dial(
+    endpoint: &Endpoint,
+    token: &str,
+    hello: &WorkerMessage,
+    loopback_child: bool,
+) -> Result<Session, Dial> {
     let address = (endpoint.host.as_str(), endpoint.port)
         .to_socket_addrs()
         .with_context(|| format!("resolve {}", endpoint.origin))
@@ -554,15 +709,14 @@ fn dial(endpoint: &Endpoint, token: &str, hello: &WorkerMessage) -> Result<Sessi
         .ok_or_else(|| Dial::Retry(anyhow!("{} resolves to no address", endpoint.origin)))?;
     let stream = match TcpStream::connect_timeout(&address, DIAL_TIMEOUT) {
         Ok(stream) => stream,
-        // Unrecoverable for a loopback agent: the master that started it
-        // listens on this host for as long as it lives, so nothing
-        // listening means it is gone. A successor mints new tokens this
-        // agent could never present, and holding on would only keep a job
-        // child running for nobody. A remote agent (phase 3) will keep
-        // redialling a master that restarts.
-        Err(error)
-            if error.kind() == std::io::ErrorKind::ConnectionRefused && endpoint.loopback =>
-        {
+        // Unrecoverable for a loopback master's child: the master that
+        // started it listens on this host for as long as it lives, so
+        // nothing listening means it is gone. A successor mints new tokens
+        // this agent could never present, and holding on would only keep a
+        // job child running for nobody. A remote worker's agent keeps
+        // redialling a master that restarts (§6), and resumes its job with
+        // the next one.
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused && loopback_child => {
             return Err(Dial::Fatal(anyhow!(
                 "nothing listens at {} any more: the master that started this agent is gone",
                 endpoint.origin
@@ -582,19 +736,30 @@ fn dial(endpoint: &Endpoint, token: &str, hello: &WorkerMessage) -> Result<Sessi
     // URL (§5.1).
     let request = ClientRequestBuilder::new(endpoint.uri.clone())
         .with_header("Authorization", format!("Bearer {token}"));
-    let mut socket = match tungstenite::client(request, stream) {
+    // `ws://`: plain, loopback only (`Endpoint::parse`). `wss://`: rustls,
+    // verifying the master against `--ca-file`'s roots, else tungstenite's
+    // own configuration with the public webpki roots. The handshake
+    // happens within the upgrade, so a master whose certificate does not
+    // verify fails this dial, and the agent tries again after the backoff:
+    // the owner may be replacing the certificate.
+    let connector = match &endpoint.roots {
+        Some(roots) => Some(Connector::Rustls(roots.channel.clone())),
+        None if endpoint.uri.scheme_str() == Some("ws") => Some(Connector::Plain),
+        None => None,
+    };
+    let mut socket = match tungstenite::client_tls_with_config(request, stream, None, connector) {
         Ok((socket, _)) => socket,
         Err(HandshakeError::Failure(tungstenite::Error::Http(response)))
             if response.status().as_u16() == 401 =>
         {
             return Err(Dial::Fatal(anyhow!(
-                "the master refused this agent's token: it is not the master that minted it"
+                "the master refused this agent's token (401): it was revoked, or it is not a \
+                 token of this master's"
             )))
         }
         Err(error) => return Err(Dial::Retry(anyhow!("the channel upgrade failed: {error}"))),
     };
-    socket
-        .get_ref()
+    tcp(&socket)
         .set_read_timeout(Some(READ_POLL))
         .context("set the channel's read timeout")
         .map_err(Dial::Retry)?;
@@ -902,6 +1067,10 @@ struct Agent {
     token: String,
     host: HostEnv,
     worker_id: String,
+    /// `AgentOptions::loopback`.
+    loopback_child: bool,
+    /// A channel has been up at least once, for the logs.
+    connected: bool,
     /// `hello.class`, fixed for the process: every redial advertises the
     /// same class, so the master never sees the agent change class.
     class: WorkerClass,
@@ -1024,10 +1193,11 @@ impl Agent {
             }
             return Ok(Step::Go);
         }
+        let again = if self.connected { "re" } else { "" };
         match self.dial() {
             Ok(()) => {
                 eprintln!(
-                    "worker agent {}: reconnected to {}",
+                    "worker agent {}: {again}connected to {}",
                     self.worker_id, self.endpoint.origin
                 );
                 Ok(Step::Go)
@@ -1038,7 +1208,7 @@ impl Agent {
                 let wait = jittered(self.backoff);
                 self.next_dial = Instant::now() + wait;
                 eprintln!(
-                    "worker agent {}: could not reconnect ({error:#}); trying again in {} ms",
+                    "worker agent {}: could not {again}connect ({error:#}); trying again in {} ms",
                     self.worker_id,
                     wait.as_millis()
                 );
@@ -1055,14 +1225,20 @@ impl Agent {
             build: own_build(),
             class: self.class.clone(),
             slots: 1,
-            // `local_paths`: this agent shares the master's host (it only
-            // ever dials loopback). `resume`: it keeps its job across a
-            // lost channel and names it below (§3.5, §3.6).
-            features: vec![
-                FEATURE_LOCAL_PATHS.to_owned(),
-                FEATURE_INSTALL_SANDBOX.to_owned(),
-                FEATURE_RESUME.to_owned(),
-            ],
+            // `local_paths` (§3.3): only while the master is on this host,
+            // a loopback address, whose `local/<name>` jobs name paths this
+            // host has; a remote worker never offers it, so it is never
+            // assigned one. `resume`: it keeps its job across a lost
+            // channel and names it below (§3.5, §3.6).
+            features: [
+                self.endpoint.loopback.then_some(FEATURE_LOCAL_PATHS),
+                Some(FEATURE_INSTALL_SANDBOX),
+                Some(FEATURE_RESUME),
+            ]
+            .into_iter()
+            .flatten()
+            .map(str::to_owned)
+            .collect(),
             // The held job, unless it is being let go already: then only
             // its `released` is still to send, after the `welcome`.
             resume: self
@@ -1076,8 +1252,9 @@ impl Agent {
                 })
                 .collect(),
         };
-        let session = dial(&self.endpoint, &self.token, &hello)?;
+        let session = dial(&self.endpoint, &self.token, &hello, self.loopback_child)?;
         let now = Instant::now();
+        self.connected = true;
         self.link = Some(session.socket);
         self.heartbeat = session.heartbeat;
         self.lease_ttl = session.lease_ttl;
@@ -1631,14 +1808,22 @@ struct JobContext {
 
 /// Artifact requests carry the bearer token. Trust decision: never through
 /// a proxy and never following a redirect -- either would hand the token
-/// to someone other than the master this agent dialled.
-fn http_agent() -> ureq::Agent {
-    let config = ureq::Agent::config_builder()
+/// to someone other than the master this agent dialled -- and, to a
+/// `wss://` master, over TLS verified against the same roots as the
+/// channel: `--ca-file`'s alone when given, else ureq's own webpki roots.
+fn http_agent(endpoint: &Endpoint) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder()
         .proxy(None)
         .max_redirects(0)
-        .http_status_as_error(false)
-        .build();
-    ureq::Agent::new_with_config(config)
+        .http_status_as_error(false);
+    if let Some(roots) = &endpoint.roots {
+        config = config.tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::new_with_certs(&roots.http))
+                .build(),
+        );
+    }
+    ureq::Agent::new_with_config(config.build())
 }
 
 impl JobContext {
@@ -1669,7 +1854,7 @@ impl JobContext {
         let Ok(id) = Uuid::parse_str(&self.job_id) else {
             return Outcome::Failed(internal("the job id is not a UUID"));
         };
-        let http = http_agent();
+        let http = http_agent(&self.endpoint);
         // Read before the job starts: an out-of-memory kill of this job
         // raises the count past this (§6). Clone and child alike run after
         // it, and only the child's death is ever read as out of memory.
