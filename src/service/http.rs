@@ -224,7 +224,19 @@ async fn post_cancel_job(
     ) {
         return Err(ApiError::rate_limited(message));
     }
-    Ok(Json(jobs::cancel_job(&state, job_id)?))
+    // `cancel_job` can now retry its durable write with backoff (#167
+    // review), so it runs off the async runtime -- the way `worker_loop`
+    // already runs a runner -- rather than sleeping on this task. It stays
+    // synchronous itself: its direct callers in `workers.rs`'s unit tests
+    // are not async.
+    let cancelling_state = state.clone();
+    let cancelled =
+        tokio::task::spawn_blocking(move || jobs::cancel_job(&cancelling_state, job_id))
+            .await
+            .map_err(|join_error| {
+                ApiError::internal(format!("cancel task panicked: {join_error}"))
+            })?;
+    Ok(Json(cancelled?))
 }
 
 // ---- GET /api/jobs/{job_id}/events ---------------------------------------
