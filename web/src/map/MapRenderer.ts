@@ -50,7 +50,7 @@ import {
 import { buildFootprintIndex, districtMedianFootprintArea, hitTestFootprint, type FootprintIndex } from "./footprints";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
 import { computeHubs, hubRingRadius, type HubSet } from "./hubs";
-import { archivoWidth, MAP_LABEL_FONT } from "./labelMetrics";
+import { archivoLabelWidth, MAP_LABEL_FONT } from "./labelMetrics";
 import { assignNeighbourhoodShades, neighbourhoodCentroids } from "./neighbourhoods";
 import type { FolderLabel, PackageGrouping } from "./packageLayout";
 import { GestureRecognizer, QUIET_AFTER_GESTURE_MS, type GestureEvent, type GestureEventType, type GestureIntent } from "./gestures";
@@ -1810,7 +1810,7 @@ export class MapRenderer {
     // IBM Plex Mono's advance and over- or under-reserved a proportional
     // face depending on the letters.
     const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number) => {
-      const w = archivoWidth(txt, size, weight ?? 400);
+      const w = archivoLabelWidth(txt, size, weight ?? 400);
       const h = size * 1.25;
       if (hits(x - w / 2, y - h, w, h)) return false;
       placed.push([x - w / 2, y - h, w, h]);
@@ -2627,7 +2627,7 @@ export class MapRenderer {
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
     // Archivo, measured with its own widths -- see placeDistrictLabels.
     const put = (x: number, y: number, txt: string, size: number, dk: string) => {
-      const w = archivoWidth(txt, size, 400);
+      const w = archivoLabelWidth(txt, size, 400);
       const h = size * 1.25;
       if (hits(x - w / 2, y - h, w, h)) return;
       placed.push([x - w / 2, y - h, w, h]);

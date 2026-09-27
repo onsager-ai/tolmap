@@ -172,7 +172,10 @@ export function SelectionPanel({
         )}
       </div>
       {(!narrow || isOpen) && (
-        <div className={narrow ? "max-h-[44vh] overflow-y-auto px-3.5 pb-3" : ""}>
+        // 40vh (was 44vh): the header grew with the §8.1 type (a phone
+        // breadcrumb now often wraps to two lines), and header + body must
+        // stay inside the card's 58vh or the route buttons are clipped.
+        <div className={narrow ? "max-h-[40vh] overflow-y-auto px-3.5 pb-3" : ""}>
           {showUnconnected ? (
             <UnconnectedList layout={packageLayout} doc={doc} onSelectFile={onSelectFile} />
           ) : selD == null && sel == null ? (

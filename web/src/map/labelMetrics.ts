@@ -62,3 +62,14 @@ export function archivoWidth(text: string, size: number, weight = 400): number {
   }
   return (units / 1000) * size;
 }
+
+/** The collision-box width for a map label drawn in Archivo: the text's own
+ * width plus 0.4 em. Map labels carry a canvas-coloured halo (paint-order
+ * stroke, 3-3.2 px wide, so ~1.6 px past each glyph edge) and two boxes that
+ * merely touch let their halos and letters run together ("utilscommon.ts" in
+ * the first CI frames of this change). The old mono estimate hid this by
+ * accident: 0.62 em per character against Plex Mono's real 0.6 em left a
+ * few pixels of slack on every label. */
+export function archivoLabelWidth(text: string, size: number, weight = 400): number {
+  return archivoWidth(text, size, weight) + size * 0.4;
+}
