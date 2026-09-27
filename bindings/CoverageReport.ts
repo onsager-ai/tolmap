@@ -2,4 +2,16 @@
 import type { CoverageLanguage } from "./CoverageLanguage";
 import type { ReferenceCoverage } from "./ReferenceCoverage";
 
-export type CoverageReport = { zero_edge_files: number, total_files: number, by_language: { [key in string]: CoverageLanguage }, references?: { [key in string]: ReferenceCoverage } | null, };
+export type CoverageReport = { zero_edge_files: number, total_files: number, by_language: { [key in string]: CoverageLanguage }, references?: { [key in string]: ReferenceCoverage } | null,
+/**
+ * Issue #115's guarded mirror rule ("Mirror rule, guarded"): TypeScript
+ * workspace-package import edges resolved by mapping an `exports`/
+ * `typesVersions` target inside an absent build directory back to its
+ * source file (`extract::mirror_build_output`), counted separately so
+ * a guessed-but-earned edge stays distinguishable from a parsed one --
+ * the lower bound stays auditable. Zero on every map with no such
+ * edge (every map before this rule existed, and every repository
+ * without this exact shape), so it is omitted rather than written as
+ * `0`, keeping every such map byte-identical.
+ */
+build_output_mirror?: number, };

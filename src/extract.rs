@@ -6211,6 +6211,7 @@ fn finish_graph(
         .filter(|(_, value)| !value.symbols.is_empty())
         .map(|(file, value)| (file.clone(), value.symbols.clone()))
         .collect();
+    let build_output_mirror = build_output_mirror_count(repo, &sources)?;
 
     Ok(GraphData {
         repo: repo
@@ -6240,7 +6241,30 @@ fn finish_graph(
         nodes,
         edges,
         references: None,
+        build_output_mirror,
     })
+}
+
+/// Issue #115's guarded mirror rule, counted once per graph: the same
+/// [`workspace_import_coverage`] bucket `--dump-blend` reports, so the
+/// map's persisted `coverage.build_output_mirror` and the diagnostic's
+/// bucket can never drift apart -- one counter, two readers. Zero (and
+/// cheap: [`workspace_import_coverage`] returns immediately) for any
+/// source list with no TypeScript.
+fn build_output_mirror_count(repo: &Path, sources: &[(String, String)]) -> Result<usize> {
+    let typed_sources = sources
+        .iter()
+        .filter_map(|(pkg, lang)| {
+            LanguageKind::parse(lang)
+                .ok()
+                .map(|kind| (pkg.clone(), kind))
+        })
+        .collect::<Vec<_>>();
+    Ok(
+        workspace_import_coverage(repo, &typed_sources)?["build_output_mirror"]
+            .as_u64()
+            .unwrap_or(0) as usize,
+    )
 }
 
 /// The largest static edge value per language, floored at 1.0 -- see the

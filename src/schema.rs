@@ -108,6 +108,21 @@ pub struct CoverageReport {
     // one built before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub references: Option<BTreeMap<String, ReferenceCoverage>>,
+    /// Issue #115's guarded mirror rule ("Mirror rule, guarded"): TypeScript
+    /// workspace-package import edges resolved by mapping an `exports`/
+    /// `typesVersions` target inside an absent build directory back to its
+    /// source file (`extract::mirror_build_output`), counted separately so
+    /// a guessed-but-earned edge stays distinguishable from a parsed one --
+    /// the lower bound stays auditable. Zero on every map with no such
+    /// edge (every map before this rule existed, and every repository
+    /// without this exact shape), so it is omitted rather than written as
+    /// `0`, keeping every such map byte-identical.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub build_output_mirror: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 // One language's reference path under `--refs scip`. Plain `//` comments
@@ -406,6 +421,14 @@ pub struct GraphData {
     /// map's `coverage.references`. Serialized only when present, so a
     /// hand-written graph dumps byte-identically.
     pub references: Option<BTreeMap<String, ReferenceCoverage>>,
+    /// Issue #115's guarded mirror rule: the same count `coverage`'s
+    /// `build_output_mirror` carries, computed once at extraction time
+    /// (`extract::workspace_import_coverage`) and passed through unchanged
+    /// by blend/prune/partition, exactly as `references` is. Zero for any
+    /// graph the rule never touches, and omitted from the JSON in that
+    /// case, so a graph dumped before this field existed -- or of a
+    /// repository the rule never applies to -- stays byte-identical.
+    pub build_output_mirror: usize,
 }
 
 #[derive(Deserialize)]
@@ -423,6 +446,8 @@ struct GraphDataWire {
     edges: Vec<SignalEdge>,
     #[serde(default)]
     references: Option<BTreeMap<String, ReferenceCoverage>>,
+    #[serde(default)]
+    build_output_mirror: usize,
 }
 
 struct GraphImports<'a>(&'a GraphData);
@@ -466,7 +491,9 @@ impl Serialize for GraphData {
     {
         // Keep the derived serializer's established field order so
         // `tolmap dump-graph` remains byte-identical.
-        let fields = if self.references.is_some() { 11 } else { 10 };
+        let fields = 10
+            + if self.references.is_some() { 1 } else { 0 }
+            + if self.build_output_mirror != 0 { 1 } else { 0 };
         let mut state = serializer.serialize_struct("GraphData", fields)?;
         state.serialize_field("repo", &self.repo)?;
         state.serialize_field("pkg", &self.pkg)?;
@@ -480,6 +507,9 @@ impl Serialize for GraphData {
         state.serialize_field("edges", &self.edges)?;
         if let Some(references) = &self.references {
             state.serialize_field("references", references)?;
+        }
+        if self.build_output_mirror != 0 {
+            state.serialize_field("build_output_mirror", &self.build_output_mirror)?;
         }
         state.end()
     }
@@ -541,6 +571,7 @@ impl<'de> Deserialize<'de> for GraphData {
             nodes: wire.nodes,
             edges: wire.edges,
             references: wire.references,
+            build_output_mirror: wire.build_output_mirror,
         })
     }
 }
@@ -610,6 +641,7 @@ mod tests {
                 .collect(),
             edges: Vec::new(),
             references: None,
+            build_output_mirror: 0,
         };
 
         let bytes = serde_json::to_vec(&data).unwrap();
@@ -623,9 +655,40 @@ mod tests {
             serde_json::json!([["a.go", "pkg/b.go", "Target"]])
         );
 
+        assert!(value.get("build_output_mirror").is_none());
+
         let round_trip: GraphData = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(round_trip.imports, data.imports);
         assert_eq!(round_trip.uses, data.uses);
+        assert_eq!(round_trip.build_output_mirror, 0);
         assert_eq!(serde_json::to_vec(&round_trip).unwrap(), bytes);
+    }
+
+    /// Issue #115: a nonzero `build_output_mirror` is written and round-trips,
+    /// exactly like `references` above it.
+    #[test]
+    fn graph_data_keeps_a_nonzero_build_output_mirror_count() {
+        let data = GraphData {
+            repo: "fixture".to_owned(),
+            pkg: ".".to_owned(),
+            lang: "ts".to_owned(),
+            sources: vec![(".".to_owned(), "ts".to_owned())],
+            imports: Vec::new(),
+            symbols: BTreeMap::new(),
+            uses: Vec::new(),
+            commits_scanned: 0,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            references: None,
+            build_output_mirror: 3,
+        };
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
+        assert_eq!(value["build_output_mirror"], 3);
+
+        let round_trip: GraphData =
+            serde_json::from_value(value).expect("a written count deserialises back");
+        assert_eq!(round_trip.build_output_mirror, 3);
     }
 }
