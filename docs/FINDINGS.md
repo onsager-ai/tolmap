@@ -2911,3 +2911,49 @@ The names are the product namer's with #144's rule (finding 56), unseeded, since
 - The 118 and 112 SCIP-only pairs classed "other" in the all-pairs table are mostly namespace-only (the 132 and 133 above); they were not read one by one.
 - `check:view`'s taps (a district, a file and a symbol each produce a card) ran on its two pinned maps, not on the Rust map: the screenshots show the Rust map at three zooms without tapping. The viewer changes here are a language label and two hub basenames.
 - `eval/batch_stability.py` was not run: it imports the frozen Python reference, which has no Rust.
+
+## 59. A Python monorepo whose projects declare themselves below the root is mapped at the root on evidence; a guarded cross-project fallback adds 223 import statements on hindsight, and the nine fixtures do not move
+
+(58 is taken by PR [#161](https://github.com/onsager-ai/tolmap/pull/161).) Issue [#162](https://github.com/onsager-ai/tolmap/issues/162), PR [#163](https://github.com/onsager-ai/tolmap/pull/163). Owner's decision (session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 10844, 2026-09-27T07:26:17Z, AskUserQuestion answer **"Detect + cross-project (Recommended)"**). `vectorize-io/hindsight` was refused `detection_uncertain`: its root `pyproject.toml` is only a uv workspace (no `[project]` name), its 48 manifests sit one or two levels down, and `detect_python` fell through to the `Low` root guess the service refuses (finding 7).
+
+**Detection.** When the root manifest matches nothing and `structural_python_guess` finds nothing, `detect_python` now walks the tree for `pyproject.toml`/`setup.py`, skipping `PY_SKIP_DIR`, the Go/TypeScript and Rust skip lists, hidden directories, `site-packages` and `venv`. A nested manifest counts only when a `name_variants` spelling of its declared name (read by the same parser as the root's, `read_python_metadata_in`) matches a directory with parsed Python files, under its `where` directories or else `src/` then beside the manifest. Two or more counted projects map `.` at `Medium`; one maps that package at `High`, as a root match would; none leaves the `Low` refusal unchanged. `file_count` for `.` stays the root total.
+
+**Guarded cross-project imports.** With `pkg == "."` an absolute import already resolves against the root spelling and the importer's own project (`python_project_root`). A third fallback runs only when both leave a part unresolved (a `from a.b import c` is one part, `import a, b` one part per name): it resolves into the one project whose module table holds the part's top-level name as a module, and only when exactly one project holds it, that project is not the importer's own, and the root does not hold the name either. It is an inference (whether the sibling is installed lives in a lock file or a virtualenv tolmap does not read), kept exact enough by the exactly-one guard, in the same family as #115's mirror rule and finding 43's redirect. A project can own a name only if its manifest declares one: `python_project_root` takes any directory holding a file called `setup.py` as a project, and dify's `api/controllers/console/setup.py` is a Flask controller whose `socketio/` subpackage answered for the external `socketio` library in the first measurement (3 wrong edges, below). A project with a `src/` layout (a `src/` that is not itself a package) also gets the import spelling `pkg.x` beside its directory spelling `src.pkg.x`, never over an existing module. The statements that resolved through the fallback are counted during the extraction pass into `coverage.python_cross_project` (import statements; a statement counts once however many files it reaches), omitted when zero, so every other map is byte-identical; an admitted SCIP Python index resets it to zero, since the hand graph it counted is replaced.
+
+**Fixtures: nothing moved.** [Full nine-fixture parity](https://github.com/onsager-ai/tolmap/actions/runs/36305070611/job/108579963991) placed all nine at 100.0%, Δq 0.0000; the same run's [hand-vs-SCIP score](https://github.com/onsager-ai/tolmap/actions/runs/36305070611/job/108581558837) passed all 11 rows identical to `data/scip/hand_score.json`. No fixture maps Python at `.`, so none has a project table. [django/django through `--compare-ref main`](https://github.com/onsager-ai/tolmap/actions/runs/36305073256) is byte-identical (`map_sha256` `dc02ca5b0a6a…` on both).
+
+**hindsight** (`ccfe85b4851957ac2adf88b4a9ddf9668b2882f1`, plain detection as the service runs it; [remote build 36305073256](https://github.com/onsager-ai/tolmap/actions/runs/36305073256), `--compare-ref main`). Detection: `py at . (972 files, medium confidence) -- Python monorepo: 40 projects declare a package below the root (hindsight-clients/python/hindsight_client, hindsight-dev/hindsight_dev, hindsight-embed/hindsight_embed, …); mapping the repository root`. Python wins on file count over `ts at .` (473, low: no root `package.json`+`tsconfig.json`), `go at hindsight-clients/go` (220, high) and `rs at hindsight-cli` (30, medium); `--all-sources` would merge Python, TypeScript and Go and drop Rust under the floor. `hindsight-api-slim` is not among the 40: it declares `hindsight-api-slim` and ships `hindsight_api` through hatch's `packages`, which the name rule does not read. Main's column is what `tolmap build` produces at the same commit from the `Low` guess, the map the service refuses:
+
+| | main (`Low`, refused by the service) | branch |
+|---|---:|---:|
+| files | 972 | 972 |
+| import edges (map `E`) | 2,273 | **2,444** |
+| districts | 48 | 45 |
+| modularity `q` | 0.6309 | 0.6324 |
+| zero-edge files | 58 | 56 |
+| `python_cross_project` | -- | **223** |
+
+District retention against main's map (`eval/remote_build_result.py`'s `placement`): 93.1%, Δq 0.0015. No hindsight project uses a `src/` layout, so every added edge comes from the cross-project fallback.
+
+**langgenius/dify moves** (`9a0961a4`, `--all-sources`; same run). Its Python source was already `py at .`, at `Low`; it now takes the monorepo path (`Medium`, 39 counted projects, the `src/`-layout providers under `api/providers/`), so its project tables are the same but both new rules apply:
+
+| | main | branch |
+|---|---:|---:|
+| import edges (map `E`) | 28,048 | **30,383** |
+| districts | 75 | **31** |
+| modularity `q` | 0.6889 | 0.6817 |
+| zero-edge files | 314 | 224 |
+| `python_cross_project` | -- | 1,894 |
+
+No edge was lost. In the first run ([36304463595](https://github.com/onsager-ai/tolmap/actions/runs/36304463595), before the named-manifest guard) the 2,338 new edges split 1,932 across projects and 406 inside one project through the `src/` spelling (the providers' and `dify-agent`'s own imports, unresolved before). The cross-project ones land in `api/`'s `core`, `controllers`, `services`, `models`, `libs` and so on, mostly from files under `api/controllers/console/`, which the controller named `setup.py` had cut off from the `api` project on main; 3 went to that directory's `socketio/` for `import socketio` and are the ones the guard removed (2,338 − 3 = 2,335 = 30,383 − 28,048; 1,897 − 3 = 1,894). District retention against main: 68.2%, Δq 0.0072. Dify is not a committed fixture, so this is not gated; it is finding 12's denser-graph effect, but halving the district count is large enough that the owner should look at a rebuilt dify map before relying on it. The pre-existing root cause, a file called `setup.py` making its directory a project, is unchanged here.
+
+**Web.** A `detection_uncertain` or `detection_failed` failure is deterministic, so the job page now shows a one-line explanation above the evidence and no "try again"; transient codes keep the button. `check:view` covers it on a 390 px phone (explanation, evidence kept, no button, no horizontal scroll) against the mock API, and `worker_crashed` is checked to keep its button.
+
+`eval/corpus.toml` gains a hand-added hindsight entry (`args = []`) so `remote-build.yml` can select it; the file's generator needs the local corpus builds, which no longer run.
+
+### Not verified
+- No other corpus repository was rebuilt. Any whose Python source was the `Low` root guess and now counts nested projects changes (dify above); one with exactly one counted project changes source root from `.` to that package.
+- The 223 hindsight and 1,894 dify statements were not read one by one; only the dify breakdown above, by owning project and top-level name, was checked.
+- `[tool.hatch.build.targets.wheel] packages` and similar build-backend package lists are not read, so projects whose distribution name differs from their package (`hindsight-api-slim` → `hindsight_api`) do not count for detection; their files are still in the root map and still own names for the fallback.
+- `eval/batch_stability.py` was not run: it imports the frozen Python reference, which has no project scoping.
+- The phone check ran against the mock API's scripted refusal, not a real service job.
