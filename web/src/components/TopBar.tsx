@@ -1,85 +1,122 @@
+import type { ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import type { CatalogueEntry } from "@/types";
+import type { CatalogueEntry, MapDocument } from "@/types";
+import { repoOptions } from "@/lib/repoOptions";
 import type { Layer } from "@/map/constants";
-import { GeoLayerControls } from "./GeoLayerControls";
+import { TOP_BAR_HEIGHT_PX } from "@/map/layoutProfile";
 import { ThemeToggle } from "./ThemeToggle";
-import { useIsNarrow } from "@/hooks/useIsNarrow";
+import { ChevronDownIcon, PanelIcon } from "./phone/icons";
 
 interface Props {
   catalogue: CatalogueEntry[] | undefined;
+  doc: MapDocument;
   owner: string;
   repo: string;
   layer: Layer;
   onLayer(l: Layer): void;
+  /** The search box, laid out by the caller (MapView owns picking). */
+  search: ReactNode;
+  /** Tablet (docs/UX.md §9): the rail is collapsible from here. Absent on
+   * desktop, where the rail always shows. */
+  rail?: { open: boolean; onToggle(): void };
+  /** 44 px targets (a tablet is touch, §9) instead of desktop's 36-40. */
+  touch: boolean;
 }
 
-/** The reference's <select id="repo"> switched between repos inlined in one
- * HTML page; here each repo is its own route, so the same dropdown just
- * navigates. It's the one piece of chrome that reaches outside this map's
- * own state. */
-export function TopBar({ catalogue, owner, repo, layer, onLayer }: Props) {
-  const navigate = useNavigate();
-  const narrow = useIsNarrow();
-  const slug = `${owner}/${repo}`;
+const LAYERS: { id: Layer; label: string }[] = [
+  { id: "d", label: "District" },
+  { id: "c", label: "Churn" },
+  { id: "x", label: "Complexity" },
+  { id: "p", label: "Package" },
+];
 
-  // Bug (reported 09-21, unverified until now): the dropdown showed a
-  // PREVIOUS repo's slug while a different one was actually on screen.
-  // Reproduced by loading a deep link to a repo the catalogue hasn't
-  // caught up to yet (a slow/partial static or service fetch, or -- as
-  // found while reproducing this -- a build whose bundled /maps/index.json
-  // doesn't include every repo the app can still be linked to). Root cause:
-  // a native <select value={x}> where `x` matches none of its <option>s
-  // does NOT clear the visible selection -- it silently leaves whatever was
-  // selected before (or index 0 on first load), so the currently-viewed
-  // repo can render correctly while the dropdown keeps showing a stale one.
-  // The fix is to guarantee the current repo always HAS a matching option,
-  // synthesized the same way the catalogue-still-undefined fallback below
-  // already does for that case, rather than only when `catalogue` itself is
-  // wholly missing.
-  const options = catalogue ?? [];
-  const withCurrent = options.some((m) => m.slug === slug)
-    ? options
-    : [{ slug, owner, repo, file: "", files: 0, districts: 0, modularity: 0, lang: "" }, ...options];
+/** docs/UX.md §5: the 56 px desktop top bar -- wordmark, repository switcher
+ * (mono), search (460 px; `/` focuses it), flexible space, the layer
+ * segmented control and the theme button. On a tablet (§9) a rail toggle
+ * leads it and every control is 44 px. The top safe-area inset is padded
+ * above it, and the side insets beside it (§9). */
+export function TopBar({ catalogue, doc, owner, repo, layer, onLayer, search, rail, touch }: Props) {
+  const navigate = useNavigate();
+  const slug = `${owner}/${repo}`;
+  const options = repoOptions(catalogue, doc, owner, repo);
+  const h = touch ? "h-11" : "h-9";
 
   return (
-    <div
-      className="flex flex-wrap items-center gap-2.5 border-b border-[var(--rule)] bg-[var(--chrome)] px-3 py-2 text-[var(--on)]"
-      style={{ paddingTop: "calc(8px + env(safe-area-inset-top, 0px))" }}
+    <header
+      data-top-bar
+      className="relative z-40 flex shrink-0 items-center gap-2 border-b border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] min-[900px]:gap-3"
+      style={{
+        height: `calc(${TOP_BAR_HEIGHT_PX}px + env(safe-area-inset-top, 0px))`,
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        paddingLeft: "calc(12px + env(safe-area-inset-left, 0px))",
+        paddingRight: "calc(12px + env(safe-area-inset-right, 0px))",
+      }}
     >
-      {!narrow && <span className="text-row">tolmap</span>}
-      {/* Bug (reported 09-21, fixed 09-24): on a phone, the fixed-width
-          theme toggle and layer-cycle button left this <select> squeezed to
-          a width that clipped its text mid-word ("langgenius/d") with no
-          indication anything was cut off. `min-w-0` removed the native
-          min-content floor so flexbox could shrink it that far in the first
-          place; a `min-w-[]` floor plus `text-ellipsis` (Chromium renders
-          this on a closed <select>, which is what every phone profile here
-          runs) fixes both halves at once: it still shrinks to fit, but
-          never past a legibly-truncated width, and truncation now reads as
-          "langgenius/d…" instead of an abrupt cut. Kept as one control
-          (not moved into the phone drawer) -- the drawer is for the
-          district/landmark list (useIsNarrow's own doc comment), and a
-          second navigation surface there would be a bigger change than this
-          truncation bug calls for. */}
-      <select
-        aria-label="Repository"
-        title={slug}
-        value={slug}
-        onChange={(e) => {
-          const [o, r] = e.target.value.split("/");
-          navigate({ to: "/$owner/$repo", params: { owner: o, repo: r }, search: { geo: "r", layer: "d" } });
-        }}
-        className={`overflow-hidden rounded-md border border-[var(--rule)] bg-[var(--chrome2)] px-2 py-1.5 font-mono text-ellipsis whitespace-nowrap text-[var(--on)] ${narrow ? "min-w-[84px] flex-1 py-1.5 text-body" : "text-meta"}`}
-      >
-        {withCurrent.map((m) => (
-          <option key={m.slug} value={m.slug}>
-            {narrow ? m.slug : `${m.slug} · ${m.files} files`}
-          </option>
-        ))}
-      </select>
-      <span className="flex-1" />
-      <GeoLayerControls layer={layer} onLayer={onLayer} />
-      <ThemeToggle />
-    </div>
+      {rail && (
+        <button
+          type="button"
+          data-rail-toggle
+          aria-label={rail.open ? "Hide the district index" : "Show the district index"}
+          aria-expanded={rail.open}
+          onClick={rail.onToggle}
+          className={`flex w-11 shrink-0 items-center justify-center rounded-[10px] ${h} ${rail.open ? "bg-[var(--chrome2)]" : ""}`}
+        >
+          <PanelIcon />
+        </button>
+      )}
+      <span data-wordmark className="mr-1 shrink-0 text-[18px] font-bold tracking-[-0.02em] max-[899px]:hidden">
+        tolmap
+      </span>
+      {/* A native select laid under a styled face: the browser's own picker
+          opens (a tablet's too), with nothing of ours to dismiss. The face
+          shows the slug alone; each option also carries its file count
+          (issue #171). */}
+      <span data-repo-switcher className={`relative flex min-w-[120px] max-w-[260px] shrink items-center gap-2 rounded-[10px] border border-[var(--rule)] bg-[var(--chrome2)] pl-2.5 pr-2 ${h}`}>
+        <span className="min-w-0 truncate font-mono text-small">{slug}</span>
+        <span className="shrink-0 text-[var(--dim)]">
+          <ChevronDownIcon />
+        </span>
+        <select
+          aria-label="Repository"
+          value={slug}
+          onChange={(e) => {
+            const [o, r] = e.target.value.split("/");
+            navigate({ to: "/$owner/$repo", params: { owner: o, repo: r }, search: { geo: "r", layer: "d" } });
+          }}
+          className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0"
+        >
+          {options.map((m) => (
+            <option key={m.slug} value={m.slug}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </span>
+      {/* Up to §5's 460 px, and shrinking before anything else does (a
+          tablet's top bar has less room than the design's 1440 px), so the
+          layer control and the theme button always fit. Grows three times
+          faster than the spacer so it reaches 460 first. */}
+      <div className="relative min-w-[140px] max-w-[460px] flex-[3_1_0%] min-[900px]:ml-4">{search}</div>
+      <span className="min-w-0 flex-1" />
+      <div role="radiogroup" aria-label="Map layer" data-layer-segmented className="flex shrink-0 rounded-[10px] border border-[var(--rule)] bg-[var(--canvas)] p-0.5">
+        {LAYERS.map((l) => {
+          const on = layer === l.id;
+          return (
+            <button
+              key={l.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              data-layer={l.id}
+              onClick={() => onLayer(l.id)}
+              className={`rounded-[8px] px-2.5 text-small min-[900px]:px-3 ${touch ? "h-11" : "h-[30px]"} ${on ? "bg-[var(--rule)] font-semibold text-[var(--on)]" : "text-[var(--dim)] hover:text-[var(--on)]"}`}
+            >
+              {l.label}
+            </button>
+          );
+        })}
+      </div>
+      <ThemeToggle className={`${touch ? "h-11 w-11" : "h-9 w-9"} rounded-[10px]`} />
+    </header>
   );
 }

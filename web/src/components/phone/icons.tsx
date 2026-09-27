@@ -22,8 +22,8 @@ function Icon({ size = 20, children }: { size?: number; children: ReactNode }) {
   );
 }
 
-export const SearchIcon = () => (
-  <Icon>
+export const SearchIcon = ({ size = 20 }: { size?: number }) => (
+  <Icon size={size}>
     <circle cx="11" cy="11" r="7" />
     <path d="M20 20l-3.5-3.5" />
   </Icon>
@@ -33,13 +33,13 @@ export const SwitchIcon = () => (
     <path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3" />
   </Icon>
 );
-export const PlusIcon = () => (
-  <Icon>
+export const PlusIcon = ({ size = 20 }: { size?: number }) => (
+  <Icon size={size}>
     <path d="M12 5v14M5 12h14" />
   </Icon>
 );
-export const MinusIcon = () => (
-  <Icon>
+export const MinusIcon = ({ size = 20 }: { size?: number }) => (
+  <Icon size={size}>
     <path d="M5 12h14" />
   </Icon>
 );
@@ -90,5 +90,30 @@ export const FileIcon = ({ size = 20 }: { size?: number }) => (
 export const SymbolIcon = ({ size = 20 }: { size?: number }) => (
   <Icon size={size}>
     <path d="M8 4c-2 0-3 1-3 3v2c0 1.5-1 2.5-2 3 1 .5 2 1.5 2 3v2c0 2 1 3 3 3M16 4c2 0 3 1 3 3v2c0 1.5 1 2.5 2 3-1 .5-2 1.5-2 3v2c0 2-1 3-3 3" />
+  </Icon>
+);
+/** docs/UX.md §5's desktop controls: outward corners for fullscreen (the
+ * opposite silhouette of the fit glyph's inward ones), a cross to leave it. */
+export const FullscreenIcon = ({ size = 18 }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" />
+  </Icon>
+);
+export const ExitFullscreenIcon = ({ size = 18 }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M6 6l12 12M18 6L6 18" />
+  </Icon>
+);
+/** The tablet top bar's rail toggle, and the landscape side sheet's (§9): a
+ * panel on the left. */
+export const PanelIcon = ({ size = 20 }: { size?: number }) => (
+  <Icon size={size}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9 4v16" />
+  </Icon>
+);
+export const ChevronDownIcon = ({ size = 14 }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M6 9l6 6 6-6" />
   </Icon>
 );

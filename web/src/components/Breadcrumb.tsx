@@ -81,7 +81,7 @@ export function Breadcrumb({ doc, sel, selSym, selD, selHSym, symbolsDoc, onSele
       // wrapping. At the docs/UX.md §8.1 size a wrapped breadcrumb filled the
       // collapsed 46 px sheet on its own and hid the title under it; shrinking
       // (not clipping) keeps every segment on screen and tappable.
-      className="mb-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-meta text-[var(--dim)] max-[820px]:flex-nowrap max-[820px]:overflow-hidden max-[820px]:[&_*]:min-w-0 max-[820px]:[&_*]:truncate max-[820px]:[&_button]:min-h-[44px]"
+      className="mb-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-meta text-[var(--dim)] touch:flex-nowrap touch:overflow-hidden touch:[&_*]:min-w-0 touch:[&_*]:truncate touch:[&_button]:min-h-[44px]"
     >
       <button type="button" className="font-mono hover:text-[var(--on)]" onClick={onSelectRepo}>
         {doc.repo}

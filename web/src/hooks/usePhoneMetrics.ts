@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 import type { PhoneMetrics } from "@/map/phoneShell";
 
 // docs/UX.md §3.1: the phone shell's heights come from the VISIBLE viewport
+// (§9: and every profile's chrome clears the safe-area insets on all four
+// sides, so all four are measured here)
 // (window.visualViewport) and the real safe-area insets, never from `vh`.
 // env(safe-area-inset-*) has no JS API, so it is read the one way the
 // platform allows: a throwaway element sized by it.
 
-function readInset(side: "top" | "bottom"): number {
+function readInset(side: "top" | "bottom" | "left" | "right"): number {
   const probe = document.createElement("div");
   probe.style.cssText = `position:fixed;left:0;top:0;width:1px;visibility:hidden;pointer-events:none;height:env(safe-area-inset-${side},0px)`;
   document.body.appendChild(probe);
@@ -22,11 +24,13 @@ function measure(): PhoneMetrics {
     height: vv?.height ?? window.innerHeight,
     safeTop: readInset("top"),
     safeBottom: readInset("bottom"),
+    safeLeft: readInset("left"),
+    safeRight: readInset("right"),
   };
 }
 
 function same(a: PhoneMetrics, b: PhoneMetrics) {
-  return a.width === b.width && a.height === b.height && a.safeTop === b.safeTop && a.safeBottom === b.safeBottom;
+  return a.width === b.width && a.height === b.height && a.safeTop === b.safeTop && a.safeBottom === b.safeBottom && a.safeLeft === b.safeLeft && a.safeRight === b.safeRight;
 }
 
 /** Measured synchronously on first render (the map's opening fit needs the

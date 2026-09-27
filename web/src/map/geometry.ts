@@ -272,7 +272,8 @@ export function mixTowardCanvas(color: string | number[], ratio: number = LAYER_
  * has. Same source palette as the reference so screenshots and
  * colour-blind-safe review stay comparable. */
 /** The ramp's three source stops, cool to warm. Exported so the chrome's
- * churn/complexity legend (FooterStats) draws the renderer's own stops
+ * churn/complexity legends (the Layers sheet, the desktop map-quality
+ * strip) draw the renderer's own stops
  * instead of a second hard-coded copy (docs/UX.md principle 7 and §4.6). */
 export const RAMP_STOPS = ["#3E6E88", "#B8B06A", "#C0472F"] as const;
 export function ramp(t: number): string {
