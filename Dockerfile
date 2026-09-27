@@ -101,6 +101,16 @@ COPY --from=native /opt/leiden /opt/leiden
 # resolve there later.
 ENV LEIDEN_PREFIX=/opt/leiden
 
+# #97 phase 3 (docs/WORKER_TIER.md §3.6): `.dockerignore` excludes `.git/`
+# from the build context (it is VCS metadata, large, and no other stage
+# needs it), so `build.rs` cannot `git rev-parse HEAD` in here -- the caller
+# passes the commit it already has from its own checkout instead. Empty
+# (the default, an unset `--build-arg`) falls through to `build.rs`'s own
+# `git rev-parse HEAD`, which then finds nothing and bakes in `"unknown"`,
+# exactly the phase 1 gap #153 could not close.
+ARG TOLMAP_BUILD_COMMIT=
+ENV TOLMAP_BUILD_COMMIT=${TOLMAP_BUILD_COMMIT}
+
 WORKDIR /app
 # The whole repo (minus .dockerignore's exclusions), not just Cargo.*/src/
 # -- `cargo build` alone does not need data/, bindings/ or web/, but
@@ -226,6 +236,20 @@ RUN npm install -g "pnpm@${PNPM_VERSION}"
 ARG SCIP_GO_VERSION=v0.2.7
 ENV GOPATH=/opt/gopath
 RUN go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
+
+# --- Indexer versions file (#97 phase 3, docs/WORKER_TIER.md §3.6): what
+# this image pins, recorded once here rather than asked of each indexer at
+# agent start -- that would be slow, and it would run indexer binaries
+# before a worker even holds a job. `runtime` copies this to
+# `TOLMAP_INDEXER_VERSIONS`'s default path; `service::workers::own_build`
+# reads it once at startup as `hello.build.indexers`. Written from the
+# exact ARG values pinned above, not by parsing each binary's own
+# `--version` output (every one has a different format, and none of that
+# parsing would ever disagree with the pin it was built from anyway).
+RUN mkdir -p /usr/local/share/tolmap \
+    && printf '{"scip-typescript": "%s", "scip-python": "%s", "scip-go": "%s"}\n' \
+        "${SCIP_TYPESCRIPT_VERSION}" "${SCIP_PYTHON_VERSION}" "${SCIP_GO_VERSION}" \
+        > /usr/local/share/tolmap/indexers.json
 
 # --- Python runtime. scip-python wraps Pyright, which needs a real Python
 # interpreter to discover the environment (search paths, stdlib) even with
@@ -372,6 +396,11 @@ COPY --from=scip-tools /opt/node /opt/node
 COPY --from=scip-tools /opt/gopath/bin/scip-go /usr/local/bin/scip-go
 ENV PATH="/opt/go/bin:/opt/node/bin:${PATH}" \
     GOTOOLCHAIN=local
+
+# #97 phase 3 (docs/WORKER_TIER.md §3.6): the indexer versions this image
+# pins, written in `scip-tools` above from the same ARGs that installed
+# them. `TOLMAP_INDEXER_VERSIONS` defaults to this exact path.
+COPY --from=scip-tools /usr/local/share/tolmap/indexers.json /usr/local/share/tolmap/indexers.json
 
 # Env overrides for P1a's ingest module (branch `feat/scip-ingest`, issue
 # #110 P1a) to find these binaries -- chosen here because P1a had not yet

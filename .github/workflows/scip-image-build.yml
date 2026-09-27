@@ -98,14 +98,48 @@ jobs:
       - name: Build the full image (this ref, after)
         run: |
           set -euo pipefail
+          # #97 phase 3 (docs/WORKER_TIER.md §3.6): `.dockerignore` excludes
+          # `.git/` from the build context, so `build.rs` cannot resolve this
+          # itself in there -- this checkout (fetch-depth 0, above) is where
+          # it comes from. Exported for the "Build identity" step below,
+          # which checks that this exact value comes back on
+          # `GET /api/healthz`.
+          commit=$(git rev-parse HEAD)
+          echo "COMMIT=$commit" >> "$GITHUB_ENV"
           start=$(date +%s)
-          docker build -t tolmap:after .
+          docker build --build-arg "TOLMAP_BUILD_COMMIT=$commit" -t tolmap:after .
           end=$(date +%s)
           secs=$((end - start))
           echo "AFTER_BUILD_SECONDS=$secs" >> "$GITHUB_ENV"
           size=$(docker image inspect tolmap:after --format='{{.Size}}')
           echo "AFTER_SIZE_BYTES=$size" >> "$GITHUB_ENV"
           echo "after: ${secs}s, $((size / 1024 / 1024)) MB"
+
+      - name: "Build identity: the baked commit and indexer versions file"
+        run: |
+          set -euo pipefail
+          echo "--- /usr/local/share/tolmap/indexers.json ---"
+          docker run --rm --entrypoint cat tolmap:after /usr/local/share/tolmap/indexers.json | tee /tmp/indexers.json
+          python3 <<'PY'
+          import json
+          indexers = json.load(open("/tmp/indexers.json"))
+          for name in ("scip-typescript", "scip-python", "scip-go"):
+              assert indexers.get(name), (name, indexers)
+          PY
+          docker run -d --name tolmap-healthz -p 127.0.0.1:8789:8787 -e TOLMAP_BIND_ADDR=0.0.0.0 tolmap:after
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8789/api/healthz -o /tmp/healthz.json && break; sleep 1; done
+          cat /tmp/healthz.json
+          python3 - "$COMMIT" <<'PY'
+          import json, sys
+          expected = sys.argv[1]
+          build = json.load(open("/tmp/healthz.json"))["build"]
+          assert build["commit"] == expected, (build, "expected", expected)
+          assert build["commit"] != "unknown", build
+          for name in ("scip-typescript", "scip-python", "scip-go"):
+              assert build["indexers"].get(name), (name, build)
+          print("build identity on GET /api/healthz:", build)
+          PY
+          docker rm -f tolmap-healthz
 
       - name: Build main's image for comparison (before)
         if: github.event_name == 'pull_request' || inputs.compare_main
