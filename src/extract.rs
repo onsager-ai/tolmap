@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
@@ -984,6 +985,10 @@ struct SourceIntermediate {
     /// just the file path. Carried as a map instead of a closure so it can
     /// be merged across sources without boxing a per-source `Fn`.
     module_for: BTreeMap<String, String>,
+    /// Issue #115: import specifiers this source's own edge-resolution loop
+    /// resolved only through the guarded mirror rule (`mirror_build_output`).
+    /// Zero for every language but TypeScript.
+    build_output_mirror: usize,
     /// Issue #162: Python import statements resolved into a sibling project
     /// by the cross-project fallback in [`parse_python_with_progress`],
     /// counted while those edges are made. Zero for every other language.
@@ -1011,6 +1016,11 @@ struct MergedSources {
     /// order (earliest wins) -- `GraphData.pkg`/`GraphData.lang`.
     dominant_pkg: String,
     dominant_lang: LanguageKind,
+    /// Sum of every source's [`SourceIntermediate::build_output_mirror`] --
+    /// `GraphData.build_output_mirror`. Summing is correct because it is a
+    /// per-source, per-import-specifier count, never a per-file one that a
+    /// cross-source collision could double count.
+    build_output_mirror: usize,
     /// Sum of every source's [`SourceIntermediate::python_cross_project`];
     /// `GraphData.python_cross_project`.
     python_cross_project: usize,
@@ -1058,6 +1068,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin,
             uses,
             module_for,
+            build_output_mirror,
             python_cross_project,
         } = intermediate;
         let file_language = files.iter().map(|file| (file.clone(), language)).collect();
@@ -1073,6 +1084,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             sources: vec![(pkg.clone(), language.as_str().to_owned())],
             dominant_pkg: pkg,
             dominant_lang: language,
+            build_output_mirror,
             python_cross_project,
         });
     }
@@ -1114,6 +1126,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
     let mut uses = BTreeSet::new();
     let mut sources = Vec::with_capacity(intermediates.len());
     let mut dominant: Option<(usize, String, LanguageKind)> = None;
+    let mut build_output_mirror = 0usize;
     let mut python_cross_project = 0usize;
 
     for (idx, intermediate) in intermediates.into_iter().enumerate() {
@@ -1127,10 +1140,17 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin: source_fanin,
             uses: source_uses,
             module_for: source_module_for,
+            build_output_mirror: source_build_output_mirror,
             python_cross_project: source_python_cross_project,
         } = intermediate;
 
         sources.push((pkg.clone(), language.as_str().to_owned()));
+        // A per-import-specifier count from this source's own resolution
+        // pass, taken before the cross-source file-ownership filtering
+        // below -- unlike an edge or a use, it names no file pair a
+        // collision could invalidate, so every source's count is kept in
+        // full.
+        build_output_mirror += source_build_output_mirror;
         python_cross_project += source_python_cross_project;
 
         let mut kept = 0usize;
@@ -1200,6 +1220,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         sources,
         dominant_pkg,
         dominant_lang,
+        build_output_mirror,
         python_cross_project,
     })
 }
@@ -2368,6 +2389,7 @@ fn parse_python_with_progress(
         fanin,
         uses,
         module_for,
+        build_output_mirror: 0,
         python_cross_project,
     })
 }
@@ -3591,6 +3613,7 @@ pub fn coverage_diagnostics(
                             modules.as_ref().expect("module index"),
                             &by_directory,
                             &by_file,
+                            None,
                         );
                         imports.push(json!({"specifier": spec, "reason": if targets.as_slice().is_empty() { "no_candidate_in_parsed_set" } else { "resolved" }, "target_count": targets.as_slice().len()}));
                     }
@@ -3651,9 +3674,27 @@ pub fn coverage_diagnostics(
 ///   the map, not just a diagnostic count. `resolved_but_excluded` minus this
 ///   is what stayed unresolved because the package had no parsed file at
 ///   all to redirect to.
+/// - `build_output_mirror`: the subset of the specifiers that had no on-disk
+///   candidate at all where [`mirror_build_output`] (issue #115, "Mirror
+///   rule, guarded") found exactly one parsed source file its build
+///   directory's target would have been generated from. Counted separately
+///   from `resolved`, never merged into it, so a guessed-but-earned edge
+///   stays distinguishable from one a parsed manifest names outright -- the
+///   lower bound stays auditable. This is a diagnostic-only classification
+///   (`--dump-blend`), scanned independently of real extraction, and its
+///   control flow does not exactly match `resolve_multi`'s: a specifier
+///   whose `redirect_excluded_workspace_import` guard passes (some
+///   candidate exists on disk) but whose redirect itself fails never
+///   reaches the mirror check here, whereas the real resolver's mirror
+///   `.or_else` always runs regardless. The persisted map's own
+///   `coverage.build_output_mirror` (`GraphData::build_output_mirror`) is
+///   counted separately, in the real resolution path, for exactly this
+///   reason -- the two numbers can differ and neither is derived from the
+///   other.
 /// - `unresolved`: the specifier names a declared workspace package, but no
 ///   candidate path exists on disk at all (a typo, a missing subpath, an
-///   `exports` map that does not cover it).
+///   `exports` map that does not cover it) and the mirror rule could not
+///   resolve it either (no build directory, or more than one candidate).
 /// - `external`: the specifier does not match any declared workspace
 ///   package prefix at all (an npm dependency).
 pub fn workspace_import_coverage(
@@ -3664,6 +3705,7 @@ pub fn workspace_import_coverage(
     let mut resolved = 0usize;
     let mut resolved_but_excluded = 0usize;
     let mut redirected_from_excluded = 0usize;
+    let mut build_output_mirror = 0usize;
     let mut unresolved = 0usize;
     let mut external = 0usize;
     let mut excluded_examples = BTreeSet::new();
@@ -3742,6 +3784,10 @@ pub fn workspace_import_coverage(
                         {
                             redirected_from_excluded += 1;
                         }
+                    } else if mirror_build_output(repo, &entry.target, subpath, manifest, &by_file)
+                        .is_some()
+                    {
+                        build_output_mirror += 1;
                     } else {
                         unresolved += 1;
                     }
@@ -3754,6 +3800,7 @@ pub fn workspace_import_coverage(
         "resolved": resolved,
         "resolved_but_excluded": resolved_but_excluded,
         "redirected_from_excluded": redirected_from_excluded,
+        "build_output_mirror": build_output_mirror,
         "unresolved": unresolved,
         "external": external,
         "resolved_but_excluded_examples": excluded_examples,
@@ -3978,6 +4025,7 @@ fn parse_multi_with_progress(
                     modules,
                     &by_directory,
                     &ids,
+                    None,
                 ) {
                     ResolvedTargets::One(target) => Some(target),
                     ResolvedTargets::Empty | ResolvedTargets::Many(_) => None,
@@ -4020,6 +4068,13 @@ fn parse_multi_with_progress(
         .and_then(std::env::var_os)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
+    // Issue #115: how many import specifiers `resolve_multi`'s mirror-rule
+    // `.or_else` branch is what resolved, counted only at the one call
+    // below that actually feeds `static_edges`/`directed` -- the graph's
+    // real import edges, not the barrel-following table above or the
+    // symbol-use candidates below, so this count matches what "count these
+    // edges" in issue #115's decision means.
+    let mirror_hits = Cell::new(0usize);
     let mut report = Vec::new();
     for file in parsed.keys() {
         let source_id = ids[file];
@@ -4035,7 +4090,16 @@ fn parse_multi_with_progress(
             unreachable!("parse_multi only ever stores FileRaw::Multi");
         };
         for (index, path) in imports.iter().enumerate() {
-            let resolved = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
+            let resolved = resolve_multi(
+                repo,
+                language,
+                path,
+                file,
+                modules,
+                &by_directory,
+                &ids,
+                Some(&mirror_hits),
+            );
             let package = resolved.as_slice();
             // A TypeScript import links the files that define the names it
             // takes, followed through re-exports; where a name cannot be
@@ -4126,7 +4190,16 @@ fn parse_multi_with_progress(
             }
         }
         for (path, name) in named_candidates {
-            let targets = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
+            let targets = resolve_multi(
+                repo,
+                language,
+                path,
+                file,
+                modules,
+                &by_directory,
+                &ids,
+                None,
+            );
             let targets = targets.as_slice();
             for &target in targets {
                 if target != source_id {
@@ -4188,6 +4261,7 @@ fn parse_multi_with_progress(
         fanin,
         uses,
         module_for,
+        build_output_mirror: mirror_hits.get(),
         python_cross_project: 0,
     })
 }
@@ -4242,6 +4316,10 @@ struct PackageManifest {
     types: Option<String>,
     module: Option<String>,
     main: Option<String>,
+    /// Issue #115's guarded mirror rule. Kept raw, exactly as `exports` is:
+    /// [`mirror_build_output`] reuses [`match_export_key`] unchanged to match
+    /// a subpath's key against a version-range's map, `*`-pattern included.
+    types_versions: Option<serde_json::Value>,
 }
 
 impl ModuleIndex {
@@ -4498,6 +4576,7 @@ fn package_manifest(path: &Path) -> Option<(String, PackageManifest)> {
         types: string_field("types").or_else(|| string_field("typings")),
         module: string_field("module"),
         main: string_field("main"),
+        types_versions: value.get("typesVersions").cloned(),
     };
     Some((name, manifest))
 }
@@ -5615,6 +5694,7 @@ fn resolve_multi<'a>(
     modules: &ModuleIndex,
     by_directory: &'a BTreeMap<String, Vec<FileId>>,
     by_file: &BTreeMap<String, FileId>,
+    mirror_hits: Option<&Cell<usize>>,
 ) -> ResolvedTargets<'a> {
     match language {
         LanguageKind::Go => {
@@ -5659,8 +5739,8 @@ fn resolve_multi<'a>(
                     if entry.is_package {
                         let manifest = modules.packages.get(&entry.target)?;
                         let subpath = (!rest.is_empty()).then_some(rest);
-                        resolve_package_entry(&entry.target, subpath, manifest, by_file).or_else(
-                            || {
+                        resolve_package_entry(&entry.target, subpath, manifest, by_file)
+                            .or_else(|| {
                                 redirect_excluded_workspace_import(
                                     repo,
                                     &entry.target,
@@ -5668,8 +5748,22 @@ fn resolve_multi<'a>(
                                     manifest,
                                     by_file,
                                 )
-                            },
-                        )
+                            })
+                            .or_else(|| {
+                                let mirrored = mirror_build_output(
+                                    repo,
+                                    &entry.target,
+                                    subpath,
+                                    manifest,
+                                    by_file,
+                                );
+                                if mirrored.is_some() {
+                                    if let Some(counter) = mirror_hits {
+                                        counter.set(counter.get() + 1);
+                                    }
+                                }
+                                mirrored
+                            })
                     } else {
                         ts_candidate(&join_slash(&entry.target, rest), by_file)
                     }
@@ -5771,6 +5865,179 @@ fn package_relative_suffix<'a>(path: &'a str, pkg_dir: &str) -> Option<&'a str> 
         return Some(path);
     }
     path.strip_prefix(pkg_dir)?.strip_prefix('/')
+}
+
+/// Output-file extensions [`mirror_build_output`] strips before probing for
+/// the matching TypeScript source. `.d.ts`/`.d.mts`/`.d.cts` are tried before
+/// nothing shorter can wrongly consume part of the stem (there is no bare
+/// `.ts` in this list -- build output never emits one).
+const BUILD_OUTPUT_EXTENSIONS: [&str; 6] = [".d.mts", ".d.cts", ".d.ts", ".mjs", ".cjs", ".js"];
+
+/// Issue #115: a workspace package whose `main`/`module`/`types` all live
+/// under one directory (`dist/`) that is itself absent from the checkout --
+/// a fresh clone, before the package's own bundler has run. Returns that
+/// directory, repo-relative, only when the guard holds; `None` disables
+/// [`mirror_build_output`] entirely for this manifest.
+///
+/// Guard, exactly as the owner's decision states it (issue #115): the first
+/// path segment must be the *same* one for every one of `main`, `module` and
+/// `types` that is actually present -- a manifest that names none of them
+/// has nothing to infer from, and one whose present fields disagree (one
+/// `dist`, one `lib`) does not get a build directory at all, because there
+/// is then no single answer for what "the build directory" even is.
+fn build_output_directory(
+    repo: &Path,
+    pkg_dir: &str,
+    manifest: &PackageManifest,
+) -> Option<String> {
+    let fields = [
+        manifest.main.as_deref(),
+        manifest.module.as_deref(),
+        manifest.types.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let first = *fields.first()?;
+    let segment = first_path_segment(first);
+    if segment.is_empty()
+        || fields
+            .iter()
+            .copied()
+            .any(|value| segment != first_path_segment(value))
+    {
+        return None;
+    }
+    let build_dir = join_slash(pkg_dir, segment);
+    (!repo.join(&build_dir).exists()).then_some(build_dir)
+}
+
+/// The first `/`-separated segment of a manifest field value, with a leading
+/// `./` stripped first -- a plain `fn`, not a closure, so it has the
+/// ordinary `for<'a> fn(&'a str) -> &'a str` signature every call site here
+/// needs; a closure inferred from one call's lifetime does not generalize to
+/// the next.
+fn first_path_segment(value: &str) -> &str {
+    value
+        .trim_start_matches("./")
+        .split('/')
+        .next()
+        .unwrap_or("")
+}
+
+/// `typesVersions`' targets for `subpath` (`None` for the package root,
+/// matched under the key `"."`, matching TypeScript's own convention -- a
+/// version-range's map is keyed by subpath *without* the `exports` map's
+/// leading `./`). Every version-range entry is consulted, not just `"*"`:
+/// tolmap has no real TypeScript version to check a range against, and
+/// matching every range keeps this a lower bound the same way trying every
+/// `exports` condition does (finding 42) -- a target only ever counts once
+/// it names a parsed file.
+fn types_versions_candidates(
+    pkg_dir: &str,
+    subpath: Option<&str>,
+    types_versions: &serde_json::Value,
+) -> Vec<String> {
+    let key = subpath.map_or_else(|| ".".to_owned(), str::to_owned);
+    let Some(versions) = types_versions.as_object() else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for selector in versions.values() {
+        let Some(map) = selector.as_object() else {
+            continue;
+        };
+        let Some((value, capture)) = match_export_key(map, &key) else {
+            continue;
+        };
+        let Some(templates) = value.as_array() else {
+            continue;
+        };
+        candidates.extend(
+            templates
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|template| join_slash(pkg_dir, &substitute_wildcard(template, &capture))),
+        );
+    }
+    candidates
+}
+
+/// Issue #115's owner decision, "Mirror rule, guarded": a workspace import
+/// that names a subpath (or the package root) whose `exports`/`typesVersions`
+/// targets all point into build output that [`build_output_directory`] has
+/// confirmed is absent -- unbuilt in a fresh clone -- links to the source
+/// file the build output would have been generated from, when that mapping
+/// is unambiguous.
+///
+/// **This is an inference, not a parsed fact.** Nothing in the manifest
+/// itself says `dist/` mirrors `src/`; on twenty (issue #115's case) that
+/// link exists only in `packages/twenty-shared`'s JavaScript Vite config,
+/// which tolmap does not and must not evaluate (a build tool's config is
+/// arbitrary code, not data). Two guards keep the inference exact enough to
+/// keep the graph's lower-bound rule:
+/// 1. [`build_output_directory`]'s own guard: the rule never fires for a
+///    package whose build output is checked in, or whose `main`/`module`/
+///    `types` disagree on where output lives.
+/// 2. Every target the manifest names for this subpath -- every `exports`
+///    condition, every `typesVersions` entry, not just the first of either
+///    -- is mapped to a candidate source, and the rule only resolves when
+///    that whole set collapses to exactly one distinct file the parsed set
+///    already has. Two live candidates (`src/x.ts` and `src/x/index.ts`)
+///    is exactly the guess this rule must refuse, so it leaves the import
+///    unresolved instead, same as every other resolver in this file.
+///
+/// This is the same shape as finding 43's generated-code redirect: a real,
+/// unparsed on-disk target (there, one source collection excludes; here, one
+/// that was never built at all) is redirected to a stand-in the parsed set
+/// does have, never a guess about what that stand-in contains. Finding 43's
+/// own guard -- accept only a candidate that already names a parsed file --
+/// still applies unchanged: every candidate here is looked up in `by_file`
+/// exactly like any other, and never assumed to exist.
+///
+/// Runs only when [`resolve_package_entry`] and [`redirect_excluded_workspace_import`]
+/// have both already failed (finding #115's rule 4, "existing resolution
+/// wins"): both are unconditionally tried first at every call site.
+fn mirror_build_output(
+    repo: &Path,
+    pkg_dir: &str,
+    subpath: Option<&str>,
+    manifest: &PackageManifest,
+    by_file: &BTreeMap<String, FileId>,
+) -> Option<FileId> {
+    let build_dir = build_output_directory(repo, pkg_dir, manifest)?;
+    let mut targets = Vec::new();
+    if let Some(exports) = &manifest.exports {
+        targets.extend(exports_candidates(pkg_dir, subpath, exports));
+    }
+    if let Some(types_versions) = &manifest.types_versions {
+        targets.extend(types_versions_candidates(pkg_dir, subpath, types_versions));
+    }
+    let prefix = format!("{build_dir}/");
+    let source_dir = join_slash(pkg_dir, "src");
+    let mut found = BTreeSet::new();
+    for target in targets {
+        let Some(rest) = target.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        let stem = BUILD_OUTPUT_EXTENSIONS
+            .into_iter()
+            .find_map(|ext| rest.strip_suffix(ext))
+            .unwrap_or(rest);
+        for candidate in [
+            format!("{source_dir}/{stem}.ts"),
+            format!("{source_dir}/{stem}.tsx"),
+            format!("{source_dir}/{stem}/index.ts"),
+            format!("{source_dir}/{stem}/index.tsx"),
+        ] {
+            if let Some(&id) = by_file.get(&candidate) {
+                found.insert(id);
+            }
+        }
+    }
+    let mut found = found.into_iter();
+    let only = found.next()?;
+    found.next().is_none().then_some(only)
 }
 
 /// The ordered candidate paths [`resolve_package_entry`] tries, kept separate
@@ -6084,6 +6351,7 @@ fn finish_graph(
         sources,
         dominant_pkg,
         dominant_lang,
+        build_output_mirror,
         python_cross_project,
     } = merged;
 
@@ -6277,6 +6545,7 @@ fn finish_graph(
         nodes,
         edges,
         references: None,
+        build_output_mirror,
         python_cross_project,
     })
 }
@@ -6603,7 +6872,8 @@ mod tests {
                     packages: BTreeMap::new(),
                 },
                 &directories,
-                &files
+                &files,
+                None
             )
             .as_slice(),
             &[0, 1],
@@ -6621,7 +6891,8 @@ mod tests {
                     packages: BTreeMap::new(),
                 },
                 &directories,
-                &files
+                &files,
+                None
             )
             .as_slice()
             .len(),
@@ -7404,6 +7675,7 @@ mod tests {
             &ModuleIndex::default(),
             &directories,
             &ids,
+            None,
         )
         .as_slice()
         .iter()
@@ -7920,6 +8192,432 @@ mod tests {
             .into_iter()
             .collect()
         );
+    }
+
+    /// Issue #115, twenty-shaped: `packages/shared`'s `main`/`module`/`types`
+    /// all agree on `dist/` (absent -- a fresh clone), and its `exports`
+    /// subpath `./types` targets `dist/types/index.d.ts` (`types`),
+    /// `dist/types.mjs` (`import`) and `dist/types.cjs` (`require`). Every
+    /// one of those three targets' candidate set includes
+    /// `src/types/index.ts`, and only that one file exists, so the mirror
+    /// rule resolves it -- the guarded rule this PR adds.
+    #[test]
+    fn exports_subpath_into_absent_dist_mirrors_to_src_index() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{
+                    "./types":{
+                        "types":"./dist/types/index.d.ts",
+                        "import":"./dist/types.mjs",
+                        "require":"./dist/types.cjs"
+                    }
+                }
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/shared/src/types/index.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// The same case as above, but the manifest declares no `exports` at
+    /// all -- only `typesVersions` names the `dist/` target for this
+    /// subpath. The mirror rule must not depend on `exports` being present.
+    #[test]
+    fn types_versions_alone_mirrors_dist_target_to_src() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "typesVersions":{"*":{"types":["dist/types/index.d.ts"]}}
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/shared/src/types/index.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// An entry-named build-output file (`dist/types.mjs`, not
+    /// `dist/types/index.d.ts`) mirrors to `src/types/index.ts` the same
+    /// way: the stem `types` produces `src/types.ts`, `src/types.tsx`,
+    /// `src/types/index.ts` and `src/types/index.tsx` as candidates, and
+    /// only the last of those exists.
+    #[test]
+    fn entry_named_build_output_mirrors_to_src_index() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{
+                    "./types":{"import":"./dist/types.mjs","require":"./dist/types.cjs"}
+                }
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/shared/src/types/index.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// Guard: when the build directory is actually present in the checkout
+    /// (a package built in place, or one committing its output), the mirror
+    /// rule must not apply at all, even though `src/types/index.ts` -- the
+    /// file it would otherwise pick -- exists.
+    #[test]
+    fn mirror_rule_does_not_apply_when_build_directory_exists_in_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{
+                    "./types":{"import":"./dist/types.mjs","require":"./dist/types.cjs"}
+                }
+            }"#,
+        );
+        // Only `dist/` existing matters for the guard; its own contents
+        // need not match the subpath under test.
+        write(dir.path(), "packages/shared/dist/index.cjs", "\n");
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            0
+        );
+    }
+
+    /// Guard: `main`/`module`/`types` must agree on the same first path
+    /// segment. Here `module` points at `lib/` while `main`/`types` point at
+    /// `dist/`, so there is no single build directory to mirror, and the
+    /// rule must not apply.
+    #[test]
+    fn mirror_rule_does_not_apply_when_fields_disagree_on_build_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"lib/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{
+                    "./types":{"import":"./dist/types.mjs","require":"./dist/types.cjs"}
+                }
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            0
+        );
+    }
+
+    /// Guard: two distinct candidate source files (`src/types.ts` and
+    /// `src/types/index.ts`) both exist for the same target, so the mapping
+    /// is ambiguous and the rule must refuse to guess.
+    #[test]
+    fn mirror_rule_leaves_ambiguous_candidates_unresolved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{
+                    "./types":{"import":"./dist/types.mjs","require":"./dist/types.cjs"}
+                }
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types.ts",
+            "export const a = 1;\n",
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edge_count(dir.path(), ".", LanguageKind::TypeScript),
+            0
+        );
+    }
+
+    /// Rule 4, "existing resolution wins": when a subpath already resolves
+    /// through the ordinary `exports` chain (a target outside the build
+    /// directory), the mirror rule must never be consulted, let alone
+    /// override it with a different file.
+    #[test]
+    fn existing_export_target_resolution_is_unchanged_by_the_mirror_rule() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{"./types":{"types":"./types.ts"}}
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/types.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+
+        assert_eq!(
+            resolved_import_edges(dir.path(), ".", LanguageKind::TypeScript),
+            [(
+                "apps/site/main.ts".to_owned(),
+                "packages/shared/types.ts".to_owned(),
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// `workspace_import_coverage`'s new `build_output_mirror` bucket counts
+    /// only the specifiers the mirror rule actually resolved -- a specifier
+    /// naming no candidate anywhere (a typo-shaped subpath) still counts as
+    /// plain `unresolved`.
+    #[test]
+    fn workspace_import_coverage_counts_mirror_resolved_edges_separately() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{
+                    "./types":{"import":"./dist/types.mjs","require":"./dist/types.cjs"}
+                }
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/site/main.ts",
+            "import '@scope/shared/types';\nimport '@scope/shared/missing';\n",
+        );
+
+        let sources = vec![(".".to_owned(), LanguageKind::TypeScript)];
+        let coverage = workspace_import_coverage(dir.path(), &sources).unwrap();
+        assert_eq!(coverage["build_output_mirror"], 1);
+        assert_eq!(coverage["unresolved"], 1);
+        assert_eq!(coverage["resolved"], 0);
+        assert_eq!(coverage["resolved_but_excluded"], 0);
+    }
+
+    /// Issue #115: the persisted count (`GraphData::build_output_mirror`,
+    /// via `coverage.build_output_mirror`) comes from the real extraction
+    /// path's own `resolve_multi` calls, not a second parse. Two files each
+    /// import the same mirror-resolved subpath (two import statements, one
+    /// target) and a third imports a subpath with no candidate anywhere;
+    /// the count is 2 -- one per resolved import statement, not per
+    /// distinct file edge or target file.
+    #[test]
+    fn extraction_path_counts_one_per_mirror_resolved_import_statement() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{
+                    "./types":{"import":"./dist/types.mjs","require":"./dist/types.cjs"}
+                }
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/one/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+        write(
+            dir.path(),
+            "apps/two/main.ts",
+            "import '@scope/shared/types';\nimport '@scope/shared/missing';\n",
+        );
+
+        let modules = module_index(dir.path()).unwrap();
+        let (parsed, raw) = parse_files(dir.path(), ".", LanguageKind::TypeScript).unwrap();
+        let intermediate = parse_multi(
+            dir.path(),
+            ".",
+            LanguageKind::TypeScript,
+            parsed,
+            raw,
+            &modules,
+        )
+        .unwrap();
+        assert_eq!(intermediate.build_output_mirror, 2);
     }
 
     #[test]
@@ -8607,6 +9305,7 @@ mod tests {
             &ModuleIndex::default(),
             &directories,
             &files,
+            None,
         );
         assert_eq!(targets.as_slice(), &[0]);
     }
@@ -8713,6 +9412,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            build_output_mirror: 0,
             python_cross_project: 0,
         };
 
@@ -8730,6 +9430,7 @@ mod tests {
             module_for: [("shared.txt".to_owned(), "shared".to_owned())]
                 .into_iter()
                 .collect(),
+            build_output_mirror: 0,
             python_cross_project: 0,
         };
 

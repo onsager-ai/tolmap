@@ -108,6 +108,20 @@ pub struct CoverageReport {
     // one built before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub references: Option<BTreeMap<String, ReferenceCoverage>>,
+    /// Issue #115's guarded mirror rule ("Mirror rule, guarded"): the count
+    /// of TypeScript workspace-package import specifiers resolved, during
+    /// extraction, only by mapping an `exports`/`typesVersions` target
+    /// inside an absent build directory back to its source file
+    /// (`extract::mirror_build_output`) -- one import statement is one
+    /// unit, not a distinct file edge (two files importing the same mirror-
+    /// resolved specifier count as two). Counted separately so a guessed-
+    /// but-earned import stays distinguishable from a parsed one -- the
+    /// lower bound stays auditable. Zero on every map with no such
+    /// specifier (every map before this rule existed, and every repository
+    /// without this exact shape), so it is omitted rather than written as
+    /// `0`, keeping every such map byte-identical.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub build_output_mirror: usize,
     /// Issue #162: Python import statements that resolved only through
     /// the guarded cross-project fallback -- an absolute import no scope of
     /// its own file resolves, taken into the one sibling project whose
@@ -424,6 +438,16 @@ pub struct GraphData {
     /// map's `coverage.references`. Serialized only when present, so a
     /// hand-written graph dumps byte-identically.
     pub references: Option<BTreeMap<String, ReferenceCoverage>>,
+    /// Issue #115's guarded mirror rule: the same count `coverage`'s
+    /// `build_output_mirror` carries -- import specifiers resolved only by
+    /// `extract::mirror_build_output` during this graph's own extraction
+    /// pass, one per import statement, not a distinct file edge -- summed
+    /// across every `(pkg, lang)` source in `union_sources` and passed
+    /// through unchanged by blend/prune/partition, exactly as `references`
+    /// is. Zero for any graph the rule never touches, and omitted from the
+    /// JSON in that case, so a graph dumped before this field existed -- or
+    /// of a repository the rule never applies to -- stays byte-identical.
+    pub build_output_mirror: usize,
     /// Issue #162: the count `coverage.python_cross_project` carries,
     /// made during extraction (`extract::parse_python_with_progress`) and
     /// passed through blend/prune/partition unchanged, as `references` is.
@@ -447,6 +471,8 @@ struct GraphDataWire {
     edges: Vec<SignalEdge>,
     #[serde(default)]
     references: Option<BTreeMap<String, ReferenceCoverage>>,
+    #[serde(default)]
+    build_output_mirror: usize,
     #[serde(default)]
     python_cross_project: usize,
 }
@@ -493,7 +519,8 @@ impl Serialize for GraphData {
         // Keep the derived serializer's established field order so
         // `tolmap dump-graph` remains byte-identical.
         let fields = 10
-            + usize::from(self.references.is_some())
+            + if self.references.is_some() { 1 } else { 0 }
+            + if self.build_output_mirror != 0 { 1 } else { 0 }
             + usize::from(self.python_cross_project != 0);
         let mut state = serializer.serialize_struct("GraphData", fields)?;
         state.serialize_field("repo", &self.repo)?;
@@ -508,6 +535,9 @@ impl Serialize for GraphData {
         state.serialize_field("edges", &self.edges)?;
         if let Some(references) = &self.references {
             state.serialize_field("references", references)?;
+        }
+        if self.build_output_mirror != 0 {
+            state.serialize_field("build_output_mirror", &self.build_output_mirror)?;
         }
         if self.python_cross_project != 0 {
             state.serialize_field("python_cross_project", &self.python_cross_project)?;
@@ -572,6 +602,7 @@ impl<'de> Deserialize<'de> for GraphData {
             nodes: wire.nodes,
             edges: wire.edges,
             references: wire.references,
+            build_output_mirror: wire.build_output_mirror,
             python_cross_project: wire.python_cross_project,
         })
     }
@@ -642,6 +673,7 @@ mod tests {
                 .collect(),
             edges: Vec::new(),
             references: None,
+            build_output_mirror: 0,
             python_cross_project: 0,
         };
 
@@ -656,13 +688,43 @@ mod tests {
             serde_json::json!([["a.go", "pkg/b.go", "Target"]])
         );
 
+        assert!(value.get("build_output_mirror").is_none());
         assert!(value.get("python_cross_project").is_none());
 
         let round_trip: GraphData = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(round_trip.imports, data.imports);
         assert_eq!(round_trip.uses, data.uses);
-        assert_eq!(round_trip.python_cross_project, 0);
+        assert_eq!(round_trip.build_output_mirror, 0);
         assert_eq!(serde_json::to_vec(&round_trip).unwrap(), bytes);
+    }
+
+    /// Issue #115: a nonzero `build_output_mirror` is written and round-trips,
+    /// exactly like `references` above it.
+    #[test]
+    fn graph_data_keeps_a_nonzero_build_output_mirror_count() {
+        let data = GraphData {
+            repo: "fixture".to_owned(),
+            pkg: ".".to_owned(),
+            lang: "ts".to_owned(),
+            sources: vec![(".".to_owned(), "ts".to_owned())],
+            imports: Vec::new(),
+            symbols: BTreeMap::new(),
+            uses: Vec::new(),
+            commits_scanned: 0,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            references: None,
+            build_output_mirror: 3,
+            python_cross_project: 0,
+        };
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
+        assert_eq!(value["build_output_mirror"], 3);
+
+        let round_trip: GraphData =
+            serde_json::from_value(value).expect("a written count deserialises back");
+        assert_eq!(round_trip.build_output_mirror, 3);
     }
 
     /// Issue #162: a nonzero cross-project count is written, round-trips,
@@ -681,11 +743,13 @@ mod tests {
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,
+            build_output_mirror: 0,
             python_cross_project: 3,
         };
         let value: serde_json::Value =
             serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
         assert_eq!(value["python_cross_project"], 3);
+        assert!(value.get("build_output_mirror").is_none());
         let round_trip: GraphData = serde_json::from_value(value).unwrap();
         assert_eq!(round_trip.python_cross_project, 3);
 
@@ -694,6 +758,7 @@ mod tests {
             total_files: 0,
             by_language: BTreeMap::new(),
             references: None,
+            build_output_mirror: 0,
             python_cross_project: count,
         };
         assert!(serde_json::to_value(coverage(0))
