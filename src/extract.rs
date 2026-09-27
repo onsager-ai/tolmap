@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
@@ -975,6 +976,10 @@ struct SourceIntermediate {
     /// just the file path. Carried as a map instead of a closure so it can
     /// be merged across sources without boxing a per-source `Fn`.
     module_for: BTreeMap<String, String>,
+    /// Issue #115: import specifiers this source's own edge-resolution loop
+    /// resolved only through the guarded mirror rule (`mirror_build_output`).
+    /// Zero for every language but TypeScript.
+    build_output_mirror: usize,
 }
 
 /// The union of every [`SourceIntermediate`], with cross-source file
@@ -998,6 +1003,11 @@ struct MergedSources {
     /// order (earliest wins) -- `GraphData.pkg`/`GraphData.lang`.
     dominant_pkg: String,
     dominant_lang: LanguageKind,
+    /// Sum of every source's [`SourceIntermediate::build_output_mirror`] --
+    /// `GraphData.build_output_mirror`. Summing is correct because it is a
+    /// per-source, per-import-specifier count, never a per-file one that a
+    /// cross-source collision could double count.
+    build_output_mirror: usize,
 }
 
 fn file_ids(
@@ -1042,6 +1052,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin,
             uses,
             module_for,
+            build_output_mirror,
         } = intermediate;
         let file_language = files.iter().map(|file| (file.clone(), language)).collect();
         return Ok(MergedSources {
@@ -1056,6 +1067,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             sources: vec![(pkg.clone(), language.as_str().to_owned())],
             dominant_pkg: pkg,
             dominant_lang: language,
+            build_output_mirror,
         });
     }
 
@@ -1096,6 +1108,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
     let mut uses = BTreeSet::new();
     let mut sources = Vec::with_capacity(intermediates.len());
     let mut dominant: Option<(usize, String, LanguageKind)> = None;
+    let mut build_output_mirror = 0usize;
 
     for (idx, intermediate) in intermediates.into_iter().enumerate() {
         let SourceIntermediate {
@@ -1108,9 +1121,16 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin: source_fanin,
             uses: source_uses,
             module_for: source_module_for,
+            build_output_mirror: source_build_output_mirror,
         } = intermediate;
 
         sources.push((pkg.clone(), language.as_str().to_owned()));
+        // A per-import-specifier count from this source's own resolution
+        // pass, taken before the cross-source file-ownership filtering
+        // below -- unlike an edge or a use, it names no file pair a
+        // collision could invalidate, so every source's count is kept in
+        // full.
+        build_output_mirror += source_build_output_mirror;
 
         let mut kept = 0usize;
         for (file, value) in source_parsed {
@@ -1179,6 +1199,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         sources,
         dominant_pkg,
         dominant_lang,
+        build_output_mirror,
     })
 }
 
@@ -2230,6 +2251,7 @@ fn parse_python_with_progress(
         fanin,
         uses,
         module_for,
+        build_output_mirror: 0,
     })
 }
 
@@ -3362,6 +3384,7 @@ pub fn coverage_diagnostics(
                             modules.as_ref().expect("module index"),
                             &by_directory,
                             &by_file,
+                            None,
                         );
                         imports.push(json!({"specifier": spec, "reason": if targets.as_slice().is_empty() { "no_candidate_in_parsed_set" } else { "resolved" }, "target_count": targets.as_slice().len()}));
                     }
@@ -3428,7 +3451,17 @@ pub fn coverage_diagnostics(
 ///   directory's target would have been generated from. Counted separately
 ///   from `resolved`, never merged into it, so a guessed-but-earned edge
 ///   stays distinguishable from one a parsed manifest names outright -- the
-///   lower bound stays auditable.
+///   lower bound stays auditable. This is a diagnostic-only classification
+///   (`--dump-blend`), scanned independently of real extraction, and its
+///   control flow does not exactly match `resolve_multi`'s: a specifier
+///   whose `redirect_excluded_workspace_import` guard passes (some
+///   candidate exists on disk) but whose redirect itself fails never
+///   reaches the mirror check here, whereas the real resolver's mirror
+///   `.or_else` always runs regardless. The persisted map's own
+///   `coverage.build_output_mirror` (`GraphData::build_output_mirror`) is
+///   counted separately, in the real resolution path, for exactly this
+///   reason -- the two numbers can differ and neither is derived from the
+///   other.
 /// - `unresolved`: the specifier names a declared workspace package, but no
 ///   candidate path exists on disk at all (a typo, a missing subpath, an
 ///   `exports` map that does not cover it) and the mirror rule could not
@@ -3763,6 +3796,7 @@ fn parse_multi_with_progress(
                     modules,
                     &by_directory,
                     &ids,
+                    None,
                 ) {
                     ResolvedTargets::One(target) => Some(target),
                     ResolvedTargets::Empty | ResolvedTargets::Many(_) => None,
@@ -3805,6 +3839,13 @@ fn parse_multi_with_progress(
         .and_then(std::env::var_os)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
+    // Issue #115: how many import specifiers `resolve_multi`'s mirror-rule
+    // `.or_else` branch is what resolved, counted only at the one call
+    // below that actually feeds `static_edges`/`directed` -- the graph's
+    // real import edges, not the barrel-following table above or the
+    // symbol-use candidates below, so this count matches what "count these
+    // edges" in issue #115's decision means.
+    let mirror_hits = Cell::new(0usize);
     let mut report = Vec::new();
     for file in parsed.keys() {
         let source_id = ids[file];
@@ -3820,7 +3861,16 @@ fn parse_multi_with_progress(
             unreachable!("parse_multi only ever stores FileRaw::Multi");
         };
         for (index, path) in imports.iter().enumerate() {
-            let resolved = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
+            let resolved = resolve_multi(
+                repo,
+                language,
+                path,
+                file,
+                modules,
+                &by_directory,
+                &ids,
+                Some(&mirror_hits),
+            );
             let package = resolved.as_slice();
             // A TypeScript import links the files that define the names it
             // takes, followed through re-exports; where a name cannot be
@@ -3911,7 +3961,16 @@ fn parse_multi_with_progress(
             }
         }
         for (path, name) in named_candidates {
-            let targets = resolve_multi(repo, language, path, file, modules, &by_directory, &ids);
+            let targets = resolve_multi(
+                repo,
+                language,
+                path,
+                file,
+                modules,
+                &by_directory,
+                &ids,
+                None,
+            );
             let targets = targets.as_slice();
             for &target in targets {
                 if target != source_id {
@@ -3973,6 +4032,7 @@ fn parse_multi_with_progress(
         fanin,
         uses,
         module_for,
+        build_output_mirror: mirror_hits.get(),
     })
 }
 
@@ -5404,6 +5464,7 @@ fn resolve_multi<'a>(
     modules: &ModuleIndex,
     by_directory: &'a BTreeMap<String, Vec<FileId>>,
     by_file: &BTreeMap<String, FileId>,
+    mirror_hits: Option<&Cell<usize>>,
 ) -> ResolvedTargets<'a> {
     match language {
         LanguageKind::Go => {
@@ -5459,7 +5520,19 @@ fn resolve_multi<'a>(
                                 )
                             })
                             .or_else(|| {
-                                mirror_build_output(repo, &entry.target, subpath, manifest, by_file)
+                                let mirrored = mirror_build_output(
+                                    repo,
+                                    &entry.target,
+                                    subpath,
+                                    manifest,
+                                    by_file,
+                                );
+                                if mirrored.is_some() {
+                                    if let Some(counter) = mirror_hits {
+                                        counter.set(counter.get() + 1);
+                                    }
+                                }
+                                mirrored
                             })
                     } else {
                         ts_candidate(&join_slash(&entry.target, rest), by_file)
@@ -6048,6 +6121,7 @@ fn finish_graph(
         sources,
         dominant_pkg,
         dominant_lang,
+        build_output_mirror,
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
@@ -6211,7 +6285,6 @@ fn finish_graph(
         .filter(|(_, value)| !value.symbols.is_empty())
         .map(|(file, value)| (file.clone(), value.symbols.clone()))
         .collect();
-    let build_output_mirror = build_output_mirror_count(repo, &sources)?;
 
     Ok(GraphData {
         repo: repo
@@ -6243,28 +6316,6 @@ fn finish_graph(
         references: None,
         build_output_mirror,
     })
-}
-
-/// Issue #115's guarded mirror rule, counted once per graph: the same
-/// [`workspace_import_coverage`] bucket `--dump-blend` reports, so the
-/// map's persisted `coverage.build_output_mirror` and the diagnostic's
-/// bucket can never drift apart -- one counter, two readers. Zero (and
-/// cheap: [`workspace_import_coverage`] returns immediately) for any
-/// source list with no TypeScript.
-fn build_output_mirror_count(repo: &Path, sources: &[(String, String)]) -> Result<usize> {
-    let typed_sources = sources
-        .iter()
-        .filter_map(|(pkg, lang)| {
-            LanguageKind::parse(lang)
-                .ok()
-                .map(|kind| (pkg.clone(), kind))
-        })
-        .collect::<Vec<_>>();
-    Ok(
-        workspace_import_coverage(repo, &typed_sources)?["build_output_mirror"]
-            .as_u64()
-            .unwrap_or(0) as usize,
-    )
 }
 
 /// The largest static edge value per language, floored at 1.0 -- see the
@@ -6589,7 +6640,8 @@ mod tests {
                     packages: BTreeMap::new(),
                 },
                 &directories,
-                &files
+                &files,
+                None
             )
             .as_slice(),
             &[0, 1],
@@ -6607,7 +6659,8 @@ mod tests {
                     packages: BTreeMap::new(),
                 },
                 &directories,
-                &files
+                &files,
+                None
             )
             .as_slice()
             .len(),
@@ -7207,6 +7260,7 @@ mod tests {
             &ModuleIndex::default(),
             &directories,
             &ids,
+            None,
         )
         .as_slice()
         .iter()
@@ -8093,6 +8147,64 @@ mod tests {
         assert_eq!(coverage["resolved_but_excluded"], 0);
     }
 
+    /// Issue #115: the persisted count (`GraphData::build_output_mirror`,
+    /// via `coverage.build_output_mirror`) comes from the real extraction
+    /// path's own `resolve_multi` calls, not a second parse. Two files each
+    /// import the same mirror-resolved subpath (two import statements, one
+    /// target) and a third imports a subpath with no candidate anywhere;
+    /// the count is 2 -- one per resolved import statement, not per
+    /// distinct file edge or target file.
+    #[test]
+    fn extraction_path_counts_one_per_mirror_resolved_import_statement() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/package.json",
+            r#"{
+                "name":"@scope/shared",
+                "main":"dist/index.cjs",
+                "module":"dist/index.mjs",
+                "types":"dist/index.d.ts",
+                "exports":{
+                    "./types":{"import":"./dist/types.mjs","require":"./dist/types.cjs"}
+                }
+            }"#,
+        );
+        write(
+            dir.path(),
+            "packages/shared/src/types/index.ts",
+            "export const types = 1;\n",
+        );
+        write(
+            dir.path(),
+            "apps/one/main.ts",
+            "import '@scope/shared/types';\n",
+        );
+        write(
+            dir.path(),
+            "apps/two/main.ts",
+            "import '@scope/shared/types';\nimport '@scope/shared/missing';\n",
+        );
+
+        let modules = module_index(dir.path()).unwrap();
+        let (parsed, raw) = parse_files(dir.path(), ".", LanguageKind::TypeScript).unwrap();
+        let intermediate = parse_multi(
+            dir.path(),
+            ".",
+            LanguageKind::TypeScript,
+            parsed,
+            raw,
+            &modules,
+        )
+        .unwrap();
+        assert_eq!(intermediate.build_output_mirror, 2);
+    }
+
     #[test]
     fn main_pointing_at_dist_with_no_matching_src_file_is_left_unresolved() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -8778,6 +8890,7 @@ mod tests {
             &ModuleIndex::default(),
             &directories,
             &files,
+            None,
         );
         assert_eq!(targets.as_slice(), &[0]);
     }

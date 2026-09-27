@@ -108,13 +108,16 @@ pub struct CoverageReport {
     // one built before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub references: Option<BTreeMap<String, ReferenceCoverage>>,
-    /// Issue #115's guarded mirror rule ("Mirror rule, guarded"): TypeScript
-    /// workspace-package import edges resolved by mapping an `exports`/
-    /// `typesVersions` target inside an absent build directory back to its
-    /// source file (`extract::mirror_build_output`), counted separately so
-    /// a guessed-but-earned edge stays distinguishable from a parsed one --
-    /// the lower bound stays auditable. Zero on every map with no such
-    /// edge (every map before this rule existed, and every repository
+    /// Issue #115's guarded mirror rule ("Mirror rule, guarded"): the count
+    /// of TypeScript workspace-package import specifiers resolved, during
+    /// extraction, only by mapping an `exports`/`typesVersions` target
+    /// inside an absent build directory back to its source file
+    /// (`extract::mirror_build_output`) -- one import statement is one
+    /// unit, not a distinct file edge (two files importing the same mirror-
+    /// resolved specifier count as two). Counted separately so a guessed-
+    /// but-earned import stays distinguishable from a parsed one -- the
+    /// lower bound stays auditable. Zero on every map with no such
+    /// specifier (every map before this rule existed, and every repository
     /// without this exact shape), so it is omitted rather than written as
     /// `0`, keeping every such map byte-identical.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -422,12 +425,14 @@ pub struct GraphData {
     /// hand-written graph dumps byte-identically.
     pub references: Option<BTreeMap<String, ReferenceCoverage>>,
     /// Issue #115's guarded mirror rule: the same count `coverage`'s
-    /// `build_output_mirror` carries, computed once at extraction time
-    /// (`extract::workspace_import_coverage`) and passed through unchanged
-    /// by blend/prune/partition, exactly as `references` is. Zero for any
-    /// graph the rule never touches, and omitted from the JSON in that
-    /// case, so a graph dumped before this field existed -- or of a
-    /// repository the rule never applies to -- stays byte-identical.
+    /// `build_output_mirror` carries -- import specifiers resolved only by
+    /// `extract::mirror_build_output` during this graph's own extraction
+    /// pass, one per import statement, not a distinct file edge -- summed
+    /// across every `(pkg, lang)` source in `union_sources` and passed
+    /// through unchanged by blend/prune/partition, exactly as `references`
+    /// is. Zero for any graph the rule never touches, and omitted from the
+    /// JSON in that case, so a graph dumped before this field existed -- or
+    /// of a repository the rule never applies to -- stays byte-identical.
     pub build_output_mirror: usize,
 }
 
