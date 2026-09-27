@@ -1146,6 +1146,8 @@ fn store_worker_result_owned(
                 symbols_path: &output.symbols_path,
                 symbols_dir: &output.symbols_dir,
                 names_cache: &output.names_cache,
+                files: output.files,
+                districts: output.districts,
             },
             owner,
         )
@@ -2688,7 +2690,14 @@ mod tests {
             let job_dir = state.config.cache_dir.join("work/test/demo/job");
             let output_dir = job_dir.join("output");
             std::fs::create_dir_all(output_dir.join("demo.symbols")).unwrap();
-            std::fs::write(output_dir.join("demo.json"), b"{}").unwrap();
+            // Matches `result()`'s reported `files: 1, districts: 1` --
+            // `worker_result::check_counts` refuses a result whose counts
+            // disagree with the map document it shipped (#97 phase 2).
+            std::fs::write(
+                output_dir.join("demo.json"),
+                br#"{"F": ["a.py"], "districts": {"0": {}}}"#,
+            )
+            .unwrap();
             std::fs::write(output_dir.join("demo.symbols.json"), b"{}").unwrap();
             std::fs::write(output_dir.join("demo.symbols/0.json"), b"{}").unwrap();
             std::fs::write(
@@ -2866,6 +2875,27 @@ mod tests {
         let fixture = ResultFixture::new();
         let mut result = fixture.result();
         result["commit"] = serde_json::json!("f".repeat(40));
+        fixture.assert_refused(fixture.store(result));
+    }
+
+    /// §5.4, #97 phase 2: the map document itself has one file and one
+    /// district; a `files` that disagrees is refused before anything is
+    /// stored, the local-mode half of `worker_result::check_counts`.
+    #[cfg(unix)]
+    #[test]
+    fn a_files_count_other_than_the_map_is_refused() {
+        let fixture = ResultFixture::new();
+        let mut result = fixture.result();
+        result["files"] = serde_json::json!(2);
+        fixture.assert_refused(fixture.store(result));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_districts_count_other_than_the_map_is_refused() {
+        let fixture = ResultFixture::new();
+        let mut result = fixture.result();
+        result["districts"] = serde_json::json!(2);
         fixture.assert_refused(fixture.store(result));
     }
 

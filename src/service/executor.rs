@@ -136,10 +136,19 @@ pub trait CancelProbe {
 /// On `Err` the job directory has already been removed; on `Ok` the caller
 /// removes [`Executed::job_dir`] once it has registered the result.
 ///
-/// Local mode keeps today's commit behaviour: the checkout is whatever the
-/// clone resolves HEAD to, and `job.commit` (pinned at admission) is not
-/// consulted. Remote mode will check out `job.commit` instead
-/// (docs/WORKER_TIER.md §3.3).
+/// **The commit is pinned** (docs/WORKER_TIER.md §3.3, #97 phase 2): once
+/// the job's own copy exists (never the shared clone cache other jobs still
+/// read), it is checked out to `job.commit` -- the commit the master
+/// resolved and admitted the job against -- so a branch that moved between
+/// admission and this clone cannot silently change what gets built. Local
+/// mode and remote mode share this one executor, so both get it from the
+/// same call to [`pin_commit`] below; there is no separate "local mode
+/// behaviour" left to keep. A `JobSpec` with no admitted commit (not a git
+/// object id -- empty, in practice only a caller that bypassed admission)
+/// keeps the previous behaviour of building whatever HEAD the clone/copy
+/// resolved to: every job admitted through `POST /api/index` has one, for a
+/// `local/<name>` path exactly as for a remote URL (`clone::resolve_head`
+/// runs for both in `service::http::post_index`, before `jobs::spawn_job`).
 pub fn execute(
     env: &ExecEnv,
     job_id: Uuid,
@@ -188,7 +197,7 @@ pub fn execute(
     // See `materialize_job_repo`'s doc comment for the full design (why
     // this runs here rather than in the worker, the `--no-hardlinks`
     // reasoning, and the cancellation-during-clone gap this doesn't cover).
-    let checkout = match materialize_job_repo(
+    let mut checkout = match materialize_job_repo(
         &env.clone_cache,
         &repo_ref,
         env.clone_cache_bytes,
@@ -198,6 +207,20 @@ pub fn execute(
         Ok(checkout) => checkout,
         Err(error) => return fail(error),
     };
+    // See `execute`'s doc comment: pin the job's own copy to the admitted
+    // commit, keeping the branch name so the child still learns one. Runs
+    // before `harden_job_dir` chowns the directory away from this process's
+    // uid, and before anything below reads `checkout.commit` -- from here
+    // on it names what was actually built, which is what `jobs::register`
+    // (local mode) and `agent::JobContext::upload` (remote mode) both check
+    // the child's reported commit against, so neither had to change to gain
+    // that check.
+    if worker_result::is_object_id(&job.commit) {
+        if let Err(error) = pin_commit(&job_repo_dir, &job.commit, checkout.branch.as_deref()) {
+            return fail(error);
+        }
+        checkout.commit = job.commit.clone();
+    }
     let names_input = output_dir.join("worker-names-input.json");
     if let Err(error) = crate::naming::save_cache(&names_input, &inputs.names) {
         return fail(internal(&error));
@@ -453,6 +476,48 @@ pub(crate) fn materialize_job_repo(
     }
     sink.clone_finished(clone_started.elapsed().as_secs_f64(), true);
     Ok(materialized)
+}
+
+/// Points `job_repo_dir`'s HEAD at `commit`, in the job's own copy only --
+/// never the shared clone cache `materialize_job_repo` fetches into, which
+/// other jobs still read concurrently. `branch` keeps its name (`checkout
+/// -B <branch> <commit>`) rather than leaving HEAD detached: the job child
+/// learns its branch from HEAD (`clone::current_branch` inside its own,
+/// now-instant "clone" of this already-checked-out directory), and that
+/// branch drives warm-start selection and the stored map row
+/// (docs/WORKER_TIER.md §3.3, "Keep the branch name"). A `None` branch --
+/// the source itself was a detached checkout, which nothing in this
+/// codebase produces today but a hand-built fixture could -- detaches at
+/// `commit` instead, matching what was already true before the pin.
+///
+/// A commit no longer reachable in the clone (the branch was force-pushed
+/// past it between admission and this clone) makes `git checkout` fail;
+/// that is surfaced as `clone_failed` naming the commit, never a silent
+/// fall-back to whatever HEAD already resolved to -- the whole point of
+/// pinning is that a job never silently builds the wrong commit.
+fn pin_commit(job_repo_dir: &Path, commit: &str, branch: Option<&str>) -> Result<(), ErrorBody> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(job_repo_dir).arg("checkout");
+    match branch {
+        Some(branch) => {
+            command.arg("-B").arg(branch);
+        }
+        None => {
+            command.arg("--detach");
+        }
+    }
+    command.arg(commit);
+    let output = command
+        .output()
+        .map_err(|error| ApiError::internal(format!("run git checkout: {error}")).body)?;
+    if !output.status.success() {
+        return Err(ApiError::clone_failed(format!(
+            "commit {commit} is not in the job's clone: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .body);
+    }
+    Ok(())
 }
 
 /// Issue #141: the map store (`cache_dir/maps/<owner>/<repo>`) is the
@@ -1010,4 +1075,137 @@ pub(crate) fn run_child(
         });
     }
     Ok(outcome.expect("checked above"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-commit git fixture on branch `main` -- the same init/commit
+    /// sequence `jobs.rs`'s `init_git_fixture` uses, kept local to this
+    /// module rather than shared, since these tests exercise `pin_commit`
+    /// alone and have no other reason to depend on `service::jobs`.
+    fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(["-c", "user.name=test", "-c", "user.email=test@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
+    }
+
+    fn init_repo_on_branch(dir: &Path, branch: &str) -> String {
+        assert!(git(dir, &["init", "-q", "-b", branch]).status.success());
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        assert!(git(dir, &["add", "-A"]).status.success());
+        assert!(git(dir, &["commit", "-qm", "initial"]).status.success());
+        String::from_utf8(git(dir, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    fn commit_file(dir: &Path, name: &str, message: &str) -> String {
+        std::fs::write(dir.join(name), b"more\n").unwrap();
+        assert!(git(dir, &["add", "-A"]).status.success());
+        assert!(git(dir, &["commit", "-qm", message]).status.success());
+        String::from_utf8(git(dir, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    fn head_commit(dir: &Path) -> String {
+        String::from_utf8(git(dir, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    /// `None` for a detached HEAD, exactly as `clone::current_branch`
+    /// (private to that module) treats it -- reimplemented here rather than
+    /// exposed from there, since this is the only test that needs it.
+    fn current_branch(dir: &Path) -> Option<String> {
+        let output = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        if !output.status.success() {
+            return None;
+        }
+        let name = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+        (name != "HEAD" && !name.is_empty()).then_some(name)
+    }
+
+    /// docs/WORKER_TIER.md §3.3 "The commit is pinned": a branch that moves
+    /// between admission and this clone must not change what gets built.
+    /// `pin_commit` is exercised directly against a job's own local-clone
+    /// copy, which is exactly what `execute` hands it (`materialize_job_repo`
+    /// then `local_clone_into`, both already covered by `jobs.rs`'s
+    /// `materialize_job_repo_reuses_the_shared_clone_cache_on_a_second_call`).
+    #[test]
+    fn pins_to_the_admitted_commit_even_though_the_branch_moved_on() {
+        let source = tempfile::tempdir().unwrap();
+        let admitted = init_repo_on_branch(source.path(), "trunk");
+        // The branch moves on after the commit was admitted, before the
+        // job's own copy is made -- the race this pin closes.
+        let later = commit_file(source.path(), "b.txt", "later");
+        assert_ne!(admitted, later);
+
+        let job_repo = tempfile::tempdir().unwrap();
+        clone::local_clone_into(source.path(), job_repo.path()).unwrap();
+        assert_eq!(
+            head_commit(job_repo.path()),
+            later,
+            "sanity: copied HEAD is the moved-on tip"
+        );
+
+        pin_commit(job_repo.path(), &admitted, Some("trunk")).unwrap();
+
+        assert_eq!(
+            head_commit(job_repo.path()),
+            admitted,
+            "the job's own copy must build the admitted commit, not the branch's later tip"
+        );
+        assert_eq!(
+            current_branch(job_repo.path()).as_deref(),
+            Some("trunk"),
+            "HEAD must still be a branch, not detached, so the child still learns one"
+        );
+    }
+
+    /// A commit that no longer exists in the clone (force-pushed away, and
+    /// GC'd, or never fetched) must fail the job, never silently fall back
+    /// to whatever HEAD already resolved to.
+    #[test]
+    fn a_commit_missing_from_the_clone_fails_clone_failed() {
+        let source = tempfile::tempdir().unwrap();
+        init_repo_on_branch(source.path(), "trunk");
+        let job_repo = tempfile::tempdir().unwrap();
+        clone::local_clone_into(source.path(), job_repo.path()).unwrap();
+
+        let missing = "f".repeat(40);
+        let error = pin_commit(job_repo.path(), &missing, Some("trunk")).unwrap_err();
+        assert_eq!(error.error, "clone_failed");
+        assert!(
+            error.message.contains(&missing),
+            "the failure must name the missing commit: {}",
+            error.message
+        );
+    }
+
+    /// No branch to keep (a hand-built detached fixture, never produced by
+    /// this codebase today) still pins the commit, just without a branch
+    /// name for the child to learn -- the same as before the pin existed.
+    #[test]
+    fn a_detached_source_pins_the_commit_and_stays_detached() {
+        let source = tempfile::tempdir().unwrap();
+        let first = init_repo_on_branch(source.path(), "trunk");
+        commit_file(source.path(), "b.txt", "second");
+
+        let job_repo = tempfile::tempdir().unwrap();
+        clone::local_clone_into(source.path(), job_repo.path()).unwrap();
+
+        pin_commit(job_repo.path(), &first, None).unwrap();
+
+        assert_eq!(head_commit(job_repo.path()), first);
+        assert_eq!(current_branch(job_repo.path()), None);
+    }
 }
