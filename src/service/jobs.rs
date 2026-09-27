@@ -185,20 +185,25 @@ struct RegistryInner {
     /// is admitted after a shutdown signal starts draining the registry.
     stopping: bool,
     /// `TOLMAP_WORKERS=loopback:N` (#97 phase 1): the worker hub every job
-    /// runs through instead of a local child, and the number of worker
-    /// slots, which is the number of agents rather than
-    /// `TOLMAP_MAX_CONCURRENT_JOBS`. Both `None` in local mode, which is
-    /// every registry `new_registry` builds until `set_remote` runs, so
-    /// local mode and every existing test see exactly the registry they
-    /// saw before.
+    /// runs through instead of a local child, and the worker classes, one
+    /// slot per agent (#97 phase 2, step 4: `TOLMAP_LOOPBACK_CLASSES`, or
+    /// one class of N slots), rather than `TOLMAP_MAX_CONCURRENT_JOBS`.
+    /// Both `None` in local mode, which is every registry `new_registry`
+    /// builds until `set_remote` runs, so local mode and every existing test
+    /// see exactly the registry they saw before.
     remote: Option<Arc<crate::service::workers::WorkerHub>>,
-    slots_override: Option<usize>,
+    remote_classes: Option<Vec<Class>>,
     /// The last admission number given out (`PendingJob::order`).
     next_order: i64,
     /// Worker modes (#97 phase 2): jobs whose runner put them back in the
     /// queue (a lost worker, a released job). `worker_loop` re-inserts
     /// them when the runner returns instead of ending them.
     requeue: HashSet<Uuid>,
+    /// Worker modes (#97 phase 2, step 4): of those, the ones going back to
+    /// another class's queue -- a reroute, an out-of-memory escalation, a
+    /// lost worker that died of memory -- by that class. The store has the
+    /// new class already (`Store::rebind_job`).
+    rebind: HashMap<Uuid, usize>,
     /// Worker modes: jobs a restarted master found leased or running, by
     /// the epoch of that lease. Their runner adopts the lease instead of
     /// asking for a new one, and it expires as any lease does (§6 "master
@@ -221,15 +226,15 @@ impl RegistryInner {
         if !self.classes.is_empty() {
             return;
         }
-        // Loopback mode: each agent is one slot of the one local class, and
+        // Loopback mode: each agent is one slot of its class (one class of
+        // unknown size unless `TOLMAP_LOOPBACK_CLASSES` says otherwise), and
         // `TOLMAP_MAX_CONCURRENT_JOBS` does not apply (docs/API.md).
-        let mut classes = vec![Class {
-            usable_memory: None,
-            slots: self
-                .slots_override
-                .unwrap_or(limits.max_concurrent_jobs)
-                .max(1),
-        }];
+        let mut classes = self.remote_classes.clone().unwrap_or_else(|| {
+            vec![Class {
+                usable_memory: None,
+                slots: limits.max_concurrent_jobs.max(1),
+            }]
+        });
         schedule::order_classes(&mut classes);
         self.slots = schedule::worker_classes(&classes)
             .into_iter()
@@ -251,6 +256,61 @@ impl RegistryInner {
         self.slots
             .iter()
             .position(|slot| slot.class >= class && slot.running.is_none())
+    }
+
+    /// Worker modes: the agents connected now in each class
+    /// (`WorkerHub::live_by_class`). `None` in local mode, where a slot is
+    /// a thread of this process and always there.
+    fn live_by_class(&self) -> Option<Vec<usize>> {
+        self.remote.as_ref().map(|hub| hub.live_by_class())
+    }
+
+    /// Whether `class` has a connected agent that no busy slot of the class
+    /// accounts for (#97 phase 2, step 4). Always in local mode (`live` is
+    /// `None`), where a slot is a thread of this process and always there.
+    fn has_spare_agent(&self, class: usize, live: Option<&[usize]>) -> bool {
+        live.is_none_or(|live| {
+            let busy = self
+                .slots
+                .iter()
+                .filter(|slot| slot.class == class && slot.running.is_some())
+                .count();
+            busy < live.get(class).copied().unwrap_or(0)
+        })
+    }
+
+    /// The queue idle `slot` takes its next job from (§7.1,
+    /// `schedule::next_for`), if its head may start: persisted, in worker
+    /// modes, and, when the slot would spill down to a smaller class, only
+    /// while the slot's own class has a connected agent to run it on.
+    ///
+    /// A slot of the job's own class takes it whatever its agents are
+    /// doing: only that class's agents (and larger ones, which spill only
+    /// once their own queue is empty) can run the job anyway, so it waits
+    /// for them in the slot as it would in the queue, and a class whose
+    /// agent is restarting keeps its jobs and its ETAs as they were. A
+    /// spill is different: a large slot with no large agent behind it must
+    /// not take a small job the small agent could run. That is what keeps
+    /// an idle slot with no agent from ever starting anything, and
+    /// `simulate_queue_etas` leaves the same slots out.
+    fn next_queue_for(&self, slot: usize, live: Option<&[usize]>) -> Option<usize> {
+        let class = self.slots[slot].class;
+        let next = schedule::next_for(class, &self.queues)?;
+        let head_ready = self.queues[next].front().is_some_and(|job| job.persisted);
+        (head_ready && (next == class || self.has_spare_agent(class, live))).then_some(next)
+    }
+
+    /// The idle slot a job bound to `class` may start on at once
+    /// (`idle_slot_for`), counting a larger class's slot only while that
+    /// class has a spare connected agent (see `next_queue_for`). The same
+    /// slot as `idle_slot_for` in local mode.
+    fn startable_slot_for(&self, class: usize, live: Option<&[usize]>) -> Option<usize> {
+        (0..self.slots.len()).find(|&slot| {
+            let slot_class = self.slots[slot].class;
+            self.slots[slot].running.is_none()
+                && slot_class >= class
+                && (slot_class == class || self.has_spare_agent(slot_class, live))
+        })
     }
 }
 
@@ -323,13 +383,79 @@ impl JobRegistry {
     }
 
     /// Loopback mode (#97 phase 1): every job from now on runs through
-    /// `hub`'s agents, which are `slots` worker slots in the one local
-    /// class. Called once by `service::serve` before the first admission;
+    /// `hub`'s agents, one worker slot per agent in `classes` (ordered by
+    /// `schedule::order_classes`, the order `hub` numbers its classes in).
+    /// Called once by `service::serve` before the first admission;
     /// `ensure_classes` builds the slots on that first admission.
-    pub fn set_remote(&self, hub: Arc<crate::service::workers::WorkerHub>, slots: usize) {
+    pub fn set_remote(&self, hub: Arc<crate::service::workers::WorkerHub>, classes: Vec<Class>) {
         let mut registry = self.0.lock().expect("job registry mutex poisoned");
         registry.remote = Some(hub);
-        registry.slots_override = Some(slots.max(1));
+        registry.remote_classes = Some(classes);
+    }
+
+    /// The class of the slot running `id`: the class of the agent it runs
+    /// on, which is larger than the job's own class when the slot spilled
+    /// down to it (§7.1). A runner asks for an agent of this class.
+    pub(crate) fn slot_class(&self, id: Uuid) -> Option<usize> {
+        let registry = self.0.lock().expect("job registry mutex poisoned");
+        registry
+            .slots
+            .iter()
+            .find(|slot| {
+                slot.running
+                    .as_ref()
+                    .is_some_and(|(running, _)| *running == id)
+            })
+            .map(|slot| slot.class)
+    }
+
+    /// A class's usable memory; `None` for one of unknown size.
+    pub(crate) fn class_memory(&self, class: usize) -> Option<u64> {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .classes
+            .get(class)
+            .and_then(|class| class.usable_memory)
+    }
+
+    /// The next larger class than `class`, if there is one.
+    pub(crate) fn next_class(&self, class: usize) -> Option<usize> {
+        let registry = self.0.lock().expect("job registry mutex poisoned");
+        (class + 1 < registry.classes.len()).then_some(class + 1)
+    }
+
+    /// §2.1 step 3 (#97 phase 2, step 4): once a running job has reported
+    /// the files it holds, whether its predicted peak exceeds the class it
+    /// runs on, `running_class`, and a larger class exists: the class to
+    /// move it to -- the smallest that holds the prediction, the largest if
+    /// none does (`schedule::bind`) -- with the prediction. Never a class
+    /// at or below `running_class`: a job is never rerouted down, and since
+    /// a rerouted job is bound to the class it moved to and runs on that
+    /// class or a larger one, a second reroute can only go further up, so
+    /// no job is ever rerouted twice to the same class. `None` before the
+    /// job has reported any files (the prediction is then the one it was
+    /// bound with) and on a class of unknown size.
+    pub(crate) fn reroute_target(&self, id: Uuid, running_class: usize) -> Option<(usize, u64)> {
+        let registry = self.0.lock().expect("job registry mutex poisoned");
+        let features = registry.features.get(&id)?;
+        if features
+            .languages
+            .values()
+            .all(|language| language.files == 0)
+        {
+            return None;
+        }
+        let slug = registry.jobs.get(&id)?.borrow().slug.clone();
+        let usable = registry.classes.get(running_class)?.usable_memory?;
+        let peak = registry
+            .memory_model
+            .predict_for(Some(slug.as_str()), features);
+        if peak <= usable {
+            return None;
+        }
+        let target = schedule::bind(Some(peak), &registry.classes);
+        (target > running_class).then_some((target, peak))
     }
 
     pub(crate) fn remote(&self) -> Option<Arc<crate::service::workers::WorkerHub>> {
@@ -365,14 +491,15 @@ impl JobRegistry {
             .is_some()
     }
 
-    /// The runner put `id` back in its queue; `worker_loop` re-inserts it
-    /// when the runner returns.
-    pub(crate) fn mark_requeue(&self, id: Uuid) {
-        self.0
-            .lock()
-            .expect("job registry mutex poisoned")
-            .requeue
-            .insert(id);
+    /// The runner put `id` back in a queue -- its own class's, or `class`
+    /// when it moved -- and `worker_loop` re-inserts it there when the
+    /// runner returns.
+    pub(crate) fn mark_requeue(&self, id: Uuid, class: Option<usize>) {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        registry.requeue.insert(id);
+        if let Some(class) = class {
+            registry.rebind.insert(id, class);
+        }
     }
 
     /// The epoch of the lease a restarted master found `id` holding, once.
@@ -571,10 +698,35 @@ fn simulate_queue_etas(registry: &RegistryInner) {
     let prior = registry
         .eta_model
         .predict(&RepoFeatures::default(), &never_started, None);
+    // Worker modes (#97 phase 2, step 4): only slots with an agent behind
+    // them. A busy slot always counts -- its job holds it, and it frees when
+    // that job ends -- and an idle one only while its class has a connected
+    // agent the busy ones do not account for (`has_spare_agent`). A queued
+    // job sees an idle slot only when that slot may not take it
+    // (`next_queue_for`: no agent to spill with), so leaving those out is
+    // what dispatch does too: a queued job no counted slot can take gets no
+    // start at all (`schedule::simulate` returns `None`), never a start of
+    // 0 on a slot with nothing to run it. In local mode every slot counts.
+    let live = registry.live_by_class();
+    let mut counted = vec![0usize; registry.classes.len()];
+    for slot in registry.slots.iter().filter(|slot| slot.running.is_some()) {
+        counted[slot.class] += 1;
+    }
     let workers: Vec<schedule::Worker> = registry
         .slots
         .iter()
         .enumerate()
+        .filter(|(_, slot)| {
+            let Some(live) = live.as_deref().filter(|_| slot.running.is_none()) else {
+                return true;
+            };
+            let class = slot.class;
+            let available = counted[class] < live.get(class).copied().unwrap_or(0);
+            if available {
+                counted[class] += 1;
+            }
+            available
+        })
         .map(|(id, slot)| schedule::Worker {
             id,
             class: slot.class,
@@ -833,12 +985,16 @@ fn admit(
     // event replaces this row, and `worker_loop` (or a queued cancel)
     // removes it.
     let prior = prior_features(&state.config);
-    // The class comes from the memory model's reference-mode prior (§2.1,
-    // step 2). Local mode has one class, so every job still binds to it;
-    // the prediction matters the day a second class exists.
-    let predicted_peak = registry.memory_model.predict_peak(&prior);
+    // The class comes from this slug's own last measurement (§2.1 step 1,
+    // #97 phase 2 step 4), else the memory model's reference-mode prior
+    // (step 2). Local mode has one class, so every job still binds to it;
+    // with `TOLMAP_LOOPBACK_CLASSES` the prediction picks the class.
+    let predicted_peak = registry
+        .memory_model
+        .predict_for(Some(repo_ref.slug.as_str()), &prior);
     let class = schedule::bind(Some(predicted_peak), &registry.classes);
-    let idle_slot = registry.idle_slot_for(class);
+    let live = registry.live_by_class();
+    let idle_slot = registry.startable_slot_for(class, live.as_deref());
     // §7.3: the queue bound applies per class, so a backlog of large jobs
     // cannot fill the queue small ones need. With one class this is the
     // single bound it always was.
@@ -925,16 +1081,19 @@ fn admit(
 /// (`schedule::next_for`), if that job is persisted -- after an admission
 /// is written, and after a restart.
 fn dispatch_idle(state: &Arc<AppState>, registry: &mut RegistryInner) {
+    // A stopping master starts nothing more: an agent going away during a
+    // graceful stop calls in here too, and what is queued stays in the table
+    // for the next process.
+    if registry.stopping {
+        simulate_queue_etas(registry);
+        return;
+    }
+    let live = registry.live_by_class();
     for slot in 0..registry.slots.len() {
         if registry.slots[slot].running.is_some() {
             continue;
         }
-        let class = registry.slots[slot].class;
-        let Some(next_class) = schedule::next_for(class, &registry.queues).filter(|&next| {
-            registry.queues[next]
-                .front()
-                .is_some_and(|job| job.persisted)
-        }) else {
+        let Some(next_class) = registry.next_queue_for(slot, live.as_deref()) else {
             continue;
         };
         let job = registry.queues[next_class]
@@ -944,6 +1103,53 @@ fn dispatch_idle(state: &Arc<AppState>, registry: &mut RegistryInner) {
         tokio::spawn(worker_loop(state.clone(), slot, job));
     }
     simulate_queue_etas(registry);
+}
+
+/// Worker modes (#97 phase 2, step 4): an agent connected or went away
+/// (`WorkerHub::on_agents_changed`). Starts whatever the connected agents
+/// can take now -- a spill a large agent that just came back may make --
+/// and quotes every queued job again against the agents there are.
+pub(crate) fn agents_changed(state: &Arc<AppState>) {
+    let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+    dispatch_idle(state, &mut registry);
+}
+
+/// Worker modes, §6 "job child OOM-killed" (#97 phase 2, step 4): records
+/// the peak an attempt reached when it was killed for memory as a timing
+/// row of its own, so the memory model learns from it although the job
+/// goes on -- a floor under this slug's next prediction
+/// (`MemoryModel::predict_for`). Its stages are all unfinished, so it
+/// never narrows the population curve or the ETA model. Keyed
+/// `<job>/e<epoch>`, so the job's own final row does not replace it, and
+/// the peak is taken off the job, whose final row is another attempt's.
+pub(crate) fn record_oom(state: &AppState, id: Uuid, epoch: u64, peak_rss_bytes: Option<u64>) {
+    let row = {
+        let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+        registry.peak_rss.remove(&id);
+        let Some(tx) = registry.jobs.get(&id).cloned() else {
+            return;
+        };
+        let (elapsed_s, slug) = {
+            let snapshot = tx.borrow();
+            (snapshot.elapsed_s, snapshot.slug.clone())
+        };
+        let features = registry.features.get(&id).cloned().unwrap_or_default();
+        TimingRow {
+            features,
+            elapsed_s,
+            stage_s: vec![None; StageId::ALL.len()],
+            peak_rss_bytes,
+            slug: Some(slug),
+        }
+    };
+    // Off the registry's lock: the store is never written under it.
+    if let Err(error) = state.store.save_timing(&format!("{id}/e{epoch}"), &row) {
+        eprintln!("timing store warning for {id}: {error:#}");
+        return;
+    }
+    let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+    registry.memory_model.record(row.clone());
+    registry.eta_model.record(row);
 }
 
 /// Worker modes (#97 phase 2, docs/WORKER_TIER.md §6 "master restarts
@@ -988,10 +1194,13 @@ pub fn restore(state: &Arc<AppState>) -> anyhow::Result<()> {
                 unreadable.push(row);
                 continue;
             };
+            // A class the configuration no longer has (fewer
+            // `TOLMAP_LOOPBACK_CLASSES` across the restart) is read as the
+            // largest there is, where a job that fits nowhere goes (§2.1).
+            let largest = registry.classes.len().saturating_sub(1);
             let class = usize::try_from(row.class)
                 .ok()
-                .filter(|class| *class < registry.classes.len())
-                .unwrap_or(0);
+                .map_or(largest, |class| class.min(largest));
             let (tx, _rx) = watch::channel(snapshot);
             registry.jobs.insert(id, tx.clone());
             registry.active.insert(key.clone(), id);
@@ -1141,6 +1350,7 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
         let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
         let snapshot = tx.borrow().clone();
         let requeued = registry.requeue.remove(&id);
+        let rebound = registry.rebind.remove(&id);
         // Re-read under the lock: a cancel that landed since has made the
         // job terminal, and then it ends here like any other.
         if durable && !is_terminal(&snapshot) {
@@ -1152,8 +1362,13 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
             // process.
             if requeued && !registry.stopping {
                 let (repo_ref, runner) = again;
+                // A job that moved class (#97 phase 2, step 4) goes to that
+                // class's queue, by its admission order like any re-queue.
+                let class = rebound
+                    .filter(|class| *class < registry.queues.len())
+                    .unwrap_or(job_class);
                 insert_by_order(
-                    &mut registry.queues[job_class],
+                    &mut registry.queues[class],
                     PendingJob {
                         id,
                         key,
@@ -1161,7 +1376,7 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
                         tx: tx.clone(),
                         runner,
                         order,
-                        class: job_class,
+                        class,
                         persisted,
                     },
                 );
@@ -1183,6 +1398,7 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
                     })
                     .collect(),
                 peak_rss_bytes,
+                slug: Some(key.0.clone()),
             };
             if let Err(error) = state.store.save_timing(&id.to_string(), &row) {
                 eprintln!("timing store warning for {id}: {error:#}");
@@ -1206,13 +1422,13 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
         // as the single FIFO did, so no admission can see it idle in
         // between and start a second job on it. In worker modes a job
         // whose row is not written yet is not started; `admitted` starts
-        // it once it is.
-        let class = registry.slots[slot].class;
-        if let Some(next_class) = schedule::next_for(class, &registry.queues).filter(|&next| {
-            registry.queues[next]
-                .front()
-                .is_some_and(|job| job.persisted)
-        }) {
+        // it once it is. Nor does a slot spill down to a smaller class
+        // without an agent of its own class to run the job on
+        // (`RegistryInner::next_queue_for`; in local mode this is exactly
+        // the old hand-over).
+        registry.slots[slot].running = None;
+        let live = registry.live_by_class();
+        if let Some(next_class) = registry.next_queue_for(slot, live.as_deref()) {
             let next = registry.queues[next_class]
                 .pop_front()
                 .expect("next_for names a non-empty queue");
@@ -1220,8 +1436,15 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
             simulate_queue_etas(&registry);
             job = next;
         } else {
-            registry.slots[slot].running = None;
-            simulate_queue_etas(&registry);
+            // Worker modes: what this slot cannot take another may -- a job
+            // it just put back for a class it does not serve, or a small one
+            // it may not spill to with no agent of its own. `dispatch_idle`
+            // also quotes the queue again.
+            if durable {
+                dispatch_idle(&state, &mut registry);
+            } else {
+                simulate_queue_etas(&registry);
+            }
             break;
         }
     }

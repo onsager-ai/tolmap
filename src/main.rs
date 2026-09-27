@@ -201,6 +201,11 @@ enum Command {
         /// This agent's own clone cache and job directories.
         #[arg(long)]
         cache_dir: Option<PathBuf>,
+        /// The usable memory, in bytes, this agent advertises as its class
+        /// instead of its host's (#97 phase 2). `tolmap serve` passes it
+        /// from `TOLMAP_LOOPBACK_CLASSES`.
+        #[arg(long)]
+        class_memory: Option<u64>,
     },
     #[command(hide = true)]
     EtaReplay { timeline: PathBuf },
@@ -658,18 +663,23 @@ fn main() -> Result<()> {
             connect,
             token_file,
             cache_dir,
+            class_memory,
         } => match (connect, token_file, cache_dir) {
             // Plain `tolmap worker`: the job child, unchanged.
-            (None, None, None) => tolmap::worker::run_stdio(),
+            (None, None, None) if class_memory.is_none() => tolmap::worker::run_stdio(),
             (Some(connect), Some(token_file), Some(cache_dir)) => {
                 tolmap::service::agent::run(tolmap::service::agent::AgentConfig {
                     connect,
                     token_file,
                     cache_dir,
                     worker_exe: std::env::current_exe().context("locate this binary")?,
+                    class_memory,
+                    memory_events: None,
                 })
             }
-            _ => anyhow::bail!("--connect, --token-file and --cache-dir go together"),
+            _ => anyhow::bail!(
+                "--connect, --token-file and --cache-dir go together, and --class-memory needs them"
+            ),
         },
         Command::EtaReplay { timeline } => {
             let report = tolmap::service::eta::replay_timeline(&timeline)?;

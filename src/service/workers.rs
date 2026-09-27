@@ -27,6 +27,17 @@
 //! token against, so it is never resumed in this step (loopback agents are
 //! this process's children and hold nothing after a restart anyway).
 //!
+//! **Classes (phase 2, step 4; §2.1, §6, §7).** `TOLMAP_LOOPBACK_CLASSES`
+//! starts loopback agents that advertise configured classes, and each
+//! agent is placed in a class by the usable memory its `hello` advertises.
+//! A runner asks for an agent of its slot's class. A job whose `features`
+//! predict more than its class holds is stopped with `cancel` `reroute`
+//! and moved, uncounted, to the smallest class that holds it; a job child
+//! killed for memory (`released` `oom`) moves, uncounted, to the next class
+//! up, and fails on the largest; a lost worker whose last heartbeat was
+//! within 10% of its class's memory moves to the next class too. A move
+//! starts the job's lost-worker count on its new class at 0 (§10.6).
+//!
 //! **Invariants**, each also stated where the code keeps it:
 //! - *Epoch fencing.* An epoch is raised in the store before the `assign`
 //!   carrying it is sent (`Store::begin_attempt`), so no epoch is ever
@@ -111,6 +122,7 @@ use crate::service::clone::{self, RepoRef};
 use crate::service::error::{ApiError, ErrorBody};
 use crate::service::executor::{self, EventSink, JobInputs, WorkerOutput};
 use crate::service::jobs::{self, JobSnapshot, JobStatus, SnapshotSink};
+use crate::service::schedule::{self, Class};
 use crate::service::store::Requeued;
 use crate::service::worker_result;
 use crate::service::AppState;
@@ -145,6 +157,21 @@ const STOPPED: &str = "the service stopped; the job runs again when it is back";
 
 /// `stage` of a job its agent released because the worker is stopping.
 const WORKER_STOPPED: &str = "the worker stopped; retrying on another worker";
+
+/// `stage` of a job moved to a larger class after its `features` (§2.1
+/// step 3).
+const REROUTED: &str =
+    "the repository needs more memory than its worker class holds; moving it to a larger one";
+
+/// `stage` of a job whose job child was killed for memory (§6).
+const OUT_OF_MEMORY: &str = "the worker ran out of memory; retrying on a larger worker class";
+
+/// `stage` of a job whose lost worker was near its memory limit (§6).
+const LOST_TO_MEMORY: &str = "worker lost near its memory limit; retrying on a larger worker class";
+
+/// The `worker_crashed` message of a job killed for memory on the largest
+/// class (§6): there is nowhere larger to go.
+const OOM_ON_LARGEST: &str = "out of memory on the largest worker class";
 
 /// How often a waiting runner re-checks cancellation and lease expiry.
 const POLL: Duration = Duration::from_millis(250);
@@ -252,6 +279,89 @@ impl LoopbackSettings {
                 .unwrap_or(DEFAULT_RETRIES),
         })
     }
+}
+
+/// `TOLMAP_LOOPBACK_CLASSES` (#97 phase 2, step 4; docs/WORKER_TIER.md §8
+/// "Phase 2"): the classes loopback agents advertise, as `<usable
+/// memory>:<agents>` pairs separated by commas, e.g. `2GiB:1,16GiB:1`. The
+/// memory is a whole number of bytes, optionally with a `KiB`, `MiB`, `GiB`
+/// or `TiB` suffix; the counts must add up to `TOLMAP_WORKERS`'s N. Unset
+/// or empty: one class of unknown size holding all N agents, as in phase 1,
+/// each advertising its host's memory. Returned smallest first
+/// (`schedule::order_classes`), which is also how agents are numbered: agent
+/// `i` is `schedule::worker_classes(classes)[i]`'s agent, as slot `i` is.
+///
+/// Anything malformed stops startup, like `TOLMAP_WORKERS`: a typo must not
+/// quietly start the wrong agents. A class named twice is refused rather
+/// than merged, so the configuration reads as what it starts.
+pub fn loopback_classes(value: Option<&str>, agents: usize) -> Result<Vec<Class>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(vec![Class {
+            usable_memory: None,
+            slots: agents,
+        }]);
+    };
+    let bad = |why: String| {
+        format!(
+            "TOLMAP_LOOPBACK_CLASSES {value:?}: {why}; expected <memory>:<agents>[,...], \
+             e.g. 2GiB:1,16GiB:1"
+        )
+    };
+    let mut classes: Vec<Class> = Vec::new();
+    for part in value.split(',').map(str::trim) {
+        let (memory, count) = part
+            .split_once(':')
+            .ok_or_else(|| bad(format!("{part:?} is not <memory>:<agents>")))?;
+        let usable = parse_bytes(memory.trim()).ok_or_else(|| {
+            bad(format!(
+                "{memory:?} is not a size such as 512MiB, 16GiB or a number of bytes"
+            ))
+        })?;
+        let slots = count
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|slots| *slots >= 1)
+            .ok_or_else(|| bad(format!("{count:?} is not an agent count of at least 1")))?;
+        if classes
+            .iter()
+            .any(|class| class.usable_memory == Some(usable))
+        {
+            return Err(bad(format!("{memory:?} is named twice")));
+        }
+        classes.push(Class {
+            usable_memory: Some(usable),
+            slots,
+        });
+    }
+    let total: usize = classes.iter().map(|class| class.slots).sum();
+    if total != agents {
+        return Err(bad(format!(
+            "it names {total} agent(s), but TOLMAP_WORKERS starts {agents}"
+        )));
+    }
+    schedule::order_classes(&mut classes);
+    Ok(classes)
+}
+
+/// A byte count: digits, then nothing, `B`, `KiB`, `MiB`, `GiB` or `TiB`
+/// (powers of 1024). Decimal units (`GB`) are refused, not guessed at: the
+/// two differ by 7% at a GiB, enough to put a job in the wrong class.
+fn parse_bytes(text: &str) -> Option<u64> {
+    let digits = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    let (number, unit) = text.split_at(digits);
+    let number: u64 = number.parse().ok()?;
+    let shift = match unit.trim() {
+        "" | "B" => 0,
+        "KiB" => 10,
+        "MiB" => 20,
+        "GiB" => 30,
+        "TiB" => 40,
+        _ => return None,
+    };
+    number.checked_mul(1u64 << shift).filter(|bytes| *bytes > 0)
 }
 
 /// A positive whole number of seconds, or `default` when unset or not one
@@ -385,9 +495,13 @@ struct Conn {
     agent: usize,
     /// Only for logs; nothing is decided on it.
     worker_id: String,
-    /// `hello.build` equals this master's (§3.6). An agent that is not is
-    /// kept connected and never assigned work.
+    /// `hello.build` equals this master's (§3.6), and its advertised memory
+    /// places it in a class. An agent that is not is kept connected and
+    /// never assigned work.
     eligible: bool,
+    /// The class its `hello.class.memory_bytes` places it in
+    /// (`WorkerHub::class_of`); `None` for one smaller than every class.
+    class: Option<usize>,
     local_paths: bool,
     ready: bool,
     draining: bool,
@@ -440,6 +554,14 @@ struct Lease {
     /// A terminal event (`result`, `error`) or `released` has arrived;
     /// anything after it is dropped.
     finished: bool,
+    /// `cancel` `reroute` was sent (§2.1 step 3). The job stays live, so a
+    /// result already on its way is still registered; `resume` answers an
+    /// agent whose channel dropped meanwhile with the same `cancel`.
+    rerouting: bool,
+    /// The agent's last heartbeat's `rss_bytes`: what the job held when its
+    /// agent was last heard from, which tells a worker that died of memory
+    /// (§6 "worker host dies").
+    last_rss: Option<u64>,
     /// The artifacts the first `result` listed, to tell a repeat of it from
     /// a different one.
     result: Option<Vec<Artifact>>,
@@ -514,10 +636,10 @@ struct HubInner {
     conns: BTreeMap<u64, Conn>,
     leases: BTreeMap<Uuid, Lease>,
     /// Runners waiting in `claim`, by admission order: whether each job is
-    /// a `local/<name>` one. Free agents go to the earliest first, so a
-    /// re-queued job, which keeps its admission number, is the head of the
-    /// queue here too.
-    waiting: BTreeMap<(i64, Uuid), bool>,
+    /// a `local/<name>` one, and the class of agent it needs. Free agents
+    /// go to the earliest first, so a re-queued job, which keeps its
+    /// admission number, is the head of the queue here too.
+    waiting: BTreeMap<(i64, Uuid), (bool, usize)>,
     /// The last `SETTLED_KEPT` settled results, by job, and their order.
     settled: BTreeMap<Uuid, Settled>,
     settled_order: VecDeque<(u64, Uuid)>,
@@ -573,6 +695,14 @@ pub struct WorkerHub {
     staging: PathBuf,
     /// `http://<listener address>`, the base of every artifact URL.
     base_url: String,
+    /// Each class's usable memory, smallest first, the registry's classes
+    /// in the registry's order (`JobRegistry::set_remote`); `None` is one
+    /// of unknown size, which every agent fits.
+    classes: Vec<Option<u64>>,
+    /// Called, off this hub's lock, whenever an agent connects or goes away
+    /// (`jobs::agents_changed`), so the registry can start what a new agent
+    /// can take and quote queued jobs against the agents there are.
+    on_agents: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl WorkerHub {
@@ -585,6 +715,7 @@ impl WorkerHub {
         retries: u32,
         staging: PathBuf,
         base_url: String,
+        classes: Vec<Option<u64>>,
     ) -> Self {
         WorkerHub {
             inner: Mutex::new(HubInner::default()),
@@ -596,7 +727,54 @@ impl WorkerHub {
             retries,
             staging,
             base_url,
+            classes,
+            on_agents: OnceLock::new(),
         }
+    }
+
+    /// Sets what `agents_changed` calls; once, before the listener serves.
+    pub(crate) fn on_agents_changed(&self, callback: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.on_agents.set(callback);
+    }
+
+    /// Lock order: called with neither this hub's lock nor the registry's
+    /// held, since the callback takes the registry's, which then takes this
+    /// one's (`JobRegistry` reads `live_by_class` under its own lock).
+    fn agents_changed(&self) {
+        if let Some(callback) = self.on_agents.get() {
+            callback();
+        }
+    }
+
+    /// The class an agent advertising `memory_bytes` of usable memory
+    /// belongs to: the largest whose usable memory it covers, so it can hold
+    /// whatever that class promises. A class of unknown size (`None`, plain
+    /// `loopback:N`) takes every agent. `None` when the agent covers no
+    /// class: it is kept connected and never assigned work.
+    fn class_of(&self, memory_bytes: u64) -> Option<usize> {
+        self.classes
+            .iter()
+            .rposition(|usable| usable.is_none_or(|usable| memory_bytes >= usable))
+    }
+
+    /// The agents connected now in each class, by class index: every
+    /// eligible agent counted once, however many channels it has open (an
+    /// old one not yet noticed dead, and a resumed one).
+    pub(crate) fn live_by_class(&self) -> Vec<usize> {
+        let inner = self.lock();
+        let agents: BTreeSet<(usize, usize)> = inner
+            .conns
+            .values()
+            .filter(|conn| conn.eligible)
+            .filter_map(|conn| conn.class.map(|class| (class, conn.agent)))
+            .collect();
+        let mut live = vec![0usize; self.classes.len()];
+        for (class, _) in agents {
+            if let Some(count) = live.get_mut(class) {
+                *count += 1;
+            }
+        }
+        live
     }
 
     fn lock(&self) -> MutexGuard<'_, HubInner> {
@@ -632,6 +810,7 @@ impl WorkerHub {
         agent: usize,
         worker_id: String,
         eligible: bool,
+        class: Option<usize>,
         local_paths: bool,
         out: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     ) -> u64 {
@@ -644,6 +823,7 @@ impl WorkerHub {
                 agent,
                 worker_id,
                 eligible,
+                class,
                 local_paths,
                 ready: false,
                 draining: false,
@@ -705,7 +885,7 @@ impl WorkerHub {
                 }
                 Ok(())
             }
-            WorkerMessage::Heartbeat { jobs, .. } => {
+            WorkerMessage::Heartbeat { jobs, rss_bytes } => {
                 let now = Instant::now();
                 for held in jobs {
                     let Ok(id) = Uuid::parse_str(&held.job_id) else {
@@ -718,6 +898,10 @@ impl WorkerHub {
                         continue;
                     }
                     lease.deadline = now + self.lease_ttl;
+                    // One slot per agent: its resident memory is its job's.
+                    if rss_bytes.is_some() {
+                        lease.last_rss = rss_bytes;
+                    }
                     let _ = lease.events.send(LeaseEvent::Tick);
                     let renewed = MasterMessage::LeaseRenewed {
                         job_id: held.job_id.clone(),
@@ -916,19 +1100,22 @@ impl WorkerHub {
         self.staging.join(format!("{job_id}-e{epoch}"))
     }
 
-    /// Waits for an agent to take `job`, then leases it at `epoch` and
-    /// sends `assign` (§2.3). `epoch` must already be in the store
-    /// (`Store::begin_attempt`): that write is what keeps an epoch from
-    /// ever being handed out twice. `order` is the job's admission number:
-    /// a free agent goes to the waiting runner with the lowest one that it
-    /// may take. `None` when the job was cancelled, or the master began
-    /// stopping, before any agent was free.
+    /// Waits for an agent of `class` to take `job`, then leases it at
+    /// `epoch` and sends `assign` (§2.3). `epoch` must already be in the
+    /// store (`Store::begin_attempt`): that write is what keeps an epoch
+    /// from ever being handed out twice. `order` is the job's admission
+    /// number: a free agent goes to the waiting runner with the lowest one
+    /// that it may take. `class` is the runner's slot's class, which may be
+    /// larger than the job's own when the slot spilled down to it (§7.1).
+    /// `None` when the job was cancelled, or the master began stopping,
+    /// before any agent was free.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn claim(
         &self,
         job_id: Uuid,
         epoch: u64,
         order: i64,
+        class: usize,
         job: &JobSpec,
         inputs: &JobInputs,
         is_cancelled: &dyn Fn() -> bool,
@@ -975,7 +1162,7 @@ impl WorkerHub {
             outputs: base,
         };
         let me = (order, job_id);
-        self.lock().waiting.insert(me, job.local);
+        self.lock().waiting.insert(me, (job.local, class));
         let give_up = |guard: MutexGuard<'_, HubInner>| -> Result<Option<Claimed>, ErrorBody> {
             drop(guard);
             self.lock().waiting.remove(&me);
@@ -1013,6 +1200,8 @@ impl WorkerHub {
                         cancelled: false,
                         lost: false,
                         finished: false,
+                        rerouting: false,
+                        last_rss: None,
                         result: None,
                         events,
                         inputs: input_files,
@@ -1062,6 +1251,8 @@ impl WorkerHub {
                 cancelled: false,
                 lost: false,
                 finished: false,
+                rerouting: false,
+                last_rss: None,
                 result: None,
                 events,
                 inputs: BTreeMap::new(),
@@ -1104,6 +1295,35 @@ impl WorkerHub {
                 reason,
             }));
         }
+    }
+
+    /// §2.1 step 3: asks the lease's agent to stop the job so it can move to
+    /// a larger class. Unlike `cancel` the job stays live: a result already
+    /// on its way is still registered, and the lease ends with the agent's
+    /// `released` (`reroute`). An agent whose channel is down meanwhile
+    /// hears it from `resume` instead.
+    pub(crate) fn reroute(&self, job_id: Uuid) {
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let Some(lease) = inner.leases.get_mut(&job_id) else {
+            return;
+        };
+        lease.rerouting = true;
+        if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get(&conn)) {
+            let _ = conn.out.send(Outgoing::Message(MasterMessage::Cancel {
+                job_id: job_id.to_string(),
+                epoch: lease.epoch,
+                reason: CancelReason::Reroute,
+            }));
+        }
+    }
+
+    /// The `rss_bytes` of the last heartbeat that renewed the lease.
+    pub(crate) fn last_rss(&self, job_id: Uuid) -> Option<u64> {
+        self.lock()
+            .leases
+            .get(&job_id)
+            .and_then(|lease| lease.last_rss)
     }
 
     /// Whether the lease has run out. Once it has, it is `lost` for good:
@@ -1180,6 +1400,14 @@ impl WorkerHub {
             }
             if lease.cancelled {
                 answers.push(cancel(CancelReason::Cancelled));
+                continue;
+            }
+            // A reroute's `cancel` that went to the dead channel (§2.1 step
+            // 3): the agent hears it now. Its `released` comes back on the
+            // new channel, and the fresh deadline leaves it time to.
+            if lease.rerouting {
+                lease.deadline = now + self.lease_ttl;
+                answers.push(cancel(CancelReason::Reroute));
                 continue;
             }
             if let Some(old) = lease.conn.filter(|old| *old != conn_id) {
@@ -1307,7 +1535,7 @@ impl WorkerHub {
 /// given sequence of connections.
 fn pick_agent(inner: &HubInner, me: (i64, Uuid)) -> Option<u64> {
     let mut taken = BTreeSet::new();
-    for (&waiter, &local) in &inner.waiting {
+    for (&waiter, &(local, class)) in &inner.waiting {
         // Trust decision (§3.3): a `local/<name>` job names a path on this
         // host, so it goes only to an agent that said it shares this
         // host's paths.
@@ -1320,6 +1548,7 @@ fn pick_agent(inner: &HubInner, me: (i64, Uuid)) -> Option<u64> {
                     && conn.ready
                     && !conn.draining
                     && conn.holding.is_none()
+                    && conn.class == Some(class)
                     && (!local || conn.local_paths)
             })
             .map(|(id, _)| *id);
@@ -1473,8 +1702,8 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
     // Trust decision (§3.6): a different build can produce a different map
     // for the same `(slug, commit)`, so it never gets work. It stays
     // connected, and this line is how an operator finds out why it idles.
-    let eligible = same_build(&build, &hub.build);
-    if !eligible {
+    let same = same_build(&build, &hub.build);
+    if !same {
         eprintln!(
             "worker agent {agent} ({worker_id}): its build {} {} differs from this master's {} {}; \
              it stays connected but is never assigned work",
@@ -1484,6 +1713,18 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
     if slots != 1 {
         eprintln!("worker agent {agent} ({worker_id}): advertised {slots} slots; phase 1 runs one job per agent");
     }
+    // #97 phase 2, step 4: its advertised memory places it in a class. One
+    // smaller than every class could be sent a job it cannot hold, so, like
+    // another build, it stays connected and idle, and this says why.
+    let worker_class = hub.class_of(class.memory_bytes);
+    if worker_class.is_none() {
+        eprintln!(
+            "worker agent {agent} ({worker_id}): it advertises {} MiB usable, less than every \
+             worker class; it stays connected but is never assigned work",
+            class.memory_bytes / (1024 * 1024)
+        );
+    }
+    let eligible = same && worker_class.is_some();
     let local_paths = features
         .iter()
         .any(|feature| feature == FEATURE_LOCAL_PATHS);
@@ -1500,10 +1741,19 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
         return;
     }
     let (out, mut outgoing) = tokio::sync::mpsc::unbounded_channel();
-    let conn = hub.add_conn(agent, worker_id.clone(), eligible, local_paths, out);
+    let conn = hub.add_conn(
+        agent,
+        worker_id.clone(),
+        eligible,
+        worker_class,
+        local_paths,
+        out,
+    );
     eprintln!(
-        "worker agent {agent} ({worker_id}) connected: {} MiB usable, {} CPUs, proto {proto}",
+        "worker agent {agent} ({worker_id}) connected: {} MiB usable (worker class {}), {} CPUs, \
+         proto {proto}",
         class.memory_bytes / (1024 * 1024),
+        worker_class.map_or("none".to_owned(), |class| class.to_string()),
         class.cpus
     );
     // Answered before `welcome` goes out; a verdict `resume` sends again
@@ -1515,6 +1765,8 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
         lease_ttl_s: hub.lease_ttl_s(),
         resume: hub.resume(conn, agent, resume),
     };
+    // Off the hub's lock: a new agent may let a queued job start.
+    hub.agents_changed();
     if send_message(&mut socket, &welcome).await.is_ok() {
         loop {
             tokio::select! {
@@ -1555,6 +1807,7 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
         }
     }
     hub.remove_conn(conn);
+    hub.agents_changed();
 }
 
 /// `GET` on an input URL from `assign` (§4.2).
@@ -1787,6 +2040,15 @@ enum ExecutorClone {
 /// between. A lease that runs out re-queues the job (`requeue`), counted
 /// as a lost worker unless this run adopted a lease a restart left behind.
 /// Terminal rows are written by `worker_loop` once this returns.
+///
+/// Classes (phase 2, step 4): the runner asks for an agent of its slot's
+/// class, which is the class the job runs on. When the job's `features`
+/// predict more than that class holds and a larger class exists, the agent
+/// is told `cancel` `reroute` and, on its `released`, the job moves there
+/// uncounted (§2.1 step 3). A `released` `oom` moves it to the next class
+/// up, uncounted, or fails it on the largest (§6). A lease that runs out
+/// with its last heartbeat within 10% of the class's memory moves the job
+/// to the next class, counted as the lost worker it is (§6).
 pub(crate) fn run_remote(
     state: Arc<AppState>,
     hub: &WorkerHub,
@@ -1805,6 +2067,11 @@ pub(crate) fn run_remote(
     // Read from the snapshot here, so an adopted lease, which skips
     // `prepare`, checks against the same value.
     let admitted_commit = tx.borrow().commit.clone().unwrap_or_default();
+    // The class of the agent this job runs on: its slot's, which is larger
+    // than the job's own when the slot spilled down to it (§7.1). Rerouting
+    // and escalation compare against this, not the job's class: a small job
+    // killed for memory on a large agent needs a class larger than that.
+    let running_class = registry.slot_class(job_id).unwrap_or(0);
     // A lease a restarted master found in the store (§6): adopted, not
     // asked for again. Its expiry is a restart, not a lost worker.
     let orphan = registry.take_orphan(job_id);
@@ -1828,7 +2095,7 @@ pub(crate) fn run_remote(
                     )
                 }
             };
-            match hub.claim(job_id, epoch, order, &job, &inputs, &|| {
+            match hub.claim(job_id, epoch, order, running_class, &job, &inputs, &|| {
                 registry.is_cancelled(job_id)
             }) {
                 Ok(Some(lease)) => {
@@ -1852,6 +2119,9 @@ pub(crate) fn run_remote(
     let mut sink = SnapshotSink::new(&tx, started, Some(registry));
     let mut clone = ExecutorClone::NotStarted;
     let mut cancel_sent = false;
+    // Set once `cancel` `reroute` is sent: the class the job moves to.
+    // Asked at most once per lease, whatever further `features` say.
+    let mut reroute_to: Option<usize> = None;
     let mut saved = SavedSnapshot::of(&tx.borrow(), table);
     loop {
         match lease.events.recv_timeout(POLL) {
@@ -1913,6 +2183,27 @@ pub(crate) fn run_remote(
                         );
                         return hub.end_lease(job_id, false);
                     }
+                    // §2.1 step 3: the files the job holds are known now, so
+                    // the prediction is better than the one it was bound
+                    // with. The sink records them first; the registry then
+                    // says whether they outgrow the class this runs on.
+                    event @ WorkerEvent::Features { .. } => {
+                        sink.event(event);
+                        if reroute_to.is_none() && !cancel_sent {
+                            if let Some((target, peak)) =
+                                registry.reroute_target(job_id, running_class)
+                            {
+                                eprintln!(
+                                    "job {job_id}: its features predict a peak of {} MiB, more \
+                                     than worker class {running_class} holds; rerouting it to \
+                                     class {target}",
+                                    peak / (1024 * 1024)
+                                );
+                                hub.reroute(job_id);
+                                reroute_to = Some(target);
+                            }
+                        }
+                    }
                     event => sink.event(event),
                 }
                 saved.save_if_due(store, &tx, epoch, table);
@@ -1933,6 +2224,46 @@ pub(crate) fn run_remote(
                 if cancel_sent {
                     return hub.end_lease(job_id, false);
                 }
+                // §2.1 step 3: stopped for the class the features call for,
+                // and moved there uncounted: a reroute is not a lost worker
+                // (§10.6).
+                if let Some(target) = reroute_to.filter(|_| reason == ReleasedReason::Reroute) {
+                    return requeue(
+                        &state,
+                        hub,
+                        &tx,
+                        job_id,
+                        epoch,
+                        false,
+                        REROUTED,
+                        false,
+                        Some(target),
+                    );
+                }
+                // §6 "job child OOM-killed": the peak is recorded so the
+                // memory model learns, then the job moves to the next class
+                // up, uncounted -- or fails, on the largest.
+                if reason == ReleasedReason::Oom {
+                    jobs::record_oom(&state, job_id, epoch, peak_rss_bytes);
+                    return match registry.next_class(running_class) {
+                        Some(target) => requeue(
+                            &state,
+                            hub,
+                            &tx,
+                            job_id,
+                            epoch,
+                            false,
+                            OUT_OF_MEMORY,
+                            false,
+                            Some(target),
+                        ),
+                        None => {
+                            eprintln!("job {job_id}: {OOM_ON_LARGEST}");
+                            jobs::finish_failed(&tx, worker_crashed(OOM_ON_LARGEST));
+                            hub.end_lease(job_id, false)
+                        }
+                    };
+                }
                 // §6, §10.6: a job released for a graceful stop (of the
                 // master, answering `shutdown now`, or of the worker) or a
                 // reroute goes back to its queue without counting.
@@ -1947,7 +2278,7 @@ pub(crate) fn run_remote(
                 };
                 match why {
                     Some(why) => {
-                        return requeue(&state, hub, &tx, job_id, epoch, false, why, false)
+                        return requeue(&state, hub, &tx, job_id, epoch, false, why, false, None)
                     }
                     None => {
                         jobs::finish_failed(
@@ -1987,18 +2318,45 @@ pub(crate) fn run_remote(
                 Some(_) => (false, jobs::RESTARTED),
                 None => (true, WORKER_LOST),
             };
-            return requeue(&state, hub, &tx, job_id, epoch, counted, why, true);
+            // §6 "worker host dies": a worker whose last heartbeat had its
+            // job within 10% of the class's memory most likely died of it,
+            // so the retry goes to the next class rather than this one again.
+            // A reroute already asked for still happens: the job goes to the
+            // larger of the two.
+            let near_limit = counted
+                && hub
+                    .last_rss(job_id)
+                    .zip(registry.class_memory(running_class))
+                    .is_some_and(|(rss, usable)| {
+                        rss.saturating_mul(10) >= usable.saturating_mul(9)
+                    });
+            let to_memory = near_limit
+                .then(|| registry.next_class(running_class))
+                .flatten();
+            let to_class = to_memory.max(reroute_to);
+            let why = if to_memory.is_some() {
+                LOST_TO_MEMORY
+            } else {
+                why
+            };
+            return requeue(
+                &state, hub, &tx, job_id, epoch, counted, why, true, to_class,
+            );
         }
     }
 }
 
 /// Puts a job whose lease ended without a result back at the head of its
-/// class queue (§2.2, §2.5 "lease expired first"). The store decides first,
+/// class queue (§2.2, §2.5 "lease expired first"), or, with `to_class`,
+/// of that class's queue (phase 2, step 4: a reroute, an out-of-memory
+/// escalation, a lost worker that died of memory). The store decides first,
 /// in one transaction: a `counted` re-queue is a lost worker, and past the
-/// retry bound (§10.6) the job fails `worker_crashed` instead. Memory
-/// follows the store: the snapshot is reset and `worker_loop` re-inserts
-/// the job, by its admission order, when this runner returns. The next
-/// `assign` raises the epoch, so this epoch's stragglers are refused.
+/// retry bound on the job's class (§10.6) the job fails `worker_crashed`
+/// instead; a move to another class starts that count again and is never
+/// refused. Memory follows the store: the snapshot is reset and
+/// `worker_loop` re-inserts the job, by its admission order, when this
+/// runner returns. The next `assign` raises the epoch, so this epoch's
+/// stragglers are refused.
 #[allow(clippy::too_many_arguments)]
 fn requeue(
     state: &AppState,
@@ -2009,16 +2367,27 @@ fn requeue(
     counted: bool,
     why: &str,
     close_channel: bool,
+    to_class: Option<usize>,
 ) {
     hub.end_lease(job_id, close_channel);
     let reset = jobs::requeued_snapshot(&tx.borrow(), why);
     let json = serde_json::to_string(&reset).expect("a JobSnapshot serializes");
-    match state
-        .store
-        .requeue_job(&job_id.to_string(), epoch, counted, hub.retries, &json)
-    {
+    let id = job_id.to_string();
+    let decided = match to_class {
+        Some(class) => state.store.rebind_job(&id, epoch, class, counted, &json),
+        None => state
+            .store
+            .requeue_job(&id, epoch, counted, hub.retries, &json),
+    };
+    match decided {
         Ok(Requeued::Queued { attempt }) => {
-            eprintln!("job {job_id}: {why} (epoch {epoch} ended; attempt {attempt})");
+            match to_class {
+                Some(class) => eprintln!(
+                    "job {job_id}: {why} (epoch {epoch} ended; attempt {attempt}; now worker \
+                     class {class})"
+                ),
+                None => eprintln!("job {job_id}: {why} (epoch {epoch} ended; attempt {attempt})"),
+            }
             // Never over a terminal snapshot: a cancel that landed since
             // wins, and `worker_loop` then ends the job instead.
             tx.send_modify(|snapshot| {
@@ -2026,7 +2395,7 @@ fn requeue(
                     *snapshot = reset.clone();
                 }
             });
-            state.jobs.mark_requeue(job_id);
+            state.jobs.mark_requeue(job_id, to_class);
         }
         Ok(Requeued::Exhausted { lost }) => {
             eprintln!("job {job_id}: lost {lost} workers; not retrying it again");
@@ -2526,6 +2895,18 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// the agents.
 pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Result<Loopback> {
     let settings = LoopbackSettings::from_env()?;
+    let classes = loopback_classes(
+        std::env::var("TOLMAP_LOOPBACK_CLASSES").ok().as_deref(),
+        agents,
+    )
+    .map_err(anyhow::Error::msg)?;
+    // Agent `i` advertises the class of slot `i`: both are numbered
+    // smallest class first (`schedule::worker_classes`). `None`, plain
+    // `loopback:N`, leaves each agent advertising its host.
+    let agent_memory: Vec<Option<u64>> = schedule::worker_classes(&classes)
+        .into_iter()
+        .map(|class| classes[class].usable_memory)
+        .collect();
     let cache_dir = state.config.cache_dir.clone();
     std::fs::create_dir_all(&cache_dir)
         .with_context(|| format!("create {}", cache_dir.display()))?;
@@ -2568,8 +2949,17 @@ pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Res
         settings.retries,
         staging,
         format!("http://{address}"),
+        classes.iter().map(|class| class.usable_memory).collect(),
     ));
-    state.jobs.set_remote(hub.clone(), agents);
+    // Weak: the registry holds the hub, so a strong reference back would
+    // keep both alive forever. Set before the listener serves anyone.
+    let weak = Arc::downgrade(state);
+    hub.on_agents_changed(Box::new(move || {
+        if let Some(state) = weak.upgrade() {
+            jobs::agents_changed(&state);
+        }
+    }));
+    state.jobs.set_remote(hub.clone(), classes.clone());
     // Restart order (#97 phase 2): the store's live jobs are reloaded
     // before the worker listener serves an agent and before `serve` opens
     // the public listener, so orphaned leases hold their slots before any
@@ -2595,6 +2985,9 @@ pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Res
             .arg("--cache-dir")
             .arg(agents_dir.join(agent.to_string()))
             .stdin(Stdio::null());
+        if let Some(memory) = agent_memory[agent] {
+            command.arg("--class-memory").arg(memory.to_string());
+        }
         // Its own process group, so a terminal's Ctrl+C reaches only the
         // master, which then stops the agents in order; and so `reap` can
         // kill one agent's group without touching the master's.
@@ -2610,8 +3003,17 @@ pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Res
         command
     });
     let supervisor = Supervisor::start(agents, command);
+    let described: Vec<String> = classes
+        .iter()
+        .map(|class| match class.usable_memory {
+            Some(bytes) => format!("{} MiB x{}", bytes / (1024 * 1024), class.slots),
+            None => format!("host memory x{}", class.slots),
+        })
+        .collect();
     eprintln!(
-        "tolmap serve: worker listener on http://{address} (loopback only), {agents} agent(s)"
+        "tolmap serve: worker listener on http://{address} (loopback only), {agents} agent(s) in \
+         worker classes {}",
+        described.join(", ")
     );
     Ok(Loopback { hub, supervisor })
 }
@@ -2654,9 +3056,55 @@ mod tests {
         relay: Option<Relay>,
     }
 
+    /// One class of unknown size with `slots` agents: plain `loopback:N`.
+    fn one_class(slots: usize) -> Vec<Class> {
+        vec![Class {
+            usable_memory: None,
+            slots,
+        }]
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    /// §9's two classes, one agent each: token 0 is the "small" agent (2
+    /// GiB), token 1 the "large" one (16 GiB).
+    fn two_classes() -> Vec<Class> {
+        vec![
+            Class {
+                usable_memory: Some(2 * GIB),
+                slots: 1,
+            },
+            Class {
+                usable_memory: Some(16 * GIB),
+                slots: 1,
+            },
+        ]
+    }
+
     impl Fixture {
         fn new(lease_ttl: Duration, build: WorkerBuild) -> Self {
             Self::with(tempfile::tempdir().unwrap(), lease_ttl, build, TOKENS.len())
+        }
+
+        /// A master with `classes` (at most `TOKENS.len()` agents in all)
+        /// and a per-class queue bound of `max_queued_jobs`.
+        fn classed(
+            lease_ttl: Duration,
+            build: WorkerBuild,
+            classes: Vec<Class>,
+            max_queued_jobs: usize,
+        ) -> Self {
+            Self::build(
+                tempfile::tempdir().unwrap(),
+                lease_ttl,
+                build,
+                classes,
+                Limits {
+                    max_queued_jobs,
+                    ..Limits::default()
+                },
+                false,
+            )
         }
 
         /// A master on `dir`'s store and cache, which may hold a previous
@@ -2668,7 +3116,14 @@ mod tests {
             build: WorkerBuild,
             slots: usize,
         ) -> Self {
-            Self::build(dir, lease_ttl, build, slots, false)
+            Self::build(
+                dir,
+                lease_ttl,
+                build,
+                one_class(slots),
+                Limits::default(),
+                false,
+            )
         }
 
         /// A master whose listener is reached through a `Relay`: the agent
@@ -2679,7 +3134,8 @@ mod tests {
                 tempfile::tempdir().unwrap(),
                 lease_ttl,
                 build,
-                TOKENS.len(),
+                one_class(TOKENS.len()),
+                Limits::default(),
                 true,
             )
         }
@@ -2688,7 +3144,8 @@ mod tests {
             dir: tempfile::TempDir,
             lease_ttl: Duration,
             build: WorkerBuild,
-            slots: usize,
+            classes: Vec<Class>,
+            limits: Limits,
             relayed: bool,
         ) -> Self {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -2706,7 +3163,7 @@ mod tests {
                 namer_model: crate::naming::DEFAULT_MODEL.to_owned(),
                 refs: crate::extract::RefsMode::Hand,
                 scip_install: false,
-                limits: Limits::default(),
+                limits,
                 retain_commits_per_repo: 20,
                 worker_uid: executor::current_uid(),
                 worker_gid: executor::current_gid(),
@@ -2743,8 +3200,16 @@ mod tests {
                 DEFAULT_RETRIES,
                 staging,
                 base_url,
+                classes.iter().map(|class| class.usable_memory).collect(),
             ));
-            state.jobs.set_remote(hub.clone(), slots);
+            // As `start_loopback` wires it.
+            let weak = Arc::downgrade(&state);
+            hub.on_agents_changed(Box::new(move || {
+                if let Some(state) = weak.upgrade() {
+                    jobs::agents_changed(&state);
+                }
+            }));
+            state.jobs.set_remote(hub.clone(), classes);
             {
                 let _entered = runtime.enter();
                 jobs::restore(&state).unwrap();
@@ -2809,6 +3274,11 @@ mod tests {
 
         fn agent(&self, token: usize) -> FakeAgent {
             FakeAgent::join(self.port, TOKENS[token], test_build())
+        }
+
+        /// A scripted agent advertising `memory_bytes` of usable memory.
+        fn class_agent(&self, token: usize, memory_bytes: u64) -> FakeAgent {
+            FakeAgent::join_as(self.port, TOKENS[token], test_build(), memory_bytes)
         }
 
         fn row(&self, id: Uuid) -> crate::service::store::JobRow {
@@ -2935,8 +3405,16 @@ mod tests {
         }
 
         fn join(port: u16, token: &str, build: WorkerBuild) -> Self {
+            Self::join_as(port, token, build, 1 << 30)
+        }
+
+        fn join_as(port: u16, token: &str, build: WorkerBuild, memory_bytes: u64) -> Self {
             let mut agent = FakeAgent::raw(port, token);
-            agent.send(&hello(build, (PROTO, PROTO)));
+            let mut hello = hello(build, (PROTO, PROTO));
+            if let WorkerMessage::Hello { class, .. } = &mut hello {
+                class.memory_bytes = memory_bytes;
+            }
+            agent.send(&hello);
             match agent.recv() {
                 MasterMessage::Welcome { proto, .. } => assert_eq!(proto, PROTO),
                 other => panic!("expected welcome, got {other:?}"),
@@ -4482,6 +4960,8 @@ mod tests {
             token_file,
             cache_dir: root.join("agent"),
             worker_exe: worker,
+            class_memory: None,
+            memory_events: None,
         };
         let agent = std::thread::spawn(move || crate::service::agent::run(config));
         wait_for_ready_agent(fixture, 0);
@@ -4987,6 +5467,8 @@ printf '{"type":"result","v":1,"map_path":"%s/demo.json","symbols_path":"%s/demo
             token_file,
             cache_dir: root.join("agent"),
             worker_exe: worker,
+            class_memory: None,
+            memory_events: None,
         };
         let agent = std::thread::spawn(move || crate::service::agent::run(config));
 
@@ -5072,5 +5554,472 @@ printf '{"type":"result","v":1,"map_path":"%s/demo.json","symbols_path":"%s/demo
         fixture.hub.shutdown_now();
         let outcome = agent.join().unwrap();
         assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    // ---- classes (#97 phase 2, step 4) ------------------------------------
+
+    #[test]
+    fn loopback_classes_are_sizes_and_agent_counts_and_refuse_anything_else() {
+        let class = |usable_memory: Option<u64>, slots: usize| Class {
+            usable_memory,
+            slots,
+        };
+        assert_eq!(loopback_classes(None, 3), Ok(vec![class(None, 3)]));
+        assert_eq!(loopback_classes(Some("  "), 2), Ok(vec![class(None, 2)]));
+        // Smallest first, whatever the order written.
+        assert_eq!(
+            loopback_classes(Some("16GiB:1, 2GiB:2"), 3),
+            Ok(vec![class(Some(2 * GIB), 2), class(Some(16 * GIB), 1)])
+        );
+        assert_eq!(
+            loopback_classes(Some("512MiB:1,1073741824:1,1TiB:1,4KiB:1"), 4),
+            Ok(vec![
+                class(Some(4 << 10), 1),
+                class(Some(512 << 20), 1),
+                class(Some(GIB), 1),
+                class(Some(1 << 40), 1),
+            ])
+        );
+        for (bad, agents) in [
+            ("2GiB", 1),
+            ("2GiB:0", 1),
+            ("2GB:1", 1),
+            ("0:1", 1),
+            ("two:1", 1),
+            ("2GiB:x", 1),
+            ("2GiB:1,", 1),
+            ("2GiB:1,2GiB:1", 2),
+            ("2GiB:1,16GiB:1", 3),
+            ("99999999999TiB:1", 1),
+        ] {
+            assert!(
+                loopback_classes(Some(bad), agents).is_err(),
+                "{bad} for {agents} agent(s)"
+            );
+        }
+    }
+
+    /// Makes `slug` predicted large at admission (§2.1 step 1): its last
+    /// job was killed at 8 GiB, a floor the prediction stays above.
+    fn predicted_large(fixture: &Fixture, slug: &str) {
+        let row = crate::service::eta::TimingRow {
+            features: crate::worker::RepoFeatures::default(),
+            elapsed_s: 1.0,
+            stage_s: vec![None; StageId::ALL.len()],
+            peak_rss_bytes: Some(8 * GIB),
+            slug: Some(slug.to_owned()),
+        };
+        fixture
+            .state
+            .store
+            .save_timing(&format!("seed {slug}"), &row)
+            .unwrap();
+        fixture
+            .state
+            .jobs
+            .load_timings(&fixture.state.store)
+            .unwrap();
+    }
+
+    /// Delivers the job `agent` holds and makes it ready again.
+    fn finish(fixture: &Fixture, agent: &mut FakeAgent, token: usize, id: Uuid) {
+        agent.deliver(fixture.port, TOKENS[token], id);
+        match agent.recv() {
+            MasterMessage::ResultAccepted { job_id, .. } => assert_eq!(job_id, id.to_string()),
+            other => panic!("expected result_accepted, got {other:?}"),
+        }
+        agent.send(&WorkerMessage::Ready { slots_free: 1 });
+    }
+
+    /// §7.1, §9 "class selection": a job predicted large waits for the
+    /// large agent, which is busy, while small jobs flow through the small
+    /// one; the small agent never takes it, and the large agent takes it
+    /// when it frees.
+    #[test]
+    fn a_large_job_waits_for_the_large_agent_while_small_jobs_flow() {
+        let fixture = Fixture::classed(Duration::from_secs(60), test_build(), two_classes(), 16);
+        predicted_large(&fixture, "test/big");
+        predicted_large(&fixture, "test/huge");
+        let mut small = fixture.class_agent(0, 2 * GIB);
+        let mut large = fixture.class_agent(1, 16 * GIB);
+        let big = fixture.spawn(remote_repo("big"));
+        assert_eq!(large.assigned(), big);
+        let huge = fixture.spawn(remote_repo("huge"));
+        let first = fixture.spawn(remote_repo("first"));
+        let second = fixture.spawn(remote_repo("second"));
+        assert_eq!(small.assigned(), first);
+        let waiting = fixture.snapshot(huge);
+        assert_eq!(waiting.status, JobStatus::Queued);
+        assert_eq!(waiting.queue_position, Some(1), "{waiting:?}");
+        assert_eq!(fixture.snapshot(second).queue_position, Some(1));
+        assert_eq!(fixture.row(huge).class, 1);
+        assert_eq!(fixture.row(second).class, 0);
+        finish(&fixture, &mut small, 0, first);
+        assert_eq!(small.assigned(), second);
+        finish(&fixture, &mut small, 0, second);
+        assert!(
+            small.recv_within(Duration::from_millis(700)).is_none(),
+            "the small agent was sent a large job"
+        );
+        assert_eq!(fixture.snapshot(huge).status, JobStatus::Queued);
+        finish(&fixture, &mut large, 1, big);
+        assert_eq!(large.assigned(), huge);
+    }
+
+    /// §7.1, §9 "spill-down": the large agent, with nothing of its own to
+    /// run, takes a small job; a large job admitted meanwhile waits for that
+    /// one small job and no more -- the small agent, free first, never takes
+    /// it.
+    #[test]
+    fn a_large_agent_spills_down_and_a_large_job_waits_for_that_one_small_job() {
+        let fixture = Fixture::classed(Duration::from_secs(60), test_build(), two_classes(), 16);
+        predicted_large(&fixture, "test/big");
+        let mut small = fixture.class_agent(0, 2 * GIB);
+        let mut large = fixture.class_agent(1, 16 * GIB);
+        let first = fixture.spawn(remote_repo("first"));
+        assert_eq!(small.assigned(), first);
+        let spilled = fixture.spawn(remote_repo("spilled"));
+        assert_eq!(large.assigned(), spilled, "an idle large agent spills down");
+        assert_eq!(
+            fixture.row(spilled).class,
+            0,
+            "a spilled job keeps its class"
+        );
+        let big = fixture.spawn(remote_repo("big"));
+        assert_eq!(fixture.snapshot(big).queue_position, Some(1));
+        finish(&fixture, &mut small, 0, first);
+        assert!(
+            small.recv_within(Duration::from_millis(700)).is_none(),
+            "the small agent was sent a large job"
+        );
+        finish(&fixture, &mut large, 1, spilled);
+        assert_eq!(large.assigned(), big);
+    }
+
+    /// §7.2 with two classes, against a schedule worked out by hand. Every
+    /// job has the same predicted midpoint `m` (nothing has reported
+    /// features, and failed seed rows move no stage estimate).
+    ///
+    /// With only the small agent connected, the idle large slot has no
+    /// agent behind it: it takes no small job and counts for nothing in the
+    /// quote, so no queued job is ever quoted a start of 0 on it, and the
+    /// small jobs queue behind the small agent. A large job then has no
+    /// agent that can take it, so it has no start at all. Once the large
+    /// agent connects it runs the large job, and a large job admitted later
+    /// goes ahead of every small one on it (classes are simulated largest
+    /// first) while the small queue spills onto it exactly as dispatch
+    /// would.
+    #[test]
+    fn queued_etas_with_two_classes_match_a_hand_computed_schedule() {
+        use crate::service::eta::EtaModel;
+        let fixture = Fixture::classed(Duration::from_secs(60), test_build(), two_classes(), 16);
+        predicted_large(&fixture, "test/big");
+        predicted_large(&fixture, "test/huge");
+        let m = EtaModel::default()
+            .predict(
+                &crate::worker::RepoFeatures::default(),
+                &[false; StageId::ALL.len()],
+                None,
+            )
+            .midpoint();
+        let quote = |id: Uuid| {
+            let snapshot = fixture.snapshot(id);
+            (snapshot.queue_position, snapshot.eta_start_s)
+        };
+        let mut small = fixture.class_agent(0, 2 * GIB);
+        let s1 = fixture.spawn(remote_repo("s1"));
+        assert_eq!(small.assigned(), s1);
+        let s2 = fixture.spawn(remote_repo("s2"));
+        let s3 = fixture.spawn(remote_repo("s3"));
+        // The small agent frees at m, then m + m; the large slot, with no
+        // agent, neither takes s2 nor quotes it 0.
+        assert_eq!(quote(s2), (Some(1), Some(m)));
+        assert_eq!(quote(s3), (Some(2), Some(m + m)));
+        // No agent can take a large job: it waits with no start.
+        let huge = fixture.spawn(remote_repo("huge"));
+        assert_eq!(quote(huge).1, None, "{:?}", fixture.snapshot(huge));
+        assert_eq!(fixture.snapshot(huge).status, JobStatus::Queued);
+
+        let mut large = fixture.class_agent(1, 16 * GIB);
+        assert_eq!(large.assigned(), huge);
+        let s4 = fixture.spawn(remote_repo("s4"));
+        let big = fixture.spawn(remote_repo("big"));
+        // Workers free at m (small, s1) and m (large, huge). Largest class
+        // first: big -> large at m, which is then free at m + m. Then the
+        // small queue in order: s2 -> small at m (small then at m + m);
+        // s3 -> both at m + m, the tie goes to the lower worker id, small
+        // (then at 3m); s4 -> large, spilling, at m + m.
+        assert_eq!(quote(big), (Some(1), Some(m)));
+        assert_eq!(quote(s2), (Some(1), Some(m)));
+        assert_eq!(quote(s3), (Some(2), Some(m + m)));
+        assert_eq!(quote(s4), (Some(3), Some(m + m)));
+    }
+
+    /// §7.3 with several classes: the queue bound applies per class, so a
+    /// full small queue turns small jobs away with `busy` while large jobs
+    /// still queue for the large class, up to that class's own bound.
+    #[test]
+    fn the_queue_bound_holds_per_class() {
+        let fixture = Fixture::classed(Duration::from_secs(60), test_build(), two_classes(), 1);
+        for slug in ["test/big", "test/big2", "test/big3"] {
+            predicted_large(&fixture, slug);
+        }
+        let try_spawn = |name: &str| {
+            let _entered = fixture.runtime.as_ref().unwrap().enter();
+            jobs::spawn_job(fixture.state.clone(), remote_repo(name), COMMIT.to_owned())
+        };
+        let mut small = fixture.class_agent(0, 2 * GIB);
+        let first = fixture.spawn(remote_repo("first"));
+        assert_eq!(small.assigned(), first);
+        let second = fixture.spawn(remote_repo("second"));
+        assert_eq!(fixture.snapshot(second).queue_position, Some(1));
+        let refused = try_spawn("third").expect_err("a small job past its class's bound");
+        assert_eq!(refused.body.error, "busy");
+        // The large class's slot takes the first large job (it waits there
+        // for a large agent); the next one queues although the small queue
+        // is full; the one after that finds the large queue full.
+        let big = fixture.spawn(remote_repo("big"));
+        let big2 = try_spawn("big2").expect("the large queue has room");
+        assert_eq!(fixture.row(big).class, 1);
+        assert_eq!(fixture.row(big2).class, 1);
+        let refused = try_spawn("big3").expect_err("a large job past its class's bound");
+        assert_eq!(refused.body.error, "busy");
+    }
+
+    fn py_features(files: u64) -> WorkerEvent {
+        WorkerEvent::Features {
+            v: 1,
+            features: crate::worker::RepoFeatures {
+                languages: [(
+                    "py".to_owned(),
+                    crate::worker::LanguageFeatures {
+                        files,
+                        bytes: files * 8_000,
+                    },
+                )]
+                .into(),
+                ..crate::worker::RepoFeatures::default()
+            },
+        }
+    }
+
+    /// §2.1 step 3 with scripted agents: a job admitted small whose
+    /// `features` predict more than 2 GiB is told `cancel` `reroute`; on
+    /// `released` it moves to the large class at the head of its queue,
+    /// epoch 2, attempt not counted, and completes there. Features that
+    /// predict less on the large agent never move it back down.
+    #[test]
+    fn a_job_whose_features_outgrow_its_class_is_rerouted_uncounted() {
+        let fixture = Fixture::classed(Duration::from_secs(60), test_build(), two_classes(), 16);
+        let mut small = fixture.class_agent(0, 2 * GIB);
+        let mut large = fixture.class_agent(1, 16 * GIB);
+        let id = fixture.spawn(remote_repo("grows"));
+        assert_eq!(small.assigned(), id);
+        assert_eq!(fixture.row(id).class, 0);
+        clone_started(&mut small, id);
+        // A clone's `features` name no files yet: nothing to act on.
+        small.event(
+            id,
+            WorkerEvent::Features {
+                v: 1,
+                features: crate::worker::RepoFeatures::default(),
+            },
+        );
+        assert!(small.recv_within(Duration::from_millis(300)).is_none());
+        // Detection's: 40,000 Python files, several GiB on the hand curve.
+        small.event(id, py_features(40_000));
+        match small.recv() {
+            MasterMessage::Cancel {
+                job_id,
+                epoch,
+                reason,
+            } => {
+                assert_eq!((job_id, epoch), (id.to_string(), 1));
+                assert_eq!(reason, CancelReason::Reroute);
+            }
+            other => panic!("expected cancel reroute, got {other:?}"),
+        }
+        // A second `features` event asks nothing more.
+        small.event(id, py_features(50_000));
+        assert!(small.recv_within(Duration::from_millis(300)).is_none());
+        small.send(&WorkerMessage::Released {
+            job_id: id.to_string(),
+            epoch: 1,
+            reason: ReleasedReason::Reroute,
+            peak_rss_bytes: Some(GIB),
+        });
+        assert_eq!(large.assigned(), id);
+        assert_eq!(large.epoch, 2);
+        let row = fixture.wait_for_row(id, "leased on the large class", |row| {
+            row.status == "leased"
+        });
+        assert_eq!((row.class, row.attempt, row.epoch), (1, 1, 2), "{row:?}");
+        clone_started(&mut large, id);
+        large.event(id, py_features(10));
+        assert!(
+            large.recv_within(Duration::from_millis(300)).is_none(),
+            "a job was rerouted down"
+        );
+        large.deliver(fixture.port, TOKENS[1], id);
+        assert!(matches!(large.recv(), MasterMessage::ResultAccepted { .. }));
+        let row = fixture.wait_for_row(id, "done", |row| row.status == "done");
+        assert_eq!((row.class, row.attempt), (1, 1), "{row:?}");
+        assert!(small.recv_within(Duration::from_millis(300)).is_none());
+    }
+
+    /// §6 "worker host dies" near its memory limit: the lost agent's last
+    /// heartbeat had its job at 95% of its class, so the lease's expiry
+    /// moves the job to the next class instead of retrying it on this one.
+    /// It is a lost worker (attempt 2), and its new class's retry count
+    /// starts at 0.
+    #[test]
+    fn a_worker_lost_near_its_memory_limit_moves_the_job_to_the_next_class() {
+        let fixture = Fixture::classed(Duration::from_secs(1), test_build(), two_classes(), 16);
+        let mut small = fixture.class_agent(0, 2 * GIB);
+        let mut large = fixture.class_agent(1, 16 * GIB);
+        let id = fixture.spawn(remote_repo("heavy"));
+        assert_eq!(small.assigned(), id);
+        clone_started(&mut small, id);
+        small.send(&WorkerMessage::Heartbeat {
+            jobs: vec![HeartbeatJob {
+                job_id: id.to_string(),
+                epoch: 1,
+                last_seq: 1,
+            }],
+            rss_bytes: Some(2 * GIB / 100 * 95),
+        });
+        assert!(matches!(small.recv(), MasterMessage::LeaseRenewed { .. }));
+        drop(small);
+        assert_eq!(large.assigned(), id);
+        assert_eq!(large.epoch, 2);
+        let row = fixture.wait_for_row(id, "leased again", |row| row.status == "leased");
+        assert_eq!((row.class, row.attempt), (1, 2), "{row:?}");
+        assert_eq!(fixture.snapshot(id).stage, LOST_TO_MEMORY);
+    }
+
+    /// A job child for the out-of-memory tests: it reads its spec, records
+    /// its start, reports a stage, then -- as the kernel's OOM killer would
+    /// leave things -- raises the `oom_kill` count in its agent's memory
+    /// events file (`<agent cache>/memory.events`, four levels above its
+    /// job directory, which is its `HOME`) when `raise` is set, and SIGKILLs
+    /// itself.
+    fn oom_job(root: &Path, raise: bool) -> (PathBuf, String, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let (repo, _, _) = scripted_job(root);
+        let head = head_of(&repo);
+        let marker = if raise {
+            "events=\"$HOME/../../../../memory.events\"\n\
+             n=$(sed -n 's/^oom_kill //p' \"$events\")\n\
+             echo \"oom_kill $((n+1))\" > \"$events\"\n"
+        } else {
+            ""
+        };
+        let script = format!(
+            "#!/bin/sh\ncat > /dev/null\necho $$ >> '{}'\n\
+             printf '%s\\n' '{{\"type\":\"stage_started\",\"v\":1,\"stage\":\"parse\"}}'\n\
+             {marker}kill -9 $$\n",
+            root.join("starts").display()
+        );
+        let worker = root.join("oom-worker.sh");
+        std::fs::write(&worker, script).unwrap();
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (repo, head, worker)
+    }
+
+    /// The real agent (`agent::run`, in a thread) with token `token`,
+    /// advertising `memory_bytes`, its own cache directory and a memory
+    /// events file there reading `oom_kill 0`, dialling the fixture.
+    fn class_agent_real(
+        fixture: &Fixture,
+        token: usize,
+        memory_bytes: u64,
+        worker: PathBuf,
+    ) -> std::thread::JoinHandle<anyhow::Result<()>> {
+        let root = fixture.dir.path();
+        let cache_dir = root.join(format!("agent-{token}"));
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let events = cache_dir.join("memory.events");
+        std::fs::write(&events, "oom 0\noom_kill 0\n").unwrap();
+        let token_file = root.join(format!("agent-{token}.token"));
+        std::fs::write(&token_file, TOKENS[token]).unwrap();
+        let config = crate::service::agent::AgentConfig {
+            connect: format!("ws://127.0.0.1:{}/workers/connect", fixture.port),
+            token_file,
+            cache_dir,
+            worker_exe: worker,
+            class_memory: Some(memory_bytes),
+            memory_events: Some(events),
+        };
+        let agent = std::thread::spawn(move || crate::service::agent::run(config));
+        wait_for_ready_agent(fixture, token);
+        agent
+    }
+
+    /// §6 "job child OOM-killed", §9's fake OOM, with real agents: the job
+    /// child raises the marker and SIGKILLs itself. On the small agent the
+    /// job is released `oom` and escalates to the large one, uncounted; on
+    /// the large agent, the largest class, it fails `worker_crashed` "out
+    /// of memory on the largest worker class". Each attempt's peak is
+    /// recorded as a timing row of its own, for the memory model.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_job_killed_for_memory_escalates_and_fails_on_the_largest_class() {
+        let fixture = Fixture::classed(Duration::from_secs(60), own_build(), two_classes(), 16);
+        let root = fixture.dir.path().to_path_buf();
+        let (repo, head, worker) = oom_job(&root, true);
+        let small = class_agent_real(&fixture, 0, 2 * GIB, worker.clone());
+        let large = class_agent_real(&fixture, 1, 16 * GIB, worker);
+        let id = fixture.spawn_at(local_demo(&repo), &head);
+        let failed = fixture.wait_for(id, "the job fails", jobs::is_terminal);
+        assert_eq!(failed.error_code.as_deref(), Some("worker_crashed"));
+        let message = failed.error.clone().unwrap_or_default();
+        assert!(message.contains(OOM_ON_LARGEST), "{message}");
+        let row = fixture.wait_for_row(id, "failed in the store", |row| row.status == "failed");
+        assert_eq!((row.class, row.epoch, row.attempt), (1, 2, 1), "{row:?}");
+        assert_eq!(starts(&root), 2, "one attempt on each class");
+        let oom_rows = fixture
+            .state
+            .store
+            .recent_timings()
+            .unwrap()
+            .into_iter()
+            .filter(|row| {
+                row.slug.as_deref() == Some("local/demo")
+                    && row.peak_rss_bytes.is_some_and(|peak| peak > 0)
+                    && row.stage_s.iter().all(Option::is_none)
+            })
+            .count();
+        assert!(oom_rows >= 2, "{oom_rows} out-of-memory timing row(s)");
+        fixture.hub.shutdown_now();
+        for agent in [small, large] {
+            let outcome = agent.join().unwrap();
+            assert!(outcome.is_ok(), "{outcome:?}");
+        }
+    }
+
+    /// A SIGKILL the memory cgroup did not count is not an out-of-memory
+    /// kill: the job fails `worker_crashed` on the class it ran on, as any
+    /// crash does, and nothing escalates.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_sigkill_with_no_oom_kill_counted_is_a_crash_not_an_escalation() {
+        let fixture = Fixture::classed(Duration::from_secs(60), own_build(), two_classes(), 16);
+        let root = fixture.dir.path().to_path_buf();
+        let (repo, head, worker) = oom_job(&root, false);
+        let small = class_agent_real(&fixture, 0, 2 * GIB, worker.clone());
+        let large = class_agent_real(&fixture, 1, 16 * GIB, worker);
+        let id = fixture.spawn_at(local_demo(&repo), &head);
+        let failed = fixture.wait_for(id, "the job fails", jobs::is_terminal);
+        assert_eq!(failed.error_code.as_deref(), Some("worker_crashed"));
+        let message = failed.error.clone().unwrap_or_default();
+        assert!(!message.contains(OOM_ON_LARGEST), "{message}");
+        let row = fixture.wait_for_row(id, "failed in the store", |row| row.status == "failed");
+        assert_eq!((row.class, row.epoch, row.attempt), (0, 1, 1), "{row:?}");
+        assert_eq!(starts(&root), 1);
+        fixture.hub.shutdown_now();
+        for agent in [small, large] {
+            let outcome = agent.join().unwrap();
+            assert!(outcome.is_ok(), "{outcome:?}");
+        }
     }
 }

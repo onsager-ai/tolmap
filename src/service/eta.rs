@@ -20,6 +20,12 @@ pub struct TimingRow {
     /// still deserialize.
     #[serde(default)]
     pub peak_rss_bytes: Option<u64>,
+    /// The repository the row measured (#97 phase 2, step 4), for
+    /// `MemoryModel::predict_for`'s "this slug's own last measurement"
+    /// (docs/WORKER_TIER.md §2.1 step 1). `None` for a row written before
+    /// it existed, which then only feeds the population curve.
+    #[serde(default)]
+    pub slug: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, TS)]
@@ -502,6 +508,16 @@ pub struct MemoryModel {
     rows: Vec<TimingRow>,
 }
 
+/// How far above this repository's own last peak a prediction from it sits
+/// (§2.1 step 1). Much smaller than `UPPER_QUANTILE_MULTIPLIER`, which
+/// covers the spread between *different* repositories of one size; the
+/// same repository at a nearby commit varies far less. It still errs high,
+/// the direction this model errs (§2.1), and it lifts a peak recorded at an
+/// out-of-memory kill -- which sits at the class's limit, a floor on what
+/// the job needs -- clear of that class, so the next admission binds the
+/// next one up rather than the class that just killed it.
+const OWN_PEAK_MARGIN: f64 = 1.25;
+
 /// Real, matching observations needed before they collectively outweigh the
 /// seed curve. Larger than `EtaModel::stage`'s three seed pseudo-observations
 /// on purpose (#2.1: "used until a group has enough finished rows (pick a
@@ -575,6 +591,58 @@ impl MemoryModel {
                 },
                 HAND_ANCHORS[1].0, // the medium-band median file count
             )
+        }
+    }
+
+    /// docs/WORKER_TIER.md §2.1's prediction in its order: this slug's own
+    /// last measurement first (step 1), scaled by the change in file count
+    /// once the job has reported one, and [`MemoryModel::predict_peak`]
+    /// otherwise -- the reference-mode prior before `features` (step 2),
+    /// the features after (step 3).
+    ///
+    /// "Last measurement" is the newest *finished* row for the slug: a
+    /// finished job's peak is what the repository needed. A failed or
+    /// killed row newer than it is a floor -- the job needed at least that
+    /// much and did not finish -- so the prediction is never below it;
+    /// with no finished row at all, floors only ever raise the population
+    /// prediction, never lower it (a job cancelled in its first second is
+    /// not proof the repository is small). Rows are searched newest first,
+    /// and the rows kept are the newest 256 (`record`), so a slug not seen
+    /// for that long is predicted like a new one.
+    pub fn predict_for(&self, slug: Option<&str>, features: &RepoFeatures) -> u64 {
+        let population = self.predict_peak(features);
+        let Some(slug) = slug else {
+            return population;
+        };
+        let mut floor: Option<u64> = None;
+        let mut measured: Option<(u64, Option<f64>)> = None;
+        for row in self.rows.iter().rev() {
+            if row.slug.as_deref() != Some(slug) {
+                continue;
+            }
+            let Some(peak) = row.peak_rss_bytes.filter(|bytes| *bytes > 0) else {
+                continue;
+            };
+            if row.stage_s.iter().any(Option::is_some) {
+                measured = Some((peak, Self::file_count(&row.features)));
+                break;
+            }
+            floor = Some(floor.map_or(peak, |floor| floor.max(peak)));
+        }
+        let with_margin = |bytes: f64| (bytes * OWN_PEAK_MARGIN).round().max(1.0) as u64;
+        let floor = floor.map_or(0, |floor| with_margin(floor as f64));
+        match measured {
+            Some((peak, then)) => {
+                // Scaled along the hand curve's own log-log slope, the one
+                // multi-point size fit this model has (finding 18); before
+                // the job reports its files there is nothing to scale by.
+                let scale = match (then, Self::file_count(features)) {
+                    (Some(then), Some(now)) => (now / then).powf(fit_loglog(&HAND_ANCHORS, None).0),
+                    _ => 1.0,
+                };
+                with_margin(peak as f64 * scale).max(floor)
+            }
+            None => population.max(floor),
         }
     }
 
@@ -891,6 +959,7 @@ mod tests {
             elapsed_s: 50.0,
             stage_s,
             peak_rss_bytes: None,
+            slug: None,
         });
         assert!(model.stage(StageId::Parse, &input) > base);
         assert!(model.stage(StageId::Parse, &input) < base * 1.5);
@@ -953,6 +1022,7 @@ mod tests {
             elapsed_s: 12.0,
             stage_s: vec![None; StageId::ALL.len()],
             peak_rss_bytes: None,
+            slug: None,
         });
         let after = model.predict(&input, &[false; STAGE_COUNT], None);
         assert!((before.low_s - after.low_s).abs() < 0.001);
@@ -971,6 +1041,7 @@ mod tests {
             elapsed_s: 10.0,
             stage_s: vec![Some(1.0); StageId::ALL.len()],
             peak_rss_bytes: Some(peak),
+            slug: None,
         }
     }
 
@@ -1067,6 +1138,7 @@ mod tests {
             elapsed_s: 1.0,
             stage_s: vec![None; StageId::ALL.len()],
             peak_rss_bytes: Some(1),
+            slug: None,
         });
         let after = model.predict_peak(&input);
         assert_eq!(before, after);
@@ -1086,6 +1158,56 @@ mod tests {
         ]);
         assert_eq!(forward.predict_peak(&a), backward.predict_peak(&a));
         assert_eq!(forward.predict_peak(&b), backward.predict_peak(&b));
+    }
+
+    fn slug_row(slug: &str, files: u64, peak: u64, finished: bool) -> TimingRow {
+        TimingRow {
+            features: features(files),
+            elapsed_s: 10.0,
+            stage_s: vec![finished.then_some(1.0); StageId::ALL.len()],
+            peak_rss_bytes: Some(peak),
+            slug: Some(slug.to_owned()),
+        }
+    }
+
+    /// §2.1 step 1 (#97 phase 2, step 4): a slug's own last finished peak
+    /// predicts it, with a small margin, scaled by the change in file count
+    /// once the job has reported one; another slug's rows do not; a newer
+    /// failed row is a floor under it, and with no finished row a floor
+    /// only ever raises the population prediction.
+    #[test]
+    fn a_slugs_own_last_peak_predicts_it_before_the_population_curve() {
+        const MIB: u64 = 1 << 20;
+        let unknown = RepoFeatures::default();
+        let mut model = MemoryModel::default();
+        let population = model.predict_peak(&unknown);
+        assert_eq!(model.predict_for(Some("o/a"), &unknown), population);
+        assert_eq!(model.predict_for(None, &unknown), population);
+
+        model.record(slug_row("o/a", 100, 40 * MIB, true));
+        model.record(slug_row("o/b", 100, 4_000 * MIB, true));
+        let own = model.predict_for(Some("o/a"), &unknown);
+        assert_eq!(own, (40.0 * MIB as f64 * OWN_PEAK_MARGIN).round() as u64);
+        assert!(own < population, "its own small peak beats the prior");
+        // Twice the files, scaled along the hand slope: more, but less than
+        // twice (the slope is below 1).
+        let grown = model.predict_for(Some("o/a"), &features(200));
+        assert!(grown > own && grown < 2 * own, "{own} then {grown}");
+        assert_eq!(model.predict_for(Some("o/a"), &features(100)), own);
+
+        // An out-of-memory kill after it: the floor wins.
+        model.record(slug_row("o/a", 100, 2_048 * MIB, false));
+        assert_eq!(
+            model.predict_for(Some("o/a"), &unknown),
+            (2_048.0 * MIB as f64 * OWN_PEAK_MARGIN).round() as u64
+        );
+
+        // No finished row: a tiny floor leaves the population prediction,
+        // a large one raises it.
+        model.record(slug_row("o/c", 100, MIB, false));
+        assert_eq!(model.predict_for(Some("o/c"), &unknown), population);
+        model.record(slug_row("o/d", 100, 8_192 * MIB, false));
+        assert!(model.predict_for(Some("o/d"), &unknown) > 8_192 * MIB);
     }
 
     // The image e2e measured a 4-file `--refs scip` job at 210 MiB, and the

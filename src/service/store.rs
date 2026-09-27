@@ -133,6 +133,17 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX jobs_status_order ON jobs(status, queue_order);
 "#,
+    // #97 phase 2, step 4 (docs/WORKER_TIER.md §2.1 step 1): the slug a
+    // timing row belongs to, so the memory model can predict a job from its
+    // own repository's last measurement. Nullable: rows from before this
+    // migration have none and only feed the population curve.
+    "ALTER TABLE job_timings ADD COLUMN slug TEXT;",
+    // #97 phase 2, step 4 (§10.6: the retry bound is per class): lost
+    // workers counted on the job's current class. `attempt` keeps counting
+    // every lost worker over the job's life; this one starts again at 0
+    // whenever the job moves to another class (`rebind_job`), and it is
+    // what the retry bound is checked against.
+    "ALTER TABLE jobs ADD COLUMN class_lost INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// The two statuses a `jobs` row never leaves.
@@ -177,13 +188,14 @@ impl Store {
     pub fn save_timing(&self, job_id: &str, row: &TimingRow) -> Result<()> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         conn.execute(
-            "INSERT OR REPLACE INTO job_timings (job_id, features_json, stage_s_json, elapsed_s, peak_rss_bytes, completed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR REPLACE INTO job_timings (job_id, features_json, stage_s_json, elapsed_s, peak_rss_bytes, slug, completed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 job_id,
                 serde_json::to_string(&row.features)?,
                 serde_json::to_string(&row.stage_s)?,
                 row.elapsed_s,
                 row.peak_rss_bytes.map(|bytes| bytes as i64),
+                row.slug,
                 crate::service::time::now_rfc3339()
             ],
         )?;
@@ -192,17 +204,18 @@ impl Store {
 
     pub fn recent_timings(&self) -> Result<Vec<TimingRow>> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
-        let mut query = conn.prepare("SELECT features_json, stage_s_json, elapsed_s, peak_rss_bytes FROM job_timings ORDER BY completed_at DESC, job_id DESC LIMIT 256")?;
+        let mut query = conn.prepare("SELECT features_json, stage_s_json, elapsed_s, peak_rss_bytes, slug FROM job_timings ORDER BY completed_at DESC, job_id DESC LIMIT 256")?;
         let rows = query.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, f64>(2)?,
                 row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })?;
         rows.map(|row| {
-            let (features, stage_s, elapsed_s, peak_rss_bytes) = row?;
+            let (features, stage_s, elapsed_s, peak_rss_bytes, slug) = row?;
             Ok(TimingRow {
                 features: serde_json::from_str(&features)?,
                 stage_s: crate::service::eta::upgrade_stage_layout(serde_json::from_str(&stage_s)?),
@@ -211,6 +224,7 @@ impl Store {
                 // malformed or hand-edited row must not resurrect a bogus
                 // peak rather than falling back to "unknown".
                 peak_rss_bytes: peak_rss_bytes.and_then(|bytes| u64::try_from(bytes).ok()),
+                slug,
             })
         })
         .collect()
@@ -546,11 +560,12 @@ impl Store {
     }
 
     /// Puts a live job at `epoch` back to `queued` with `snapshot_json`
-    /// (its stages reset) and no lease. A `counted` re-queue is a lost
-    /// worker (§10.6): it raises `attempt`, unless `retries` lost-worker
-    /// retries are used up already, in which case nothing is written and
-    /// the caller fails the job. One transaction, so the bound is decided
-    /// on the value it updates.
+    /// (its stages reset) and no lease, on the class it is bound to. A
+    /// `counted` re-queue is a lost worker (§10.6): it raises `attempt` and
+    /// the job's lost workers on this class, unless `retries` lost-worker
+    /// retries are used up on this class already, in which case nothing is
+    /// written and the caller fails the job. One transaction, so the bound
+    /// is decided on the value it updates.
     pub fn requeue_job(
         &self,
         job_id: &str,
@@ -561,39 +576,95 @@ impl Store {
     ) -> Result<Requeued> {
         let mut conn = self.conn.lock().expect("store connection mutex poisoned");
         let tx = conn.transaction()?;
-        let attempt: Option<i64> = tx
+        let found: Option<(i64, i64)> = tx
             .query_row(
                 &format!(
-                    "SELECT attempt FROM jobs WHERE job_id = ?1 AND epoch = ?2 AND {TERMINAL_JOB}"
+                    "SELECT attempt, class_lost FROM jobs
+                     WHERE job_id = ?1 AND epoch = ?2 AND {TERMINAL_JOB}"
                 ),
                 params![job_id, epoch as i64],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional_context()?;
-        let Some(attempt) = attempt else {
+        let Some((attempt, class_lost)) = found else {
             return Ok(Requeued::Unchanged);
         };
-        // `attempt` counts the workers the job has been on; the retries
-        // used so far are one fewer, so the bound is reached once
-        // `attempt - 1 >= retries`.
-        if counted && attempt > i64::from(retries) {
-            return Ok(Requeued::Exhausted { lost: attempt });
+        // §10.6, per class: `class_lost` workers were lost on this class
+        // before this one, so this loss would be retry number
+        // `class_lost + 1`, past the bound once `class_lost >= retries`.
+        // With one class `class_lost` is `attempt - 1`, the bound #155
+        // checked.
+        if counted && class_lost >= i64::from(retries) {
+            return Ok(Requeued::Exhausted {
+                lost: class_lost + 1,
+            });
         }
         let attempt = attempt + i64::from(counted);
         tx.execute(
-            "UPDATE jobs SET status = 'queued', attempt = ?3, lease_holder = NULL,
-                 lease_deadline_ms = NULL, snapshot_json = ?4, updated_at = ?5
+            "UPDATE jobs SET status = 'queued', attempt = ?3, class_lost = class_lost + ?4,
+                 lease_holder = NULL, lease_deadline_ms = NULL, snapshot_json = ?5,
+                 updated_at = ?6
              WHERE job_id = ?1 AND epoch = ?2",
             params![
                 job_id,
                 epoch as i64,
                 attempt,
+                i64::from(counted),
                 snapshot_json,
                 crate::service::time::now_rfc3339()
             ],
         )?;
         tx.commit()?;
         Ok(Requeued::Queued { attempt })
+    }
+
+    /// Puts a live job at `epoch` back to `queued` on another class (#97
+    /// phase 2, step 4: a reroute after `features`, an out-of-memory
+    /// escalation, or a lost worker that died of memory; docs/WORKER_TIER.md
+    /// §2.1, §6). Its lost workers on the new class start at 0 (§10.6: the
+    /// bound is per class). `counted` raises `attempt` for a lost worker; a
+    /// reroute or an escalation is not one. Never refuses: moving to a
+    /// class is not a retry on it.
+    pub fn rebind_job(
+        &self,
+        job_id: &str,
+        epoch: u64,
+        class: usize,
+        counted: bool,
+        snapshot_json: &str,
+    ) -> Result<Requeued> {
+        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            &format!(
+                "UPDATE jobs SET status = 'queued', class = ?3, attempt = attempt + ?4,
+                     class_lost = 0, lease_holder = NULL, lease_deadline_ms = NULL,
+                     snapshot_json = ?5, updated_at = ?6
+                 WHERE job_id = ?1 AND epoch = ?2 AND {TERMINAL_JOB}"
+            ),
+            params![
+                job_id,
+                epoch as i64,
+                class as i64,
+                i64::from(counted),
+                snapshot_json,
+                crate::service::time::now_rfc3339()
+            ],
+        )?;
+        let attempt: Option<i64> = if changed == 1 {
+            Some(tx.query_row(
+                "SELECT attempt FROM jobs WHERE job_id = ?1",
+                params![job_id],
+                |row| row.get(0),
+            )?)
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok(match attempt {
+            Some(attempt) => Requeued::Queued { attempt },
+            None => Requeued::Unchanged,
+        })
     }
 
     /// A job's terminal snapshot. The first terminal write wins: callers
@@ -792,6 +863,7 @@ mod tests {
             elapsed_s: 4.0,
             stage_s: vec![Some(1.0), None, Some(2.0)],
             peak_rss_bytes: Some(456_789_012),
+            slug: Some("o/r".to_owned()),
         };
         Store::open(&path)
             .unwrap()
@@ -803,6 +875,7 @@ mod tests {
         assert_eq!(saved[0].features.languages["py"].files, 12);
         assert_eq!(saved[0].stage_s, row.stage_s);
         assert_eq!(saved[0].peak_rss_bytes, Some(456_789_012));
+        assert_eq!(saved[0].slug.as_deref(), Some("o/r"));
     }
 
     #[test]
@@ -814,6 +887,7 @@ mod tests {
             elapsed_s: 1.0,
             stage_s: vec![None],
             peak_rss_bytes: None,
+            slug: None,
         };
         let store = Store::open(&path).unwrap();
         store.save_timing("job-2", &row).unwrap();
@@ -901,6 +975,65 @@ mod tests {
             ("failed", "{\"end\":1}")
         );
         assert!(store.live_jobs().unwrap().is_empty());
+    }
+
+    /// §10.6 per class (#97 phase 2, step 4): moving a job to another class
+    /// starts its lost-worker count on that class at 0, so it gets the full
+    /// bound there; a reroute or an escalation raises no attempt, a lost
+    /// worker that died of memory does.
+    #[test]
+    fn the_retry_bound_starts_again_on_a_new_class() {
+        let (_dir, store) = temp_store();
+        store.insert_job(&job_row("a", 1)).unwrap();
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((1, 1)));
+        assert_eq!(
+            store.requeue_job("a", 1, true, 2, "{}").unwrap(),
+            Requeued::Queued { attempt: 2 }
+        );
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((2, 1)));
+        assert_eq!(
+            store.requeue_job("a", 2, true, 2, "{}").unwrap(),
+            Requeued::Queued { attempt: 3 }
+        );
+        // Class 0's two retries are used; a reroute to class 1 is not a
+        // lost worker and raises nothing.
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((3, 1)));
+        assert_eq!(
+            store.rebind_job("a", 3, 1, false, "{}").unwrap(),
+            Requeued::Queued { attempt: 3 }
+        );
+        assert_eq!(store.job("a").unwrap().unwrap().class, 1);
+        // Two more lost workers on class 1 are retried, the third is not.
+        for (epoch, attempt) in [(4, 4), (5, 5)] {
+            assert_eq!(store.begin_attempt("a").unwrap(), Some((epoch, 1)));
+            assert_eq!(
+                store.requeue_job("a", epoch, true, 2, "{}").unwrap(),
+                Requeued::Queued { attempt }
+            );
+        }
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((6, 1)));
+        // A lost worker that died of memory moves on and counts.
+        assert_eq!(
+            store.rebind_job("a", 6, 2, true, "{}").unwrap(),
+            Requeued::Queued { attempt: 6 }
+        );
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((7, 1)));
+        assert_eq!(
+            store.requeue_job("a", 7, true, 0, "{}").unwrap(),
+            Requeued::Exhausted { lost: 1 },
+            "with no retries the first loss on a class fails the job"
+        );
+        assert_eq!(
+            store.rebind_job("a", 6, 0, false, "{}").unwrap(),
+            Requeued::Unchanged,
+            "a superseded epoch cannot move the job"
+        );
+        store.finish_job("a", "failed", "{}").unwrap();
+        assert_eq!(
+            store.rebind_job("a", 7, 0, false, "{}").unwrap(),
+            Requeued::Unchanged,
+            "a terminal row stays terminal"
+        );
     }
 
     #[test]
