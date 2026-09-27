@@ -1,12 +1,14 @@
+import { useEffect, useRef } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { CatalogueEntry, DistrictSymbols, MapDocument } from "@/types";
 import type { Layer } from "@/map/constants";
 import type { AdjMap, Route } from "@/map/graph";
 import { RAMP_STOPS } from "@/map/geometry";
 import type { PackageGrouping, PackageLayout } from "@/map/packageLayout";
-import type { SearchHit } from "@/map/search";
+import type { SearchPick } from "@/map/searchResults";
 import type { Detent, DetentHeights } from "@/map/phoneShell";
 import { SearchBox } from "@/components/SearchBox";
+import { useVisualViewportBox } from "@/hooks/useVisualViewportBox";
 import { PackageLegend } from "@/components/PackageLegend";
 import { ThemeSegmented } from "@/components/ThemeToggle";
 import { BottomSheet } from "./BottomSheet";
@@ -53,7 +55,7 @@ export interface PhoneChromeProps {
   searchOpen: boolean;
   onOpenSearch(): void;
   onCloseSearch(): void;
-  onSearchPick(hit: SearchHit): void;
+  onSearchPick(pick: SearchPick): void;
   layersOpen: boolean;
   onOpenLayers(): void;
   onCloseLayers(): void;
@@ -109,6 +111,16 @@ const LAYERS: { id: Layer; name: string; meaning: string }[] = [
 export function PhoneChrome(p: PhoneChromeProps) {
   const navigate = useNavigate();
   const slug = `${p.owner}/${p.repo}`;
+  const searchBox = useVisualViewportBox(p.searchOpen);
+  // §7.2: closing search returns focus to what opened it, the pill's search
+  // button (a person on a keyboard or a screen reader lands where they were).
+  const searchWasOpen = useRef(p.searchOpen);
+  useEffect(() => {
+    if (searchWasOpen.current && !p.searchOpen) {
+      document.querySelector<HTMLElement>("[data-open-search]")?.focus({ preventScroll: true });
+    }
+    searchWasOpen.current = p.searchOpen;
+  }, [p.searchOpen]);
   // TopBar's fix, kept: the current repo always has an option, or a native
   // select silently shows a stale one.
   const options = p.catalogue ?? [];
@@ -336,10 +348,17 @@ export function PhoneChrome(p: PhoneChromeProps) {
         </>
       )}
 
-      {/* §4.8, phase 2's interim form: the existing search box, full screen,
-          at 16 px; above every map control. */}
+      {/* §4.8: search, full screen and above every map control (z-50; the
+          pill and control column are z-20, the sheet z-30, Layers z-40).
+          Fixed to the visual viewport, so the results end at the keyboard's
+          top edge. */}
       {p.searchOpen && (
-        <section aria-label="Search" data-search-layer className="absolute inset-0 z-50 bg-[var(--chrome)] text-[var(--on)]">
+        <section
+          aria-label="Search"
+          data-search-layer
+          className="fixed inset-x-0 top-0 z-50 h-full bg-[var(--chrome)] text-[var(--on)]"
+          style={searchBox ? { top: searchBox.top, height: searchBox.height } : undefined}
+        >
           <SearchBox doc={p.doc} variant="overlay" onPick={p.onSearchPick} onClose={p.onCloseSearch} />
         </section>
       )}

@@ -6,7 +6,7 @@ import type { FrameInsets, MapRendererCallbacks } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
 import { D_, DESKTOP_INSETS, districtClass } from "@/map/geometry";
 import { decodeDistrictSymbols, parentGlobalOf } from "@/map/symbolCards";
-import type { SearchHit } from "@/map/search";
+import type { SearchPick } from "@/map/searchResults";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
 import { SearchBox } from "@/components/SearchBox";
@@ -408,6 +408,20 @@ export function MapView() {
     // Already at "nothing": matches the prototype's own `else return;`.
   }
 
+  /** docs/UX.md §4.8: a search result selects its district, file or
+   * symbol and brings it into view (framed above the sheet at Peek on a
+   * phone); a district pans like a District index row, a file or symbol
+   * like any other selection (pan only if off screen, issue #82 A1). */
+  function pickSearchResult(pick: SearchPick) {
+    if (pick.kind === "district") {
+      selectDistrict(pick.d);
+      framePeekNow();
+      canvasRef.current?.panToDistrict(pick.d);
+    } else {
+      selectFile(pick.i, pick.kind === "symbol" ? { symbol: pick.s } : {});
+    }
+  }
+
   function selectDirectory(path?: string) {
     setUnconnectedRepo(null);
     setPreviewDirectory(null);
@@ -726,10 +740,13 @@ export function MapView() {
           searchOpen={searchOpen}
           onOpenSearch={openSearch}
           onCloseSearch={closeSearch}
-          onSearchPick={(hit: SearchHit) => {
+          onSearchPick={(pick: SearchPick) => {
             closeSearch();
             clearPath();
-            selectFile(hit.i, hit.s != null ? { symbol: hit.s } : {});
+            // Picking what is already selected still lands the sheet at
+            // Peek (§4.8), which the selection-change effect alone would not.
+            changeDetent("peek");
+            pickSearchResult(pick);
           }}
           layersOpen={layersOpen}
           onOpenLayers={openLayers}
@@ -834,7 +851,7 @@ export function MapView() {
           {mapCanvas}
           <SearchBox
             doc={doc}
-            onPick={(hit: SearchHit) => selectFile(hit.i, hit.s != null ? { symbol: hit.s } : {})}
+            onPick={pickSearchResult}
           />
           {isFullscreen ? (
             <SelectionSummaryBar
