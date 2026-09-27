@@ -2911,3 +2911,39 @@ The names are the product namer's with #144's rule (finding 56), unseeded, since
 - The 118 and 112 SCIP-only pairs classed "other" in the all-pairs table are mostly namespace-only (the 132 and 133 above); they were not read one by one.
 - `check:view`'s taps (a district, a file and a symbol each produce a card) ran on its two pinned maps, not on the Rust map: the screenshots show the Rust map at three zooms without tapping. The viewer changes here are a language label and two hub basenames.
 - `eval/batch_stability.py` was not run: it imports the frozen Python reference, which has no Rust.
+
+## 58. A guarded mirror from build output back to source resolves 91.3% of twenty's workspace subpath imports; the nine fixtures do not move
+
+Issue [#115](https://github.com/onsager-ai/tolmap/issues/115), PR [#161](https://github.com/onsager-ai/tolmap/pull/161). Owner's decision (issue #115 comment; session `16030105-19f0-4a84-933b-c5953f23c6b3`, transcript line 10314, 2026-09-27T05:28:15Z, AskUserQuestion answer **"Mirror rule, guarded (Recommended)"**): finding 42 measured twenty (`twentyhq/twenty` at its corpus pin, `be8c77a`) at 14,734 unresolved workspace-package imports against 13 resolved, after workspace and `exports` resolution had already landed. The proximate cause: `packages/twenty-shared/package.json`'s `main`/`module`/`types` and its `exports`/`typesVersions` maps all point into `dist/`, build output absent from a fresh clone. Only the package's JavaScript Vite config ties `dist/` back to `src/`, and tolmap does not and must not evaluate a bundler config.
+
+**What shipped**, `src/extract.rs` only, no dependency changes: `build_output_directory` finds the first path segment shared by every present `main`/`module`/`types` field, and returns it only when that directory does not exist in the checkout (rule 1) -- a package with checked-in output, or whose fields disagree on where output lives, gets no mirroring. `types_versions_candidates` reads `typesVersions` targets for a subpath, reusing `match_export_key`'s exact/wildcard matching unchanged (no second matcher to keep in sync with the first). `mirror_build_output` maps every `exports`/`typesVersions` target that lies inside the build directory to `src/<rest>.ts`/`.tsx`/`.../index.ts`/`.../index.tsx` after stripping the output extension (`.d.ts`, `.d.mts`, `.d.cts`, `.mjs`, `.cjs`, `.js`), and resolves only when the whole candidate set collapses to exactly one distinct parsed file (rules 2-3) -- two live candidates is exactly the guess this rule must refuse. It runs as a third `.or_else()` fallback in `resolve_multi`'s TypeScript package branch, after `resolve_package_entry` and `redirect_excluded_workspace_import`, so an import the existing chain already resolves is never touched (rule 4). `workspace_import_coverage` gains a `build_output_mirror` bucket next to `resolved`/`resolved_but_excluded`/`redirected_from_excluded`/`unresolved`, counted separately so a guessed-but-earned edge stays distinguishable from a parsed one (rule 5) -- the same shape finding 43 used for `redirected_from_excluded`, in the same function, not a `schema.rs` change: the counter is `--dump-blend` audit tooling, not part of the persisted map document, matching how neither #113 nor #43 touched the schema for their equivalent buckets either.
+
+**Fixture parity: no fixture moved.** [Full nine-fixture parity](https://github.com/onsager-ai/tolmap/actions/runs/36298981880) (job "full nine-fixture parity") placed all nine at 100.0% district placement, Δq 0.0000, vue included (239/239 files, 7/7 districts) -- vue's own workspace packages' `exports` targets do not hit this rule's guard the way twenty's do. The same run's `hand-score` (job "Hand resolver vs SCIP score") passed every row byte-identical to the committed baseline, vue's included (recall 0.7991, precision 0.9974, unchanged). No fixture needed re-derivation.
+
+**Measured on twenty**, [remote `build` run 36298987088](https://github.com/onsager-ai/tolmap/actions/runs/36298987088) (`--compare-ref main`, via `eval/measure_module_resolution.py` and the map's own committed fields) and [remote `dump-blend` run 36298991764](https://github.com/onsager-ai/tolmap/actions/runs/36298991764) (`--compare-ref main`, `workspace_import_coverage`'s buckets):
+
+| | main | branch |
+|---|---:|---:|
+| workspace imports: `resolved` | 13 | 13 |
+| workspace imports: `resolved_but_excluded` | 0 | 0 |
+| workspace imports: `build_output_mirror` | -- (field absent) | **13,448** |
+| workspace imports: `unresolved` | 14,734 | **1,286** |
+| workspace imports: `external` | 97,004 | 97,004 |
+| candidate edges (blended, pre-prune) | 133,288 | **148,809** |
+| post-prune edges | 101,699 | **111,922** |
+| below-prune-floor count | 2 | 20 |
+| import edges (map's own `E`) | 83,946 | **99,604** |
+| zero-edge files | 554 | 539 |
+| districts | 100 | 97 |
+| modularity `q` | 0.7986 | 0.7458 |
+
+13,448 of the 14,734 previously-unresolved specifiers (91.3%) now resolve through the mirror rule; `13,448 + 1,286 = 14,734` exactly, so every previously-unresolved specifier was reclassified, none dropped. The 1,286 still unresolved are subpaths whose manifest declares no matching `exports`/`typesVersions` entry at all, or whose candidate set was ambiguous. `resolved` (13) is unchanged: existing resolution wins, as rule 4 requires. District retention, this branch's map against main's (`eval/remote_build_result.py`'s `placement`, the parity gate's own greedy-Jaccard scorer, run directly between the two twenty maps rather than against a fixture -- twenty is not one of the nine): **64.2%** (14,148 of 22,033 common files keep district), Δq 0.0528. Twenty is not a committed fixture, so this movement is not gated; a graph gaining 15,658 real import edges (18.6% more than main's 83,946) reshaping districts is finding 12's already-documented effect of a denser graph, not a regression signal (finding 5/10's cross-repo modularity caution).
+
+**A known pre-existing gate misfire, not this fix's to repair**, exactly as finding 43 documented for dify/n8n: the `build` run's "build twentyhq/twenty" job shows as failed because `eval/measure_typed_edges.py`'s `assert primary_map == compare_map` fires on any repository whose branch map legitimately differs from main -- true for the first time for twenty on this PR, since #113/#43 left twenty's map byte-identical. The job's `Measure workspace-package import resolution` step (`if: always()`) ran regardless and is the source of every number in the table above.
+
+No dependency changes. Only `src/extract.rs` changed: `build_output_directory`, `first_path_segment`, `types_versions_candidates` and `mirror_build_output` added to the TypeScript resolution chain, plus one new `build_output_mirror` counter in `workspace_import_coverage`, and `PackageManifest` gains a `types_versions` field.
+
+### Not verified
+- Whether any workspace repository other than twenty in the existing corpus has a package shaped like this (main/module/types all under one absent build directory); only twenty was measured, since it is the repository issue #115 was filed against.
+- `eval/batch_stability.py` was not run: it imports the frozen Python reference, which has no `exports`/`typesVersions`/mirror handling at all.
+- The 1,286 still-unresolved specifiers were not read one by one; the `unresolved` count only confirms they are neither `resolved` nor `build_output_mirror`, not what each one names.
