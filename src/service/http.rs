@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
+use ts_rs::TS;
 use uuid::Uuid;
 
 use super::clone;
@@ -25,6 +26,7 @@ use super::error::ApiError;
 use super::jobs::{self, JobSnapshot, JobStatus};
 use super::ratelimit::Verdict;
 use super::AppState;
+use crate::worker::WorkerBuild;
 
 pub fn router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
@@ -450,6 +452,22 @@ async fn get_symbols(
 
 // ---- GET /api/healthz ------------------------------------------------------
 
-async fn get_healthz() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok"}))
+/// `GET /api/healthz`'s body (docs/API.md). Additive since #97 phase 3:
+/// `status` alone was the whole body before. `build` is this master's own
+/// `hello.build` identity (docs/WORKER_TIER.md §3.6) -- what it insists a
+/// worker's build matches before assigning it work, in local mode too
+/// (`crate::service::workers::own_build` does not depend on
+/// `TOLMAP_WORKERS`), so an operator can read it off a plain deployment
+/// without a worker fleet at all.
+#[derive(Serialize, TS)]
+pub struct HealthzResponse {
+    status: String,
+    build: WorkerBuild,
+}
+
+async fn get_healthz() -> Json<HealthzResponse> {
+    Json(HealthzResponse {
+        status: "ok".to_owned(),
+        build: crate::service::workers::own_build(),
+    })
 }

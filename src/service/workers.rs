@@ -128,7 +128,8 @@ use axum::extract::{Path as AxPath, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 use tokio_stream::StreamExt;
@@ -947,41 +948,99 @@ impl FrameBudget {
 
 // ---- build identity and tokens ---------------------------------------------
 
-/// This binary's identity for `hello.build` (§3.6). There is no git commit
-/// compiled into the binary, so `commit` is the SHA-256 of the executable
-/// itself: the same file on both sides is the same build, and a replaced
-/// binary is not. `indexers` stays empty in phase 1: a loopback agent is
-/// this binary on this host, running the indexers this process would, so
-/// there is nothing to compare yet. Remote workers (phase 3) will need
-/// their indexer versions here.
+/// This binary's identity for `hello.build` (§3.6): the crate version, the
+/// git commit it was built from, and the SCIP indexer versions this host's
+/// image pins. Phase 1 used the executable's own SHA-256 for `commit`
+/// (#153's departure 5) because no git commit was compiled in and no
+/// indexer versions file existed yet; both now do -- see `build_commit` and
+/// `read_indexer_versions`.
 pub fn own_build() -> WorkerBuild {
     static BUILD: OnceLock<WorkerBuild> = OnceLock::new();
     BUILD
         .get_or_init(|| WorkerBuild {
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            commit: executable_digest(),
-            indexers: BTreeMap::new(),
+            commit: build_commit(),
+            indexers: read_indexer_versions(),
         })
         .clone()
 }
 
-fn executable_digest() -> String {
-    let digest = std::env::current_exe()
-        .and_then(|path| std::fs::File::open(path))
-        .and_then(|file| sha256_reader(file));
-    match digest {
-        Ok((hex, _)) => format!("sha256:{hex}"),
-        // Unique per process, so it matches nothing: an agent whose build
-        // cannot be established is idle, never trusted by default.
-        Err(error) => {
-            eprintln!("worker build identity: could not hash this binary: {error}");
-            format!("unreadable:{}", std::process::id())
-        }
+/// The git commit this binary was built from (§3.6, `build.rs`'s
+/// `emit_build_commit`): `TOLMAP_BUILD_COMMIT`, baked in at compile time --
+/// from CI's or the Dockerfile's build-arg env var if one was set, else
+/// `git rev-parse HEAD` run at compile time, in that order. `"unknown"`
+/// when build.rs found neither (a source tarball with no `.git` and no
+/// build arg): `same_build` never matches an `"unknown"` commit, including
+/// to another `"unknown"`, so a build that cannot name its own commit is
+/// idle rather than trusted by default, same stance #153 took for a binary
+/// whose hash it could not read.
+///
+/// Tests get a matching identity for free: `own_build()` is memoized once
+/// per process (`OnceLock`), so every call inside one `cargo test` binary
+/// returns the identical `WorkerBuild` -- version, commit and indexers all
+/// equal by construction, whatever `TOLMAP_BUILD_COMMIT` happened to be at
+/// compile time. A test that wants a *different* build (to exercise a
+/// mismatch) constructs one explicitly instead, as `a_build_mismatch_
+/// leaves_the_agent_idle` already does.
+fn build_commit() -> String {
+    match option_env!("TOLMAP_BUILD_COMMIT") {
+        Some(commit) if !commit.trim().is_empty() => commit.trim().to_owned(),
+        _ => "unknown".to_owned(),
     }
 }
 
+/// Path `own_build` reads the SCIP indexer versions from, unless
+/// `TOLMAP_INDEXER_VERSIONS` overrides it: the runtime image writes this at
+/// build time (`.github/workflows/scip-image-build.yml`, `Dockerfile`),
+/// next to the indexers themselves, so a worker never has to run each one
+/// just to ask its version at agent start.
+const DEFAULT_INDEXER_VERSIONS_PATH: &str = "/usr/local/share/tolmap/indexers.json";
+
+/// The SCIP indexer versions this host's image pins (§3.6, §8 phase 3):
+/// read once from a small `{"scip-python": "0.6.6", ...}` file, never by
+/// running the indexers themselves (slow, and it would execute untrusted
+/// tools at agent start for no reason). No file -- a loopback agent, which
+/// is this binary on this host and has nothing to compare yet, or an image
+/// that predates this file -- is an empty map, as phase 1 always was. A
+/// file that exists but does not parse is also an empty map, logged rather
+/// than a startup failure: a worker with a broken versions file should stay
+/// connected and report what it can, not refuse to start.
+fn read_indexer_versions() -> BTreeMap<String, String> {
+    let path = std::env::var_os("TOLMAP_INDEXER_VERSIONS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_INDEXER_VERSIONS_PATH));
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return BTreeMap::new(),
+        Err(error) => {
+            eprintln!(
+                "worker build identity: could not read {}: {error}",
+                path.display()
+            );
+            return BTreeMap::new();
+        }
+    };
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        eprintln!(
+            "worker build identity: {} did not parse as {{\"indexer\": \"version\"}}: {error}",
+            path.display()
+        );
+        BTreeMap::new()
+    })
+}
+
+/// §3.6: an `"unknown"` commit identifies nothing, not even itself -- two
+/// binaries that could not name their own commit are not proven to be the
+/// same build, so trusting them by default would silently reopen the
+/// determinism gap #153 closed for a hashable one. Tests get a matching
+/// identity through `own_build()`'s per-process memoization (its doc
+/// comment), never by relying on two `"unknown"`s matching each other.
 fn same_build(left: &WorkerBuild, right: &WorkerBuild) -> bool {
-    left.version == right.version && left.commit == right.commit && left.indexers == right.indexers
+    left.commit != "unknown"
+        && right.commit != "unknown"
+        && left.version == right.version
+        && left.commit == right.commit
+        && left.indexers == right.indexers
 }
 
 /// SHA-256 of everything `reader` yields, as lowercase hex, and its length.
@@ -1370,6 +1429,13 @@ impl WorkerHub {
         self.classes
             .iter()
             .rposition(|usable| usable.is_none_or(|usable| memory_bytes >= usable))
+    }
+
+    /// Each configured class's usable memory, `None` for one of unknown
+    /// size, smallest first -- the same order and length as `live_by_class`
+    /// (§7.4, `GET /workers/capacity`).
+    pub(crate) fn usable_memory_by_class(&self) -> &[Option<u64>] {
+        &self.classes
     }
 
     /// The agents connected now in each class, by class index: every
@@ -2297,17 +2363,33 @@ fn pick_agent(inner: &HubInner, me: (i64, Uuid)) -> Option<u64> {
 
 // ---- the listener ----------------------------------------------------------
 
-/// The worker listener's routes (§4.2, §5.6): the channel and the artifact
-/// URLs, nothing else. Served on its own socket, never merged into
-/// `http::router`.
-pub fn router(hub: Arc<WorkerHub>) -> Router {
-    Router::new()
+/// The worker listener's routes (§4.2, §5.6, §7.4): the channel, the
+/// artifact URLs and the read-only desired-capacity route, nothing else.
+/// Served on its own socket, never merged into `http::router`.
+///
+/// Two sub-routers, not one: the channel and artifact handlers only need
+/// the hub, as before, but `GET /workers/capacity` also needs the job
+/// registry's running and queued counts, which only `AppState` has --
+/// `state.jobs.remote()` is the hub `set_remote` already gave it. Axum
+/// resolves one state type per `Router`, so each half calls `with_state`
+/// on its own state before the two are merged, rather than threading a
+/// combined state type through handlers that do not need half of it.
+pub fn router(state: Arc<AppState>) -> Router {
+    let hub = state
+        .jobs
+        .remote()
+        .expect("the worker listener starts only after JobRegistry::set_remote");
+    let channel = Router::new()
         .route("/workers/connect", get(connect))
         .route(
             "/workers/artifacts/{job}/{epoch}/{*name}",
             get(get_artifact).put(put_artifact),
         )
-        .with_state(hub)
+        .with_state(hub);
+    let capacity = Router::new()
+        .route("/workers/capacity", get(get_capacity))
+        .with_state(state);
+    channel.merge(capacity)
 }
 
 fn refuse(status: StatusCode, message: impl Into<String>) -> Response {
@@ -2351,6 +2433,111 @@ async fn connect(
         .max_message_size(WS_MESSAGE_LIMIT)
         .max_frame_size(WS_MESSAGE_LIMIT)
         .on_upgrade(move |socket| serve_agent(hub, identity, origin, socket))
+}
+
+/// §7.4: the default per-class maximum a provider-specific autoscaler
+/// should ever bring up -- one worker, the decided phase 3 fleet (§10.1).
+/// `TOLMAP_WORKER_MAX_PER_CLASS` overrides it uniformly for every class;
+/// the design decided one number for the one class there is, not a
+/// per-class table, so that is what this reads.
+pub const DEFAULT_WORKER_MAX_PER_CLASS: usize = 1;
+
+/// §7.4: how long a class may sit idle (nothing running or queued) before
+/// `GET /workers/capacity` reports 0 for it, rather than holding the
+/// clamp it last computed. Long enough that back-to-back small jobs do not
+/// each pay a worker's cold start. `TOLMAP_WORKER_IDLE_S` overrides it.
+pub const DEFAULT_WORKER_IDLE_S: u64 = 600;
+
+/// A whole number, or `default` when `key` is unset or not one -- like
+/// `positive_env`, but zero is a valid value (`TOLMAP_WORKER_MAX_PER_CLASS
+/// =0` disables a class's autoscaler on purpose, unlike a heartbeat or
+/// lease interval, which zero would only break).
+fn usize_env(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+/// §7.4's clamp-and-idle-drop arithmetic, factored out so the unit tests
+/// below exercise exactly what `get_capacity` computes, without a real
+/// clock or a live hub. `running` and `queued` are one class's counts;
+/// `idle_for` is `None` while the class is busy (`running + queued > 0`)
+/// or has never been busy, `Some(elapsed)` for how long it has sat idle
+/// otherwise (`JobRegistry::class_load`).
+///
+/// Busy: `running + queued`, clamped to `max`. Idle: `max.min(1)` -- "keep
+/// the one worker" -- for as long as `idle_for` stays under `idle_after`,
+/// then 0. A class that has never been busy is never held: `idle_for` is
+/// `None` there too, which this treats the same as "idle past the
+/// window" (§7.4 "started when a job is queued" -- nothing starts one
+/// before the first job arrives).
+fn desired_capacity(
+    running: usize,
+    queued: usize,
+    max: usize,
+    idle_for: Option<Duration>,
+    idle_after: Duration,
+) -> usize {
+    let busy = (running + queued).min(max);
+    if busy > 0 {
+        return busy;
+    }
+    match idle_for {
+        Some(elapsed) if elapsed < idle_after => max.min(1),
+        _ => 0,
+    }
+}
+
+#[derive(Serialize)]
+struct ClassCapacity {
+    class: usize,
+    usable_memory_bytes: Option<u64>,
+    running: usize,
+    queued: usize,
+    connected_agents: usize,
+    desired: usize,
+}
+
+#[derive(Serialize)]
+struct CapacityResponse {
+    classes: Vec<ClassCapacity>,
+}
+
+/// `GET /workers/capacity` (§7.4): on the worker listener only, never the
+/// public router (docs/API.md marks it as such). Answers what a
+/// provider-specific starter in the private hosting repository should have
+/// running, per configured class: running and queued jobs
+/// (`JobRegistry::class_load`), connected agents (`WorkerHub::
+/// live_by_class`), and `desired` (`desired_capacity`). Same bearer check
+/// as `/workers/connect` -- any configured worker token, not only the one
+/// for a connected agent.
+async fn get_capacity(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let Some(hub) = state.jobs.remote() else {
+        return refuse(StatusCode::NOT_FOUND, "no worker hub is running");
+    };
+    if hub.authenticate(&headers).is_none() {
+        return unauthorized();
+    }
+    let max = usize_env("TOLMAP_WORKER_MAX_PER_CLASS", DEFAULT_WORKER_MAX_PER_CLASS);
+    let idle_after =
+        Duration::from_secs(positive_env("TOLMAP_WORKER_IDLE_S", DEFAULT_WORKER_IDLE_S));
+    let live = hub.live_by_class();
+    let memory = hub.usable_memory_by_class();
+    let load = state.jobs.class_load(memory.len());
+    let classes = load
+        .into_iter()
+        .enumerate()
+        .map(|(class, load)| ClassCapacity {
+            class,
+            usable_memory_bytes: memory[class],
+            running: load.running,
+            queued: load.queued,
+            connected_agents: live.get(class).copied().unwrap_or(0),
+            desired: desired_capacity(load.running, load.queued, max, load.idle_for, idle_after),
+        })
+        .collect();
+    Json(CapacityResponse { classes }).into_response()
 }
 
 async fn send_message(socket: &mut WebSocket, message: &MasterMessage) -> Result<(), axum::Error> {
@@ -3830,7 +4017,7 @@ pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Res
     // the public listener, so orphaned leases hold their slots before any
     // new admission and queued jobs keep their admission order.
     jobs::restore(state).context("reload jobs from the store")?;
-    let app = router(hub.clone());
+    let app = router(state.clone());
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
             eprintln!("tolmap serve: the worker listener stopped: {error}");
@@ -3969,7 +4156,7 @@ pub async fn start_remote(state: &Arc<AppState>, slots: usize) -> anyhow::Result
     // connect, so a remote agent that redials finds its lease adopted and
     // resumes it.
     jobs::restore(state).context("reload jobs from the store")?;
-    let app = router(hub.clone());
+    let app = router(state.clone());
     match tls {
         Some(config) => {
             let listener = TlsListener::start(listener, config)?;
@@ -4206,7 +4393,7 @@ mod tests {
                 let _entered = runtime.enter();
                 jobs::restore(&state).unwrap();
             }
-            let app = router(hub.clone());
+            let app = router(state.clone());
             runtime.spawn(async move {
                 let _ = axum::serve(listener, app).await;
             });
@@ -4591,6 +4778,12 @@ mod tests {
         sha256_reader(body).unwrap().0
     }
 
+    /// The body of `request`'s raw HTTP/1.1 response text (after the blank
+    /// line that ends the headers).
+    fn response_body(response: &str) -> &str {
+        response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+    }
+
     fn put(port: u16, token: &str, job: Uuid, name: &str, body: &[u8]) -> u16 {
         put_at(port, token, job, 1, name, body)
     }
@@ -4662,6 +4855,56 @@ mod tests {
                 artifact(name, body)
             })
             .collect()
+    }
+
+    /// §7.4's clamp: busy (running + queued > 0) always wins over the idle
+    /// rule, and is capped at `max`, whichever of running or queued (or
+    /// both) supplies the count.
+    #[test]
+    fn desired_capacity_clamps_busy_classes_to_the_configured_maximum() {
+        let hour = Duration::from_secs(3600);
+        assert_eq!(desired_capacity(1, 0, 1, None, hour), 1);
+        assert_eq!(desired_capacity(0, 3, 1, None, hour), 1);
+        assert_eq!(desired_capacity(5, 5, 1, None, hour), 1);
+        assert_eq!(desired_capacity(1, 2, 4, None, hour), 3);
+        assert_eq!(desired_capacity(5, 5, 4, None, hour), 4);
+    }
+
+    /// §7.4's idle drop: a class that has never been busy is 0 from the
+    /// start (nothing starts a worker before the first job); a class that
+    /// just went idle holds at `max.min(1)` until `TOLMAP_WORKER_IDLE_S`
+    /// passes, then drops to 0; a `max` of 0 disables it outright.
+    #[test]
+    fn desired_capacity_drops_to_zero_only_after_the_idle_window() {
+        let idle_after = Duration::from_secs(600);
+        assert_eq!(
+            desired_capacity(0, 0, 1, None, idle_after),
+            0,
+            "never busy must not start a worker"
+        );
+        assert_eq!(
+            desired_capacity(0, 0, 1, Some(Duration::from_secs(0)), idle_after),
+            1,
+            "just went idle: hold one worker"
+        );
+        assert_eq!(
+            desired_capacity(0, 0, 1, Some(Duration::from_secs(599)), idle_after),
+            1
+        );
+        assert_eq!(
+            desired_capacity(0, 0, 1, Some(Duration::from_secs(600)), idle_after),
+            0,
+            "at the window: drop"
+        );
+        assert_eq!(
+            desired_capacity(0, 0, 1, Some(Duration::from_secs(3600)), idle_after),
+            0
+        );
+        assert_eq!(
+            desired_capacity(0, 0, 0, Some(Duration::from_secs(1)), idle_after),
+            0,
+            "max 0 disables the class even mid-grace"
+        );
     }
 
     #[test]
@@ -4790,6 +5033,7 @@ mod tests {
                 "GET",
                 format!("/workers/artifacts/{}/1/inputs/names", Uuid::new_v4()),
             ),
+            ("GET", "/workers/capacity".to_owned()),
         ] {
             let request = axum::http::Request::builder()
                 .method(method)
@@ -4802,6 +5046,89 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
         }
+    }
+
+    /// §7.4: `GET /workers/capacity` reports one row per configured class,
+    /// refuses a missing or wrong token like every other `/workers` route,
+    /// and its running/queued counts track admission and dispatch (no
+    /// idle-window assertion here -- that arithmetic is
+    /// `desired_capacity_*` above; a real elapsed wait would make this test
+    /// slow and flaky for no more coverage).
+    #[test]
+    fn workers_capacity_reports_running_queued_and_connected_agents_per_class() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let get = || {
+            request(
+                fixture.port,
+                "GET",
+                "/workers/capacity",
+                &[bearer(TOKENS[0])],
+                b"",
+                None,
+            )
+        };
+
+        assert_eq!(
+            request(fixture.port, "GET", "/workers/capacity", &[], b"", None).0,
+            401,
+            "no token"
+        );
+        assert_eq!(
+            request(
+                fixture.port,
+                "GET",
+                "/workers/capacity",
+                &[bearer("not-a-real-token")],
+                b"",
+                None,
+            )
+            .0,
+            401,
+            "wrong token"
+        );
+
+        let (status, response) = get();
+        assert_eq!(status, 200, "{response}");
+        let body: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+        let classes = body["classes"].as_array().unwrap();
+        assert_eq!(classes.len(), 1, "one class: plain loopback:N");
+        assert_eq!(classes[0]["running"], 0);
+        assert_eq!(classes[0]["queued"], 0);
+        assert_eq!(classes[0]["connected_agents"], 0);
+        assert_eq!(classes[0]["desired"], 0, "never busy: no worker started");
+
+        // Queued, no agent connected yet: desired clamps to the default
+        // maximum (1) even though nothing is running.
+        let id = fixture.spawn(remote_repo("demo"));
+        fixture.wait_for(id, "queued", |snapshot| {
+            snapshot.status == JobStatus::Queued
+        });
+        let (status, response) = get();
+        assert_eq!(status, 200, "{response}");
+        let body: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+        let classes = body["classes"].as_array().unwrap();
+        // With no agent connected the job waits in its class's slot, not in
+        // the queue (#157, departure 4), so it counts as running here. The
+        // starter only reads `desired`, which is the same either way.
+        assert_eq!(
+            classes[0]["queued"].as_u64().unwrap() + classes[0]["running"].as_u64().unwrap(),
+            1
+        );
+        assert_eq!(classes[0]["connected_agents"], 0);
+        assert_eq!(classes[0]["desired"], 1);
+
+        // An agent connects and takes it: running, not queued, one
+        // connected agent.
+        let mut agent = fixture.agent(0);
+        assert_eq!(agent.assigned(), id);
+        let (status, response) = get();
+        assert_eq!(status, 200, "{response}");
+        let body: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
+        let classes = body["classes"].as_array().unwrap();
+        assert_eq!(classes[0]["queued"], 0);
+        assert_eq!(classes[0]["running"], 1);
+        assert_eq!(classes[0]["connected_agents"], 1);
+        assert_eq!(classes[0]["desired"], 1);
     }
 
     /// The whole path with a scripted agent: `assign` carries URLs and a
@@ -5176,6 +5503,26 @@ mod tests {
         let mut matching = fixture.agent(1);
         assert_eq!(matching.assigned(), id);
         assert!(stranger.recv_within(Duration::from_millis(300)).is_none());
+    }
+
+    /// §3.6: `"unknown"` (build.rs found neither `TOLMAP_BUILD_COMMIT` nor a
+    /// git checkout) matches nothing, including another `"unknown"` with an
+    /// otherwise identical build -- a mismatch fixed by #153 for a build
+    /// that could hash its own binary must stay fixed for one that cannot
+    /// name its commit at all.
+    #[test]
+    fn an_unknown_commit_never_matches_even_another_unknown() {
+        let left = WorkerBuild {
+            commit: "unknown".to_owned(),
+            ..test_build()
+        };
+        let right = WorkerBuild {
+            commit: "unknown".to_owned(),
+            ..test_build()
+        };
+        assert!(!same_build(&left, &right));
+        assert!(!same_build(&left, &left.clone()));
+        assert!(same_build(&test_build(), &test_build()));
     }
 
     /// §6 "cancel races", before `assign`: the job never leaves the queue.

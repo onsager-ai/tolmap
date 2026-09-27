@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -45,8 +45,6 @@ use crate::worker::WorkerSpec;
 use std::path::PathBuf;
 #[cfg(test)]
 use std::process::Command;
-#[cfg(test)]
-use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
@@ -151,6 +149,18 @@ struct Slot {
     running: Option<(Uuid, watch::Sender<JobSnapshot>)>,
 }
 
+/// One class's demand, from `JobRegistry::class_load` (§7.4). Connected
+/// agents are the worker hub's to report, not the registry's; the route
+/// handler (`service::workers::get_capacity`) combines the two.
+pub(crate) struct ClassLoad {
+    pub(crate) running: usize,
+    pub(crate) queued: usize,
+    /// `None` while busy (`running + queued > 0`) or never busy; `Some`
+    /// for how long a class that has been busy at least once has now sat
+    /// idle.
+    pub(crate) idle_for: Option<Duration>,
+}
+
 #[derive(Default)]
 struct RegistryInner {
     jobs: HashMap<Uuid, watch::Sender<JobSnapshot>>,
@@ -210,6 +220,13 @@ struct RegistryInner {
     /// for a new one; it expires as any lease does (§6 "master restarts
     /// mid-job"), unless, in remote mode, its worker resumes it.
     orphans: HashMap<Uuid, (u64, crate::service::workers::Claimed)>,
+    /// §7.4, `GET /workers/capacity`: the last time each class had a
+    /// running or queued job, by class index -- possibly longer than
+    /// `classes` (`class_load` grows it to the hub's own class count,
+    /// which the registry may not have built yet, see `class_load`'s doc
+    /// comment). `None` is "never busy", read the same as "idle past the
+    /// window": nothing has ever asked for a worker of that class.
+    class_last_busy: Vec<Option<Instant>>,
 }
 
 impl RegistryInner {
@@ -424,6 +441,47 @@ impl JobRegistry {
     pub(crate) fn next_class(&self, class: usize) -> Option<usize> {
         let registry = self.0.lock().expect("job registry mutex poisoned");
         (class + 1 < registry.classes.len()).then_some(class + 1)
+    }
+
+    /// One class's running and queued job counts, plus how long it has sat
+    /// idle, for `GET /workers/capacity` (§7.4, `service::workers::
+    /// get_capacity`). `count` is the *hub's* number of configured classes,
+    /// not `registry.classes.len()`: the registry only builds its classes
+    /// on the first admission (`ensure_classes`), but the capacity route
+    /// has to answer for every configured class from the moment the worker
+    /// listener opens, before any job has ever been queued. A class past
+    /// what the registry has built yet is reported `running: 0, queued: 0`
+    /// with no idle history (`idle_for: None`, read as "never busy" by
+    /// `service::workers::desired_capacity`) -- exactly correct, since
+    /// nothing can be running or queued in a class nothing has admitted a
+    /// job to.
+    pub(crate) fn class_load(&self, count: usize) -> Vec<ClassLoad> {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        if registry.class_last_busy.len() < count {
+            registry.class_last_busy.resize(count, None);
+        }
+        let now = Instant::now();
+        (0..count)
+            .map(|class| {
+                let running = registry
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.class == class && slot.running.is_some())
+                    .count();
+                let queued = registry.queues.get(class).map_or(0, |queue| queue.len());
+                let idle_for = if running + queued > 0 {
+                    registry.class_last_busy[class] = Some(now);
+                    None
+                } else {
+                    registry.class_last_busy[class].map(|last| now.saturating_duration_since(last))
+                };
+                ClassLoad {
+                    running,
+                    queued,
+                    idle_for,
+                }
+            })
+            .collect()
     }
 
     /// §2.1 step 3 (#97 phase 2, step 4): once a running job has reported

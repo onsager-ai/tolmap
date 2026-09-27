@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use tolmap::schema::{DistrictSymbols, MapDocument, SymbolsDocument};
+use tolmap::service::http::HealthzResponse;
 use tolmap::service::jobs::JobSnapshot;
 use tolmap::worker::{WorkerEvent, WorkerSpec};
 use ts_rs::{Config, TS};
@@ -49,6 +50,11 @@ fn export_to(directory: &Path) -> Result<()> {
     WorkerSpec::export_all(&Config::default().with_out_dir(directory))?;
     WorkerEvent::export_all(&Config::default().with_out_dir(directory))?;
     JobSnapshot::export_all(&Config::default().with_out_dir(directory))?;
+    // §97 phase 3: `WorkerBuild` (its dependency) is exported for the first
+    // time here, reachable from `GET /api/healthz`'s body rather than the
+    // worker protocol -- the web client never opens that channel (`worker::
+    // WorkerMessage`'s own doc comment), but it can read this.
+    HealthzResponse::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 
