@@ -846,8 +846,14 @@ export class MapRenderer {
   resize(vw: number, vh: number) {
     this.cssW = vw;
     this.cssH = vh;
-    const newVW = Math.max(360, vw);
-    const newVH = Math.max(300, vh);
+    // The viewBox keeps its 360 x 300 floor, but scales BOTH axes by the
+    // same factor to reach it: flooring only the width letterboxed a 320 px
+    // phone (a 360-wide viewBox "meet"-fitted into 320 px left bands above
+    // and below the map), and put every CSS-px inset (docs/UX.md §3.3) in
+    // the wrong place vertically. Same aspect, no bands.
+    const floor = Math.max(1, 360 / (vw || 360), 300 / (vh || 300));
+    const newVW = vw * floor;
+    const newVH = vh * floor;
     if (newVW === this.VW && newVH === this.VH) return;
     const prevVW = this.VW;
     const prevVH = this.VH;

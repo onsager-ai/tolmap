@@ -2897,13 +2897,20 @@ async function checkRoadTap(browser, base, profile) {
     report((await page.locator('[data-structure-card="road"] [data-sheet-close]').count()) === 1, `${label}: the road card has a close button`);
     const empty = await findEmptyPoint(page, profile.viewport.width, profile.viewport.height);
     const from = empty ?? [profile.viewport.width / 2, 300];
+    // Toward the middle of the screen: a drag that leaves the viewport
+    // stops delivering pointer moves before it ever becomes a pan.
+    const dx = from[0] > profile.viewport.width / 2 ? -60 : 60;
+    const dy = from[1] > profile.viewport.height / 2 ? -20 : 20;
+    const beforePan = await stableBox(page);
     await page.mouse.move(from[0], from[1]);
     await page.mouse.down();
-    await page.mouse.move(from[0] + 60, from[1] + 20, { steps: 6 });
+    await page.mouse.move(from[0] + dx, from[1] + dy, { steps: 6 });
     await page.mouse.up();
     await page.waitForTimeout(300);
-    report((await page.locator("[data-structure-card]").count()) === 0 && new URL(page.url()).searchParams.get("file") === baseline,
-      `${label}: panning the map closes the road card and keeps the selection (§7.1 rule 7)`);
+    const panned = !boxesClose(beforePan, await stableBox(page));
+    report(panned && (await page.locator("[data-structure-card]").count()) === 0 && new URL(page.url()).searchParams.get("file") === baseline,
+      `${label}: panning the map closes the road card and keeps the selection (§7.1 rule 7)`,
+      JSON.stringify({ from, panned, cards: await page.locator("[data-structure-card]").count(), url: page.url() }));
   } else {
     const cardVisible = await page
       .locator(".tolmap-hover-card")
@@ -4867,10 +4874,11 @@ async function checkPhoneTapSelection(browser, base, profile) {
   const from = empty ?? [profile.viewport.width / 2, 200];
   await page.mouse.move(from[0], from[1]);
   await page.mouse.down();
-  await page.mouse.move(from[0] + 15, from[1], { steps: 3 });
+  const sx = from[0] > profile.viewport.width / 2 ? -1 : 1; // stay on screen
+  await page.mouse.move(from[0] + 15 * sx, from[1], { steps: 3 });
   await page.waitForTimeout(100);
   const mid = await sheetDetent(page);
-  await page.mouse.move(from[0] + 50, from[1] + 10, { steps: 4 });
+  await page.mouse.move(from[0] + 50 * sx, from[1] + 10, { steps: 4 });
   await page.mouse.up();
   await page.waitForTimeout(450);
   report(mid === "half" && (await sheetDetent(page)) === "peek" && new URL(page.url()).searchParams.get("file") === doc.F[index],
@@ -4889,9 +4897,10 @@ async function checkPhoneTapSelection(browser, base, profile) {
     report(false, `${label}: an empty-map tap clears the selection`, "no empty map point");
   }
 
-  // The close button clears too (§3.5).
-  await tap(page, profile, file.x, file.y);
-  if (!new URL(page.url()).searchParams.has("d") && !new URL(page.url()).searchParams.has("file")) await tap(page, profile, file.x, file.y);
+  // The close button clears too (§3.5). (The empty-tap step may have
+  // zoomed out to find water, so the district is picked again.)
+  const again = await pickDistrictPoint(page, true);
+  if (again) await tap(page, profile, again.x, again.y);
   const close = page.locator('[data-phone-sheet] button[aria-label="Clear selection"]');
   if (await close.count()) {
     const box = await close.boundingBox();

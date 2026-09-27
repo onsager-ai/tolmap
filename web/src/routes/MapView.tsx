@@ -424,8 +424,13 @@ export function MapView() {
   // not resurrect an older selection (back is not a selection-history
   // scrubber). Only a popped `sel` entry clears the selection.
   const backRef = useRef<BackState | null>(null);
+  // True while a back press is being carried past dead entries (skipBack):
+  // the entries it passes through carry older URLs, and the page must
+  // neither adopt their selection as the live one nor push a new entry for
+  // it mid-traversal (a push there would cut the traversal short).
+  const skippingRef = useRef(false);
   const liveSearchRef = useRef(search);
-  liveSearchRef.current = search;
+  if (!skippingRef.current) liveSearchRef.current = search;
   const mapPathRef = useRef(router.history.location.pathname);
   mapPathRef.current = router.history.location.pathname;
   const historyIndex = () => Number((router.history.location.state as unknown as Record<string, unknown>).__TSR_index ?? 0);
@@ -485,6 +490,7 @@ export function MapView() {
   // entry the page is on -- after a reload, possibly one of ours.
   useEffect(() => {
     if (!narrow) return;
+    skippingRef.current = false;
     const st = router.history.location.state as unknown as Record<string, unknown>;
     backRef.current = initBack(historyIndex(), st[OVERLAY_MARKER], phoneHasSelectionRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -492,7 +498,7 @@ export function MapView() {
   // A selection (a deep link included) is one entry: back clears it before
   // it leaves the map.
   useEffect(() => {
-    if (!narrow) return;
+    if (!narrow || skippingRef.current) return;
     if (phoneHasSelection) pushOverlay("sel");
     else dropOverlay("sel");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -501,7 +507,10 @@ export function MapView() {
     if (!narrow) return;
     return router.history.subscribe(({ location, action }) => {
       if (action.type !== "BACK" && action.type !== "FORWARD" && action.type !== "GO") return;
-      if (location.pathname !== mapPathRef.current) return;
+      if (location.pathname !== mapPathRef.current) {
+        skippingRef.current = false;
+        return;
+      }
       const st = location.state as unknown as Record<string, unknown>;
       const idx = Number(st.__TSR_index ?? 0);
       const cur = backRef.current ?? initBack(idx, null, false);
@@ -516,6 +525,7 @@ export function MapView() {
       liveSearchRef.current = desired;
       // Skipping on: the entry this press finally lands on reconciles (and
       // if that is the previous page, there is nothing of ours to fix).
+      skippingRef.current = res.skipBack;
       if (res.skipBack) router.history.back();
       else navigate({ to: ".", search: desired, replace: true, state: true });
     });
