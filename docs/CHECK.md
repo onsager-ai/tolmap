@@ -49,6 +49,7 @@ This is the graph the partitioner sees. The base partition `P` is the base map's
   - **Not the map's `q`.** `Q` is not comparable with the map's `q`, which is reported topology-only (unweighted, γ = 1) on the partition before small districts are merged.
 - **`modularity_base`, `modularity_head`**: the two `Q`s.
 - **`edges_added`, `edges_removed`**: the edges between two different districts that are in the head graph and not in the base graph, or the other way round. These are the "why" behind `delta_q`.
+  - **Not only the diff's own edges.** Pruning keeps each file's strongest edges relative to its others (finding 23), so an edge can enter or leave the pruned graph without either of its files changing.
   - **Matching.** Edges are matched across a rename by the file's base path.
   - **Direction.** `source → target` follows the import when the edge carries one, and path order otherwise.
   - **`weight`** is the edge's blended weight in its own graph. It is rescaled so the heaviest edge in that graph is 1, so weights compare within one graph only.
@@ -98,59 +99,249 @@ The text format starts with three lines: districts crossed, Δq and the verdict.
 
 ## Examples
 
-Both examples are from the scripted repository in `tests/check_cli.rs`, where three packages import only themselves. The change is uncommitted: `town/billing/invoice.py` gains `from ..people.account import Account`. The numbers show the shape of the output. They are not a measurement.
+Both examples are real output, not illustrations. They come from GitHub Actions ([remote-build run 36321866316](https://github.com/onsager-ai/tolmap/actions/runs/36321866316), `command=check`, `extra_args=--base HEAD~30`). The repository is django at its corpus pin `dd6f6b1` (the working tree), checked against 30 commits earlier (`5f0293b`), with no thresholds.
+
+Two things in them are worth reading closely:
+
+- **Modularity rose.** Δq is positive: the change coupled the districts slightly less.
+- **Not every listed edge touches a changed file.** `sql/query.py -> utils/warnings.py` left the pruned graph although neither file changed. Pruning keeps each file's strongest edges relative to its others (finding 23), so a new edge elsewhere can push an old one out. The edge lists describe the graph the partitioner sees, not only the diff's own lines.
 
 ```
-$ tolmap check . --base HEAD --max-dq 0.005
-districts crossed: 1 (0 billing)
-delta q: -0.021904 (base 0.588517 -> head 0.566613, base partition held fixed)
-verdict: fail (delta q -0.021904 < -0.005000)
-cross-district edges: 1 added, 0 removed
-  + town/billing/invoice.py -> town/people/account.py (district 0 -> 2) weight 0.353209, import
+$ tolmap check django --base HEAD~30
+districts crossed: 6 (2 admin & contrib, 3 models & db, 4 db & backends, 6 gis & contrib, 7 template, 8 gdal & gis)
+delta q: +0.000162 (base 0.574889 -> head 0.575051, base partition held fixed)
+verdict: pass (report only: no threshold given)
+cross-district edges: 3 added, 4 removed
+  + django/db/backends/base/features.py -> django/db/backends/sqlite3/schema.py (district 4 -> 3) weight 0.153985
+  - django/db/backends/postgresql/features.py -> django/db/models/fields/__init__.py (district 4 -> 3) weight 0.148922
+  - django/contrib/gis/db/backends/postgis/operations.py -> django/db/models/sql/compiler.py (district 6 -> 3) weight 0.118161
+  - django/db/backends/base/operations.py -> django/db/backends/mysql/schema.py (district 4 -> 3) weight 0.112463
+  + django/core/validators.py -> django/utils/deprecation.py (district 2 -> 0) weight 0.097092, import
+  + django/core/validators.py -> django/utils/warnings.py (district 2 -> 0) weight 0.092354, import
+  - django/db/models/sql/query.py -> django/utils/warnings.py (district 3 -> 0) weight 0.088049, import
+landmark touched: django/db/models/query.py is a hazard (churn 92 x cplx 587)
 numbers are a lower bound: tolmap's graph holds only the references it can resolve (calls through variables, dynamic imports and reflection are missed), so the change couples at least this much
 $ echo $?
-1
+0
 ```
 
 ```
-$ tolmap check . --base HEAD --format json
+$ tolmap check django --base HEAD~30 --format json
 {
   "version": 1,
-  "base": "4f0c6d2e9b1a7c3d5e8f0a2b4c6d8e0f1a3b5c7d",
+  "base": "5f0293b3ab546f86d666524f07d17304ac785506",
   "head": null,
-  "districts_crossed": 1,
+  "districts_crossed": 6,
   "districts": [
     {
-      "id": 0,
-      "name": "billing",
+      "id": 2,
+      "name": "admin & contrib",
+      "changed_files": 2
+    },
+    {
+      "id": 3,
+      "name": "models & db",
+      "changed_files": 6
+    },
+    {
+      "id": 4,
+      "name": "db & backends",
+      "changed_files": 4
+    },
+    {
+      "id": 6,
+      "name": "gis & contrib",
+      "changed_files": 1
+    },
+    {
+      "id": 7,
+      "name": "template",
+      "changed_files": 1
+    },
+    {
+      "id": 8,
+      "name": "gdal & gis",
       "changed_files": 1
     }
   ],
   "files": [
     {
-      "path": "town/billing/invoice.py",
+      "path": "django/contrib/admin/views/main.py",
       "base_path": null,
       "status": "modified",
-      "district": 0,
+      "district": 2,
+      "placed": false
+    },
+    {
+      "path": "django/contrib/gis/db/backends/postgis/operations.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 6,
+      "placed": false
+    },
+    {
+      "path": "django/contrib/gis/gdal/raster/source.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 8,
+      "placed": false
+    },
+    {
+      "path": "django/core/validators.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 2,
+      "placed": false
+    },
+    {
+      "path": "django/db/backends/base/features.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 4,
+      "placed": false
+    },
+    {
+      "path": "django/db/backends/base/schema.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 3,
+      "placed": false
+    },
+    {
+      "path": "django/db/backends/mysql/schema.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 3,
+      "placed": false
+    },
+    {
+      "path": "django/db/backends/oracle/features.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 4,
+      "placed": false
+    },
+    {
+      "path": "django/db/backends/postgresql/features.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 4,
+      "placed": false
+    },
+    {
+      "path": "django/db/models/fields/__init__.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 3,
+      "placed": false
+    },
+    {
+      "path": "django/db/models/fields/generated.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 4,
+      "placed": false
+    },
+    {
+      "path": "django/db/models/functions/json.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 3,
+      "placed": false
+    },
+    {
+      "path": "django/db/models/query.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 3,
+      "placed": false
+    },
+    {
+      "path": "django/forms/models.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 3,
+      "placed": false
+    },
+    {
+      "path": "django/utils/inspect.py",
+      "base_path": null,
+      "status": "modified",
+      "district": 7,
       "placed": false
     }
   ],
   "unplaced_files": [],
-  "modularity_base": 0.588517,
-  "modularity_head": 0.566613,
-  "delta_q": -0.021904,
+  "modularity_base": 0.574889,
+  "modularity_head": 0.575051,
+  "delta_q": 0.000162,
   "edges_added": [
     {
-      "source": "town/billing/invoice.py",
-      "target": "town/people/account.py",
-      "source_district": 0,
-      "target_district": 2,
-      "weight": 0.353209,
+      "source": "django/db/backends/base/features.py",
+      "target": "django/db/backends/sqlite3/schema.py",
+      "source_district": 4,
+      "target_district": 3,
+      "weight": 0.153985,
+      "static_import": false
+    },
+    {
+      "source": "django/core/validators.py",
+      "target": "django/utils/deprecation.py",
+      "source_district": 2,
+      "target_district": 0,
+      "weight": 0.097092,
+      "static_import": true
+    },
+    {
+      "source": "django/core/validators.py",
+      "target": "django/utils/warnings.py",
+      "source_district": 2,
+      "target_district": 0,
+      "weight": 0.092354,
       "static_import": true
     }
   ],
-  "edges_removed": [],
-  "landmark_touches": [],
+  "edges_removed": [
+    {
+      "source": "django/db/backends/postgresql/features.py",
+      "target": "django/db/models/fields/__init__.py",
+      "source_district": 4,
+      "target_district": 3,
+      "weight": 0.148922,
+      "static_import": false
+    },
+    {
+      "source": "django/contrib/gis/db/backends/postgis/operations.py",
+      "target": "django/db/models/sql/compiler.py",
+      "source_district": 6,
+      "target_district": 3,
+      "weight": 0.118161,
+      "static_import": false
+    },
+    {
+      "source": "django/db/backends/base/operations.py",
+      "target": "django/db/backends/mysql/schema.py",
+      "source_district": 4,
+      "target_district": 3,
+      "weight": 0.112463,
+      "static_import": false
+    },
+    {
+      "source": "django/db/models/sql/query.py",
+      "target": "django/utils/warnings.py",
+      "source_district": 3,
+      "target_district": 0,
+      "weight": 0.088049,
+      "static_import": true
+    }
+  ],
+  "landmark_touches": [
+    {
+      "file": "django/db/models/query.py",
+      "kind": "hazard",
+      "detail": "churn 92 x cplx 587"
+    }
+  ],
   "thresholds": {
     "max_districts": null,
     "max_dq": null
@@ -162,4 +353,6 @@ $ tolmap check . --base HEAD --format json
 
 ## Cost
 
-The check has no incremental build (HANDOFF.md item 3). It extracts both sides and builds the base map, skipping geometry and parcels, unless `--base-map` is given. Head needs extraction and blend only. The time a run spent on each stage is printed to stderr. `remote-build.yml`'s `check` command times it on corpus repositories on GitHub Actions: the pinned commit against its parent.
+The check has no incremental build (HANDOFF.md item 3). It extracts both sides and builds the base map, skipping geometry and parcels, unless `--base-map` is given. Head needs extraction and blend only. The time a run spent on each stage is printed to stderr. `remote-build.yml`'s `check` command times it on corpus repositories on GitHub Actions: the pinned commit against its parent, or against the `--base` given in `extra_args`.
+
+On django (851 files, co-change over its last 4000 commits), the example above took 5.6 s wall time with a 55 MB peak RSS, on a standard GitHub-hosted runner. The stages were base graph 1.8 s, base map 0.5 s and head graph 1.8 s; the rest was git and the two worktrees. Against the pinned commit's parent, the same run took 3.7 s.
