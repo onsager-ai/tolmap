@@ -8,33 +8,48 @@ import type { Config } from "tailwindcss";
 export default {
   darkMode: ["class", '[data-theme="dark"]'],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // docs/UX.md §7.3: `hover:` styles only apply on devices that can hover,
+  // so a tap on a phone never leaves a button stuck in its hover style.
+  future: {
+    hoverOnlyWhenSupported: true,
+  },
   theme: {
     extend: {
+      // The shadcn component names resolve to the chrome tokens of
+      // docs/UX.md §8.3 (src/index.css), not to a second palette -- see the
+      // comment where the old shadcn HSL values used to be in index.css.
       colors: {
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
+        border: "var(--rule)",
+        input: "var(--rule)",
+        ring: "var(--accent)",
+        background: "var(--chrome2)",
+        foreground: "var(--on)",
         primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT: "var(--accent)",
+          foreground: "var(--on-accent)",
         },
         secondary: {
-          DEFAULT: "hsl(var(--secondary))",
-          foreground: "hsl(var(--secondary-foreground))",
+          DEFAULT: "var(--chrome)",
+          foreground: "var(--on)",
         },
         muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
+          DEFAULT: "var(--chrome)",
+          foreground: "var(--dim)",
         },
         accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
+          DEFAULT: "var(--accent)",
+          foreground: "var(--on-accent)",
+        },
+        // shadcn's old "accent": the faint hover wash behind ghost and
+        // outline buttons. A mix with --on, so it reads on --chrome and
+        // --chrome2 alike, in both themes.
+        subtle: {
+          DEFAULT: "color-mix(in srgb, var(--on) 8%, transparent)",
+          foreground: "var(--on)",
         },
         card: {
-          DEFAULT: "hsl(var(--card))",
-          foreground: "hsl(var(--card-foreground))",
+          DEFAULT: "var(--chrome2)",
+          foreground: "var(--on)",
         },
       },
       borderRadius: {
@@ -45,6 +60,20 @@ export default {
       fontFamily: {
         sans: ["Archivo", "ui-sans-serif", "system-ui", "sans-serif"],
         mono: ["IBM Plex Mono", "ui-monospace", "monospace"],
+      },
+      // docs/UX.md §8.1's type scale, by role. Nothing is smaller than 12 px,
+      // and 12 px is only for uppercase group labels (`text-label uppercase`).
+      // Inputs are 16 px on narrow widths (index.css enforces it for every
+      // input, select and textarea).
+      fontSize: {
+        title: ["30px", { lineHeight: "36px", fontWeight: "700" }],
+        "sheet-title": ["22px", { lineHeight: "28px", fontWeight: "600" }],
+        "section-title": ["20px", { lineHeight: "26px", fontWeight: "600" }],
+        row: ["16px", { lineHeight: "22px", fontWeight: "600" }],
+        body: ["16px", { lineHeight: "24px" }],
+        small: ["14px", { lineHeight: "20px" }],
+        meta: ["13px", { lineHeight: "18px" }],
+        label: ["12px", { lineHeight: "16px", fontWeight: "600", letterSpacing: "0.06em" }],
       },
     },
   },

@@ -5,6 +5,15 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>tolmap</title>
+    <!-- docs/UX.md §8.1: Archivo for UI text, IBM Plex Mono for identifiers
+         and data. Loaded the way viewer/template.html loads them; with
+         display=swap the fallback shows until they arrive. Map label
+         placement never measures the rendered font (map/labelMetrics.ts
+         carries Archivo's advance widths), so a late font can't move a label
+         or change which labels fit. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" />
     <script>
       // Issue #82 "chrome follows the theme" (owner decision, 2026-09-24):
       // applies a saved Light/Dark override before anything paints, so a

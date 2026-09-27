@@ -123,12 +123,15 @@ export function SelectionPanel({
   return (
     <Card
       data-selection-panel
-      className={`absolute z-10 border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-lg max-[820px]:inset-x-2.5 max-[820px]:bottom-[calc(58px+env(safe-area-inset-bottom,0px))] max-[820px]:top-auto max-[820px]:w-auto max-[820px]:overflow-hidden max-[820px]:p-0 min-[821px]:right-2.5 min-[821px]:top-2.5 min-[821px]:w-[230px] min-[821px]:p-3`}
+      className={`absolute z-10 border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-lg max-[820px]:inset-x-2.5 max-[820px]:bottom-[calc(58px+env(safe-area-inset-bottom,0px))] max-[820px]:top-auto max-[820px]:w-auto max-[820px]:overflow-hidden max-[820px]:p-0 min-[821px]:right-2.5 min-[821px]:top-2.5 min-[821px]:w-[260px] min-[821px]:p-3`}
       style={narrow ? { maxHeight: isOpen ? "58vh" : "46px" } : undefined}
     >
       <div
         onClick={narrow ? onToggleOpen : undefined}
-        className={narrow ? "grid cursor-pointer grid-cols-[1fr_auto] items-center gap-2.5 px-3.5 py-2.5" : ""}
+        // py-1.5 (was py-2.5): the collapsed phone sheet is 46 px tall, and
+        // at the docs/UX.md §8.1 sizes a 13 px breadcrumb line plus a 14 px
+        // title line only fit it with the smaller padding.
+        className={narrow ? "grid cursor-pointer grid-cols-[1fr_auto] items-center gap-2.5 px-3.5 py-1.5" : ""}
       >
         <div className="overflow-hidden">
           {!showUnconnected && (
@@ -146,8 +149,8 @@ export function SelectionPanel({
             />
           )}
           {showUnconnected ? (
-            <><h3 className="font-sans text-[13px] font-semibold">Unconnected files</h3>
-              {doc.coverage && <p className="text-[10px] text-[var(--dim)]" data-coverage-detail>
+            <><h3 className="text-small font-semibold min-[821px]:text-row">Unconnected files</h3>
+              {doc.coverage && <p className="text-meta text-[var(--dim)]" data-coverage-detail>
                 {/* Two different counts: the list is files in unconnected
                     districts (not placed on the map); coverage counts every
                     file with no kept edge, including ones merge_tiny placed
@@ -165,7 +168,7 @@ export function SelectionPanel({
           )}
         </div>
         {narrow && (
-          <span className={`text-[13px] text-[var(--dim)] transition-transform ${isOpen ? "rotate-180" : ""}`}>⌄</span>
+          <span className={`text-meta text-[var(--dim)] transition-transform ${isOpen ? "rotate-180" : ""}`}>⌄</span>
         )}
       </div>
       {(!narrow || isOpen) && (
@@ -217,9 +220,9 @@ export function SelectionPanel({
 function UnconnectedList({ layout, doc, onSelectFile }: { layout: PackageLayout; doc: MapDocument; onSelectFile: Props["onSelectFile"] }) {
   return <div className="mt-2 max-h-[44vh] overflow-y-auto" data-unconnected-list>
     {layout.unconnectedGroups.map((group) => <details key={group.path} className="border-t border-[var(--rule)] py-1">
-      <summary className="cursor-pointer break-all text-[10px] text-[var(--on)]">{formatDirectory(group.path)} <span className="text-[var(--dim)]">({group.files.length})</span></summary>
+      <summary className="cursor-pointer break-all font-mono text-meta text-[var(--on)]">{formatDirectory(group.path)} <span className="text-[var(--dim)]">({group.files.length})</span></summary>
       {group.files.map((i) => <button type="button" key={i} data-unconnected-file={i}
-        className="block w-full break-all py-1 pl-2 text-left text-[10px] text-[var(--dim)] hover:text-[var(--on)]"
+        className="block w-full break-all py-1 pl-2 text-left font-mono text-meta text-[var(--dim)] hover:text-[var(--on)]"
         onClick={() => onSelectFile(i)}>{doc.F[i].split("/").pop()}</button>)}
     </details>)}
   </div>;
@@ -228,8 +231,8 @@ function UnconnectedList({ layout, doc, onSelectFile }: { layout: PackageLayout;
 function FolderHead({ layout, activeDirectory }: { layout: PackageLayout; activeDirectory?: string }) {
   return (
     <>
-      <h3 className="truncate font-sans text-[13px] font-semibold">Folders</h3>
-      <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">
+      <h3 className="truncate text-small font-semibold min-[821px]:text-row">Folders</h3>
+      <p className="mt-0.5 truncate text-meta text-[var(--dim)]">
         {activeDirectory ? formatDirectory(activeDirectory) : `${layout.directories.length} directories`}
       </p>
     </>
@@ -261,7 +264,7 @@ function FolderBody({
           aria-label="Filter folder paths"
           placeholder="filter folder paths…"
           autoComplete="off"
-          className="h-7 min-w-0 bg-[var(--chrome2)] px-2 text-[10.5px] text-[var(--on)]"
+          className="h-8 min-w-0 bg-[var(--chrome2)] px-2 font-mono text-[var(--on)]"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key !== "Enter" || matches.length === 0) return;
@@ -288,7 +291,7 @@ function FolderBody({
               />
             ))
           ) : (
-            <p className="px-1 py-2 text-[10px] italic text-[var(--dim)]">no folder matches</p>
+            <p className="px-1 py-2 text-meta italic text-[var(--dim)]">no folder matches</p>
           )
         ) : (
           layout.directoryRoots.map((directory) => (
@@ -324,7 +327,7 @@ function FolderPickRow({
       data-folder-path={directory.path}
       onClick={() => onPick(directory.path)}
       aria-pressed={active}
-      className={`grid w-full grid-cols-[1fr_auto_auto] gap-2 border-t border-[var(--rule)] px-1 py-1 text-left text-[10px] first:border-t-0 ${active ? "text-[var(--hot)]" : "text-[var(--on)]"}`}
+      className={`grid w-full grid-cols-[1fr_auto_auto] gap-2 border-t border-[var(--rule)] px-1 py-1 text-left font-mono text-meta first:border-t-0 ${active ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
     >
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">{formatDirectory(directory.path)}</span>
       <span className="text-[var(--dim)]">{repositoryShare(directory.count, totalFiles)}</span>
@@ -356,7 +359,7 @@ function FolderTreeRow({
             type="button"
             aria-label={`${expanded ? "Collapse" : "Expand"} ${directory.path}`}
             onClick={() => setExpanded((value) => !value)}
-            className="h-6 text-[11px] text-[var(--dim)]"
+            className="h-6 text-meta text-[var(--dim)]"
           >
             <span className={`inline-block transition-transform ${expanded ? "rotate-90" : ""}`}>›</span>
           </button>
@@ -368,13 +371,13 @@ function FolderTreeRow({
           data-folder-path={directory.path}
           aria-pressed={activeDirectory === directory.path}
           onClick={() => onPick(directory.path)}
-          className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap py-1 text-left text-[10px] ${activeDirectory === directory.path ? "text-[var(--hot)]" : "text-[var(--on)]"}`}
+          className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap py-1 text-left font-mono text-meta ${activeDirectory === directory.path ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
           style={{ paddingLeft: `${depth * 7}px` }}
         >
           {directory.name}/
         </button>
-        <span className="text-[9.5px] text-[var(--dim)]">{repositoryShare(directory.count, totalFiles)}</span>
-        <span className="pr-1 text-[9.5px] text-[var(--dim)]">{directory.count.toLocaleString("en-US")}</span>
+        <span className="font-mono text-meta text-[var(--dim)]">{repositoryShare(directory.count, totalFiles)}</span>
+        <span className="pr-1 font-mono text-meta text-[var(--dim)]">{directory.count.toLocaleString("en-US")}</span>
       </div>
       {expanded &&
         directory.children.map((child) => (
@@ -410,7 +413,7 @@ function DistrictHead({ doc, d, onZoomDistrict }: { doc: MapDocument; d: number;
   return (
     <>
       <div className="flex items-center gap-1">
-        <h3 className="min-w-0 flex-1 truncate font-sans text-[13px] font-semibold">{doc.names[d]}</h3>
+        <h3 className="min-w-0 flex-1 truncate text-small font-semibold min-[821px]:text-row">{doc.names[d]}</h3>
         <button
           type="button"
           aria-label="Zoom to district"
@@ -421,7 +424,7 @@ function DistrictHead({ doc, d, onZoomDistrict }: { doc: MapDocument; d: number;
           ⤢
         </button>
       </div>
-      <p className="mt-0.5 truncate text-[10px] text-[var(--dim)]">
+      <p className="mt-0.5 truncate text-meta text-[var(--dim)]">
         {compactCount(files.length)} files · {compactCount(lines)} lines
       </p>
     </>
@@ -468,10 +471,10 @@ function DistrictBody({
     .map((r) => ({ id: r[0] === d ? r[1] : r[0], name: doc.names[String(r[0] === d ? r[1] : r[0])] }));
   const largest = paths.find((path) => !path.other);
   return (
-    <div className="mt-1.5 space-y-1 text-[10px]" data-district-summary>
+    <div className="mt-1.5 space-y-1 text-meta" data-district-summary>
       {largest && largest.share >= 40 && (
         <p className="truncate text-[var(--dim)]" title={`mostly ${formatDirectory(largest.path!)}`}>
-          mostly <span className="text-[var(--on)]">{formatDirectory(largest.path!)}</span>
+          mostly <span className="font-mono text-[var(--on)]">{formatDirectory(largest.path!)}</span>
         </p>
       )}
       {nb.length > 0 && (
@@ -480,7 +483,7 @@ function DistrictBody({
           {nb.map((neighbour, index) => (
             <span key={neighbour.id}>
               {index > 0 ? ", " : ""}
-              <button type="button" data-neighbour-district={neighbour.id} className="text-[var(--on)] hover:text-[var(--hot)]" onClick={() => onSelectDistrict(neighbour.id)}>
+              <button type="button" data-neighbour-district={neighbour.id} className="text-[var(--on)] hover:text-[var(--accent)]" onClick={() => onSelectDistrict(neighbour.id)}>
                 {neighbour.name}
               </button>
             </span>
@@ -496,9 +499,9 @@ function DistrictBody({
             path.other ? (
               <div
                 key="other"
-                className="grid grid-cols-[30px_1fr_auto] gap-1.5 border-t border-[var(--rule)] py-1 text-[9.5px] text-[var(--dim)]"
+                className="grid grid-cols-[36px_1fr_auto] gap-1.5 border-t border-[var(--rule)] py-1 text-meta text-[var(--dim)]"
               >
-                <b className="text-[var(--on)]">{path.share}%</b>
+                <b className="font-mono text-[var(--on)]">{path.share}%</b>
                 <span>other</span>
                 <span>({path.count} {path.count === 1 ? "file" : "files"})</span>
               </div>
@@ -509,10 +512,10 @@ function DistrictBody({
                 data-district-path={path.path}
                 aria-label={`Highlight folder ${path.path}`}
                 onClick={() => onSelectDirectory(path.path!)}
-                className="grid w-full grid-cols-[30px_1fr_auto] gap-1.5 border-t border-[var(--rule)] py-1 text-left text-[9.5px] text-[var(--on)] hover:text-white"
+                className="grid w-full grid-cols-[36px_1fr_auto] gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)]"
               >
-                <b>{path.share}%</b>
-                <span className="overflow-hidden text-ellipsis whitespace-nowrap">{formatDirectory(path.path!)}</span>
+                <b className="font-mono">{path.share}%</b>
+                <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono">{formatDirectory(path.path!)}</span>
                 <span className="text-[var(--dim)]">({path.count} {path.count === 1 ? "file" : "files"})</span>
               </button>
             ),
@@ -528,11 +531,11 @@ function DistrictBody({
             key={i}
             data-district-key-file={i}
             onClick={() => onSelectFile(i)}
-            className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-[10.5px] text-[var(--on)] hover:text-white"
+            className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)]"
           >
             <i className="h-2 w-2 rounded-sm" style={{ background: districtColor(doc, d) }} />
-            <span className="overflow-hidden text-ellipsis whitespace-nowrap">{doc.F[i].split("/").slice(1).join("/")}</span>
-            <span className="text-[9.5px] text-[var(--dim)]">{LOC(doc, i)} lines</span>
+            <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono">{doc.F[i].split("/").slice(1).join("/")}</span>
+            <span className="font-mono text-[var(--dim)]">{LOC(doc, i)} lines</span>
           </button>
         ))}
       </div>
@@ -586,8 +589,8 @@ function FileHead({
   }, [decoded, selHSym]);
   return (
     <>
-      <h3 className="truncate font-sans text-[13px] font-semibold">{sm ? sm[0] : doc.F[i].split("/").pop()}</h3>
-      <p className={`mt-0.5 text-[10px] text-[var(--dim)] ${sm ? "truncate" : ""}`}>
+      <h3 className="truncate font-mono text-small font-semibold min-[821px]:text-row">{sm ? sm[0] : doc.F[i].split("/").pop()}</h3>
+      <p className={`mt-0.5 text-meta text-[var(--dim)] ${sm ? "truncate" : ""}`}>
         {sm ? (
           `${doc.F[i].split("/").pop()}:${sm[2]} · ${KIND[sm[1]]}`
         ) : (
@@ -657,8 +660,8 @@ function FileBody({
   return (
     <div>
       {districtClass(doc.districts[String(D_(doc, i))]) === "unconnected" &&
-        <p className="my-2 text-[10px] text-[var(--dim)]">not connected to anything, so it isn't placed on the map</p>}
-      <p className="break-all text-[10px] text-[var(--dim)]">
+        <p className="my-2 text-meta text-[var(--dim)]">not connected to anything, so it isn't placed on the map</p>}
+      <p className="break-all font-mono text-meta text-[var(--dim)]">
         {doc.F[i]}
         {sm ? `:${sm[2]}` : ""}
       </p>
@@ -680,7 +683,7 @@ function FileBody({
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
         {lm && (
           <Row label="landmark">
-            <b className="text-[9px] uppercase tracking-wide" style={{ color: WHY_COLOR[lm[1]] }}>
+            <b className="text-label uppercase" style={{ color: WHY_COLOR[lm[1]] }}>
               {lm[1]}
             </b>
           </Row>
@@ -710,7 +713,7 @@ function FileBody({
       </div>
       <BlastLine blast={blast} doc={doc} />
       {linkTotal > LINK_PREVIEW_MAX && (
-        <p className="mt-1 text-[9.5px] text-[var(--dim)]">
+        <p className="mt-1 text-meta text-[var(--dim)]">
           links: showing <b className="text-[var(--on)]">{LINK_PREVIEW_MAX}</b> of {linkTotal}
         </p>
       )}
@@ -723,7 +726,7 @@ function FileBody({
           onHoverHierSymbol={onHoverHierSymbol}
         />
       ) : symbolsLoading ? (
-        <p className="my-2 text-[10px] text-[var(--dim)]" data-symbols-loading>
+        <p className="my-2 text-meta text-[var(--dim)]" data-symbols-loading>
           loading symbols…
         </p>
       ) : (
@@ -768,7 +771,7 @@ const WHY_COLOR: Record<string, string> = {
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex justify-between gap-2 border-t border-[var(--rule)] py-0.5 text-[10.5px] first:border-t-0">
+    <div className="flex justify-between gap-2 border-t border-[var(--rule)] py-0.5 text-meta first:border-t-0">
       <span className="text-[var(--dim)]">{label}</span>
       {children}
     </div>
@@ -784,10 +787,14 @@ function BlastLine({ blast, doc }: { blast: ReturnType<typeof computeBlast>; doc
   const d = blast.districts.size;
   const names = [...blast.districts].map((x) => doc.names[String(x)]).slice(0, 4);
   return (
-    <div className="my-2 border-l-2 border-[var(--hot)] py-1 pl-2.5 text-[10.5px] leading-relaxed">
-      <b className="text-[var(--hot)]">{n}</b> file{n === 1 ? "" : "s"} reference it, across{" "}
-      <b className="text-[var(--hot)]">{d}</b> district{d === 1 ? "" : "s"}
-      <span className="block text-[9.5px] text-[var(--dim)]">
+    // The --hot rule is deliberate: it keys this line to the blast radius,
+    // which the renderer draws in --hot (the same reason LinkLegend reads
+    // --link-out/--link-in). Only the rule, not the text: --hot is a map
+    // stroke colour and measures 3.4:1 as text on the dark chrome.
+    <div className="my-2 border-l-2 border-[var(--hot)] py-1 pl-2.5 text-meta">
+      <b className="font-mono text-[var(--on)]">{n}</b> file{n === 1 ? "" : "s"} reference it, across{" "}
+      <b className="font-mono text-[var(--on)]">{d}</b> district{d === 1 ? "" : "s"}
+      <span className="block text-meta text-[var(--dim)]">
         {names.join(" · ")}
         {blast.districts.size > 4 ? " …" : ""}
       </span>
@@ -833,18 +840,18 @@ function SymbolDirectory({
             key={r.n}
             data-symbol-row={`${i}:${r.n}`}
             onClick={() => onSelectSymbol(i, r.n)}
-            className={`grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-[10.5px] first:border-t-0 ${cur === r.n ? "text-[var(--hot)]" : "text-[var(--on)]"}`}
+            className={`grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left font-mono text-meta first:border-t-0 ${cur === r.n ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
           >
             <i className="h-2 w-2 rounded-sm" style={{ background: KCOL[r.sm[1]] }} />
             <span className="overflow-hidden text-ellipsis whitespace-nowrap">{r.sm[0]}</span>
-            <span className="text-[9.5px] text-[var(--dim)]">
+            <span className="text-[var(--dim)]">
               {r.sm[2]}–{r.sm[3]}
             </span>
           </button>
         ))}
       </div>
       {rows.length > shown.length && (
-        <div className="pt-0.5 text-[9.5px] text-[var(--dim)]">+{rows.length - shown.length} more symbols</div>
+        <div className="pt-0.5 text-meta text-[var(--dim)]">+{rows.length - shown.length} more symbols</div>
       )}
     </>
   );
@@ -873,7 +880,7 @@ function RelationLine({
   const shown = items.slice(0, max);
   const extra = items.length - shown.length;
   return (
-    <p className="mt-1 text-[10.5px] leading-relaxed" data-symbol-relation={dataKey}>
+    <p className="mt-1 text-meta" data-symbol-relation={dataKey}>
       <span className="text-[var(--dim)]">{label}: </span>
       {shown.map((it, idx) => (
         <span key={it.global}>
@@ -881,7 +888,7 @@ function RelationLine({
           <button
             type="button"
             data-relation-target={it.global}
-            className="text-[var(--on)] underline decoration-[var(--rule)] underline-offset-2 hover:text-[var(--hot)]"
+            className="font-mono text-[var(--on)] underline decoration-[var(--rule)] underline-offset-2 hover:text-[var(--accent)]"
             onClick={() => onSelectHierSymbol(it.global)}
           >
             {it.name}
@@ -919,7 +926,7 @@ function SymbolRelationsCard({
     <div className="mt-1.5" data-symbol-relations>
       {abstract && (
         <span
-          className="inline-block rounded bg-[var(--chrome2)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--dim)]"
+          className="inline-block rounded-[6px] bg-[var(--chrome2)] px-1.5 py-0.5 text-label uppercase text-[var(--dim)]"
           data-abstract-tag
         >
           abstract
@@ -973,7 +980,7 @@ function HierOutline({
         onMouseLeave={() => onHoverHierSymbol?.(null)}
         onClick={() => onSelectHierSymbol(r.global)}
         style={{ paddingLeft: 6 + depth * 12 }}
-        className={`grid w-full grid-cols-[1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-[10.5px] first:border-t-0 ${selHSym === r.global ? "text-[var(--hot)]" : "text-[var(--on)]"}`}
+        className={`grid w-full grid-cols-[1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left font-mono text-meta first:border-t-0 ${selHSym === r.global ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
       >
         <span className={`overflow-hidden text-ellipsis whitespace-nowrap ${isBoldKind(r.row[2]) ? "font-semibold" : ""}`}>
           {symbolLabel(r.row, r.children.length, false)}
@@ -988,12 +995,12 @@ function HierOutline({
             </span>
           )}
           {rowAbstract(r.row) && (
-            <span className="ml-1 font-normal text-[9px] uppercase tracking-wide text-[var(--dim)]" data-outline-abstract>
+            <span className="ml-1 font-sans text-label uppercase text-[var(--dim)]" data-outline-abstract>
               abstract
             </span>
           )}
         </span>
-        <span className="text-[9.5px] text-[var(--dim)]" title="incoming references">
+        <span className="text-[var(--dim)]" title="incoming references">
           {r.refsIn > 0 ? `← ${r.refsIn}` : ""}
         </span>
       </button>
@@ -1003,29 +1010,29 @@ function HierOutline({
 
   return (
     <div className="mt-2 border-t border-[var(--rule)] pt-1.5">
-      <div className="mb-0.5 text-[9.5px] uppercase tracking-wide text-[var(--dim)]">outline</div>
+      <div className="mb-0.5 text-label uppercase text-[var(--dim)]">outline</div>
       {outline.length > 0 ? (
         <div className="mb-1.5 max-h-[180px] overflow-y-auto" data-outline-tree>
           {outline.map((r) => row(r, 0))}
         </div>
       ) : (
-        <p className="mb-1.5 text-[9.5px] text-[var(--dim)]">no top-level symbols</p>
+        <p className="mb-1.5 text-meta text-[var(--dim)]">no top-level symbols</p>
       )}
       {external.length > 0 && (
         <>
-          <div className="mb-0.5 text-[9.5px] uppercase tracking-wide text-[var(--dim)]">external references</div>
+          <div className="mb-0.5 text-label uppercase text-[var(--dim)]">external references</div>
           <div className="mb-1.5 max-h-[140px] overflow-y-auto">
             {external.map((group) => (
-              <div key={group.from.global} className="border-t border-[var(--rule)] py-1 text-[10px] first:border-t-0">
+              <div key={group.from.global} className="border-t border-[var(--rule)] py-1 font-mono text-meta first:border-t-0">
                 <div className="font-semibold text-[var(--on)]">{symbolLabel(group.from.row, group.from.children.length, false)}</div>
                 {group.targets.slice(0, 8).map((t) => (
-                  <div key={t.key} className="flex justify-between gap-2 text-[9.5px] text-[var(--dim)]">
+                  <div key={t.key} className="flex justify-between gap-2 text-[var(--dim)]">
                     <span className="overflow-hidden text-ellipsis whitespace-nowrap">{t.label}</span>
                     <span>{t.count}</span>
                   </div>
                 ))}
                 {group.targets.length > 8 && (
-                  <div className="text-[9.5px] text-[var(--dim)]">+{group.targets.length - 8} more</div>
+                  <div className="font-sans text-[var(--dim)]">+{group.targets.length - 8} more</div>
                 )}
               </div>
             ))}
@@ -1034,7 +1041,7 @@ function HierOutline({
       )}
       {/* finding 30: resolution is a lower bound -- said here, plainly, once
           per file card that has any symbol data at all, not buried in docs. */}
-      <p className="text-[9px] leading-snug text-[var(--dim)]">
+      <p className="text-meta text-[var(--dim)]">
         Method references are under-counted: calls through instances and inherited methods aren&apos;t resolved.
       </p>
     </div>

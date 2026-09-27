@@ -91,7 +91,7 @@ function StageIcon({ state }: { state: StageSnapshot["state"] }) {
     return (
       <span
         aria-hidden
-        className="inline-flex h-4 w-4 flex-none items-center justify-center rounded-full bg-[#6FB39F] text-[10px] text-[#0a1410]"
+        className="inline-flex h-4 w-4 flex-none items-center justify-center rounded-full bg-[var(--accent)] text-label text-[var(--on-accent)]"
       >
         ✓
       </span>
@@ -101,14 +101,14 @@ function StageIcon({ state }: { state: StageSnapshot["state"] }) {
     return (
       <span
         aria-hidden
-        className="inline-flex h-4 w-4 flex-none items-center justify-center rounded-full bg-[var(--hot)] text-[10px] text-white"
+        className="inline-flex h-4 w-4 flex-none items-center justify-center rounded-full bg-[var(--link-out)] text-label text-[var(--on-accent)]"
       >
         ×
       </span>
     );
   }
   if (state === "running") {
-    return <span aria-hidden className="inline-flex h-4 w-4 flex-none items-center justify-center rounded-full border-2 border-[#6FB39F]" />;
+    return <span aria-hidden className="inline-flex h-4 w-4 flex-none items-center justify-center rounded-full border-2 border-[var(--accent)]" />;
   }
   return <span aria-hidden className="inline-flex h-4 w-4 flex-none items-center justify-center rounded-full border border-[var(--rule)]" />;
 }
@@ -134,11 +134,11 @@ function StageProgressBar({ progress, elapsedS }: { progress: ProgressValue; ela
         <div
           data-progress-fill
           data-progress-pct={pct ?? undefined}
-          className={pct == null ? "h-full w-1/3 animate-pulse rounded-full bg-[#6FB39F]" : "h-full rounded-full bg-[#6FB39F] transition-[width] duration-300"}
+          className={pct == null ? "h-full w-1/3 animate-pulse rounded-full bg-[var(--accent)]" : "h-full rounded-full bg-[var(--accent)] transition-[width] duration-300"}
           style={pct == null ? undefined : { width: `${pct}%` }}
         />
       </div>
-      <p className="mt-0.5 text-[10.5px] text-[var(--dim)]">
+      <p className="mt-0.5 font-mono text-meta text-[var(--dim)]">
         {pct == null ? `${formatDoneTotal(progress)} · elapsed ${formatSeconds(elapsedS)}` : formatDoneTotal(progress)}
         {formatRate(progress) ? ` · ${formatRate(progress)}` : ""}
       </p>
@@ -150,10 +150,10 @@ function StageRow({ stage, progress, elapsedS }: { stage: StageSnapshot; progres
   const showProgress = stage.state === "running" && progress != null && progress.stage === stage.id;
   return (
     <li data-stage-row data-stage-id={stage.id} data-stage-state={stage.state} className="flex flex-col py-0.5">
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex items-center gap-2 text-small">
         <StageIcon state={stage.state} />
         <span className={stage.state === "pending" ? "text-[var(--dim)]" : "text-[var(--on)]"}>{stage.label}</span>
-        <span className="ml-auto text-[10.5px] text-[var(--dim)]">
+        <span className="ml-auto font-mono text-meta text-[var(--dim)]">
           {stage.state === "done" && stage.duration_s != null ? formatSeconds(stage.duration_s) : null}
           {stage.state === "failed" ? "failed" : null}
         </span>
@@ -239,8 +239,8 @@ export function IndexJobView() {
   if (!search.job) {
     return (
       <Centered>
-        <p className="text-sm text-[var(--dim)]">No indexing job to show.</p>
-        <Link to="/" className="text-sm text-[#6FB39F] underline underline-offset-2">
+        <p className="text-small text-[var(--dim)]">No indexing job to show.</p>
+        <Link to="/" className="text-small text-[var(--accent)] underline underline-offset-2">
           back to the map index
         </Link>
       </Centered>
@@ -250,8 +250,8 @@ export function IndexJobView() {
   if (transportError && !job) {
     return (
       <Centered>
-        <p className="text-sm text-[var(--hot)]">couldn't reach the indexing service: {transportError}</p>
-        <Link to="/" className="text-sm text-[#6FB39F] underline underline-offset-2">
+        <p className="text-small text-[var(--link-out)]">couldn't reach the indexing service: {transportError}</p>
+        <Link to="/" className="text-small text-[var(--accent)] underline underline-offset-2">
           back to the map index
         </Link>
       </Centered>
@@ -261,7 +261,7 @@ export function IndexJobView() {
   if (!job) {
     return (
       <Centered>
-        <p className="text-sm text-[var(--dim)]">connecting to job {search.job}…</p>
+        <p className="text-small text-[var(--dim)]">connecting to job <span className="font-mono">{search.job}</span>…</p>
       </Centered>
     );
   }
@@ -280,19 +280,19 @@ export function IndexJobView() {
         : (job.error ?? "indexing failed.");
     return (
       <Centered>
-        <h1 className="font-sans text-lg font-semibold text-[var(--on)]">{slug}</h1>
+        <h1 className="break-all font-mono text-title text-[var(--on)]">{slug}</h1>
         <div
           data-job-failure
           data-job-failure-code={job.error_code ?? ""}
-          className={`max-w-md rounded-md border px-4 py-3 text-sm ${
+          className={`max-w-md rounded-md border px-4 py-3 text-small ${
             cancelled
               ? "border-[var(--rule)] bg-[var(--chrome2)] text-[var(--on)]"
-              : "border-[var(--hot)] bg-[color-mix(in_srgb,var(--hot)_12%,transparent)] text-[var(--hot)]"
+              : "border-[var(--link-out)] bg-[color-mix(in_srgb,var(--link-out)_12%,transparent)] text-[var(--on)]"
           }`}
         >
           <p>{message}</p>
         </div>
-        {retryError && <p className="text-xs text-[var(--hot)]">retry failed: {retryError}</p>}
+        {retryError && <p className="text-meta text-[var(--link-out)]">retry failed: {retryError}</p>}
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={() => void retry()} disabled={retrying}>
             {retrying ? "retrying…" : "try again"}
@@ -309,27 +309,27 @@ export function IndexJobView() {
 
   return (
     <Centered>
-      <h1 className="font-sans text-lg font-semibold text-[var(--on)]">{slug}</h1>
+      <h1 className="break-all font-mono text-title text-[var(--on)]">{slug}</h1>
 
       {job.status === "queued" ? (
-        <p className="text-sm text-[var(--dim)]" data-queued-text>
+        <p className="text-small text-[var(--dim)]" data-queued-text>
           {job.eta_start_s != null ? formatStartsIn(job.eta_start_s) : "queued"}
           {job.queue_position != null ? ` · #${job.queue_position} in queue` : ""}
         </p>
       ) : (
         <>
-          <p className="text-sm text-[var(--dim)]">{job.stage}</p>
+          <p className="font-mono text-small text-[var(--dim)]">{job.stage}</p>
           <ol className="flex w-full max-w-sm flex-col gap-0.5" data-stage-timeline>
             {job.stages.filter(shownStage).map((stage) => (
               <StageRow key={stage.id} stage={stage} progress={job.progress} elapsedS={job.elapsed_s} />
             ))}
           </ol>
           <div className="flex flex-col items-center gap-0.5">
-            <p className="text-[11px] text-[var(--dim)]">elapsed {formatSeconds(job.elapsed_s)}</p>
+            <p className="text-meta text-[var(--dim)]">elapsed {formatSeconds(job.elapsed_s)}</p>
             {job.eta && (
-              <p className="text-[11px] text-[var(--on)]" data-eta-range>
+              <p className="text-meta text-[var(--on)]" data-eta-range>
                 {formatEtaRange(job.eta.low_s, job.eta.high_s)}
-                <span className="ml-1 text-[10px] text-[var(--dim)]">
+                <span className="ml-1 text-meta text-[var(--dim)]">
                   ({job.eta.basis === "model" ? "rough estimate" : "estimate"})
                 </span>
               </p>
@@ -340,7 +340,7 @@ export function IndexJobView() {
 
       <div className="flex flex-col items-center gap-1.5" data-cancel-area>
         {confirmCancel ? (
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-2 text-small">
             <span className="text-[var(--dim)]">cancel this job?</span>
             <Button size="sm" variant="outline" onClick={() => void doCancel()} disabled={cancelling}>
               {cancelling ? "cancelling…" : "yes, cancel"}
@@ -354,14 +354,14 @@ export function IndexJobView() {
             cancel
           </Button>
         )}
-        {cancelError && <p className="text-xs text-[var(--hot)]">cancel failed: {cancelError}</p>}
+        {cancelError && <p className="text-meta text-[var(--link-out)]">cancel failed: {cancelError}</p>}
       </div>
 
-      <p className="text-[11px] text-[var(--dim)]">
+      <p className="text-meta text-[var(--dim)]">
         {connection === "poll" ? "polling for updates" : connection === "sse" ? "live updates" : "connecting…"}
         {" · "}started {new Date(job.started_at).toLocaleTimeString()}
       </p>
-      <p className="max-w-sm text-center text-[11px] text-[var(--dim)]">
+      <p className="max-w-sm text-center text-meta text-[var(--dim)]">
         A large repository (django-sized) can take several minutes — this page updates as each stage completes.
       </p>
     </Centered>

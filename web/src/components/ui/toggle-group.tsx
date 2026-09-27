@@ -21,7 +21,7 @@ export const ToggleGroupItem = React.forwardRef<
   <ToggleGroupPrimitive.Item
     ref={ref}
     className={cn(
-      "px-2.5 py-1.5 text-[11.5px] text-muted-foreground bg-secondary hover:text-foreground data-[state=on]:bg-primary data-[state=on]:text-primary-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+      "px-2.5 py-1.5 text-meta text-muted-foreground bg-secondary hover:text-foreground data-[state=on]:bg-primary data-[state=on]:text-primary-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
       className,
     )}
     {...props}

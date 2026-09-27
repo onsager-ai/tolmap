@@ -65,7 +65,7 @@ export function SearchBox({ doc, onPick }: SearchBoxProps) {
       />
       {open && (
         <div className="mt-1 max-h-[238px] overflow-y-auto rounded-md border border-[var(--rule)] bg-[var(--chrome)] shadow-lg">
-          {hits.length === 0 && <div className="px-2.5 py-1.5 text-[10.5px] italic text-[var(--dim)]">nothing matches</div>}
+          {hits.length === 0 && <div className="px-2.5 py-1.5 text-meta italic text-[var(--dim)]">nothing matches</div>}
           {hits.map((h, n) => {
             const sm = h.s != null ? doc.S?.[String(h.i)]?.[h.s] : null;
             const refs = sm ? (doc.U?.[`${h.i}:${h.s}`] ?? []).length : 0;
@@ -73,7 +73,7 @@ export function SearchBox({ doc, onPick }: SearchBoxProps) {
               <div
                 key={`${h.i}:${h.s ?? "f"}`}
                 onClick={() => pick(h)}
-                className={`cursor-pointer break-all px-2.5 py-1.5 text-[10.5px] hover:bg-[var(--chrome2)] ${n === cursor ? "bg-[var(--chrome2)]" : ""}`}
+                className={`cursor-pointer break-all px-2.5 py-1.5 font-mono text-meta hover:bg-[var(--chrome2)] ${n === cursor ? "bg-[var(--chrome2)]" : ""}`}
               >
                 {sm ? (
                   <>

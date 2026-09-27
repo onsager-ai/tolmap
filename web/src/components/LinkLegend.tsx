@@ -1,11 +1,11 @@
 // Issue #82 "link colour legend" (owner feedback: "what's the colored
 // circles?"). A selected file draws solid red rings/lines to what it
-// imports (MapRenderer's selection-links block, `var(--hot)`) and dashed
-// blue rings/lines to what imports it (`var(--cold)`) -- nothing on screen
-// explained that mapping. Colour-coding the file card's own "imported by N"
-// / "imports M" counts the same way, each with a tiny glyph matching the
-// map's own dash pattern (dashed for --cold/"imported by", solid for
-// --hot/"imports"), makes this line double as the legend instead of adding
+// imports (MapRenderer's selection-links block, `var(--link-out)`) and
+// dashed blue rings/lines to what imports it (`var(--link-in)`) -- nothing on
+// screen explained that mapping. Colour-coding the file card's own "imported
+// by N" / "imports M" counts the same way, each with a tiny glyph matching
+// the map's own dash pattern (dashed for --link-in/"imported by", solid for
+// --link-out/"imports"), makes this line double as the legend instead of adding
 // a separate one somewhere else. One shared component so the desktop card,
 // the phone sheet (same markup -- SelectionPanel's FileHead renders both)
 // and the fullscreen summary bar (SelectionSummaryBar) can't drift apart on
@@ -30,7 +30,7 @@ function LineGlyph({ color, dashed }: { color: string; dashed: boolean }) {
  * hollowTriangleGlyph), miniaturised for inline text -- same "canvas fill,
  * ink stroke" hollow look, and the same neutral colour: this relation has no
  * direction to colour-code the way imports/imported-by does (build spec item
- * 1 keeps --hot/--cold for call-like kinds only). */
+ * 1 keeps the link-out/link-in colours for call-like kinds only). */
 function TriangleGlyph() {
   return (
     <svg
@@ -78,14 +78,14 @@ export function LinkCountsLabel({
   hasInheritance?: boolean;
 }) {
   const importedBy = (
-    <span className={stacked ? "block truncate" : undefined} style={{ color: "var(--cold)" }}>
-      <LineGlyph color="var(--cold)" dashed />
+    <span className={stacked ? "block truncate" : undefined} style={{ color: "var(--link-in)" }}>
+      <LineGlyph color="var(--link-in)" dashed />
       imported by {inDeg} file{inDeg === 1 ? "" : "s"}
     </span>
   );
   const imports = (
-    <span className={stacked ? "block truncate" : undefined} style={{ color: "var(--hot)" }}>
-      <LineGlyph color="var(--hot)" dashed={false} />
+    <span className={stacked ? "block truncate" : undefined} style={{ color: "var(--link-out)" }}>
+      <LineGlyph color="var(--link-out)" dashed={false} />
       imports {outDeg}
     </span>
   );

@@ -46,7 +46,7 @@ export function TopBar({ catalogue, owner, repo, layer, onLayer }: Props) {
       className="flex flex-wrap items-center gap-2.5 border-b border-[var(--rule)] bg-[var(--chrome)] px-3 py-2 text-[var(--on)]"
       style={{ paddingTop: "calc(8px + env(safe-area-inset-top, 0px))" }}
     >
-      {!narrow && <span className="font-sans text-[15px] font-semibold">tolmap</span>}
+      {!narrow && <span className="text-row">tolmap</span>}
       {/* Bug (reported 09-21, fixed 09-24): on a phone, the fixed-width
           theme toggle and layer-cycle button left this <select> squeezed to
           a width that clipped its text mid-word ("langgenius/d") with no
@@ -69,7 +69,7 @@ export function TopBar({ catalogue, owner, repo, layer, onLayer }: Props) {
           const [o, r] = e.target.value.split("/");
           navigate({ to: "/$owner/$repo", params: { owner: o, repo: r }, search: { geo: "r", layer: "d" } });
         }}
-        className={`overflow-hidden rounded-md border border-[var(--rule)] bg-[var(--chrome2)] px-2 py-1.5 text-[11.5px] text-ellipsis whitespace-nowrap text-[var(--on)] ${narrow ? "min-w-[84px] flex-1 py-1.5 text-xs" : ""}`}
+        className={`overflow-hidden rounded-md border border-[var(--rule)] bg-[var(--chrome2)] px-2 py-1.5 font-mono text-ellipsis whitespace-nowrap text-[var(--on)] ${narrow ? "min-w-[84px] flex-1 py-1.5 text-body" : "text-meta"}`}
       >
         {withCurrent.map((m) => (
           <option key={m.slug} value={m.slug}>

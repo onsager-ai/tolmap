@@ -1,6 +1,6 @@
 import type { MapDocument } from "@/types";
 import type { Layer } from "@/map/constants";
-import { districtClass } from "@/map/geometry";
+import { districtClass, RAMP_STOPS } from "@/map/geometry";
 import { summarizeReferenceCoverage } from "@/map/referenceCoverage";
 import { ReferenceCoverageIndicator } from "@/components/ReferenceCoverageIndicator";
 
@@ -42,7 +42,7 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
   const referenceCoverage = summarizeReferenceCoverage(doc.coverage);
   const hasReferenceGraph = doc.coverage?.references != null;
   return (
-    <div className={`pointer-events-none absolute bottom-2.5 left-2.5 max-w-[min(440px,calc(100%-22px))] rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] px-2.5 py-2 text-[9.5px] leading-relaxed text-[var(--dim)] max-[820px]:bottom-[calc(112px+env(safe-area-inset-bottom,0px))] max-[820px]:z-20 max-[820px]:border-0 max-[820px]:bg-transparent max-[820px]:p-0 ${layer === "p" ? "min-[821px]:left-[225px]" : ""}`}>
+    <div className={`pointer-events-none absolute bottom-2.5 left-2.5 max-w-[min(440px,calc(100%-22px))] rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] px-2.5 py-2 text-meta text-[var(--dim)] max-[820px]:bottom-[calc(112px+env(safe-area-inset-bottom,0px))] max-[820px]:z-20 max-[820px]:border-0 max-[820px]:bg-transparent max-[820px]:p-0 ${layer === "p" ? "min-[821px]:left-[225px]" : ""}`}>
       {layer !== "p" && <span className="max-[820px]:hidden">
       {layer === "d" ? (
         <>
@@ -61,9 +61,9 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
           {layer === "c" ? "Commits touching each file" : "Branch points per file"}
           <span
             className="mx-1.5 inline-block h-[7px] w-24 rounded-sm align-middle"
-            style={{ background: "linear-gradient(90deg,#3E6E88,#B8B06A,#C0472F)" }}
+            style={{ background: `linear-gradient(90deg,${RAMP_STOPS.join(",")})` }}
           />
-          <b className="font-medium text-[var(--on)]">{layer === "c" ? `1 → ${maxCh}` : `0 → ${maxCx}`}</b>
+          <b className="font-mono font-medium text-[var(--on)]">{layer === "c" ? `1 → ${maxCh}` : `0 → ${maxCx}`}</b>
         </>
       )}
       </span>}
@@ -77,7 +77,7 @@ export function FooterStats({ doc, layer, maxCh, maxCx, unconnectedCount, onOpen
           to its own content rather than the full row. */}
       {layer === "d" && referenceCoverage && <ReferenceCoverageIndicator summary={referenceCoverage} />}
       {unconnectedCount > 0 && <button type="button" data-unconnected-chip
-        className={`pointer-events-auto mt-1 block w-fit rounded border border-[var(--rule)] bg-[var(--chrome)] px-2 py-1 text-[10px] text-[var(--on)] hover:text-[var(--hot)] max-[820px]:mt-0 ${mobileHidden ? "max-[820px]:hidden" : ""}`}
+        className={`pointer-events-auto mt-1 block w-fit rounded border border-[var(--rule)] bg-[var(--chrome)] px-2 py-1 text-meta text-[var(--on)] hover:text-[var(--accent)] max-[820px]:mt-0 ${mobileHidden ? "max-[820px]:hidden" : ""}`}
         onClick={onOpenUnconnected}>{unconnectedCount} unconnected files</button>}
     </div>
   );

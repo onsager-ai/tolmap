@@ -50,9 +50,12 @@ import {
 import { buildFootprintIndex, districtMedianFootprintArea, hitTestFootprint, type FootprintIndex } from "./footprints";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
 import { computeHubs, hubRingRadius, type HubSet } from "./hubs";
+import { archivoWidth, MAP_LABEL_FONT } from "./labelMetrics";
 import { assignNeighbourhoodShades, neighbourhoodCentroids } from "./neighbourhoods";
 import type { FolderLabel, PackageGrouping } from "./packageLayout";
+import { GestureRecognizer, QUIET_AFTER_GESTURE_MS, type GestureEvent, type GestureEventType, type GestureIntent } from "./gestures";
 import { pinchTransform, type PinchAnchor } from "./pinch";
+import { RenderGate } from "./renderGate";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
 import { buildRoadGeom, buildRoadPlan, districtRadius, type RoadPlan } from "./roads";
 import { aggregateCrossDistrictFlows, aggregateIntraDistrictFlows, selectCrossDistrictPairs, selectStreetPairs, type CrossFlow, type StreetFlow } from "./streets";
@@ -93,6 +96,13 @@ declare global {
 }
 
 const NS = "http://www.w3.org/2000/svg";
+// docs/UX.md §8.1: the smallest size the map's Archivo labels (district and
+// neighbourhood names and their subtitles) are drawn at.
+const MIN_LABEL_PX = 12;
+// A district's second line sits this far below its name's baseline: one
+// MIN_LABEL_PX line (box height 1.25 x 12 = 15 px) plus 1 px, so its
+// collision box never overlaps the name's.
+const SUBTITLE_OFFSET_PX = 16;
 function el<K extends keyof SVGElementTagNameMap>(
   name: K,
   attrs: Record<string, string | number> = {},
@@ -322,17 +332,25 @@ export class MapRenderer {
   private VW = 1000;
   private VH = 700;
 
-  private dragging = false;
-  private lx = 0;
-  private ly = 0;
-  private moved = 0;
-  private pts = new Map<number, [number, number]>();
-  // tx0/ty0 (PinchAnchor) are the pinch's own start tx/ty, captured once in
-  // pointerDown -- see pinch.ts's doc comment for why pointerMove must read
-  // these instead of the live this.tx/this.ty.
-  private pinch: (PinchAnchor & { d: number }) | null = null;
-  private lastTap = 0;
-  private tapped = false;
+  // docs/UX.md §7.1: every tap/pan/pinch/double-tap decision is made by
+  // gestures.ts's GestureRecognizer, fed from the pointer listeners below;
+  // this class only applies the intents it returns (applyGestureIntents).
+  private gestures = new GestureRecognizer();
+  // tx0/ty0 (PinchAnchor) are the pinch's own start tx/ty, captured once on
+  // the pinch-start intent -- see pinch.ts's doc comment for why a pinch
+  // frame must read these instead of the live this.tx/this.ty.
+  private pinch: PinchAnchor | null = null;
+  // Set by a "tap" intent and consumed by the very next click: only a click
+  // that follows a recognised single tap reaches selection. Replaces the old
+  // `moved >= threshold` / `tapped` checks in click(), which read state the
+  // pointer handlers had left behind rather than a verdict.
+  private clickAllowed = false;
+  // docs/UX.md §7.1 rule 4: React's render() calls are held while a pointer
+  // is down and for QUIET_AFTER_GESTURE_MS after the last pointerup (or until
+  // that sequence's click has been handled, whichever is first -- see
+  // click()). renderGate.ts has the why.
+  private renderGate = new RenderGate<MapRenderState>();
+  private quietTimer: ReturnType<typeof setTimeout> | null = null;
   private animId: number | null = null;
 
   // Issue #51: transform-during-gesture state -- what preview()/
@@ -352,7 +370,7 @@ export class MapRenderer {
   // the PR description). SETTLE_MS=140: short enough that a pause mid-drag
   // reads as "the map is live," not "the map is stuck," long enough that a
   // 40-step scripted drag (one pointermove roughly every frame) never fires
-  // it between two moves -- and see pointerDown/endPointer for why it also
+  // it between two moves -- and see pointerDown and the "end" intent for why it also
   // has to be short enough that an unrelated LATER tap's own click always
   // beats a timer re-armed from it.
   //
@@ -401,35 +419,26 @@ export class MapRenderer {
   private static readonly ISLAND_FADE_VISIBLE_EPS = 0.05;
   private static readonly ISLAND_STROKE_MIN_BASE = 0.22;
 
-  // Issue #82 A1 ("drag vs. click"): pointerMove used 5px (Manhattan, i.e.
-  // |dx|+|dy|) to decide a gesture was still a tap, and click() used a
-  // DIFFERENT 6px Manhattan bound to decide whether to swallow the
-  // synthetic click a real drag generates on release -- two unnamed
-  // literals close enough that nobody had noticed they disagreed. One named
-  // constant, used by both, closes that gap for good. 4px, Euclidean
-  // (Math.hypot of the per-move deltas, summed over the gesture -- not the
-  // old Math.abs+Math.abs Manhattan sum, and not straight-line displacement
-  // from pointerdown either: summing keeps the "once you've moved this
-  // much, it's a drag for the rest of the gesture" stickiness the old code
-  // had, which straight-line displacement would lose if a drag ever
-  // doubled back near its start). Small enough that an intentional tap
-  // (real touch input always jitters a pixel or two) is never swallowed;
-  // large enough that a real drag can't end close enough to its start to
-  // sneak under the bar and select whatever the pointer happens to be over
-  // when it lifts.
-  private static readonly DRAG_THRESHOLD_PX = 4;
+  // Issue #82 A1 ("drag vs. click") unified the tap/drag threshold at 4 px of
+  // cumulative Euclidean path, shared by pointerMove and click(). docs/UX.md
+  // §7.1 rule 1 replaced that: cumulative path turned ordinary finger jitter
+  // into drags. The threshold is now straight-line distance from pointerdown
+  // (10 px touch, 4 px mouse) and lives in gestures.ts with its tests; click()
+  // no longer measures anything itself (see clickAllowed).
 
   private readonly TOUCH = matchMedia("(pointer: coarse)").matches;
   private readonly onPointerDown = (e: PointerEvent) => this.pointerDown(e);
   private readonly onPointerMove = (e: PointerEvent) => this.pointerMove(e);
-  private readonly onPointerUp = (e: PointerEvent) => this.endPointer(e);
+  private readonly onPointerUp = (e: PointerEvent) => this.pointerUp(e);
+  private readonly onPointerCancel = (e: PointerEvent) => this.pointerCancel(e);
+  private readonly onLostCapture = (e: PointerEvent) => this.lostCapture(e);
   private readonly onWheel = (e: WheelEvent) => this.wheel(e);
   private readonly onClick = (e: MouseEvent) => this.click(e);
 
   // ---------- desktop hover (readable-overview PR, scope item 4) ----------
   // Fine-pointer only: matched once at construction, the same pattern as
   // TOUCH above, so a touch profile never registers these listeners at all
-  // -- new listeners, not a rewire of pointerDown/pointerMove/endPointer/
+  // -- new listeners, not a rewire of pointerDown/pointerMove/pointerUp/
   // click, which is what keeps every touch-only bug fix documented at the
   // bottom of this file completely unchanged.
   private readonly HOVER = matchMedia("(hover: hover) and (pointer: fine)").matches;
@@ -478,7 +487,8 @@ export class MapRenderer {
     svg.addEventListener("pointerdown", this.onPointerDown);
     svg.addEventListener("pointermove", this.onPointerMove);
     svg.addEventListener("pointerup", this.onPointerUp);
-    svg.addEventListener("pointercancel", this.onPointerUp);
+    svg.addEventListener("pointercancel", this.onPointerCancel);
+    svg.addEventListener("lostpointercapture", this.onLostCapture);
     svg.addEventListener("wheel", this.onWheel, { passive: false });
     svg.addEventListener("click", this.onClick);
     if (this.HOVER) {
@@ -490,10 +500,13 @@ export class MapRenderer {
   destroy() {
     if (this.animId != null) cancelAnimationFrame(this.animId);
     this.cancelPendingGestureWork();
+    if (this.quietTimer != null) clearTimeout(this.quietTimer);
+    this.quietTimer = null;
     this.svg.removeEventListener("pointerdown", this.onPointerDown);
     this.svg.removeEventListener("pointermove", this.onPointerMove);
     this.svg.removeEventListener("pointerup", this.onPointerUp);
-    this.svg.removeEventListener("pointercancel", this.onPointerUp);
+    this.svg.removeEventListener("pointercancel", this.onPointerCancel);
+    this.svg.removeEventListener("lostpointercapture", this.onLostCapture);
     this.svg.removeEventListener("wheel", this.onWheel);
     this.svg.removeEventListener("click", this.onClick);
     if (this.HOVER) {
@@ -511,6 +524,10 @@ export class MapRenderer {
    * and is called from React (MapView), not here — the renderer only draws
    * whatever Route object it's handed in render(state). */
   loadDocument(doc: MapDocument) {
+    // A render() still held from the previous document must never be
+    // applied over this one (see renderGate.ts); fit(false, state) paints
+    // the new document's state directly.
+    this.renderGate.drop();
     this.maxLoc = Math.max(1, ...doc.N.map((r) => r[3]));
     this.maxCh = Math.max(1, ...doc.N.map((r) => r[5]));
     this.maxCx = Math.max(1, ...doc.N.map((r) => r[4]));
@@ -804,6 +821,13 @@ export class MapRenderer {
   }
 
   render(state: MapRenderState) {
+    // docs/UX.md §7.1 rule 4: held while a gesture (or its quiet window) is
+    // in progress, applied once when it ends -- see renderGate.ts.
+    if (!this.renderGate.offer(state)) return;
+    this.applyRender(state);
+  }
+
+  private applyRender(state: MapRenderState) {
     this.state = state;
     // Issue #51: a real state change (selection, layer, geo, a route...)
     // always gets a full paint(), never a transform -- preview() only ever
@@ -880,7 +904,10 @@ export class MapRenderer {
    * current `this.state` and papered over it. Every other caller passes no
    * `state` and gets exactly today's behaviour. */
   fit(anim: boolean, state?: MapRenderState) {
-    if (state) this.state = state;
+    if (state) {
+      this.state = state;
+      this.renderGate.drop();
+    }
     const b = this.frameBounds();
     const [left, , right] = fitViewport(this.VW, this.VH);
     const s = this.fitScale();
@@ -1014,8 +1041,14 @@ export class MapRenderer {
     return Math.max(lo, Math.min(this.fitScale() * 40, v));
   }
   zoomBy(f: number) {
+    this.zoomAbout(f, this.VW / 2, this.VH / 2);
+  }
+  /** Zooms by `f`, keeping the SVG-space point (x, y) fixed on screen: the
+   * zoom buttons use the viewport centre, a double-tap its own tap point
+   * (docs/UX.md §7.1 rule 2; the old double-tap zoomed about the centre). */
+  private zoomAbout(f: number, x: number, y: number) {
     const nk = this.clampK(this.k * f);
-    this.glide(nk, this.VW / 2 - (this.VW / 2 - this.tx) * (nk / this.k), this.VH / 2 - (this.VH / 2 - this.ty) * (nk / this.k), 240);
+    this.glide(nk, x - (x - this.tx) * (nk / this.k), y - (y - this.ty) * (nk / this.k), 240);
   }
 
   private px(i: number): [number, number] {
@@ -1580,8 +1613,9 @@ export class MapRenderer {
     // (getSelLinks -> map/graph.ts's rankedNeighbours, LINK_PREVIEW_MAX);
     // the dim/highlight set above is NOT capped -- only which lines get
     // DRAWN is. Direction shown by colour AND dash (never colour alone):
-    // solid var(--hot) for what `sel` imports, dashed var(--cold) for what
-    // imports `sel`.
+    // solid var(--link-out) for what `sel` imports, dashed var(--link-in)
+    // for what imports `sel` (docs/UX.md §8.3; these were --hot/--cold). The
+    // file card's LinkLegend reads the same two tokens.
     if (selNeighbours && sel != null) {
       const { shown } = this.getSelLinks(sel);
       const o = this.anchor(sel);
@@ -1595,7 +1629,7 @@ export class MapRenderer {
             y1: oy.toFixed(1),
             x2: this.X(p[0]).toFixed(1),
             y2: this.Y(p[1]).toFixed(1),
-            stroke: dir === "out" ? "var(--hot)" : "var(--cold)",
+            stroke: dir === "out" ? "var(--link-out)" : "var(--link-in)",
             "stroke-width": 1.4,
             "stroke-opacity": 0.55,
             "stroke-dasharray": dir === "in" ? "4 3" : "none",
@@ -1603,7 +1637,7 @@ export class MapRenderer {
           }),
         );
       }
-      for (const { j, dir } of shown) this.ring(g, j, dir === "out" ? "var(--hot)" : "var(--cold)", fs);
+      for (const { j, dir } of shown) this.ring(g, j, dir === "out" ? "var(--link-out)" : "var(--link-in)", fs);
     }
 
     // A5 (district labels always on, issue #82): district names are placed
@@ -1762,16 +1796,21 @@ export class MapRenderer {
    * list, the SMALLER of two colliding district names is always the one
    * `put()` rejects -- "the smaller district's name is hidden first" (spec).
    * Otherwise unchanged from the pre-A5 drawLabels: same +N-files badge,
-   * same island fade/priority, same font-size floor (the existing
-   * `Math.min(.., 10 + zf)` / `Math.min(.., 12 + zf)` formulas never drop
-   * below ~10.5px even at this renderer's loosest zoom-out floor, clampK's
-   * `fitScale()*0.5`, i.e. zf=0.5). */
+   * same island fade/priority. Font and floor changed with docs/UX.md §8.1:
+   * Archivo, measured by labelMetrics.ts, and never under MIN_LABEL_PX (the
+   * phone formula used to read 10.5 px at clampK's loosest zoom-out,
+   * `fitScale()*0.5`, i.e. zf=0.5, and islands 0.75x that). */
   private placeDistrictLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, placed: Array<[number, number, number, number]>) {
     const { doc, geo } = this.state!;
     const hits = (x: number, y: number, w: number, h: number) =>
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
+    // docs/UX.md §8.1: district names and their subtitles are UI text, in
+    // Archivo, and measured with Archivo's own advance widths
+    // (labelMetrics.ts) -- not the old `length * size * 0.62`, which was
+    // IBM Plex Mono's advance and over- or under-reserved a proportional
+    // face depending on the letters.
     const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number) => {
-      const w = txt.length * size * 0.62;
+      const w = archivoWidth(txt, size, weight ?? 400);
       const h = size * 1.25;
       if (hits(x - w / 2, y - h, w, h)) return false;
       placed.push([x - w / 2, y - h, w, h]);
@@ -1782,7 +1821,7 @@ export class MapRenderer {
         "text-anchor": "middle",
         fill: "var(--ink)",
         "fill-opacity": op,
-        "font-family": "IBM Plex Mono, monospace",
+        "font-family": MAP_LABEL_FONT,
         "paint-order": "stroke",
         stroke: "var(--canvas)",
         "stroke-width": 3.2,
@@ -1834,7 +1873,9 @@ export class MapRenderer {
       const x = this.X(c[0]);
       const y = this.Y(c[1]);
       if (x < 0 || x > this.VW || y < 0 || y > this.VH) continue;
-      const size = narrow ? Math.min(13, 10 + zf) : Math.min(17, 12 + zf);
+      // docs/UX.md §8.1: nothing under 12 px. The phone formula used to start
+      // at 10.5 px (zf 0.5) and read 11 px at fit.
+      const size = narrow ? Math.min(13, Math.max(MIN_LABEL_PX, 10 + zf)) : Math.min(17, Math.max(MIN_LABEL_PX, 12 + zf));
       // Islands read as minor: smaller, dimmer, lighter weight, and no "N
       // files" subtitle -- with up to hundreds of them on a real repo, a
       // second line per label would be its own kind of clutter even after
@@ -1843,7 +1884,9 @@ export class MapRenderer {
       // the district name its own line above that centre once zoomed in;
       // the dots and the folder's measured median stay exactly where they are.
       const labelY = !isIsland && zf > 1 ? y - 32 : y;
-      const labelPlaced = put(x, labelY, doc.names[d], isIsland ? size * 0.75 : size, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
+      // Islands stay "minor" by weight and opacity; their old 0.75x size put
+      // them under 12 px, so it is floored like every other label.
+      const labelPlaced = put(x, labelY, doc.names[d], isIsland ? Math.max(MIN_LABEL_PX, size * 0.75) : size, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
       // Issue's scope item 2: a "+N files" badge once #49's budget is
       // actually hiding members of this district AND the name label itself
       // found room -- a floating count with no name above it would read
@@ -1864,13 +1907,16 @@ export class MapRenderer {
       // footprint), so there is never a hidden count to report there.
       const hidden = labelPlaced && !this.hasFootprints ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
       if (hidden > 0) {
-        put(x, labelY + (isIsland ? 10 : 13), `+${hidden} files`, isIsland ? 8.5 : 9.5, (isIsland ? 0.55 : 0.7) * iFade, 600, +d);
+        // 12 px (was 8.5/9.5) and a 16 px line below the name (was 10/13):
+        // a 12 px line's box is 15 px tall, so the old offsets would have put
+        // its box inside the name's and hits() would always reject it.
+        put(x, labelY + SUBTITLE_OFFSET_PX, `+${hidden} files`, MIN_LABEL_PX, (isIsland ? 0.55 : 0.7) * iFade, 600, +d);
         // Issue #82 A1 scope item 6: the "+N files" badge above already
         // passed `+d` as `dk`; the plain "N files" subtitle below (shown
         // instead, once nothing is hidden) had not, and so had no data-k at
         // all -- the exact bug this issue's scope item 6 calls out.
       } else if (zf < 1.8 && !narrow && !isIsland) {
-        put(x, labelY + 13, doc.districts[d].size + " files", 9.5, 0.45, undefined, +d);
+        put(x, labelY + SUBTITLE_OFFSET_PX, doc.districts[d].size + " files", MIN_LABEL_PX, 0.45, undefined, +d);
       }
     }
   }
@@ -2577,11 +2623,11 @@ export class MapRenderer {
   private placeNeighbourhoodLabels(g: SVGGElement, placed: Array<[number, number, number, number]>, selD: number | null) {
     const { doc } = this.state!;
     if (!doc.neighbourhoods) return;
-    const narrow = this.narrow();
     const hits = (x: number, y: number, w: number, h: number) =>
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
+    // Archivo, measured with its own widths -- see placeDistrictLabels.
     const put = (x: number, y: number, txt: string, size: number, dk: string) => {
-      const w = txt.length * size * 0.62;
+      const w = archivoWidth(txt, size, 400);
       const h = size * 1.25;
       if (hits(x - w / 2, y - h, w, h)) return;
       placed.push([x - w / 2, y - h, w, h]);
@@ -2592,7 +2638,7 @@ export class MapRenderer {
         "text-anchor": "middle",
         fill: "var(--ink)",
         "fill-opacity": 0.85,
-        "font-family": "IBM Plex Mono, monospace",
+        "font-family": MAP_LABEL_FONT,
         "paint-order": "stroke",
         stroke: "var(--canvas)",
         "stroke-width": 3,
@@ -2625,7 +2671,8 @@ export class MapRenderer {
       const x = this.X(c[0]);
       const y = this.Y(c[1]);
       if (x < 0 || x > this.VW || y < 0 || y > this.VH) continue;
-      put(x, y, n.label, narrow ? 10 : 11, id);
+      // docs/UX.md §8.1: 12 px on both profiles (was 10 phone / 11 desktop).
+      put(x, y, n.label, MIN_LABEL_PX, id);
     }
   }
 
@@ -3086,7 +3133,7 @@ export class MapRenderer {
         el("path", {
           d: `M${meScreen[0].toFixed(1)} ${meScreen[1].toFixed(1)} L${b[0].toFixed(1)} ${b[1].toFixed(1)}`,
           fill: "none",
-          stroke: isOut ? "var(--hot)" : "var(--cold)",
+          stroke: isOut ? "var(--link-out)" : "var(--link-in)",
           "stroke-width": w,
           "stroke-dasharray": isOut ? "none" : "5 3",
           "pointer-events": "none",
@@ -3104,7 +3151,7 @@ export class MapRenderer {
           cx: b[0].toFixed(1),
           cy: b[1].toFixed(1),
           r: key.startsWith("f:") ? 3.4 : 2.6,
-          fill: isOut ? "var(--hot)" : "var(--cold)",
+          fill: isOut ? "var(--link-out)" : "var(--link-in)",
           "pointer-events": "none",
           "data-symref-dot": key,
         }),
@@ -3113,7 +3160,7 @@ export class MapRenderer {
     for (const [key, count] of topN(out, 120)) line(key, count, true);
     for (const [key, count] of topN(inn, 120)) line(key, count, false);
     // #103 build item 1: extends/implements/overrides draw separately from
-    // the call lines above -- neutral ink, never the hot/cold direction
+    // the call lines above -- neutral ink, never the link-out/link-in direction
     // colour, with their own UML-ish styling instead of a count-scaled
     // width (rollInheritanceReferences already dropped anything that isn't
     // one of these three kinds, possible_implementation included).
@@ -3316,7 +3363,8 @@ export class MapRenderer {
 
   /** `color` defaults to the selection ring's own `var(--hot)`; the
    * readable-overview PR's selection-links feature also calls this per
-   * neighbour with `var(--hot)` (imports) or `var(--cold)` (imported-by),
+   * neighbour with `var(--link-out)` (imports) or `var(--link-in)`
+   * (imported-by),
    * one ring style shared rather than a second copy of this geometry. `fs`
    * is paint()'s own hoisted fitScale() (its `fs` local) -- passed through
    * rather than re-read here, so a selection with many neighbours doesn't
@@ -3646,12 +3694,12 @@ export class MapRenderer {
     // one now could light up the wrong element relative to the cursor.
     // gestureFrame() already clears hover the instant a gesture starts;
     // this guard additionally covers the pointermove that reports the
-    // gesture itself (dragging/pinch true by the time THIS listener runs
-    // in the same dispatch). e.pointerType excludes a touch/pen contact
+    // gesture itself, and a held mouse button before it has moved at all
+    // (gestures.active is true from pointerdown on). e.pointerType excludes a touch/pen contact
     // reaching this HOVER-gated listener at all (defensive: the device-level
     // matchMedia check that gates registering it in the first place already
     // makes this unlikely).
-    if (e.pointerType !== "mouse" || this.dragging || this.pinch || this.svg.classList.contains("previewing")) {
+    if (e.pointerType !== "mouse" || this.gestures.active || this.svg.classList.contains("previewing")) {
       this.clearHover();
       return;
     }
@@ -3926,7 +3974,7 @@ export class MapRenderer {
           y1: oy.toFixed(1),
           x2: this.X(p[0]).toFixed(1),
           y2: this.Y(p[1]).toFixed(1),
-          stroke: dir === "out" ? "var(--hot)" : "var(--ink)",
+          stroke: dir === "out" ? "var(--link-out)" : "var(--ink)",
           "stroke-width": 1,
           "stroke-opacity": 0.4,
           "pointer-events": "none",
@@ -3995,13 +4043,16 @@ export class MapRenderer {
     const r = this.svg.getBoundingClientRect();
     return [((ev.clientX - r.left) / r.width) * this.VW, ((ev.clientY - r.top) / r.height) * this.VH];
   }
-  private mid(): [number, number] {
-    const a = [...this.pts.values()];
-    return [(a[0][0] + a[1][0]) / 2, (a[0][1] + a[1][1]) / 2];
+  private gestureEvent(e: PointerEvent, type: GestureEventType): GestureEvent {
+    return { type, id: e.pointerId, x: e.clientX, y: e.clientY, t: e.timeStamp, pointerType: e.pointerType, isPrimary: e.isPrimary };
   }
-  private dist(): number {
-    const a = [...this.pts.values()];
-    return Math.hypot(a[0][0] - a[1][0], a[0][1] - a[1][1]) || 1;
+
+  private capture(id: number) {
+    try {
+      this.svg.setPointerCapture(id);
+    } catch {
+      /* ignore: pointer already released */
+    }
   }
 
   private pointerDown(e: PointerEvent) {
@@ -4011,105 +4062,165 @@ export class MapRenderer {
     // its pointerup, so a stale timer left ticking from before could
     // otherwise fire in the gap between THIS sequence's own pointerup and
     // its click -- deleting the click's target, Bug fix #2 again with a
-    // timer as the culprit instead of a synchronous redraw. See endPointer()
-    // for the other half: re-arming a fresh one if a real paint is still
-    // owed once this sequence ends.
+    // timer as the culprit instead of a synchronous redraw. See the "end"
+    // intent in applyGestureIntents() for the other half: re-arming a fresh
+    // one if a real paint is still owed once this sequence ends.
     if (this.settleTimer != null) {
       clearTimeout(this.settleTimer);
       this.settleTimer = null;
     }
-    this.pts.set(e.pointerId, this.toSvg(e));
-    if (this.pts.size === 2) {
-      this.dragging = false;
-      this.pinch = { d: this.dist(), k: this.k, m: this.mid(), tx0: this.tx, ty0: this.ty };
-      return;
-    }
+    // Any new pointer voids a click the previous sequence had earned but the
+    // browser never delivered, and a second finger never clicks at all.
+    this.clickAllowed = false;
     // Bug fix #1 (see docs/ARCHITECTURE.md / HANDOFF.md): deliberately NOT
     // capturing the pointer here. A captured pointer retargets the
     // subsequent click to the <svg> element itself, so taps would never
-    // reach the shape under the finger — capture is taken only once a drag
-    // is confirmed, in pointermove below.
-    this.dragging = true;
-    this.moved = 0;
-    [this.lx, this.ly] = this.toSvg(e);
+    // reach the shape under the finger -- capture is taken only on the
+    // "pan" intent's start (a drag is confirmed) or on "pinch-start".
+    this.applyGestureIntents(this.gestures.handle(this.gestureEvent(e, "down")));
+    this.syncRenderHold();
   }
 
   private pointerMove(e: PointerEvent) {
-    if (!this.pts.has(e.pointerId)) return;
-    this.pts.set(e.pointerId, this.toSvg(e));
-    if (this.pts.size === 2 && this.pinch) {
-      const nk = this.clampK(this.pinch.k * (this.dist() / this.pinch.d));
-      const m = this.mid();
-      // pinch.ts's pinchTransform, not the reference's live-tx formula --
-      // see pinch.ts's doc comment for why (it compounds frame over frame).
-      const { tx, ty } = pinchTransform(this.pinch, m, nk);
-      this.tx = tx;
-      this.ty = ty;
-      this.k = nk;
-      // Issue #51: a pinch frame previews (transform) rather than repaints.
-      this.gestureFrame();
-      return;
-    }
-    if (!this.dragging) return;
-    const [x, y] = this.toSvg(e);
-    this.moved += Math.hypot(x - this.lx, y - this.ly);
-    if (this.moved < MapRenderer.DRAG_THRESHOLD_PX) {
-      this.lx = x;
-      this.ly = y;
-      return; // below this it is still a tap
-    }
-    if (!this.svg.classList.contains("dragging")) {
-      this.svg.classList.add("dragging");
-      this.callbacks.onDragStart?.();
-      try {
-        this.svg.setPointerCapture(e.pointerId);
-      } catch {
-        /* ignore: pointer already released */
-      }
-    }
-    this.tx += x - this.lx;
-    this.ty += y - this.ly;
-    this.lx = x;
-    this.ly = y;
-    this.gestureFrame();
+    // Hover moves (mouse, no button) reach here too; nothing is tracked then.
+    if (!this.gestures.active) return;
+    this.applyGestureIntents(this.gestures.handle(this.gestureEvent(e, "move")));
   }
 
-  private endPointer(e: PointerEvent) {
-    this.pts.delete(e.pointerId);
-    if (this.pts.size < 2) this.pinch = null;
-    if (this.pts.size === 0) {
-      this.dragging = false;
-      this.svg.classList.remove("dragging");
-      // Bug fix #2: no draw() call here. Redrawing on pointerup would delete
-      // the very SVG element the upcoming click event is about to be
-      // dispatched to, so the click's `data-k` walk (below) would find
-      // nothing — taps would silently stop selecting anything on touch.
-      //
-      // A settle timer left armed by THIS gesture's own last pointermove is
-      // safe for the same reason: it fires later, on its own setTimeout
-      // callback, and a timer callback cannot preempt the synchronous
-      // pointerup -> click sequence the browser dispatches for this event.
-      // A timer inherited from a PREVIOUS, unrelated gesture is not safe --
-      // touch click dispatch is not guaranteed to land in that same task,
-      // so a stale one could fire in the gap and delete the click's target.
-      // pointerDown() clears any inherited timer the moment a new sequence
-      // starts, closing that window; if this sequence turns out to be a
-      // genuine tap (nothing moved, so no gestureFrame() ever ran to re-arm
-      // one), re-arm it here instead, with a fresh SETTLE_MS -- comfortably
-      // longer than the gap between this tap's own pointerup and its click,
-      // so it can't race that click either, and the map still ends up
-      // painting for real whatever preview transform (this gesture's own,
-      // or an inherited one) is still outstanding.
-      if (this.rootG?.hasAttribute("transform")) this.scheduleSettle();
-      if (this.moved < MapRenderer.DRAG_THRESHOLD_PX && this.TOUCH) {
-        const now = performance.now();
-        if (now - this.lastTap < 300) {
-          this.zoomBy(2);
-          this.lastTap = 0;
-          this.tapped = true;
-        } else this.lastTap = now;
+  private pointerUp(e: PointerEvent) {
+    this.applyGestureIntents(this.gestures.handle(this.gestureEvent(e, "up")));
+    this.syncRenderHold();
+  }
+
+  private pointerCancel(e: PointerEvent) {
+    this.applyGestureIntents(this.gestures.handle(this.gestureEvent(e, "cancel")));
+    this.syncRenderHold();
+  }
+
+  /** docs/UX.md §7.1 rule 3: losing capture resets the gesture. Only the
+   * <svg>'s OWN capture counts (`e.target === this.svg`): lostpointercapture
+   * bubbles, and a touch pointer is implicitly captured to the element it
+   * went down on, so taking capture onto the <svg> for a pan or a pinch
+   * fires lostpointercapture at that child first -- treating that as a
+   * reset would cancel every pan and pinch the moment it started. The one
+   * the <svg> gets right after a captured pointer's own pointerup is a
+   * no-op in the recognizer (that pointer is no longer tracked). */
+  private lostCapture(e: PointerEvent) {
+    if (e.target !== this.svg) return;
+    this.applyGestureIntents(this.gestures.handle(this.gestureEvent(e, "lostcapture")));
+    this.syncRenderHold();
+  }
+
+  private applyGestureIntents(intents: GestureIntent[]) {
+    for (const it of intents) {
+      switch (it.kind) {
+        case "pan": {
+          if (it.start) {
+            this.svg.classList.add("dragging");
+            this.callbacks.onDragStart?.();
+            this.capture(it.id);
+          }
+          // Intents are in CSS pixels; tx/ty are in viewBox units, which
+          // differ once the box is narrower than resize()'s 360 px floor.
+          const r = this.svg.getBoundingClientRect();
+          this.tx += it.dx * (this.VW / (r.width || 1));
+          this.ty += it.dy * (this.VH / (r.height || 1));
+          this.gestureFrame();
+          break;
+        }
+        case "pinch-start": {
+          // docs/UX.md §7.1 rule 3: both pinch pointers captured on the
+          // <svg> itself, which paint() never removes (it only replaces the
+          // svg's children) -- so a drift repaint mid-pinch (gestureFrame's
+          // driftExceeded branch) cannot orphan either pointer.
+          for (const id of it.ids) this.capture(id);
+          this.pinch = { m: this.toSvg({ clientX: it.mid[0], clientY: it.mid[1] }), k: this.k, tx0: this.tx, ty0: this.ty };
+          break;
+        }
+        case "pinch": {
+          if (!this.pinch) break;
+          const nk = this.clampK(this.pinch.k * it.scale);
+          const m = this.toSvg({ clientX: it.mid[0], clientY: it.mid[1] });
+          // pinch.ts's pinchTransform, not the reference's live-tx formula --
+          // see pinch.ts's doc comment for why (it compounds frame over frame).
+          const { tx, ty } = pinchTransform(this.pinch, m, nk);
+          this.tx = tx;
+          this.ty = ty;
+          this.k = nk;
+          // Issue #51: a pinch frame previews (transform) rather than repaints.
+          this.gestureFrame();
+          break;
+        }
+        case "tap":
+          this.clickAllowed = true;
+          break;
+        case "double-tap": {
+          // The first tap's click already selected; this one's click is
+          // swallowed so it neither undoes nor steps back that selection.
+          this.clickAllowed = false;
+          const [x, y] = this.toSvg({ clientX: it.x, clientY: it.y });
+          this.zoomAbout(2, x, y);
+          break;
+        }
+        case "cancel":
+        case "end":
+          this.pinch = null;
+          this.svg.classList.remove("dragging");
+          // Bug fix #2: no draw() call here. Redrawing on pointerup would
+          // delete the very SVG element the upcoming click event is about to
+          // be dispatched to, so the click's `data-k` walk (below) would find
+          // nothing -- taps would silently stop selecting anything on touch.
+          //
+          // A settle timer left armed by THIS gesture's own last pointermove
+          // is safe for the same reason: it fires later, on its own
+          // setTimeout callback, and a timer callback cannot preempt the
+          // synchronous pointerup -> click sequence the browser dispatches
+          // for this event. A timer inherited from a PREVIOUS, unrelated
+          // gesture is not safe -- touch click dispatch is not guaranteed to
+          // land in that same task, so a stale one could fire in the gap and
+          // delete the click's target. pointerDown() clears any inherited
+          // timer the moment a new sequence starts, closing that window; if
+          // this sequence turns out to be a genuine tap (nothing moved, so no
+          // gestureFrame() ever ran to re-arm one), re-arm it here instead,
+          // with a fresh SETTLE_MS -- comfortably longer than the gap between
+          // this tap's own pointerup and its click, so it can't race that
+          // click either, and the map still ends up painting for real
+          // whatever preview transform (this gesture's own, or an inherited
+          // one) is still outstanding.
+          if (this.rootG?.hasAttribute("transform")) this.scheduleSettle();
+          break;
       }
     }
+  }
+
+  /** docs/UX.md §7.1 rule 4: holds React's render() calls while any pointer
+   * is down; once the last one is up, keeps holding for
+   * QUIET_AFTER_GESTURE_MS, then applies the newest held state once.
+   * click() releases early, right after it has handled the sequence's click:
+   * the hold exists to protect the pointerup -> click gap, and once the
+   * click has been dispatched there is nothing left to protect -- while
+   * waiting out the full window would delay every tap's selection paint by
+   * a third of a second. */
+  private syncRenderHold() {
+    if (this.gestures.active) {
+      if (this.quietTimer != null) clearTimeout(this.quietTimer);
+      this.quietTimer = null;
+      this.renderGate.hold();
+      return;
+    }
+    if (this.renderGate.held && this.quietTimer == null) {
+      this.quietTimer = setTimeout(() => {
+        this.quietTimer = null;
+        this.releaseRenders();
+      }, QUIET_AFTER_GESTURE_MS);
+    }
+  }
+
+  private releaseRenders() {
+    if (this.quietTimer != null) clearTimeout(this.quietTimer);
+    this.quietTimer = null;
+    const held = this.renderGate.release();
+    if (held) this.applyRender(held);
   }
 
   // Issue #82 A1 scope item 7 (trackpad, noted rather than changed): a
@@ -4191,11 +4302,20 @@ export class MapRenderer {
   }
 
   private click(e: MouseEvent) {
-    if (this.moved >= MapRenderer.DRAG_THRESHOLD_PX) return; // that was a drag
-    if (this.tapped) {
-      this.tapped = false;
-      return; // that was a double-tap zoom
-    }
+    // Only the click that follows a recognised single tap selects: not the
+    // one a drag, a pinch, a long press or a cancelled sequence ends with,
+    // and not a double-tap's second click (gestures.ts decides; see
+    // clickAllowed). Consumed here, so it can never leak to a later click.
+    const allowed = this.clickAllowed;
+    this.clickAllowed = false;
+    if (allowed) this.handleTap(e);
+    // The sequence's click has been dispatched: release React renders held
+    // since its pointerdown (see syncRenderHold) rather than waiting out the
+    // rest of the quiet window.
+    if (!this.gestures.active) this.releaseRenders();
+  }
+
+  private handleTap(e: MouseEvent) {
     const kk = this.resolveKey(e.target as Element, e.clientX, e.clientY);
     if (!kk) {
       // Issue #82 A1 scope item 2: an empty tap no longer clears the whole
@@ -4268,7 +4388,9 @@ export class MapRenderer {
    * assert a single tap on a fresh page selected a file directly; each now
    * performs the district tap first (or asserts it) before the file tap. */
   private selectFileTwoStep(i: number): void {
-    const state = this.state;
+    // The newest state React asked for, even if its paint is still held
+    // (renderGate): the selection it carries is the one the user sees next.
+    const state = this.renderGate.latest ?? this.state;
     if (state && this.hasFootprints) {
       const d = D_(state.doc, i);
       const currentD = state.selD ?? (state.sel != null ? D_(state.doc, state.sel) : null);

@@ -68,20 +68,20 @@ export function SubmitRepoForm() {
           placeholder="owner/name or https://github.com/owner/name"
           aria-label="Repository to map"
           disabled={disabled || submitting}
-          className="flex-1"
+          className="flex-1 font-mono"
         />
         <Button type="submit" disabled={disabled || submitting || value.trim().length === 0}>
           {submitting ? "submitting…" : "map it"}
         </Button>
       </div>
       {disabled && (
-        <p className="text-[11px] text-[var(--dim)]">
+        <p className="text-meta text-[var(--dim)]">
           the indexing service isn't reachable right now — browsing the bundled catalogue below still works.
         </p>
       )}
-      {validationError && <p className="text-[11px] text-[var(--hot)]">{validationError}</p>}
+      {validationError && <p className="text-meta text-[var(--link-out)]">{validationError}</p>}
       {submitError && (
-        <p className={`text-[11px] ${submitError.tooLarge ? "text-[#8A6B1C]" : "text-[var(--hot)]"}`}>
+        <p className={`text-meta ${submitError.tooLarge ? "text-[var(--warn)]" : "text-[var(--link-out)]"}`}>
           {submitError.tooLarge ? "too large for the hosted index: " : ""}
           {submitError.message}
         </p>
