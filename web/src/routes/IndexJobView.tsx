@@ -54,6 +54,15 @@ function ChevronLeft() {
   );
 }
 
+/** A disclosure's state, turned by its `details` (a `group`) opening. */
+function Chevron() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" {...ICON} strokeWidth={1.8} aria-hidden className="flex-none text-[var(--dim)] transition-transform group-open:rotate-180">
+      <path d="m4 6 4 4 4-4" />
+    </svg>
+  );
+}
+
 function CopyIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18" {...ICON} strokeWidth={1.6} aria-hidden>
@@ -235,15 +244,18 @@ function TechnicalDetails({ job, phases, open, card }: { job: JobSnapshot; phase
     <details
       open={open}
       data-tech-details
-      className={card ? "rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)]" : "border-t border-[var(--rule)]"}
+      className={`group ${card ? "rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)]" : "border-t border-[var(--rule)]"}`}
     >
       <summary className={`flex min-h-11 cursor-pointer select-none items-center justify-between gap-3 ${card ? "border-b border-[var(--rule)] px-5 py-3" : "py-3"}`}>
         <span className="text-row">Technical details</span>
-        {position && (
-          <span className="font-mono text-meta text-[var(--dim)]" data-stage-position>
-            stage {position.index} of {position.count}
-          </span>
-        )}
+        <span className="flex items-center gap-2.5">
+          {position && (
+            <span className="font-mono text-meta text-[var(--dim)]" data-stage-position>
+              stage {position.index} of {position.count}
+            </span>
+          )}
+          <Chevron />
+        </span>
       </summary>
       <div className={card ? "px-5 py-4" : "pb-4"}>
         <p className="mb-3 break-words font-mono text-meta text-[var(--dim)]" data-raw-stage>
@@ -380,7 +392,15 @@ function CancelArea({ job, queued }: { job: JobSnapshot; queued: boolean }) {
   );
 }
 
-function ProgressPage({ job, narrow }: { job: JobSnapshot; narrow: boolean }) {
+function ProgressPage({
+  job,
+  seen,
+  narrow,
+}: {
+  job: JobSnapshot;
+  seen: Partial<Record<StageId, ProgressValue>>;
+  narrow: boolean;
+}) {
   const queued = job.status === "queued";
   const now = useTick(true);
   // The tick at which the snapshot on screen arrived, so the elapsed time
@@ -389,16 +409,8 @@ function ProgressPage({ job, narrow }: { job: JobSnapshot; narrow: boolean }) {
   if (received.job !== job) setReceived({ job, at: now });
   const receivedAt = received.job === job ? received.at : now;
   const phases = useMemo(() => summarisePhases(job), [job]);
-  // §6.3: the snapshot carries only the running stage's progress, so the
-  // facts found so far come from the last value seen for each stage (state
-  // adjusted while rendering, as each new snapshot arrives).
-  const [seen, setSeen] = useState<Partial<Record<StageId, ProgressValue>>>({});
-  const [seenFrom, setSeenFrom] = useState<JobSnapshot | null>(null);
-  if (seenFrom !== job) {
-    setSeenFrom(job);
-    const progress = job.progress;
-    if (progress) setSeen((prev) => ({ ...prev, [progress.stage]: progress }));
-  }
+  // §6.3: from the last progress value seen for each stage
+  // (useJobProgress keeps them, per snapshot received).
   const found = useMemo(() => foundSoFar(seen), [seen]);
 
   const elapsedS = job.elapsed_s + Math.max(0, (now - receivedAt) / 1000);
@@ -602,8 +614,11 @@ function FailurePage({ job, slug, narrow }: { job: JobSnapshot; slug: string | u
         ))}
       </div>
       {job.error && (
-        <details open className="mt-6 overflow-hidden rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)]" data-job-failure-evidence>
-          <summary className="flex min-h-12 cursor-pointer select-none items-center px-4 text-row">What tolmap saw</summary>
+        <details open className="group mt-6 overflow-hidden rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)]" data-job-failure-evidence>
+          <summary className="flex min-h-12 cursor-pointer select-none items-center justify-between gap-3 px-4 text-row">
+            What tolmap saw
+            <Chevron />
+          </summary>
           {/* Evidence names paths with no spaces to break at; let them wrap
               anywhere rather than push a phone into sideways scrolling. */}
           <pre className="whitespace-pre-wrap border-t border-[var(--rule)] bg-[var(--chrome)] px-4 py-3 font-mono text-small text-[var(--on)] [overflow-wrap:anywhere]">
@@ -632,7 +647,7 @@ export function IndexJobView() {
   const search = useSearch({ strict: false }) as { job?: string; slug?: string };
   const navigate = useNavigate();
   const narrow = useIsNarrow();
-  const { job, error: transportError } = useJobProgress(search.job);
+  const { job, error: transportError, seen } = useJobProgress(search.job);
 
   const status = job?.status;
   const mapReady = job?.map_ready === true;
@@ -696,7 +711,7 @@ export function IndexJobView() {
       {job.status === "failed" ? (
         <FailurePage job={job} slug={search.slug} narrow={narrow} />
       ) : (
-        <ProgressPage job={job} narrow={narrow} />
+        <ProgressPage job={job} seen={seen} narrow={narrow} />
       )}
     </PageFrame>
   );
