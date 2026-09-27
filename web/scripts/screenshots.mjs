@@ -784,6 +784,73 @@ try {
       }
     }
   }
+
+  // docs/UX.md §11 phase 6: Home (§4.9) -- the plain one-screen page, on
+  // phone and desktop in both themes, plus its States: empty catalogue,
+  // service unavailable (mock API, with the retry), and an invalid-input
+  // message. Route-mocked the same way the job-progress block above uses
+  // the mock API directly, and the same page.route() technique
+  // check-legacy-terrain.mjs uses for a fixed response.
+  {
+    const stem = `${out}/home`;
+    for (const colorScheme of ["light", "dark"]) {
+      for (const profile of PROFILES) {
+        const context = await browser.newContext({ ...profile, colorScheme });
+        const page = await context.newPage();
+        await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+        await page.locator("[data-catalogue-row]").first().waitFor({ timeout: 15_000 });
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: `${stem}-${profile.name}-${colorScheme}.png`, fullPage: true });
+        console.log(`${stem}-${profile.name}-${colorScheme}.png`);
+        await context.close();
+      }
+    }
+
+    // Empty catalogue: nothing from either source, service left reachable
+    // (otherwise the submit form's own "isn't reachable" line shows up next
+    // to "no repositories mapped yet" -- two messages for what should read
+    // as one plain empty state).
+    for (const profile of PROFILES) {
+      const context = await browser.newContext(profile);
+      const page = await context.newPage();
+      await page.route("**/maps/index.json", (route) => route.fulfill({ json: [] }));
+      await page.route("**/api/maps", (route) => route.fulfill({ json: [] }));
+      await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+      await page.locator("[data-catalogue-empty]").waitFor({ timeout: 15_000 });
+      await page.screenshot({ path: `${stem}-${profile.name}-empty.png`, fullPage: true });
+      console.log(`${stem}-${profile.name}-empty.png`);
+      await context.close();
+    }
+
+    // Service unavailable: both sources error, with the retry shown.
+    for (const profile of PROFILES) {
+      const context = await browser.newContext(profile);
+      const page = await context.newPage();
+      await page.route("**/maps/index.json", (route) => route.fulfill({ status: 500, body: "" }));
+      await page.route("**/api/healthz", (route) => route.fulfill({ status: 503, body: "" }));
+      await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+      await page.locator("[data-catalogue-error]").waitFor({ timeout: 15_000 });
+      await page.screenshot({ path: `${stem}-${profile.name}-service-unavailable.png`, fullPage: true });
+      console.log(`${stem}-${profile.name}-service-unavailable.png`);
+      await context.close();
+    }
+
+    // Invalid-input message.
+    {
+      const phone = PROFILES.find((profile) => profile.name === "phone");
+      const context = await browser.newContext(phone);
+      const page = await context.newPage();
+      await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+      const field = page.locator("[data-repo-field]");
+      await field.waitFor();
+      await field.fill("not a repo at all");
+      await page.locator('button[type="submit"]').click();
+      await page.locator("[data-repo-validation-error]").waitFor({ timeout: 5_000 });
+      await page.screenshot({ path: `${stem}-invalid-input.png` });
+      console.log(`${stem}-invalid-input.png`);
+      await context.close();
+    }
+  }
 } finally {
   await browser.close();
 }

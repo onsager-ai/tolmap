@@ -91,7 +91,9 @@ function mergeCatalogues(
 }
 
 export function useCatalogue() {
-  const { data: available, isLoading: checkingService } = useServiceAvailable();
+  const availableQuery = useServiceAvailable();
+  const available = availableQuery.data;
+  const checkingService = availableQuery.isLoading;
 
   const staticQuery = useQuery({
     queryKey: ["catalogue", "static"],
@@ -115,7 +117,24 @@ export function useCatalogue() {
   // Error only when every source that could have answered has failed.
   const isError = !haveAnyData && staticQuery.isError && (available === false || serviceQuery.isError);
 
-  return { data, isLoading, isError, error: staticQuery.error ?? serviceQuery.error, serviceAvailable: available === true };
+  // Home's "service unavailable" retry (docs/UX.md §4.9): re-probes
+  // reachability and both catalogue sources, since a real outage is
+  // transient (the state's own copy says so) and shouldn't need a page
+  // reload to recover from.
+  function refetch() {
+    void availableQuery.refetch();
+    void staticQuery.refetch();
+    if (available === true) void serviceQuery.refetch();
+  }
+
+  return {
+    data,
+    isLoading,
+    isError,
+    error: staticQuery.error ?? serviceQuery.error,
+    serviceAvailable: available === true,
+    refetch,
+  };
 }
 
 export function useMapDocument(owner: string, repo: string) {

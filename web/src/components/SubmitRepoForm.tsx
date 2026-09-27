@@ -3,15 +3,15 @@ import { useNavigate } from "@tanstack/react-router";
 import { validateRepoInput } from "@/api/repoInput";
 import { postIndexJob, ApiRequestError } from "@/api/client";
 import { useServiceAvailable } from "@/data/queries";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 
-/** The catalogue route's "map a repository" entry point (milestone brief,
- * "A submit flow" + "The catalogue becomes a real index page"). Validates
- * the pasted shape client-side (src/api/repoInput.ts, which also rejects
- * the router's reserved names as an owner), POSTs it, and moves to the
- * progress view at /new. When the service isn't reachable the box stays
- * visible but inert — the bundled catalogue below it still works either way. */
+/** Home's "Map a codebase" entry point (docs/UX.md §4.9): a labelled 16px
+ * mono field and a full-width "Map it" button, stacked (never side by side
+ * -- the approved artboard has no room for both at 16px on a 320px phone).
+ * Validates the pasted shape client-side (src/api/repoInput.ts, which also
+ * rejects the router's reserved names as an owner), POSTs it, and moves to
+ * the progress view at /new. When the service isn't reachable the box stays
+ * visible but inert -- the mapped-repositories list below it still works
+ * either way. */
 export function SubmitRepoForm() {
   const navigate = useNavigate();
   const { data: serviceAvailable } = useServiceAvailable();
@@ -57,31 +57,46 @@ export function SubmitRepoForm() {
   }
 
   return (
-    <form onSubmit={(e) => void onSubmit(e)} className="mt-6 flex flex-col gap-2">
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Input
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-            if (validationError) setValidationError(null);
-          }}
-          placeholder="owner/name or https://github.com/owner/name"
-          aria-label="Repository to map"
-          disabled={disabled || submitting}
-          className="flex-1 font-mono"
-        />
-        <Button type="submit" disabled={disabled || submitting || value.trim().length === 0}>
-          {submitting ? "submitting…" : "map it"}
-        </Button>
-      </div>
+    <form onSubmit={(e) => void onSubmit(e)} className="flex flex-col gap-2">
+      <label htmlFor="repo-field" className="text-small font-semibold">
+        GitHub repository
+      </label>
+      <input
+        id="repo-field"
+        data-repo-field
+        value={value}
+        onChange={(e) => {
+          setValue(e.target.value);
+          if (validationError) setValidationError(null);
+        }}
+        placeholder="owner/repo or a github.com link"
+        aria-invalid={validationError != null}
+        aria-describedby={validationError ? "repo-field-error" : undefined}
+        disabled={disabled || submitting}
+        className="h-[52px] rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)] px-4 font-mono text-body text-[var(--on)] outline-none placeholder:text-[var(--dim)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-50"
+      />
+      <button
+        type="submit"
+        disabled={disabled || submitting || value.trim().length === 0}
+        className="h-[52px] rounded-[14px] bg-[var(--accent)] text-body font-bold text-[var(--on-accent)] disabled:opacity-50"
+      >
+        {submitting ? "mapping…" : "Map it"}
+      </button>
+      <p className="text-meta text-[var(--dim)]">
+        A large repository can take several minutes; you can leave and come back.
+      </p>
       {disabled && (
         <p className="text-meta text-[var(--dim)]">
-          the indexing service isn't reachable right now — browsing the bundled catalogue below still works.
+          the indexing service isn't reachable right now — the mapped repositories below still work.
         </p>
       )}
-      {validationError && <p className="text-meta text-[var(--link-out)]">{validationError}</p>}
+      {validationError && (
+        <p id="repo-field-error" data-repo-validation-error className="text-meta text-[var(--link-out)]">
+          {validationError}
+        </p>
+      )}
       {submitError && (
-        <p className={`text-meta ${submitError.tooLarge ? "text-[var(--warn)]" : "text-[var(--link-out)]"}`}>
+        <p data-repo-submit-error className={`text-meta ${submitError.tooLarge ? "text-[var(--warn)]" : "text-[var(--link-out)]"}`}>
           {submitError.tooLarge ? "too large for the hosted index: " : ""}
           {submitError.message}
         </p>
