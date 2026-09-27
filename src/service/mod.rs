@@ -144,9 +144,11 @@ pub async fn serve(config: ServeConfig) -> Result<()> {
         shutdown_signal().await;
         eprintln!("tolmap serve: shutdown signal received, draining jobs");
         shutdown_state.jobs.shutdown();
-        // Loopback mode: the jobs above are failed with `server_stopping`
-        // as in local mode (phase 1 keeps its state in memory); then every
-        // agent is told `shutdown now` and reaped.
+        // Loopback mode (#97 phase 2): jobs are durable, so `shutdown`
+        // above only stopped admission; every agent is told `shutdown now`,
+        // its released job goes back to `queued` in the store, and the
+        // agents are reaped. Open SSE streams end on their own
+        // (`http::get_job_events`), and the next process runs the jobs.
         if let Some(loopback) = loopback {
             loopback.shutdown().await;
         }
