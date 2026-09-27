@@ -2180,6 +2180,7 @@ pub(crate) fn resolve(
         fanin,
         uses,
         module_for,
+        python_cross_project: 0,
     })
 }
 

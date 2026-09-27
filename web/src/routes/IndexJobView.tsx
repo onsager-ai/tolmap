@@ -269,8 +269,8 @@ export function IndexJobView() {
   if (job.status === "failed") {
     const cancelled = job.error_code === "cancelled";
     // docs/API.md: "Existing clients should render unknown error codes as a
-    // generic failure" -- so everything that isn't the two codes this view
-    // gives its own wording to (cancelled, worker_crashed) falls through to
+    // generic failure" -- so everything that isn't a code this view gives
+    // its own wording to (cancelled, worker_crashed) falls through to
     // job.error, the server's own human text, unchanged.
     const crashed = job.error_code === "worker_crashed";
     const message = cancelled
@@ -278,6 +278,17 @@ export function IndexJobView() {
       : crashed
         ? `The indexer stopped during ${lastActiveStageLabel(job)} — the repository may be too large for this server.`
         : (job.error ?? "indexing failed.");
+    // Issue #162: a detection refusal is deterministic -- the same commit
+    // gets the same answer every time -- so "try again" would only repeat
+    // it. Say plainly why above the evidence, and offer no retry. Transient
+    // failures (clone_failed, busy, server_stopping, index_failed, and any
+    // code this view doesn't know) keep the button.
+    const explanation =
+      job.error_code === "detection_uncertain"
+        ? "tolmap couldn't find this repository's package layout, so it didn't guess."
+        : job.error_code === "detection_failed"
+          ? "tolmap found no source code in this repository that it can map."
+          : null;
     return (
       <Centered>
         <h1 className="font-sans text-lg font-semibold text-[var(--on)]">{slug}</h1>
@@ -290,13 +301,22 @@ export function IndexJobView() {
               : "border-[var(--hot)] bg-[color-mix(in_srgb,var(--hot)_12%,transparent)] text-[var(--hot)]"
           }`}
         >
-          <p>{message}</p>
+          {explanation && (
+            <p data-job-failure-explanation className="mb-2 font-medium text-[var(--on)]">
+              {explanation}
+            </p>
+          )}
+          {/* Evidence names paths with no spaces to break at; let them wrap
+              anywhere rather than push a phone into sideways scrolling. */}
+          <p className="[overflow-wrap:anywhere]">{message}</p>
         </div>
         {retryError && <p className="text-xs text-[var(--hot)]">retry failed: {retryError}</p>}
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => void retry()} disabled={retrying}>
-            {retrying ? "retrying…" : "try again"}
-          </Button>
+          {!explanation && (
+            <Button size="sm" variant="outline" onClick={() => void retry()} disabled={retrying}>
+              {retrying ? "retrying…" : "try again"}
+            </Button>
+          )}
           <Link to="/">
             <Button size="sm" variant="ghost">
               back to the map index

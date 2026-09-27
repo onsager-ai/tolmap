@@ -268,6 +268,16 @@ fn detect_python(repo: &Path) -> Result<Option<SourceCandidate>> {
         return Ok(Some(candidate));
     }
 
+    // Issue #162: a Python monorepo declares its projects below the root
+    // (vectorize-io/hindsight: 48 nested pyproject.toml files, and a root
+    // one that names no project). Go and Rust already look for nested
+    // manifests; this is the Python equivalent, and it is evidence, not a
+    // guess: a nested manifest counts only when its declared name matches
+    // a package directory holding parsed Python files.
+    if let Some(candidate) = nested_python_projects_candidate(repo, total)? {
+        return Ok(Some(candidate));
+    }
+
     // Last resort: no package layout recognised at all. Map the repository
     // root directly rather than refusing -- silence is the failure mode
     // this module exists to avoid -- but say plainly that it's a guess.
@@ -296,7 +306,15 @@ fn name_variants(name: &str) -> Vec<String> {
 }
 
 fn read_python_metadata(repo: &Path) -> Option<PyMeta> {
-    if let Ok(text) = fs::read_to_string(repo.join("pyproject.toml")) {
+    read_python_metadata_in(repo)
+}
+
+/// [`read_python_metadata`] for any directory holding a manifest: the
+/// repository root, or a nested project's directory (issue #162). One
+/// parser for both, so a nested project's declared name is read exactly as
+/// a root one is.
+fn read_python_metadata_in(dir: &Path) -> Option<PyMeta> {
+    if let Ok(text) = fs::read_to_string(dir.join("pyproject.toml")) {
         if let Ok(value) = text.parse::<toml::Value>() {
             let name = value
                 .get("project")
@@ -337,7 +355,7 @@ fn read_python_metadata(repo: &Path) -> Option<PyMeta> {
     // insensitive, so a `NAME = 'celery'` constant later passed as
     // `setup(name=NAME)` is still recovered) rather than an attempt to
     // evaluate the file.
-    if let Ok(text) = fs::read_to_string(repo.join("setup.py")) {
+    if let Ok(text) = fs::read_to_string(dir.join("setup.py")) {
         if let Some(name) = first_name_literal(&text) {
             return Some(PyMeta {
                 name: Some(name),
@@ -346,7 +364,7 @@ fn read_python_metadata(repo: &Path) -> Option<PyMeta> {
             });
         }
     }
-    if let Ok(text) = fs::read_to_string(repo.join("setup.cfg")) {
+    if let Ok(text) = fs::read_to_string(dir.join("setup.cfg")) {
         if let Some(name) = first_name_literal(&text) {
             return Some(PyMeta {
                 name: Some(name),
@@ -500,6 +518,184 @@ fn candidate_python_packages(repo: &Path, sub: &str) -> Result<Vec<(String, usiz
         }
     }
     Ok(result)
+}
+
+/// Directory names the nested-manifest search (issue #162) never enters,
+/// on top of `extract::PY_SKIP_DIR`, the Go/TypeScript list
+/// (`MULTI_SKIP_DIR`), the Rust list (`extract::rust::skip_dir`) and every
+/// hidden directory (`.venv`, `.tox`): an environment checked into the tree
+/// holds other people's manifests, not this repository's projects.
+const PY_NESTED_SKIP: &[&str] = &["site-packages", "venv"];
+
+/// How many counted projects the monorepo evidence names before `…`.
+const PY_NESTED_EVIDENCE_NAMED: usize = 3;
+
+/// A manifest below the repository root whose declared name matched a
+/// package directory on disk (issue #162).
+struct NestedPythonProject {
+    /// The manifest's directory, relative to the repository.
+    dir: String,
+    /// The package directory the declared name matched, relative to the
+    /// repository (`hindsight-clients/python/hindsight_client`).
+    pkg: String,
+    name: String,
+    where_dirs: Vec<String>,
+    source_file: &'static str,
+    file_count: usize,
+}
+
+/// Issue #162: the repository root declares no package of its own, but
+/// projects below it do. Two or more counted projects map the root at
+/// `Medium`: the extractor already resolves each file's absolute imports
+/// against its own nearest manifest (`extract::python_project_root`), so the
+/// root is the source root that covers every project, and the projects are
+/// what says so. One counted project is that project's package, at `High`,
+/// exactly as a root manifest's match would be. None changes nothing: the
+/// caller falls through to the `Low` root guess, which the service refuses
+/// (finding 7).
+fn nested_python_projects_candidate(repo: &Path, total: usize) -> Result<Option<SourceCandidate>> {
+    let projects = nested_python_projects(repo)?;
+    match projects.as_slice() {
+        [] => Ok(None),
+        [project] => {
+            let where_note = if project.where_dirs.is_empty() {
+                String::new()
+            } else {
+                format!(", where={:?}", project.where_dirs)
+            };
+            Ok(Some(SourceCandidate {
+                language: LanguageKind::Python,
+                pkg: project.pkg.clone(),
+                confidence: Confidence::High,
+                file_count: project.file_count,
+                evidence: format!(
+                    "no package match at the repository root; {}/{} declares name {:?}{where_note}; matched {}",
+                    project.dir, project.source_file, project.name, project.pkg
+                ),
+            }))
+        }
+        _ => {
+            let named = projects
+                .iter()
+                .take(PY_NESTED_EVIDENCE_NAMED)
+                .map(|project| project.pkg.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = if projects.len() > PY_NESTED_EVIDENCE_NAMED {
+                ", …"
+            } else {
+                ""
+            };
+            Ok(Some(SourceCandidate {
+                language: LanguageKind::Python,
+                pkg: ".".to_owned(),
+                confidence: Confidence::Medium,
+                file_count: total,
+                evidence: format!(
+                    "Python monorepo: {} projects declare a package below the root ({named}{more}); mapping the repository root",
+                    projects.len()
+                ),
+            }))
+        }
+    }
+}
+
+/// Every nested `pyproject.toml`/`setup.py` directory whose declared name
+/// matches a package directory with parsed Python files, in path order.
+/// The same two markers `extract::python_project_root` recognises, so a
+/// project detection counts is a project the extractor scopes imports by.
+/// The root is left out: its manifest was already read, and it matched
+/// nothing.
+fn nested_python_projects(repo: &Path) -> Result<Vec<NestedPythonProject>> {
+    let mut dirs = Vec::new();
+    collect_python_manifest_dirs(repo, repo, &mut dirs)?;
+    dirs.sort();
+    dirs.dedup();
+    let mut projects = Vec::new();
+    for dir in dirs {
+        let rel = dir
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        if rel.is_empty() {
+            continue;
+        }
+        let Some(meta) = read_python_metadata_in(&repo.join(&dir)) else {
+            continue;
+        };
+        let Some(name) = meta.name.clone() else {
+            continue;
+        };
+        if let Some((pkg, file_count)) = match_nested_package(repo, &rel, &meta, &name)? {
+            projects.push(NestedPythonProject {
+                dir: rel,
+                pkg,
+                name,
+                where_dirs: meta.where_dirs,
+                source_file: meta.source_file,
+                file_count,
+            });
+        }
+    }
+    Ok(projects)
+}
+
+/// The package directory a nested manifest's declared name matches: under
+/// its declared `where` directories when it has them, otherwise under
+/// `src/` and then beside the manifest -- the root rule in
+/// [`detect_python`], applied relative to the manifest's directory. A
+/// `where` entry that climbs out of the project (`..`) is not followed.
+fn match_nested_package(
+    repo: &Path,
+    project: &str,
+    meta: &PyMeta,
+    name: &str,
+) -> Result<Option<(String, usize)>> {
+    let where_dirs = if meta.where_dirs.is_empty() {
+        vec!["src".to_owned(), ".".to_owned()]
+    } else {
+        meta.where_dirs.clone()
+    };
+    for where_dir in &where_dirs {
+        let where_dir = where_dir.trim_start_matches("./").trim_end_matches('/');
+        if where_dir.split('/').any(|part| part == "..") {
+            continue;
+        }
+        let base = if where_dir.is_empty() || where_dir == "." {
+            project.to_owned()
+        } else {
+            format!("{project}/{where_dir}")
+        };
+        for variant in name_variants(name) {
+            let candidate = format!("{base}/{variant}");
+            if let Ok(files) = extract::source_files(repo, &candidate, LanguageKind::Python) {
+                if !files.is_empty() {
+                    return Ok(Some((candidate, files.len())));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn collect_python_manifest_dirs(repo: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = fs::read_dir(dir)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if file_type.is_dir() {
+            if extract::PY_SKIP_DIR.contains(&name.as_str())
+                || extract::rust::skip_dir(&name)
+                || PY_NESTED_SKIP.contains(&name.as_str())
+            {
+                continue;
+            }
+            collect_python_manifest_dirs(repo, &entry.path(), out)?;
+        } else if file_type.is_file() && (name == "pyproject.toml" || name == "setup.py") {
+            out.push(dir.strip_prefix(repo)?.to_path_buf());
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -1003,6 +1199,189 @@ mod tests {
         let candidate = detect_python(dir.path()).unwrap().unwrap();
         assert_eq!(candidate.pkg, ".");
         assert_eq!(candidate.confidence, Confidence::Low);
+    }
+
+    // -- nested Python projects (issue #162) ---------------------------
+
+    /// vectorize-io/hindsight's shape: a root pyproject.toml that is only a
+    /// uv workspace (no project name), projects one and two levels down,
+    /// each beside its package, one with a `src/` layout, and loose Python
+    /// that belongs to no project.
+    fn hindsight_shaped(root: &Path) {
+        write(
+            root,
+            "pyproject.toml",
+            "[tool.uv.workspace]\nmembers = [\"hindsight-api-slim\"]\n",
+        );
+        write(
+            root,
+            "hindsight-api-slim/pyproject.toml",
+            "[project]\nname = \"hindsight-api\"\n",
+        );
+        write(root, "hindsight-api-slim/hindsight_api/__init__.py", "");
+        write(root, "hindsight-api-slim/hindsight_api/server.py", "");
+        write(
+            root,
+            "hindsight-clients/python/pyproject.toml",
+            "[project]\nname = \"hindsight-client\"\n",
+        );
+        write(
+            root,
+            "hindsight-clients/python/hindsight_client/__init__.py",
+            "",
+        );
+        write(
+            root,
+            "hindsight-integrations/ag2/pyproject.toml",
+            "[project]\nname = \"hindsight-ag2\"\n",
+        );
+        write(
+            root,
+            "hindsight-integrations/ag2/src/hindsight_ag2/__init__.py",
+            "",
+        );
+        write(
+            root,
+            "hindsight-integrations/ag2/src/hindsight_ag2/tools.py",
+            "",
+        );
+        write(
+            root,
+            "hindsight-integrations/crewai/pyproject.toml",
+            "[project]\nname = \"hindsight-crewai\"\n",
+        );
+        write(
+            root,
+            "hindsight-integrations/crewai/hindsight_crewai/__init__.py",
+            "",
+        );
+        write(root, "scripts/release.py", "");
+    }
+
+    #[test]
+    fn python_monorepo_with_nested_projects_maps_the_root_at_medium() {
+        let dir = TempDir::new().unwrap();
+        hindsight_shaped(dir.path());
+        let candidate = detect_python(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, ".");
+        assert_eq!(candidate.confidence, Confidence::Medium);
+        // The root total, as the low-confidence root guess counts it.
+        assert_eq!(
+            candidate.file_count,
+            extract::source_files(dir.path(), ".", LanguageKind::Python)
+                .unwrap()
+                .len()
+        );
+        assert_eq!(candidate.file_count, 7);
+        assert_eq!(
+            candidate.evidence,
+            "Python monorepo: 4 projects declare a package below the root \
+             (hindsight-api-slim/hindsight_api, hindsight-clients/python/hindsight_client, \
+             hindsight-integrations/ag2/src/hindsight_ag2, …); mapping the repository root"
+        );
+    }
+
+    #[test]
+    fn a_single_nested_python_project_is_its_package_at_high() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "backend/pyproject.toml",
+            "[project]\nname = \"Widget-Server\"\n",
+        );
+        write(dir.path(), "backend/widget_server/__init__.py", "");
+        write(dir.path(), "backend/widget_server/app.py", "");
+        write(dir.path(), "tools/gen.py", "");
+        let candidate = detect_python(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, "backend/widget_server");
+        assert_eq!(candidate.confidence, Confidence::High);
+        assert_eq!(candidate.file_count, 2);
+        assert!(candidate
+            .evidence
+            .contains("backend/pyproject.toml declares name \"Widget-Server\""));
+    }
+
+    #[test]
+    fn nested_python_manifests_that_name_nothing_on_disk_stay_low() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "one/pyproject.toml",
+            "[project]\nname = \"one-service\"\n",
+        );
+        write(dir.path(), "one/main.py", "");
+        write(dir.path(), "two/setup.py", "setup(name='two-service')\n");
+        write(dir.path(), "two/run.py", "");
+        // A package directory whose name no manifest declares.
+        write(dir.path(), "two/helpers/__init__.py", "");
+        let candidate = detect_python(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, ".");
+        assert_eq!(candidate.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn nested_python_manifests_in_vendored_and_skipped_directories_are_ignored() {
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "service/pyproject.toml",
+            "[project]\nname = \"service\"\n",
+        );
+        write(dir.path(), "service/service/__init__.py", "");
+        // Each of these would be a second counted project, and the answer
+        // would become the root at Medium, if the search walked into it.
+        for decoy in [
+            "vendor/dep",
+            "third_party/dep",
+            "node_modules/dep",
+            "tests/fixture_project",
+            ".venv/lib/python3.12/site-packages/dep",
+            "venv/lib/dep",
+            "site-packages/dep",
+            "examples/demo",
+            "target/dep",
+        ] {
+            write(
+                dir.path(),
+                &format!("{decoy}/pyproject.toml"),
+                "[project]\nname = \"dep\"\n",
+            );
+            write(dir.path(), &format!("{decoy}/dep/__init__.py"), "");
+            write(dir.path(), &format!("{decoy}/dep/core.py"), "");
+        }
+        let candidate = detect_python(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, "service/service");
+        assert_eq!(candidate.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn a_root_package_match_still_wins_over_nested_projects() {
+        // The nested search only runs when the root declares nothing that
+        // matches and no structural package exists: an ordinary package
+        // repository with a nested example project is unchanged.
+        let dir = TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "pyproject.toml",
+            "[project]\nname = \"widget\"\n",
+        );
+        write(dir.path(), "widget/__init__.py", "");
+        write(dir.path(), "widget/core.py", "");
+        write(
+            dir.path(),
+            "plugins/extra/pyproject.toml",
+            "[project]\nname = \"widget-extra\"\n",
+        );
+        write(dir.path(), "plugins/extra/widget_extra/__init__.py", "");
+        write(
+            dir.path(),
+            "plugins/other/pyproject.toml",
+            "[project]\nname = \"widget-other\"\n",
+        );
+        write(dir.path(), "plugins/other/widget_other/__init__.py", "");
+        let candidate = detect_python(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, "widget");
+        assert_eq!(candidate.confidence, Confidence::High);
     }
 
     #[test]

@@ -695,6 +695,7 @@ fn compact(
         total_files: layout.weighted.nodes.len(),
         by_language,
         references: layout.weighted.references.clone(),
+        python_cross_project: layout.weighted.python_cross_project,
     };
     let files = layout
         .weighted

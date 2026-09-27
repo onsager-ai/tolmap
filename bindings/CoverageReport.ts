@@ -2,4 +2,19 @@
 import type { CoverageLanguage } from "./CoverageLanguage";
 import type { ReferenceCoverage } from "./ReferenceCoverage";
 
-export type CoverageReport = { zero_edge_files: number, total_files: number, by_language: { [key in string]: CoverageLanguage }, references?: { [key in string]: ReferenceCoverage } | null, };
+export type CoverageReport = { zero_edge_files: number, total_files: number, by_language: { [key in string]: CoverageLanguage }, references?: { [key in string]: ReferenceCoverage } | null,
+/**
+ * Issue #162: Python import statements that resolved only through
+ * the guarded cross-project fallback -- an absolute import no scope of
+ * its own file resolves, taken into the one sibling project whose
+ * module table owns its top-level package -- counted during the
+ * extraction pass that makes those edges. The unit is import
+ * statements, not file edges: a statement counts once however many
+ * files it reaches, and one file importing a sibling in three
+ * statements counts three. These edges rest on an inference (that the
+ * sibling is installed), so they are counted apart to keep the lower
+ * bound auditable. Zero on every map without such an import, and then
+ * omitted rather than written as `0`, so every such map stays
+ * byte-identical.
+ */
+python_cross_project?: number, };

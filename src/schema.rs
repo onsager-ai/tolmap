@@ -108,6 +108,24 @@ pub struct CoverageReport {
     // one built before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub references: Option<BTreeMap<String, ReferenceCoverage>>,
+    /// Issue #162: Python import statements that resolved only through
+    /// the guarded cross-project fallback -- an absolute import no scope of
+    /// its own file resolves, taken into the one sibling project whose
+    /// module table owns its top-level package -- counted during the
+    /// extraction pass that makes those edges. The unit is import
+    /// statements, not file edges: a statement counts once however many
+    /// files it reaches, and one file importing a sibling in three
+    /// statements counts three. These edges rest on an inference (that the
+    /// sibling is installed), so they are counted apart to keep the lower
+    /// bound auditable. Zero on every map without such an import, and then
+    /// omitted rather than written as `0`, so every such map stays
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub python_cross_project: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 // One language's reference path under `--refs scip`. Plain `//` comments
@@ -406,6 +424,12 @@ pub struct GraphData {
     /// map's `coverage.references`. Serialized only when present, so a
     /// hand-written graph dumps byte-identically.
     pub references: Option<BTreeMap<String, ReferenceCoverage>>,
+    /// Issue #162: the count `coverage.python_cross_project` carries,
+    /// made during extraction (`extract::parse_python_with_progress`) and
+    /// passed through blend/prune/partition unchanged, as `references` is.
+    /// Serialized only when nonzero, so every graph dumped before this
+    /// field existed, or without such an import, stays byte-identical.
+    pub python_cross_project: usize,
 }
 
 #[derive(Deserialize)]
@@ -423,6 +447,8 @@ struct GraphDataWire {
     edges: Vec<SignalEdge>,
     #[serde(default)]
     references: Option<BTreeMap<String, ReferenceCoverage>>,
+    #[serde(default)]
+    python_cross_project: usize,
 }
 
 struct GraphImports<'a>(&'a GraphData);
@@ -466,7 +492,9 @@ impl Serialize for GraphData {
     {
         // Keep the derived serializer's established field order so
         // `tolmap dump-graph` remains byte-identical.
-        let fields = if self.references.is_some() { 11 } else { 10 };
+        let fields = 10
+            + usize::from(self.references.is_some())
+            + usize::from(self.python_cross_project != 0);
         let mut state = serializer.serialize_struct("GraphData", fields)?;
         state.serialize_field("repo", &self.repo)?;
         state.serialize_field("pkg", &self.pkg)?;
@@ -480,6 +508,9 @@ impl Serialize for GraphData {
         state.serialize_field("edges", &self.edges)?;
         if let Some(references) = &self.references {
             state.serialize_field("references", references)?;
+        }
+        if self.python_cross_project != 0 {
+            state.serialize_field("python_cross_project", &self.python_cross_project)?;
         }
         state.end()
     }
@@ -541,6 +572,7 @@ impl<'de> Deserialize<'de> for GraphData {
             nodes: wire.nodes,
             edges: wire.edges,
             references: wire.references,
+            python_cross_project: wire.python_cross_project,
         })
     }
 }
@@ -610,6 +642,7 @@ mod tests {
                 .collect(),
             edges: Vec::new(),
             references: None,
+            python_cross_project: 0,
         };
 
         let bytes = serde_json::to_vec(&data).unwrap();
@@ -623,9 +656,53 @@ mod tests {
             serde_json::json!([["a.go", "pkg/b.go", "Target"]])
         );
 
+        assert!(value.get("python_cross_project").is_none());
+
         let round_trip: GraphData = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(round_trip.imports, data.imports);
         assert_eq!(round_trip.uses, data.uses);
+        assert_eq!(round_trip.python_cross_project, 0);
         assert_eq!(serde_json::to_vec(&round_trip).unwrap(), bytes);
+    }
+
+    /// Issue #162: a nonzero cross-project count is written, round-trips,
+    /// and reaches the map's coverage only when nonzero.
+    #[test]
+    fn a_nonzero_python_cross_project_count_is_written_and_round_trips() {
+        let data = GraphData {
+            repo: "fixture".to_owned(),
+            pkg: ".".to_owned(),
+            lang: "py".to_owned(),
+            sources: vec![(".".to_owned(), "py".to_owned())],
+            imports: Vec::new(),
+            symbols: BTreeMap::new(),
+            uses: Vec::new(),
+            commits_scanned: 0,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            references: None,
+            python_cross_project: 3,
+        };
+        let value: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
+        assert_eq!(value["python_cross_project"], 3);
+        let round_trip: GraphData = serde_json::from_value(value).unwrap();
+        assert_eq!(round_trip.python_cross_project, 3);
+
+        let coverage = |count| CoverageReport {
+            zero_edge_files: 0,
+            total_files: 0,
+            by_language: BTreeMap::new(),
+            references: None,
+            python_cross_project: count,
+        };
+        assert!(serde_json::to_value(coverage(0))
+            .unwrap()
+            .get("python_cross_project")
+            .is_none());
+        assert_eq!(
+            serde_json::to_value(coverage(2)).unwrap()["python_cross_project"],
+            2
+        );
     }
 }

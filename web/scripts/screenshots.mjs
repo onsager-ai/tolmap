@@ -479,6 +479,22 @@ try {
         await cancelJob(queued.job_id);
       }
 
+      // Issue #162: a detection refusal, on a phone -- the plain-line
+      // explanation above the evidence, and no "try again".
+      {
+        const slug = `shotorg/uncertain-${Date.now()}`;
+        const accepted = await postIndexJob(slug);
+        const phone = PROFILES.find((profile) => profile.name === "phone");
+        const context = await browser.newContext({ ...phone, colorScheme });
+        const page = await context.newPage();
+        await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
+        await page.waitForSelector('[data-job-failure][data-job-failure-code="detection_uncertain"]', { timeout: 30_000 }).catch(() => {});
+        await page.waitForTimeout(200);
+        await page.screenshot({ path: `${jobStem}-detection-uncertain-phone-${colorScheme}.png` });
+        console.log(`${jobStem}-detection-uncertain-phone-${colorScheme}.png`);
+        await context.close();
+      }
+
       // Cancelled.
       {
         const slug = `shotorg/cancel-${Date.now()}`;

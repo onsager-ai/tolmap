@@ -4407,6 +4407,53 @@ async function checkWorkerCrashedJobPage(browser, base) {
     `${label}: shows the stage-naming message`,
     text,
   );
+  // Issue #162: a failure that might not happen again keeps its retry.
+  report(
+    (await page.getByRole("button", { name: "try again" }).count()) === 1,
+    `${label}: offers "try again"`,
+  );
+
+  await context.close();
+}
+
+// Issue #162: a detection refusal is deterministic, so the page explains it
+// in one plain line above the evidence and offers no "try again" -- checked
+// on a 390 px phone, where the evidence's long unbroken paths are what would
+// push the page into sideways scrolling.
+async function checkDetectionUncertainJobPage(browser, base) {
+  const label = "detection_uncertain job page, phone (mock API)";
+  console.log(`\n${label}`);
+  const phone = PROFILES.find((profile) => profile.name === "phone");
+  const context = await browser.newContext({ ...phone });
+  const page = await context.newPage();
+
+  // A slug containing "uncertain" fails as detection_uncertain at the mock's
+  // detect stage -- see mock-api-server.mjs's classify().
+  const slug = `checkorg/uncertain-${Date.now()}`;
+  const accepted = await submitMockJob(base, slug);
+  await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-job-failure][data-job-failure-code="detection_uncertain"]', { timeout: 45_000 });
+  const explanation = await page.locator("[data-job-failure-explanation]").innerText().catch(() => "");
+  report(
+    explanation === "tolmap couldn't find this repository's package layout, so it didn't guess.",
+    `${label}: explains the refusal in one plain line`,
+    JSON.stringify(explanation),
+  );
+  const text = await page.locator("[data-job-failure]").innerText();
+  report(/low confidence/.test(text), `${label}: keeps the evidence text`, text);
+  report(
+    (await page.getByRole("button", { name: "try again" }).count()) === 0,
+    `${label}: offers no "try again"`,
+  );
+  report(
+    (await page.getByRole("button", { name: "back to the map index" }).count()) === 1,
+    `${label}: still links back to the map index`,
+  );
+  const widths = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    viewport: window.innerWidth,
+  }));
+  report(widths.scroll <= widths.viewport, `${label}: no horizontal scroll`, JSON.stringify(widths));
 
   await context.close();
 }
@@ -4484,6 +4531,7 @@ async function main() {
     await checkQueuedJobPage(browser, args.base);
     await checkCancelJobPage(browser, args.base);
     await checkWorkerCrashedJobPage(browser, args.base);
+    await checkDetectionUncertainJobPage(browser, args.base);
   } finally {
     await browser.close();
   }

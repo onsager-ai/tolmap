@@ -638,6 +638,15 @@ fn build_multi_source_inner(
             if let Some(spool) = spool.as_mut() {
                 spool.scip = scip;
             }
+            // An admitted Python index replaced the hand-written static
+            // signal, cross-project edges included, so none of the counted
+            // edges is in the graph any more.
+            if report
+                .get(LanguageKind::Python.as_str())
+                .is_some_and(|row| row.path == "scip")
+            {
+                merged.python_cross_project = 0;
+            }
             Some(report)
         }
     };
@@ -975,6 +984,10 @@ struct SourceIntermediate {
     /// just the file path. Carried as a map instead of a closure so it can
     /// be merged across sources without boxing a per-source `Fn`.
     module_for: BTreeMap<String, String>,
+    /// Issue #162: Python import statements resolved into a sibling project
+    /// by the cross-project fallback in [`parse_python_with_progress`],
+    /// counted while those edges are made. Zero for every other language.
+    python_cross_project: usize,
 }
 
 /// The union of every [`SourceIntermediate`], with cross-source file
@@ -998,6 +1011,9 @@ struct MergedSources {
     /// order (earliest wins) -- `GraphData.pkg`/`GraphData.lang`.
     dominant_pkg: String,
     dominant_lang: LanguageKind,
+    /// Sum of every source's [`SourceIntermediate::python_cross_project`];
+    /// `GraphData.python_cross_project`.
+    python_cross_project: usize,
 }
 
 fn file_ids(
@@ -1042,6 +1058,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin,
             uses,
             module_for,
+            python_cross_project,
         } = intermediate;
         let file_language = files.iter().map(|file| (file.clone(), language)).collect();
         return Ok(MergedSources {
@@ -1056,6 +1073,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             sources: vec![(pkg.clone(), language.as_str().to_owned())],
             dominant_pkg: pkg,
             dominant_lang: language,
+            python_cross_project,
         });
     }
 
@@ -1096,6 +1114,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
     let mut uses = BTreeSet::new();
     let mut sources = Vec::with_capacity(intermediates.len());
     let mut dominant: Option<(usize, String, LanguageKind)> = None;
+    let mut python_cross_project = 0usize;
 
     for (idx, intermediate) in intermediates.into_iter().enumerate() {
         let SourceIntermediate {
@@ -1108,9 +1127,11 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin: source_fanin,
             uses: source_uses,
             module_for: source_module_for,
+            python_cross_project: source_python_cross_project,
         } = intermediate;
 
         sources.push((pkg.clone(), language.as_str().to_owned()));
+        python_cross_project += source_python_cross_project;
 
         let mut kept = 0usize;
         for (file, value) in source_parsed {
@@ -1179,6 +1200,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         sources,
         dominant_pkg,
         dominant_lang,
+        python_cross_project,
     })
 }
 
@@ -2024,6 +2046,45 @@ fn parse_python_with_progress(
                 project_for.insert(file.clone(), project);
             }
         }
+        // Issue #162: a project with a `src/` layout (`proj/src/pkg/x.py`,
+        // no `proj/src/__init__.py`) is imported as `pkg.x`, the spelling
+        // an installed copy has; `python_project_module` spells it
+        // `src.pkg.x`, which only a process started inside `proj/` with
+        // `src` as a namespace package would use. Add the import spelling
+        // beside the directory one rather than replacing it, and never over
+        // a module the project already has: whatever resolved before still
+        // resolves to the same file. Only a project below a root mapped as
+        // `.` has a table at all, and no committed fixture maps Python at
+        // `.`, so every fixture is untouched.
+        for (project, table) in &mut project_modules {
+            if !python_project_src_layout(repo, project) {
+                continue;
+            }
+            let aliases = table
+                .iter()
+                .filter_map(|(module, file)| {
+                    module
+                        .strip_prefix("src.")
+                        .map(|module| (module.to_owned(), file.clone()))
+                })
+                .collect::<Vec<_>>();
+            for (module, file) in aliases {
+                table.entry(module).or_insert(file);
+            }
+        }
+    }
+    // Issue #162: each project's top-level modules, and the projects that
+    // hold each one, for the cross-project fallback below.
+    let mut top_level_owners = BTreeMap::<&str, Vec<&str>>::new();
+    for (project, table) in &project_modules {
+        for module in table.keys() {
+            if !module.is_empty() && !module.contains('.') {
+                top_level_owners
+                    .entry(module.as_str())
+                    .or_default()
+                    .push(project.as_str());
+            }
+        }
     }
     let project_known = project_modules
         .iter()
@@ -2053,6 +2114,7 @@ fn parse_python_with_progress(
     let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
     let mut fanin = BTreeMap::<FileId, f64>::new();
     let mut uses = BTreeSet::<(FileId, FileId, String)>::new();
+    let mut python_cross_project = 0usize;
     // Eval instrumentation only (finding 53): one row per import statement,
     // with the files it linked before module objects and ordinary-module
     // re-exports were followed and the files it links now, and how each
@@ -2101,6 +2163,13 @@ fn parse_python_with_progress(
             );
             (scoped, current, project_scope, project_objects)
         });
+        // The importer's module in the scope its absolute imports resolve
+        // from first: its own project's spelling, else the root's.
+        let own_current = project
+            .as_ref()
+            .map_or(module.as_str(), |project| project.1.as_str());
+        let own_project = project_for.get(file).map(String::as_str);
+        let mut cross_uses = BTreeMap::<&str, Vec<PythonImport>>::new();
         for (index, import) in imports.iter().enumerate() {
             let links_of = |objects: Option<(&PythonObjectUses<'_>, &PythonObjectUses<'_>)>| {
                 let mut links = PythonLinks::default();
@@ -2122,14 +2191,65 @@ fn parse_python_with_progress(
                         links.add(targets, scoped);
                     }
                 }
-                links
+                // Issue #162: the guarded cross-project fallback, only for
+                // what both scopes above left unresolved (see
+                // `python_cross_project_imports`).
+                let mut crossed = Vec::new();
+                for (owner, sub) in python_cross_project_imports(
+                    import,
+                    (module.as_str(), &known),
+                    project
+                        .as_ref()
+                        .map(|project| (project.1.as_str(), project.2.known)),
+                    own_project,
+                    is_pkg,
+                    &top_level_owners,
+                ) {
+                    let owner_scope = PythonScope {
+                        known: &project_known[owner],
+                        file_of: &project_modules[owner],
+                        exports: &exports,
+                    };
+                    let owner_objects = objects.map(|_| {
+                        PythonObjectUses::new(
+                            imports,
+                            &attributes,
+                            bare_names,
+                            own_current,
+                            is_pkg,
+                            &owner_scope,
+                        )
+                    });
+                    let targets = resolve_python_import(
+                        &sub,
+                        own_current,
+                        &owner_scope,
+                        is_pkg,
+                        owner_objects.as_ref(),
+                    );
+                    if targets.modules.is_empty()
+                        && targets.names.is_empty()
+                        && targets.objects.is_empty()
+                    {
+                        continue;
+                    }
+                    links.add(targets, &project_modules[owner]);
+                    crossed.push((owner, sub));
+                }
+                (links, crossed)
             };
-            let links = links_of(Some((
+            let (links, crossed) = links_of(Some((
                 &objects,
                 project.as_ref().map_or(&objects, |project| &project.3),
             )));
+            if !crossed.is_empty() {
+                python_cross_project += 1;
+            }
+            for (owner, sub) in crossed {
+                cross_uses.entry(owner).or_default().push(sub);
+            }
             if report_dir.is_some() {
-                let before = links_of(None);
+                let (before, _) = links_of(None);
                 let others = |links: &PythonLinks| {
                     links
                         .files()
@@ -2196,6 +2316,16 @@ fn parse_python_with_progress(
                 scoped,
             ));
         }
+        for (owner, subs) in &cross_uses {
+            resolved_uses.extend(python_uses_from_raw(
+                own_current,
+                file,
+                subs,
+                attribute_candidates,
+                &project_known[*owner],
+                &project_modules[*owner],
+            ));
+        }
         for (target_file, name) in resolved_uses {
             uses.insert((file_id, ids[&target_file], name));
         }
@@ -2230,7 +2360,98 @@ fn parse_python_with_progress(
         fanin,
         uses,
         module_for,
+        python_cross_project,
     })
+}
+
+/// Issue #162: which parts of one absolute import resolve into a sibling
+/// project, and into which one. `root` is the importer's root-spelled
+/// module with the root's module set, `own` its own project's spelling and
+/// module set when it has a project, and `owners` every project's
+/// top-level modules with the projects that hold each.
+///
+/// A `from a.b import c` is one part, keyed by `a`; `import a.b, d` is one
+/// part per module named, since each name is its own import. A part is
+/// taken only when all of this holds:
+///
+/// - the import is absolute (level 0): a relative import never leaves its
+///   own package;
+/// - neither scope that already resolves it -- the root spelling and the
+///   importer's own project -- links anything for it, so existing
+///   resolution always wins, and a partly resolved `import a, b` keeps
+///   what it had;
+/// - the root does not have the top-level name as a module either, and
+///   exactly one project holds it, not the importer's own. None means it
+///   is external; two or more means the tree does not say which one a
+///   process would load, and choosing would be a guess.
+///
+/// This is an inference, not something the tree states: whether a sibling
+/// project is installed where the importer runs lives in a lock file, a
+/// virtualenv or a CI script, none of which tolmap reads. What makes it
+/// exact enough for a lower bound is the exactly-one guard: the only file
+/// set in the repository that can answer to that top-level name is that
+/// project's, and every such edge is counted in `python_cross_project` so
+/// the map can say how many edges rest on it. Issue #115's guarded mirror
+/// from build output back to source and finding 43's generated-code
+/// redirect are the same kind of rule: resolve past what the tree states
+/// only where one answer exists, and count it apart.
+fn python_cross_project_imports<'o>(
+    import: &PythonImport,
+    root: (&str, &BTreeSet<String>),
+    own: Option<(&str, &BTreeSet<String>)>,
+    own_project: Option<&str>,
+    is_pkg: bool,
+    owners: &BTreeMap<&'o str, Vec<&'o str>>,
+) -> Vec<(&'o str, PythonImport)> {
+    if import.level != 0 || owners.is_empty() {
+        return Vec::new();
+    }
+    // Each part's dotted name, and the name it came from (a plain import's).
+    let parts = if import.from {
+        vec![(import.module.as_str(), None)]
+    } else {
+        import
+            .names
+            .iter()
+            .map(|name| (name.0.as_str(), Some(name)))
+            .collect::<Vec<_>>()
+    };
+    let mut result = Vec::new();
+    for (dotted, name) in parts {
+        let top = dotted.split('.').next().unwrap_or(dotted);
+        let Some(&[owner]) = owners.get(top).map(Vec::as_slice) else {
+            continue;
+        };
+        if own_project == Some(owner) || root.1.contains(top) {
+            continue;
+        }
+        let part = match name {
+            None => import.clone(),
+            Some(name) => PythonImport {
+                from: false,
+                level: 0,
+                module: String::new(),
+                names: vec![name.clone()],
+            },
+        };
+        if !resolve_python(&part, root.0, root.1, is_pkg).is_empty() {
+            continue;
+        }
+        if let Some((current, known)) = own {
+            if known.contains(top) || !resolve_python(&part, current, known, is_pkg).is_empty() {
+                continue;
+            }
+        }
+        result.push((owner, part));
+    }
+    result
+}
+
+/// A project directory laid out as `src/<package>`: `src/` exists and is
+/// not itself a package (issue #162).
+fn python_project_src_layout(repo: &Path, project: &str) -> bool {
+    let src = repo.join(project).join("src");
+    src.is_dir() && !src.join("__init__.py").is_file()
 }
 
 fn python_project_root(repo: &Path, file: &str) -> Option<String> {
@@ -3959,6 +4180,7 @@ fn parse_multi_with_progress(
         fanin,
         uses,
         module_for,
+        python_cross_project: 0,
     })
 }
 
@@ -5854,6 +6076,7 @@ fn finish_graph(
         sources,
         dominant_pkg,
         dominant_lang,
+        python_cross_project,
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
@@ -6046,6 +6269,7 @@ fn finish_graph(
         nodes,
         edges,
         references: None,
+        python_cross_project,
     })
 }
 
@@ -6434,6 +6658,169 @@ mod tests {
         assert!(edges.contains(&("other/app.py", "other/core/helper.py")));
         assert!(!edges.contains(&("api/app.py", "other/core/helper.py")));
         assert!(!edges.contains(&("outside.py", "api/core/helper.py")));
+    }
+
+    // -- Python cross-project imports (issue #162) ----------------------------
+
+    fn python_root_intermediate(files: &[(&str, &str)]) -> SourceIntermediate {
+        let dir = tempfile::TempDir::new().unwrap();
+        for (path, contents) in files {
+            write(dir.path(), path, contents);
+        }
+        let (parsed, raw) = parse_files(dir.path(), ".", LanguageKind::Python).unwrap();
+        parse_python(dir.path(), ".", parsed, raw).unwrap()
+    }
+
+    fn intermediate_edges(intermediate: &SourceIntermediate) -> BTreeSet<(String, String)> {
+        intermediate
+            .directed
+            .keys()
+            .map(|&(a, b)| {
+                (
+                    intermediate.files[a as usize].clone(),
+                    intermediate.files[b as usize].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_cross_project_import_resolves_when_exactly_one_sibling_owns_the_name() {
+        let intermediate = python_root_intermediate(&[
+            (
+                "clients/python/pyproject.toml",
+                "[project]\nname = 'hindsight-client'\n",
+            ),
+            (
+                "clients/python/hindsight_client/__init__.py",
+                "from .api import Client\n",
+            ),
+            (
+                "clients/python/hindsight_client/api.py",
+                "class Client:\n    pass\n",
+            ),
+            (
+                "integrations/ag2/pyproject.toml",
+                "[project]\nname = 'hindsight-ag2'\n",
+            ),
+            ("integrations/ag2/hindsight_ag2/__init__.py", ""),
+            (
+                "integrations/ag2/hindsight_ag2/tools.py",
+                "import os\nfrom hindsight_client import Client\n",
+            ),
+            // One statement, two parts: `hindsight_ag2.tools` resolves in
+            // the importer's own project and keeps that edge;
+            // `hindsight_client.api` resolves only across.
+            (
+                "integrations/ag2/hindsight_ag2/plain.py",
+                "import hindsight_ag2.tools, hindsight_client.api\n",
+            ),
+        ]);
+        let edges = intermediate_edges(&intermediate);
+        let tools = targets_of(&edges, "integrations/ag2/hindsight_ag2/tools.py");
+        assert!(
+            !tools.is_empty()
+                && tools
+                    .iter()
+                    .all(|target| target.starts_with("clients/python/hindsight_client/")),
+            "{tools:?}"
+        );
+        let plain = targets_of(&edges, "integrations/ag2/hindsight_ag2/plain.py");
+        assert!(plain.contains(&"integrations/ag2/hindsight_ag2/tools.py".to_owned()));
+        assert!(plain.contains(&"clients/python/hindsight_client/api.py".to_owned()));
+        // One per import statement that crossed; `import os` is external.
+        assert_eq!(intermediate.python_cross_project, 2);
+    }
+
+    #[test]
+    fn a_cross_project_import_stays_unresolved_when_two_siblings_own_the_name() {
+        let intermediate = python_root_intermediate(&[
+            ("a/pyproject.toml", "[project]\nname = 'a'\n"),
+            ("a/shared/__init__.py", ""),
+            ("a/shared/x.py", "X = 1\n"),
+            ("b/pyproject.toml", "[project]\nname = 'b'\n"),
+            ("b/shared/__init__.py", ""),
+            ("b/shared/x.py", "X = 2\n"),
+            ("c/pyproject.toml", "[project]\nname = 'c'\n"),
+            ("c/cpkg/__init__.py", ""),
+            ("c/cpkg/use.py", "from shared import x\nimport shared.x\n"),
+        ]);
+        let edges = intermediate_edges(&intermediate);
+        assert!(targets_of(&edges, "c/cpkg/use.py").is_empty(), "{edges:?}");
+        assert_eq!(intermediate.python_cross_project, 0);
+    }
+
+    #[test]
+    fn the_importers_own_project_wins_over_a_sibling() {
+        let intermediate = python_root_intermediate(&[
+            ("a/pyproject.toml", "[project]\nname = 'a'\n"),
+            ("a/util/__init__.py", ""),
+            ("a/util/helper.py", "VALUE = 1\n"),
+            (
+                "a/app.py",
+                "from util import helper\nfrom util.missing import thing\n",
+            ),
+            ("b/pyproject.toml", "[project]\nname = 'b'\n"),
+            ("b/util/__init__.py", ""),
+            ("b/util/helper.py", "VALUE = 2\n"),
+            ("b/util/missing.py", "thing = 3\n"),
+        ]);
+        let edges = intermediate_edges(&intermediate);
+        let app = targets_of(&edges, "a/app.py");
+        assert!(app.contains(&"a/util/helper.py".to_owned()), "{app:?}");
+        assert!(app.iter().all(|target| target.starts_with("a/")), "{app:?}");
+        assert_eq!(intermediate.python_cross_project, 0);
+    }
+
+    #[test]
+    fn a_src_layout_project_uses_the_import_spelling() {
+        let intermediate = python_root_intermediate(&[
+            ("lib/pyproject.toml", "[project]\nname = 'hindsight-lib'\n"),
+            ("lib/src/hindsight_lib/__init__.py", ""),
+            ("lib/src/hindsight_lib/core.py", "VALUE = 1\n"),
+            (
+                "lib/src/hindsight_lib/app.py",
+                "from hindsight_lib import core\n",
+            ),
+            ("app/pyproject.toml", "[project]\nname = 'hs-app'\n"),
+            ("app/hs_app/__init__.py", ""),
+            (
+                "app/hs_app/main.py",
+                "from hindsight_lib.core import VALUE\n",
+            ),
+        ]);
+        let edges = intermediate_edges(&intermediate);
+        // Inside the project: `hindsight_lib`, not `src.hindsight_lib`.
+        assert!(edges.contains(&(
+            "lib/src/hindsight_lib/app.py".to_owned(),
+            "lib/src/hindsight_lib/core.py".to_owned()
+        )));
+        // From a sibling, through the same spelling.
+        assert!(edges.contains(&(
+            "app/hs_app/main.py".to_owned(),
+            "lib/src/hindsight_lib/core.py".to_owned()
+        )));
+        // Only the sibling's statement crossed.
+        assert_eq!(intermediate.python_cross_project, 1);
+    }
+
+    #[test]
+    fn a_source_root_below_the_repository_never_crosses_projects() {
+        // `pkg` is not `.`: there are no project tables, so nothing to
+        // cross into, and the count stays zero.
+        let dir = tempfile::TempDir::new().unwrap();
+        write(dir.path(), "widget/__init__.py", "");
+        write(dir.path(), "widget/core.py", "import hindsight_client\n");
+        write(
+            dir.path(),
+            "clients/pyproject.toml",
+            "[project]\nname = 'hindsight-client'\n",
+        );
+        write(dir.path(), "clients/hindsight_client/__init__.py", "");
+        let (parsed, raw) = parse_files(dir.path(), "widget", LanguageKind::Python).unwrap();
+        let intermediate = parse_python(dir.path(), "widget", parsed, raw).unwrap();
+        assert!(intermediate.directed.is_empty());
+        assert_eq!(intermediate.python_cross_project, 0);
     }
 
     // -- Python package re-exports (finding 48) ---------------------------
@@ -8298,6 +8685,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            python_cross_project: 0,
         };
 
         let mut py_parsed = BTreeMap::new();
@@ -8314,6 +8702,7 @@ mod tests {
             module_for: [("shared.txt".to_owned(), "shared".to_owned())]
                 .into_iter()
                 .collect(),
+            python_cross_project: 0,
         };
 
         let merged = union_sources(vec![go_source, py_source]).unwrap();
