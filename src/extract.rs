@@ -469,6 +469,7 @@ pub fn build_multi_source_with_progress(
         false,
         RefsMode::Hand,
         &InstallMode::Off,
+        None,
         progress,
     )?
     .0)
@@ -491,6 +492,46 @@ pub fn build_multi_source_with_refs(
         false,
         refs,
         &InstallMode::Off,
+        None,
+        &crate::progress::Progress::silent(),
+    )?
+    .0)
+}
+
+/// Where co-change is read from when it is not the checkout's own history
+/// (issue #176). `tolmap check` extracts its head graph with the **base's**
+/// history, so the two graphs it compares differ only in what the diff
+/// changed: the diff's static signals, never a history one commit longer.
+/// Reading head's own `git log` made Δq move on commits that change no
+/// mapped file -- the 4000-commit window slides by one, and the diff's own
+/// commit adds co-change -- down to -0.0042 on django (finding 60), which
+/// hid the narrow coupling changes the check exists to catch.
+#[derive(Clone, Debug, Default)]
+pub struct CochangeHistory {
+    /// The commit whose `git log` is read, instead of the checkout's HEAD.
+    pub revision: String,
+    /// Old path -> new path for files the diff renamed, so the base history
+    /// of a renamed file is credited to the path it has in this checkout.
+    pub renames: BTreeMap<String, String>,
+}
+
+/// As [`build_multi_source_with_refs`], with co-change read from
+/// `history` instead of the checkout's own `git log` (see
+/// [`CochangeHistory`]). Everything else -- parsing, resolution, semantic,
+/// proximity -- reads the checkout.
+pub fn build_multi_source_with_history(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    refs: RefsMode,
+    history: &CochangeHistory,
+) -> Result<GraphData> {
+    Ok(build_multi_source_inner(
+        repo,
+        sources,
+        false,
+        refs,
+        &InstallMode::Off,
+        Some(history),
         &crate::progress::Progress::silent(),
     )?
     .0)
@@ -507,6 +548,7 @@ pub(crate) fn build_with_symbols(
         true,
         RefsMode::Hand,
         &InstallMode::Off,
+        None,
         &crate::progress::Progress::silent(),
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -526,6 +568,7 @@ pub(crate) fn build_with_symbols_progress(
         true,
         refs,
         install,
+        None,
         progress,
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -541,6 +584,7 @@ pub(crate) fn build_multi_source_with_symbols(
         true,
         RefsMode::Hand,
         &InstallMode::Off,
+        None,
         &crate::progress::Progress::silent(),
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -553,7 +597,8 @@ pub(crate) fn build_multi_source_with_symbols_progress(
     install: &InstallMode,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
-    let (graph, spool) = build_multi_source_inner(repo, sources, true, refs, install, progress)?;
+    let (graph, spool) =
+        build_multi_source_inner(repo, sources, true, refs, install, None, progress)?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
@@ -563,6 +608,7 @@ fn build_multi_source_inner(
     collect_symbols: bool,
     refs: RefsMode,
     install: &InstallMode,
+    history: Option<&CochangeHistory>,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
     let started = Instant::now();
@@ -652,7 +698,7 @@ fn build_multi_source_inner(
         }
     };
     let graph_started = Instant::now();
-    let mut graph = finish_graph(repo, merged, progress)?;
+    let mut graph = finish_graph(repo, merged, history, progress)?;
     graph.references = references;
     graph_time += graph_started.elapsed();
     let total = started.elapsed();
@@ -6341,6 +6387,7 @@ fn normalize_relative(directory: &str, import: &str) -> String {
 fn finish_graph(
     repo: &Path,
     merged: MergedSources,
+    history: Option<&CochangeHistory>,
     progress: &crate::progress::Progress,
 ) -> Result<GraphData> {
     let MergedSources {
@@ -6360,7 +6407,7 @@ fn finish_graph(
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
-    let history = git_history(repo, &files, 4000, &history_stage)?;
+    let history = git_history(repo, &files, 4000, history, &history_stage)?;
     history_stage.set(history.commits as u64);
     history_stage.finish();
     let semantic = semantic_vectors(&parsed);
@@ -6673,35 +6720,42 @@ fn git_history(
     repo: &Path,
     files: &[String],
     max_commits: usize,
+    source: Option<&CochangeHistory>,
     progress: &crate::progress::StageCounter,
 ) -> Result<GitHistory> {
-    let mut child = Command::new("git")
-        .args([
-            "-C",
-            &repo.to_string_lossy(),
-            "log",
-            &format!("-n{max_commits}"),
-            "--no-merges",
-            "--pretty=format:@%H",
-            "--name-only",
-            // Rename detection needs blob CONTENT, which a `--filter=blob:none`
-            // clone does not have -- `service::clone` makes exactly that kind of
-            // clone, so every blob git wants here is fetched from the remote one
-            // promisor round-trip at a time. Measured on two fresh blobless
-            // clones of encode/httpx (23 source files): 74.59s with rename
-            // detection, 0.02s without. The cost scales with history, not file
-            // count, which is why it never showed up on the fixtures' file
-            // counts and why a dify-sized index spent 712s of wall clock on 3s
-            // of CPU (issue #32).
-            //
-            // What this gives up: a renamed file is reported as delete-old +
-            // add-new instead of one path, so a rename commit contributes the
-            // old path too. Old paths are not in the current file set and are
-            // dropped downstream, so the visible effect is confined to commits
-            // that renamed a file -- see the parity evidence in #32 for what
-            // that does (or does not) change on the nine fixtures.
-            "--no-renames",
-        ])
+    let mut command = Command::new("git");
+    command.args([
+        "-C",
+        &repo.to_string_lossy(),
+        "log",
+        &format!("-n{max_commits}"),
+        "--no-merges",
+        "--pretty=format:@%H",
+        "--name-only",
+        // Rename detection needs blob CONTENT, which a `--filter=blob:none`
+        // clone does not have -- `service::clone` makes exactly that kind of
+        // clone, so every blob git wants here is fetched from the remote one
+        // promisor round-trip at a time. Measured on two fresh blobless
+        // clones of encode/httpx (23 source files): 74.59s with rename
+        // detection, 0.02s without. The cost scales with history, not file
+        // count, which is why it never showed up on the fixtures' file
+        // counts and why a dify-sized index spent 712s of wall clock on 3s
+        // of CPU (issue #32).
+        //
+        // What this gives up: a renamed file is reported as delete-old +
+        // add-new instead of one path, so a rename commit contributes the
+        // old path too. Old paths are not in the current file set and are
+        // dropped downstream, so the visible effect is confined to commits
+        // that renamed a file -- see the parity evidence in #32 for what
+        // that does (or does not) change on the nine fixtures.
+        "--no-renames",
+    ]);
+    // HEAD unless the caller names another commit (issue #176). The `--`
+    // keeps a revision from ever being read as a path.
+    if let Some(source) = source {
+        command.arg(&source.revision).arg("--");
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -6742,9 +6796,17 @@ fn git_history(
                 }
             }
             current = Some(BTreeSet::new());
-        } else if !line.trim().is_empty() && file_set.contains(line) {
-            if let Some(current) = current.as_mut() {
-                current.insert(line.to_owned());
+        } else if !line.trim().is_empty() {
+            // A path another history knew under its old name is credited
+            // to the name it has here (issue #176: a renamed file keeps its
+            // base co-change on the head side).
+            let line = source
+                .and_then(|source| source.renames.get(line))
+                .map_or(line, String::as_str);
+            if file_set.contains(line) {
+                if let Some(current) = current.as_mut() {
+                    current.insert(line.to_owned());
+                }
             }
         }
     }
@@ -6910,6 +6972,79 @@ mod tests {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    /// Issue #176: co-change read from a named commit, not HEAD, with a
+    /// renamed file credited under its new path.
+    #[test]
+    fn git_history_reads_the_named_revision_and_follows_renames() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        git_in(root, &["init", "-q"]);
+        for round in 0..3 {
+            write(root, "a.py", &format!("A = {round}\n"));
+            write(root, "b.py", &format!("B = {round}\n"));
+            git_in(root, &["add", "-A"]);
+            git_in(root, &["commit", "-qm", &format!("round {round}")]);
+        }
+        let base = git_in(root, &["rev-parse", "HEAD"]);
+        // Head: a.py becomes z.py, and z.py and c.py change together
+        // three times -- co-change the base history does not hold.
+        git_in(root, &["mv", "a.py", "z.py"]);
+        git_in(root, &["commit", "-qm", "rename"]);
+        for round in 0..3 {
+            write(root, "z.py", &format!("A = {}\n", round + 10));
+            write(root, "c.py", &format!("C = {round}\n"));
+            git_in(root, &["add", "-A"]);
+            git_in(root, &["commit", "-qm", &format!("later {round}")]);
+        }
+        let files = ["b.py", "c.py", "z.py"].map(str::to_owned).to_vec();
+        let progress = crate::progress::Progress::silent();
+        let stage = progress.stage(crate::progress::StageId::History, None);
+
+        let own = git_history(root, &files, 4000, None, &stage).unwrap();
+        // Every commit touching a mapped file: three rounds (b.py), the
+        // rename (z.py) and three later rounds.
+        assert_eq!(own.commits, 7);
+        assert!(own
+            .cochange
+            .contains_key(&("c.py".to_owned(), "z.py".to_owned())));
+
+        let history = CochangeHistory {
+            revision: base,
+            renames: BTreeMap::from([("a.py".to_owned(), "z.py".to_owned())]),
+        };
+        let from_base = git_history(root, &files, 4000, Some(&history), &stage).unwrap();
+        assert_eq!(from_base.commits, 3, "only the base's three rounds");
+        assert_eq!(
+            from_base.cochange,
+            BTreeMap::from([(("b.py".to_owned(), "z.py".to_owned()), 1.0)]),
+            "a.py's base co-change is credited to z.py, and head's own is not read"
+        );
     }
 
     #[test]

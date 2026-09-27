@@ -22,14 +22,23 @@
 //! (unweighted, γ = 1) on the pre-merge membership; the two are not
 //! comparable and docs/CHECK.md says so.
 //!
+//! **Co-change is the base's on both sides** (issue #176, finding 61). The
+//! head graph takes its imports, symbol uses, names and paths from head, but
+//! its co-change from the base commit's history. Head's own `git log` is one
+//! commit longer: its 4000-commit window slides by one, and the diff's own
+//! commit adds co-change. That moved Δq on commits that change no mapped
+//! file, down to -0.0042 on django (finding 60), deeper than the narrow
+//! coupling changes the check exists to catch.
+//!
 //! Every number is computed on tolmap's own reference graph, which misses
 //! what it cannot resolve (CLAUDE.md: numbers are a lower bound), and the
 //! report says so in `lower_bound`.
 //!
 //! The user's checkout is never touched: base (and `--head`, when given) are
 //! checked out into temporary `git worktree`s, with hooks off, and removed
-//! afterwards. A worktree rather than `git archive` because extraction's
-//! co-change signal reads the checkout's own `git log`.
+//! afterwards. A worktree rather than `git archive` because extraction reads
+//! the base's `git log` for co-change, and the head worktree reads it too,
+//! through the object store they share.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -40,7 +49,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::detect::{self, Confidence};
-use crate::extract::{self, round_to, InstallMode, LanguageKind, RefsMode};
+use crate::extract::{self, round_to, CochangeHistory, InstallMode, LanguageKind, RefsMode};
 use crate::geometry::{self, BuildFeatures};
 use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
@@ -273,8 +282,22 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
             source.0
         )));
     }
+    // The head graph reads the base's co-change history (issue #176), with
+    // renamed files credited under their head paths: the two graphs then
+    // differ only in the diff's own static signals, so a commit that changes
+    // no mapped file gives Δq exactly 0.
+    let history = CochangeHistory {
+        revision: base.clone(),
+        renames: changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Renamed { from, to } => Some((from.clone(), to.clone())),
+                _ => None,
+            })
+            .collect(),
+    };
     let stage = Instant::now();
-    let head_graph = extract_graph(&head_dir, &source)?;
+    let head_graph = extract_head_graph(&head_dir, &source, &history)?;
     let head_graph_s = stage.elapsed().as_secs_f64();
     drop(scratch);
 
@@ -1158,6 +1181,20 @@ fn extract_graph(dir: &Path, source: &(String, LanguageKind)) -> Result<GraphDat
 /// Builds the base map the way `tolmap build` would, cold, into scratch.
 /// Parcels are skipped: they are drawn after the partition and never change
 /// membership, names or landmarks, which is all the check reads.
+fn extract_head_graph(
+    dir: &Path,
+    source: &(String, LanguageKind),
+    history: &CochangeHistory,
+) -> Result<GraphData, CheckError> {
+    extract::build_multi_source_with_history(
+        dir,
+        std::slice::from_ref(source),
+        RefsMode::default(),
+        history,
+    )
+    .map_err(|error| internal(error.context(format!("extract {}", dir.display()))))
+}
+
 fn build_base_map(graph: GraphData, out: &Path) -> Result<MapDocument, CheckError> {
     let path = geometry::build_from_graph(
         graph,
