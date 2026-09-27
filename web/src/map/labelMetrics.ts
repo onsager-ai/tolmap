@@ -49,18 +49,27 @@ const UNKNOWN = 1000;
 
 export const MAP_LABEL_FONT = "Archivo, ui-sans-serif, system-ui, sans-serif";
 
+// Each glyph counts as the larger of its exact advance and that advance
+// rounded to a whole pixel. A hinted rasteriser -- Chromium on Linux, which
+// is what CI screenshots -- draws every glyph a whole number of pixels wide,
+// and on a long label the rounding adds up (a 54-character neighbourhood
+// label drew 343 px against an exact 332 px; the rounded sum is exactly 343,
+// measured by check-view-stability's checkLabelsFitTheirBoxes). Taking the
+// larger per glyph is exact there and never narrower than the text on an
+// unhinted renderer (macOS, iOS).
 /** Width in px of `text` set in Archivo at `size` px and `weight`. Only 400,
  * 500 and 600 are tabled (all the map's Archivo labels use); a weight above
  * 600 would under-measure, so add its table before using one. */
 export function archivoWidth(text: string, size: number, weight = 400): number {
   const table = weight <= 400 ? ARCHIVO_400 : weight <= 500 ? ARCHIVO_500 : ARCHIVO_600;
-  let units = 0;
+  let px = 0;
   for (const ch of text) {
     const code = ch.codePointAt(0)!;
-    if (code >= 0x20 && code <= 0x7e) units += table[code - 0x20];
-    else units += EXTRA[ch] ?? UNKNOWN;
+    const units = code >= 0x20 && code <= 0x7e ? table[code - 0x20] : (EXTRA[ch] ?? UNKNOWN);
+    const exact = (units / 1000) * size;
+    px += Math.max(exact, Math.round(exact));
   }
-  return (units / 1000) * size;
+  return px;
 }
 
 /** The collision-box width for a map label drawn in Archivo: the text's own
