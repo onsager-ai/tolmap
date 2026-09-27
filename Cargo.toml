@@ -79,6 +79,21 @@ tokio-stream = "=0.1.19"
 # forwarding shim depending on the already-locked webpki-roots 1.0.9 -- so
 # there is one rustls, one crypto provider and one root store, not two.
 tokio-tungstenite = { version = "=0.29.0", features = ["rustls-tls-webpki-roots"] }
+# Issue #97 phase 3 (owner decision, WORKER_TIER.md §10.4 "one bearer token
+# per worker ... over TLS, on a separate listener"): the master terminates
+# TLS on the worker listener itself, and a remote agent verifies the master
+# against a private CA (`--ca-file`). `tokio-rustls` is the async server
+# half (`TlsAcceptor`); its `pub use rustls` is also how this crate names
+# rustls types directly (`ServerConfig`, `ClientConfig`, `RootCertStore`,
+# `StreamOwned`, and `pki_types::pem::PemObject` for reading the PEM
+# certificate and key files -- rustls-pki-types' own PEM parser, so no
+# `rustls-pemfile`). Pinned "=0.26.5" because that is the exact version
+# `tokio-tungstenite`'s rustls feature already locks, so Cargo.lock gains no
+# package, only this edge. `default-features = false` drops tokio-rustls'
+# default `aws_lc_rs`; "ring" keeps the one crypto provider the tree already
+# uses (ureq's `_ring`), so there is still one rustls, one provider, no
+# aws-lc-rs and no native-tls.
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
 # Fly.io deployment (2026-09-20): tolmap serves the built web bundle from
 # the same axum process as the API when TOLMAP_STATIC_DIR is set, so a
 # single always-on machine is one origin instead of two (see
