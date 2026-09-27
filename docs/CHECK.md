@@ -4,7 +4,7 @@
 
 ```
 tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
-             [--max-districts N] [--max-dq X] [--format text|json]
+             [--max-districts N] [--max-dq X | --report-only] [--format text|json]
 ```
 
 ## Flags
@@ -17,15 +17,30 @@ tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
 | `--base-map <map.json>` | a stored map of `--base`, used as the base partition instead of building one. See "The base map" below |
 | `--max-districts N` | fail (exit 1) when the change crosses more than `N` districts |
 | `--max-dq X` | fail (exit 1) when modularity drops by more than `X`, that is when `delta_q < -X`. `X` is a number ≥ 0 |
+| `--report-only` | apply no threshold: report, and exit 0 whatever the numbers. Cannot be combined with `--max-districts` or `--max-dq` (exit 2) |
 | `--format text\|json` | `text` (the default) or `json` on stdout. Progress and timings go to stderr |
 
-**With no threshold flag the check only reports.** The verdict is `pass` and the exit code is 0, whatever the numbers. Default thresholds come in a later change, once replaying real history on GitHub Actions has calibrated them (issue #170, PR 2).
+## Default thresholds
+
+**With no threshold flag the check applies `--max-districts 4 --max-dq 0.01`.** Both are absolute: neither scales with the size of the repository.
+
+- **Flags replace the defaults as a set.** Pass either threshold flag and only the flags you pass apply. `--max-dq 0.002` alone checks Δq and nothing else; no default mixes in.
+- **`--report-only` applies none.** That is the behaviour the check had before the defaults existed.
+- **The report says which applied.** `thresholds.source` is `default`, `flags` or `report_only`.
+
+The defaults come from replaying 600 real commits through the check on GitHub Actions: the last 200 first-parent commits of django, prometheus and vuejs/core at their corpus pins (docs/FINDINGS.md finding 60, `remote-build.yml` `command=check-calibrate`). On those commits they would have failed 2, 2 and 1 of the 200, every one of them a change that crossed 5 or more districts.
+
+- **`--max-districts 4`** sits above every repository's p99 (4, 3 and 3) and below a clear knee: above 4, the sample holds one commit at 5 and four at 7.
+- **Absolute, not a share of the map.** The three maps have 11–15, 11–14 and 6–8 districts, yet their tails are the same in absolute terms. A share of the map's districts would fire most on the map with the fewest.
+- **`--max-dq 0.01`** is set above a noise floor. Δq moves even on commits that change no file on the map, because the head's co-change history is one commit longer; on django that drift reached −0.0042. Below the floor, Δq cannot tell a small real coupling change from drift. 0.01 sits in the knee of django's tail (−0.0173, then −0.0059). In the sample it fires on one commit alone, and that commit also crossed 7 districts.
+
+Read a Δq failure with that floor in mind. A drop of a few thousandths can come from history rather than from the diff.
 
 ## Exit codes
 
 | code | meaning |
 |---|---|
-| 0 | pass: no threshold given, or none crossed |
+| 0 | pass: no threshold crossed, or `--report-only` |
 | 1 | a threshold was crossed; the report is still printed |
 | 2 | usage or input error: a bad flag or value, a path that is not in a git repository, a ref that names no commit, a `--base-map` that is missing, unreadable, not a map, or not verifiably from `--base`, detection refused (low confidence) or failed at base, the detected source root missing at head |
 | 3 | internal error: the check itself failed (extraction, the base build, git failing mid-run, a panic) |
@@ -73,15 +88,17 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 
 `CheckReport` is defined once in Rust (`src/schema.rs`), and its TypeScript is generated (`bindings/CheckReport.ts` and the `Check*` types beside it).
 
-- **`version` is 1.** Any change to a field's meaning or shape, and any removal, bumps it. A consumer should refuse a version it does not know.
+- **`version` is 1.** Any change to an existing field's meaning or type, and any removal, bumps it. Adding a field does not, so a consumer should ignore fields it does not know, and refuse a version it does not know.
 - **Stable output.** Key order is fixed, and every float is rounded to 6 decimal places. `delta_q` is computed before rounding, and the thresholds compare the rounded values that are printed. The same inputs give a byte-identical report (CLAUDE.md's determinism rule); it holds no timings and no temporary paths.
 - **`head`** is `null` for the working tree.
+- **Added in version 1.** `base_files`, `base_districts` and `thresholds.source` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
 
 | field | type | meaning |
 |---|---|---|
 | `version` | number | 1 |
 | `base` | string | full commit id of `--base` |
 | `head` | string \| null | full commit id of `--head`, or `null` for the working tree |
+| `base_files`, `base_districts` | number | the base map's size: its files, and its distinct districts |
 | `districts_crossed` | number | see above |
 | `districts` | `{id, name, changed_files}[]` | the districts crossed, by id; `name` is the base map's name for it |
 | `files` | `{path, base_path, status, district, placed}[]` | the changed files on the map, by path. `status` is `added`, `modified`, `deleted` or `renamed`; `base_path` is set for a rename only; `district` is `null` for an unplaced file; `placed` is true when the district came from placement |
@@ -89,7 +106,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 | `modularity_base`, `modularity_head`, `delta_q` | number | see above |
 | `edges_added`, `edges_removed` | `{source, target, source_district, target_district, weight, static_import}[]` | heaviest first, then by path |
 | `landmark_touches` | `{file, kind, detail}[]` | `kind` is `hazard` or `bridge` |
-| `thresholds` | `{max_districts, max_dq}` | the thresholds applied, `null` where not given |
+| `thresholds` | `{max_districts, max_dq, source}` | the thresholds applied, `null` where one was not applied. `source` is `default` (no threshold flag), `flags` (the flags given, and only those) or `report_only` (both `null`) |
 | `verdict` | `"pass" \| "fail"` | `fail` exactly when the exit code is 1 |
 | `lower_bound` | `true` | always |
 
@@ -99,10 +116,11 @@ The text format starts with three lines: districts crossed, Δq and the verdict.
 
 ## Examples
 
-Both examples are real output, not illustrations. They come from GitHub Actions ([remote-build run 36321866316](https://github.com/onsager-ai/tolmap/actions/runs/36321866316), `command=check`, `extra_args=--base HEAD~30`). The repository is django at its corpus pin `dd6f6b1` (the working tree), checked against 30 commits earlier (`5f0293b`), with no thresholds.
+Both examples are real output, not illustrations. They come from GitHub Actions ([remote-build run 36324295341](https://github.com/onsager-ai/tolmap/actions/runs/36324295341), `command=check`, `extra_args=--base HEAD~30`). The repository is django at its corpus pin `dd6f6b1` (the working tree), checked against 30 commits earlier (`5f0293b`), under the default thresholds.
 
-Two things in them are worth reading closely:
+Three things in them are worth reading closely:
 
+- **It fails, on breadth alone.** Thirty commits together cross 6 districts, past the default 4. Of the 600 single commits replayed for finding 60, 4 crossed 6 or more. With `--report-only` the numbers are the same, the verdict is `pass` and the exit code is 0.
 - **Modularity rose.** Δq is positive: the change coupled the districts slightly less.
 - **Not every listed edge touches a changed file.** `sql/query.py -> utils/warnings.py` left the pruned graph although neither file changed. Pruning keeps each file's strongest edges relative to its others (finding 23), so a new edge elsewhere can push an old one out. The edge lists describe the graph the partitioner sees, not only the diff's own lines.
 
@@ -110,7 +128,7 @@ Two things in them are worth reading closely:
 $ tolmap check django --base HEAD~30
 districts crossed: 6 (2 admin & contrib, 3 models & db, 4 db & backends, 6 gis & contrib, 7 template, 8 gdal & gis)
 delta q: +0.000162 (base 0.574889 -> head 0.575051, base partition held fixed)
-verdict: pass (report only: no threshold given)
+verdict: fail (districts 6 > 4, delta q +0.000162 >= -0.010000; default thresholds)
 cross-district edges: 3 added, 4 removed
   + django/db/backends/base/features.py -> django/db/backends/sqlite3/schema.py (district 4 -> 3) weight 0.153985
   - django/db/backends/postgresql/features.py -> django/db/models/fields/__init__.py (district 4 -> 3) weight 0.148922
@@ -122,7 +140,7 @@ cross-district edges: 3 added, 4 removed
 landmark touched: django/db/models/query.py is a hazard (churn 92 x cplx 587)
 numbers are a lower bound: tolmap's graph holds only the references it can resolve (calls through variables, dynamic imports and reflection are missed), so the change couples at least this much
 $ echo $?
-0
+1
 ```
 
 ```
@@ -131,6 +149,8 @@ $ tolmap check django --base HEAD~30 --format json
   "version": 1,
   "base": "5f0293b3ab546f86d666524f07d17304ac785506",
   "head": null,
+  "base_files": 851,
+  "base_districts": 13,
   "districts_crossed": 6,
   "districts": [
     {
@@ -343,10 +363,11 @@ $ tolmap check django --base HEAD~30 --format json
     }
   ],
   "thresholds": {
-    "max_districts": null,
-    "max_dq": null
+    "max_districts": 4,
+    "max_dq": 0.01,
+    "source": "default"
   },
-  "verdict": "pass",
+  "verdict": "fail",
   "lower_bound": true
 }
 ```
@@ -356,3 +377,5 @@ $ tolmap check django --base HEAD~30 --format json
 The check has no incremental build (HANDOFF.md item 3). It extracts both sides and builds the base map, skipping geometry and parcels, unless `--base-map` is given. Head needs extraction and blend only. The time a run spent on each stage is printed to stderr. `remote-build.yml`'s `check` command times it on corpus repositories on GitHub Actions: the pinned commit against its parent, or against the `--base` given in `extra_args`.
 
 On django (851 files, co-change over its last 4000 commits), the example above took 5.6 s wall time with a 55 MB peak RSS, on a standard GitHub-hosted runner. The stages were base graph 1.8 s, base map 0.5 s and head graph 1.8 s; the rest was git and the two worktrees. Against the pinned commit's parent, the same run took 3.7 s.
+
+The calibration replay (finding 60) timed 600 single-commit checks on the same runners: the median was 5.8 s on django, 5.3 s on prometheus (444 files) and 1.5 s on vuejs/core (239 files), and no check took longer than 6.4 s.
