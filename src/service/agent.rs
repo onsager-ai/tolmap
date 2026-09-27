@@ -236,6 +236,14 @@ pub fn run(config: AgentConfig) -> Result<()> {
     let endpoint = Endpoint::parse(&config.connect)?;
     std::fs::create_dir_all(&config.cache_dir)
         .with_context(|| format!("create {}", config.cache_dir.display()))?;
+    // A starting agent holds no job, so any job or input directory under
+    // its cache is a killed predecessor's. They must go: the master
+    // re-queues that job (#97 phase 2), it may come back to this agent
+    // under the same id, and the executor would find the old checkout in
+    // its way. The clone cache beside them is kept.
+    for leftover in ["work", "inputs"] {
+        let _ = std::fs::remove_dir_all(config.cache_dir.join(leftover));
+    }
     // The same variables local mode reads for its job children: the uid
     // they drop to and the clone cache budget.
     let settings = ServeConfig::from_env();
@@ -453,8 +461,8 @@ impl Agent {
             current.kill();
         }
         Err(anyhow!(
-            "the channel to the master was lost ({reason}); with no resume in phase 1, \
-             the job this agent held, if any, was killed"
+            "the channel to the master was lost ({reason}); with no resume yet, the job \
+             this agent held, if any, was killed and its lease left to run out"
         ))
     }
 

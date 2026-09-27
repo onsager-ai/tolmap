@@ -1,17 +1,41 @@
-//! The worker tier's master side for #97 phase 1 (docs/WORKER_TIER.md §2,
-//! §2.3, §2.4, §3, §4, §5.1, §5.6): the private worker listener, the
-//! channel sessions with agents, in-memory leases, the lease-scoped
-//! artifact endpoints, the job runner loopback mode uses in place of the
-//! in-process executor, and the supervisor that keeps
-//! `TOLMAP_WORKERS=loopback:N`'s agents running.
+//! The worker tier's master side for #97 phases 1 and 2 (docs/WORKER_TIER.md
+//! §2, §2.2–§2.5, §3, §4, §5.1, §5.6, §6): the private worker listener, the
+//! channel sessions with agents, leases, the lease-scoped artifact
+//! endpoints, the job runner loopback mode uses in place of the in-process
+//! executor, and the supervisor that keeps `TOLMAP_WORKERS=loopback:N`'s
+//! agents running.
 //!
-//! **What phase 1 is.** State is in memory, as local mode's is. A lost
-//! agent or an expired lease fails its job with `worker_crashed`; nothing
-//! is re-queued, resumed or retried (phase 2), so `resume` is never
-//! advertised and a `hello.resume` is answered with `cancel`. Only loopback
-//! agents exist: the listener binds to loopback only, the agents are this
-//! binary started by this process, and their tokens are minted here at
-//! startup.
+//! **Durable jobs (phase 2, step 2).** Each job has a row in the store's
+//! `jobs` table (`store::JobRow`), and the table is the truth for its state,
+//! attempt and epoch; the job registry and the hub's leases are caches of
+//! it. A lease that runs out -- the agent died, its channel dropped, or it
+//! went quiet -- puts the job back at the head of its class queue with a new
+//! epoch to come, counting one lost worker; past the retry bound (§10.6)
+//! the job fails `worker_crashed`. A restart or a graceful stop re-queues
+//! without counting. There is no resume yet (step 3): a dropped channel just
+//! lets the lease run out, `resume` is never advertised, and a
+//! `hello.resume` is answered with `cancel`. Only loopback agents exist: the
+//! listener binds to loopback only, the agents are this binary started by
+//! this process, and their tokens are minted here at startup.
+//!
+//! **Invariants**, each also stated where the code keeps it:
+//! - *Epoch fencing.* An epoch is raised in the store before the `assign`
+//!   carrying it is sent (`Store::begin_attempt`), so no epoch is ever
+//!   handed out twice, even across a crash. Anything carrying another
+//!   epoch than the live lease's -- an event, a heartbeat, an upload, a
+//!   result -- is refused; a result gets `result_rejected` and is never
+//!   registered. Each epoch uploads into its own directory, removed when
+//!   its lease ends.
+//! - *Terminal is final.* No row leaves `done` or `failed` (every update is
+//!   guarded), and terminal rows are written from the in-memory snapshot,
+//!   which is itself terminal once and for all, so a cancel racing a result
+//!   or a re-queue leaves memory and table agreeing.
+//! - *Lock order.* The registry's lock is never taken under the hub's, and
+//!   neither is held across SQLite I/O or a socket write: the runner writes
+//!   the store between its calls into either.
+//! - *Restart order.* `jobs::restore` reloads the table before the public
+//!   listener opens and before any agent can connect: orphaned leases take
+//!   their slots first, then queued jobs in admission order.
 //!
 //! **Trust decisions**, each also stated where the code makes it:
 //! - The listener is separate from the public router and loopback-only
@@ -63,7 +87,8 @@ use crate::progress::StageId;
 use crate::service::clone::{self, RepoRef};
 use crate::service::error::{ApiError, ErrorBody};
 use crate::service::executor::{self, EventSink, JobInputs, WorkerOutput};
-use crate::service::jobs::{self, JobSnapshot, SnapshotSink};
+use crate::service::jobs::{self, JobSnapshot, JobStatus, SnapshotSink};
+use crate::service::store::Requeued;
 use crate::service::worker_result;
 use crate::service::AppState;
 use crate::worker::{
@@ -81,8 +106,21 @@ pub const DEFAULT_LEASE_TTL_S: u64 = 60;
 /// digits. Its size is the request's `Content-Length`.
 pub const SHA256_HEADER: &str = "x-tolmap-sha256";
 
-/// Phase 1 never reassigns a job, so every lease is epoch 1 (§2.2).
-const EPOCH: u64 = 1;
+/// §10.6: two lost-worker retries per class by default.
+pub const DEFAULT_RETRIES: u32 = 2;
+
+/// How often a running job's snapshot is written to the store between
+/// stage boundaries (§3.5: "at stage boundaries and every few seconds").
+const SNAPSHOT_EVERY: Duration = Duration::from_secs(3);
+
+/// `stage` of a job re-queued after its lease ran out (§2.2).
+const WORKER_LOST: &str = "worker lost, retrying on another worker";
+
+/// `stage` of a job its agent released for a graceful stop.
+const STOPPED: &str = "the service stopped; the job runs again when it is back";
+
+/// `stage` of a job its agent released because the worker is stopping.
+const WORKER_STOPPED: &str = "the worker stopped; retrying on another worker";
 
 /// How often a waiting runner re-checks cancellation and lease expiry.
 const POLL: Duration = Duration::from_millis(250);
@@ -147,6 +185,8 @@ pub struct LoopbackSettings {
     pub listen: SocketAddr,
     pub heartbeat_s: u64,
     pub lease_ttl: Duration,
+    /// `TOLMAP_WORKER_RETRIES`: lost-worker retries before a job fails.
+    pub retries: u32,
 }
 
 impl LoopbackSettings {
@@ -175,6 +215,11 @@ impl LoopbackSettings {
                 "TOLMAP_WORKER_LEASE_TTL_S",
                 DEFAULT_LEASE_TTL_S,
             )),
+            // Zero is a valid bound (no retries), unlike the two above.
+            retries: std::env::var("TOLMAP_WORKER_RETRIES")
+                .ok()
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .unwrap_or(DEFAULT_RETRIES),
         })
     }
 }
@@ -343,15 +388,17 @@ pub(crate) enum LeaseEvent {
         reason: ReleasedReason,
         peak_rss_bytes: Option<u64>,
     },
-    /// The channel holding the lease closed.
-    Lost(String),
 }
 
-/// The master's record that one agent holds one job (§2.2), in memory in
-/// phase 1.
+/// The master's record that one agent holds one job (§2.2), a cache of the
+/// job's row: the row holds its status, epoch and holder.
 struct Lease {
-    conn: u64,
-    agent: usize,
+    /// The channel holding it; `None` once that channel closed (the lease
+    /// then runs out unless resumed, step 3) and for a lease a restarted
+    /// master adopted from the store.
+    conn: Option<u64>,
+    /// The agent (token) holding it; `None` for an adopted lease.
+    agent: Option<usize>,
     epoch: u64,
     deadline: Instant,
     next_seq: u64,
@@ -371,6 +418,11 @@ struct Lease {
 struct HubInner {
     conns: BTreeMap<u64, Conn>,
     leases: BTreeMap<Uuid, Lease>,
+    /// Runners waiting in `claim`, by admission order: whether each job is
+    /// a `local/<name>` one. Free agents go to the earliest first, so a
+    /// re-queued job, which keeps its admission number, is the head of the
+    /// queue here too.
+    waiting: BTreeMap<(i64, Uuid), bool>,
     next_conn: u64,
     stopping: bool,
 }
@@ -379,6 +431,8 @@ struct HubInner {
 pub(crate) struct Claimed {
     pub(crate) events: std_mpsc::Receiver<LeaseEvent>,
     pub(crate) dir: PathBuf,
+    /// Who holds it, for the store's `lease_holder` and the logs.
+    pub(crate) holder: String,
 }
 
 /// Agents, leases and uploads. One per master in loopback mode, shared by
@@ -395,17 +449,21 @@ pub struct WorkerHub {
     build: WorkerBuild,
     heartbeat_s: u64,
     lease_ttl: Duration,
+    /// Lost-worker retries before a job fails (§10.6).
+    retries: u32,
     staging: PathBuf,
     /// `http://<listener address>`, the base of every artifact URL.
     base_url: String,
 }
 
 impl WorkerHub {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         token_digests: Vec<[u8; 32]>,
         build: WorkerBuild,
         heartbeat_s: u64,
         lease_ttl: Duration,
+        retries: u32,
         staging: PathBuf,
         base_url: String,
     ) -> Self {
@@ -416,6 +474,7 @@ impl WorkerHub {
             build,
             heartbeat_s,
             lease_ttl,
+            retries,
             staging,
             base_url,
         }
@@ -477,8 +536,11 @@ impl WorkerHub {
         id
     }
 
-    /// Phase 1 has no resume, so a closed channel loses its job at once:
-    /// waiting out the lease would only delay the same failure.
+    /// A closed channel does not end its lease (§6 "channel lost, worker
+    /// alive"): the lease is detached and runs out at its deadline, when
+    /// the runner re-queues the job. Resuming within the TTL is step 3; in
+    /// this step a loopback agent that loses its channel kills its job and
+    /// exits, so the lease always runs out.
     fn remove_conn(&self, conn_id: u64) {
         let mut guard = self.lock();
         let inner = &mut *guard;
@@ -488,11 +550,15 @@ impl WorkerHub {
                 conn.agent, conn.worker_id
             );
         }
-        for lease in inner.leases.values() {
-            if lease.conn == conn_id {
-                let _ = lease.events.send(LeaseEvent::Lost(
-                    "worker lost: the agent's channel closed".to_owned(),
-                ));
+        for (job_id, lease) in inner.leases.iter_mut() {
+            if lease.conn == Some(conn_id) {
+                lease.conn = None;
+                eprintln!(
+                    "job {job_id}: its agent's channel closed; the lease (epoch {}) runs out \
+                     within {} s",
+                    lease.epoch,
+                    self.lease_ttl_s()
+                );
             }
         }
         self.changed.notify_all();
@@ -530,7 +596,7 @@ impl WorkerHub {
                     let Some(lease) = inner.leases.get_mut(&id) else {
                         continue;
                     };
-                    if lease.conn != conn_id || lease.epoch != held.epoch {
+                    if lease.conn != Some(conn_id) || lease.epoch != held.epoch {
                         continue;
                     }
                     lease.deadline = now + self.lease_ttl;
@@ -560,16 +626,35 @@ impl WorkerHub {
                         message: format!("job event version {} is not 1", event.version()),
                     });
                 }
-                // Events for a job this channel does not hold at this epoch
-                // are dropped (§2.4, §3.5): a stale epoch, a job whose lease
-                // already ended, or one it never held.
+                // Epoch fencing (§2.4, §3.5, §6 "duplicate or stale
+                // result"): events for a job this channel does not hold at
+                // this epoch are dropped -- a stale epoch, a job whose lease
+                // already ended, or one it never held -- and a result among
+                // them is answered `result_rejected`, never registered.
+                let is_result = matches!(event, WorkerEvent::Result { .. });
+                let reject = |reason: &str| {
+                    if is_result {
+                        if let Some(conn) = inner.conns.get(&conn_id) {
+                            let _ =
+                                conn.out
+                                    .send(Outgoing::Message(MasterMessage::ResultRejected {
+                                        job_id: job_id.clone(),
+                                        epoch,
+                                        reason: reason.to_owned(),
+                                    }));
+                        }
+                    }
+                };
                 let Ok(id) = Uuid::parse_str(&job_id) else {
+                    reject("not a job id");
                     return Ok(());
                 };
                 let Some(lease) = inner.leases.get_mut(&id) else {
+                    reject("no live lease on this job: stale epoch, or the job ended");
                     return Ok(());
                 };
-                if lease.conn != conn_id || lease.epoch != epoch {
+                if lease.conn != Some(conn_id) || lease.epoch != epoch {
+                    reject("stale epoch: the job's lease is held at another epoch");
                     return Ok(());
                 }
                 if seq < lease.next_seq {
@@ -588,6 +673,10 @@ impl WorkerHub {
                 // Any job event also renews the lease (§2.2).
                 lease.deadline = Instant::now() + self.lease_ttl;
                 if lease.finished {
+                    // A second result for this epoch, after the first one
+                    // (or an error, or `released`) ended the job's run:
+                    // refused, so only the first is ever registered.
+                    reject("duplicate: this epoch already delivered its terminal event");
                     return Ok(());
                 }
                 let terminal = matches!(
@@ -634,7 +723,7 @@ impl WorkerHub {
                 let Some(lease) = inner.leases.get_mut(&id) else {
                     return Ok(());
                 };
-                if lease.conn != conn_id || lease.epoch != epoch {
+                if lease.conn != Some(conn_id) || lease.epoch != epoch {
                     return Ok(());
                 }
                 lease.finished = true;
@@ -647,24 +736,38 @@ impl WorkerHub {
         }
     }
 
-    /// Waits for an agent to take `job`, then leases it and sends `assign`
-    /// (§2.3). `None` when the job was cancelled, or the master began
+    /// The directory a lease at `epoch` keeps its inputs and uploads in.
+    /// One per epoch, so an upload still in flight from a superseded epoch
+    /// can never land beside the current epoch's files (§6 "stale result").
+    fn lease_dir(&self, job_id: Uuid, epoch: u64) -> PathBuf {
+        self.staging.join(format!("{job_id}-e{epoch}"))
+    }
+
+    /// Waits for an agent to take `job`, then leases it at `epoch` and
+    /// sends `assign` (§2.3). `epoch` must already be in the store
+    /// (`Store::begin_attempt`): that write is what keeps an epoch from
+    /// ever being handed out twice. `order` is the job's admission number:
+    /// a free agent goes to the waiting runner with the lowest one that it
+    /// may take. `None` when the job was cancelled, or the master began
     /// stopping, before any agent was free.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn claim(
         &self,
         job_id: Uuid,
+        epoch: u64,
+        order: i64,
         job: &JobSpec,
         inputs: &JobInputs,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<Option<Claimed>, ErrorBody> {
         let internal = |error: std::io::Error| ApiError::internal(error.to_string()).body;
-        let dir = self.staging.join(job_id.to_string());
+        let dir = self.lease_dir(job_id, epoch);
         let _ = std::fs::remove_dir_all(&dir);
         worker_result::create_private_dir(&dir).map_err(internal)?;
         worker_result::create_private_dir(&dir.join("blobs")).map_err(internal)?;
         let names = dir.join("names.json");
         crate::naming::save_cache(&names, &inputs.names).map_err(internal)?;
-        let base = format!("{}/workers/artifacts/{job_id}/{EPOCH}", self.base_url);
+        let base = format!("{}/workers/artifacts/{job_id}/{epoch}", self.base_url);
         let mut input_files = BTreeMap::new();
         input_files.insert("inputs/names".to_owned(), names);
         // Only the maps the job child could choose: the newest on each
@@ -689,7 +792,7 @@ impl WorkerHub {
         }
         let assign = MasterMessage::Assign {
             job_id: job_id.to_string(),
-            epoch: EPOCH,
+            epoch,
             lease_ttl_s: self.lease_ttl_s(),
             job: job.clone(),
             inputs: AssignInputs {
@@ -698,48 +801,40 @@ impl WorkerHub {
             },
             outputs: base,
         };
+        let me = (order, job_id);
+        self.lock().waiting.insert(me, job.local);
+        let give_up = |guard: MutexGuard<'_, HubInner>| -> Result<Option<Claimed>, ErrorBody> {
+            drop(guard);
+            self.lock().waiting.remove(&me);
+            let _ = std::fs::remove_dir_all(&dir);
+            self.changed.notify_all();
+            Ok(None)
+        };
         loop {
             // The registry's lock is never taken under this one.
             if is_cancelled() {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Ok(None);
+                return give_up(self.lock());
             }
             let mut guard = self.lock();
             if guard.stopping {
-                drop(guard);
-                let _ = std::fs::remove_dir_all(&dir);
-                return Ok(None);
+                return give_up(guard);
             }
             let inner = &mut *guard;
-            // Lowest channel first: the oldest connected agent, so the
-            // choice is deterministic for a given sequence of connections.
-            // Trust decision (§3.3): a `local/<name>` job names a path on
-            // this host, so it goes only to an agent that said it shares
-            // this host's paths.
-            let free = inner
-                .conns
-                .iter()
-                .find(|(_, conn)| {
-                    conn.eligible
-                        && conn.ready
-                        && !conn.draining
-                        && conn.holding.is_none()
-                        && (!job.local || conn.local_paths)
-                })
-                .map(|(id, _)| *id);
-            if let Some(conn_id) = free {
+            if let Some(conn_id) = pick_agent(inner, me) {
+                inner.waiting.remove(&me);
                 let (events, receiver) = std_mpsc::channel();
-                let conn = inner.conns.get_mut(&conn_id).expect("found above");
+                let conn = inner.conns.get_mut(&conn_id).expect("picked from conns");
                 conn.ready = false;
                 conn.holding = Some(job_id);
                 let agent = conn.agent;
+                let holder = format!("agent {agent} ({})", conn.worker_id);
                 let _ = conn.out.send(Outgoing::Message(assign.clone()));
                 inner.leases.insert(
                     job_id,
                     Lease {
-                        conn: conn_id,
-                        agent,
-                        epoch: EPOCH,
+                        conn: Some(conn_id),
+                        agent: Some(agent),
+                        epoch,
                         deadline: Instant::now() + self.lease_ttl,
                         next_seq: 1,
                         cancelled: false,
@@ -750,10 +845,12 @@ impl WorkerHub {
                         dir: dir.clone(),
                     },
                 );
-                eprintln!("job {job_id}: assigned to worker agent {agent} (epoch {EPOCH})");
+                self.changed.notify_all();
+                eprintln!("job {job_id}: assigned to worker agent {agent} (epoch {epoch})");
                 return Ok(Some(Claimed {
                     events: receiver,
                     dir,
+                    holder,
                 }));
             }
             let _ = self
@@ -761,6 +858,54 @@ impl WorkerHub {
                 .wait_timeout(guard, POLL)
                 .expect("worker hub mutex poisoned");
         }
+    }
+
+    /// Takes over the lease a restarted master found in the store (§6
+    /// "master restarts mid-job"): the same epoch, no channel, and a
+    /// deadline one TTL from now, so the agent that held it has that long
+    /// to come back. None does in this step (no resume), so the lease runs
+    /// out and the runner re-queues the job.
+    pub(crate) fn adopt(&self, job_id: Uuid, epoch: u64) -> Claimed {
+        let dir = self.lease_dir(job_id, epoch);
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(error) = worker_result::create_private_dir(&dir) {
+            eprintln!("job {job_id}: could not create {}: {error}", dir.display());
+        }
+        let (events, receiver) = std_mpsc::channel();
+        let mut inner = self.lock();
+        inner.leases.insert(
+            job_id,
+            Lease {
+                conn: None,
+                agent: None,
+                epoch,
+                deadline: Instant::now() + self.lease_ttl,
+                next_seq: 1,
+                cancelled: false,
+                finished: false,
+                events,
+                inputs: BTreeMap::new(),
+                uploads: BTreeMap::new(),
+                dir: dir.clone(),
+            },
+        );
+        eprintln!(
+            "job {job_id}: its lease (epoch {epoch}) survived a restart; it runs out within {} s",
+            self.lease_ttl_s()
+        );
+        Claimed {
+            events: receiver,
+            dir,
+            holder: "none since the restart".to_owned(),
+        }
+    }
+
+    /// The lease exists and no channel holds it.
+    pub(crate) fn detached(&self, job_id: Uuid) -> bool {
+        self.lock()
+            .leases
+            .get(&job_id)
+            .is_some_and(|lease| lease.conn.is_none())
     }
 
     /// Sends `cancel` for a leased job (§2.4). The lease stays, and the
@@ -772,7 +917,7 @@ impl WorkerHub {
             return;
         };
         lease.cancelled = true;
-        if let Some(conn) = inner.conns.get(&lease.conn) {
+        if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get(&conn)) {
             let _ = conn.out.send(Outgoing::Message(MasterMessage::Cancel {
                 job_id: job_id.to_string(),
                 epoch: lease.epoch,
@@ -817,22 +962,22 @@ impl WorkerHub {
                 reason,
             }
         };
-        if let Some(conn) = inner.conns.get(&lease.conn) {
+        if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get(&conn)) {
             let _ = conn.out.send(Outgoing::Message(message));
         }
     }
 
     /// Ends a lease: the agent's slot is free for its next `ready`, the
-    /// lease's inputs and uploads are deleted (phase 1 keeps nothing for a
-    /// resume that does not exist), and, for an expired lease, the channel
-    /// is closed so the agent kills whatever it still runs.
+    /// lease's inputs and uploads are deleted (an epoch's files are never
+    /// used by another epoch), and, for an expired lease, the channel is
+    /// closed so the agent kills whatever it still runs.
     pub(crate) fn end_lease(&self, job_id: Uuid, close_channel: bool) {
         let dir = {
             let mut guard = self.lock();
             let inner = &mut *guard;
             let lease = inner.leases.remove(&job_id);
             if let Some(lease) = &lease {
-                if let Some(conn) = inner.conns.get_mut(&lease.conn) {
+                if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get_mut(&conn)) {
                     if conn.holding == Some(job_id) {
                         conn.holding = None;
                     }
@@ -876,11 +1021,44 @@ impl WorkerHub {
     ) -> Result<T, StatusCode> {
         let mut inner = self.lock();
         let lease = inner.leases.get_mut(&job_id).ok_or(StatusCode::FORBIDDEN)?;
-        if lease.agent != agent || lease.epoch != epoch || lease.cancelled || lease.finished {
+        if lease.agent != Some(agent) || lease.epoch != epoch || lease.cancelled || lease.finished {
             return Err(StatusCode::FORBIDDEN);
         }
         act(lease)
     }
+}
+
+/// The agent a waiting runner `me` may take now: free agents are handed to
+/// waiting runners in admission order, each the lowest-numbered free agent
+/// it may use, and `me` gets whatever is left for it. Lowest channel first
+/// is the oldest connected agent, so the choice is deterministic for a
+/// given sequence of connections.
+fn pick_agent(inner: &HubInner, me: (i64, Uuid)) -> Option<u64> {
+    let mut taken = BTreeSet::new();
+    for (&waiter, &local) in &inner.waiting {
+        // Trust decision (§3.3): a `local/<name>` job names a path on this
+        // host, so it goes only to an agent that said it shares this
+        // host's paths.
+        let free = inner
+            .conns
+            .iter()
+            .find(|(id, conn)| {
+                !taken.contains(*id)
+                    && conn.eligible
+                    && conn.ready
+                    && !conn.draining
+                    && conn.holding.is_none()
+                    && (!local || conn.local_paths)
+            })
+            .map(|(id, _)| *id);
+        if waiter == me {
+            return free;
+        }
+        if let Some(id) = free {
+            taken.insert(id);
+        }
+    }
+    None
 }
 
 // ---- the listener ----------------------------------------------------------
@@ -1324,6 +1502,13 @@ enum ExecutorClone {
 /// SSE frames made from them, are what local mode makes from the same
 /// events. The worker slot `worker_loop` gave this job is held until this
 /// returns, which is when the lease has ended.
+///
+/// Durable (phase 2): the job's row moves `queued` → `leased` (written
+/// right after `assign`) → `running` (first event), with the snapshot
+/// written at every stage boundary and at most every `SNAPSHOT_EVERY`
+/// between. A lease that runs out re-queues the job (`requeue`), counted
+/// as a lost worker unless this run adopted a lease a restart left behind.
+/// Terminal rows are written by `worker_loop` once this returns.
 pub(crate) fn run_remote(
     state: Arc<AppState>,
     hub: &WorkerHub,
@@ -1336,20 +1521,60 @@ pub(crate) fn run_remote(
     if registry.is_cancelled(job_id) {
         return;
     }
-    let (job, inputs) = match jobs::prepare(&state, &repo_ref, &tx) {
-        Ok(prepared) => prepared,
-        Err(error) => return jobs::finish_failed(&tx, error),
-    };
-    let lease = match hub.claim(job_id, &job, &inputs, &|| registry.is_cancelled(job_id)) {
-        Ok(Some(lease)) => lease,
-        // Cancelled (or the master is stopping) before any agent took it:
-        // the registry has already failed the job.
-        Ok(None) => return,
-        Err(error) => return jobs::finish_failed(&tx, error),
+    let store = &state.store;
+    // The commit the job was admitted against, which `jobs::prepare` puts
+    // in the `JobSpec`: a result is checked against it (`check_result`).
+    // Read from the snapshot here, so an adopted lease, which skips
+    // `prepare`, checks against the same value.
+    let admitted_commit = tx.borrow().commit.clone().unwrap_or_default();
+    // A lease a restarted master found in the store (§6): adopted, not
+    // asked for again. Its expiry is a restart, not a lost worker.
+    let orphan = registry.take_orphan(job_id);
+    let (lease, epoch, mut table) = match orphan {
+        Some(epoch) => (hub.adopt(job_id, epoch), epoch, "running"),
+        None => {
+            let (job, inputs) = match jobs::prepare(&state, &repo_ref, &tx) {
+                Ok(prepared) => prepared,
+                Err(error) => return jobs::finish_failed(&tx, error),
+            };
+            // Invariant (epoch fencing): the epoch is raised in the store
+            // before `assign` carries it, so it is never handed out twice.
+            // `None`: the row is terminal, so a cancel won.
+            let (epoch, order) = match store.begin_attempt(&job_id.to_string()) {
+                Ok(Some(attempt)) => attempt,
+                Ok(None) => return,
+                Err(error) => {
+                    return jobs::finish_failed(
+                        &tx,
+                        ApiError::internal(format!("could not record the attempt: {error:#}")).body,
+                    )
+                }
+            };
+            match hub.claim(job_id, epoch, order, &job, &inputs, &|| {
+                registry.is_cancelled(job_id)
+            }) {
+                Ok(Some(lease)) => {
+                    save_state(
+                        store,
+                        &tx,
+                        epoch,
+                        "leased",
+                        Some((lease.holder.as_str(), hub.lease_ttl)),
+                    );
+                    (lease, epoch, "leased")
+                }
+                // Cancelled before any agent took it (the registry has
+                // failed the job), or the master is stopping (the row stays
+                // `queued` for the next process).
+                Ok(None) => return,
+                Err(error) => return jobs::finish_failed(&tx, error),
+            }
+        }
     };
     let mut sink = SnapshotSink::new(&tx, started, Some(registry));
     let mut clone = ExecutorClone::NotStarted;
     let mut cancel_sent = false;
+    let mut saved = SavedSnapshot::of(&tx.borrow(), table);
     loop {
         match lease.events.recv_timeout(POLL) {
             Ok(LeaseEvent::Event {
@@ -1359,6 +1584,8 @@ pub(crate) fn run_remote(
                 if let Some(peak) = peak_rss_bytes {
                     sink.peak_rss(peak);
                 }
+                // `leased` → `running` on the first event (§2.2).
+                table = "running";
                 match event {
                     // The agent's executor brackets its own clone with these
                     // two events before the job child exists, and the child
@@ -1389,7 +1616,7 @@ pub(crate) fn run_remote(
                             started,
                             job_id,
                             &lease.dir,
-                            &job.commit,
+                            &admitted_commit,
                             &event,
                         );
                         match registered {
@@ -1410,10 +1637,14 @@ pub(crate) fn run_remote(
                     }
                     event => sink.event(event),
                 }
+                saved.save_if_due(store, &tx, epoch, table);
             }
             // A heartbeat keeps the elapsed time moving through a long quiet
             // stage, as `install_tick` does for local mode's installs.
-            Ok(LeaseEvent::Tick) => sink.install_tick(),
+            Ok(LeaseEvent::Tick) => {
+                sink.install_tick();
+                saved.save_if_due(store, &tx, epoch, table);
+            }
             Ok(LeaseEvent::Released {
                 reason,
                 peak_rss_bytes,
@@ -1421,19 +1652,35 @@ pub(crate) fn run_remote(
                 if let Some(peak) = peak_rss_bytes {
                     sink.peak_rss(peak);
                 }
-                if !cancel_sent {
-                    jobs::finish_failed(
-                        &tx,
-                        worker_crashed(format!(
-                            "the worker released the job without being asked ({reason:?})"
-                        )),
-                    );
+                if cancel_sent {
+                    return hub.end_lease(job_id, false);
                 }
-                return hub.end_lease(job_id, false);
-            }
-            Ok(LeaseEvent::Lost(message)) => {
-                jobs::finish_failed(&tx, worker_crashed(message));
-                return hub.end_lease(job_id, false);
+                // §6, §10.6: a job released for a graceful stop (of the
+                // master, answering `shutdown now`, or of the worker) or a
+                // reroute goes back to its queue without counting.
+                let why = match reason {
+                    ReleasedReason::ServerStopping => Some(STOPPED),
+                    ReleasedReason::WorkerStopping | ReleasedReason::Reroute => {
+                        Some(WORKER_STOPPED)
+                    }
+                    ReleasedReason::Cancelled | ReleasedReason::LeaseLost | ReleasedReason::Oom => {
+                        None
+                    }
+                };
+                match why {
+                    Some(why) => {
+                        return requeue(&state, hub, &tx, job_id, epoch, false, why, false)
+                    }
+                    None => {
+                        jobs::finish_failed(
+                            &tx,
+                            worker_crashed(format!(
+                                "the worker released the job without being asked ({reason:?})"
+                            )),
+                        );
+                        return hub.end_lease(job_id, false);
+                    }
+                }
             }
             Err(std_mpsc::RecvTimeoutError::Timeout) => {}
             Err(std_mpsc::RecvTimeoutError::Disconnected) => {
@@ -1444,18 +1691,164 @@ pub(crate) fn run_remote(
         // The registry already made the job terminal (§2.4); the agent is
         // told, and this slot stays busy until it has released the job.
         if !cancel_sent && registry.is_cancelled(job_id) {
-            let reason = if registry.is_stopping() {
-                CancelReason::ServerStopping
-            } else {
-                CancelReason::Cancelled
-            };
-            hub.cancel(job_id, reason);
+            hub.cancel(job_id, CancelReason::Cancelled);
             cancel_sent = true;
         }
-        if hub.expired(job_id) {
-            jobs::finish_failed(&tx, worker_crashed("worker lost: lease expired"));
-            return hub.end_lease(job_id, true);
+        // A graceful stop whose agent went without releasing the job (it
+        // was reaped): the row stays `leased`/`running`, and the next
+        // process re-queues it without counting (`jobs::restore`). Waiting
+        // for the lease to run out would only hold the process's exit.
+        if registry.is_stopping() && hub.detached(job_id) {
+            return hub.end_lease(job_id, false);
         }
+        if hub.expired(job_id) {
+            if cancel_sent || registry.is_stopping() {
+                return hub.end_lease(job_id, true);
+            }
+            let (counted, why) = match orphan {
+                Some(_) => (false, jobs::RESTARTED),
+                None => (true, WORKER_LOST),
+            };
+            return requeue(&state, hub, &tx, job_id, epoch, counted, why, true);
+        }
+    }
+}
+
+/// Puts a job whose lease ended without a result back at the head of its
+/// class queue (§2.2, §2.5 "lease expired first"). The store decides first,
+/// in one transaction: a `counted` re-queue is a lost worker, and past the
+/// retry bound (§10.6) the job fails `worker_crashed` instead. Memory
+/// follows the store: the snapshot is reset and `worker_loop` re-inserts
+/// the job, by its admission order, when this runner returns. The next
+/// `assign` raises the epoch, so this epoch's stragglers are refused.
+#[allow(clippy::too_many_arguments)]
+fn requeue(
+    state: &AppState,
+    hub: &WorkerHub,
+    tx: &watch::Sender<JobSnapshot>,
+    job_id: Uuid,
+    epoch: u64,
+    counted: bool,
+    why: &str,
+    close_channel: bool,
+) {
+    hub.end_lease(job_id, close_channel);
+    let reset = jobs::requeued_snapshot(&tx.borrow(), why);
+    let json = serde_json::to_string(&reset).expect("a JobSnapshot serializes");
+    match state
+        .store
+        .requeue_job(&job_id.to_string(), epoch, counted, hub.retries, &json)
+    {
+        Ok(Requeued::Queued { attempt }) => {
+            eprintln!("job {job_id}: {why} (epoch {epoch} ended; attempt {attempt})");
+            // Never over a terminal snapshot: a cancel that landed since
+            // wins, and `worker_loop` then ends the job instead.
+            tx.send_modify(|snapshot| {
+                if !jobs::is_terminal(snapshot) {
+                    *snapshot = reset.clone();
+                }
+            });
+            state.jobs.mark_requeue(job_id);
+        }
+        Ok(Requeued::Exhausted { lost }) => {
+            eprintln!("job {job_id}: lost {lost} workers; not retrying it again");
+            jobs::finish_failed(
+                tx,
+                worker_crashed(format!(
+                    "lost {lost} workers: the job's worker was lost {lost} times, past the \
+                     bound of {} retries",
+                    hub.retries
+                )),
+            );
+        }
+        // Terminal in the table already: a cancel won.
+        Ok(Requeued::Unchanged) => {}
+        Err(error) => jobs::finish_failed(
+            tx,
+            ApiError::internal(format!("could not re-queue the job: {error:#}")).body,
+        ),
+    }
+}
+
+/// Writes a live job's state and snapshot (`leased` or `running`), with its
+/// lease holder and deadline when it has just been leased. A failed write
+/// is logged: the epoch is already safe in the store (`begin_attempt`), and
+/// the next write or a restart catches up.
+fn save_state(
+    store: &crate::service::store::Store,
+    tx: &watch::Sender<JobSnapshot>,
+    epoch: u64,
+    status: &str,
+    lease: Option<(&str, Duration)>,
+) {
+    let snapshot = tx.borrow().clone();
+    if jobs::is_terminal(&snapshot) {
+        return;
+    }
+    let deadline_ms = lease.map(|(_, ttl)| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        (now + ttl).as_millis() as i64
+    });
+    let json = serde_json::to_string(&snapshot).expect("a JobSnapshot serializes");
+    if let Err(error) = store.save_job_state(
+        &snapshot.job_id.to_string(),
+        epoch,
+        status,
+        lease.map(|(holder, _)| holder),
+        deadline_ms,
+        &json,
+    ) {
+        eprintln!(
+            "job {}: could not record its progress in the store: {error:#}",
+            snapshot.job_id
+        );
+    }
+}
+
+/// When a running job's snapshot was last written, and what it showed: it
+/// is written again at once when the status, a stage's state or the row's
+/// status changes (§3.5 "at stage boundaries"), and otherwise at most every
+/// `SNAPSHOT_EVERY` -- never on every progress event.
+struct SavedSnapshot {
+    at: Instant,
+    shape: (JobStatus, Vec<jobs::StageState>, &'static str),
+}
+
+impl SavedSnapshot {
+    fn of(snapshot: &JobSnapshot, table: &'static str) -> Self {
+        SavedSnapshot {
+            at: Instant::now(),
+            shape: Self::shape(snapshot, table),
+        }
+    }
+
+    fn shape(
+        snapshot: &JobSnapshot,
+        table: &'static str,
+    ) -> (JobStatus, Vec<jobs::StageState>, &'static str) {
+        (
+            snapshot.status,
+            snapshot.stages.iter().map(|stage| stage.state).collect(),
+            table,
+        )
+    }
+
+    fn save_if_due(
+        &mut self,
+        store: &crate::service::store::Store,
+        tx: &watch::Sender<JobSnapshot>,
+        epoch: u64,
+        table: &'static str,
+    ) {
+        let shape = Self::shape(&tx.borrow(), table);
+        if shape == self.shape && self.at.elapsed() < SNAPSHOT_EVERY {
+            return;
+        }
+        save_state(store, tx, epoch, table, None);
+        self.at = Instant::now();
+        self.shape = shape;
     }
 }
 
@@ -1810,8 +2203,11 @@ pub struct Loopback {
 
 impl Loopback {
     /// The master's half of graceful shutdown in loopback mode, after
-    /// `JobRegistry::shutdown` has failed every job with `server_stopping`
-    /// as in local mode: `shutdown now` to every agent, then reap them.
+    /// `JobRegistry::shutdown` has stopped admission (failing nothing: jobs
+    /// are durable in this mode): `shutdown now` to every agent, whose
+    /// release puts each running job back to `queued` in the store without
+    /// counting an attempt (`run_remote`), then reap them. Queued jobs stay
+    /// queued for the next process.
     pub async fn shutdown(self) {
         self.supervisor.stop();
         self.hub.shutdown_now();
@@ -1821,8 +2217,9 @@ impl Loopback {
 }
 
 /// Removes whatever a previous process left at `path` and makes it anew,
-/// private. Phase 1 keeps no state across a restart, so nothing there is
-/// anyone's any more.
+/// private. Tokens and uploads do not survive a restart -- the agents that
+/// held them are gone, and a job whose lease survives re-runs from scratch
+/// (`jobs::restore`) -- so nothing there is anyone's any more.
 fn fresh_private_dir(path: &Path) -> anyhow::Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => {}
@@ -1890,16 +2287,22 @@ pub async fn start_loopback(state: &Arc<AppState>, agents: usize) -> anyhow::Res
         build,
         settings.heartbeat_s,
         settings.lease_ttl,
+        settings.retries,
         staging,
         format!("http://{address}"),
     ));
+    state.jobs.set_remote(hub.clone(), agents);
+    // Restart order (#97 phase 2): the store's live jobs are reloaded
+    // before the worker listener serves an agent and before `serve` opens
+    // the public listener, so orphaned leases hold their slots before any
+    // new admission and queued jobs keep their admission order.
+    jobs::restore(state).context("reload jobs from the store")?;
     let app = router(hub.clone());
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
             eprintln!("tolmap serve: the worker listener stopped: {error}");
         }
     });
-    state.jobs.set_remote(hub.clone(), agents);
     let exe = std::env::current_exe().context("locate this binary to start the agents")?;
     let connect = format!("ws://{address}/workers/connect");
     let agents_dir = cache_dir.join("agents");
@@ -1968,16 +2371,53 @@ mod tests {
         port: u16,
         dir: tempfile::TempDir,
         runtime: Option<tokio::runtime::Runtime>,
+        /// Set by `relayed`: the relay every artifact URL and the agents'
+        /// channel go through.
+        relay: Option<Relay>,
     }
 
     impl Fixture {
         fn new(lease_ttl: Duration, build: WorkerBuild) -> Self {
+            Self::with(tempfile::tempdir().unwrap(), lease_ttl, build, TOKENS.len())
+        }
+
+        /// A master on `dir`'s store and cache, which may hold a previous
+        /// master's jobs: it reloads them as `start_loopback` does, before
+        /// its listener serves anyone.
+        fn with(
+            dir: tempfile::TempDir,
+            lease_ttl: Duration,
+            build: WorkerBuild,
+            slots: usize,
+        ) -> Self {
+            Self::build(dir, lease_ttl, build, slots, false)
+        }
+
+        /// A master whose listener is reached through a `Relay`: the agent
+        /// only sends its token to the origin it dialled, so the artifact
+        /// URLs name the relay too.
+        fn relayed(lease_ttl: Duration, build: WorkerBuild) -> Self {
+            Self::build(
+                tempfile::tempdir().unwrap(),
+                lease_ttl,
+                build,
+                TOKENS.len(),
+                true,
+            )
+        }
+
+        fn build(
+            dir: tempfile::TempDir,
+            lease_ttl: Duration,
+            build: WorkerBuild,
+            slots: usize,
+            relayed: bool,
+        ) -> Self {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
                 .build()
                 .unwrap();
-            let dir = tempfile::tempdir().unwrap();
             let config = ServeConfig {
                 bind: "127.0.0.1:0".parse().unwrap(),
                 db_path: dir.path().join("store.sqlite3"),
@@ -2006,28 +2446,42 @@ mod tests {
                 .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
                 .unwrap();
             let address = listener.local_addr().unwrap();
+            let relay = relayed.then(|| Relay::start(address.port()));
+            let base_url = match &relay {
+                Some(relay) => format!("http://127.0.0.1:{}", relay.port),
+                None => format!("http://{address}"),
+            };
             let hub = Arc::new(WorkerHub::new(
                 TOKENS
                     .iter()
                     .map(|token| token_digest(token.as_bytes()))
                     .collect(),
                 build,
-                15,
+                // A real agent heartbeats at this interval, so it has to fit
+                // a short test lease several times; scripted agents send
+                // their own heartbeats or none.
+                (lease_ttl.as_secs() / 3).max(1),
                 lease_ttl,
+                DEFAULT_RETRIES,
                 staging,
-                format!("http://{address}"),
+                base_url,
             ));
+            state.jobs.set_remote(hub.clone(), slots);
+            {
+                let _entered = runtime.enter();
+                jobs::restore(&state).unwrap();
+            }
             let app = router(hub.clone());
             runtime.spawn(async move {
                 let _ = axum::serve(listener, app).await;
             });
-            state.jobs.set_remote(hub.clone(), TOKENS.len());
             Fixture {
                 state,
                 hub,
                 port: address.port(),
                 dir,
                 runtime: Some(runtime),
+                relay,
             }
         }
 
@@ -2079,6 +2533,31 @@ mod tests {
             FakeAgent::join(self.port, TOKENS[token], test_build())
         }
 
+        fn row(&self, id: Uuid) -> crate::service::store::JobRow {
+            self.state
+                .store
+                .job(&id.to_string())
+                .unwrap()
+                .expect("the job has a row")
+        }
+
+        fn wait_for_row(
+            &self,
+            id: Uuid,
+            what: &str,
+            check: impl Fn(&crate::service::store::JobRow) -> bool,
+        ) -> crate::service::store::JobRow {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let row = self.row(id);
+                if check(&row) {
+                    return row;
+                }
+                assert!(Instant::now() < deadline, "{what}: {row:?}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
         fn nothing_stored(&self, slug: &str) {
             assert!(self.state.store.get(slug, COMMIT).unwrap().is_none());
             let maps = self.state.config.cache_dir.join("maps");
@@ -2093,6 +2572,13 @@ mod tests {
         fn drop(&mut self) {
             self.state.jobs.shutdown();
             self.hub.shutdown_now();
+            // Runners leave once their agent's channel is gone (a stopping
+            // master does not wait out a lease); give them the moment that
+            // takes while the listener still runs.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.leases() > 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             if let Some(runtime) = self.runtime.take() {
                 runtime.shutdown_timeout(Duration::from_secs(2));
             }
@@ -2136,10 +2622,12 @@ mod tests {
         }
     }
 
-    /// A scripted agent on the real channel.
+    /// A scripted agent on the real channel. `epoch` and `seq` follow the
+    /// job it was last assigned.
     struct FakeAgent {
         socket: tungstenite::WebSocket<TcpStream>,
         seq: u64,
+        epoch: u64,
     }
 
     impl FakeAgent {
@@ -2147,6 +2635,7 @@ mod tests {
             FakeAgent {
                 socket: dial(port, token).unwrap(),
                 seq: 0,
+                epoch: 1,
             }
         }
 
@@ -2170,11 +2659,16 @@ mod tests {
         }
 
         fn event(&mut self, job: Uuid, event: WorkerEvent) {
+            self.event_at(job, self.epoch, event);
+        }
+
+        /// One `job_event` at `epoch`, whatever this agent holds.
+        fn event_at(&mut self, job: Uuid, epoch: u64, event: WorkerEvent) {
             self.seq += 1;
             let seq = self.seq;
             self.send(&WorkerMessage::JobEvent {
                 job_id: job.to_string(),
-                epoch: 1,
+                epoch,
                 seq,
                 event,
                 peak_rss_bytes: None,
@@ -2216,14 +2710,22 @@ mod tests {
             serde_json::from_str(&self.recv_text()).unwrap()
         }
 
+        /// The next `assign`; this agent then holds that job at its epoch.
         fn assigned(&mut self) -> Uuid {
             match self.recv() {
                 MasterMessage::Assign { job_id, epoch, .. } => {
-                    assert_eq!(epoch, 1);
+                    self.epoch = epoch;
+                    self.seq = 0;
                     Uuid::parse_str(&job_id).unwrap()
                 }
                 other => panic!("expected assign, got {other:?}"),
             }
+        }
+
+        /// Uploads a whole result for its job at its epoch and sends it.
+        fn deliver(&mut self, port: u16, token: &str, job: Uuid) {
+            let artifacts = upload_all_at(port, token, job, self.epoch);
+            self.event(job, result_event(artifacts));
         }
 
         /// Whether the master closed the channel within a few seconds.
@@ -2308,10 +2810,14 @@ mod tests {
     }
 
     fn put(port: u16, token: &str, job: Uuid, name: &str, body: &[u8]) -> u16 {
+        put_at(port, token, job, 1, name, body)
+    }
+
+    fn put_at(port: u16, token: &str, job: Uuid, epoch: u64, name: &str, body: &[u8]) -> u16 {
         request(
             port,
             "PUT",
-            &format!("/workers/artifacts/{job}/1/{name}"),
+            &format!("/workers/artifacts/{job}/{epoch}/{name}"),
             &[bearer(token), (SHA256_HEADER, sha(body))],
             body,
             None,
@@ -2353,6 +2859,10 @@ mod tests {
     const NAMES: &[u8] = b"{}";
 
     fn upload_all(port: u16, job: Uuid) -> Vec<Artifact> {
+        upload_all_at(port, TOKENS[0], job, 1)
+    }
+
+    fn upload_all_at(port: u16, token: &str, job: Uuid, epoch: u64) -> Vec<Artifact> {
         let files = [
             ("map", MAP),
             ("symbols", SYMBOLS),
@@ -2362,7 +2872,11 @@ mod tests {
         files
             .iter()
             .map(|(name, body)| {
-                assert_eq!(put(port, TOKENS[0], job, name, body), 200, "PUT {name}");
+                assert_eq!(
+                    put_at(port, token, job, epoch, name, body),
+                    200,
+                    "PUT {name} at epoch {epoch}"
+                );
                 artifact(name, body)
             })
             .collect()
@@ -2984,54 +3498,369 @@ mod tests {
         fixture.nothing_stored("test/demo");
     }
 
-    /// A lost agent fails its job with `worker_crashed` at once (no resume
-    /// in phase 1), and the other agent keeps serving.
-    #[test]
-    fn a_lost_agent_fails_its_job_and_the_other_keeps_serving() {
-        let fixture = Fixture::new(Duration::from_secs(60), test_build());
-        let mut first = fixture.agent(0);
-        let mut second = fixture.agent(1);
-        let id = fixture.spawn(remote_repo("one"));
-        assert_eq!(first.assigned(), id);
-        first.event(
+    fn clone_started(agent: &mut FakeAgent, id: Uuid) {
+        agent.event(
             id,
             WorkerEvent::StageStarted {
                 v: 1,
                 stage: StageId::Clone,
             },
         );
-        drop(first);
-        let snapshot = fixture.wait_for(id, "the job fails", |s| s.status == JobStatus::Failed);
-        assert_eq!(snapshot.error_code.as_deref(), Some("worker_crashed"));
-        assert!(
-            snapshot
-                .error
-                .as_deref()
-                .unwrap_or("")
-                .contains("worker lost"),
-            "{snapshot:?}"
-        );
-        let next = fixture.spawn(remote_repo("two"));
-        assert_eq!(second.assigned(), next);
     }
 
-    /// An agent that stops heartbeating loses its lease within the TTL:
-    /// the job fails `worker_crashed` and the channel is closed.
+    /// §6 "worker host dies" (phase 2): a lost agent's channel only
+    /// detaches its lease; when the lease runs out the job goes back to the
+    /// head of its queue as `queued`, its stages reset and `stage` saying
+    /// why, one lost worker counted, and it runs again on the other agent
+    /// at a new epoch and ends `done`.
     #[test]
-    fn an_expired_lease_fails_the_job_and_closes_the_channel() {
+    fn a_lost_agent_lets_its_lease_run_out_and_the_job_reruns_on_the_other() {
+        let fixture = Fixture::new(Duration::from_secs(1), test_build());
+        let mut first = fixture.agent(0);
+        let mut second = fixture.agent(1);
+        let id = fixture.spawn(remote_repo("one"));
+        assert_eq!(first.assigned(), id);
+        assert_eq!(first.epoch, 1);
+        clone_started(&mut first, id);
+        fixture.wait_for(id, "cloning", |s| s.status == JobStatus::Cloning);
+        fixture.wait_for_row(id, "running", |row| row.status == "running");
+        drop(first);
+        // Not failed at once: the lease still runs.
+        std::thread::sleep(Duration::from_millis(300));
+        assert_ne!(fixture.snapshot(id).status, JobStatus::Failed);
+        assert_eq!(second.assigned(), id);
+        assert_eq!(
+            second.epoch, 2,
+            "a re-queued job is assigned at a new epoch"
+        );
+        let snapshot = fixture.snapshot(id);
+        assert_eq!(snapshot.status, JobStatus::Queued, "{snapshot:?}");
+        assert_eq!(snapshot.stage, WORKER_LOST);
+        assert!(snapshot
+            .stages
+            .iter()
+            .all(|stage| stage.state == jobs::StageState::Pending));
+        let row = fixture.wait_for_row(id, "leased again", |row| row.status == "leased");
+        assert_eq!((row.attempt, row.epoch), (2, 2), "{row:?}");
+        second.deliver(fixture.port, TOKENS[1], id);
+        assert!(matches!(
+            second.recv(),
+            MasterMessage::ResultAccepted { .. }
+        ));
+        fixture.wait_for(id, "done", |s| s.status == JobStatus::Done);
+        let row = fixture.wait_for_row(id, "done in the store", |row| row.status == "done");
+        assert_eq!(row.attempt, 2);
+        assert!(fixture
+            .state
+            .store
+            .get("test/one", COMMIT)
+            .unwrap()
+            .is_some());
+    }
+
+    /// An agent that stays connected but goes quiet loses its lease within
+    /// the TTL: its channel is closed, and the job is re-queued (not
+    /// failed) for the next agent.
+    #[test]
+    fn an_expired_lease_requeues_the_job_and_closes_the_channel() {
         let fixture = Fixture::new(Duration::from_secs(1), test_build());
         let mut agent = fixture.agent(0);
         let id = fixture.spawn(remote_repo("demo"));
         assert_eq!(agent.assigned(), id);
         let assigned_at = Instant::now();
-        let snapshot = fixture.wait_for(id, "the lease expires", |s| s.status == JobStatus::Failed);
+        let row = fixture.wait_for_row(id, "the lease expires", |row| {
+            row.status == "queued" && row.attempt == 2
+        });
         assert!(assigned_at.elapsed() < Duration::from_secs(5));
-        assert_eq!(snapshot.error_code.as_deref(), Some("worker_crashed"));
-        assert_eq!(
-            snapshot.error.as_deref(),
-            Some("worker lost: lease expired")
-        );
+        assert!(row.lease_holder.is_none(), "{row:?}");
+        let snapshot = fixture.snapshot(id);
+        assert_eq!(snapshot.status, JobStatus::Queued);
+        assert_eq!(snapshot.stage, WORKER_LOST);
         assert!(agent.closed());
+        let mut next = fixture.agent(1);
+        assert_eq!(next.assigned(), id);
+        assert_eq!(next.epoch, 2);
+    }
+
+    /// §10.6: a job whose workers keep dying is retried twice, then fails
+    /// `worker_crashed` "lost 3 workers" -- a failure of the machine, never
+    /// a refusal at admission.
+    #[test]
+    fn a_job_whose_workers_keep_dying_fails_past_the_retry_bound() {
+        let fixture = Fixture::new(Duration::from_secs(1), test_build());
+        let id = fixture.spawn(remote_repo("doomed"));
+        for attempt in 1..=3u64 {
+            let mut agent = fixture.agent((attempt % 2) as usize);
+            assert_eq!(agent.assigned(), id);
+            assert_eq!(agent.epoch, attempt);
+            clone_started(&mut agent, id);
+            drop(agent);
+            if attempt < 3 {
+                fixture.wait_for_row(id, "re-queued", |row| {
+                    row.status == "queued" && row.attempt == attempt as i64 + 1
+                });
+            }
+        }
+        let snapshot = fixture.wait_for(id, "the job fails", |s| s.status == JobStatus::Failed);
+        assert_eq!(snapshot.error_code.as_deref(), Some("worker_crashed"));
+        let message = snapshot.error.clone().unwrap_or_default();
+        assert!(message.contains("lost 3 workers"), "{message}");
+        let row = fixture.wait_for_row(id, "failed in the store", |row| row.status == "failed");
+        assert_eq!(row.attempt, 3);
+        fixture.nothing_stored("test/doomed");
+    }
+
+    /// §6 "duplicate or stale result": a result for an epoch whose lease
+    /// ran out is refused with `result_rejected`, and so is its upload; the
+    /// current epoch's result is registered once, and a second result for
+    /// it is refused too. Only the current epoch's bytes reach the store.
+    #[test]
+    fn stale_epoch_and_duplicate_results_are_refused_and_never_registered() {
+        let fixture = Fixture::new(Duration::from_secs(1), test_build());
+        let mut stale = fixture.agent(0);
+        let mut current = fixture.agent(1);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(stale.assigned(), id);
+        // `stale` goes quiet; its lease runs out and `current` gets epoch 2.
+        assert_eq!(current.assigned(), id);
+        assert_eq!(current.epoch, 2);
+        assert!(
+            stale.closed(),
+            "the master closes an expired holder's channel"
+        );
+        // The old holder comes back on a new channel and delivers epoch 1.
+        let mut stale = fixture.agent(0);
+        assert_eq!(
+            put_at(fixture.port, TOKENS[0], id, 1, "map", b"{\"stale\":1}"),
+            403
+        );
+        stale.event_at(id, 1, result_event(vec![artifact("map", b"{\"stale\":1}")]));
+        match stale.recv() {
+            MasterMessage::ResultRejected { epoch, reason, .. } => {
+                assert_eq!(epoch, 1);
+                assert!(reason.contains("stale epoch"), "{reason}");
+            }
+            other => panic!("expected result_rejected, got {other:?}"),
+        }
+        assert!(fixture
+            .state
+            .store
+            .get("test/demo", COMMIT)
+            .unwrap()
+            .is_none());
+        current.deliver(fixture.port, TOKENS[1], id);
+        assert!(matches!(
+            current.recv(),
+            MasterMessage::ResultAccepted { .. }
+        ));
+        let again = [
+            ("map", MAP),
+            ("symbols", SYMBOLS),
+            ("symbols_dir/0.json", DISTRICT),
+            ("names", NAMES),
+        ]
+        .iter()
+        .map(|(name, body)| artifact(name, body))
+        .collect();
+        current.event(id, result_event(again));
+        match current.recv() {
+            MasterMessage::ResultRejected { reason, .. } => {
+                assert!(
+                    reason.contains("no live lease") || reason.contains("duplicate"),
+                    "{reason}"
+                )
+            }
+            other => panic!("expected result_rejected, got {other:?}"),
+        }
+        let row = fixture
+            .state
+            .store
+            .get("test/demo", COMMIT)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(&row.map_path).unwrap(), MAP);
+        assert_eq!(fixture.snapshot(id).status, JobStatus::Done);
+    }
+
+    /// §2.4 in the store: a cancel while leased and one while running are
+    /// terminal in the table at once, and a re-queue racing the cancel
+    /// never brings the job back.
+    #[test]
+    fn a_cancel_is_terminal_in_the_store_whatever_state_the_job_is_in() {
+        let fixture = Fixture::new(Duration::from_secs(1), test_build());
+        let mut agent = fixture.agent(0);
+        let leased = fixture.spawn(remote_repo("leased"));
+        assert_eq!(agent.assigned(), leased);
+        fixture.wait_for_row(leased, "leased", |row| row.status == "leased");
+        let snapshot = jobs::cancel_job(&fixture.state, leased).unwrap();
+        assert_eq!(snapshot.error_code.as_deref(), Some("cancelled"));
+        let row = fixture.row(leased);
+        assert_eq!(row.status, "failed", "recorded before the answer");
+        assert!(matches!(agent.recv(), MasterMessage::Cancel { .. }));
+        // The agent never releases it; the lease runs out and the job
+        // stays cancelled rather than going back to the queue.
+        std::thread::sleep(Duration::from_millis(1800));
+        assert_eq!(fixture.row(leased).status, "failed");
+        assert_eq!(
+            fixture.snapshot(leased).error_code.as_deref(),
+            Some("cancelled")
+        );
+
+        let mut agent = fixture.agent(1);
+        let running = fixture.spawn(remote_repo("running"));
+        assert_eq!(agent.assigned(), running);
+        clone_started(&mut agent, running);
+        fixture.wait_for_row(running, "running", |row| row.status == "running");
+        jobs::cancel_job(&fixture.state, running).unwrap();
+        assert_eq!(fixture.row(running).status, "failed");
+        assert!(matches!(agent.recv(), MasterMessage::Cancel { .. }));
+        agent.event(running, result_event(vec![artifact("map", MAP)]));
+        assert!(matches!(agent.recv(), MasterMessage::ResultRejected { .. }));
+        fixture.nothing_stored("test/running");
+        // A repeated cancel answers the same terminal snapshot.
+        assert_eq!(
+            jobs::cancel_job(&fixture.state, running)
+                .unwrap()
+                .error_code
+                .as_deref(),
+            Some("cancelled")
+        );
+    }
+
+    fn stored_job(
+        id: Uuid,
+        name: &str,
+        status: &str,
+        order: i64,
+        epoch: i64,
+    ) -> crate::service::store::JobRow {
+        let slug = format!("test/{name}");
+        let spec = JobSpec {
+            slug: slug.clone(),
+            owner: "test".to_owned(),
+            repo: name.to_owned(),
+            source: "https://example.invalid/test.git".to_owned(),
+            local: false,
+            commit: COMMIT.to_owned(),
+            all_sources: false,
+            prune_variant: "node-relative".to_owned(),
+            namer: "idf".to_owned(),
+            namer_model: String::new(),
+            refs: Some("hand".to_owned()),
+            install: None,
+        };
+        let public = match status {
+            "running" => JobStatus::Indexing,
+            "done" => JobStatus::Done,
+            _ => JobStatus::Queued,
+        };
+        let snapshot = JobSnapshot {
+            job_id: id,
+            slug: slug.clone(),
+            commit: Some(COMMIT.to_owned()),
+            status: public,
+            stage: format!("{status} before the restart"),
+            queue_position: None,
+            started_at: "2026-09-27T00:00:00Z".to_owned(),
+            finished_at: None,
+            error: None,
+            error_code: None,
+            progress: None,
+            eta: None,
+            eta_start_s: None,
+            elapsed_s: 1.0,
+            stages: StageId::ALL
+                .iter()
+                .map(|&stage| jobs::StageSnapshot {
+                    id: stage,
+                    label: stage.label().to_owned(),
+                    state: jobs::StageState::Pending,
+                    started_at: None,
+                    duration_s: None,
+                })
+                .collect(),
+        };
+        crate::service::store::JobRow {
+            job_id: id.to_string(),
+            slug,
+            commit: COMMIT.to_owned(),
+            spec_json: serde_json::to_string(&spec).unwrap(),
+            class: 0,
+            status: status.to_owned(),
+            attempt: 1,
+            epoch,
+            lease_holder: None,
+            lease_deadline_ms: None,
+            queue_order: order,
+            snapshot_json: serde_json::to_string(&snapshot).unwrap(),
+        }
+    }
+
+    /// §6 "master restarts mid-job", in process: a master started on a
+    /// store a previous one left behind reloads its jobs before serving
+    /// anyone. The finished job answers from the store; the running one
+    /// keeps its snapshot and its slot for one TTL, then goes back to the
+    /// head of the queue without counting an attempt; the queued ones keep
+    /// their order and positions; and they then run in that order.
+    #[test]
+    fn a_restarted_master_reloads_its_jobs_and_reruns_a_running_one_uncounted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (done, running, first, second) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        {
+            let store = Store::open(&dir.path().join("store.sqlite3")).unwrap();
+            store
+                .insert_job(&stored_job(done, "done", "done", 1, 1))
+                .unwrap();
+            store
+                .insert_job(&stored_job(running, "running", "running", 2, 1))
+                .unwrap();
+            store
+                .insert_job(&stored_job(second, "second", "queued", 4, 0))
+                .unwrap();
+            store
+                .insert_job(&stored_job(first, "first", "queued", 3, 0))
+                .unwrap();
+        }
+        let fixture = Fixture::with(dir, Duration::from_secs(1), test_build(), 1);
+        let finished = jobs::persisted_snapshot(&fixture.state, done).expect("the finished job");
+        assert_eq!(finished.status, JobStatus::Done);
+        assert!(fixture.state.jobs.subscribe(done).is_none());
+        assert_eq!(fixture.snapshot(running).status, JobStatus::Indexing);
+        assert_eq!(fixture.snapshot(first).queue_position, Some(1));
+        assert_eq!(fixture.snapshot(second).queue_position, Some(2));
+        let (a, b) = (
+            fixture.snapshot(first).eta_start_s.unwrap(),
+            fixture.snapshot(second).eta_start_s.unwrap(),
+        );
+        assert!(a <= b, "{a} then {b}");
+        // The dedup key is rebuilt: the same repository and commit is the
+        // same job.
+        assert_eq!(fixture.spawn(remote_repo("first")), first);
+
+        let snapshot = fixture.wait_for(running, "re-queued after the restart", |s| {
+            s.status == JobStatus::Queued
+        });
+        assert_eq!(snapshot.stage, jobs::RESTARTED);
+        let row = fixture.row(running);
+        assert_eq!(
+            (row.attempt, row.status.as_str()),
+            (1, "queued"),
+            "a restart is not a lost worker"
+        );
+        let mut agent = fixture.agent(0);
+        for (expected, name) in [(running, "running"), (first, "first"), (second, "second")] {
+            assert_eq!(agent.assigned(), expected, "{name} next");
+            agent.deliver(fixture.port, TOKENS[0], expected);
+            assert!(matches!(agent.recv(), MasterMessage::ResultAccepted { .. }));
+            agent.send(&WorkerMessage::Ready { slots_free: 1 });
+            fixture.wait_for_row(expected, "done", |row| row.status == "done");
+        }
+        assert_eq!(fixture.row(running).epoch, 2);
     }
 
     /// Heartbeats renew the lease (§2.2), so a quiet job outlives its TTL.
@@ -3091,6 +3920,250 @@ mod tests {
         let after = starts();
         std::thread::sleep(Duration::from_millis(2500));
         assert_eq!(starts(), after, "a stopped supervisor restarted an agent");
+    }
+
+    /// An in-process TCP relay between an agent and the master (§9 "failure
+    /// injection"): it forwards bytes both ways and can pause them (both
+    /// directions held, the TCP connections kept open) or cut every
+    /// connection it carries. Step 3 (resume) reuses it for drops shorter
+    /// than the lease.
+    struct Relay {
+        port: u16,
+        control: Arc<RelayControl>,
+    }
+
+    #[derive(Default)]
+    struct RelayControl {
+        paused: AtomicBool,
+        /// Raised by `cut`: every connection opened before it closes.
+        cuts: std::sync::atomic::AtomicU64,
+        stopped: AtomicBool,
+    }
+
+    impl Relay {
+        fn start(target: u16) -> Relay {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let control = Arc::new(RelayControl::default());
+            let shared = control.clone();
+            std::thread::spawn(move || {
+                for inbound in listener.incoming() {
+                    if shared.stopped.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let Ok(inbound) = inbound else { continue };
+                    let Ok(outbound) = TcpStream::connect(("127.0.0.1", target)) else {
+                        continue;
+                    };
+                    let generation = shared.cuts.load(Ordering::SeqCst);
+                    for (from, to) in [
+                        (inbound.try_clone().unwrap(), outbound.try_clone().unwrap()),
+                        (outbound, inbound),
+                    ] {
+                        let shared = shared.clone();
+                        std::thread::spawn(move || pump(from, to, &shared, generation));
+                    }
+                }
+            });
+            Relay { port, control }
+        }
+
+        fn url(&self) -> String {
+            format!("ws://127.0.0.1:{}/workers/connect", self.port)
+        }
+
+        fn pause(&self) {
+            self.control.paused.store(true, Ordering::SeqCst);
+        }
+
+        fn resume(&self) {
+            self.control.paused.store(false, Ordering::SeqCst);
+        }
+
+        fn cut(&self) {
+            self.control.cuts.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Drop for Relay {
+        fn drop(&mut self) {
+            self.control.stopped.store(true, Ordering::SeqCst);
+            self.cut();
+            let _ = TcpStream::connect(("127.0.0.1", self.port));
+        }
+    }
+
+    fn pump(mut from: TcpStream, mut to: TcpStream, control: &RelayControl, generation: u64) {
+        let _ = from.set_read_timeout(Some(Duration::from_millis(20)));
+        let mut buffer = [0u8; 16 * 1024];
+        loop {
+            if control.cuts.load(Ordering::SeqCst) != generation {
+                let _ = from.shutdown(std::net::Shutdown::Both);
+                let _ = to.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+            if control.paused.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            match from.read(&mut buffer) {
+                Ok(0) => {
+                    let _ = to.shutdown(std::net::Shutdown::Write);
+                    return;
+                }
+                Ok(count) => {
+                    if to.write_all(&buffer[..count]).is_err() {
+                        return;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => {
+                    let _ = to.shutdown(std::net::Shutdown::Both);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// A one-commit git repository at `root/demo` and a scripted job child
+    /// that reports one stage and then sleeps, writing its spec and pid.
+    fn scripted_job(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = root.join("demo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["add", "-A"][..],
+            &["commit", "-qm", "initial"][..],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(["-c", "user.name=test", "-c", "user.email=test@example.com"])
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let spec = root.join("spec.json");
+        let pid_file = root.join("child.pid");
+        let worker = root.join("worker.sh");
+        std::fs::write(
+            &worker,
+            format!(
+                "#!/bin/sh\ncat > '{}'\nsleep 30 &\necho $! > '{}'\nprintf '%s\\n' '{{\"type\":\"stage_started\",\"v\":1,\"stage\":\"parse\"}}'\nwait\n",
+                spec.display(),
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (repo, worker, pid_file)
+    }
+
+    /// §6 "channel lost past the lease TTL", with the real agent behind the
+    /// relay: a stall shorter than the lease changes nothing (the agent's
+    /// heartbeats arrive late, not never); a cut connection makes the agent
+    /// kill its job child, and the master, which no longer fails the job at
+    /// once, lets the lease run out and runs the job on the other agent at
+    /// epoch 2.
+    #[test]
+    fn a_cut_channel_lets_the_lease_run_out_and_the_job_reruns_on_another_agent() {
+        let fixture = Fixture::relayed(Duration::from_secs(3), own_build());
+        let root = fixture.dir.path();
+        let (repo, worker, pid_file) = scripted_job(root);
+        // The executor checks out the admitted commit, so it must be real.
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+        let relay = fixture.relay.as_ref().unwrap();
+        let token_file = root.join("agent.token");
+        std::fs::write(&token_file, TOKENS[0]).unwrap();
+        let config = crate::service::agent::AgentConfig {
+            connect: relay.url(),
+            token_file,
+            cache_dir: root.join("agent"),
+            worker_exe: worker,
+        };
+        let agent = std::thread::spawn(move || crate::service::agent::run(config));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !fixture.hub.lock().conns.values().any(|conn| conn.ready) {
+            assert!(Instant::now() < deadline, "the agent never became ready");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The other agent joins second, so the job goes to the real one.
+        let mut other = FakeAgent::join(fixture.port, TOKENS[1], own_build());
+        let id = fixture.spawn_at(
+            RepoRef {
+                slug: "local/demo".to_owned(),
+                owner: "local".to_owned(),
+                repo: "demo".to_owned(),
+                source: RepoSource::Local(repo.clone()),
+            },
+            &head,
+        );
+        fixture.wait_for(id, "the child starts parsing", |s| {
+            s.status == JobStatus::Indexing
+        });
+        relay.pause();
+        std::thread::sleep(Duration::from_millis(1500));
+        relay.resume();
+        std::thread::sleep(Duration::from_millis(1500));
+        let row = fixture.row(id);
+        assert_eq!(
+            (row.status.as_str(), row.epoch, row.attempt),
+            ("running", 1, 1),
+            "{row:?}"
+        );
+        assert!(other.recv_within(Duration::from_millis(100)).is_none());
+
+        relay.cut();
+        let outcome = agent.join().unwrap();
+        assert!(
+            outcome.is_err(),
+            "a lost channel ends the agent: {outcome:?}"
+        );
+        let child: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let stat = std::fs::read_to_string(format!("/proc/{child}/stat"));
+                let gone = stat.as_ref().map_or(true, |stat| {
+                    stat.split(") ")
+                        .nth(1)
+                        .is_some_and(|tail| tail.starts_with('Z'))
+                });
+                if gone {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the job child outlived its channel"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = child;
+        assert_ne!(fixture.snapshot(id).status, JobStatus::Failed);
+        assert_eq!(other.assigned(), id);
+        assert_eq!(other.epoch, 2);
+        let row = fixture.wait_for_row(id, "leased to the other agent", |row| {
+            row.status == "leased"
+        });
+        assert_eq!(row.attempt, 2);
     }
 
     /// The real agent (`agent::run`, in a thread, with a scripted job child)

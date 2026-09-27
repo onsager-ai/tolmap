@@ -367,7 +367,7 @@ jobs:
           git -C sandbox/loopback-fixture init --quiet && git -C sandbox/loopback-fixture add -A
           git -C sandbox/loopback-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
           docker run -d --name tolmap-loopback --privileged -p 127.0.0.1:8788:8787 \
-            -e TOLMAP_WORKERS=loopback:1 \
+            -e TOLMAP_WORKERS=loopback:1 -e TOLMAP_WORKER_LEASE_TTL_S=10 -e TOLMAP_WORKER_HEARTBEAT_S=2 \
             -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 -e TOLMAP_CACHE_DIR=/srv/cache \
             -v "$PWD/sandbox/loopback-fixture:/srv/fixture:ro" \
             --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap serve'
@@ -445,6 +445,53 @@ jobs:
           docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
           tail -20 sandbox/loopback.log
           grep -q "tolmap serve: shut down cleanly" sandbox/loopback.log
+
+          # #97 phase 2: restart survival. The same container restarts on
+          # the same store and cache: a job that finished before the stop
+          # still answers GET, and a third job SIGKILLed with the whole
+          # container mid-run (clone, install or indexing) completes after
+          # the next start, its lease adopted for one TTL and then re-queued
+          # without counting an attempt.
+          wait_up() {
+            for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:8788/api/healthz >/dev/null 2>&1 && return 0; sleep 1; done
+            return 1
+          }
+          docker start tolmap-loopback
+          wait_up
+          before=$(curl -fsS "http://127.0.0.1:8788/api/jobs/$first_id")
+          python3 -c 'import json,sys; s=json.loads(sys.argv[1]); assert s["status"] == "done", s' "$before"
+          echo "export const third = 3;" > sandbox/loopback-fixture/packages/core/src/third.ts
+          git -C sandbox/loopback-fixture add -A
+          git -C sandbox/loopback-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m "third commit"
+          job=$(curl -fsS -X POST -H 'content-type: application/json' \
+            -d '{"path":"/srv/fixture"}' http://127.0.0.1:8788/api/index)
+          third_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<<"$job")
+          for _ in $(seq 1 240); do
+            status=$(curl -fsS "http://127.0.0.1:8788/api/jobs/$third_id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
+            case "$status" in cloning|detecting|indexing) break ;; esac
+            sleep 0.5
+          done
+          echo "killing the container while the third job is $status"
+          [ "$status" != done ] && [ "$status" != failed ]
+          docker kill -s KILL tolmap-loopback
+          docker start tolmap-loopback
+          wait_up
+          for _ in $(seq 1 300); do
+            snapshot=$(curl -fsS "http://127.0.0.1:8788/api/jobs/$third_id")
+            status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$snapshot")
+            [ "$status" = done ] || [ "$status" = failed ] && break
+            sleep 2
+          done
+          echo "$snapshot" | python3 -m json.tool | head -40
+          docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
+          echo "--- restart lines ---"
+          grep -E "restored|survived a restart|restarted; retrying|job $third_id: (assigned|the service)" sandbox/loopback.log || true
+          [ "$status" = done ]
+          grep -qE "^tolmap serve: restored 1 leased or running and 0 queued job\(s\) from the store$" sandbox/loopback.log
+          grep -qE "^job $third_id: assigned to worker agent 0 \(epoch 2\)$" sandbox/loopback.log
+          docker stop tolmap-loopback
+          docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
+          [ "$(grep -c 'tolmap serve: shut down cleanly' sandbox/loopback.log)" -ge 2 ]
           docker rm -f tolmap-loopback
 
       - name: Size and time summary

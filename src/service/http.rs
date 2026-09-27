@@ -177,13 +177,16 @@ async fn get_job(
     State(state): State<Arc<AppState>>,
     AxPath(job_id): AxPath<Uuid>,
 ) -> Result<Json<JobSnapshot>, ApiError> {
-    let snapshot = {
-        let rx = state
-            .jobs
-            .subscribe(job_id)
-            .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?;
-        let current = rx.borrow().clone();
-        current
+    let snapshot = match state.jobs.subscribe(job_id) {
+        Some(rx) => {
+            let current = rx.borrow().clone();
+            current
+        }
+        // Worker modes (#97 phase 2): a job that ended before a restart is
+        // answered from the store. Local mode persists no jobs, so this is
+        // `None` there and the answer is the 404 it always was.
+        None => jobs::persisted_snapshot(&state, job_id)
+            .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?,
     };
     Ok(Json(snapshot))
 }
@@ -201,13 +204,17 @@ async fn post_cancel_job(
     ) {
         return Err(ApiError::rate_limited(message));
     }
-    let slug = state
-        .jobs
-        .subscribe(job_id)
-        .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?
-        .borrow()
-        .slug
-        .clone();
+    let slug = match state.jobs.subscribe(job_id) {
+        Some(rx) => {
+            let slug = rx.borrow().slug.clone();
+            slug
+        }
+        None => {
+            jobs::persisted_snapshot(&state, job_id)
+                .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?
+                .slug
+        }
+    };
     if let Verdict::Denied { message } = state.rate_limiter.check_repo(
         &slug,
         limits.rate_limit_per_repo,
@@ -215,7 +222,7 @@ async fn post_cancel_job(
     ) {
         return Err(ApiError::rate_limited(message));
     }
-    Ok(Json(state.jobs.cancel(job_id)?))
+    Ok(Json(jobs::cancel_job(&state, job_id)?))
 }
 
 // ---- GET /api/jobs/{job_id}/events ---------------------------------------
@@ -224,10 +231,22 @@ async fn get_job_events(
     State(state): State<Arc<AppState>>,
     AxPath(job_id): AxPath<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let mut rx = state
-        .jobs
-        .subscribe(job_id)
-        .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?;
+    let mut rx = match state.jobs.subscribe(job_id) {
+        Some(rx) => rx,
+        // Worker modes: a job that ended before a restart streams its one
+        // terminal frame from the store, then ends. The relay below sends
+        // the first value whether or not the sender is still alive.
+        None => {
+            let snapshot = jobs::persisted_snapshot(&state, job_id)
+                .ok_or_else(|| ApiError::not_found(format!("no job {job_id}")))?;
+            tokio::sync::watch::channel(snapshot).1
+        }
+    };
+    // Worker modes: a graceful stop leaves jobs running for the next
+    // process instead of failing them, so no terminal frame is coming; the
+    // stream ends instead, or axum's graceful drain would wait on it
+    // forever. The client reconnects and `GET`s first, as documented.
+    let ends_on_stop = state.jobs.is_durable().then(|| state.clone());
 
     // A relay task, not the watch::Receiver wrapped directly: this is what
     // lets the stream emit the *current* value immediately on connect and
@@ -242,6 +261,13 @@ async fn get_job_events(
         let mut first = true;
         loop {
             tick.tick().await;
+            if !first
+                && ends_on_stop
+                    .as_ref()
+                    .is_some_and(|state| state.jobs.is_stopping())
+            {
+                return;
+            }
             if !first && !rx.has_changed().unwrap_or(false) {
                 continue;
             }

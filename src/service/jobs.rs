@@ -122,6 +122,26 @@ struct PendingJob {
     repo_ref: RepoRef,
     tx: watch::Sender<JobSnapshot>,
     runner: JobRunner,
+    /// Admission sequence (#97 phase 2). Every queue is kept in this
+    /// order, so a re-queued job, which keeps its number, goes back to the
+    /// head: every job still queued was admitted after it started.
+    order: i64,
+    /// The class queue it waits in.
+    class: usize,
+    /// Worker modes only: false until the job's row is in the store. A
+    /// slot never starts a job that is not, so no runner reads or writes a
+    /// row that does not exist yet (`spawn_job`, `JobRegistry::admitted`).
+    /// Always true in local mode.
+    persisted: bool,
+}
+
+/// Inserts `job` into `queue` by admission order (see `PendingJob::order`).
+fn insert_by_order(queue: &mut VecDeque<PendingJob>, job: PendingJob) {
+    let position = queue
+        .iter()
+        .position(|queued| queued.order > job.order)
+        .unwrap_or(queue.len());
+    queue.insert(position, job);
 }
 
 /// One worker slot: a `worker_loop` task while it holds a job, idle
@@ -173,6 +193,17 @@ struct RegistryInner {
     /// saw before.
     remote: Option<Arc<crate::service::workers::WorkerHub>>,
     slots_override: Option<usize>,
+    /// The last admission number given out (`PendingJob::order`).
+    next_order: i64,
+    /// Worker modes (#97 phase 2): jobs whose runner put them back in the
+    /// queue (a lost worker, a released job). `worker_loop` re-inserts
+    /// them when the runner returns instead of ending them.
+    requeue: HashSet<Uuid>,
+    /// Worker modes: jobs a restarted master found leased or running, by
+    /// the epoch of that lease. Their runner adopts the lease instead of
+    /// asking for a new one, and it expires as any lease does (§6 "master
+    /// restarts mid-job").
+    orphans: HashMap<Uuid, u64>,
 }
 
 impl RegistryInner {
@@ -323,6 +354,64 @@ impl JobRegistry {
             .contains(&id)
     }
 
+    /// Worker modes (#97 phase 2): jobs are durable, persisted in the
+    /// store's `jobs` table, and this registry is a cache of it. False in
+    /// local mode, which keeps its in-memory registry exactly as before.
+    pub(crate) fn is_durable(&self) -> bool {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .remote
+            .is_some()
+    }
+
+    /// The runner put `id` back in its queue; `worker_loop` re-inserts it
+    /// when the runner returns.
+    pub(crate) fn mark_requeue(&self, id: Uuid) {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .requeue
+            .insert(id);
+    }
+
+    /// The epoch of the lease a restarted master found `id` holding, once.
+    pub(crate) fn take_orphan(&self, id: Uuid) -> Option<u64> {
+        self.0
+            .lock()
+            .expect("job registry mutex poisoned")
+            .orphans
+            .remove(&id)
+    }
+
+    /// Worker modes: `id`'s row is in the store now, so a slot may start
+    /// it. Starts every idle slot that has a job it may take.
+    fn admitted(&self, state: &Arc<AppState>, id: Uuid) {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        for job in registry.queues.iter_mut().flatten() {
+            if job.id == id {
+                job.persisted = true;
+            }
+        }
+        dispatch_idle(state, &mut registry);
+    }
+
+    /// Worker modes: the admission row could not be written, so the job is
+    /// withdrawn -- a job that exists only in memory would not survive the
+    /// restart it was promised to survive.
+    fn abandon(&self, id: Uuid, error: ErrorBody) {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        for queue in &mut registry.queues {
+            queue.retain(|job| job.id != id);
+        }
+        registry.active.retain(|_, active| *active != id);
+        registry.features.remove(&id);
+        if let Some(tx) = registry.jobs.remove(&id) {
+            finish_failed(&tx, error);
+        }
+        simulate_queue_etas(&registry);
+    }
+
     /// See `peak_rss`'s doc comment on `RegistryInner`. Called from
     /// `SnapshotSink::peak_rss`, right after the executor's `wait_with_peak`
     /// reaps the child,
@@ -405,6 +494,16 @@ impl JobRegistry {
     pub fn shutdown(&self) {
         let mut registry = self.0.lock().expect("job registry mutex poisoned");
         registry.stopping = true;
+        // Worker modes (#97 phase 2, docs/WORKER_TIER.md §6 "master
+        // graceful stop"): jobs are durable, so a stop fails none of them.
+        // Admission stops (the flag above); queued jobs stay queued in the
+        // table; running ones are released by the agents on `shutdown now`
+        // (`workers::Loopback::shutdown`) and their runners put them back
+        // to `queued` without counting an attempt. A restarted master runs
+        // them all. Local mode continues below, unchanged.
+        if registry.remote.is_some() {
+            return;
+        }
         // Every class's queue, smallest class first, each in FIFO order.
         let queued: Vec<PendingJob> = registry
             .queues
@@ -525,24 +624,196 @@ pub fn spawn_job(
     repo_ref: RepoRef,
     commit: String,
 ) -> Result<Uuid, ApiError> {
-    // Loopback mode runs the job through an agent (`workers::run_remote`);
-    // with no hub, which is local mode, the runner is `run_blocking` as it
-    // always was.
-    let runner: JobRunner = match state.jobs.remote() {
+    let runner = runner_for(&state);
+    let admission = admit(state.clone(), repo_ref.clone(), commit.clone(), runner)?;
+    // Worker modes (#97 phase 2): the job is in the store before `POST
+    // /api/index` answers, so a job a client was told about survives a
+    // restart. Written here, off the registry's lock, which is why a new
+    // job waits unstartable (`PendingJob::persisted`) until the row exists.
+    if let Some(new) = admission.new {
+        persist_admission(&state, admission.id, &repo_ref, &commit, new)?;
+    }
+    Ok(admission.id)
+}
+
+/// The runner a job of this service runs with. Loopback mode runs the job
+/// through an agent (`workers::run_remote`); with no hub, which is local
+/// mode, the runner is `run_blocking` as it always was.
+fn runner_for(state: &AppState) -> JobRunner {
+    match state.jobs.remote() {
         Some(hub) => Arc::new(move |state, repo_ref, tx| {
             crate::service::workers::run_remote(state, &hub, repo_ref, tx)
         }),
         None => Arc::new(run_blocking),
-    };
-    enqueue_job(state, repo_ref, commit, runner)
+    }
 }
 
+/// A job `admit` created in worker mode, still to be written to the store.
+struct NewJob {
+    order: i64,
+    class: usize,
+    tx: watch::Sender<JobSnapshot>,
+}
+
+struct Admission {
+    id: Uuid,
+    /// Worker modes only: set when this call created the job (not a
+    /// duplicate of an active one).
+    new: Option<NewJob>,
+}
+
+/// Worker modes: writes a newly admitted job's row, then lets a slot start
+/// it. A job cancelled meanwhile has its terminal state written too, since
+/// the cancel may have found no row to write it to.
+fn persist_admission(
+    state: &Arc<AppState>,
+    id: Uuid,
+    repo_ref: &RepoRef,
+    commit: &str,
+    new: NewJob,
+) -> Result<(), ApiError> {
+    let spec = job_spec(&state.config, repo_ref, commit);
+    let snapshot = new.tx.borrow().clone();
+    let row = crate::service::store::JobRow {
+        job_id: id.to_string(),
+        slug: repo_ref.slug.clone(),
+        commit: commit.to_owned(),
+        spec_json: serde_json::to_string(&spec).expect("a JobSpec serializes"),
+        class: new.class as i64,
+        status: table_status(&snapshot, "queued").to_owned(),
+        attempt: 1,
+        epoch: 0,
+        lease_holder: None,
+        lease_deadline_ms: None,
+        queue_order: new.order,
+        snapshot_json: serde_json::to_string(&snapshot).expect("a JobSnapshot serializes"),
+    };
+    if let Err(error) = state.store.insert_job(&row) {
+        let error = ApiError::internal(format!("could not record the job: {error:#}"));
+        state.jobs.abandon(id, error.body.clone());
+        return Err(error);
+    }
+    state.jobs.admitted(state, id);
+    persist_terminal(&state.store, &new.tx.borrow());
+    Ok(())
+}
+
+/// A snapshot's `jobs.status`: `done` or `failed` once terminal, otherwise
+/// `live`, the state only the caller knows (queued, leased, running).
+pub(crate) fn table_status<'a>(snapshot: &JobSnapshot, live: &'a str) -> &'a str {
+    match snapshot.status {
+        JobStatus::Done => "done",
+        JobStatus::Failed => "failed",
+        _ => live,
+    }
+}
+
+/// Worker modes: writes a terminal snapshot to the job's row (a no-op for
+/// one that is not terminal, and for a row already terminal). Every
+/// terminal outcome passes here: `worker_loop` for whatever the runner
+/// left, `cancel_job` for a cancel. A failed write is logged; the job's
+/// in-memory state stands.
+pub(crate) fn persist_terminal(store: &crate::service::store::Store, snapshot: &JobSnapshot) {
+    if !is_terminal(snapshot) {
+        return;
+    }
+    let json = serde_json::to_string(snapshot).expect("a JobSnapshot serializes");
+    if let Err(error) = store.finish_job(
+        &snapshot.job_id.to_string(),
+        table_status(snapshot, "failed"),
+        &json,
+    ) {
+        eprintln!(
+            "job {}: could not record its end in the store: {error:#}",
+            snapshot.job_id
+        );
+    }
+}
+
+/// `POST /api/jobs/{id}/cancel`: [`JobRegistry::cancel`], and in worker
+/// modes the terminal state written to the store before the answer (§2.4:
+/// the cancel is terminal the moment it is recorded). A job a restarted
+/// master no longer holds in memory answers with its persisted snapshot,
+/// terminal by construction (`restore` reloads every live one).
+pub fn cancel_job(state: &AppState, id: Uuid) -> Result<JobSnapshot, ApiError> {
+    match state.jobs.cancel(id) {
+        Ok(snapshot) => {
+            if state.jobs.is_durable() {
+                persist_terminal(&state.store, &snapshot);
+            }
+            Ok(snapshot)
+        }
+        Err(error) => persisted_snapshot(state, id).ok_or(error),
+    }
+}
+
+/// Worker modes: the last snapshot the store holds for `id`, for a job no
+/// longer in memory -- one that ended before a restart. `None` in local
+/// mode, which persists no jobs.
+pub fn persisted_snapshot(state: &AppState, id: Uuid) -> Option<JobSnapshot> {
+    if !state.jobs.is_durable() {
+        return None;
+    }
+    let row = match state.store.job(&id.to_string()) {
+        Ok(row) => row?,
+        Err(error) => {
+            eprintln!("job {id}: could not read it from the store: {error:#}");
+            return None;
+        }
+    };
+    serde_json::from_str(&row.snapshot_json).ok()
+}
+
+/// A job's snapshot as it goes back to its queue (#97 phase 2, §2.2): a
+/// re-queued job shows `queued` with its stages reset and `stage` saying
+/// why. Pure, so the store can be written with it before memory is.
+pub(crate) fn requeued_snapshot(snapshot: &JobSnapshot, why: &str) -> JobSnapshot {
+    let mut next = snapshot.clone();
+    next.status = JobStatus::Queued;
+    next.stage = why.to_owned();
+    next.queue_position = None;
+    next.finished_at = None;
+    next.error = None;
+    next.error_code = None;
+    next.progress = None;
+    next.eta_start_s = None;
+    next.elapsed_s = 0.0;
+    for stage in &mut next.stages {
+        stage.state = StageState::Pending;
+        stage.started_at = None;
+        stage.duration_s = None;
+    }
+    next
+}
+
+/// What the ETA and memory models know of a job before its worker reports
+/// anything: the service's reference mode. See `admit`.
+fn prior_features(config: &ServeConfig) -> RepoFeatures {
+    RepoFeatures {
+        refs: (config.refs == crate::extract::RefsMode::Scip).then(|| config.refs.to_string()),
+        ..RepoFeatures::default()
+    }
+}
+
+/// [`admit`] as it was before worker modes needed its second half: the
+/// signature the tests below were written against. Production admits
+/// through `spawn_job`.
+#[cfg(test)]
 fn enqueue_job(
     state: Arc<AppState>,
     repo_ref: RepoRef,
     commit: String,
     runner: JobRunner,
 ) -> Result<Uuid, ApiError> {
+    admit(state, repo_ref, commit, runner).map(|admission| admission.id)
+}
+
+fn admit(
+    state: Arc<AppState>,
+    repo_ref: RepoRef,
+    commit: String,
+    runner: JobRunner,
+) -> Result<Admission, ApiError> {
     let key = (repo_ref.slug.clone(), commit.clone());
     let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
     if registry.stopping {
@@ -551,7 +822,7 @@ fn enqueue_job(
         ));
     }
     if let Some(id) = registry.active.get(&key) {
-        return Ok(*id);
+        return Ok(Admission { id: *id, new: None });
     }
     registry.ensure_classes(&state.config.limits);
     // Until the worker reports the repository's features, all the ETA
@@ -561,11 +832,7 @@ fn enqueue_job(
     // absent, exactly as before #110 P2a). The worker's own `Features`
     // event replaces this row, and `worker_loop` (or a queued cancel)
     // removes it.
-    let prior = RepoFeatures {
-        refs: (state.config.refs == crate::extract::RefsMode::Scip)
-            .then(|| state.config.refs.to_string()),
-        ..RepoFeatures::default()
-    };
+    let prior = prior_features(&state.config);
     // The class comes from the memory model's reference-mode prior (§2.1,
     // step 2). Local mode has one class, so every job still binds to it;
     // the prediction matters the day a second class exists.
@@ -615,26 +882,196 @@ fn enqueue_job(
     tx.send_modify(|snapshot| snapshot.eta = Some(initial_eta));
     registry.jobs.insert(job_id, tx.clone());
     registry.active.insert(key.clone(), job_id);
+    registry.next_order += 1;
+    let order = registry.next_order;
+    // Worker modes: the job may not start before its row is written, off
+    // this lock, by `spawn_job`; it waits in its queue, unstartable, until
+    // `JobRegistry::admitted`.
+    let durable = registry.remote.is_some();
     let job = PendingJob {
         id: job_id,
         key,
         repo_ref,
         tx,
         runner,
+        order,
+        class,
+        persisted: !durable,
     };
-    if let Some(slot) = idle_slot {
-        job.tx
-            .send_modify(|snapshot| snapshot.eta_start_s = Some(0.0));
-        registry.slots[slot].running = Some((job_id, job.tx.clone()));
-        tokio::spawn(worker_loop(state.clone(), slot, job));
-    } else {
-        let position = registry.queues[class].len() + 1;
-        job.tx
-            .send_modify(|snapshot| snapshot.queue_position = Some(position));
-        registry.queues[class].push_back(job);
+    let new = durable.then(|| NewJob {
+        order,
+        class,
+        tx: job.tx.clone(),
+    });
+    match idle_slot.filter(|_| !durable) {
+        Some(slot) => {
+            job.tx
+                .send_modify(|snapshot| snapshot.eta_start_s = Some(0.0));
+            registry.slots[slot].running = Some((job_id, job.tx.clone()));
+            tokio::spawn(worker_loop(state.clone(), slot, job));
+        }
+        None => {
+            let position = registry.queues[class].len() + 1;
+            job.tx
+                .send_modify(|snapshot| snapshot.queue_position = Some(position));
+            registry.queues[class].push_back(job);
+        }
     }
     simulate_queue_etas(&registry);
-    Ok(job_id)
+    Ok(Admission { id: job_id, new })
+}
+
+/// Worker modes: starts every idle slot on the job it would take next
+/// (`schedule::next_for`), if that job is persisted -- after an admission
+/// is written, and after a restart.
+fn dispatch_idle(state: &Arc<AppState>, registry: &mut RegistryInner) {
+    for slot in 0..registry.slots.len() {
+        if registry.slots[slot].running.is_some() {
+            continue;
+        }
+        let class = registry.slots[slot].class;
+        let Some(next_class) = schedule::next_for(class, &registry.queues).filter(|&next| {
+            registry.queues[next]
+                .front()
+                .is_some_and(|job| job.persisted)
+        }) else {
+            continue;
+        };
+        let job = registry.queues[next_class]
+            .pop_front()
+            .expect("next_for names a non-empty queue");
+        registry.slots[slot].running = Some((job.id, job.tx.clone()));
+        tokio::spawn(worker_loop(state.clone(), slot, job));
+    }
+    simulate_queue_etas(registry);
+}
+
+/// Worker modes (#97 phase 2, docs/WORKER_TIER.md §6 "master restarts
+/// mid-job"): reloads every live job from the store before the service
+/// admits anything. Queued jobs return to their class queues in admission
+/// order, so they keep their positions and the dispatch order their ETAs
+/// were computed for. A job that was leased or running holds a slot again
+/// and its runner adopts the lease, whose deadline starts over at one TTL
+/// from now; the agent that held it is gone (loopback agents die with the
+/// channel), so the lease expires and the job goes back to the head of its
+/// queue without counting an attempt -- a master restart is not a lost
+/// worker. The dedup keys and the queue bounds are rebuilt with it.
+pub fn restore(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let store = &state.store;
+    if let Err(error) = store.prune_finished_jobs(FINISHED_JOBS_KEPT) {
+        eprintln!("tolmap serve: could not prune finished jobs: {error:#}");
+    }
+    let rows = store.live_jobs()?;
+    let max_order = store.max_job_order()?;
+    let runner = runner_for(state);
+    let prior = prior_features(&state.config);
+    let (mut running, mut queued) = (0usize, 0usize);
+    // Written after the lock is released: rows that could not be read
+    // back, and leased jobs with no slot left to hold them.
+    let mut unreadable = Vec::new();
+    let mut without_slot = Vec::new();
+    {
+        let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+        registry.ensure_classes(&state.config.limits);
+        registry.next_order = registry.next_order.max(max_order);
+        let mut to_start = Vec::new();
+        for row in rows {
+            let parsed = Uuid::parse_str(&row.job_id).ok().zip(
+                serde_json::from_str::<JobSpec>(&row.spec_json)
+                    .ok()
+                    .zip(serde_json::from_str::<JobSnapshot>(&row.snapshot_json).ok()),
+            );
+            let key = (row.slug.clone(), row.commit.clone());
+            let Some((id, (spec, snapshot))) =
+                parsed.filter(|_| !registry.active.contains_key(&key))
+            else {
+                unreadable.push(row);
+                continue;
+            };
+            let class = usize::try_from(row.class)
+                .ok()
+                .filter(|class| *class < registry.classes.len())
+                .unwrap_or(0);
+            let (tx, _rx) = watch::channel(snapshot);
+            registry.jobs.insert(id, tx.clone());
+            registry.active.insert(key.clone(), id);
+            registry.features.insert(id, prior.clone());
+            let job = PendingJob {
+                id,
+                key,
+                repo_ref: repo_ref_of(&spec),
+                tx: tx.clone(),
+                runner: runner.clone(),
+                order: row.queue_order,
+                class,
+                persisted: true,
+            };
+            let epoch = u64::try_from(row.epoch).unwrap_or(0);
+            if matches!(row.status.as_str(), "leased" | "running") {
+                running += 1;
+                if let Some(slot) = registry.idle_slot_for(class) {
+                    registry.orphans.insert(id, epoch);
+                    registry.slots[slot].running = Some((id, tx));
+                    to_start.push((slot, job));
+                    continue;
+                }
+                // More leased jobs than slots (the agent count went down
+                // across the restart): back to the queue at once.
+                let reset = requeued_snapshot(&tx.borrow(), RESTARTED);
+                tx.send_replace(reset.clone());
+                without_slot.push((row.job_id.clone(), epoch, reset));
+            } else {
+                queued += 1;
+            }
+            let class_queue = &mut registry.queues[class];
+            insert_by_order(class_queue, job);
+        }
+        for (slot, job) in to_start {
+            tokio::spawn(worker_loop(state.clone(), slot, job));
+        }
+        dispatch_idle(state, &mut registry);
+    }
+    for (job_id, epoch, reset) in without_slot {
+        let json = serde_json::to_string(&reset).expect("a JobSnapshot serializes");
+        if let Err(error) = store.requeue_job(&job_id, epoch, false, 0, &json) {
+            eprintln!("job {job_id}: could not re-queue it in the store: {error:#}");
+        }
+    }
+    for row in unreadable {
+        eprintln!(
+            "job {}: its stored row cannot be reloaded (unreadable, or a second live job for \
+             {} at {}); marking it failed",
+            row.job_id, row.slug, row.commit
+        );
+        let _ = store.finish_job(&row.job_id, "failed", &row.snapshot_json);
+    }
+    if running + queued > 0 {
+        eprintln!(
+            "tolmap serve: restored {running} leased or running and {queued} queued job(s) from \
+             the store"
+        );
+    }
+    Ok(())
+}
+
+/// How many finished jobs' rows `restore` keeps for `GET /api/jobs/{id}`.
+const FINISHED_JOBS_KEPT: usize = 1000;
+
+/// `stage` of a job a master restart put back in its queue.
+pub(crate) const RESTARTED: &str = "the service restarted; retrying the job on a worker";
+
+/// The repository a stored `JobSpec` names, as `executor::execute` reads it.
+fn repo_ref_of(spec: &JobSpec) -> RepoRef {
+    RepoRef {
+        slug: spec.slug.clone(),
+        owner: spec.owner.clone(),
+        repo: spec.repo.clone(),
+        source: if spec.local {
+            RepoSource::Local(std::path::PathBuf::from(&spec.source))
+        } else {
+            RepoSource::Remote(spec.source.clone())
+        },
+    }
 }
 
 /// Runs jobs on one worker slot until [`schedule::next_for`] finds nothing
@@ -649,12 +1086,17 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
             repo_ref,
             tx,
             runner,
+            order,
+            class: job_class,
+            persisted,
         } = job;
         tx.send_modify(|snapshot| {
             snapshot.queue_position = None;
             snapshot.eta_start_s = None;
             snapshot.started_at = now_rfc3339();
         });
+        // Kept for a worker-mode re-queue, which puts the same job back.
+        let again = (repo_ref.clone(), runner.clone());
         let blocking_state = state.clone();
         let blocking_tx = tx.clone();
         let result =
@@ -669,9 +1111,21 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
                 },
             );
         }
+        // Worker modes (#97 phase 2): a job the runner put back in its
+        // queue, or one a graceful stop leaves as it is for the next
+        // process, is not over, so it is neither failed here nor ended
+        // below. `held` is always false in local mode.
+        let (durable, held) = {
+            let registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+            let durable = registry.remote.is_some();
+            (
+                durable,
+                durable && (registry.stopping || registry.requeue.contains(&id)),
+            )
+        };
         // The runner normally sets a terminal snapshot itself. A panic or
         // an unexpected return must never leave an accepted job in flight.
-        if !is_terminal(&tx.borrow()) {
+        if !held && !is_terminal(&tx.borrow()) {
             finish_failed(
                 &tx,
                 ErrorBody {
@@ -680,40 +1134,85 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
                 },
             );
         }
+        // Off the registry's lock: the store is never written under it.
+        if durable {
+            persist_terminal(&state.store, &tx.borrow());
+        }
         let mut registry = state.jobs.0.lock().expect("job registry mutex poisoned");
         let snapshot = tx.borrow().clone();
-        let peak_rss_bytes = registry.peak_rss.remove(&id);
-        let features = registry.features.remove(&id).unwrap_or_default();
-        log_peak_memory(id, &features, peak_rss_bytes, &registry.memory_model);
-        let row = TimingRow {
-            features,
-            elapsed_s: snapshot.elapsed_s,
-            stage_s: snapshot
-                .stages
-                .iter()
-                .map(|stage| {
-                    (snapshot.status == JobStatus::Done && stage.state == StageState::Done)
-                        .then_some(stage.duration_s)
-                        .flatten()
-                })
-                .collect(),
-            peak_rss_bytes,
-        };
-        if let Err(error) = state.store.save_timing(&id.to_string(), &row) {
-            eprintln!("timing store warning for {id}: {error:#}");
+        let requeued = registry.requeue.remove(&id);
+        // Re-read under the lock: a cancel that landed since has made the
+        // job terminal, and then it ends here like any other.
+        if durable && !is_terminal(&snapshot) {
+            // No timing row for a run that did not finish, and the job
+            // keeps its dedup key and features. A re-queued job goes back
+            // by its admission order, which is the head of its queue; its
+            // row says `queued` already (`workers::run_remote`). During a
+            // graceful stop it stays where the table has it, for the next
+            // process.
+            if requeued && !registry.stopping {
+                let (repo_ref, runner) = again;
+                insert_by_order(
+                    &mut registry.queues[job_class],
+                    PendingJob {
+                        id,
+                        key,
+                        repo_ref,
+                        tx: tx.clone(),
+                        runner,
+                        order,
+                        class: job_class,
+                        persisted,
+                    },
+                );
+            }
         } else {
-            registry.memory_model.record(row.clone());
-            registry.eta_model.record(row);
+            let peak_rss_bytes = registry.peak_rss.remove(&id);
+            let features = registry.features.remove(&id).unwrap_or_default();
+            log_peak_memory(id, &features, peak_rss_bytes, &registry.memory_model);
+            let row = TimingRow {
+                features,
+                elapsed_s: snapshot.elapsed_s,
+                stage_s: snapshot
+                    .stages
+                    .iter()
+                    .map(|stage| {
+                        (snapshot.status == JobStatus::Done && stage.state == StageState::Done)
+                            .then_some(stage.duration_s)
+                            .flatten()
+                    })
+                    .collect(),
+                peak_rss_bytes,
+            };
+            if let Err(error) = state.store.save_timing(&id.to_string(), &row) {
+                eprintln!("timing store warning for {id}: {error:#}");
+            } else {
+                registry.memory_model.record(row.clone());
+                registry.eta_model.record(row);
+            }
+            registry.cancelled.remove(&id);
+            if registry.active.get(&key) == Some(&id) {
+                registry.active.remove(&key);
+            }
         }
-        registry.cancelled.remove(&id);
-        if registry.active.get(&key) == Some(&id) {
-            registry.active.remove(&key);
+        // A stopping master in worker mode starts nothing more: whatever
+        // is queued stays in the table for the next process.
+        if durable && registry.stopping {
+            registry.slots[slot].running = None;
+            simulate_queue_etas(&registry);
+            break;
         }
         // The slot is handed straight to the next job under the same lock,
         // as the single FIFO did, so no admission can see it idle in
-        // between and start a second job on it.
+        // between and start a second job on it. In worker modes a job
+        // whose row is not written yet is not started; `admitted` starts
+        // it once it is.
         let class = registry.slots[slot].class;
-        if let Some(next_class) = schedule::next_for(class, &registry.queues) {
+        if let Some(next_class) = schedule::next_for(class, &registry.queues).filter(|&next| {
+            registry.queues[next]
+                .front()
+                .is_some_and(|job| job.persisted)
+        }) {
             let next = registry.queues[next_class]
                 .pop_front()
                 .expect("next_for names a non-empty queue");
@@ -942,18 +1441,30 @@ pub(crate) fn prepare(
         .warm_start_candidates(&repo_ref.slug)
         .map_err(internal)?;
     let names = state.store.load_names(&repo_ref.slug).map_err(internal)?;
+    let commit = tx.borrow().commit.clone().unwrap_or_default();
+    let job = job_spec(&state.config, repo_ref, &commit);
+    let inputs = JobInputs {
+        names,
+        previous_maps: previous_map_inputs(&warm_start_candidates),
+    };
+    Ok((job, inputs))
+}
+
+/// The portable [`JobSpec`] for `repo_ref` at `commit` under this service's
+/// configuration: what `prepare` sends the executor, and what worker modes
+/// store at admission so a restarted master can rebuild the job.
+fn job_spec(config: &ServeConfig, repo_ref: &RepoRef, commit: &str) -> JobSpec {
     let (source, local) = match &repo_ref.source {
         RepoSource::Remote(url) => (url.clone(), false),
         RepoSource::Local(path) => (path.to_string_lossy().into_owned(), true),
     };
-    let config = &state.config;
-    let job = JobSpec {
+    JobSpec {
         slug: repo_ref.slug.clone(),
         owner: repo_ref.owner.clone(),
         repo: repo_ref.repo.clone(),
         source,
         local,
-        commit: tx.borrow().commit.clone().unwrap_or_default(),
+        commit: commit.to_owned(),
         all_sources: false,
         prune_variant: config.prune_variant.to_string(),
         namer: config.namer.to_string(),
@@ -961,12 +1472,7 @@ pub(crate) fn prepare(
         refs: Some(config.refs.to_string()),
         install: (config.refs == crate::extract::RefsMode::Scip && config.scip_install)
             .then(|| "sandbox".to_owned()),
-    };
-    let inputs = JobInputs {
-        names,
-        previous_maps: previous_map_inputs(&warm_start_candidates),
-    };
-    Ok((job, inputs))
+    }
 }
 
 /// The master's own host environment for the executor in local mode: its

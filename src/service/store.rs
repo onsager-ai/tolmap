@@ -92,7 +92,82 @@ const MIGRATIONS: &[&str] = &[
     // (CLAUDE.md "migrate forward" -- never edit `job_timings`' first
     // migration above).
     "ALTER TABLE job_timings ADD COLUMN peak_rss_bytes INTEGER;",
+    // #97 phase 2 (docs/WORKER_TIER.md §2.2, §6): durable jobs and leases,
+    // written only in worker modes (`TOLMAP_WORKERS=loopback:N`); local
+    // mode never reads or writes this table. One row per job:
+    // - `status` is the master's internal state, not the public
+    //   `JobSnapshot.status`: `queued`, `leased`, `running`, `done`,
+    //   `failed`. A row never leaves `done` or `failed`: every update below
+    //   is guarded on it, which is what keeps a cancel terminal whatever
+    //   races it.
+    // - `attempt` starts at 1 and counts lost workers (§10.6); a re-queue
+    //   for a master restart or a graceful stop leaves it alone.
+    // - `epoch` is the epoch of the job's current (or pending) assignment,
+    //   0 before the first. It is raised and written when a runner starts
+    //   looking for an agent, *before* the `assign` carrying it is sent, so
+    //   no epoch number is ever given out twice, even across a crash
+    //   between the two.
+    // - `queue_order` is the admission sequence. Queues are kept in this
+    //   order, and a re-queued job keeps its number, which puts it at the
+    //   head of its class queue: every job still queued was admitted after
+    //   it started.
+    // - `spec_json` is the job's `JobSpec`, which is all a restarted master
+    //   needs to rebuild the job; `snapshot_json` the last persisted
+    //   `JobSnapshot`, which `GET /api/jobs/{id}` serves after a restart.
+    r#"
+    CREATE TABLE jobs (
+        job_id            TEXT PRIMARY KEY,
+        slug              TEXT NOT NULL,
+        commit_sha        TEXT NOT NULL,
+        spec_json         TEXT NOT NULL,
+        class             INTEGER NOT NULL,
+        status            TEXT NOT NULL,
+        attempt           INTEGER NOT NULL,
+        epoch             INTEGER NOT NULL,
+        lease_holder      TEXT,
+        lease_deadline_ms INTEGER,
+        queue_order       INTEGER NOT NULL,
+        snapshot_json     TEXT NOT NULL,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+    );
+    CREATE INDEX jobs_status_order ON jobs(status, queue_order);
+"#,
 ];
+
+/// The two statuses a `jobs` row never leaves.
+const TERMINAL_JOB: &str = "status NOT IN ('done', 'failed')";
+
+/// One `jobs` row (#97 phase 2) -- see the migration above for what each
+/// column means. JSON columns stay strings here: the store does not need
+/// to know the shapes it keeps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JobRow {
+    pub job_id: String,
+    pub slug: String,
+    pub commit: String,
+    pub spec_json: String,
+    pub class: i64,
+    pub status: String,
+    pub attempt: i64,
+    pub epoch: i64,
+    pub lease_holder: Option<String>,
+    pub lease_deadline_ms: Option<i64>,
+    pub queue_order: i64,
+    pub snapshot_json: String,
+}
+
+/// What [`Store::requeue_job`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Requeued {
+    /// Back to `queued`, at this attempt.
+    Queued { attempt: i64 },
+    /// A counted loss past the retry bound: nothing was written, and the
+    /// caller fails the job having lost this many workers.
+    Exhausted { lost: i64 },
+    /// The row is terminal already (a cancel won), or at another epoch.
+    Unchanged,
+}
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -378,6 +453,222 @@ impl Store {
         Ok(stale.len())
     }
 
+    // ---- durable jobs (#97 phase 2), worker modes only ------------------
+
+    /// Admission: the job's first row, before `POST /api/index` answers.
+    pub fn insert_job(&self, row: &JobRow) -> Result<()> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        let now = crate::service::time::now_rfc3339();
+        conn.execute(
+            "INSERT INTO jobs (job_id, slug, commit_sha, spec_json, class, status, attempt, epoch,
+                               lease_holder, lease_deadline_ms, queue_order, snapshot_json,
+                               created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+            params![
+                row.job_id,
+                row.slug,
+                row.commit,
+                row.spec_json,
+                row.class,
+                row.status,
+                row.attempt,
+                row.epoch,
+                row.lease_holder,
+                row.lease_deadline_ms,
+                row.queue_order,
+                row.snapshot_json,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Raises a live job's epoch for its next assignment and returns it,
+    /// with the job's admission order; `None` when the row is terminal (or
+    /// missing), so the job must not be assigned. Written before `assign`
+    /// is sent -- see the migration.
+    pub fn begin_attempt(&self, job_id: &str) -> Result<Option<(u64, i64)>> {
+        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            &format!(
+                "UPDATE jobs SET epoch = epoch + 1, updated_at = ?2 WHERE job_id = ?1 AND {TERMINAL_JOB}"
+            ),
+            params![job_id, crate::service::time::now_rfc3339()],
+        )?;
+        let attempt = if changed == 1 {
+            Some(tx.query_row(
+                "SELECT epoch, queue_order FROM jobs WHERE job_id = ?1",
+                params![job_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )?)
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok(
+            attempt
+                .and_then(|(epoch, order)| u64::try_from(epoch).ok().map(|epoch| (epoch, order))),
+        )
+    }
+
+    /// A live job at `epoch` moves to `status` (`leased` or `running`)
+    /// with its latest snapshot and lease holder. Guarded on the epoch, so
+    /// a runner can only ever write the lease it holds.
+    pub fn save_job_state(
+        &self,
+        job_id: &str,
+        epoch: u64,
+        status: &str,
+        lease_holder: Option<&str>,
+        lease_deadline_ms: Option<i64>,
+        snapshot_json: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        conn.execute(
+            &format!(
+                "UPDATE jobs SET status = ?3, lease_holder = COALESCE(?4, lease_holder),
+                     lease_deadline_ms = COALESCE(?5, lease_deadline_ms), snapshot_json = ?6,
+                     updated_at = ?7
+                 WHERE job_id = ?1 AND epoch = ?2 AND {TERMINAL_JOB}"
+            ),
+            params![
+                job_id,
+                epoch as i64,
+                status,
+                lease_holder,
+                lease_deadline_ms,
+                snapshot_json,
+                crate::service::time::now_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Puts a live job at `epoch` back to `queued` with `snapshot_json`
+    /// (its stages reset) and no lease. A `counted` re-queue is a lost
+    /// worker (§10.6): it raises `attempt`, unless `retries` lost-worker
+    /// retries are used up already, in which case nothing is written and
+    /// the caller fails the job. One transaction, so the bound is decided
+    /// on the value it updates.
+    pub fn requeue_job(
+        &self,
+        job_id: &str,
+        epoch: u64,
+        counted: bool,
+        retries: u32,
+        snapshot_json: &str,
+    ) -> Result<Requeued> {
+        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
+        let tx = conn.transaction()?;
+        let attempt: Option<i64> = tx
+            .query_row(
+                &format!(
+                    "SELECT attempt FROM jobs WHERE job_id = ?1 AND epoch = ?2 AND {TERMINAL_JOB}"
+                ),
+                params![job_id, epoch as i64],
+                |row| row.get(0),
+            )
+            .optional_context()?;
+        let Some(attempt) = attempt else {
+            return Ok(Requeued::Unchanged);
+        };
+        // `attempt` counts the workers the job has been on; the retries
+        // used so far are one fewer, so the bound is reached once
+        // `attempt - 1 >= retries`.
+        if counted && attempt > i64::from(retries) {
+            return Ok(Requeued::Exhausted { lost: attempt });
+        }
+        let attempt = attempt + i64::from(counted);
+        tx.execute(
+            "UPDATE jobs SET status = 'queued', attempt = ?3, lease_holder = NULL,
+                 lease_deadline_ms = NULL, snapshot_json = ?4, updated_at = ?5
+             WHERE job_id = ?1 AND epoch = ?2",
+            params![
+                job_id,
+                epoch as i64,
+                attempt,
+                snapshot_json,
+                crate::service::time::now_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Requeued::Queued { attempt })
+    }
+
+    /// A job's terminal snapshot. The first terminal write wins: callers
+    /// write the in-memory snapshot, which is itself terminal once and for
+    /// all (`jobs::finish_failed`, `jobs::finish_done`), so every writer of
+    /// one job writes the same terminal state.
+    pub fn finish_job(&self, job_id: &str, status: &str, snapshot_json: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        conn.execute(
+            &format!(
+                "UPDATE jobs SET status = ?2, lease_holder = NULL, lease_deadline_ms = NULL,
+                     snapshot_json = ?3, updated_at = ?4
+                 WHERE job_id = ?1 AND {TERMINAL_JOB}"
+            ),
+            params![
+                job_id,
+                status,
+                snapshot_json,
+                crate::service::time::now_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every job not yet `done` or `failed`, in admission order: what a
+    /// restarted master reloads.
+    pub fn live_jobs(&self) -> Result<Vec<JobRow>> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        let mut statement = conn.prepare(&format!(
+            "SELECT job_id, slug, commit_sha, spec_json, class, status, attempt, epoch,
+                    lease_holder, lease_deadline_ms, queue_order, snapshot_json
+             FROM jobs WHERE {TERMINAL_JOB} ORDER BY queue_order, job_id"
+        ))?;
+        let rows = statement
+            .query_map([], row_to_job)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn job(&self, job_id: &str) -> Result<Option<JobRow>> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        conn.query_row(
+            "SELECT job_id, slug, commit_sha, spec_json, class, status, attempt, epoch,
+                    lease_holder, lease_deadline_ms, queue_order, snapshot_json
+             FROM jobs WHERE job_id = ?1",
+            params![job_id],
+            row_to_job,
+        )
+        .optional_context()
+    }
+
+    /// The largest admission number ever given out, so a restarted master
+    /// continues after it.
+    pub fn max_job_order(&self) -> Result<i64> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT COALESCE(MAX(queue_order), 0) FROM jobs",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Keeps the newest `keep` terminal rows, so `GET /api/jobs/{id}` still
+    /// answers for recent jobs after a restart without the table growing
+    /// forever. Live rows are never touched.
+    pub fn prune_finished_jobs(&self, keep: usize) -> Result<usize> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        Ok(conn.execute(
+            "DELETE FROM jobs WHERE status IN ('done', 'failed') AND job_id NOT IN (
+                 SELECT job_id FROM jobs WHERE status IN ('done', 'failed')
+                 ORDER BY updated_at DESC, job_id DESC LIMIT ?1)",
+            params![keep as i64],
+        )?)
+    }
+
     pub fn insert(&self, row: &MapRow) -> Result<()> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         conn.execute(
@@ -418,6 +709,23 @@ fn row_to_map(row: &rusqlite::Row) -> rusqlite::Result<MapRow> {
         modularity: row.get(8)?,
         map_path: PathBuf::from(row.get::<_, String>(9)?),
         indexed_at: row.get(10)?,
+    })
+}
+
+fn row_to_job(row: &rusqlite::Row) -> rusqlite::Result<JobRow> {
+    Ok(JobRow {
+        job_id: row.get(0)?,
+        slug: row.get(1)?,
+        commit: row.get(2)?,
+        spec_json: row.get(3)?,
+        class: row.get(4)?,
+        status: row.get(5)?,
+        attempt: row.get(6)?,
+        epoch: row.get(7)?,
+        lease_holder: row.get(8)?,
+        lease_deadline_ms: row.get(9)?,
+        queue_order: row.get(10)?,
+        snapshot_json: row.get(11)?,
     })
 }
 
@@ -512,6 +820,107 @@ mod tests {
         let saved = store.recent_timings().unwrap();
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].peak_rss_bytes, None);
+    }
+
+    fn job_row(id: &str, order: i64) -> JobRow {
+        JobRow {
+            job_id: id.to_owned(),
+            slug: format!("o/{id}"),
+            commit: "c0".to_owned(),
+            spec_json: "{}".to_owned(),
+            class: 0,
+            status: "queued".to_owned(),
+            attempt: 1,
+            epoch: 0,
+            lease_holder: None,
+            lease_deadline_ms: None,
+            queue_order: order,
+            snapshot_json: "{}".to_owned(),
+        }
+    }
+
+    /// #97 phase 2: each assignment raises the epoch first; a counted
+    /// re-queue raises the attempt until the retry bound, then refuses; an
+    /// uncounted one never does; and a terminal row stays terminal whatever
+    /// is written after it.
+    #[test]
+    fn job_rows_fence_epochs_bound_retries_and_stay_terminal() {
+        let (_dir, store) = temp_store();
+        store.insert_job(&job_row("a", 1)).unwrap();
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((1, 1)));
+        store
+            .save_job_state("a", 1, "leased", Some("agent 0"), Some(5), "{\"s\":1}")
+            .unwrap();
+        // A write for another epoch is ignored.
+        store
+            .save_job_state("a", 7, "running", None, None, "{\"s\":7}")
+            .unwrap();
+        let row = store.job("a").unwrap().unwrap();
+        assert_eq!(row.status, "leased");
+        assert_eq!(row.lease_holder.as_deref(), Some("agent 0"));
+        assert_eq!(row.snapshot_json, "{\"s\":1}");
+        // Two lost-worker retries, then the bound.
+        assert_eq!(
+            store.requeue_job("a", 1, true, 2, "{}").unwrap(),
+            Requeued::Queued { attempt: 2 }
+        );
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((2, 1)));
+        assert_eq!(
+            store.requeue_job("a", 2, false, 2, "{}").unwrap(),
+            Requeued::Queued { attempt: 2 },
+            "a restart or a graceful stop is not a lost worker"
+        );
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((3, 1)));
+        assert_eq!(
+            store.requeue_job("a", 3, true, 2, "{}").unwrap(),
+            Requeued::Queued { attempt: 3 }
+        );
+        assert_eq!(store.begin_attempt("a").unwrap(), Some((4, 1)));
+        assert_eq!(
+            store.requeue_job("a", 4, true, 2, "{}").unwrap(),
+            Requeued::Exhausted { lost: 3 }
+        );
+        assert_eq!(
+            store.requeue_job("a", 3, true, 2, "{}").unwrap(),
+            Requeued::Unchanged,
+            "a superseded epoch cannot re-queue"
+        );
+        store.finish_job("a", "failed", "{\"end\":1}").unwrap();
+        store.finish_job("a", "done", "{\"end\":2}").unwrap();
+        store
+            .save_job_state("a", 4, "running", None, None, "{}")
+            .unwrap();
+        assert_eq!(store.begin_attempt("a").unwrap(), None);
+        assert_eq!(
+            store.requeue_job("a", 4, false, 2, "{}").unwrap(),
+            Requeued::Unchanged
+        );
+        let row = store.job("a").unwrap().unwrap();
+        assert_eq!(
+            (row.status.as_str(), row.snapshot_json.as_str()),
+            ("failed", "{\"end\":1}")
+        );
+        assert!(store.live_jobs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn live_jobs_come_back_in_admission_order_and_old_finished_ones_are_pruned() {
+        let (_dir, store) = temp_store();
+        for (id, order) in [("c", 3), ("a", 1), ("b", 2), ("d", 4)] {
+            store.insert_job(&job_row(id, order)).unwrap();
+        }
+        store.finish_job("d", "done", "{}").unwrap();
+        let live: Vec<String> = store
+            .live_jobs()
+            .unwrap()
+            .into_iter()
+            .map(|row| row.job_id)
+            .collect();
+        assert_eq!(live, ["a", "b", "c"]);
+        assert_eq!(store.max_job_order().unwrap(), 4);
+        assert_eq!(store.prune_finished_jobs(0).unwrap(), 1);
+        assert!(store.job("d").unwrap().is_none());
+        assert_eq!(store.live_jobs().unwrap().len(), 3);
     }
 
     fn temp_store() -> (tempfile::TempDir, Store) {
