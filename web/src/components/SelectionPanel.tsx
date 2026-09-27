@@ -123,7 +123,7 @@ export function SelectionPanel({
   return (
     <Card
       data-selection-panel
-      className={`absolute z-10 border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-lg max-[820px]:inset-x-2.5 max-[820px]:bottom-[calc(58px+env(safe-area-inset-bottom,0px))] max-[820px]:top-auto max-[820px]:w-auto max-[820px]:overflow-hidden max-[820px]:p-0 min-[821px]:right-2.5 min-[821px]:top-2.5 min-[821px]:w-[260px] min-[821px]:p-3`}
+      className={`absolute z-10 border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-lg max-[820px]:flex max-[820px]:flex-col max-[820px]:inset-x-2.5 max-[820px]:bottom-[calc(58px+env(safe-area-inset-bottom,0px))] max-[820px]:top-auto max-[820px]:w-auto max-[820px]:overflow-hidden max-[820px]:p-0 min-[821px]:right-2.5 min-[821px]:top-2.5 min-[821px]:w-[260px] min-[821px]:p-3`}
       style={narrow ? { maxHeight: isOpen ? "58vh" : "46px" } : undefined}
     >
       <div
@@ -131,7 +131,7 @@ export function SelectionPanel({
         // py-1.5 (was py-2.5): the collapsed phone sheet is 46 px tall, and
         // at the docs/UX.md §8.1 sizes a 13 px breadcrumb line plus a 14 px
         // title line only fit it with the smaller padding.
-        className={narrow ? "grid cursor-pointer grid-cols-[1fr_auto] items-center gap-2.5 px-3.5 py-1.5" : ""}
+        className={narrow ? "grid shrink-0 cursor-pointer grid-cols-[1fr_auto] items-center gap-2.5 px-3.5 py-1.5" : ""}
       >
         <div className="overflow-hidden">
           {!showUnconnected && (
@@ -172,10 +172,12 @@ export function SelectionPanel({
         )}
       </div>
       {(!narrow || isOpen) && (
-        // 40vh (was 44vh): the header grew with the §8.1 type (a phone
-        // breadcrumb now often wraps to two lines), and header + body must
-        // stay inside the card's 58vh or the route buttons are clipped.
-        <div className={narrow ? "max-h-[40vh] overflow-y-auto px-3.5 pb-3" : ""}>
+        // On a phone the card is a flex column capped at 58vh and this body
+        // takes whatever the header leaves (was a fixed 44vh): the header
+        // grew with the §8.1 type, and header + a fixed-height body
+        // overflowed the card, clipping the route buttons instead of
+        // scrolling to them.
+        <div className={narrow ? "min-h-0 flex-1 overflow-y-auto px-3.5 pb-3" : ""}>
           {showUnconnected ? (
             <UnconnectedList layout={packageLayout} doc={doc} onSelectFile={onSelectFile} />
           ) : selD == null && sel == null ? (

@@ -77,7 +77,11 @@ export function Breadcrumb({ doc, sel, selSym, selD, selHSym, symbolsDoc, onSele
       // into, exactly like the existing "Zoom to district" button already
       // guards against with its own stopPropagation.
       onClick={(e) => e.stopPropagation()}
-      className="mb-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-meta text-[var(--dim)]"
+      // Phone: one line, every segment shrinking to an ellipsis rather than
+      // wrapping. At the docs/UX.md §8.1 size a wrapped breadcrumb filled the
+      // collapsed 46 px sheet on its own and hid the title under it; shrinking
+      // (not clipping) keeps every segment on screen and tappable.
+      className="mb-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-meta text-[var(--dim)] max-[820px]:flex-nowrap max-[820px]:overflow-hidden max-[820px]:[&_*]:min-w-0 max-[820px]:[&_*]:truncate"
     >
       <button type="button" className="font-mono hover:text-[var(--on)]" onClick={onSelectRepo}>
         {doc.repo}
