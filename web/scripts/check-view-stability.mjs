@@ -2913,7 +2913,35 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     `${label}: the first tap resolves via JS hit-testing and selects that district (two-step tap, #82 C2)`,
     `expected d=${point.district} url=${page.url()}`,
   );
-  await tap(page, profile, point.x, point.y);
+  // Focusing the district draws things over its own footprints that the fit
+  // view didn't have -- its neighbourhood labels and streets (both tappable,
+  // both deliberately NOT selections). If one now covers the original point,
+  // the second tap would be a label/street tap, not the bare-footprint tap
+  // this check is about; re-pick a point that still resolves to the bare
+  // district polygon, and say what covered the first one.
+  const second = await page.evaluate(({ x, y, district }) => {
+    const key = `d:${district}`;
+    const at = (px, py) => {
+      const hit = document.elementFromPoint(px, py)?.closest?.("[data-k]");
+      return { key: hit?.getAttribute("data-k") ?? null, tag: hit?.tagName?.toLowerCase() ?? null };
+    };
+    const here = at(x, y);
+    if (here.key === key && here.tag === "path") return { x, y, coveredBy: null };
+    for (const path of document.querySelectorAll(`svg.map-svg path.hit[data-k="${key}"]`)) {
+      const rect = path.getBoundingClientRect();
+      for (let yi = 1; yi < 10; yi++) {
+        for (let xi = 1; xi < 10; xi++) {
+          const px = rect.left + (rect.width * xi) / 10;
+          const py = rect.top + (rect.height * yi) / 10;
+          const hit = at(px, py);
+          if (hit.key === key && hit.tag === "path") return { x: px, y: py, coveredBy: here.key };
+        }
+      }
+    }
+    return { x, y, coveredBy: here.key, noBarePoint: true };
+  }, point);
+  if (second.coveredBy) console.log(`  info  ${label}: after focusing, the first point is covered by ${second.coveredBy}; second tap at (${second.x.toFixed(1)}, ${second.y.toFixed(1)})`);
+  await tap(page, profile, second.x, second.y);
   const selectedFile = new URL(page.url()).searchParams.get("file");
   report(
     !!selectedFile,
