@@ -2074,9 +2074,17 @@ fn parse_python_with_progress(
         }
     }
     // Issue #162: each project's top-level modules, and the projects that
-    // hold each one, for the cross-project fallback below.
+    // hold each one, for the cross-project fallback below. Only a project
+    // whose manifest declares a name can own one: a directory that merely
+    // holds a file called `setup.py` (dify's `api/controllers/console/`, a
+    // Flask controller) is a project to `python_project_root`, and its
+    // subpackages would otherwise answer for external libraries of the
+    // same name (`socketio`).
     let mut top_level_owners = BTreeMap::<&str, Vec<&str>>::new();
     for (project, table) in &project_modules {
+        if !crate::detect::python_manifest_declares_name(&repo.join(project)) {
+            continue;
+        }
         for module in table.keys() {
             if !module.is_empty() && !module.contains('.') {
                 top_level_owners
@@ -6802,6 +6810,26 @@ mod tests {
         )));
         // Only the sibling's statement crossed.
         assert_eq!(intermediate.python_cross_project, 1);
+    }
+
+    #[test]
+    fn a_directory_whose_setup_py_declares_no_name_owns_no_top_level_name() {
+        // dify's shape: `app/controllers/console/setup.py` is a controller,
+        // not a manifest, yet it makes its directory a project to
+        // `python_project_root`. Its `socketio/` must not answer for the
+        // external `socketio` library imported elsewhere.
+        let intermediate = python_root_intermediate(&[
+            ("app/pyproject.toml", "[project]\nname = 'dify-api'\n"),
+            ("app/factory.py", "import socketio\n"),
+            (
+                "app/controllers/console/setup.py",
+                "class Setup:\n    name: str = ''\n",
+            ),
+            ("app/controllers/console/socketio/__init__.py", ""),
+        ]);
+        let edges = intermediate_edges(&intermediate);
+        assert!(targets_of(&edges, "app/factory.py").is_empty(), "{edges:?}");
+        assert_eq!(intermediate.python_cross_project, 0);
     }
 
     #[test]

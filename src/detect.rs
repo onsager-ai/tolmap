@@ -309,6 +309,18 @@ fn read_python_metadata(repo: &Path) -> Option<PyMeta> {
     read_python_metadata_in(repo)
 }
 
+/// Whether the `pyproject.toml`/`setup.py`/`setup.cfg` in `dir` declares a
+/// project name, read exactly as detection reads one. The extractor's
+/// cross-project fallback (issue #162) lets only such a project own a
+/// top-level name: `extract::python_project_root` takes any directory with
+/// a file called `setup.py` as a project, and langgenius/dify has
+/// `api/controllers/console/setup.py`, a Flask controller, whose
+/// `socketio/` subpackage would otherwise have answered for the external
+/// `socketio` library.
+pub(crate) fn python_manifest_declares_name(dir: &Path) -> bool {
+    read_python_metadata_in(dir).is_some_and(|meta| meta.name.is_some())
+}
+
 /// [`read_python_metadata`] for any directory holding a manifest: the
 /// repository root, or a nested project's directory (issue #162). One
 /// parser for both, so a nested project's declared name is read exactly as
