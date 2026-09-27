@@ -975,7 +975,15 @@ impl JobContext {
     /// the output into a directory only the agent can write and checks each
     /// expected file there (regular, one link, owned by the worker uid)
     /// before anything is read, exactly as local mode does before it stores
-    /// a map. The commit must be the one this agent's own checkout resolved.
+    /// a map, including the files/districts-vs-map-document check
+    /// (`worker_result::check_counts`). The commit must be the one this
+    /// agent's own checkout resolved -- which, since #97 phase 2,
+    /// `executor::execute` has already pinned to the commit `self.job`
+    /// carries (docs/WORKER_TIER.md §3.3), so this is also the master's own
+    /// admitted commit by construction, and `check_result` on the master
+    /// checks it again independently against `self.job.commit` once this
+    /// agent is not the only thing standing between an untrusted child and
+    /// the store.
     fn upload(
         &self,
         http: &ureq::Agent,
@@ -1026,6 +1034,8 @@ impl JobContext {
                 symbols_path: &output.symbols_path,
                 symbols_dir: &output.symbols_dir,
                 names_cache: &output.names_cache,
+                files: output.files,
+                districts: output.districts,
             },
             Some(worker_uid_in_effect(self.host.worker_uid)),
         )

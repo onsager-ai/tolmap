@@ -1604,7 +1604,15 @@ pub(crate) fn run_remote(
                     }
                     WorkerEvent::Result { .. } => {
                         let registered = register_result(
-                            &state, hub, &repo_ref, &tx, started, job_id, &lease.dir, &event,
+                            &state,
+                            hub,
+                            &repo_ref,
+                            &tx,
+                            started,
+                            job_id,
+                            &lease.dir,
+                            &job.commit,
+                            &event,
                         );
                         match registered {
                             Ok(()) => hub.verdict(job_id, true, "registered".to_owned()),
@@ -1851,13 +1859,14 @@ fn register_result(
     started: Instant,
     job_id: Uuid,
     dir: &Path,
+    admitted_commit: &str,
     event: &WorkerEvent,
 ) -> Result<(), ErrorBody> {
     // A cancel that landed between the result and here still wins (§2.4).
     if state.jobs.is_cancelled(job_id) {
         return Err(executor::cancelled_error());
     }
-    let checked = check_result(event, &hub.uploads(job_id))
+    let checked = check_result(event, admitted_commit, &hub.uploads(job_id))
         .and_then(|checked| assemble(dir, &repo_ref.repo, checked));
     let executed = match checked {
         Ok(executed) => executed,
@@ -1896,8 +1905,21 @@ pub(crate) struct CheckedResult {
 /// and uploaded under this lease with the SHA-256 and size it states. The
 /// map and the symbols document are required; the names cache is optional,
 /// as a missing one is an empty one in local mode.
+///
+/// **The commit is checked against the admission, not the agent's say-so**
+/// (docs/WORKER_TIER.md §5.4, #97 phase 2): `admitted_commit` is the
+/// `JobSpec.commit` this job was assigned with, from the master's own
+/// `jobs::prepare`, never the event's own `commit` field. The agent's
+/// executor already pins its checkout to that same commit and checks the
+/// child's report against it before uploading
+/// (`agent::JobContext::upload`), but a compromised or buggy agent (§5.3)
+/// controls what it puts in the `result` event it sends over the channel,
+/// so the master repeats the check independently against the one value it
+/// trusts -- what it assigned -- exactly as local mode's `jobs::register`
+/// does against its own pinned checkout.
 pub(crate) fn check_result(
     event: &WorkerEvent,
+    admitted_commit: &str,
     uploads: &BTreeMap<String, Upload>,
 ) -> Result<CheckedResult, ErrorBody> {
     let WorkerEvent::Result {
@@ -1919,6 +1941,11 @@ pub(crate) fn check_result(
     };
     if *v != 1 {
         return Err(invalid_result(format!("result version {v} is not 1")));
+    }
+    if !worker_result::is_object_id(commit) || commit != admitted_commit {
+        return Err(invalid_result(
+            "the reported commit is not the commit the job was admitted against",
+        ));
     }
     for (field, value, expected) in [
         ("map_path", map_path, "artifact:map"),
@@ -2454,8 +2481,14 @@ mod tests {
         }
 
         fn spawn(&self, repo: RepoRef) -> Uuid {
+            self.spawn_at(repo, COMMIT)
+        }
+
+        /// For a test whose agent really clones: the executor checks out
+        /// the admitted commit, so it must exist in the repository.
+        fn spawn_at(&self, repo: RepoRef, commit: &str) -> Uuid {
             let _entered = self.runtime.as_ref().unwrap().enter();
-            jobs::spawn_job(self.state.clone(), repo, COMMIT.to_owned()).unwrap()
+            jobs::spawn_job(self.state.clone(), repo, commit.to_owned()).unwrap()
         }
 
         fn snapshot(&self, id: Uuid) -> JobSnapshot {
@@ -2812,7 +2845,10 @@ mod tests {
         }
     }
 
-    const MAP: &[u8] = b"{\"map\":1}";
+    // `result_event` reports `files: 1, districts: 1` -- this must agree,
+    // since #97 phase 2's `check_counts` (`worker_result.rs`) now refuses a
+    // result whose counts disagree with the map document it shipped.
+    const MAP: &[u8] = br#"{"F": ["a.py"], "districts": {"0": {}}}"#;
     const SYMBOLS: &[u8] = b"{\"symbols\":1}";
     const DISTRICT: &[u8] = b"{\"district\":0}";
     const NAMES: &[u8] = b"{}";
@@ -3217,6 +3253,64 @@ mod tests {
         match agent.recv() {
             MasterMessage::ResultRejected { reason, .. } => {
                 assert!(reason.contains("never paths"), "{reason}")
+            }
+            other => panic!("expected result_rejected, got {other:?}"),
+        }
+        let snapshot = fixture.snapshot(id);
+        assert_eq!(
+            snapshot.error_code.as_deref(),
+            Some("invalid_worker_result")
+        );
+        fixture.nothing_stored("test/demo");
+    }
+
+    /// §5.4, #97 phase 2: a result reporting a commit other than the one the
+    /// job was admitted against is refused -- checked before artifacts are
+    /// even looked at, so no upload is needed to exercise it -- even though
+    /// it is a well-formed object id: the master checks against its own
+    /// admission, never the agent's say-so (`check_result`'s doc comment).
+    #[test]
+    fn a_result_with_the_wrong_commit_is_rejected_and_never_stored() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        let WorkerEvent::Result {
+            v,
+            map_path,
+            symbols_path,
+            symbols_dir,
+            names_cache,
+            branch,
+            lang,
+            files,
+            districts,
+            modularity,
+            ..
+        } = result_event(Vec::new())
+        else {
+            unreachable!()
+        };
+        agent.event(
+            id,
+            WorkerEvent::Result {
+                v,
+                map_path,
+                symbols_path,
+                symbols_dir,
+                names_cache,
+                commit: "f".repeat(40),
+                branch,
+                lang,
+                files,
+                districts,
+                modularity,
+                artifacts: Vec::new(),
+            },
+        );
+        match agent.recv() {
+            MasterMessage::ResultRejected { reason, .. } => {
+                assert!(reason.contains("admitted"), "{reason}")
             }
             other => panic!("expected result_rejected, got {other:?}"),
         }
@@ -4105,12 +4199,21 @@ mod tests {
         };
         let agent = std::thread::spawn(move || crate::service::agent::run(config));
 
-        let id = fixture.spawn(RepoRef {
-            slug: "local/demo".to_owned(),
-            owner: "local".to_owned(),
-            repo: "demo".to_owned(),
-            source: RepoSource::Local(repo.clone()),
-        });
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+        let id = fixture.spawn_at(
+            RepoRef {
+                slug: "local/demo".to_owned(),
+                owner: "local".to_owned(),
+                repo: "demo".to_owned(),
+                source: RepoSource::Local(repo.clone()),
+            },
+            &head,
+        );
         let snapshot = fixture.wait_for(id, "the child starts parsing", |s| {
             s.status == JobStatus::Indexing
         });
