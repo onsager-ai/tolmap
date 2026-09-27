@@ -3067,7 +3067,7 @@ pub(crate) fn run_remote(
         None => {
             let (job, inputs) = match jobs::prepare(&state, &repo_ref, &tx) {
                 Ok(prepared) => prepared,
-                Err(error) => return jobs::finish_failed(&tx, error),
+                Err(error) => return jobs::finish_failed_durable(&state, &tx, error),
             };
             // Invariant (epoch fencing): the epoch is raised in the store
             // before `assign` carries it, so it is never handed out twice.
@@ -3076,7 +3076,8 @@ pub(crate) fn run_remote(
                 Ok(Some(attempt)) => attempt,
                 Ok(None) => return,
                 Err(error) => {
-                    return jobs::finish_failed(
+                    return jobs::finish_failed_durable(
+                        &state,
                         &tx,
                         ApiError::internal(format!("could not record the attempt: {error:#}")).body,
                     )
@@ -3099,7 +3100,7 @@ pub(crate) fn run_remote(
                 // failed the job), or the master is stopping (the row stays
                 // `queued` for the next process).
                 Ok(None) => return,
-                Err(error) => return jobs::finish_failed(&tx, error),
+                Err(error) => return jobs::finish_failed_durable(&state, &tx, error),
             }
         }
     };
@@ -3194,7 +3195,8 @@ pub(crate) fn run_remote(
                         return hub.end_lease(job_id, false);
                     }
                     WorkerEvent::Error { code, message, .. } => {
-                        jobs::finish_failed(
+                        jobs::finish_failed_durable(
+                            &state,
                             &tx,
                             ErrorBody {
                                 error: code,
@@ -3279,7 +3281,11 @@ pub(crate) fn run_remote(
                         ),
                         None => {
                             eprintln!("job {job_id}: {OOM_ON_LARGEST}");
-                            jobs::finish_failed(&tx, worker_crashed(OOM_ON_LARGEST));
+                            jobs::finish_failed_durable(
+                                &state,
+                                &tx,
+                                worker_crashed(OOM_ON_LARGEST),
+                            );
                             hub.end_lease(job_id, false)
                         }
                     };
@@ -3301,7 +3307,8 @@ pub(crate) fn run_remote(
                         return requeue(&state, hub, &tx, job_id, epoch, false, why, false, None)
                     }
                     None => {
-                        jobs::finish_failed(
+                        jobs::finish_failed_durable(
+                            &state,
                             &tx,
                             worker_crashed(format!(
                                 "the worker released the job without being asked ({reason:?})"
@@ -3313,7 +3320,7 @@ pub(crate) fn run_remote(
             }
             Err(std_mpsc::RecvTimeoutError::Timeout) => {}
             Err(std_mpsc::RecvTimeoutError::Disconnected) => {
-                jobs::finish_failed(&tx, worker_crashed("worker lost"));
+                jobs::finish_failed_durable(&state, &tx, worker_crashed("worker lost"));
                 return hub.end_lease(job_id, false);
             }
         }
@@ -3447,7 +3454,8 @@ fn requeue(
         }
         Ok(Requeued::Exhausted { lost }) => {
             eprintln!("job {job_id}: lost {lost} workers; not retrying it again");
-            jobs::finish_failed(
+            jobs::finish_failed_durable(
+                state,
                 tx,
                 worker_crashed(format!(
                     "lost {lost} workers: the job's worker was lost {lost} times, past the \
@@ -3458,7 +3466,8 @@ fn requeue(
         }
         // Terminal in the table already: a cancel won.
         Ok(Requeued::Unchanged) => {}
-        Err(error) => jobs::finish_failed(
+        Err(error) => jobs::finish_failed_durable(
+            state,
             tx,
             ApiError::internal(format!("could not re-queue the job: {error:#}")).body,
         ),
@@ -3571,7 +3580,7 @@ fn register_result(
     let executed = match checked {
         Ok(executed) => executed,
         Err(error) => {
-            jobs::finish_failed(tx, error.clone());
+            jobs::finish_failed_durable(state, tx, error.clone());
             return Err(error);
         }
     };
