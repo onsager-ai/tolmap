@@ -967,29 +967,36 @@ pub fn diff(top: &Path, base: &str, head: Option<&str>) -> Result<Vec<Change>, C
 /// (source, destination) for a rename or copy. A copy's destination is an
 /// addition; type changes and unmerged paths are modifications.
 pub fn parse_name_status(bytes: &[u8]) -> Result<Vec<Change>, CheckError> {
+    // Every field, the last included, ends in a NUL; a path is never empty,
+    // so an empty field where a path belongs means the output was cut short.
     let mut fields = bytes
         .split(|&byte| byte == 0)
         .map(|field| String::from_utf8_lossy(field).into_owned());
     let mut changes = Vec::new();
-    let truncated = || {
-        internal(anyhow::anyhow!(
-            "git diff --name-status output is truncated"
-        ))
+    let path = |fields: &mut dyn Iterator<Item = String>| {
+        fields
+            .next()
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| {
+                internal(anyhow::anyhow!(
+                    "git diff --name-status output is truncated"
+                ))
+            })
     };
     while let Some(status) = fields.next() {
         if status.is_empty() {
             continue;
         }
-        let path = fields.next().ok_or_else(truncated)?;
+        let first = path(&mut fields)?;
         let change = match status.as_bytes()[0] {
             b'R' => Change::Renamed {
-                from: path,
-                to: fields.next().ok_or_else(truncated)?,
+                from: first,
+                to: path(&mut fields)?,
             },
-            b'C' => Change::Added(fields.next().ok_or_else(truncated)?),
-            b'A' => Change::Added(path),
-            b'D' => Change::Deleted(path),
-            _ => Change::Modified(path),
+            b'C' => Change::Added(path(&mut fields)?),
+            b'A' => Change::Added(first),
+            b'D' => Change::Deleted(first),
+            _ => Change::Modified(first),
         };
         changes.push(change);
     }
