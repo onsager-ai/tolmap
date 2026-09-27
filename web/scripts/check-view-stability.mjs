@@ -2981,6 +2981,10 @@ async function checkHubRingTap(browser, base, profile) {
     const box = await page.locator(`svg.map-svg circle.hit[data-k="${key}"][fill="transparent"]`).first().boundingBox();
     if (!box) continue;
     const candidate = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    // docs/UX.md §5: the first tap selects the district and opens the
+    // inspector over the map's top-right corner; the second tap must land
+    // where the inspector is not.
+    if (!profile.isMobile && candidate.x > profile.viewport.width - INSPECTOR_ZONE_PX) continue;
     if (await isPointClickable(page, candidate.x, candidate.y, key)) {
       chosenKey = key;
       point = candidate;

@@ -86,7 +86,10 @@ function RailDistrictRow({
           onClick={() => onPickKeyFile(kf.file)}
           className="-mt-1.5 flex min-h-[28px] w-full items-center truncate px-4 pb-1 text-left text-meta text-[var(--dim)] hover:text-[var(--on)] touch:mt-0 touch:min-h-[44px] touch:pb-0"
         >
-          {kf.text}
+          {/* A span, not the button's own text: text-overflow does not
+              reach a flex container's text, so a long "links A ↔ B" line
+              overran the row instead of ending in an ellipsis. */}
+          <span className="min-w-0 truncate">{kf.text}</span>
         </button>
       ))}
     </div>
@@ -219,7 +222,10 @@ function SheetDistrictRow({
           onClick={() => onPickKeyFile(kf.file)}
           className="-mt-1 flex min-h-[44px] w-full items-center truncate px-5 text-left text-meta text-[var(--dim)]"
         >
-          {kf.text}
+          {/* A span, not the button's own text: text-overflow does not
+              reach a flex container's text, so a long "links A ↔ B" line
+              overran the row instead of ending in an ellipsis. */}
+          <span className="min-w-0 truncate">{kf.text}</span>
         </button>
       ))}
     </div>

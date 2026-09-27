@@ -92,7 +92,11 @@ export function TopBar({ catalogue, doc, owner, repo, layer, onLayer, search, ra
           ))}
         </select>
       </span>
-      <div className="relative min-w-[140px] max-w-[460px] flex-1 min-[900px]:ml-4 min-[900px]:w-[460px] min-[900px]:flex-none">{search}</div>
+      {/* Up to §5's 460 px, and shrinking before anything else does (a
+          tablet's top bar has less room than the design's 1440 px), so the
+          layer control and the theme button always fit. Grows three times
+          faster than the spacer so it reaches 460 first. */}
+      <div className="relative min-w-[140px] max-w-[460px] flex-[3_1_0%] min-[900px]:ml-4">{search}</div>
       <span className="min-w-0 flex-1" />
       <div role="radiogroup" aria-label="Map layer" data-layer-segmented className="flex shrink-0 rounded-[10px] border border-[var(--rule)] bg-[var(--canvas)] p-0.5">
         {LAYERS.map((l) => {
