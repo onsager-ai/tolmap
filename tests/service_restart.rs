@@ -414,14 +414,23 @@ fn a_master_restarted_mid_job_finishes_every_job(graceful: bool) {
     let second = master.post(&gamma);
     assert_eq!(master.get(&first)["queue_position"], 1);
     assert_eq!(master.get(&second)["queue_position"], 2);
-    let before = master.get(&running);
-    assert!(
-        matches!(
+    // The agent forwards the events that came before the freeze a moment
+    // later (it drains them between reads of its channel).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let before = master.get(&running);
+        if matches!(
             before["status"].as_str(),
             Some("cloning" | "detecting" | "indexing")
-        ),
-        "{before}"
-    );
+        ) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the frozen job never showed running: {before}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     if graceful {
         master.terminate();
         // The agent released the frozen job on `shutdown now`; it is
