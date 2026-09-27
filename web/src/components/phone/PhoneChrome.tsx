@@ -44,6 +44,10 @@ export interface PhoneChromeProps {
   activeDirectory?: string;
 
   heights: DetentHeights;
+  /** The visible viewport height (map/phoneShell.ts's PhoneMetrics). */
+  viewportHeight: number;
+  /** env(safe-area-inset-top), measured. */
+  safeTop: number;
   detent: Detent;
   onDetent(d: Detent): void;
   searchOpen: boolean;
@@ -85,6 +89,9 @@ export interface PhoneChromeProps {
   onBreadcrumbRepo(): void;
   onBreadcrumbFile(i: number): void;
 }
+
+/** Four 44 px buttons and the column's border. */
+const CONTROL_COLUMN_PX = 4 * 44 + 2;
 
 const LAYERS: { id: Layer; name: string; meaning: string }[] = [
   { id: "d", name: "District", meaning: "One colour per district" },
@@ -160,6 +167,7 @@ export function PhoneChrome(p: PhoneChromeProps) {
     content = (
       <OverviewCard
         doc={p.doc}
+        slug={slug}
         packageLayout={p.packageLayout}
         activeDirectory={p.activeDirectory}
         tab={p.indexTab}
@@ -219,9 +227,10 @@ export function PhoneChrome(p: PhoneChromeProps) {
         </span>
       </div>
 
-      {/* §3: the control column. No fullscreen button on phones. Hidden at
-          Full, where the sheet reaches up to the pill. */}
-      {p.detent !== "full" && (
+      {/* §3: the control column. No fullscreen button on phones. Hidden
+          whenever the sheet reaches up into it (always at Full; at Half on a
+          short phone). */}
+      {p.viewportHeight - p.heights[p.detent] >= p.safeTop + 68 + CONTROL_COLUMN_PX + 8 && (
         <div
           data-control-column
           className="absolute right-3 z-20 flex w-[46px] flex-col overflow-hidden rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] shadow-[0_6px_18px_rgba(0,0,0,.25)]"

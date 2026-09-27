@@ -165,6 +165,7 @@ function MapQualityRow({ doc, unconnected, onOpen }: { doc: MapDocument; unconne
 
 export function OverviewCard({
   doc,
+  slug,
   packageLayout,
   activeDirectory,
   tab,
@@ -175,6 +176,8 @@ export function OverviewCard({
   onSelectDirectory,
 }: {
   doc: MapDocument;
+  /** `owner/repo`, as the pill shows it. */
+  slug: string;
   packageLayout: PackageLayout;
   activeDirectory?: string;
   tab: "districts" | "folders";
@@ -189,7 +192,7 @@ export function OverviewCard({
   return (
     <div data-sheet-card="overview">
       <div data-sheet-dragzone>
-        <div className="font-mono text-meta text-[var(--dim)]">{doc.repo}</div>
+        <div className="font-mono text-meta text-[var(--dim)]">{slug}</div>
         <SheetTitle>
           {mainland} districts · {doc.F.length.toLocaleString("en-US")} files
         </SheetTitle>

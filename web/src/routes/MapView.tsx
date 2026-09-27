@@ -714,6 +714,8 @@ export function MapView() {
           radj={radj}
           activeDirectory={activeDirectory}
           heights={heights}
+          viewportHeight={metrics.height}
+          safeTop={metrics.safeTop}
           detent={detent}
           onDetent={changeDetent}
           searchOpen={searchOpen}
