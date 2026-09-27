@@ -68,12 +68,57 @@ fn invalid(message: impl Into<String>) -> Refused {
     Refused::Invalid(message.into())
 }
 
-/// The paths a worker reports in its `result` event.
+/// Just enough of the map document's own shape to check a worker's reported
+/// `files`/`districts` counts against what the map it shipped actually
+/// contains (docs/WORKER_TIER.md §5.4) -- not the full `MapDocument`
+/// (`schema.rs`), so a field added there never has to touch this check, and
+/// reading two array/object lengths stays cheap on the corpus's largest
+/// maps. `#[serde(deny_unknown_fields)]` is deliberately not set: this type
+/// exists to count, not to validate the document's shape.
+#[derive(serde::Deserialize)]
+struct MapCounts {
+    #[serde(rename = "F")]
+    files: Vec<serde::de::IgnoredAny>,
+    districts: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+/// Refuses a result whose reported `files`/`districts` disagree with the
+/// map document it just shipped -- the second half of "Checking results"
+/// (docs/WORKER_TIER.md §5.4), next to the commit check `adopt`'s caller
+/// already made. `path` is the map already moved into staging, so this
+/// reads the service's own copy, never anything still under the worker's
+/// uid.
+fn check_counts(path: &Path, files: usize, districts: usize) -> Result<(), Refused> {
+    let bytes = std::fs::read(path)?;
+    let counts: MapCounts = serde_json::from_slice(&bytes)
+        .map_err(|error| invalid(format!("the map is not a valid map document: {error}")))?;
+    if counts.files.len() != files {
+        return Err(invalid(format!(
+            "the result's files ({files}) does not match the map's F ({})",
+            counts.files.len()
+        )));
+    }
+    if counts.districts.len() != districts {
+        return Err(invalid(format!(
+            "the result's districts ({districts}) does not match the map's districts ({})",
+            counts.districts.len()
+        )));
+    }
+    Ok(())
+}
+
+/// The paths and counts a worker reports in its `result` event. `files` and
+/// `districts` are checked against the map document's own `F` and
+/// `districts` once it is in staging (docs/WORKER_TIER.md §5.4, "Checking
+/// results") -- a result whose counts disagree with the document it shipped
+/// is refused rather than stored under numbers nothing produced.
 pub(crate) struct Reported<'a> {
     pub map_path: &'a str,
     pub symbols_path: &'a str,
     pub symbols_dir: &'a str,
     pub names_cache: &'a str,
+    pub files: usize,
+    pub districts: usize,
 }
 
 /// A checked result, moved into the staging directory. Every path is inside
@@ -204,6 +249,7 @@ pub(crate) fn adopt(
 
     let map = staging.join("map.json");
     take_file(&taken.join(&files.map), &map, "the map", owner)?;
+    check_counts(&map, reported.files, reported.districts)?;
     let symbols = staging.join("symbols.json");
     take_file(
         &taken.join(&files.symbols),
@@ -321,12 +367,20 @@ mod tests {
     use std::os::unix::fs::{symlink, MetadataExt};
 
     const REPO: &str = "demo";
+    // The fixture map below carries exactly this many files and districts
+    // (two district symbol files, ids 0 and 1, are written next to it) --
+    // `check_counts` is exercised by overriding `Job::files`/`Job::districts`
+    // to disagree with these, not by editing the map itself.
+    const FILES: usize = 3;
+    const DISTRICTS: usize = 2;
 
     struct Job {
         dir: tempfile::TempDir,
         output: PathBuf,
         staging: PathBuf,
         owner: u32,
+        files: usize,
+        districts: usize,
     }
 
     impl Job {
@@ -336,7 +390,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let output = dir.path().join("work/output");
             std::fs::create_dir_all(output.join(format!("{REPO}.symbols"))).unwrap();
-            std::fs::write(output.join(format!("{REPO}.json")), b"{\"map\":1}").unwrap();
+            std::fs::write(
+                output.join(format!("{REPO}.json")),
+                br#"{"F": ["a.py", "b.py", "c.py"], "districts": {"0": {}, "1": {}}}"#,
+            )
+            .unwrap();
             std::fs::write(
                 output.join(format!("{REPO}.symbols.json")),
                 b"{\"symbols\":1}",
@@ -364,6 +422,8 @@ mod tests {
                 output,
                 staging,
                 owner,
+                files: FILES,
+                districts: DISTRICTS,
             }
         }
 
@@ -384,6 +444,8 @@ mod tests {
                     symbols_path: &symbols_path,
                     symbols_dir: &symbols_dir,
                     names_cache: &names_cache,
+                    files: self.files,
+                    districts: self.districts,
                 },
                 Some(self.owner),
             )
@@ -426,7 +488,10 @@ mod tests {
     fn a_well_formed_result_is_moved_into_staging() {
         let job = Job::new();
         let adopted = job.adopt().unwrap();
-        assert_eq!(std::fs::read(&adopted.map).unwrap(), b"{\"map\":1}");
+        assert_eq!(
+            std::fs::read(&adopted.map).unwrap(),
+            br#"{"F": ["a.py", "b.py", "c.py"], "districts": {"0": {}, "1": {}}}"#
+        );
         assert_eq!(std::fs::read(&adopted.symbols).unwrap(), b"{\"symbols\":1}");
         assert!(adopted.symbols_dir.join("0.json").is_file());
         assert!(adopted.symbols_dir.join("1.json").is_file());
@@ -445,6 +510,22 @@ mod tests {
         let job = Job::new();
         std::fs::remove_file(job.output.join(format!("{REPO}.names.json"))).unwrap();
         assert!(job.adopt().unwrap().names.is_empty());
+    }
+
+    #[test]
+    fn a_reported_files_count_disagreeing_with_the_map_is_refused() {
+        let mut job = Job::new();
+        job.files = FILES + 1;
+        let message = refused(job.adopt());
+        assert!(message.contains("files"), "{message}");
+    }
+
+    #[test]
+    fn a_reported_districts_count_disagreeing_with_the_map_is_refused() {
+        let mut job = Job::new();
+        job.districts = DISTRICTS + 1;
+        let message = refused(job.adopt());
+        assert!(message.contains("districts"), "{message}");
     }
 
     #[test]
@@ -537,6 +618,8 @@ mod tests {
                 symbols_path: &symbols_path,
                 symbols_dir: &symbols_dir,
                 names_cache: &names_cache,
+                files: job.files,
+                districts: job.districts,
             },
             Some(job.owner.wrapping_add(1)),
         );
