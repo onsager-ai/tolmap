@@ -3008,11 +3008,27 @@ async function checkHubRingTap(browser, base, profile) {
     `${label}: the first tap selects the hub's district (two-step tap, #82 C2)`,
     `expected d=${expectedDistrict} url=${page.url()}`,
   );
-  await tap(page, profile, point.x, point.y);
+  // Focusing the district draws its neighbourhood and folder labels, and a
+  // label can now sit over the first tap point (a label tap is deliberately
+  // not a selection -- phase 1's departure 8 met the same thing). Re-pick a
+  // point on the same hub ring that still hit-tests to it.
+  const second = await page.evaluate((key) => {
+    for (const el of document.querySelectorAll(`svg.map-svg circle.hit[data-k="${key}"][fill="transparent"]`)) {
+      const r = el.getBoundingClientRect();
+      for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.5], [0.7, 0.5], [0.5, 0.3], [0.5, 0.7], [0.35, 0.35], [0.65, 0.65], [0.35, 0.65], [0.65, 0.35]]) {
+        const x = r.left + r.width * fx;
+        const y = r.top + r.height * fy;
+        if (document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k") === key) return { x, y };
+      }
+    }
+    return null;
+  }, chosenKey);
+  const at = second ?? point;
+  await tap(page, profile, at.x, at.y);
   report(
     new URL(page.url()).searchParams.get("file") === expected,
     `${label}: a second tap, now inside its own district, selects the hub's file`,
-    `expected=${expected}`,
+    `expected=${expected} repicked=${JSON.stringify(second)} url=${page.url()}`,
   );
   await context.close();
 }
