@@ -57,7 +57,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation: build, dump-blend, stability, sequential name-eval, scip-spike (issue #110 P0), scip-ingest (P1a), scip-install (P1c) or rust-scip-spike (issue #126); the scip-*/rust-scip-spike commands ignore repos/extra_args/compare_ref"
+        description: "operation: build, dump-blend, stability, sequential name-eval, check (issue #170: `tolmap check` of the pinned commit against its parent, or against extra_args such as `--base HEAD~30`, timed), scip-spike (issue #110 P0), scip-ingest (P1a), scip-install (P1c) or rust-scip-spike (issue #126); the scip-*/rust-scip-spike commands ignore repos/extra_args/compare_ref"
         required: false
         type: choice
         options:
@@ -65,6 +65,7 @@ on:
           - dump-blend
           - stability
           - name-eval
+          - check
           - scip-spike
           - scip-ingest
           - scip-install
@@ -408,6 +409,22 @@ jobs:
               --out "out-primary/${STEM}.json" \
               > primary.log 2>&1
             rc=$?
+          elif [ "$COMMAND" = "check" ]; then
+            # Issue #170: the pinned commit against its parent (or against
+            # whatever `extra_args` names instead, e.g. `--base HEAD~30`),
+            # the wall time a CI gate on one change would pay: base and
+            # head graphs, base map built cold. Detection picks the source,
+            # as the service does; REPO_ARGS are build flags and do not
+            # apply. The JSON report stands in for the map in result.json
+            # (sha256 and wall time); the text report is kept beside it.
+            check_args="${EXTRA_ARGS:---base HEAD~1}"
+            /usr/bin/time -v -o primary.time.txt \
+              prlimit "--as=${BUILD_MEM_BYTES}" -- \
+              ./bin-primary/tolmap check "$PWD/clone" $check_args --format json \
+              > "out-primary/${STEM}.json" 2> primary.log
+            rc=$?
+            ./bin-primary/tolmap check "$PWD/clone" $check_args \
+              > "out-primary/${STEM}.check.txt" 2>> primary.log || true
           elif [ "$COMMAND" = "stability" ]; then
             mkdir -p out-previous
             git -C clone checkout --quiet --detach "$COMMIT"
@@ -593,6 +610,7 @@ jobs:
           cp -f worker-timeline.stderr artifact/worker-timeline.stderr 2>/dev/null || true
           cp -f progress_overhead.json artifact/progress_overhead.json 2>/dev/null || true
           cp -f "out-primary/${STEM}.json" "artifact/${STEM}.json" 2>/dev/null || true
+          cp -f "out-primary/${STEM}.check.txt" "artifact/${STEM}.check.txt" 2>/dev/null || true
           cp -f "out-primary/${STEM}.symbols.json" "artifact/${STEM}.symbols.json" 2>/dev/null || true
           if [ -d "out-primary/${STEM}.symbols" ]; then
             cp -a "out-primary/${STEM}.symbols" "artifact/${STEM}.symbols"
