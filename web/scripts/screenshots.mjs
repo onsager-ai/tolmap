@@ -34,6 +34,17 @@ const STEPS = [0, 2, 4];
 // the panel (left of centre; the panel is anchored top-right on desktop,
 // a bottom sheet on phone) sidesteps the button entirely -- the same
 // technique check-view-stability.mjs's own zoomIn() already uses.
+/** docs/UX.md §3.1: the phone's sheet is raised by its grabber (a real
+ * button cycling peek -> half -> full), not by tapping a card header. */
+async function setSheetDetent(page, detent) {
+  for (let i = 0; i < 3; i++) {
+    const now = await page.locator("[data-phone-sheet]").getAttribute("data-detent").catch(() => null);
+    if (now === detent || now == null) return;
+    await page.locator("[data-sheet-grabber]").click();
+    await page.waitForTimeout(400);
+  }
+}
+
 async function wheelZoomIn(page, cx, cy, notches) {
   await page.mouse.move(cx, cy);
   for (let i = 0; i < notches; i++) {
@@ -97,7 +108,7 @@ try {
       await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[workflowFile])}`, { waitUntil: "domcontentloaded" });
       await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
       await page.waitForTimeout(700);
-      if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+      if (profile.isMobile) await setSheetDetent(page, "half");
       await page.screenshot({ path: `${stem}-${profile.name}-file-selected.png` });
       console.log(`${stem}-${profile.name}-file-selected.png`);
 
@@ -131,10 +142,10 @@ try {
       await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
       await page.waitForTimeout(500);
       if (profile.isMobile) {
-        await page.locator("aside button", { hasText: /districts/i }).first().click();
-        await page.waitForTimeout(400);
-        await page.screenshot({ path: `${stem}-${profile.name}-district-drawer-open.png` });
-        console.log(`${stem}-${profile.name}-district-drawer-open.png`);
+        // docs/UX.md §4.3: the district index is the sheet's Districts tab.
+        await setSheetDetent(page, "half");
+        await page.screenshot({ path: `${stem}-${profile.name}-district-index-half.png` });
+        console.log(`${stem}-${profile.name}-district-index-half.png`);
       } else {
         await page.screenshot({ path: `${stem}-${profile.name}-district-rail.png` });
         console.log(`${stem}-${profile.name}-district-rail.png`);
@@ -248,7 +259,7 @@ try {
         await page.screenshot({ path: `${stem}-${profile.name}-symbol-cards-deep-zoom.png` });
         console.log(`${stem}-${profile.name}-symbol-cards-deep-zoom.png`);
 
-        if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+        if (profile.isMobile) await setSheetDetent(page, "full");
         await page.screenshot({ path: `${stem}-${profile.name}-outline-tree.png` });
         console.log(`${stem}-${profile.name}-outline-tree.png`);
 
@@ -323,10 +334,9 @@ try {
 
         // District rail (desktop) / drawer (phone).
         if (profile.isMobile) {
-          await page.locator("aside button", { hasText: /districts/i }).first().click();
-          await page.waitForTimeout(400);
-          await page.screenshot({ path: `${stem}-${profile.name}-district-drawer-open-${colorScheme}.png` });
-          console.log(`${stem}-${profile.name}-district-drawer-open-${colorScheme}.png`);
+          await setSheetDetent(page, "half");
+          await page.screenshot({ path: `${stem}-${profile.name}-district-index-half-${colorScheme}.png` });
+          console.log(`${stem}-${profile.name}-district-index-half-${colorScheme}.png`);
         } else {
           await page.screenshot({ path: `${stem}-${profile.name}-district-rail-${colorScheme}.png` });
           console.log(`${stem}-${profile.name}-district-rail-${colorScheme}.png`);
@@ -347,7 +357,7 @@ try {
           await page.goto(`${base}/${DIFY_SLUG}?file=${encodeURIComponent(doc.F[workflowFile])}`, { waitUntil: "domcontentloaded" });
           await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
           await page.waitForTimeout(700);
-          if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+          if (profile.isMobile) await setSheetDetent(page, "half");
           await page.screenshot({ path: `${stem}-${profile.name}-file-selected-${colorScheme}.png` });
           console.log(`${stem}-${profile.name}-file-selected-${colorScheme}.png`);
 
@@ -408,13 +418,148 @@ try {
           await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
           await page.waitForTimeout(700);
           await wheelZoomIn(page, profile.viewport.width * 0.35, profile.viewport.height * 0.4, 6); // ~1.6^4, same as the symbol-references frame above
-          if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap().catch(() => {});
+          if (profile.isMobile) await setSheetDetent(page, "half");
           await page.screenshot({ path: `${stem}-${profile.name}-class-extends-${colorScheme}.png` });
           console.log(`${stem}-${profile.name}-class-extends-${colorScheme}.png`);
 
           await context.close();
         }
       }
+    }
+  }
+
+  // docs/UX.md §11 phase 2: the phone shell. A selection made by TAPPING THE
+  // MAP (sheet at Peek, target above it), a district selected, a file at
+  // Half, the district index at Half, the Layers sheet, search, path mode --
+  // on the 390 x 844 phone and on 360 x 640 and 320 x 568. The back-button
+  // pop order is asserted in check-view-stability.mjs (checkPhoneBackStack).
+  if (slugs.includes(DIFY_SLUG)) {
+    const doc = await (await fetch(`${base}/maps/${DIFY_SLUG}.json`)).json();
+    const workflowFile = doc.F.findIndex((p) => p === "web/app/components/workflow/types.ts");
+    const stem = `${out}/phase2`;
+    const phones = [
+      PROFILES.find((p) => p.name === "phone"),
+      { name: "phone360", viewport: { width: 360, height: 640 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+      { name: "phone320", viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+    ];
+    const shot = async (page, name) => {
+      await page.screenshot({ path: `${stem}-${name}.png` });
+      console.log(`${stem}-${name}.png`);
+    };
+    const open = async (page, query = "") => {
+      await page.goto(`${base}/${DIFY_SLUG}${query}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(700);
+    };
+    // A point on the map that hit-tests to `prefix`, clear of the chrome.
+    const pickOnMap = (page, prefix) =>
+      page.evaluate((prefix) => {
+        const sel = prefix === "d:" ? 'svg.map-svg text.hit[data-k^="d:"]' : 'svg.map-svg .hit[data-k^="f:"]';
+        for (const el of document.querySelectorAll(sel)) {
+          const r = el.getBoundingClientRect();
+          const x = r.left + r.width / 2;
+          const y = r.top + r.height / 2;
+          if (y < 90 || y > innerHeight - 200 || x < 20 || x > innerWidth - 80) continue;
+          if (document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k") !== el.getAttribute("data-k")) continue;
+          return { x, y, key: el.getAttribute("data-k") };
+        }
+        return null;
+      }, prefix);
+
+    for (const profile of phones) {
+      const context = await browser.newContext(profile);
+      const page = await context.newPage();
+      const tag = profile.name;
+
+      await open(page);
+      await shot(page, `${tag}-overview-peek`);
+
+      // Map taps: a district, then a file in view.
+      const d = await pickOnMap(page, "d:");
+      if (d) {
+        await page.touchscreen.tap(d.x, d.y);
+        await page.waitForTimeout(700);
+        await shot(page, `${tag}-district-selected-by-map-tap-peek`);
+      }
+      const f = await pickOnMap(page, "f:");
+      if (f) {
+        await page.touchscreen.tap(f.x, f.y);
+        await page.waitForTimeout(500);
+        if (!new URL(page.url()).searchParams.has("file")) {
+          await page.touchscreen.tap(f.x, f.y);
+          await page.waitForTimeout(500);
+        }
+        await page.waitForTimeout(400);
+        await shot(page, `${tag}-file-selected-by-map-tap-peek`);
+      }
+
+      // A file at Half (the approved "File selected · half" state).
+      if (workflowFile >= 0) {
+        await open(page, `?file=${encodeURIComponent(doc.F[workflowFile])}`);
+        await setSheetDetent(page, "half");
+        await page.waitForTimeout(500);
+        await shot(page, `${tag}-file-selected-half`);
+        // Path mode: "Path from here", then a file tapped on the map.
+        await setSheetDetent(page, "full");
+        await page.locator('[data-path-start="from"]').click();
+        await page.waitForTimeout(500);
+        await shot(page, `${tag}-path-mode-picking`);
+        const g = await pickOnMap(page, "f:");
+        if (g) {
+          await page.touchscreen.tap(g.x, g.y);
+          await page.waitForTimeout(500);
+          await setSheetDetent(page, "half");
+          await page.waitForTimeout(400);
+          await shot(page, `${tag}-path-mode-found-half`);
+        }
+      }
+
+      // The district index at Half, and a district selected from it.
+      await open(page);
+      await setSheetDetent(page, "half");
+      await shot(page, `${tag}-district-index-half`);
+      const row = page.locator("[data-district-index-row] > button").first();
+      if (await row.count()) {
+        await row.click();
+        await page.waitForTimeout(800);
+        await shot(page, `${tag}-district-selected-from-index-peek`);
+      }
+
+      // The Layers sheet (§4.6), on the churn layer so its ramp shows.
+      await open(page);
+      await page.locator('button[aria-label="Map layers"]').click();
+      await page.waitForTimeout(300);
+      await page.locator('[data-layer-option="c"]').click();
+      await page.waitForTimeout(300);
+      await shot(page, `${tag}-layers-sheet`);
+
+      // Search from the pill (phase 2's interim search layer).
+      await open(page);
+      await page.locator("[data-open-search]").click();
+      await page.locator('[data-search-layer] input[aria-label="Search files"]').fill("types");
+      await page.waitForTimeout(300);
+      await shot(page, `${tag}-search-open`);
+
+      // Map quality (§4.2) as a Full sheet.
+      await open(page);
+      const quality = page.locator("[data-map-quality]");
+      if (await quality.count()) {
+        await quality.click();
+        await page.waitForTimeout(500);
+        await shot(page, `${tag}-map-quality-full`);
+      }
+      await context.close();
+    }
+
+    // Light theme, the file at Half (the approved light artboard).
+    if (workflowFile >= 0) {
+      const context = await browser.newContext({ ...PROFILES.find((p) => p.name === "phone"), colorScheme: "light" });
+      const page = await context.newPage();
+      await open(page, `?file=${encodeURIComponent(doc.F[workflowFile])}`);
+      await setSheetDetent(page, "half");
+      await page.waitForTimeout(500);
+      await shot(page, "phone-file-selected-half-light");
+      await context.close();
     }
   }
 
@@ -528,7 +673,9 @@ try {
         const page = await context.newPage();
         await page.goto(`${base}/${SLUG}`, { waitUntil: "domcontentloaded" });
         await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
-        const trigger = page.locator("[data-reference-coverage] button");
+        // Phone: docs/UX.md §4.2's map-quality row in the sheet opens the
+        // same explanation as a Full sheet (the floating chip is gone).
+        const trigger = profile.isMobile ? page.locator("[data-map-quality]") : page.locator("[data-reference-coverage] button");
         await trigger.waitFor({ timeout: 10_000 });
         await page.waitForTimeout(300);
         await page.screenshot({ path: `${stem}-${profile.name}-collapsed-${colorScheme}.png` });
@@ -538,7 +685,7 @@ try {
         // profile.isMobile split the other frames above use.
         if (profile.isMobile) await trigger.tap();
         else await trigger.click();
-        await page.waitForTimeout(200);
+        await page.waitForTimeout(400);
         await page.screenshot({ path: `${stem}-${profile.name}-expanded-${colorScheme}.png` });
         console.log(`${stem}-${profile.name}-expanded-${colorScheme}.png`);
 

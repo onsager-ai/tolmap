@@ -80,3 +80,33 @@ export function ThemeToggle() {
     </button>
   );
 }
+
+/** docs/UX.md §4.6: on a phone the theme control lives in the Layers sheet as
+ * a System / Light / Dark segmented control -- all three states visible at
+ * once, which a sheet has room for and the desktop top bar does not. Same
+ * store (lib/theme.ts) as the desktop toggle above. */
+export function ThemeSegmented() {
+  const [choice, setChoice] = useThemeChoice();
+  return (
+    <div
+      role="group"
+      aria-label="Appearance"
+      data-theme-segmented
+      data-theme-choice={choice}
+      className="mt-2.5 grid grid-cols-3 rounded-[10px] border border-[var(--rule)] bg-[var(--canvas)] p-0.5"
+    >
+      {(["system", "light", "dark"] as const).map((c) => (
+        <button
+          key={c}
+          type="button"
+          aria-pressed={choice === c}
+          data-theme-option={c}
+          onClick={() => setChoice(c)}
+          className={`h-11 rounded-[8px] text-body ${choice === c ? "bg-[var(--rule)] font-semibold text-[var(--on)]" : "text-[var(--dim)]"}`}
+        >
+          {LABEL[c]}
+        </button>
+      ))}
+    </div>
+  );
+}

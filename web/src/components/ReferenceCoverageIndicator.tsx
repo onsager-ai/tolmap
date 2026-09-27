@@ -6,7 +6,7 @@ import type { ReferenceCoverageSummary } from "@/map/referenceCoverage";
  * tooltip." This indicator needs more than a one-line accessible name can
  * carry (per-language reason and recall), so it gets its own disclosure
  * panel instead of relying on `title` at all -- never both. */
-function StatusGlyph({ status }: { status: ReferenceCoverageSummary["status"] }) {
+export function StatusGlyph({ status }: { status: ReferenceCoverageSummary["status"] }) {
   // Shape-coded, not colour-coded (LinkLegend's own precedent: "colour is
   // never used alone"), so the three states read the same on a colour-blind
   // screen and need no state-specific token in index.css's palette:
@@ -39,7 +39,7 @@ function StatusGlyph({ status }: { status: ReferenceCoverageSummary["status"] })
  * recall 98%" or "JavaScript: heuristic (hand) -- the indexer isn't
  * installed". Plain words throughout (docs/GLOSSARY.md: "reference" is a
  * code-object term here, never "road"). */
-function LanguageRow({ row }: { row: ReferenceCoverageSummary["languages"][number] }) {
+export function LanguageRow({ row }: { row: ReferenceCoverageSummary["languages"][number] }) {
   return (
     <li className="py-0.5">
       <span className="text-[var(--on)]">{row.label}</span>

@@ -1188,6 +1188,10 @@ jobs:
       # drive them reliably (check-view-stability.mjs's zoomIn() comment).
       # The pinch math they feed (map/pinch.ts) was checked by hand until now.
       - run: npx --yes tsx@4.23.15 scripts/check-gestures.ts
+      # docs/UX.md §3 (phase 2): the phone shell's pure parts -- the back-
+      # stack reducer, sheet detents and snap, and the safe rectangle the
+      # map frames into (map/backStack.ts, map/phoneShell.ts).
+      - run: npx --yes tsx@4.23.15 scripts/check-phone-shell.ts
       - run: npx --yes tsx@4.23.15 scripts/check-pinch-math.ts
       - run: pnpm build
 

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
 import { useCatalogue, useMapDocument, useDistrictSymbolsMap } from "@/data/queries";
 import { MapCanvas, type MapCanvasHandle } from "@/map/MapCanvas";
-import type { MapRendererCallbacks } from "@/map/MapRenderer";
+import type { FrameInsets, MapRendererCallbacks } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
-import { D_, districtClass } from "@/map/geometry";
+import { D_, DESKTOP_INSETS, districtClass } from "@/map/geometry";
 import { decodeDistrictSymbols, parentGlobalOf } from "@/map/symbolCards";
 import type { SearchHit } from "@/map/search";
 import { TopBar } from "@/components/TopBar";
@@ -20,9 +20,18 @@ import { LoadProgressIndicator } from "@/components/LoadProgressIndicator";
 import { buildPackageLayout } from "@/map/packageLayout";
 import { useEffectiveTheme } from "@/lib/theme";
 import type { MapSearch } from "@/routes/search";
+import { useIsNarrow } from "@/hooks/useIsNarrow";
+import { usePhoneMetrics } from "@/hooks/usePhoneMetrics";
+import { detentHeights, safeInsets, type Detent } from "@/map/phoneShell";
+import { closeOverlay, initBack, openOverlay, OVERLAY_MARKER, popTo, type BackState, type OverlayKind } from "@/map/backStack";
+import { structureDetail } from "@/map/structureCard";
+import { PhoneChrome } from "@/components/phone/PhoneChrome";
+import type { PathPick, StructureCardState } from "@/components/phone/SheetCards";
 
 /** The /:owner/:repo page: assembles chrome (TopBar, Sidebar, SearchBox,
- * SelectionPanel, RouteBox, FooterStats, ZoomControls) around one MapCanvas.
+ * SelectionPanel, RouteBox, FooterStats, ZoomControls) around one MapCanvas
+ * on desktop, and the phone shell (components/phone/PhoneChrome.tsx:
+ * docs/UX.md §3's pill, control column and one bottom sheet) on a phone.
  * This component owns every piece of application state — selection, geo,
  * layer, route — either directly or via the URL; MapCanvas/MapRenderer only
  * ever receive it as props and report gestures back through callbacks. */
@@ -78,11 +87,39 @@ export function MapView() {
   const canvasRef = useRef<MapCanvasHandle>(null);
   const mapAreaRef = useRef<HTMLDivElement>(null);
   const [panelOpen, setPanelOpen] = useState(false);
-  const [sideOpen, setSideOpen] = useState(false);
+  const [, setSideOpen] = useState(false); // the old phone drawer is gone (docs/UX.md §3); kept as a no-op setter for the shared select paths
   const [routeFrom, setRouteFrom] = useState<number | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
   const [unconnectedRepo, setUnconnectedRepo] = useState<string | null>(null);
   const [previewDirectory, setPreviewDirectory] = useState<{ repo: string; path: string } | null>(null);
+
+  // ---------- the phone shell (docs/UX.md §3) ----------
+  const narrow = useIsNarrow();
+  const router = useRouter();
+  const metrics = usePhoneMetrics();
+  const heights = detentHeights(metrics);
+  const [detent, setDetentState] = useState<Detent>("peek");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [quality, setQuality] = useState(false);
+  const [indexTab, setIndexTab] = useState<"districts" | "folders">("districts");
+  const [structure, setStructure] = useState<StructureCardState | null>(null);
+  const [pathPick, setPathPick] = useState<PathPick | null>(null);
+  const [pathEnds, setPathEnds] = useState<[number, number] | null>(null);
+  // docs/UX.md §3.3: the safe rectangle from the real chrome. `frame` is the
+  // resting layout (pill + Peek), which the level-of-detail scale is
+  // measured against; `safe` follows the sheet. Desktop keeps its margins
+  // until phase 5.
+  const peekInsets = safeInsets(metrics, heights.peek);
+  const frameInsets: FrameInsets = narrow
+    ? { frame: peekInsets, safe: safeInsets(metrics, heights[detent]), centreInSafe: true }
+    : { frame: DESKTOP_INSETS, safe: DESKTOP_INSETS, centreInSafe: false };
+  /** Before a camera move made together with a selection (which always
+   * lands the sheet at Peek, §3.2): the renderer frames into the Peek rect
+   * now, not after React commits. */
+  function framePeekNow() {
+    if (narrow) canvasRef.current?.setInsets({ frame: peekInsets, safe: peekInsets, centreInSafe: true });
+  }
   // Issue #82 "chrome follows the theme": buildPackageLayout resolves every
   // `--pN`/`--canvas` custom property it needs ONCE, into a plain colour
   // array per depth (map/packageLayout.ts's own cssCache) -- correct for a
@@ -257,6 +294,7 @@ export function MapView() {
     updateSearch({ file: doc.F[fileIdx], sym: undefined, hsym: global, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
+    framePeekNow();
     if (districtClass(doc.districts[String(D_(doc, fileIdx))]) !== "unconnected") canvasRef.current?.panTo(fileIdx);
   }
 
@@ -265,6 +303,10 @@ export function MapView() {
       to: ".",
       search: (prev: Record<string, unknown>) => ({ ...prev, sel: undefined, ...patch }),
       replace: true,
+      // docs/UX.md §3.4: a selection change replaces the URL of whatever
+      // entry is on top -- possibly one the back stack pushed. Keeping its
+      // history state keeps its overlay marker (map/backStack.ts).
+      state: true,
     });
   }
 
@@ -284,6 +326,7 @@ export function MapView() {
     updateSearch({ file: doc.F[i], sym: opts.symbol, hsym: undefined, d: undefined, dir: undefined });
     setPanelOpen(true);
     setSideOpen(false);
+    framePeekNow();
     if (districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.panTo(i);
   }
   // selectDistrict deliberately never pans on its own: it's reused by the
@@ -371,12 +414,213 @@ export function MapView() {
     setSideOpen(false);
   }
 
+  // ---------- phone: back stack (docs/UX.md §3.4, map/backStack.ts) ----------
+  // Opening an overlay pushes one history entry through the ROUTER's own
+  // history (so TanStack's `__TSR_index` stays the one index both sides
+  // count with); OS back pops them last-opened-first. Selection changes keep
+  // replacing the URL (updateSearch), so after a back the URL is
+  // reconciled to the selection that is actually live: an entry pushed
+  // earlier still carries the URL it was pushed with, and landing on it must
+  // not resurrect an older selection (back is not a selection-history
+  // scrubber). Only a popped `sel` entry clears the selection.
+  const backRef = useRef<BackState | null>(null);
+  const liveSearchRef = useRef(search);
+  liveSearchRef.current = search;
+  const mapPathRef = useRef(router.history.location.pathname);
+  mapPathRef.current = router.history.location.pathname;
+  const historyIndex = () => Number((router.history.location.state as unknown as Record<string, unknown>).__TSR_index ?? 0);
+  function pushOverlay(kind: OverlayKind) {
+    if (!narrow) return;
+    const cur = backRef.current ?? initBack(historyIndex(), null, false);
+    const { state, push } = openOverlay(cur, kind, historyIndex());
+    backRef.current = state;
+    if (push) router.history.push(router.history.location.href, { [OVERLAY_MARKER]: kind } as never);
+  }
+  function dropOverlay(kind: OverlayKind) {
+    if (backRef.current) backRef.current = closeOverlay(backRef.current, kind);
+  }
+  function changeDetent(d: Detent) {
+    if (d === detent) return;
+    if (d === "peek") dropOverlay("sheet");
+    else pushOverlay("sheet");
+    setDetentState(d);
+  }
+  function openSearch() {
+    pushOverlay("search");
+    setSearchOpen(true);
+  }
+  function closeSearch() {
+    dropOverlay("search");
+    setSearchOpen(false);
+  }
+  function openLayers() {
+    pushOverlay("layers");
+    setLayersOpen(true);
+  }
+  function closeLayers() {
+    dropOverlay("layers");
+    setLayersOpen(false);
+  }
+  function clearPath() {
+    setPathPick(null);
+    setPathEnds(null);
+    setRoute(null);
+    setRouteFrom(null);
+  }
+  const undoRef = useRef<(kind: OverlayKind) => void>(() => {});
+  undoRef.current = (kind) => {
+    if (kind === "search") setSearchOpen(false);
+    else if (kind === "layers") setLayersOpen(false);
+    else if (kind === "sheet") setDetentState("peek");
+    else {
+      // The URL half of clearing the selection is the reconcile below.
+      setStructure(null);
+      clearPath();
+    }
+  };
+  const phoneHasSelection = sel != null || selD != null || !!search.dir || !!structure || !!pathPick;
+  const phoneHasSelectionRef = useRef(phoneHasSelection);
+  phoneHasSelectionRef.current = phoneHasSelection;
+  // Mount, and every repository switch (a new map is a new stack): adopt the
+  // entry the page is on -- after a reload, possibly one of ours.
+  useEffect(() => {
+    if (!narrow) return;
+    const st = router.history.location.state as unknown as Record<string, unknown>;
+    backRef.current = initBack(historyIndex(), st[OVERLAY_MARKER], phoneHasSelectionRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [narrow, owner, repo]);
+  // A selection (a deep link included) is one entry: back clears it before
+  // it leaves the map.
+  useEffect(() => {
+    if (!narrow) return;
+    if (phoneHasSelection) pushOverlay("sel");
+    else dropOverlay("sel");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phoneHasSelection, narrow]);
+  useEffect(() => {
+    if (!narrow) return;
+    return router.history.subscribe(({ location, action }) => {
+      if (action.type !== "BACK" && action.type !== "FORWARD" && action.type !== "GO") return;
+      if (location.pathname !== mapPathRef.current) return;
+      const st = location.state as unknown as Record<string, unknown>;
+      const idx = Number(st.__TSR_index ?? 0);
+      const cur = backRef.current ?? initBack(idx, null, false);
+      const res = popTo(cur, idx, st[OVERLAY_MARKER], phoneHasSelectionRef.current);
+      backRef.current = res.state;
+      for (const kind of res.undo) undoRef.current(kind);
+      const live = liveSearchRef.current;
+      const desired = res.undo.includes("sel")
+        ? { ...live, file: undefined, sym: undefined, hsym: undefined, d: undefined, dir: undefined }
+        : live;
+      // A second pop can arrive (skipBack) before React re-renders.
+      liveSearchRef.current = desired;
+      // Skipping on: the entry this press finally lands on reconciles (and
+      // if that is the previous page, there is nothing of ours to fix).
+      if (res.skipBack) router.history.back();
+      else navigate({ to: ".", search: desired, replace: true, state: true });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [narrow]);
+
+  // docs/UX.md §3.2: every selection opens the sheet at Peek, never higher,
+  // and replaces whatever card (a road, map quality) was showing.
+  const selKey = `${sel}|${selSym}|${selHSym}|${selD}|${search.dir ?? ""}`;
+  const prevSelKeyRef = useRef(selKey);
+  useEffect(() => {
+    if (prevSelKeyRef.current === selKey) return;
+    prevSelKeyRef.current = selKey;
+    if (!narrow) return;
+    changeDetent("peek");
+    setQuality(false);
+    setStructure(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selKey]);
+  // Map quality is a Full-sheet view; the sheet leaving Half/Full ends it.
+  useEffect(() => {
+    if (detent === "peek") setQuality(false);
+  }, [detent]);
+  // docs/UX.md §3.3: raising the sheet eases the camera only if the
+  // selection would otherwise be covered (panTo is a no-op when it is in
+  // the new safe rect). Runs after MapCanvas has applied the new insets
+  // (a child's layout effect runs before this parent's effect).
+  const prevDetentRef = useRef(detent);
+  useEffect(() => {
+    const prev = prevDetentRef.current;
+    prevDetentRef.current = detent;
+    if (!narrow || !doc) return;
+    const order = { peek: 0, half: 1, full: 2 };
+    if (order[detent] <= order[prev]) return;
+    if (sel != null) {
+      if (districtClass(doc.districts[String(D_(doc, sel))]) !== "unconnected") canvasRef.current?.panTo(sel);
+    } else if (selD != null) canvasRef.current?.panToDistrict(selD);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detent]);
+  // docs/UX.md §4.7: while a path waits for its other end, a file tap picks
+  // that file directly.
+  useEffect(() => {
+    canvasRef.current?.setDirectFileTaps(!!pathPick && !pathEnds);
+  }, [pathPick, pathEnds]);
+  // Leaving the phone layout (a rotation, a resize) closes phone overlays.
+  useEffect(() => {
+    if (narrow) return;
+    setSearchOpen(false);
+    setLayersOpen(false);
+    setDetentState("peek");
+    setStructure(null);
+    setPathPick(null);
+    setPathEnds(null);
+  }, [narrow]);
+
+  /** §4.7: the second file of a path. */
+  function completePath(i: number) {
+    if (!doc || !pathPick || i === pathPick.anchor) return;
+    const ends: [number, number] = pathPick.dir === "from" ? [pathPick.anchor, i] : [i, pathPick.anchor];
+    setPathEnds(ends);
+    setRoute(findRoute(doc, adj, ends[0], ends[1]));
+  }
+  /** docs/UX.md §3.5 on a phone: a tap on empty map clears the selection
+   * (one tap, one step -- no zoom), and returns the sheet to Peek. A road
+   * card or a path waiting for its end are the step it takes first. */
+  function phoneEmptyTap() {
+    if (pathPick && !pathEnds) return;
+    if (structure) {
+      setStructure(null);
+      return;
+    }
+    if (sel != null || selD != null || search.dir || pathPick) {
+      clearPath();
+      clearAll();
+      return;
+    }
+    changeDetent("peek");
+  }
+
   const rendererCallbacks: MapRendererCallbacks = {
-    onSelectFile: (i) => selectFile(i),
+    onSelectFile: (i) => (narrow && pathPick && !pathEnds ? completePath(i) : selectFile(i)),
     onSelectSymbol: (i, s) => selectFile(i, { symbol: s }),
     onSelectHierSymbol: (g) => selectHierSymbol(g),
-    onSelectDistrict: (d) => selectDistrict(d),
-    onClearSelection: () => stepBackSelection(),
+    onSelectDistrict: (d) => {
+      if (narrow && pathPick && !pathEnds) return; // a path's end is a file
+      selectDistrict(d);
+    },
+    // docs/UX.md §3.5: on a phone an empty tap clears; desktop keeps issue
+    // #82 A1's one-level step back until its own phase (5).
+    onClearSelection: () => (narrow ? phoneEmptyTap() : stepBackSelection()),
+    // §7.1 rule 7: a road card never stays put while the map moves.
+    onDragStart: () => {
+      if (narrow) setStructure(null);
+    },
+    onPanDismiss: () => {
+      if (narrow && detent !== "peek") changeDetent("peek");
+    },
+    onTapStructure: (key, lines) => {
+      if (!narrow || !doc) return false;
+      const detail = structureDetail(doc, key);
+      if (!detail) return false;
+      setStructure({ key, lines, detail });
+      changeDetent("peek");
+      return true;
+    },
     onSelectDirectory: (path) => selectDirectory(path),
     onPreviewDirectory: (path) => setPreviewDirectory(path && doc ? { repo: doc.repo, path } : null),
     onNeedSymbols: (d) => onNeedSymbols(d),
@@ -409,6 +653,120 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
+  const mapCanvas = (
+    <MapCanvas
+      doc={doc}
+      geo={search.geo}
+      layer={search.layer}
+      sel={sel}
+      selSym={selSym}
+      selD={selD}
+      route={route}
+      packageGrouping={packageGrouping}
+      folderFiles={folderFiles}
+      folderOnlyIslands={folderOnlyIslands}
+      folderLabels={packageLayout.folderLabels}
+      activeDirectory={activeDirectory}
+      districtSymbols={districtSymbolsMap}
+      selHSym={selHSym}
+      insets={frameInsets}
+      callbacks={rendererCallbacks}
+      handleRef={canvasRef}
+    />
+  );
+
+  if (narrow) {
+    // docs/UX.md §3: the map is full screen; everything else floats over it
+    // or lives in the one sheet. No fullscreen mode on phones (§3).
+    return (
+      <div className="relative h-full overflow-hidden bg-[var(--canvas)]" data-phone-shell>
+        <div ref={mapAreaRef} className="absolute inset-0">
+          {mapCanvas}
+        </div>
+        <PhoneChrome
+          doc={doc}
+          packageLayout={packageLayout}
+          packageGrouping={packageGrouping}
+          catalogue={catalogue}
+          owner={owner}
+          repo={repo}
+          layer={search.layer}
+          depthAuto={search.depth == null}
+          maxCh={maxCh}
+          maxCx={maxCx}
+          sel={sel}
+          selSym={selSym}
+          selD={selD}
+          selHSym={selHSym}
+          symbolsDoc={selSymbolsDoc}
+          symbolsLoading={selSymbolsLoading}
+          adj={adj}
+          radj={radj}
+          activeDirectory={activeDirectory}
+          heights={heights}
+          detent={detent}
+          onDetent={changeDetent}
+          searchOpen={searchOpen}
+          onOpenSearch={openSearch}
+          onCloseSearch={closeSearch}
+          onSearchPick={(hit: SearchHit) => {
+            closeSearch();
+            clearPath();
+            selectFile(hit.i, hit.s != null ? { symbol: hit.s } : {});
+          }}
+          layersOpen={layersOpen}
+          onOpenLayers={openLayers}
+          onCloseLayers={closeLayers}
+          quality={quality}
+          onQuality={(open) => {
+            setQuality(open);
+            changeDetent(open ? "full" : "peek");
+          }}
+          indexTab={activeDirectory ? "folders" : indexTab}
+          onIndexTab={(t) => {
+            setIndexTab(t);
+            if (detent === "peek") changeDetent("half");
+          }}
+          structure={structure}
+          onCloseStructure={() => setStructure(null)}
+          pathPick={pathPick}
+          pathEnds={pathEnds}
+          route={route}
+          onPath={(i, dir) => {
+            setRoute(null);
+            setPathEnds(null);
+            setPathPick({ anchor: i, dir });
+            changeDetent("peek");
+          }}
+          onPathCancel={clearPath}
+          onZoomIn={() => canvasRef.current?.zoomBy(1.6)}
+          onZoomOut={() => canvasRef.current?.zoomBy(1 / 1.6)}
+          onFit={() => canvasRef.current?.fit(true)}
+          onLayer={(l) => updateSearch({ layer: l })}
+          onDepth={(depth) => updateSearch({ depth: depth === packageLayout.autoDepth ? undefined : depth })}
+          onClearSelection={() => {
+            clearPath();
+            clearAll();
+          }}
+          onSelectFile={(i) => selectFile(i)}
+          onSelectSymbol={(i, s) => selectFile(i, { symbol: s })}
+          onSelectHierSymbol={selectHierSymbol}
+          onSelectDistrict={selectDistrict}
+          onPickDistrict={(d) => {
+            selectDistrict(d);
+            framePeekNow();
+            canvasRef.current?.panToDistrict(d);
+          }}
+          onPickKeyFile={(i) => selectFile(i)}
+          onZoomDistrict={(d) => canvasRef.current?.zoomDistrict(d)}
+          onSelectDirectory={selectDirectory}
+          onBreadcrumbRepo={clearAll}
+          onBreadcrumbFile={(i) => updateSearch({ file: doc.F[i], sym: undefined, hsym: undefined, d: undefined, dir: undefined })}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
       {!isFullscreen && (
@@ -425,8 +783,6 @@ export function MapView() {
           <Sidebar
             doc={doc}
             packageLayout={packageLayout}
-            open={sideOpen}
-            onToggleOpen={() => setSideOpen((v) => !v)}
             onPickKeyFile={(i) => {
               // Issue #82 "district index": a district row's key-file line
               // (most imported / entry / links a bridge) selects the file
@@ -458,24 +814,7 @@ export function MapView() {
           ref={mapAreaRef}
           className={`relative min-w-0 flex-1 bg-[var(--canvas)]${isFullscreen ? " fixed inset-0 z-50" : ""}`}
         >
-          <MapCanvas
-            doc={doc}
-            geo={search.geo}
-            layer={search.layer}
-            sel={sel}
-            selSym={selSym}
-            selD={selD}
-            route={route}
-            packageGrouping={packageGrouping}
-            folderFiles={folderFiles}
-            folderOnlyIslands={folderOnlyIslands}
-            folderLabels={packageLayout.folderLabels}
-            activeDirectory={activeDirectory}
-            districtSymbols={districtSymbolsMap}
-            selHSym={selHSym}
-            callbacks={rendererCallbacks}
-            handleRef={canvasRef}
-          />
+          {mapCanvas}
           <SearchBox
             doc={doc}
             onPick={(hit: SearchHit) => selectFile(hit.i, hit.s != null ? { symbol: hit.s } : {})}

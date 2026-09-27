@@ -50,6 +50,11 @@ export const DOUBLE_TAP_PX = 24;
  * long after the last pointerup. Lives here, next to the other gesture
  * timings; the queue itself is renderGate.ts, driven by MapRenderer. */
 export const QUIET_AFTER_GESTURE_MS = 350;
+/** docs/UX.md §3.5: panning the map with the phone's sheet raised returns
+ * the sheet to Peek once the pan has travelled this far (CSS px, summed
+ * along the pan -- here the question is "is the person moving the map",
+ * not "was this a tap", so path length is the right measure). */
+export const PAN_DISMISS_PX = 24;
 
 export type GestureEventType = "down" | "move" | "up" | "cancel" | "lostcapture";
 

@@ -157,35 +157,56 @@ export function mainlandBounds(doc: MapDocument, geo: Geo): [number, number, num
 // caching the final number would have to be invalidated on VW/VH anyway --
 // so this is the one place both the uncached callers below and
 // MapRenderer's cached ones turn a bounds box back into a scale.
-/** Screen space available to the default fit. The old 46px inset consumed
- * almost a quarter of a 390px phone. The phone's bottom inset also moves the
- * map above the chip and collapsed sheet; it does not shrink its width. */
-export function fitViewport(vw: number, vh: number): [number, number, number, number] {
-  return vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+/** Space the map keeps clear of chrome, in CSS pixels from the map box's
+ * edges. docs/UX.md §3.3: the fit and every programmatic camera move frame
+ * into the box minus these, and the caller measures them from the real
+ * chrome (the phone's pill, control column and sheet; map/phoneShell.ts)
+ * rather than guessing from the window width -- the old width-keyed
+ * constants gave an 821-1070 px desktop window phone margins and ignored
+ * the sheet's actual height. */
+export interface Insets {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
-/** Tall phones have spare vertical room after width sets the scale. Bring
- * that slack above the bottom sheet rather than leaving the map low on the
- * screen. The minimum keeps shorter viewports centred in their safe rect. */
-export function fitCentreY(vw: number, vh: number, fittedHeight: number): number {
-  const [, top, , bottom] = fitViewport(vw, vh);
-  const middle = (top + bottom) / 2;
-  return vw <= 820 ? Math.max(top + fittedHeight / 2, Math.min(middle, 315)) : middle;
+/** The desktop map's margins, unchanged from before §3.3: the desktop
+ * chrome (rail, top bar, inspector) is realigned in docs/UX.md phase 5. */
+export const DESKTOP_INSETS: Insets = { left: 24, top: 12, right: 24, bottom: 38 };
+/** For callers with no chrome to measure -- the offline analysis scripts
+ * (pin-counts.ts, no-change-proof.ts) -- the old width-keyed margins, so
+ * their numbers stay comparable with earlier runs. The app never uses this:
+ * MapRenderer is always given measured insets (MapCanvas's `insets` prop). */
+export function defaultInsets(vw: number): Insets {
+  return vw <= 820 ? { left: 16, top: 110, right: 16, bottom: 158 } : DESKTOP_INSETS;
 }
-export function scaleToFit(b: [number, number, number, number], vw: number, vh: number): number {
-  const [left, top, right, bottom] = fitViewport(vw, vh);
+/** Screen rect `[left, top, right, bottom]` a fit frames into. */
+export function fitViewport(vw: number, vh: number, insets: Insets = defaultInsets(vw)): [number, number, number, number] {
+  return [insets.left, insets.top, vw - insets.right, vh - insets.bottom];
+}
+/** Vertical centre a fit uses: the middle of the rect. (The phone used to
+ * clamp this to 315 px to lift the map above a chip and a sheet the rect
+ * did not know about; with the sheet's real height in the insets the middle
+ * of the rect is already above it.) */
+export function fitCentreY(vw: number, vh: number, _fittedHeight: number, insets: Insets = defaultInsets(vw)): number {
+  const [, top, , bottom] = fitViewport(vw, vh, insets);
+  return (top + bottom) / 2;
+}
+export function scaleToFit(b: [number, number, number, number], vw: number, vh: number, insets: Insets = defaultInsets(vw)): number {
+  const [left, top, right, bottom] = fitViewport(vw, vh, insets);
   return Math.min((right - left) / (b[2] - b[0] || 1), (bottom - top) / (b[3] - b[1] || 1));
 }
 
-export function fitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): number {
-  return scaleToFit(mainlandBounds(doc, geo), vw, vh);
+export function fitScale(doc: MapDocument, geo: Geo, vw: number, vh: number, insets?: Insets): number {
+  return scaleToFit(mainlandBounds(doc, geo), vw, vh, insets);
 }
 
 /** Like `fitScale`, but against the drawable extent (mainland + islands).
  * `MapRenderer` uses this only as the floor for how far a
  * viewer can zoom OUT -- never as the default framing, which is
  * `fitScale`/`mainlandBounds` (see that function's doc comment for why). */
-export function fullFitScale(doc: MapDocument, geo: Geo, vw: number, vh: number): number {
-  return scaleToFit(worldBounds(doc, geo), vw, vh);
+export function fullFitScale(doc: MapDocument, geo: Geo, vw: number, vh: number, insets?: Insets): number {
+  return scaleToFit(worldBounds(doc, geo), vw, vh, insets);
 }
 
 // ---------- colour ----------

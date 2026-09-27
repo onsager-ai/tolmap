@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { DistrictSymbols, MapDocument } from "@/types";
-import { MapRenderer, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
+import { MapRenderer, type FrameInsets, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
 import type { Geo, Layer } from "./constants";
 import type { Route } from "./graph";
 import type { FolderLabel, PackageGrouping } from "./packageLayout";
@@ -21,6 +21,12 @@ export interface MapCanvasHandle {
    * highlight its card on the map, without a full repaint (see
    * MapRenderer.hoverSymbol's own doc comment). `null` clears it. */
   hoverSymbol(global: number | null): void;
+  /** docs/UX.md §3.3: apply new chrome insets NOW, before a camera move in
+   * the same event handler (the `insets` prop only reaches the renderer
+   * after React commits). Never moves the camera. */
+  setInsets(insets: FrameInsets): void;
+  /** docs/UX.md §4.7: path mode's "next file tap picks the other end". */
+  setDirectFileTaps(on: boolean): void;
 }
 
 interface MapCanvasProps {
@@ -40,6 +46,9 @@ interface MapCanvasProps {
    * see data/queries.ts's useDistrictSymbolsMap. */
   districtSymbols: ReadonlyMap<number, DistrictSymbols>;
   selHSym: number | null;
+  /** docs/UX.md §3.3: the real chrome around the map (MapRenderer's
+   * FrameInsets doc comment). */
+  insets: FrameInsets;
   callbacks: MapRendererCallbacks;
   handleRef?: React.Ref<MapCanvasHandle>;
 }
@@ -65,6 +74,7 @@ export function MapCanvas({
   activeDirectory,
   districtSymbols,
   selHSym,
+  insets,
   callbacks,
   handleRef,
 }: MapCanvasProps) {
@@ -89,6 +99,8 @@ export function MapCanvas({
       onPreviewDirectory: (path) => callbacksRef.current.onPreviewDirectory(path),
       onNeedSymbols: (d) => callbacksRef.current.onNeedSymbols(d),
       onDragStart: () => callbacksRef.current.onDragStart?.(),
+      onPanDismiss: () => callbacksRef.current.onPanDismiss?.(),
+      onTapStructure: (key, lines) => callbacksRef.current.onTapStructure?.(key, lines) ?? false,
     };
     const renderer = new MapRenderer(svgRef.current, stableCallbacks);
     rendererRef.current = renderer;
@@ -107,6 +119,8 @@ export function MapCanvas({
       zoomDistrict: (d) => rendererRef.current?.zoomDistrict(d),
       zoomBy: (f) => rendererRef.current?.zoomBy(f),
       hoverSymbol: (g) => rendererRef.current?.hoverSymbol(g),
+      setInsets: (next) => rendererRef.current?.setInsets(next),
+      setDirectFileTaps: (on) => rendererRef.current?.setDirectFileTaps(on),
     }),
     [],
   );
@@ -135,6 +149,8 @@ export function MapCanvas({
   // time that effect sees it, so a later real state change in the same
   // render pass this component happens to also pick up still repaints.
   const justFittedRef = useRef(false);
+  const insetsRef = useRef(insets);
+  insetsRef.current = insets;
   const repoKey = doc.repo;
   useLayoutEffect(() => {
     const renderer = rendererRef.current;
@@ -142,6 +158,8 @@ export function MapCanvas({
     renderer.loadDocument(doc);
     const r = wrapRef.current.getBoundingClientRect();
     renderer.resize(r.width, r.height);
+    // Before fit(): the opening frame is measured against the real chrome.
+    renderer.setInsets(insetsRef.current);
     const state: MapRenderState = {
       doc,
       geo,
@@ -200,6 +218,14 @@ export function MapCanvas({
     renderer.render(state);
   }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
 
+  // docs/UX.md §3.3: new chrome insets (a sheet detent, a resize) reach the
+  // renderer without moving the camera -- MapView decides when a move is
+  // owed (a raised sheet covering the selection) and asks for it itself.
+  const insetsKey = JSON.stringify(insets);
+  useLayoutEffect(() => {
+    rendererRef.current?.setInsets(insetsRef.current);
+  }, [insetsKey]);
+
   // The wrapper's box, watched once for the component's life. Selection,
   // layer, geo and route changes must never touch this subscription: the
   // wrapper's size doesn't depend on any of them, and this effect used to
@@ -229,7 +255,14 @@ export function MapCanvas({
   }, []);
 
   return (
-    <div ref={wrapRef} className="absolute inset-0">
+    <div
+      ref={wrapRef}
+      className="absolute inset-0"
+      // Read by the viewer checks (check-view-stability.mjs) so they assert
+      // against the insets the app actually framed with, not a copy of them.
+      data-fit-insets={`${insets.frame.left},${insets.frame.top},${insets.frame.right},${insets.frame.bottom}`}
+      data-safe-insets={`${insets.safe.left},${insets.safe.top},${insets.safe.right},${insets.safe.bottom}`}
+    >
       <svg
         ref={svgRef}
         className="map-svg"

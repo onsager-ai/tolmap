@@ -1,5 +1,6 @@
 import type { MapDocument } from "@/types";
 import type { Route } from "@/map/graph";
+import { PATH_KIND_TEXT as KIND_TEXT } from "@/lib/cardText";
 
 interface Props {
   doc: MapDocument;
@@ -8,29 +9,27 @@ interface Props {
   onClear(): void;
 }
 
-const KIND_TEXT: Record<Route["kind"], string> = {
-  imports: "follows imports, source → target",
-  "imported-by": "reverse direction — the target imports the source",
-  undirected: "no directed path; shown ignoring edge direction",
-};
 
-/** Blast-radius's sibling feature: an explicit two-click "route from / route
- * to" path query over the directed import graph, rendered as a polyline on
+/** Blast-radius's sibling feature: an explicit two-click "path from / path
+ * to" query (docs/UX.md §12: the UI says "path", never "route"; the code
+ * keeps its `route` names) over the directed import graph, rendered as a polyline on
  * the map (see MapRenderer.draw()) and as hop-by-hop text here. Not part of
  * the URL-state requirement — it's a transient tool, not a view worth
  * bookmarking — so this state lives in MapView's local state, unlike
  * selection/geo/layer. */
+/** Desktop only: on a phone the path is bottom-sheet content (docs/UX.md
+ * §4.7, components/phone/SheetContent.tsx). */
 export function RouteBox({ doc, routeFrom, route, onClear }: Props) {
   if (routeFrom == null && !route) return null;
   return (
     <div className="absolute bottom-2.5 left-2.5 max-w-[min(430px,calc(100%-22px))] rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.96)] px-3 py-2.5 text-meta text-[var(--on)] max-[820px]:inset-x-2.5 max-[820px]:max-w-none">
-      <span onClick={onClear} className="float-right ml-2.5 cursor-pointer text-[var(--dim)]">
+      <button type="button" onClick={onClear} className="float-right ml-2.5 cursor-pointer text-[var(--dim)]">
         clear
-      </span>
+      </button>
       {!route && routeFrom != null && (
         <>
-          <b>Route from</b> <span className="font-mono">{doc.F[routeFrom]}</span>
-          <div className="break-all text-[var(--dim)]">now pick a destination and press "route to".</div>
+          <b>Path from</b> <span className="font-mono">{doc.F[routeFrom]}</span>
+          <div className="break-all text-[var(--dim)]">now pick a destination and press "Path to here".</div>
         </>
       )}
       {route && (
