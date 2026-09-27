@@ -1197,6 +1197,16 @@ jobs:
       # (map/searchResults.ts).
       - run: npx --yes tsx@4.23.15 scripts/check-search.ts
       - run: npx --yes tsx@4.23.15 scripts/check-pinch-math.ts
+      # docs/UX.md §4.9 (phase 6): Home's repository field -- parsing and
+      # validation (src/api/repoInput.ts), including the reserved-name
+      # refusal it shares with the router (routes/reserved.ts). Needs
+      # TSX_TSCONFIG_PATH: repoInput.ts's `@/routes/reserved` import is a
+      # real (non type-only) one, and tsx's default tsconfig discovery reads
+      # the solution-style root tsconfig.json, which has no `paths` of its
+      # own (they live in tsconfig.app.json) -- every other check script here
+      # only reaches `@/...` modules through `import type`, which the
+      # compiler erases before this would matter.
+      - run: TSX_TSCONFIG_PATH=tsconfig.app.json npx --yes tsx@4.23.15 scripts/check-repo-input.ts
       - run: pnpm build
 
   full-fixtures:

@@ -5137,6 +5137,121 @@ async function checkPhonePathMode(browser, base, profile) {
   await context.close();
 }
 
+// ---------------------------------------------------------------------------
+// docs/UX.md phase 6: Home (§4.9) -- the plain one-screen page: wordmark and
+// theme button, "Map a codebase" with its field and button, "Mapped
+// repositories" as 64px rows built only from what the catalogue actually
+// returns, and its States: a loaded catalogue, empty, service unavailable
+// with a retry (that state's own copy calls it transient), and input
+// validation in plain words (the reserved-name refusal is part of that same
+// state -- routes/reserved.ts). The pure parsing behind validation is
+// check-repo-input.ts; this drives the real page, against the mock API
+// (mock-api-server.mjs, already running for the job-progress checks below)
+// and route-mocked catalogue responses -- the same page.route() technique
+// check-legacy-terrain.mjs and checkDistrictRefinement already use.
+// ---------------------------------------------------------------------------
+
+async function checkHomeLoaded(browser, base) {
+  const label = "Home: loaded catalogue (mock API + bundled maps)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+  await page.locator("[data-catalogue-row]").first().waitFor({ timeout: 15_000 });
+
+  report((await page.locator("h1", { hasText: "Map a codebase" }).count()) === 1, `${label}: leads with "Map a codebase"`);
+  report((await page.locator("[data-repo-field]").count()) === 1, `${label}: has the repository field`);
+  report((await page.locator('button[type="submit"]', { hasText: "Map it" }).count()) === 1, `${label}: has the "Map it" button`);
+  report((await page.locator("[data-theme-toggle]").count()) === 1, `${label}: has the theme button`);
+
+  // mock-api-server.mjs's cached entry: files: 2, districts: 1, lang: "py" --
+  // this row must show exactly that, nothing invented, and "district"
+  // singular for a count of 1.
+  const row = page.locator("[data-catalogue-row]", { hasText: "mockorg/already-indexed" });
+  report((await row.count()) === 1, `${label}: the mock API's cached repo appears as a row`);
+  const rowText = (await row.innerText()).replace(/\s+/g, " ");
+  report(
+    /\b2\b.*files/.test(rowText) && /\b1\b.*district\b/.test(rowText) && /\bpy\b/.test(rowText) && !/districts/.test(rowText),
+    `${label}: the row shows files, districts (singular for a count of 1) and language, straight from the API`,
+    rowText,
+  );
+
+  await context.close();
+}
+
+async function checkHomeEmptyCatalogue(browser, base) {
+  const label = "Home: empty catalogue";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  // Static index empty, service unreachable -- the merge (src/data/queries.ts)
+  // has nothing from either side, which is "empty", not "unavailable": the
+  // service ping failing alone must never read as an error state.
+  await page.route("**/maps/index.json", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/healthz", (route) => route.fulfill({ status: 503, body: "" }));
+  await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+  await page.locator("[data-catalogue-empty]").waitFor({ timeout: 15_000 });
+  report((await page.locator("[data-catalogue-row]").count()) === 0, `${label}: no rows`);
+  report(/no repositories mapped/i.test(await page.locator("[data-catalogue-empty]").innerText()), `${label}: plain empty-state copy, not a raw "0 results"`);
+  report((await page.locator("[data-catalogue-error]").count()) === 0, `${label}: not shown as an error -- an empty list is not a failure`);
+  await context.close();
+}
+
+async function checkHomeServiceUnavailable(browser, base) {
+  const label = "Home: service unavailable, with a retry (transient)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  let failing = true;
+  await page.route("**/maps/index.json", (route) => (failing ? route.fulfill({ status: 500, body: "" }) : route.continue()));
+  await page.route("**/api/healthz", (route) => (failing ? route.fulfill({ status: 503, body: "" }) : route.continue()));
+  await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+  await page.locator("[data-catalogue-error]").waitFor({ timeout: 15_000 });
+  const msg = (await page.locator("[data-catalogue-error]").innerText()).replace(/\s+/g, " ");
+  report(!/\{|error_code|fetch|failed|500|503/i.test(msg) && msg.trim().length > 0, `${label}: a clear message, not a raw fetch error`, msg);
+  report((await page.locator("[data-catalogue-retry]").count()) === 1, `${label}: offers a retry`);
+
+  // The outage clears; Retry must recover without a page reload.
+  failing = false;
+  await page.locator("[data-catalogue-retry]").click();
+  await page.locator("[data-catalogue-row]").first().waitFor({ timeout: 15_000 });
+  report((await page.locator("[data-catalogue-error]").count()) === 0, `${label}: retry recovers without a reload`);
+  await context.close();
+}
+
+async function checkHomeValidation(browser, base) {
+  const label = "Home: input validation (plain words)";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+  const field = page.locator("[data-repo-field]");
+  await field.waitFor();
+
+  await field.fill("not a repo at all");
+  await page.locator('button[type="submit"]').click();
+  const shapeMsg = await page.locator("[data-repo-validation-error]").innerText();
+  report(
+    /owner\/name|github\.com/i.test(shapeMsg) && !/\{|error_code|invalid_request/i.test(shapeMsg),
+    `${label}: an unparseable value gets a plain-words message, not the wire shape`,
+    shapeMsg,
+  );
+  report(new URL(page.url()).pathname === "/", `${label}: nothing is submitted`);
+
+  // Reserved-name refusal (routes/reserved.ts) is client-side, same as the
+  // router's own belt-and-braces check -- part of this same State.
+  await field.fill("admin/anything");
+  await page.locator('button[type="submit"]').click();
+  const reservedMsg = await page.locator("[data-repo-validation-error]").innerText();
+  report(/reserved/i.test(reservedMsg) && /admin/.test(reservedMsg), `${label}: a reserved owner is refused client-side`, reservedMsg);
+
+  await field.fill("django/django");
+  await page.waitForTimeout(150);
+  report((await page.locator("[data-repo-validation-error]").count()) === 0, `${label}: the message clears once the field changes`);
+
+  await context.close();
+}
+
 async function submitMockJob(base, slug) {
   const res = await fetch(`${base}/api/index`, {
     method: "POST",
@@ -5693,6 +5808,12 @@ async function main() {
     // docs/UX.md phase 3: search on both profiles, and the narrowest phone.
     for (const profile of PROFILES) await checkSearch(browser, args.base, profile);
     await checkSearch(browser, args.base, PHONE_SIZES.find((p) => p.name === "phone-320"));
+    // docs/UX.md phase 6: Home (§4.9) -- loaded, empty, service-unavailable
+    // with a retry, and input validation.
+    await checkHomeLoaded(browser, args.base);
+    await checkHomeEmptyCatalogue(browser, args.base);
+    await checkHomeServiceUnavailable(browser, args.base);
+    await checkHomeValidation(browser, args.base);
     // Issue #97: live job progress, ETA and cancel (mock-api-server.mjs).
     await checkJobProgressPage(browser, args.base);
     await checkQueuedJobPage(browser, args.base);
