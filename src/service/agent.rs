@@ -1473,7 +1473,8 @@ impl Agent {
             // down meanwhile delivers it on the next one.
             Outcome::OutOfMemory => {
                 eprintln!(
-                    "job {}: the job child was killed for memory; releasing it for a larger                      worker class",
+                    "job {}: the job child was killed for memory; releasing it for a larger \
+                     worker class",
                     current.job_id
                 );
                 self.let_go(Some(ReleasedReason::Oom), peak_rss_bytes)
