@@ -1181,6 +1181,14 @@ jobs:
       # actually wired into a workflow, since this one runs from scripted
       # data rather than a Playwright session or a public/maps/ fixture.
       - run: npx --yes tsx@4.23.15 scripts/check-reference-coverage.ts
+      # docs/UX.md §7.1: the gesture rules (tap slop, double-tap, pinch
+      # capture and resets, a third pointer ignored) and the no-repaint-mid-
+      # gesture queue are pure modules (map/gestures.ts, map/renderGate.ts),
+      # checked here from scripted pointer sequences -- CDP touch input can't
+      # drive them reliably (check-view-stability.mjs's zoomIn() comment).
+      # The pinch math they feed (map/pinch.ts) was checked by hand until now.
+      - run: npx --yes tsx@4.23.15 scripts/check-gestures.ts
+      - run: npx --yes tsx@4.23.15 scripts/check-pinch-math.ts
       - run: pnpm build
 
   full-fixtures:

@@ -77,9 +77,13 @@ export function Breadcrumb({ doc, sel, selSym, selD, selHSym, symbolsDoc, onSele
       // into, exactly like the existing "Zoom to district" button already
       // guards against with its own stopPropagation.
       onClick={(e) => e.stopPropagation()}
-      className="mb-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[9.5px] text-[var(--dim)]"
+      // Phone: one line, every segment shrinking to an ellipsis rather than
+      // wrapping. At the docs/UX.md §8.1 size a wrapped breadcrumb filled the
+      // collapsed 46 px sheet on its own and hid the title under it; shrinking
+      // (not clipping) keeps every segment on screen and tappable.
+      className="mb-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-meta text-[var(--dim)] max-[820px]:flex-nowrap max-[820px]:overflow-hidden max-[820px]:[&_*]:min-w-0 max-[820px]:[&_*]:truncate"
     >
-      <button type="button" className="hover:text-[var(--on)]" onClick={onSelectRepo}>
+      <button type="button" className="font-mono hover:text-[var(--on)]" onClick={onSelectRepo}>
         {doc.repo}
       </button>
       <span aria-hidden="true">›</span>
@@ -94,9 +98,9 @@ export function Breadcrumb({ doc, sel, selSym, selD, selHSym, symbolsDoc, onSele
         <>
           <span aria-hidden="true">›</span>
           {fileIsCurrent ? (
-            <span className="font-semibold text-[var(--on)]">{doc.F[sel].split("/").pop()}</span>
+            <span className="font-mono font-semibold text-[var(--on)]">{doc.F[sel].split("/").pop()}</span>
           ) : (
-            <button type="button" className="hover:text-[var(--on)]" onClick={() => onSelectFile(sel)}>
+            <button type="button" className="font-mono hover:text-[var(--on)]" onClick={() => onSelectFile(sel)}>
               {doc.F[sel].split("/").pop()}
             </button>
           )}
@@ -105,7 +109,7 @@ export function Breadcrumb({ doc, sel, selSym, selD, selHSym, symbolsDoc, onSele
       {sm && (
         <>
           <span aria-hidden="true">›</span>
-          <span className="font-semibold text-[var(--on)]">{sm[0]}</span>
+          <span className="font-mono font-semibold text-[var(--on)]">{sm[0]}</span>
         </>
       )}
       {hierChain?.map((entry, index) => {
@@ -114,9 +118,9 @@ export function Breadcrumb({ doc, sel, selSym, selD, selHSym, symbolsDoc, onSele
           <span key={entry.global} className="contents">
             <span aria-hidden="true">›</span>
             {isLast ? (
-              <span className="font-semibold text-[var(--on)]">{entry.name}</span>
+              <span className="font-mono font-semibold text-[var(--on)]">{entry.name}</span>
             ) : (
-              <button type="button" className="hover:text-[var(--on)]" onClick={() => onSelectHierSymbol?.(entry.global)}>
+              <button type="button" className="font-mono hover:text-[var(--on)]" onClick={() => onSelectHierSymbol?.(entry.global)}>
                 {entry.name}
               </button>
             )}

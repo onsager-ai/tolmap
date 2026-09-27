@@ -276,7 +276,7 @@ async function readDot(page, dataK) {
  * that selection/layer changes and resizes leave an already-established
  * zoomed-in view alone, which doesn't care how the zoom got there. Two
  * touch-native alternatives were tried and dropped:
- *   - Double-tap zoom (MapRenderer.endPointer's TOUCH lastTap<300ms path):
+ *   - Double-tap zoom (gestures.ts, 300 ms between taps):
  *     in this headless/CDP setup, the gap Chromium actually delivers the
  *     second tap's pointerdown at measured over 1s after the first tap's
  *     pointerup even with only an 80ms wait requested in between -- CDP
@@ -760,7 +760,7 @@ async function checkSelectionDim(browser, base, profile) {
     const dimmed = nonSelected.filter((c) => c.getAttribute("fill-opacity") === "0.2");
     const dimmedBatches = [...document.querySelectorAll("svg.map-svg path[data-footprint-batch]")]
       .filter((p) => p.getAttribute("fill-opacity") === "0.2");
-    // A neighbour ring (MapRenderer.ring(), var(--hot) or var(--cold) stroke)
+    // A neighbour ring (MapRenderer.ring(), var(--link-out) or var(--link-in) stroke)
     // marks a file that's connected -- find one and check ITS OWN file's
     // opacity, which should read as full strength (alwaysDrawn), not dimmed.
     // B4: matched by `data-ring-for` (which file the ring belongs to,
@@ -1500,7 +1500,7 @@ async function checkDistrictIndex(browser, base, profile) {
 // Issue #82 "link colour legend" (owner feedback: "what's the colored
 // circles?"). The file card's "imported by N"/"imports M" line now doubles
 // as the legend for the map's own selection rings/lines -- colour-coded to
-// match (var(--cold) dashed for imported-by, var(--hot) solid for imports)
+// match (var(--link-in) dashed for imported-by, var(--link-out) solid for imports)
 // with a tiny line glyph per half. Checked on the file card (desktop panel /
 // phone sheet -- same markup, SelectionPanel's FileHead) and the fullscreen
 // summary bar (SelectionSummaryBar), both of which render the shared
@@ -2302,7 +2302,7 @@ async function checkDragThresholdNoSelect(browser, base) {
   } else {
     await page.mouse.move(dragPoint.x, dragPoint.y);
     await page.mouse.down();
-    await page.mouse.move(dragPoint.x + 6, dragPoint.y + 6, { steps: 4 }); // >= DRAG_THRESHOLD_PX
+    await page.mouse.move(dragPoint.x + 6, dragPoint.y + 6, { steps: 4 }); // 8.5 px straight-line > TAP_SLOP_MOUSE_PX (gestures.ts)
     await page.mouse.up();
     await page.waitForTimeout(300);
     report(!new URL(page.url()).searchParams.has("d"),
@@ -2315,7 +2315,7 @@ async function checkDragThresholdNoSelect(browser, base) {
   } else {
     await page.mouse.move(tapPoint.x, tapPoint.y);
     await page.mouse.down();
-    await page.mouse.move(tapPoint.x + 2, tapPoint.y + 1, { steps: 2 }); // < DRAG_THRESHOLD_PX
+    await page.mouse.move(tapPoint.x + 2, tapPoint.y + 1, { steps: 2 }); // 2.2 px straight-line <= TAP_SLOP_MOUSE_PX
     await page.mouse.up();
     await page.waitForTimeout(300);
     report(new URL(page.url()).searchParams.get("d") === tapPoint.key.split(":")[1],
@@ -2913,7 +2913,35 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     `${label}: the first tap resolves via JS hit-testing and selects that district (two-step tap, #82 C2)`,
     `expected d=${point.district} url=${page.url()}`,
   );
-  await tap(page, profile, point.x, point.y);
+  // Focusing the district draws things over its own footprints that the fit
+  // view didn't have -- its neighbourhood labels and streets (both tappable,
+  // both deliberately NOT selections). If one now covers the original point,
+  // the second tap would be a label/street tap, not the bare-footprint tap
+  // this check is about; re-pick a point that still resolves to the bare
+  // district polygon, and say what covered the first one.
+  const second = await page.evaluate(({ x, y, district }) => {
+    const key = `d:${district}`;
+    const at = (px, py) => {
+      const hit = document.elementFromPoint(px, py)?.closest?.("[data-k]");
+      return { key: hit?.getAttribute("data-k") ?? null, tag: hit?.tagName?.toLowerCase() ?? null };
+    };
+    const here = at(x, y);
+    if (here.key === key && here.tag === "path") return { x, y, coveredBy: null };
+    for (const path of document.querySelectorAll(`svg.map-svg path.hit[data-k="${key}"]`)) {
+      const rect = path.getBoundingClientRect();
+      for (let yi = 1; yi < 10; yi++) {
+        for (let xi = 1; xi < 10; xi++) {
+          const px = rect.left + (rect.width * xi) / 10;
+          const py = rect.top + (rect.height * yi) / 10;
+          const hit = at(px, py);
+          if (hit.key === key && hit.tag === "path") return { x: px, y: py, coveredBy: here.key };
+        }
+      }
+    }
+    return { x, y, coveredBy: here.key, noBarePoint: true };
+  }, point);
+  if (second.coveredBy) console.log(`  info  ${label}: after focusing, the first point is covered by ${second.coveredBy}; second tap at (${second.x.toFixed(1)}, ${second.y.toFixed(1)})`);
+  await tap(page, profile, second.x, second.y);
   const selectedFile = new URL(page.url()).searchParams.get("file");
   report(
     !!selectedFile,
@@ -2951,7 +2979,7 @@ async function checkImportLinesAnchorOnFootprintCentroids(browser, base) {
     const ocy = own.getAttribute("data-cy") ?? own.getAttribute("cy");
     const lines = [...document.querySelectorAll("svg.map-svg g line")].filter((l) => {
       const stroke = l.getAttribute("stroke");
-      return stroke === "var(--hot)" || stroke === "var(--cold)";
+      return stroke === "var(--link-out)" || stroke === "var(--link-in)";
     });
     const matching = lines.filter((l) => l.getAttribute("x1") === ocx && l.getAttribute("y1") === ocy);
     return { total: lines.length, matching: matching.length, ocx, ocy };
@@ -3043,6 +3071,68 @@ async function checkNeighbourhoodLabelsAtDeeperZoom(browser, base, profile) {
   const focused = await page.locator("[data-neighbourhood-label]").count();
 
   report(focused > atFit, `${label}: focusing a district reveals more neighbourhood labels than the opening fit`, `fit=${atFit} focused=${focused}`);
+  await context.close();
+}
+
+// docs/UX.md §8.1 phase 1: the map's labels now render in the real web
+// fonts (Archivo, IBM Plex Mono) instead of the runner's fallback. Every label
+// placer reserves a collision box before drawing and records its width in
+// `data-label-box`; a label drawn wider than that box can overlap a
+// neighbour without hits() ever knowing. This compares the recorded width
+// with what Chromium actually drew (getComputedTextLength), once the fonts
+// have loaded, on the focused-district view where district, neighbourhood,
+// hub, folder and file labels crowd together. The first run of it found the
+// 10.5 px and 11 px mono labels drawing 7 px per character on this
+// (hinted) rasteriser, against a 0.62 em estimate -- see MONO_LABEL_PX.
+async function checkLabelsFitTheirBoxes(browser, base, profile) {
+  const label = `map labels render within their collision boxes (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  const page = await context.newPage();
+  // The fonts are self-hosted (web/public/fonts): nothing the page loads
+  // may come from another origin.
+  const origin = new URL(base).origin;
+  const foreign = [];
+  page.on("request", (req) => {
+    if (!req.url().startsWith("data:") && new URL(req.url()).origin !== origin) foreign.push(req.url());
+  });
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  const workflowFile = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
+  const workflowDistrict = doc.N[workflowFile][0];
+  await page.goto(`${base}/langgenius/dify?d=${workflowDistrict}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('button[aria-label="Zoom to district"]');
+  await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
+  await page.waitForTimeout(850);
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(300);
+  const result = await page.evaluate(() => {
+    const faces = [...document.fonts].filter((f) => /Plex|Archivo/.test(f.family) && f.status === "loaded")
+      .map((f) => `${f.family.replace(/"/g, "")} ${f.weight}`);
+    const over = [];
+    const families = {};
+    let measured = 0;
+    for (const t of document.querySelectorAll("svg.map-svg text[data-label-box]")) {
+      const box = Number(t.getAttribute("data-label-box"));
+      const drawn = t.getComputedTextLength();
+      measured++;
+      const family = /Archivo/.test(t.getAttribute("font-family") ?? "") ? "Archivo" : "mono";
+      families[family] = (families[family] ?? 0) + 1;
+      if (drawn > box + 0.5) {
+        over.push({ text: t.textContent, family, size: t.getAttribute("font-size"), weight: t.getAttribute("font-weight"), drawn: +drawn.toFixed(1), box });
+      }
+    }
+    return { faces: [...new Set(faces)].sort(), measured, families, over: over.slice(0, 6), overCount: over.length };
+  });
+  console.log(`  info  ${label}: loaded faces ${JSON.stringify(result.faces)}; measured ${JSON.stringify(result.families)}`);
+  const needed = ["Archivo 400", "Archivo 600", "IBM Plex Mono 400", "IBM Plex Mono 700"];
+  report(needed.every((f) => result.faces.includes(f)), `${label}: the self-hosted Archivo and IBM Plex Mono faces load`, JSON.stringify(result.faces));
+  report(foreign.length === 0, `${label}: no request leaves the app's own origin (fonts are self-hosted)`, JSON.stringify(foreign.slice(0, 5)));
+  report(result.measured > 0 && result.overCount === 0, `${label}: no label is drawn wider than the box it reserved`, JSON.stringify(result));
   await context.close();
 }
 
@@ -4248,15 +4338,36 @@ async function checkChromeContrast(browser, base) {
     for (const theme of ["light", "dark"]) {
       root.setAttribute("data-theme", theme);
       const css = getComputedStyle(root);
-      const on = toRgb(css.getPropertyValue("--on"));
-      const dim = toRgb(css.getPropertyValue("--dim"));
-      const chrome = toRgb(css.getPropertyValue("--chrome"));
-      const chrome2 = toRgb(css.getPropertyValue("--chrome2"));
+      const tok = (name) => toRgb(css.getPropertyValue(name));
+      const on = tok("--on");
+      const dim = tok("--dim");
+      const chrome = tok("--chrome");
+      const chrome2 = tok("--chrome2");
+      const canvas = tok("--canvas");
       out[theme] = {
         onChrome: ratio(on, chrome),
         dimChrome: ratio(dim, chrome),
         onChrome2: ratio(on, chrome2),
         dimChrome2: ratio(dim, chrome2),
+        // docs/UX.md §8.3's new tokens. Text uses are checked at AA (4.5:1)
+        // on both chrome surfaces: --accent (links, the selected row),
+        // --link-out/--link-in (the file card's colour-coded counts, and
+        // --link-out for destructive text), --warn (the "too large" note),
+        // and --on-accent on an --accent button. The link colours are also
+        // map strokes, checked at the non-text 3:1 against --canvas.
+        accentChrome: ratio(tok("--accent"), chrome),
+        accentChrome2: ratio(tok("--accent"), chrome2),
+        onAccent: ratio(tok("--on-accent"), tok("--accent")),
+        linkOutChrome: ratio(tok("--link-out"), chrome),
+        linkOutChrome2: ratio(tok("--link-out"), chrome2),
+        linkInChrome: ratio(tok("--link-in"), chrome),
+        linkInChrome2: ratio(tok("--link-in"), chrome2),
+        linkOutCanvas: ratio(tok("--link-out"), canvas),
+        linkInCanvas: ratio(tok("--link-in"), canvas),
+        warnChrome: ratio(tok("--warn"), chrome),
+        warnChrome2: ratio(tok("--warn"), chrome2),
+        grabberChrome: ratio(tok("--grabber"), chrome),
+        grabberChrome2: ratio(tok("--grabber"), chrome2),
       };
     }
     if (previous == null) root.removeAttribute("data-theme");
@@ -4270,6 +4381,28 @@ async function checkChromeContrast(browser, base) {
     report(r.dimChrome >= 4.5, `${label}: --dim on --chrome clears AA (4.5:1) in ${theme}`, r.dimChrome.toFixed(2));
     report(r.onChrome2 >= 4.5, `${label}: --on on --chrome2 clears AA (4.5:1) in ${theme}`, r.onChrome2.toFixed(2));
     report(r.dimChrome2 >= 4.5, `${label}: --dim on --chrome2 clears AA (4.5:1) in ${theme}`, r.dimChrome2.toFixed(2));
+    for (const [key, fg, bg, min] of [
+      ["accentChrome", "--accent", "--chrome", 4.5],
+      ["accentChrome2", "--accent", "--chrome2", 4.5],
+      ["onAccent", "--on-accent", "--accent", 4.5],
+      ["linkOutChrome", "--link-out", "--chrome", 4.5],
+      ["linkOutChrome2", "--link-out", "--chrome2", 4.5],
+      ["linkInChrome", "--link-in", "--chrome", 4.5],
+      ["linkInChrome2", "--link-in", "--chrome2", 4.5],
+      ["linkOutCanvas", "--link-out", "--canvas", 3],
+      ["linkInCanvas", "--link-in", "--canvas", 3],
+      ["warnChrome", "--warn", "--chrome", 4.5],
+      ["warnChrome2", "--warn", "--chrome2", 4.5],
+      // The sheet grabber (phase 2) is a decorative affordance, not the only
+      // way to identify or operate the sheet (its header is the drag handle
+      // and a real button), so it is not held to 3:1; docs/UX.md §8.3's own
+      // values sit at 1.6-1.9:1, like the platform grabbers they copy. This
+      // floor only catches it vanishing into the surface behind it.
+      ["grabberChrome", "--grabber", "--chrome", 1.5],
+      ["grabberChrome2", "--grabber", "--chrome2", 1.5],
+    ]) {
+      report(r[key] >= min, `${label}: ${fg} on ${bg} clears ${min}:1 in ${theme}`, r[key].toFixed(2));
+    }
   }
 
   await context.close();
@@ -4507,6 +4640,7 @@ async function main() {
     await checkImportLinesAnchorOnFootprintCentroids(browser, args.base);
     for (const profile of PROFILES) await checkStreetsAndTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkNeighbourhoodLabelsAtDeeperZoom(browser, args.base, profile);
+    for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
     for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);

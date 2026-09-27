@@ -250,10 +250,14 @@ export function mixTowardCanvas(color: string | number[], ratio: number = LAYER_
  * reads correctly, just at the same brightness the district layer already
  * has. Same source palette as the reference so screenshots and
  * colour-blind-safe review stay comparable. */
+/** The ramp's three source stops, cool to warm. Exported so the chrome's
+ * churn/complexity legend (FooterStats) draws the renderer's own stops
+ * instead of a second hard-coded copy (docs/UX.md principle 7 and §4.6). */
+export const RAMP_STOPS = ["#3E6E88", "#B8B06A", "#C0472F"] as const;
 export function ramp(t: number): string {
-  const A = hx("#3E6E88");
-  const B = hx("#B8B06A");
-  const C = hx("#C0472F");
+  const A = hx(RAMP_STOPS[0]);
+  const B = hx(RAMP_STOPS[1]);
+  const C = hx(RAMP_STOPS[2]);
   const r = t < 0.5 ? mix(A, B, t * 2) : mix(B, C, (t - 0.5) * 2);
   return mixTowardCanvas(r);
 }

@@ -27,7 +27,7 @@ export function GeoLayerControls({ layer, onLayer }: Props) {
   if (narrow) {
     return (
       <button
-        className="whitespace-nowrap rounded-md border border-[var(--rule)] bg-[var(--chrome2)] px-2.5 py-1.5 text-[11px] text-[var(--on)]"
+        className="whitespace-nowrap rounded-md border border-[var(--rule)] bg-[var(--chrome2)] px-2.5 py-1.5 text-meta text-[var(--on)]"
         onClick={() => onLayer(LAYER_ORDER[(LAYER_ORDER.indexOf(layer) + 1) % LAYER_ORDER.length])}
         aria-label="Cycle layer"
       >
@@ -38,7 +38,7 @@ export function GeoLayerControls({ layer, onLayer }: Props) {
 
   return (
     <>
-      <span className="text-[9.5px] uppercase tracking-[0.12em] text-[var(--dim)]">layer</span>
+      <span className="text-label uppercase text-[var(--dim)]">layer</span>
       <ToggleGroup type="single" value={layer} onValueChange={(v) => v && onLayer(v as Layer)} aria-label="Layer">
         {LAYER_ORDER.map((l) => (
           <ToggleGroupItem key={l} value={l}>

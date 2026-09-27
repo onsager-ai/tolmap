@@ -384,14 +384,14 @@ export function MapView() {
 
   if (isLoading) {
     return (
-      <div className="flex h-full items-center justify-center bg-[var(--chrome)] text-sm text-[var(--dim)]">
+      <div className="flex h-full items-center justify-center bg-[var(--chrome)] text-small text-[var(--dim)]">
         <LoadProgressIndicator progressKey={`map:${owner}/${repo}`} label={`${owner}/${repo}`} />
       </div>
     );
   }
   if (isError || !doc || !packageLayout) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--chrome)] p-6 text-center text-sm text-[var(--hot)]">
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--chrome)] p-6 text-center text-small text-[var(--link-out)]">
         <p>couldn't load {owner}/{repo}.</p>
         <p className="text-[var(--dim)]">{error instanceof Error ? error.message : "not in the catalogue"}</p>
       </div>

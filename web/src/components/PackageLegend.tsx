@@ -24,7 +24,7 @@ export function PackageLegend({ grouping, auto, minDepth, maxDepth, onDepth }: P
       aria-label="Package legend"
       data-package-legend
       data-package-expanded={expanded ? "true" : "false"}
-      className={`absolute left-2.5 top-[62px] z-10 rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] text-[9.5px] text-[var(--dim)] shadow-lg min-[821px]:bottom-2.5 min-[821px]:top-auto ${expanded ? "w-[205px] px-2.5 py-2" : "w-auto p-0"}`}
+      className={`absolute left-2.5 top-[62px] z-10 rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] text-meta text-[var(--dim)] shadow-lg min-[821px]:bottom-2.5 min-[821px]:top-auto ${expanded ? "w-[240px] px-2.5 py-2" : "w-auto p-0"}`}
     >
       {!expanded ? (
         <button
@@ -32,7 +32,7 @@ export function PackageLegend({ grouping, auto, minDepth, maxDepth, onDepth }: P
           aria-label="Expand package legend"
           aria-expanded="false"
           onClick={() => setPhoneOpen(true)}
-          className="whitespace-nowrap px-2.5 py-1.5 font-sans text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--on)]"
+          className="whitespace-nowrap px-2.5 py-1.5 text-label uppercase text-[var(--on)]"
         >
           packages · depth {grouping.depth} ▾
         </button>
@@ -45,12 +45,12 @@ export function PackageLegend({ grouping, auto, minDepth, maxDepth, onDepth }: P
                 aria-label="Collapse package legend"
                 aria-expanded="true"
                 onClick={() => setPhoneOpen(false)}
-                className="mr-auto font-sans text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--on)]"
+                className="mr-auto text-label uppercase text-[var(--on)]"
               >
                 packages ▴
               </button>
             ) : (
-              <b className="mr-auto font-sans text-[10px] uppercase tracking-[0.12em] text-[var(--on)]">packages</b>
+              <b className="mr-auto text-label uppercase text-[var(--on)]">packages</b>
             )}
             <button
               type="button"
@@ -81,10 +81,10 @@ export function PackageLegend({ grouping, auto, minDepth, maxDepth, onDepth }: P
                 className="grid grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-0.5 first:border-t-0"
               >
                 <i className="h-2 w-2 rounded-sm" style={{ background: group.color }} />
-                <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[var(--on)]">
+                <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[var(--on)]">
                   {group.other ? "other" : formatDirectory(group.path!)}
                 </span>
-                <span>{group.count}</span>
+                <span className="font-mono">{group.count}</span>
               </div>
             ))}
           </div>

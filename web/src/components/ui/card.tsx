@@ -18,14 +18,14 @@ export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDiv
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
   return (
     <h3
-      className={cn("font-sans text-[13px] font-semibold leading-tight break-all", className)}
+      className={cn("font-mono text-row break-all", className)}
       {...props}
     />
   );
 }
 export function CardDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
   return (
-    <p className={cn("text-[10px] text-muted-foreground break-all", className)} {...props} />
+    <p className={cn("text-meta text-muted-foreground break-all", className)} {...props} />
   );
 }
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

@@ -103,7 +103,7 @@ export function ReferenceCoverageIndicator({ summary }: { summary: ReferenceCove
         aria-controls={detailId}
         aria-label={`${summary.label}. Activate for the per-language breakdown.`}
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded border border-[var(--rule)] bg-[var(--chrome)] px-1.5 py-0.5 text-[10px] text-[var(--on)] hover:text-[var(--hot)]"
+        className="flex items-center gap-1 rounded border border-[var(--rule)] bg-[var(--chrome)] px-1.5 py-0.5 text-meta text-[var(--on)] hover:text-[var(--accent)]"
       >
         <StatusGlyph status={summary.status} />
         {summary.label}
@@ -113,7 +113,7 @@ export function ReferenceCoverageIndicator({ summary }: { summary: ReferenceCove
           id={detailId}
           role="group"
           aria-label="Reference coverage by language"
-          className="absolute bottom-full left-0 z-30 mb-1 w-[230px] max-w-[78vw] rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.98)] p-2 text-[9.5px] leading-relaxed text-[var(--dim)] shadow-lg"
+          className="absolute bottom-full left-0 z-30 mb-1 w-[230px] max-w-[78vw] rounded-md border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.98)] p-2 text-meta text-[var(--dim)] shadow-lg"
         >
           {summary.languages.length === 0 ? (
             <p>

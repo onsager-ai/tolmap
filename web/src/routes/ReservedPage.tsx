@@ -8,12 +8,12 @@ export function ReservedPage() {
   const name = (params as { name?: string }).name ?? "";
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 bg-[var(--chrome)] p-8 text-center text-[var(--on)]">
-      <h1 className="font-sans text-lg font-semibold">/{name}</h1>
-      <p className="max-w-sm text-sm text-[var(--dim)]">
+      <h1 className="font-mono text-title">/{name}</h1>
+      <p className="max-w-sm text-small text-[var(--dim)]">
         This name is reserved for tolmap itself and will never route to a GitHub
         owner called "{name}".
       </p>
-      <Link to="/" className="text-sm text-[#6FB39F] underline underline-offset-2">
+      <Link to="/" className="text-small text-[var(--accent)] underline underline-offset-2">
         back to the map index
       </Link>
     </div>

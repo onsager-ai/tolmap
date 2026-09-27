@@ -78,8 +78,8 @@ export function SelectionSummaryBar({ doc, sel, selSym, selD, selHSym, symbolsDo
       style={{ paddingBottom: "calc(8px + env(safe-area-inset-bottom, 0px))" }}
     >
       <div className="min-w-0 flex-1">
-        <div className="truncate font-sans text-[12.5px] font-semibold">{title}</div>
-        <div className="truncate text-[10px] text-[var(--dim)]">{subtitle}</div>
+        <div className={`truncate text-row ${selD != null ? "" : "font-mono"}`}>{title}</div>
+        <div className="truncate text-meta text-[var(--dim)]">{subtitle}</div>
       </div>
       <Button size="sm" variant="outline" onClick={onDetails}>
         Details

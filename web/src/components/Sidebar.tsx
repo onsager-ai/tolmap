@@ -30,10 +30,10 @@ function PlainDistrictRow({ doc, d, onSelectDistrict }: { doc: MapDocument; d: s
   return (
     <div
       onClick={() => onSelectDistrict(+d)}
-      className="flex cursor-pointer items-baseline gap-1.5 px-3 py-1 text-[10.5px] hover:bg-[var(--chrome2)]"
+      className="flex cursor-pointer items-baseline gap-1.5 px-3 py-1 text-small hover:bg-[var(--chrome2)]"
     >
       <span className="min-w-0 flex-1 truncate">{doc.names[d]}</span>
-      <span className="text-[9.5px] text-[var(--dim)]">{doc.districts[d].size}</span>
+      <span className="font-mono text-meta text-[var(--dim)]">{doc.districts[d].size}</span>
     </div>
   );
 }
@@ -59,14 +59,14 @@ function DistrictIndexRowView({
     <div data-district-index-row={row.d} className="border-t border-[var(--rule)] py-1.5 first:border-t-0">
       <div
         onClick={() => onSelectDistrict(row.d)}
-        className="flex cursor-pointer items-baseline gap-1.5 px-3 hover:text-[var(--hot)]"
+        className="flex cursor-pointer items-baseline gap-1.5 px-3 hover:text-[var(--accent)]"
       >
-        <span className="min-w-0 flex-1 truncate text-[10.5px]">{row.name}</span>
-        <span className="flex-none text-[9.5px] text-[var(--dim)]">{row.size}</span>
+        <span className="min-w-0 flex-1 truncate text-small font-semibold">{row.name}</span>
+        <span className="flex-none font-mono text-meta text-[var(--dim)]">{row.size}</span>
       </div>
       {row.mostly && (
-        <p className="truncate px-3 text-[9px] text-[var(--dim)]" title={`mostly ${row.mostly}`}>
-          mostly <span className="text-[var(--on)]">{row.mostly}</span>
+        <p className="truncate px-3 text-meta text-[var(--dim)]" title={`mostly ${row.mostly}`}>
+          mostly <span className="font-mono text-[var(--on)]">{row.mostly}</span>
         </p>
       )}
       {row.keyFiles.map((kf) => (
@@ -78,7 +78,7 @@ function DistrictIndexRowView({
             event.stopPropagation();
             onPickKeyFile(kf.file);
           }}
-          className="block w-full truncate px-3 py-0.5 text-left text-[9.5px] text-[var(--dim)] hover:bg-[var(--chrome2)] hover:text-[var(--on)]"
+          className="block w-full truncate px-3 py-0.5 text-left text-meta text-[var(--dim)] hover:bg-[var(--chrome2)] hover:text-[var(--on)]"
         >
           {kf.text}
         </button>
@@ -110,9 +110,9 @@ function CollapsibleSection({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="mb-1.5 mt-3 flex w-full items-center gap-1.5 px-3 font-sans text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--dim)]"
+        className="mb-1.5 mt-3 flex w-full items-center gap-1.5 px-3 text-label uppercase text-[var(--dim)]"
       >
-        <span className={`inline-block text-[10px] transition-transform ${open ? "rotate-90" : ""}`}>›</span>
+        <span className={`inline-block text-meta transition-transform ${open ? "rotate-90" : ""}`}>›</span>
         {ids.length} {label}
       </button>
       {open && (
@@ -163,7 +163,7 @@ export function Sidebar({ doc, packageLayout, open, onToggleOpen, onPickKeyFile,
   if (!narrow) {
     return (
       <aside className="w-[250px] flex-none overflow-y-auto border-r border-[var(--rule)] bg-[var(--chrome)] pb-4 text-[var(--on)]">
-        <h2 className="mb-1.5 mt-3 px-3 font-sans text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--dim)]">{title}</h2>
+        <h2 className="mb-1.5 mt-3 px-3 text-label uppercase text-[var(--dim)]">{title}</h2>
         {list}
       </aside>
     );
@@ -185,7 +185,7 @@ export function Sidebar({ doc, packageLayout, open, onToggleOpen, onPickKeyFile,
     >
       <button
         onClick={onToggleOpen}
-        className="sticky top-0 block h-[46px] w-full bg-[var(--chrome)] px-3 text-center text-[11px] uppercase tracking-[0.1em] text-[var(--dim)]"
+        className="sticky top-0 block h-[46px] w-full bg-[var(--chrome)] px-3 text-center text-label uppercase text-[var(--dim)]"
       >
         {title}
       </button>
