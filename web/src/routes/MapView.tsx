@@ -940,7 +940,9 @@ export function MapView() {
           {isFullscreen && (
             <div
               data-fullscreen-search
-              className="absolute z-40"
+              // Floating over the map, the field takes the raised chrome
+              // colour (in the top bar it is the canvas colour, §5).
+              className="absolute z-40 rounded-[10px] shadow-[0_6px_18px_rgba(0,0,0,.25)] [&_label]:bg-[var(--chrome2)]"
               style={{
                 top: `calc(${DESKTOP_GUTTER_PX}px + env(safe-area-inset-top, 0px))`,
                 left: desktopLeftEdge(true),
