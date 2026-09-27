@@ -4156,7 +4156,7 @@ pub async fn start_remote(state: &Arc<AppState>, slots: usize) -> anyhow::Result
     // connect, so a remote agent that redials finds its lease adopted and
     // resumes it.
     jobs::restore(state).context("reload jobs from the store")?;
-    let app = router(hub.clone());
+    let app = router(state.clone());
     match tls {
         Some(config) => {
             let listener = TlsListener::start(listener, config)?;
