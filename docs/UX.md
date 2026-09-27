@@ -72,7 +72,7 @@ Heights are computed from `window.visualViewport.height` and `env(safe-area-inse
 | Nothing selected | repo, "19 districts · 6,347 files", the map-quality row | the District index, with a Districts / Folders tab |
 | District selected | "District", name, files, mostly-folder; Zoom to district, Details | the district card ("Summary + collapsed", owner 2026-09-23): near neighbours, collapsed folders and key files |
 | Neighborhood selected | name, files, parent district link | its files |
-| File selected | breadcrumb (district), file name, path | imports / imported-by (keyed to the map rings), landmark, lines, symbols, commits, key symbols, Route from/to |
+| File selected | breadcrumb (district), file name, path | imports / imported-by (keyed to the map rings), landmark, lines, symbols, commits, key symbols, Path from/to |
 | Symbol selected | symbol, kind, file:lines | references, members |
 | Road/street tapped | the two ends and the link count | the file pairs behind it |
 | Route active | from → to, hop count | the path's files in order |
@@ -125,7 +125,7 @@ The map eases to the district in the safe rectangle; other districts dim; folder
 - The file keeps its place on the map above the sheet, with its import links drawn (#61's selection links).
 - **The two counts are the legend.** "Imports 11" carries a solid ring in the link-out colour, "Imported by 687" a dashed ring in the link-in colour: the same stroke styles the map draws. This answers the owner's "what's the coloured circles?" (2026-09-24) without a separate legend. Tapping a count lists those files.
 - Facts on one wrapping line: landmark badge (e.g. Bridge), lines, symbols, commits.
-- Key symbols (3 at Half, all at Full), then Route from here / Route to here.
+- Key symbols (3 at Half, all at Full), then Path from here / Path to here.
 
 ### 4.6 Layers and appearance (artboard "Layers and appearance")
 
@@ -133,7 +133,7 @@ Opened from the control column. A radio list (District, Churn, Complexity, Packa
 
 ### 4.7 Route
 
-"Route from here" puts the sheet into Route mode (Peek: "From `a.py` · pick a destination", with Cancel); the next file tap sets the destination and the sheet shows the path. This replaces RouteBox, which sat under the drawer on phones (reference used `bottom: calc(58px + safe)`; the port lost it).
+"Path from here" puts the sheet into path mode (Peek: "From `a.py` · pick a destination", with Cancel); the next file tap sets the destination and the sheet shows the path. This replaces RouteBox, which sat under the drawer on phones (reference used `bottom: calc(58px + safe)`; the port lost it).
 
 ### 4.8 Search (artboard "Search active")
 
