@@ -1935,7 +1935,11 @@ impl WorkerHub {
         };
         let dir = self.lease_dir(job_id, epoch);
         let _ = std::fs::remove_dir_all(&dir);
-        if let Err(error) = worker_result::create_private_dir(&dir) {
+        // `blobs` too, as `claim` makes it: a lease resumed in remote mode
+        // takes uploads, which land there.
+        let made = worker_result::create_private_dir(&dir)
+            .and_then(|()| worker_result::create_private_dir(&dir.join("blobs")));
+        if let Err(error) = made {
             eprintln!("job {job_id}: could not create {}: {error}", dir.display());
         }
         let (events, receiver) = std_mpsc::channel();
