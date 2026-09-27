@@ -133,6 +133,9 @@ const REDIAL_FIRST: Duration = Duration::from_millis(200);
 /// An upload that got no answer is sent again after a delay doubling up to
 /// this.
 const UPLOAD_BACKOFF_CAP: Duration = Duration::from_secs(5);
+/// How long the early map upload (docs/UX.md §12) keeps retrying before the
+/// job carries on without opening its map early.
+const EARLY_MAP_UPLOAD_WINDOW: Duration = Duration::from_secs(20);
 
 /// What `tolmap worker --connect` was given.
 pub struct AgentConfig {
@@ -1705,21 +1708,24 @@ impl Agent {
 /// (`workers::run_remote`). `result` and `error` are not forwarded here:
 /// the executor also returns them, and the agent sends the terminal event
 /// itself once it has checked and uploaded the result.
-struct AgentSink {
+struct AgentSink<'a> {
     out: mpsc::Sender<FromJob>,
     peak_rss_bytes: Option<u64>,
     /// How the job child ended: the signal that killed it, if one did, and
     /// whether the executor sent that kill itself.
     exit: Option<(Option<i32>, bool)>,
+    /// The job this sink reports for, which uploads the map early
+    /// (docs/UX.md §12, `JobContext::upload_early_map`).
+    job: &'a JobContext,
 }
 
-impl AgentSink {
+impl AgentSink<'_> {
     fn forward(&self, event: WorkerEvent) {
         let _ = self.out.send(FromJob::Event(event));
     }
 }
 
-impl EventSink for AgentSink {
+impl EventSink for AgentSink<'_> {
     fn clone_started(&mut self) {
         self.forward(WorkerEvent::StageStarted {
             v: 1,
@@ -1749,6 +1755,13 @@ impl EventSink for AgentSink {
 
     fn peak_rss(&mut self, bytes: u64) {
         self.peak_rss_bytes = Some(bytes);
+    }
+
+    // Called by the executor before it delivers `write_map`'s
+    // `stage_finished` to `event` above, so the upload lands before the
+    // master sees the stage end (`workers::run_remote`).
+    fn map_written(&mut self, map: Vec<u8>) {
+        self.job.upload_early_map(&map);
     }
 
     fn child_exited(&mut self, status: std::process::ExitStatus, killed_here: bool) {
@@ -1832,6 +1845,7 @@ impl JobContext {
             out: self.out.clone(),
             peak_rss_bytes: None,
             exit: None,
+            job: &self,
         };
         let probe = AgentProbe {
             cancel: self.cancel.clone(),
@@ -1850,7 +1864,7 @@ impl JobContext {
         });
     }
 
-    fn execute(&self, sink: &mut AgentSink, probe: &AgentProbe) -> Outcome {
+    fn execute(&self, sink: &mut AgentSink<'_>, probe: &AgentProbe) -> Outcome {
         let Ok(id) = Uuid::parse_str(&self.job_id) else {
             return Outcome::Failed(internal("the job id is not a UUID"));
         };
@@ -1968,6 +1982,54 @@ impl JobContext {
         std::io::copy(&mut response.into_body().into_reader(), &mut file)
             .map_err(|error| internal(format!("GET {url}: {error}")))?;
         Ok(())
+    }
+
+    /// docs/UX.md §12: uploads the map the child has just written as this
+    /// lease's `map` artifact, so the master can open it before the symbol
+    /// stages finish (`workers::publish_uploaded_map`). The same `PUT` the
+    /// result's own upload makes (`put`), from a copy in this job's private
+    /// inputs directory, never from the child's output directory, and for a
+    /// short while only: best effort, since the job's result uploads the map
+    /// again anyway -- content-addressed, so that repeat is a no-op -- and a
+    /// slow master must not hold up the child, whose events wait in the pipe
+    /// meanwhile.
+    fn upload_early_map(&self, map: &[u8]) {
+        let Ok(id) = Uuid::parse_str(&self.job_id) else {
+            return;
+        };
+        let path = self
+            .host
+            .cache_dir
+            .join("inputs")
+            .join(id.to_string())
+            .join("early-map.json");
+        let _ = std::fs::remove_file(&path);
+        let written = (|| -> std::io::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            std::io::Write::write_all(&mut options.open(&path)?, map)
+        })();
+        if let Err(error) = written {
+            eprintln!("job {}: the map is not opened early: {error}", self.job_id);
+            return;
+        }
+        let probe = AgentProbe {
+            cancel: self.cancel.clone(),
+            child: self.child.clone(),
+        };
+        let deadline = Instant::now() + EARLY_MAP_UPLOAD_WINDOW;
+        if let Err(error) = self.put(&http_agent(&self.endpoint), "map", &path, deadline, &probe) {
+            eprintln!(
+                "job {}: the map is not opened early: {}",
+                self.job_id, error.message
+            );
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Checks the child's result the way local mode's

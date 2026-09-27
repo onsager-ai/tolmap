@@ -83,6 +83,12 @@ pub struct JobSnapshot {
     pub eta_start_s: Option<f64>,
     pub elapsed_s: f64,
     pub stages: Vec<StageSnapshot>,
+    /// True once the map itself is stored and served at this job's commit
+    /// (`GET /api/maps/{owner}/{repo}?commit=`), while the job still runs
+    /// the symbol stages. The page may open the map then; symbols arrive
+    /// when the job is done.
+    #[serde(default)]
+    pub map_ready: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -227,6 +233,15 @@ struct RegistryInner {
     /// comment). `None` is "never busy", read the same as "idle past the
     /// window": nothing has ever asked for a worker of that class.
     class_last_busy: Vec<Option<Instant>>,
+    /// docs/UX.md §12 ("open the map early"): a running job's map, published
+    /// once its `write_map` stage finished and served by `GET /api/maps/
+    /// {owner}/{repo}?commit=` until the job's result is registered. In
+    /// memory only, never in the store's `maps` table: a job that then fails
+    /// in its symbol stages must leave no map row behind, and `POST
+    /// /api/index` must not answer "done" for a commit whose symbols never
+    /// arrived. Removed by `worker_loop` when the job's run ends, whatever
+    /// the ending.
+    early_maps: HashMap<Uuid, Arc<Vec<u8>>>,
 }
 
 impl RegistryInner {
@@ -341,6 +356,43 @@ impl JobRegistry {
         registry.memory_model = MemoryModel::from_rows(rows.clone());
         registry.eta_model = EtaModel::from_rows(rows);
         Ok(())
+    }
+
+    /// Publishes `map` as job `tx`'s early map (docs/UX.md §12) and sets its
+    /// snapshot's `map_ready`. `map` has already been checked as a map
+    /// document by the caller (`worker_result::read_early_map` in local mode,
+    /// `workers::publish_uploaded_map` in worker modes). A job that already
+    /// ended, or that the registry no longer knows, publishes nothing.
+    pub(crate) fn publish_early_map(&self, tx: &watch::Sender<JobSnapshot>, map: Vec<u8>) {
+        let id = tx.borrow().job_id;
+        {
+            let mut registry = self.0.lock().expect("job registry mutex poisoned");
+            if is_terminal(&tx.borrow()) || !registry.jobs.contains_key(&id) {
+                return;
+            }
+            registry.early_maps.insert(id, Arc::new(map));
+        }
+        tx.send_modify(|snapshot| {
+            if !is_terminal(snapshot) {
+                snapshot.map_ready = true;
+            }
+        });
+    }
+
+    /// The early map of the job running `slug` at `commit`, if it has
+    /// published one and has not failed. A job that is done has registered
+    /// its map row by then, which the caller reads first.
+    pub fn early_map(&self, slug: &str, commit: &str) -> Option<Arc<Vec<u8>>> {
+        let registry = self.0.lock().expect("job registry mutex poisoned");
+        let id = registry.active.get(&(slug.to_owned(), commit.to_owned()))?;
+        let failed = registry
+            .jobs
+            .get(id)
+            .is_none_or(|tx| tx.borrow().status == JobStatus::Failed);
+        if failed {
+            return None;
+        }
+        registry.early_maps.get(id).cloned()
     }
 
     pub fn cancel(&self, id: Uuid) -> Result<JobSnapshot, ApiError> {
@@ -992,6 +1044,8 @@ pub(crate) fn requeued_snapshot(snapshot: &JobSnapshot, why: &str) -> JobSnapsho
     next.progress = None;
     next.eta_start_s = None;
     next.elapsed_s = 0.0;
+    // The early map was this run's; the next run publishes its own.
+    next.map_ready = false;
     for stage in &mut next.stages {
         stage.state = StageState::Pending;
         stage.started_at = None;
@@ -1091,6 +1145,7 @@ fn admit(
                 duration_s: None,
             })
             .collect(),
+        map_ready: false,
     };
     let (tx, _rx) = watch::channel(snapshot);
     let initial_eta = registry
@@ -1263,6 +1318,13 @@ pub fn restore(state: &Arc<AppState>) -> anyhow::Result<()> {
             let class = usize::try_from(row.class)
                 .ok()
                 .map_or(largest, |class| class.min(largest));
+            // An early map lives in memory only (`publish_early_map`), so a
+            // restarted master has none to serve until the job publishes
+            // again or registers its result.
+            let snapshot = JobSnapshot {
+                map_ready: false,
+                ..snapshot
+            };
             let (tx, _rx) = watch::channel(snapshot);
             registry.jobs.insert(id, tx.clone());
             registry.active.insert(key.clone(), id);
@@ -1423,6 +1485,11 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
         let snapshot = tx.borrow().clone();
         let requeued = registry.requeue.remove(&id);
         let rebound = registry.rebind.remove(&id);
+        // This run's early map ends with it: a done job serves its stored
+        // row now, a failed one serves nothing, and a re-queued one
+        // publishes again from its next run (`requeued_snapshot` clears
+        // `map_ready` to match).
+        registry.early_maps.remove(&id);
         // Re-read under the lock: a cancel that landed since has made the
         // job terminal, and then it ends here like any other.
         if durable && !is_terminal(&snapshot) {
@@ -1673,6 +1740,8 @@ pub(crate) fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
         snapshot.set_error(error);
         snapshot.eta = None;
         snapshot.eta_start_s = None;
+        // A failed job's early map is no longer served (`early_map`).
+        snapshot.map_ready = false;
         for stage in &mut snapshot.stages {
             if matches!(stage.state, StageState::Running) {
                 stage.state = StageState::Failed;
@@ -2073,6 +2142,14 @@ impl EventSink for SnapshotSink<'_> {
         }
     }
 
+    // docs/UX.md §12: local mode publishes the map the moment the executor
+    // has read it back, ahead of the `write_map` stage's own end.
+    fn map_written(&mut self, map: Vec<u8>) {
+        if let Some(registry) = self.registry {
+            registry.publish_early_map(self.tx, map);
+        }
+    }
+
     fn event(&mut self, event: WorkerEvent) {
         let tx = self.tx;
         let started = self.started;
@@ -2404,6 +2481,7 @@ mod tests {
                     duration_s: None,
                 })
                 .collect(),
+            map_ready: false,
         }
     }
 
@@ -3104,6 +3182,108 @@ mod tests {
             final_snapshot.error_code.as_deref(),
             Some("server_stopping")
         );
+    }
+
+    /// docs/UX.md §12: once the child's `write_map` stage finishes, its map
+    /// is served at the job's commit while the job runs on, the snapshot
+    /// says so, and both end with the job -- here a failure in the symbol
+    /// stages, which must leave nothing servable behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_map_written_before_the_symbol_stages_is_served_until_the_job_ends() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use std::os::unix::fs::PermissionsExt;
+        use tower::ServiceExt;
+        const MAP: &str = r#"{"F":["a.py"],"districts":{"0":{}}}"#;
+        let (dir, state) = state(Limits::default());
+        let output = dir.path().join("out");
+        std::fs::create_dir_all(&output).unwrap();
+        let gate = dir.path().join("gate");
+        let fake_worker = dir.path().join("early-map-worker");
+        let script = format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{map_json}' > '{map_path}'\nprintf '%s\\n' '{{\"type\":\"stage_finished\",\"v\":1,\"stage\":\"write_map\",\"duration_s\":0.1,\"success\":true}}'\nwhile [ ! -f '{gate}' ]; do sleep 0.05; done\nprintf '%s\\n' '{{\"type\":\"error\",\"v\":1,\"code\":\"index_failed\",\"message\":\"test\"}}'\n",
+            map_json = MAP,
+            map_path = output.join("early.json").display(),
+            gate = gate.display(),
+        );
+        std::fs::write(&fake_worker, script).unwrap();
+        std::fs::set_permissions(&fake_worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output_dir = output.to_string_lossy().into_owned();
+        let job_dir = dir.path().to_path_buf();
+        let runner: JobRunner = Arc::new(move |state: Arc<AppState>, repo, tx| {
+            let spec = WorkerSpec {
+                v: 1,
+                slug: repo.slug,
+                owner: repo.owner,
+                repo: repo.repo,
+                source: "unused".to_owned(),
+                local: false,
+                all_sources: false,
+                cache_dir: String::new(),
+                output_dir: output_dir.clone(),
+                clone_cache_bytes: 1,
+                prune_variant: "node-relative".to_owned(),
+                namer: "idf".to_owned(),
+                namer_model: String::new(),
+                previous_maps: vec![],
+                names_cache: None,
+                refs: None,
+                install: None,
+            };
+            let error = process_worker_exe(
+                &tx,
+                spec,
+                Instant::now(),
+                &fake_worker,
+                Some(&state.jobs),
+                &WorkerHardening::for_test(&job_dir),
+                None,
+            )
+            .err()
+            .expect("worker terminal error");
+            finish_failed(&tx, error);
+        });
+        let get = |uri: &str| {
+            crate::service::http::router(state.clone()).oneshot(
+                Request::builder()
+                    .uri(uri.to_owned())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let id = enqueue_job(state.clone(), repo("early"), "a".to_owned(), runner).unwrap();
+        until(|| snapshot(&state, id).map_ready).await;
+        assert_ne!(snapshot(&state, id).status, JobStatus::Failed);
+
+        let response = get("/api/maps/test/early?commit=a").await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], MAP.as_bytes());
+        // Only at the job's own commit: the slug's latest map is still the
+        // last registered one (none here).
+        let latest = get("/api/maps/test/early").await.unwrap();
+        assert_eq!(latest.status(), StatusCode::NOT_FOUND);
+        let other = get("/api/maps/test/early?commit=b").await.unwrap();
+        assert_eq!(other.status(), StatusCode::NOT_FOUND);
+
+        std::fs::write(&gate, b"").unwrap();
+        until(|| snapshot(&state, id).status == JobStatus::Failed).await;
+        assert!(!snapshot(&state, id).map_ready);
+        let after = get("/api/maps/test/early?commit=a").await.unwrap();
+        assert_eq!(after.status(), StatusCode::NOT_FOUND);
+        until(|| state.jobs.0.lock().unwrap().early_maps.is_empty()).await;
+    }
+
+    #[test]
+    fn a_requeued_snapshot_no_longer_claims_its_early_map() {
+        let mut snapshot = blank_snapshot("test/requeue");
+        snapshot.map_ready = true;
+        assert!(!requeued_snapshot(&snapshot, "lost its worker").map_ready);
     }
 
     #[cfg(unix)]
