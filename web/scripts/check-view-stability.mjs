@@ -3075,14 +3075,15 @@ async function checkNeighbourhoodLabelsAtDeeperZoom(browser, base, profile) {
 }
 
 // docs/UX.md §8.1 phase 1: the map's labels now render in the real web
-// fonts (Archivo, IBM Plex Mono) instead of whatever the runner's fallback
-// was. Every label placer reserves a collision box before drawing; a label
-// whose rendered text is wider than its box can overlap a neighbour without
-// hits() ever knowing. Mono labels reserve `length * size * 0.62`; this
-// measures what Chromium actually drew, once the fonts have loaded, on the
-// focused-district view where hub (bold), folder and file labels crowd
-// together. It also reports which font faces loaded, since a missing face
-// (synthetic bold) is what widens bold mono text.
+// fonts (Archivo, IBM Plex Mono) instead of the runner's fallback. Every label
+// placer reserves a collision box before drawing and records its width in
+// `data-label-box`; a label drawn wider than that box can overlap a
+// neighbour without hits() ever knowing. This compares the recorded width
+// with what Chromium actually drew (getComputedTextLength), once the fonts
+// have loaded, on the focused-district view where district, neighbourhood,
+// hub, folder and file labels crowd together. The first run of it found the
+// 10.5 px and 11 px mono labels drawing 7 px per character on this
+// (hinted) rasteriser, against a 0.62 em estimate -- see MONO_LABEL_PX.
 async function checkLabelsFitTheirBoxes(browser, base, profile) {
   const label = `map labels render within their collision boxes (dify) / ${profile.name}`;
   console.log(`\n${label}`);
@@ -3106,21 +3107,22 @@ async function checkLabelsFitTheirBoxes(browser, base, profile) {
     const faces = [...document.fonts].filter((f) => /Plex|Archivo/.test(f.family) && f.status === "loaded")
       .map((f) => `${f.family.replace(/"/g, "")} ${f.weight}`);
     const over = [];
-    let mono = 0;
-    for (const t of document.querySelectorAll("svg.map-svg text")) {
-      if (!/Plex/.test(t.getAttribute("font-family") ?? "")) continue;
-      const text = t.textContent ?? "";
-      const size = Number(t.getAttribute("font-size"));
-      if (!text || !size) continue;
-      mono++;
-      const box = text.length * size * 0.62;
+    const families = {};
+    let measured = 0;
+    for (const t of document.querySelectorAll("svg.map-svg text[data-label-box]")) {
+      const box = Number(t.getAttribute("data-label-box"));
       const drawn = t.getComputedTextLength();
-      if (drawn > box + 0.5) over.push({ text, size, weight: t.getAttribute("font-weight"), drawn: +drawn.toFixed(1), box: +box.toFixed(1) });
+      measured++;
+      const family = /Archivo/.test(t.getAttribute("font-family") ?? "") ? "Archivo" : "mono";
+      families[family] = (families[family] ?? 0) + 1;
+      if (drawn > box + 0.5) {
+        over.push({ text: t.textContent, family, size: t.getAttribute("font-size"), weight: t.getAttribute("font-weight"), drawn: +drawn.toFixed(1), box });
+      }
     }
-    return { faces: [...new Set(faces)].sort(), mono, over: over.slice(0, 6), overCount: over.length };
+    return { faces: [...new Set(faces)].sort(), measured, families, over: over.slice(0, 6), overCount: over.length };
   });
-  console.log(`  info  ${label}: loaded faces ${JSON.stringify(result.faces)}`);
-  report(result.mono > 0 && result.overCount === 0, `${label}: every mono label is no wider than its length * size * 0.62 box`, JSON.stringify(result));
+  console.log(`  info  ${label}: loaded faces ${JSON.stringify(result.faces)}; measured ${JSON.stringify(result.families)}`);
+  report(result.measured > 0 && result.overCount === 0, `${label}: no label is drawn wider than the box it reserved`, JSON.stringify(result));
   await context.close();
 }
 

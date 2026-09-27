@@ -103,6 +103,14 @@ const MIN_LABEL_PX = 12;
 // MIN_LABEL_PX line (box height 1.25 x 12 = 15 px) plus 1 px, so its
 // collision box never overlaps the name's.
 const SUBTITLE_OFFSET_PX = 16;
+// The mono data labels (hub, folder, file and file-tab labels), which reserve
+// `length * size * 0.62` per label. 12 px meets §8.1's floor, and it is also
+// the size where that estimate holds on a hinted rasteriser: Chromium on
+// Linux (CI) draws each Plex Mono glyph a whole number of pixels wide,
+// round(0.6 * size), so the old 10.5 px and 11 px labels drew 7 px per
+// character (0.667 / 0.636 em) and overran their boxes -- measured by
+// check-view-stability's checkLabelsFitTheirBoxes. At 12 px it is 7 of 7.44.
+const MONO_LABEL_PX = 12;
 function el<K extends keyof SVGElementTagNameMap>(
   name: K,
   attrs: Record<string, string | number> = {},
@@ -1826,6 +1834,9 @@ export class MapRenderer {
         stroke: "var(--canvas)",
         "stroke-width": 3.2,
         "stroke-linejoin": "round",
+        // The collision-box width this label reserved, so a check can compare
+        // it with what the browser actually drew (checkLabelsFitTheirBoxes).
+        "data-label-box": w.toFixed(1),
       });
       if (weight) t.setAttribute("font-weight", String(weight));
       // Issue #82 A1 scope item 6: a label text glyph is painted, so it's
@@ -2070,7 +2081,7 @@ export class MapRenderer {
     for (const { hub, cx, cy, r } of candidates) {
       if (labelled >= labelBudget) break;
       const text = `${hub.name} · ${hub.fi}`;
-      const size = 10.5;
+      const size = MONO_LABEL_PX;
       const w = text.length * size * 0.62;
       const h = size * 1.25;
       const lx = cx + r + 4;
@@ -2089,6 +2100,7 @@ export class MapRenderer {
         "stroke-width": 3,
         "stroke-linejoin": "round",
         "pointer-events": "none",
+        "data-label-box": w.toFixed(1),
       });
       t.textContent = text;
       g.appendChild(t);
@@ -2647,6 +2659,7 @@ export class MapRenderer {
         "pointer-events": "all",
         "data-k": "n:" + dk,
         "data-neighbourhood-label": dk,
+        "data-label-box": w.toFixed(1),
       });
       t.textContent = txt;
       g.appendChild(t);
@@ -2943,7 +2956,7 @@ export class MapRenderer {
     // sharing `placed`/`hits` above.
     tabCandidates.sort((a, b) => b.widthPx - a.widthPx);
     for (const t of tabCandidates) {
-      const fs = 10.5;
+      const fs = MONO_LABEL_PX;
       const tw = t.name.length * fs * 0.62;
       const minWidth = Math.max(70, Math.min(tw, 90));
       if (t.widthPx < minWidth) continue;
@@ -2960,7 +2973,7 @@ export class MapRenderer {
       // decorative for hit-testing -- the polygon underneath already
       // carries the real data-k -- so both get pointer-events:none.
       gLabels.appendChild(el("rect", { x: box[0], y: box[1], width: box[2], height: box[3], rx: 3, fill: "var(--chrome)", "fill-opacity": 0.92, stroke: "var(--dim)", "stroke-width": 0.6, "pointer-events": "none" }));
-      const text = el("text", { x: t.cx, y: t.y0 - 3, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace", fill: "var(--on)", "pointer-events": "none" });
+      const text = el("text", { x: t.cx, y: t.y0 - 3, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace", fill: "var(--on)", "pointer-events": "none", "data-label-box": tw.toFixed(1) });
       text.textContent = t.name;
       gLabels.appendChild(text);
     }
@@ -3249,6 +3262,7 @@ export class MapRenderer {
         stroke: "var(--canvas)",
         "stroke-width": 3.2,
         "stroke-linejoin": "round",
+        "data-label-box": w.toFixed(1),
       });
       if (weight) t.setAttribute("font-weight", String(weight));
       // Issue #82 A1 scope item 6: a label text glyph is painted, so it's
@@ -3284,7 +3298,7 @@ export class MapRenderer {
       if (this.state!.activeDirectory && this.state!.activeDirectory !== label.path) continue;
       if (label.worldSide * this.k < Math.min(this.VW, this.VH) * 0.25) continue;
       const x = this.X(label.x), y = this.Y(label.y);
-      const size = narrow ? 11 : 12;
+      const size = MONO_LABEL_PX; // was 11 on phones (see MONO_LABEL_PX)
       const h = size * 1.25;
       // Try two path segments for context, then the final segment when a
       // nearby district name leaves too little horizontal room.
@@ -3301,7 +3315,7 @@ export class MapRenderer {
         "font-weight": 500,
         "font-family": "IBM Plex Mono, monospace", "pointer-events": "all",
         "data-k": `dir:${label.path}`, "data-folder-label": label.path,
-        "data-folder-district": label.district });
+        "data-folder-district": label.district, "data-label-box": w.toFixed(1) });
       t.textContent = tail;
       g.appendChild(t);
     }
@@ -3340,7 +3354,7 @@ export class MapRenderer {
         const x = this.X(p[0]);
         const y = this.Y(p[1]);
         if (x < 10 || x > this.VW - 10 || y < 14 || y > this.VH - 6) continue;
-        if (put(x, y - 9, basename, 10, 0.82, undefined, undefined, i)) {
+        if (put(x, y - 9, basename, MONO_LABEL_PX, 0.82, undefined, undefined, i)) {
           n++;
           if (this.repeatedBasenames.has(repeatKey)) shownRepeated.add(repeatKey);
         }
