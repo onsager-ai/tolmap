@@ -950,38 +950,41 @@ pub(crate) fn persist_terminal(store: &crate::service::store::Store, snapshot: &
 /// master no longer holds in memory answers with its persisted snapshot,
 /// terminal by construction (`restore` reloads every live one).
 ///
-/// Durable-first (#167): `JobRegistry::cancel` flips and publishes `tx` the
-/// moment it runs -- its own direct callers, in tests, depend on that being
-/// synchronous and unconditional -- so the store write cannot simply move
-/// to the far side of it the way a runner's own completion could. Instead
-/// it moves to the near side: a peek at the not-yet-cancelled snapshot is
-/// turned into the same `failed`/`cancelled` snapshot `cancel` itself would
-/// produce and persisted first. A write that fails is logged loudly and the
-/// cancel does not go ahead at all -- today's handling of a failed write
-/// was to log it and let the in-memory cancel stand regardless; the change
-/// here is that a client is no longer told `cancelled` when the row cannot
-/// back it. `persist_terminal` below still runs after `cancel` returns, to
-/// reconcile the row with whatever it actually produced (a race with the
-/// job's own ending can still make that something other than a
-/// cancellation, or the timestamp can differ from this pre-check's).
+/// Durable-first, but live (#167, and its review): `JobRegistry::cancel`
+/// flips and publishes `tx` the moment it runs -- its own direct callers,
+/// in tests, depend on that being synchronous and unconditional -- so the
+/// store write cannot simply move to the far side of it the way a runner's
+/// own completion could. Instead it moves to the near side: a peek at the
+/// not-yet-cancelled snapshot is turned into the same `failed`/`cancelled`
+/// snapshot `cancel` itself would produce and persisted first, retried with
+/// backoff on a failure ([`persist_with_retries`]). If every retry still
+/// fails, the cancel goes ahead anyway, loudly logged: a client that asked
+/// to cancel a job and never hears back is worse than a row that briefly
+/// disagrees with it, which `persist_terminal` below, and the next write,
+/// reconcile. `cancel_job` stays synchronous -- its own direct callers, in
+/// `workers.rs`'s unit tests, are not async -- so its caller
+/// (`http::post_cancel_job`) runs it inside `spawn_blocking`, the way
+/// `worker_loop` already does for a runner, rather than sleeping on the
+/// async runtime.
 pub fn cancel_job(state: &AppState, id: Uuid) -> Result<JobSnapshot, ApiError> {
     if state.jobs.is_durable() {
         if let Some(before) = state.jobs.subscribe(id).map(|rx| rx.borrow().clone()) {
             if !is_terminal(&before) {
                 let pending = failed_snapshot(&before, cancelled_error());
                 let json = serde_json::to_string(&pending).expect("a JobSnapshot serializes");
-                if let Err(error) = state.store.finish_job(
-                    &pending.job_id.to_string(),
-                    table_status(&pending, "failed"),
-                    &json,
-                ) {
+                let write = || {
+                    state.store.finish_job(
+                        &pending.job_id.to_string(),
+                        table_status(&pending, "failed"),
+                        &json,
+                    )
+                };
+                if let Err(error) = persist_with_retries(write, std::thread::sleep) {
                     eprintln!(
-                        "job {id}: could not record its cancellation in the store; not \
-                         cancelling it: {error:#}"
+                        "job {id}: could not record its cancellation in the store after \
+                         retrying; cancelling it anyway -- the row may still read its live \
+                         status until a later write reconciles it: {error:#}"
                     );
-                    return Err(ApiError::internal(format!(
-                        "could not record the cancellation: {error:#}"
-                    )));
                 }
             }
         }
@@ -1420,14 +1423,22 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
             tokio::task::spawn_blocking(move || runner(blocking_state, repo_ref, blocking_tx))
                 .await;
         if let Err(join_error) = result {
-            finish_failed_durable(
-                &state,
-                &tx,
-                ErrorBody {
-                    error: "internal_error".to_owned(),
-                    message: format!("job task panicked: {join_error}"),
-                },
-            );
+            // `finish_failed_durable` can now sleep between retries
+            // (#167 review): off the async runtime, the same way the
+            // runner itself just ran, not inline on this task.
+            let panicked_state = state.clone();
+            let panicked_tx = tx.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                finish_failed_durable(
+                    &panicked_state,
+                    &panicked_tx,
+                    ErrorBody {
+                        error: "internal_error".to_owned(),
+                        message: format!("job task panicked: {join_error}"),
+                    },
+                );
+            })
+            .await;
         }
         // Worker modes (#97 phase 2): a job the runner put back in its
         // queue, or one a graceful stop leaves as it is for the next
@@ -1444,14 +1455,20 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
         // The runner normally sets a terminal snapshot itself. A panic or
         // an unexpected return must never leave an accepted job in flight.
         if !held && !is_terminal(&tx.borrow()) {
-            finish_failed_durable(
-                &state,
-                &tx,
-                ErrorBody {
-                    error: "internal_error".to_owned(),
-                    message: "job exited without a terminal state".to_owned(),
-                },
-            );
+            // Same reasoning as the panic branch above: off the runtime.
+            let unterminated_state = state.clone();
+            let unterminated_tx = tx.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                finish_failed_durable(
+                    &unterminated_state,
+                    &unterminated_tx,
+                    ErrorBody {
+                        error: "internal_error".to_owned(),
+                        message: "job exited without a terminal state".to_owned(),
+                    },
+                );
+            })
+            .await;
         }
         // Off the registry's lock: the store is never written under it.
         // Every terminal write above already went through it durable-first
@@ -1749,29 +1766,77 @@ pub(crate) fn finish_failed(tx: &watch::Sender<JobSnapshot>, error: ErrorBody) {
     });
 }
 
-/// Durable-first (#167): the store write that used to follow the runner
-/// (`persist_terminal`, called once it had already returned) instead
-/// happens here, before `tx` is ever touched, so `done`/`failed` never
-/// reaches a `GET` or an SSE reader a moment before the `jobs` row backs
-/// it. `build` computes the pure terminal snapshot from what `tx` holds
-/// now, exactly as `finish_done`/`finish_failed` do, but without applying
-/// it.
+/// Backoff between a durable terminal write's retries (#167 review): one
+/// try, then up to three more, 50 ms/200 ms/800 ms apart. Long enough to
+/// clear a momentary `SQLITE_BUSY`-shaped hiccup, short enough that a
+/// client waiting on `POST /api/jobs/{id}/cancel` or a job's own last
+/// stage does not notice.
+const DURABLE_WRITE_RETRY_BACKOFF_MS: [u64; 3] = [50, 200, 800];
+
+/// How many times a durable terminal write used up every retry and was
+/// published (or, for a cancel, let through) anyway. Test-observable
+/// without capturing `eprintln!`'s output: a test reads this before and
+/// after, since `cargo test` runs tests concurrently and an absolute value
+/// would be racy across them.
+static DURABLE_WRITE_RETRIES_EXHAUSTED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn durable_write_retries_exhausted() -> usize {
+    DURABLE_WRITE_RETRIES_EXHAUSTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Tries `write` once, then retries it through
+/// [`DURABLE_WRITE_RETRY_BACKOFF_MS`], sleeping between tries with `sleep`
+/// -- `std::thread::sleep` in production, injectable so a test that
+/// exhausts every retry pays no wall-clock cost. Returns the last error if
+/// every try failed, after counting it in
+/// [`DURABLE_WRITE_RETRIES_EXHAUSTED`].
+fn persist_with_retries(
+    mut write: impl FnMut() -> anyhow::Result<()>,
+    sleep: impl Fn(Duration),
+) -> anyhow::Result<()> {
+    let mut last = write();
+    for backoff_ms in DURABLE_WRITE_RETRY_BACKOFF_MS {
+        if last.is_ok() {
+            break;
+        }
+        sleep(Duration::from_millis(backoff_ms));
+        last = write();
+    }
+    if last.is_err() {
+        DURABLE_WRITE_RETRIES_EXHAUSTED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    last
+}
+
+/// Durable-first, but live (#167, and its review): the store write that
+/// used to follow the runner (`persist_terminal`, called once it had
+/// already returned) instead happens here, before `tx` is ever touched, so
+/// `done`/`failed` never reaches a `GET` or an SSE reader a moment before
+/// the `jobs` row backs it. `build` computes the pure terminal snapshot
+/// from what `tx` holds now, exactly as `finish_done`/`finish_failed` do,
+/// but without applying it.
 ///
 /// Local mode (`state.jobs.is_durable()` false) skips the store and
 /// applies at once, so this is a safe default anywhere `state` is in
-/// scope. A store write that fails is logged loudly and `tx` is left
-/// alone -- not "done", not "failed", whatever it already was -- rather
-/// than publishing a status the row cannot back; that is the one change
-/// from today's handling of a failed write, which logged it the same way
-/// but continued regardless (the ordering bug this fixes made that appear
-/// to work). `worker_loop`'s own catch-all for "the runner returned
-/// without a terminal state" then tries again, and its `persist_terminal`
-/// call after the runner returns reconciles the row with whatever, if
-/// anything, ended up final in memory (a concurrent cancel can still win).
+/// scope. A write that fails is retried with backoff
+/// ([`persist_with_retries`]); if every retry still fails, it is logged
+/// loudly and `tx` is published anyway. That is the review's correction to
+/// this fix's first version, which left `tx` unpublished on a failed write:
+/// a client that never hears `done`/`failed` -- stuck on an open SSE
+/// stream or a `GET` poll that never changes -- is worse than a row that
+/// might re-run the job after a crash, and a re-run is harmless (the map
+/// is already stored, and the rebuild is byte-identical). `worker_loop`'s
+/// own catch-all for "the runner returned without a terminal state" then
+/// finds `tx` already terminal, and its `persist_terminal` call after the
+/// runner returns reconciles the row with whatever ended up final in
+/// memory (a concurrent cancel can still win that race).
 fn finish_terminal_durable(
     state: &AppState,
     tx: &watch::Sender<JobSnapshot>,
     build: impl FnOnce(&JobSnapshot) -> JobSnapshot,
+    sleep: impl Fn(Duration),
 ) {
     let before = tx.borrow().clone();
     if is_terminal(&before) {
@@ -1780,18 +1845,22 @@ fn finish_terminal_durable(
     let pending = build(&before);
     if state.jobs.is_durable() {
         let json = serde_json::to_string(&pending).expect("a JobSnapshot serializes");
-        if let Err(error) = state.store.finish_job(
-            &pending.job_id.to_string(),
-            table_status(&pending, "failed"),
-            &json,
-        ) {
+        let write = || {
+            state.store.finish_job(
+                &pending.job_id.to_string(),
+                table_status(&pending, "failed"),
+                &json,
+            )
+        };
+        if let Err(error) = persist_with_retries(write, sleep) {
             eprintln!(
-                "job {}: could not record its end in the store; not reporting it as {} until it \
-                 does: {error:#}",
+                "job {}: could not record its end in the store after retrying; reporting it as \
+                 {} anyway -- if the master crashes before a later write catches up, the row may \
+                 still read its live status and re-run the job on restart (harmless: the map is \
+                 already stored and the rebuild is byte-identical): {error:#}",
                 pending.job_id,
                 table_status(&pending, "failed")
             );
-            return;
         }
     }
     tx.send_modify(|snapshot| {
@@ -1804,7 +1873,7 @@ fn finish_terminal_durable(
 /// [`finish_done`], durable-first. Use this, not `finish_done`, wherever
 /// `state` is available -- every runner completion path.
 pub(crate) fn finish_done_durable(state: &AppState, tx: &watch::Sender<JobSnapshot>) {
-    finish_terminal_durable(state, tx, done_snapshot);
+    finish_terminal_durable(state, tx, done_snapshot, std::thread::sleep);
 }
 
 /// [`finish_failed`], durable-first. Use this, not `finish_failed`,
@@ -1814,7 +1883,12 @@ pub(crate) fn finish_failed_durable(
     tx: &watch::Sender<JobSnapshot>,
     error: ErrorBody,
 ) {
-    finish_terminal_durable(state, tx, |snapshot| failed_snapshot(snapshot, error));
+    finish_terminal_durable(
+        state,
+        tx,
+        |snapshot| failed_snapshot(snapshot, error),
+        std::thread::sleep,
+    );
 }
 
 /// Runs one job in local mode: [`prepare`], [`executor::execute`] and
@@ -4043,51 +4117,137 @@ mod tests {
         (dir, state, snapshot)
     }
 
-    /// #167: the CI failure (`tests/service_restart.rs:387`, run 36316531259)
-    /// was `wait_done` reading `done` over the API while the `jobs` row
-    /// still said `running` -- the runner's own `finish_done` flipped and
-    /// published the in-memory snapshot before the store write that used to
-    /// follow it (`persist_terminal`, called only after the runner
-    /// returned) ever ran. `finish_done_durable`/`finish_failed_durable`
-    /// persist first and flip `tx` only once that succeeds.
+    /// #167, and its review: the CI failure (`tests/service_restart.rs:387`,
+    /// run 36316531259) was `wait_done` reading `done` over the API while
+    /// the `jobs` row still said `running` -- the runner's own
+    /// `finish_done` flipped and published the in-memory snapshot before
+    /// the store write that used to follow it (`persist_terminal`, called
+    /// only after the runner returned) ever ran. The fix's first version
+    /// persisted first and simply did not publish on a failed write; the
+    /// review correctly called that a worse bug for a store write that
+    /// keeps failing -- a client stuck watching a job that never reports
+    /// `done`/`failed` -- and asked for retries, then publish anyway.
     ///
-    /// Proved here without a race: the store write is made to fail (the
-    /// `jobs` table is gone), and `tx` is checked to still hold its
-    /// pre-call status afterwards. Against the old order -- which flipped
-    /// `tx` unconditionally, and only logged a persist failure once it
-    /// already happened after the fact -- this would have failed every
-    /// time, not occasionally, so no sleep or poll is needed to catch it.
+    /// Proved here without a sleep-shaped race: the store write is made to
+    /// fail (the `jobs` table is gone) for every retry, with the backoff
+    /// itself zeroed (`finish_terminal_durable`'s injectable `sleep`) so
+    /// exhausting three retries costs nothing. `tx` still ends up
+    /// terminal, and [`durable_write_retries_exhausted`] -- observable
+    /// without capturing `eprintln!`'s loud log line -- records that it
+    /// took giving up on the store to get there.
     #[test]
-    fn a_failed_store_write_never_publishes_the_terminal_state() {
+    fn a_store_write_that_exhausts_its_retries_still_publishes_the_terminal_state() {
         let id = Uuid::new_v4();
         let (_dir, state, before) = durable_state(id, "test/durable-fail", "running");
         assert!(!is_terminal(&before));
-        // Break the store from underneath it: the next write to `jobs`
-        // fails with "no such table".
+        // Break the store from underneath it: every write to `jobs` fails
+        // with "no such table", retries included.
         {
             let breaker = rusqlite::Connection::open(&state.config.db_path).unwrap();
             breaker.execute_batch("DROP TABLE jobs;").unwrap();
         }
+        let before_exhausted = durable_write_retries_exhausted();
         let (tx, _rx) = watch::channel(before.clone());
-        finish_done_durable(&state, &tx);
+        finish_terminal_durable(&state, &tx, done_snapshot, |_| {});
         assert_eq!(
             tx.borrow().status,
-            before.status,
-            "a store write that fails must not publish `done`"
+            JobStatus::Done,
+            "a client must not be left watching a job that never reports done"
         );
-        finish_failed_durable(
+        assert!(
+            durable_write_retries_exhausted() > before_exhausted,
+            "exhausting every retry must be recorded"
+        );
+
+        let failed_id = Uuid::new_v4();
+        let (_dir, state, before) = durable_state(failed_id, "test/durable-fail-2", "leased");
+        {
+            let breaker = rusqlite::Connection::open(&state.config.db_path).unwrap();
+            breaker.execute_batch("DROP TABLE jobs;").unwrap();
+        }
+        let before_exhausted = durable_write_retries_exhausted();
+        let (tx, _rx) = watch::channel(before);
+        finish_terminal_durable(
             &state,
             &tx,
-            ErrorBody {
-                error: "test".to_owned(),
-                message: "test".to_owned(),
+            |snapshot| {
+                failed_snapshot(
+                    snapshot,
+                    ErrorBody {
+                        error: "test".to_owned(),
+                        message: "test".to_owned(),
+                    },
+                )
             },
+            |_| {},
         );
+        assert_eq!(tx.borrow().status, JobStatus::Failed);
+        assert!(durable_write_retries_exhausted() > before_exhausted);
+    }
+
+    /// [`persist_with_retries`] on its own, with no store involved: proves
+    /// the exact retry contract `finish_terminal_durable` and `cancel_job`
+    /// both lean on. Zero attempts means the write never ran; `slept`
+    /// records the backoff `persist_with_retries` asked for between tries,
+    /// via the same injectable `sleep` production uses `std::thread::sleep`
+    /// for.
+    #[test]
+    fn persist_with_retries_gives_up_after_three_retries_and_counts_it() {
+        let attempts = std::cell::Cell::new(0);
+        let slept = std::cell::RefCell::new(Vec::new());
+        let before_exhausted = durable_write_retries_exhausted();
+        let result = persist_with_retries(
+            || {
+                attempts.set(attempts.get() + 1);
+                anyhow::bail!("still broken")
+            },
+            |delay| slept.borrow_mut().push(delay),
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 4, "one try plus three retries");
         assert_eq!(
-            tx.borrow().status,
-            before.status,
-            "a store write that fails must not publish `failed` either"
+            slept.borrow().as_slice(),
+            &[
+                Duration::from_millis(50),
+                Duration::from_millis(200),
+                Duration::from_millis(800),
+            ]
         );
+        assert!(
+            durable_write_retries_exhausted() > before_exhausted,
+            "exhausting every retry must be counted"
+        );
+    }
+
+    /// The other side: a write that fails once and then succeeds is
+    /// durable on its second try, not its fourth -- `finish_terminal_durable`
+    /// (and `cancel_job`) only ever publish the pure snapshot they built
+    /// once `persist_with_retries` returns `Ok`, so this is exactly what
+    /// makes a real caller's snapshot become terminal only once a write
+    /// actually lands.
+    #[test]
+    fn persist_with_retries_stops_at_the_first_success() {
+        let attempts = std::cell::Cell::new(0);
+        let slept = std::cell::RefCell::new(Vec::new());
+        let result = persist_with_retries(
+            || {
+                let attempt = attempts.get() + 1;
+                attempts.set(attempt);
+                if attempt == 1 {
+                    anyhow::bail!("transient")
+                } else {
+                    Ok(())
+                }
+            },
+            |delay| slept.borrow_mut().push(delay),
+        );
+        assert!(result.is_ok());
+        assert_eq!(
+            attempts.get(),
+            2,
+            "the write is durable on the second try, so a third never runs"
+        );
+        assert_eq!(slept.borrow().as_slice(), &[Duration::from_millis(50)]);
     }
 
     /// The other side of the same fix: once the store write succeeds, the
