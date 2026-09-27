@@ -12,11 +12,20 @@
 //! went quiet -- puts the job back at the head of its class queue with a new
 //! epoch to come, counting one lost worker; past the retry bound (§10.6)
 //! the job fails `worker_crashed`. A restart or a graceful stop re-queues
-//! without counting. There is no resume yet (step 3): a dropped channel just
-//! lets the lease run out, `resume` is never advertised, and a
-//! `hello.resume` is answered with `cancel`. Only loopback agents exist: the
-//! listener binds to loopback only, the agents are this binary started by
-//! this process, and their tokens are minted here at startup.
+//! without counting. Only loopback agents exist: the listener binds to
+//! loopback only, the agents are this binary started by this process, and
+//! their tokens are minted here at startup.
+//!
+//! **Resume (phase 2, step 3; §2.5, §3.5).** A dropped channel only
+//! detaches its lease. An agent that advertised `resume` and comes back
+//! within the TTL names the job in `hello.resume`; if it still holds that
+//! lease -- same token, same epoch, not cancelled, not run out -- the lease
+//! moves to the new channel and `welcome` answers `continue` with the
+//! master's `acked_seq`, and the agent replays what came after. Anything
+//! else is answered `cancel`, and the agent kills the job. A lease a
+//! restarted master adopted from the store has no holder it could check a
+//! token against, so it is never resumed in this step (loopback agents are
+//! this process's children and hold nothing after a restart anyway).
 //!
 //! **Invariants**, each also stated where the code keeps it:
 //! - *Epoch fencing.* An epoch is raised in the store before the `assign`
@@ -25,7 +34,21 @@
 //!   epoch than the live lease's -- an event, a heartbeat, an upload, a
 //!   result -- is refused; a result gets `result_rejected` and is never
 //!   registered. Each epoch uploads into its own directory, removed when
-//!   its lease ends.
+//!   its lease ends. Only the live epoch's holder can resume a lease, and
+//!   a lease the runner has found expired (`Lease::lost`) is never resumed
+//!   or renewed, so a resume and the runner's re-queue cannot both win.
+//! - *Seq ordering.* A job's events are applied in `seq` order: `seq ==
+//!   next_seq` is applied, a lower one is a repeat (a replay after a
+//!   resume) and ignored, a higher one is a protocol violation. So
+//!   `acked_seq = next_seq - 1` is exactly what was applied, and a resumed
+//!   agent that writes everything after it gets one gapless sequence.
+//! - *Settled results.* A result, once registered or refused, is
+//!   remembered (`HubInner::settled`, bounded) with its artifacts and
+//!   verdict: a repeat for that epoch with the same artifacts gets the same
+//!   verdict again and a different one `result_rejected` (§6 "duplicate or
+//!   stale result"), and neither is registered. A resume of that job is
+//!   answered `continue` and the verdict is sent again, since the agent
+//!   lost it with the old channel.
 //! - *Terminal is final.* No row leaves `done` or `failed` (every update is
 //!   guarded), and terminal rows are written from the in-memory snapshot,
 //!   which is itself terminal once and for all, so a cancel racing a result
@@ -59,7 +82,7 @@
 //!   file it registers itself, under names it chooses, and hands them to
 //!   the same `jobs::register_owned` local mode uses.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -92,9 +115,10 @@ use crate::service::store::Requeued;
 use crate::service::worker_result;
 use crate::service::AppState;
 use crate::worker::{
-    is_valid_artifact_name, negotiate, AssignInputs, CancelReason, JobSpec, MasterMessage,
-    PreviousMapUrl, ReleasedReason, ResumeAction, ShutdownMode, WelcomeResume, WorkerBuild,
-    WorkerEvent, WorkerMessage, FEATURE_LOCAL_PATHS, MAX_CONTROL_FRAME_BYTES, PROTO,
+    is_valid_artifact_name, negotiate, Artifact, AssignInputs, CancelReason, JobSpec,
+    MasterMessage, PreviousMapUrl, ReleasedReason, ResumeAction, ResumeEntry, ShutdownMode,
+    WelcomeResume, WorkerBuild, WorkerEvent, WorkerMessage, FEATURE_LOCAL_PATHS, FEATURE_RESUME,
+    MAX_CONTROL_FRAME_BYTES, PROTO,
 };
 
 /// §2.2's defaults: a heartbeat every 15 s, the SSE heartbeat's interval,
@@ -131,6 +155,12 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a stopping master waits for its agents to exit after `shutdown
 /// now` before it kills them.
 const REAP_GRACE: Duration = Duration::from_secs(10);
+
+/// Settled results remembered for a repeat or a resume (`HubInner::settled`).
+/// An agent that lost its verdict asks again within a lease TTL or so; one
+/// that asks after its entry is gone gets `cancel` and discards a result the
+/// store already has, which costs nothing.
+const SETTLED_KEPT: usize = 256;
 
 /// The largest text frame axum itself accepts on the channel. Above
 /// `MAX_CONTROL_FRAME_BYTES` on purpose: a frame between the two reaches
@@ -394,24 +424,89 @@ pub(crate) enum LeaseEvent {
 /// job's row: the row holds its status, epoch and holder.
 struct Lease {
     /// The channel holding it; `None` once that channel closed (the lease
-    /// then runs out unless resumed, step 3) and for a lease a restarted
-    /// master adopted from the store.
+    /// then runs out unless its agent resumes it) and for a lease a
+    /// restarted master adopted from the store.
     conn: Option<u64>,
     /// The agent (token) holding it; `None` for an adopted lease.
     agent: Option<usize>,
     epoch: u64,
     deadline: Instant,
+    /// The next `seq` to apply (invariant: seq ordering).
     next_seq: u64,
     cancelled: bool,
+    /// The runner found it expired and is re-queueing the job: never
+    /// renewed or resumed again (invariant: epoch fencing).
+    lost: bool,
     /// A terminal event (`result`, `error`) or `released` has arrived;
     /// anything after it is dropped.
     finished: bool,
+    /// The artifacts the first `result` listed, to tell a repeat of it from
+    /// a different one.
+    result: Option<Vec<Artifact>>,
     events: std_mpsc::Sender<LeaseEvent>,
     /// The only files a GET may return for this lease, by name.
     inputs: BTreeMap<String, PathBuf>,
     uploads: BTreeMap<String, Upload>,
     /// Master-owned `0700`: the names-cache input, uploads and blobs.
     dir: PathBuf,
+}
+
+/// A result that was registered or refused, remembered after its lease
+/// ended (invariant: settled results).
+struct Settled {
+    epoch: u64,
+    agent: Option<usize>,
+    artifacts: Vec<Artifact>,
+    accepted: bool,
+    reason: String,
+    /// The master's `acked_seq` for the job when it settled.
+    last_seq: u64,
+    /// Insertion number, so evicting an old entry never drops a newer one
+    /// for the same job.
+    order: u64,
+}
+
+impl Settled {
+    fn verdict(&self, job_id: Uuid) -> MasterMessage {
+        let (job_id, epoch, reason) = (job_id.to_string(), self.epoch, self.reason.clone());
+        if self.accepted {
+            MasterMessage::ResultAccepted {
+                job_id,
+                epoch,
+                reason,
+            }
+        } else {
+            MasterMessage::ResultRejected {
+                job_id,
+                epoch,
+                reason,
+            }
+        }
+    }
+}
+
+/// Whether two `result`s list the same artifacts, whatever their order.
+fn same_artifacts(left: &[Artifact], right: &[Artifact]) -> bool {
+    let set = |artifacts: &[Artifact]| {
+        artifacts
+            .iter()
+            .map(|artifact| {
+                (
+                    artifact.name.clone(),
+                    artifact.sha256.clone(),
+                    artifact.bytes,
+                )
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    left.len() == right.len() && set(left) == set(right)
+}
+
+fn result_artifacts(event: &WorkerEvent) -> &[Artifact] {
+    match event {
+        WorkerEvent::Result { artifacts, .. } => artifacts,
+        _ => &[],
+    }
 }
 
 #[derive(Default)]
@@ -423,8 +518,32 @@ struct HubInner {
     /// re-queued job, which keeps its admission number, is the head of the
     /// queue here too.
     waiting: BTreeMap<(i64, Uuid), bool>,
+    /// The last `SETTLED_KEPT` settled results, by job, and their order.
+    settled: BTreeMap<Uuid, Settled>,
+    settled_order: VecDeque<(u64, Uuid)>,
+    next_settled: u64,
     next_conn: u64,
     stopping: bool,
+}
+
+impl HubInner {
+    fn settle(&mut self, job_id: Uuid, mut settled: Settled) {
+        settled.order = self.next_settled;
+        self.next_settled += 1;
+        self.settled_order.push_back((settled.order, job_id));
+        self.settled.insert(job_id, settled);
+        while self.settled_order.len() > SETTLED_KEPT {
+            if let Some((order, old)) = self.settled_order.pop_front() {
+                if self
+                    .settled
+                    .get(&old)
+                    .is_some_and(|entry| entry.order == order)
+                {
+                    self.settled.remove(&old);
+                }
+            }
+        }
+    }
 }
 
 /// What `claim` hands the runner.
@@ -537,10 +656,9 @@ impl WorkerHub {
     }
 
     /// A closed channel does not end its lease (§6 "channel lost, worker
-    /// alive"): the lease is detached and runs out at its deadline, when
-    /// the runner re-queues the job. Resuming within the TTL is step 3; in
-    /// this step a loopback agent that loses its channel kills its job and
-    /// exits, so the lease always runs out.
+    /// alive"): the lease is detached, and either its agent resumes it on a
+    /// new channel within the TTL (`resume`) or it runs out at its deadline
+    /// and the runner re-queues the job.
     fn remove_conn(&self, conn_id: u64) {
         let mut guard = self.lock();
         let inner = &mut *guard;
@@ -555,7 +673,7 @@ impl WorkerHub {
                 lease.conn = None;
                 eprintln!(
                     "job {job_id}: its agent's channel closed; the lease (epoch {}) runs out \
-                     within {} s",
+                     within {} s unless the agent resumes it",
                     lease.epoch,
                     self.lease_ttl_s()
                 );
@@ -596,7 +714,7 @@ impl WorkerHub {
                     let Some(lease) = inner.leases.get_mut(&id) else {
                         continue;
                     };
-                    if lease.conn != Some(conn_id) || lease.epoch != held.epoch {
+                    if lease.conn != Some(conn_id) || lease.epoch != held.epoch || lease.lost {
                         continue;
                     }
                     lease.deadline = now + self.lease_ttl;
@@ -649,14 +767,42 @@ impl WorkerHub {
                     reject("not a job id");
                     return Ok(());
                 };
+                let agent = inner.conns.get(&conn_id).map(|conn| conn.agent);
                 let Some(lease) = inner.leases.get_mut(&id) else {
-                    reject("no live lease on this job: stale epoch, or the job ended");
+                    // §6 "duplicate or stale result", after the lease
+                    // ended: a repeat of the result this epoch settled gets
+                    // the same verdict again, a different one is refused,
+                    // and neither is registered (invariant: settled
+                    // results).
+                    let settled = inner
+                        .settled
+                        .get(&id)
+                        .filter(|settled| settled.epoch == epoch && settled.agent == agent);
+                    match settled {
+                        Some(settled) if is_result => {
+                            if same_artifacts(result_artifacts(&event), &settled.artifacts) {
+                                if let Some(conn) = inner.conns.get(&conn_id) {
+                                    let _ = conn.out.send(Outgoing::Message(settled.verdict(id)));
+                                }
+                            } else {
+                                reject(
+                                    "a different result for an epoch that already delivered one",
+                                );
+                            }
+                        }
+                        _ => reject("no live lease on this job: stale epoch, or the job ended"),
+                    }
                     return Ok(());
                 };
-                if lease.conn != Some(conn_id) || lease.epoch != epoch {
+                // Epoch fencing: only the channel holding the live epoch,
+                // and never a lease the runner already found expired.
+                if lease.conn != Some(conn_id) || lease.epoch != epoch || lease.lost {
                     reject("stale epoch: the job's lease is held at another epoch");
                     return Ok(());
                 }
+                // Invariant (seq ordering): a repeat -- the replay a
+                // resumed agent sends of what it could not know arrived --
+                // is ignored; a gap is a violation.
                 if seq < lease.next_seq {
                     return Ok(());
                 }
@@ -673,10 +819,28 @@ impl WorkerHub {
                 // Any job event also renews the lease (§2.2).
                 lease.deadline = Instant::now() + self.lease_ttl;
                 if lease.finished {
-                    // A second result for this epoch, after the first one
-                    // (or an error, or `released`) ended the job's run:
-                    // refused, so only the first is ever registered.
-                    reject("duplicate: this epoch already delivered its terminal event");
+                    // A second result for this epoch before its lease ended.
+                    // A repeat of the first gets the first one's verdict:
+                    // again from `settled` if it was given already, or, while
+                    // the first is still being registered, the verdict still
+                    // to come on this channel answers both. A different one,
+                    // or anything after an error or `released`, is refused.
+                    // Only the first is ever registered.
+                    let repeat = lease
+                        .result
+                        .as_deref()
+                        .is_some_and(|first| same_artifacts(result_artifacts(&event), first));
+                    if !(is_result && repeat) {
+                        reject("a different result for an epoch that already delivered one");
+                    } else if let Some(settled) = inner
+                        .settled
+                        .get(&id)
+                        .filter(|settled| settled.epoch == epoch)
+                    {
+                        if let Some(conn) = inner.conns.get(&conn_id) {
+                            let _ = conn.out.send(Outgoing::Message(settled.verdict(id)));
+                        }
+                    }
                     return Ok(());
                 }
                 let terminal = matches!(
@@ -705,6 +869,9 @@ impl WorkerHub {
                 if terminal {
                     lease.finished = true;
                 }
+                if is_result {
+                    lease.result = Some(result_artifacts(&event).to_vec());
+                }
                 let _ = lease.events.send(LeaseEvent::Event {
                     event,
                     peak_rss_bytes,
@@ -720,10 +887,16 @@ impl WorkerHub {
                 let Ok(id) = Uuid::parse_str(&job_id) else {
                     return Ok(());
                 };
+                let agent = inner.conns.get(&conn_id).map(|conn| conn.agent);
                 let Some(lease) = inner.leases.get_mut(&id) else {
                     return Ok(());
                 };
-                if lease.conn != Some(conn_id) || lease.epoch != epoch {
+                // From the lease's agent on any of its channels: an agent
+                // that killed a job while its channel was down, or after a
+                // resume was answered `cancel`, releases it on the next
+                // channel, which does not hold the lease. Never for a lease
+                // already found expired, whose re-queue is under way.
+                if agent.is_none() || lease.agent != agent || lease.epoch != epoch || lease.lost {
                     return Ok(());
                 }
                 lease.finished = true;
@@ -838,7 +1011,9 @@ impl WorkerHub {
                         deadline: Instant::now() + self.lease_ttl,
                         next_seq: 1,
                         cancelled: false,
+                        lost: false,
                         finished: false,
+                        result: None,
                         events,
                         inputs: input_files,
                         uploads: BTreeMap::new(),
@@ -863,8 +1038,11 @@ impl WorkerHub {
     /// Takes over the lease a restarted master found in the store (§6
     /// "master restarts mid-job"): the same epoch, no channel, and a
     /// deadline one TTL from now, so the agent that held it has that long
-    /// to come back. None does in this step (no resume), so the lease runs
-    /// out and the runner re-queues the job.
+    /// to come back. It has no holder (`agent: None`), so `resume` never
+    /// hands it back: the master cannot tell which token held it before the
+    /// restart, and loopback agents, this process's children, are new
+    /// processes after one and hold nothing. The lease runs out and the
+    /// runner re-queues the job, uncounted.
     pub(crate) fn adopt(&self, job_id: Uuid, epoch: u64) -> Claimed {
         let dir = self.lease_dir(job_id, epoch);
         let _ = std::fs::remove_dir_all(&dir);
@@ -882,7 +1060,9 @@ impl WorkerHub {
                 deadline: Instant::now() + self.lease_ttl,
                 next_seq: 1,
                 cancelled: false,
+                lost: false,
                 finished: false,
+                result: None,
                 events,
                 inputs: BTreeMap::new(),
                 uploads: BTreeMap::new(),
@@ -926,11 +1106,105 @@ impl WorkerHub {
         }
     }
 
+    /// Whether the lease has run out. Once it has, it is `lost` for good:
+    /// no heartbeat renews it and no resume takes it back, so the re-queue
+    /// the runner starts on this answer cannot race a resume (invariant:
+    /// epoch fencing).
     pub(crate) fn expired(&self, job_id: Uuid) -> bool {
-        self.lock()
-            .leases
-            .get(&job_id)
-            .is_some_and(|lease| Instant::now() > lease.deadline)
+        let mut inner = self.lock();
+        let Some(lease) = inner.leases.get_mut(&job_id) else {
+            return false;
+        };
+        if Instant::now() > lease.deadline {
+            lease.lost = true;
+        }
+        lease.lost
+    }
+
+    /// Answers `hello.resume` (§2.5, §3.5) for the channel `conn_id` of
+    /// `agent`. `continue`, with the master's own `acked_seq`, for a lease
+    /// this agent still holds -- the same token, the same epoch, neither
+    /// cancelled nor run out -- which moves to the new channel with a fresh
+    /// deadline, closing the old channel if the master had not noticed it
+    /// die. `continue` too for a result this epoch already settled, whose
+    /// verdict is then sent again after the `welcome`. `cancel` for
+    /// everything else: `cancelled` for a job the user cancelled meanwhile,
+    /// `lease_lost` otherwise -- another epoch holds the job, its lease ran
+    /// out, it ended, or a restarted master adopted it (an adopted lease
+    /// has no holder whose token could be checked).
+    fn resume(&self, conn_id: u64, agent: usize, entries: Vec<ResumeEntry>) -> Vec<WelcomeResume> {
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let now = Instant::now();
+        let mut answers = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let answer = |action, acked_seq, reason| WelcomeResume {
+                job_id: entry.job_id.clone(),
+                action,
+                acked_seq,
+                reason,
+            };
+            let cancel = |reason| answer(ResumeAction::Cancel, 0, Some(reason));
+            let Ok(id) = Uuid::parse_str(&entry.job_id) else {
+                answers.push(cancel(CancelReason::LeaseLost));
+                continue;
+            };
+            // Checked before the lease: a result is settled a moment before
+            // its lease ends, and the verdict sent then went to whichever
+            // channel held the lease, possibly the dead one.
+            if let Some(settled) = inner
+                .settled
+                .get(&id)
+                .filter(|settled| settled.epoch == entry.epoch && settled.agent == Some(agent))
+            {
+                if let Some(conn) = inner.conns.get(&conn_id) {
+                    let _ = conn.out.send(Outgoing::Message(settled.verdict(id)));
+                }
+                answers.push(answer(ResumeAction::Continue, settled.last_seq, None));
+                continue;
+            }
+            let Some(lease) = inner.leases.get_mut(&id) else {
+                answers.push(cancel(CancelReason::LeaseLost));
+                continue;
+            };
+            // Run out is run out, whether or not the runner has polled yet:
+            // marked here as `expired` would mark it, so the `released` this
+            // `cancel` brings back is ignored rather than read as a job the
+            // agent gave up unasked.
+            if now > lease.deadline {
+                lease.lost = true;
+            }
+            if lease.agent != Some(agent) || lease.epoch != entry.epoch || lease.lost {
+                answers.push(cancel(CancelReason::LeaseLost));
+                continue;
+            }
+            if lease.cancelled {
+                answers.push(cancel(CancelReason::Cancelled));
+                continue;
+            }
+            if let Some(old) = lease.conn.filter(|old| *old != conn_id) {
+                if let Some(conn) = inner.conns.get_mut(&old) {
+                    if conn.holding == Some(id) {
+                        conn.holding = None;
+                    }
+                    let _ = conn.out.send(Outgoing::Close);
+                }
+            }
+            lease.conn = Some(conn_id);
+            lease.deadline = now + self.lease_ttl;
+            if let Some(conn) = inner.conns.get_mut(&conn_id) {
+                conn.holding = Some(id);
+            }
+            let acked_seq = lease.next_seq - 1;
+            eprintln!(
+                "job {id}: worker agent {agent} resumed its lease (epoch {}) on a new channel; \
+                 events up to seq {acked_seq} of its {} are applied",
+                lease.epoch, entry.last_seq
+            );
+            answers.push(answer(ResumeAction::Continue, acked_seq, None));
+        }
+        self.changed.notify_all();
+        answers
     }
 
     pub(crate) fn uploads(&self, job_id: Uuid) -> BTreeMap<String, Upload> {
@@ -941,30 +1215,28 @@ impl WorkerHub {
             .unwrap_or_default()
     }
 
-    /// `result_accepted` or `result_rejected` for the lease's holder.
+    /// `result_accepted` or `result_rejected` for the lease's holder, on
+    /// whichever channel holds the lease now, and remembered for a repeat
+    /// or a resume (invariant: settled results).
     pub(crate) fn verdict(&self, job_id: Uuid, accepted: bool, reason: String) {
-        let inner = self.lock();
+        let mut guard = self.lock();
+        let inner = &mut *guard;
         let Some(lease) = inner.leases.get(&job_id) else {
             return;
         };
-        let job_id = job_id.to_string();
-        let epoch = lease.epoch;
-        let message = if accepted {
-            MasterMessage::ResultAccepted {
-                job_id,
-                epoch,
-                reason,
-            }
-        } else {
-            MasterMessage::ResultRejected {
-                job_id,
-                epoch,
-                reason,
-            }
+        let settled = Settled {
+            epoch: lease.epoch,
+            agent: lease.agent,
+            artifacts: lease.result.clone().unwrap_or_default(),
+            accepted,
+            reason,
+            last_seq: lease.next_seq - 1,
+            order: 0,
         };
         if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get(&conn)) {
-            let _ = conn.out.send(Outgoing::Message(message));
+            let _ = conn.out.send(Outgoing::Message(settled.verdict(job_id)));
         }
+        inner.settle(job_id, settled);
     }
 
     /// Ends a lease: the agent's slot is free for its next `ready`, the
@@ -1215,6 +1487,18 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
     let local_paths = features
         .iter()
         .any(|feature| feature == FEATURE_LOCAL_PATHS);
+    // §3.6: what is gated on a feature comes only from a peer that
+    // advertised it. `hello.resume` from an agent that never said it can
+    // resume would have it replay events under rules it did not agree to.
+    if !resume.is_empty() && !features.iter().any(|feature| feature == FEATURE_RESUME) {
+        close_with_error(
+            &mut socket,
+            "protocol_error",
+            format!("hello.resume from an agent that did not advertise {FEATURE_RESUME:?}"),
+        )
+        .await;
+        return;
+    }
     let (out, mut outgoing) = tokio::sync::mpsc::unbounded_channel();
     let conn = hub.add_conn(agent, worker_id.clone(), eligible, local_paths, out);
     eprintln!(
@@ -1222,20 +1506,14 @@ async fn serve_agent(hub: Arc<WorkerHub>, agent: usize, mut socket: WebSocket) {
         class.memory_bytes / (1024 * 1024),
         class.cpus
     );
-    // No resume in phase 1 (§3.5 is phase 2): anything an agent still
-    // holds from before is to be dropped.
+    // Answered before `welcome` goes out; a verdict `resume` sends again
+    // waits in `outgoing`, which the loop below drains only after
+    // `welcome`, so the agent reads its answers first.
     let welcome = MasterMessage::Welcome {
         proto,
         heartbeat_s: hub.heartbeat_s,
         lease_ttl_s: hub.lease_ttl_s(),
-        resume: resume
-            .into_iter()
-            .map(|entry| WelcomeResume {
-                job_id: entry.job_id,
-                action: ResumeAction::Cancel,
-                acked_seq: 0,
-            })
-            .collect(),
+        resume: hub.resume(conn, agent, resume),
     };
     if send_message(&mut socket, &welcome).await.is_ok() {
         loop {
@@ -2607,6 +2885,15 @@ mod tests {
     }
 
     fn hello(build: WorkerBuild, proto: (u32, u32)) -> WorkerMessage {
+        hello_with(build, proto, &[FEATURE_LOCAL_PATHS], Vec::new())
+    }
+
+    fn hello_with(
+        build: WorkerBuild,
+        proto: (u32, u32),
+        features: &[&str],
+        resume: Vec<ResumeEntry>,
+    ) -> WorkerMessage {
         WorkerMessage::Hello {
             proto_min: proto.0,
             proto_max: proto.1,
@@ -2617,8 +2904,16 @@ mod tests {
                 cpus: 1,
             },
             slots: 1,
-            features: vec![FEATURE_LOCAL_PATHS.to_owned()],
-            resume: Vec::new(),
+            features: features.iter().map(|feature| feature.to_string()).collect(),
+            resume,
+        }
+    }
+
+    fn resume_entry(job: Uuid, epoch: u64, last_seq: u64) -> ResumeEntry {
+        ResumeEntry {
+            job_id: job.to_string(),
+            epoch,
+            last_seq,
         }
     }
 
@@ -2648,6 +2943,23 @@ mod tests {
             }
             agent.send(&WorkerMessage::Ready { slots_free: 1 });
             agent
+        }
+
+        /// A new channel for an agent that advertises `resume` and names
+        /// `resume` in its `hello`; the `welcome`'s answers. It sends no
+        /// `ready`: the test decides.
+        fn rejoin(port: u16, token: &str, resume: Vec<ResumeEntry>) -> (Self, Vec<WelcomeResume>) {
+            let mut agent = FakeAgent::raw(port, token);
+            agent.send(&hello_with(
+                test_build(),
+                (PROTO, PROTO),
+                &[FEATURE_LOCAL_PATHS, FEATURE_RESUME],
+                resume,
+            ));
+            match agent.recv() {
+                MasterMessage::Welcome { resume, .. } => (agent, resume),
+                other => panic!("expected welcome, got {other:?}"),
+            }
         }
 
         fn send(&mut self, message: &WorkerMessage) {
@@ -3612,10 +3924,13 @@ mod tests {
 
     /// §6 "duplicate or stale result": a result for an epoch whose lease
     /// ran out is refused with `result_rejected`, and so is its upload; the
-    /// current epoch's result is registered once, and a second result for
-    /// it is refused too. Only the current epoch's bytes reach the store.
+    /// current epoch's result is registered once. A repeat of it with the
+    /// same artifacts is acknowledged again with `result_accepted` (#97
+    /// phase 2 step 3 reverses #155's refusal, as the spec asks), one with
+    /// different artifacts is refused, and neither is registered: only the
+    /// current epoch's first bytes reach the store.
     #[test]
-    fn stale_epoch_and_duplicate_results_are_refused_and_never_registered() {
+    fn stale_epoch_results_are_refused_and_a_repeat_of_the_registered_one_is_acknowledged_again() {
         let fixture = Fixture::new(Duration::from_secs(1), test_build());
         let mut stale = fixture.agent(0);
         let mut current = fixture.agent(1);
@@ -3662,16 +3977,24 @@ mod tests {
         .iter()
         .map(|(name, body)| artifact(name, body))
         .collect();
+        // The same artifacts in another order: the same result.
+        let mut again: Vec<Artifact> = again;
+        again.reverse();
         current.event(id, result_event(again));
         match current.recv() {
+            MasterMessage::ResultAccepted { epoch, .. } => assert_eq!(epoch, 2),
+            other => panic!("expected result_accepted again, got {other:?}"),
+        }
+        current.event(id, result_event(vec![artifact("map", b"{\"other\":1}")]));
+        match current.recv() {
             MasterMessage::ResultRejected { reason, .. } => {
-                assert!(
-                    reason.contains("no live lease") || reason.contains("duplicate"),
-                    "{reason}"
-                )
+                assert!(reason.contains("different result"), "{reason}")
             }
             other => panic!("expected result_rejected, got {other:?}"),
         }
+        // The stale epoch stays refused after the job is done.
+        stale.event_at(id, 1, result_event(vec![artifact("map", MAP)]));
+        assert!(matches!(stale.recv(), MasterMessage::ResultRejected { .. }));
         let row = fixture
             .state
             .store
@@ -3924,9 +4247,9 @@ mod tests {
 
     /// An in-process TCP relay between an agent and the master (§9 "failure
     /// injection"): it forwards bytes both ways and can pause them (both
-    /// directions held, the TCP connections kept open) or cut every
-    /// connection it carries. Step 3 (resume) reuses it for drops shorter
-    /// than the lease.
+    /// directions held, the TCP connections kept open), cut every
+    /// connection it carries, or refuse new ones (accept, then close at
+    /// once), which with a cut makes a drop last as long as the test wants.
     struct Relay {
         port: u16,
         control: Arc<RelayControl>,
@@ -3937,6 +4260,7 @@ mod tests {
         paused: AtomicBool,
         /// Raised by `cut`: every connection opened before it closes.
         cuts: std::sync::atomic::AtomicU64,
+        refusing: AtomicBool,
         stopped: AtomicBool,
     }
 
@@ -3952,6 +4276,10 @@ mod tests {
                         return;
                     }
                     let Ok(inbound) = inbound else { continue };
+                    if shared.refusing.load(Ordering::SeqCst) {
+                        drop(inbound);
+                        continue;
+                    }
                     let Ok(outbound) = TcpStream::connect(("127.0.0.1", target)) else {
                         continue;
                     };
@@ -3982,6 +4310,10 @@ mod tests {
 
         fn cut(&self) {
             self.control.cuts.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn refuse(&self, refusing: bool) {
+            self.control.refusing.store(refusing, Ordering::SeqCst);
         }
     }
 
@@ -4065,55 +4397,257 @@ mod tests {
         (repo, worker, pid_file)
     }
 
-    /// §6 "channel lost past the lease TTL", with the real agent behind the
-    /// relay: a stall shorter than the lease changes nothing (the agent's
-    /// heartbeats arrive late, not never); a cut connection makes the agent
-    /// kill its job child, and the master, which no longer fails the job at
-    /// once, lets the lease run out and runs the job on the other agent at
-    /// epoch 2.
-    #[test]
-    fn a_cut_channel_lets_the_lease_run_out_and_the_job_reruns_on_another_agent() {
-        let fixture = Fixture::relayed(Duration::from_secs(3), own_build());
-        let root = fixture.dir.path();
-        let (repo, worker, pid_file) = scripted_job(root);
-        // The executor checks out the admitted commit, so it must be real.
+    /// `repo`'s HEAD, the commit a job on it is admitted against.
+    fn head_of(repo: &Path) -> String {
         let head = std::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
-            .current_dir(&repo)
+            .current_dir(repo)
             .output()
             .unwrap();
-        let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
-        let relay = fixture.relay.as_ref().unwrap();
+        String::from_utf8(head.stdout).unwrap().trim().to_owned()
+    }
+
+    fn local_demo(repo: &Path) -> RepoRef {
+        RepoRef {
+            slug: "local/demo".to_owned(),
+            owner: "local".to_owned(),
+            repo: "demo".to_owned(),
+            source: RepoSource::Local(repo.to_path_buf()),
+        }
+    }
+
+    /// The pid a scripted job child wrote, once it has.
+    #[cfg(target_os = "linux")]
+    fn child_pid(pid_file: &Path) -> i32 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(pid) = std::fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "the job child never started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Whether `pid` still runs (a zombie does not).
+    #[cfg(target_os = "linux")]
+    fn running(pid: i32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.split(") ")
+                .nth(1)
+                .is_some_and(|tail| !tail.starts_with('Z'))
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_until_gone(pid: i32, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while running(pid) {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_for_ready_agent(fixture: &Fixture, token: usize) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !fixture
+            .hub
+            .lock()
+            .conns
+            .values()
+            .any(|conn| conn.agent == token && conn.ready)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "agent {token} never became ready"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The real agent (`agent::run`, in a thread, with token 0 and `worker`
+    /// as its job child) dialling the fixture's relay, once it is ready.
+    fn relayed_agent(
+        fixture: &Fixture,
+        worker: PathBuf,
+    ) -> std::thread::JoinHandle<anyhow::Result<()>> {
+        let root = fixture.dir.path();
         let token_file = root.join("agent.token");
         std::fs::write(&token_file, TOKENS[0]).unwrap();
         let config = crate::service::agent::AgentConfig {
-            connect: relay.url(),
+            connect: fixture.relay.as_ref().unwrap().url(),
             token_file,
             cache_dir: root.join("agent"),
             worker_exe: worker,
         };
         let agent = std::thread::spawn(move || crate::service::agent::run(config));
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !fixture.hub.lock().conns.values().any(|conn| conn.ready) {
-            assert!(Instant::now() < deadline, "the agent never became ready");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        // The other agent joins second, so the job goes to the real one.
+        wait_for_ready_agent(fixture, 0);
+        agent
+    }
+
+    /// A one-commit repository at `root/demo`, and a job child that reports
+    /// `parse` progress 1..=`steps`, one every 0.1 s, and then -- once the
+    /// file `gate` exists, when one is named -- writes `MAP` and its
+    /// siblings into its output directory and reports a `result` for them,
+    /// as the real child would. Each start appends the child's pid to
+    /// `root/starts`.
+    fn resulting_job(root: &Path, steps: u64, gate: Option<&Path>) -> (PathBuf, String, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let (repo, _, _) = scripted_job(root);
+        let head = head_of(&repo);
+        let wait = gate.map_or(String::new(), |gate| {
+            format!("while [ ! -f '{}' ]; do sleep 0.02; done\n", gate.display())
+        });
+        let script = r##"#!/bin/sh
+spec=$(cat)
+out=$(printf '%s' "$spec" | sed -n 's/.*"output_dir":"\([^"]*\)".*/\1/p')
+echo $$ >> '@STARTS@'
+printf '%s\n' '{"type":"stage_started","v":1,"stage":"parse"}'
+i=1
+while [ $i -le @STEPS@ ]; do
+  printf '{"type":"progress","v":1,"value":{"stage":"parse","stage_index":6,"stage_count":22,"label":"Parsing files","unit":"files","done":%d,"total":@STEPS@,"rate_per_s":null}}\n' $i
+  sleep 0.1
+  i=$((i+1))
+done
+printf '%s\n' '{"type":"stage_finished","v":1,"stage":"parse","duration_s":1.5,"success":true}'
+@WAIT@mkdir -p "$out/demo.symbols"
+printf '%s' '@MAP@' > "$out/demo.json"
+printf '%s' '@SYMBOLS@' > "$out/demo.symbols.json"
+printf '%s' '@DISTRICT@' > "$out/demo.symbols/0.json"
+printf '%s' '@NAMES@' > "$out/demo.names.json"
+printf '{"type":"result","v":1,"map_path":"%s/demo.json","symbols_path":"%s/demo.symbols.json","symbols_dir":"%s/demo.symbols","names_cache":"%s/demo.names.json","commit":"@HEAD@","branch":"main","lang":"py","files":1,"districts":1,"modularity":0.5}\n' "$out" "$out" "$out" "$out"
+"##
+        .replace("@STARTS@", &root.join("starts").display().to_string())
+        .replace("@STEPS@", &steps.to_string())
+        .replace("@WAIT@", &wait)
+        .replace("@MAP@", std::str::from_utf8(MAP).unwrap())
+        .replace("@SYMBOLS@", std::str::from_utf8(SYMBOLS).unwrap())
+        .replace("@DISTRICT@", std::str::from_utf8(DISTRICT).unwrap())
+        .replace("@NAMES@", std::str::from_utf8(NAMES).unwrap())
+        .replace("@HEAD@", &head);
+        let worker = root.join("resulting-worker.sh");
+        std::fs::write(&worker, script).unwrap();
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (repo, head, worker)
+    }
+
+    /// How many times a `resulting_job` child started.
+    fn starts(root: &Path) -> usize {
+        std::fs::read_to_string(root.join("starts"))
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    fn stored_map(fixture: &Fixture, slug: &str, commit: &str) -> Vec<u8> {
+        let row = fixture
+            .state
+            .store
+            .get(slug, commit)
+            .unwrap()
+            .expect("a map row");
+        std::fs::read(&row.map_path).unwrap()
+    }
+
+    /// §6 "channel lost, worker alive", §9 "drop the channel for less than
+    /// the TTL", with the real agent behind the relay: the channel is cut
+    /// mid-stage and the agent resumes. The job is not re-run (one child
+    /// start, epoch 1, attempt 1, no other agent asked), its progress over
+    /// SSE never decreases and runs on to the child's last value across the
+    /// cut, the stage the child finished while the channel was down is
+    /// applied once, and the stored map is the child's bytes exactly.
+    #[test]
+    fn a_channel_cut_for_less_than_the_lease_resumes_without_a_rerun() {
+        use axum::http::Request;
+        use tower::ServiceExt;
+        const STEPS: u64 = 30;
+        let fixture = Fixture::relayed(Duration::from_secs(5), own_build());
+        let root = fixture.dir.path().to_path_buf();
+        let (repo, head, worker) = resulting_job(&root, STEPS, None);
+        let agent = relayed_agent(&fixture, worker);
         let mut other = FakeAgent::join(fixture.port, TOKENS[1], own_build());
-        let id = fixture.spawn_at(
-            RepoRef {
-                slug: "local/demo".to_owned(),
-                owner: "local".to_owned(),
-                repo: "demo".to_owned(),
-                source: RepoSource::Local(repo.clone()),
-            },
-            &head,
+        let id = fixture.spawn_at(local_demo(&repo), &head);
+        let runtime = fixture.runtime.as_ref().unwrap();
+        let router = crate::service::http::router(fixture.state.clone());
+        let events = runtime.spawn(async move {
+            let request = Request::builder()
+                .uri(format!("/api/jobs/{id}/events"))
+                .body(Body::empty())
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            axum::body::to_bytes(response.into_body(), 16 << 20)
+                .await
+                .unwrap()
+        });
+        let before = fixture.wait_for(id, "parse progress under way", |s| {
+            s.progress
+                .as_ref()
+                .is_some_and(|progress| progress.done >= 5)
+        });
+        let before = before.progress.unwrap().done;
+        fixture.relay.as_ref().unwrap().cut();
+        let done = fixture.wait_for(id, "the job ends", jobs::is_terminal);
+        assert_eq!(done.status, JobStatus::Done, "{done:?}");
+        let row = fixture.wait_for_row(id, "done in the store", |row| row.status == "done");
+        assert_eq!((row.epoch, row.attempt), (1, 1), "{row:?}");
+        assert_eq!(starts(&root), 1, "the job child ran again");
+        let parse = &done.stages[StageId::Parse.index() - 1];
+        assert_eq!(parse.state, jobs::StageState::Done);
+        assert_eq!(parse.duration_s, Some(1.5), "the stage was applied once");
+        assert_eq!(stored_map(&fixture, "local/demo", &head), MAP);
+        let body = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(10), events).await })
+            .expect("the SSE stream ends with the job")
+            .unwrap();
+        let frames = String::from_utf8(body.to_vec()).unwrap();
+        let seen: Vec<u64> = frames
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|value| value["progress"]["stage"] == "parse")
+            .filter_map(|value| value["progress"]["done"].as_u64())
+            .collect();
+        assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "{seen:?}");
+        assert!(seen.iter().any(|done| *done <= before), "{seen:?}");
+        assert_eq!(seen.last().copied(), Some(STEPS), "{seen:?}");
+        assert!(
+            other.recv_within(Duration::from_millis(100)).is_none(),
+            "the job went to another agent"
         );
+        assert!(!agent.is_finished(), "a lost channel ended the agent");
+        fixture.hub.shutdown_now();
+        let outcome = agent.join().unwrap();
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    /// §6 "channel lost past the lease TTL", §2.5's second branch, with the
+    /// real agent behind the relay. First a stall shorter than the lease
+    /// changes nothing: the agent's heartbeats arrive late, not never. Then
+    /// its channel is cut and the relay turns it away for longer than the
+    /// lease; its job child keeps running meanwhile. The master re-queues
+    /// the job to the other agent at epoch 2, which finishes it; the old
+    /// agent comes back naming epoch 1, is answered `cancel` (`lease_lost`),
+    /// kills its child and is ready for work again, and nothing of epoch 1
+    /// is registered.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_channel_cut_for_longer_than_the_lease_is_cancelled_on_resume() {
+        let fixture = Fixture::relayed(Duration::from_secs(3), own_build());
+        let root = fixture.dir.path().to_path_buf();
+        let (repo, worker, pid_file) = scripted_job(&root);
+        let head = head_of(&repo);
+        let agent = relayed_agent(&fixture, worker);
+        let mut other = FakeAgent::join(fixture.port, TOKENS[1], own_build());
+        let id = fixture.spawn_at(local_demo(&repo), &head);
         fixture.wait_for(id, "the child starts parsing", |s| {
             s.status == JobStatus::Indexing
         });
+        let child = child_pid(&pid_file);
+        let relay = fixture.relay.as_ref().unwrap();
         relay.pause();
-        std::thread::sleep(Duration::from_millis(1500));
+        std::thread::sleep(Duration::from_millis(1200));
         relay.resume();
         std::thread::sleep(Duration::from_millis(1500));
         let row = fixture.row(id);
@@ -4123,47 +4657,289 @@ mod tests {
             "{row:?}"
         );
         assert!(other.recv_within(Duration::from_millis(100)).is_none());
-
+        relay.refuse(true);
         relay.cut();
-        let outcome = agent.join().unwrap();
-        assert!(
-            outcome.is_err(),
-            "a lost channel ends the agent: {outcome:?}"
-        );
-        let child: i32 = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        #[cfg(target_os = "linux")]
-        {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
-                let stat = std::fs::read_to_string(format!("/proc/{child}/stat"));
-                let gone = stat.as_ref().map_or(true, |stat| {
-                    stat.split(") ")
-                        .nth(1)
-                        .is_some_and(|tail| tail.starts_with('Z'))
-                });
-                if gone {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "the job child outlived its channel"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = child;
-        assert_ne!(fixture.snapshot(id).status, JobStatus::Failed);
         assert_eq!(other.assigned(), id);
         assert_eq!(other.epoch, 2);
-        let row = fixture.wait_for_row(id, "leased to the other agent", |row| {
-            row.status == "leased"
+        assert!(running(child), "a lost channel killed the job");
+        let artifacts = upload_all_at(fixture.port, TOKENS[1], id, 2);
+        other.event(id, result_at(artifacts, &head));
+        match other.recv() {
+            MasterMessage::ResultAccepted { epoch, .. } => assert_eq!(epoch, 2),
+            unexpected => panic!("expected result_accepted, got {unexpected:?}"),
+        }
+        let row = fixture.wait_for_row(id, "done in the store", |row| row.status == "done");
+        assert_eq!((row.epoch, row.attempt), (2, 2), "{row:?}");
+        relay.refuse(false);
+        wait_until_gone(
+            child,
+            "the old agent's child outlived the `cancel` of its resume",
+        );
+        wait_for_ready_agent(&fixture, 0);
+        assert_eq!(stored_map(&fixture, "local/demo", &head), MAP);
+        assert!(!agent.is_finished(), "a lost channel ended the agent");
+        fixture.hub.shutdown_now();
+        let outcome = agent.join().unwrap();
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    /// §9 "pause the connection": the relay holds both directions for
+    /// longer than the lease, with every connection open. It is the same as
+    /// a long drop: the master re-queues the job and closes the old channel,
+    /// the agent, hearing nothing for a whole TTL, redials, and once the
+    /// relay lets it through is answered `cancel` and kills its child.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_channel_paused_for_longer_than_the_lease_is_the_same_as_a_long_drop() {
+        let fixture = Fixture::relayed(Duration::from_secs(3), own_build());
+        let root = fixture.dir.path().to_path_buf();
+        let (repo, worker, pid_file) = scripted_job(&root);
+        let head = head_of(&repo);
+        let agent = relayed_agent(&fixture, worker);
+        let mut other = FakeAgent::join(fixture.port, TOKENS[1], own_build());
+        let id = fixture.spawn_at(local_demo(&repo), &head);
+        fixture.wait_for(id, "the child starts parsing", |s| {
+            s.status == JobStatus::Indexing
         });
-        assert_eq!(row.attempt, 2);
+        let child = child_pid(&pid_file);
+        let relay = fixture.relay.as_ref().unwrap();
+        relay.pause();
+        assert_eq!(other.assigned(), id);
+        assert_eq!(other.epoch, 2);
+        let artifacts = upload_all_at(fixture.port, TOKENS[1], id, 2);
+        other.event(id, result_at(artifacts, &head));
+        match other.recv() {
+            MasterMessage::ResultAccepted { epoch, .. } => assert_eq!(epoch, 2),
+            unexpected => panic!("expected result_accepted, got {unexpected:?}"),
+        }
+        assert!(running(child), "a stalled channel killed the job");
+        relay.resume();
+        wait_until_gone(
+            child,
+            "the old agent's child outlived the `cancel` of its resume",
+        );
+        wait_for_ready_agent(&fixture, 0);
+        let row = fixture.row(id);
+        assert_eq!(
+            (row.status.as_str(), row.epoch, row.attempt),
+            ("done", 2, 2),
+            "{row:?}"
+        );
+        assert_eq!(stored_map(&fixture, "local/demo", &head), MAP);
+        assert!(!agent.is_finished(), "a stalled channel ended the agent");
+        fixture.hub.shutdown_now();
+        let outcome = agent.join().unwrap();
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    /// §6 "duplicate or stale result" across a drop, with the real agent:
+    /// the channel is cut the moment the agent's uploads are in, so its
+    /// `result` is lost in flight or lands just before the cut, and a
+    /// verdict, if any, is lost with the channel. Either way the agent keeps
+    /// the result, resumes, and sends it again only if the master had not
+    /// applied it; the master registers it once, the agent hears a verdict
+    /// (it is ready again), and the job is done at epoch 1, attempt 1.
+    #[test]
+    fn a_result_cut_off_as_it_is_sent_is_registered_once_after_a_resume() {
+        let fixture = Fixture::relayed(Duration::from_secs(5), own_build());
+        let root = fixture.dir.path().to_path_buf();
+        let gate = root.join("go");
+        let (repo, head, worker) = resulting_job(&root, 3, Some(&gate));
+        let agent = relayed_agent(&fixture, worker);
+        let id = fixture.spawn_at(local_demo(&repo), &head);
+        fixture.wait_for(id, "parse finished", |s| {
+            s.stages[StageId::Parse.index() - 1].state == jobs::StageState::Done
+        });
+        std::fs::write(&gate, b"").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while fixture.hub.uploads(id).len() < 4 {
+            assert!(
+                Instant::now() < deadline,
+                "the agent never uploaded its result"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        fixture.relay.as_ref().unwrap().cut();
+        let done = fixture.wait_for(id, "the job ends", jobs::is_terminal);
+        assert_eq!(done.status, JobStatus::Done, "{done:?}");
+        let row = fixture.wait_for_row(id, "done in the store", |row| row.status == "done");
+        assert_eq!((row.epoch, row.attempt), (1, 1), "{row:?}");
+        assert_eq!(starts(&root), 1, "the job child ran again");
+        assert_eq!(stored_map(&fixture, "local/demo", &head), MAP);
+        wait_for_ready_agent(&fixture, 0);
+        assert!(!agent.is_finished(), "a lost channel ended the agent");
+        fixture.hub.shutdown_now();
+        let outcome = agent.join().unwrap();
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    /// `result_event` for a job admitted against `commit`.
+    fn result_at(artifacts: Vec<Artifact>, commit: &str) -> WorkerEvent {
+        let mut event = result_event(artifacts);
+        if let WorkerEvent::Result {
+            commit: reported, ..
+        } = &mut event
+        {
+            *reported = commit.to_owned();
+        }
+        event
+    }
+
+    fn stage_finished(stage: StageId, duration_s: f64) -> WorkerEvent {
+        WorkerEvent::StageFinished {
+            v: 1,
+            stage,
+            duration_s,
+            success: true,
+        }
+    }
+
+    /// §3.5 on the master's side, with scripted agents: a lease whose
+    /// channel dropped is resumed within the TTL only by its holder at its
+    /// epoch -- another token, a stale epoch and a job nobody holds are
+    /// answered `cancel` with `lease_lost` -- and `continue` carries the
+    /// master's own `acked_seq`. The lease moves to the new channel, a
+    /// replay of what it already applied is ignored (the stage it finished
+    /// is not counted twice), and the job ends `done` at epoch 1, attempt 1.
+    #[test]
+    fn a_dropped_lease_is_resumed_from_the_masters_acked_seq_by_its_holder_only() {
+        let fixture = Fixture::new(Duration::from_secs(3), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        clone_started(&mut agent, id);
+        agent.event(id, stage_finished(StageId::Clone, 0.5));
+        agent.event(
+            id,
+            WorkerEvent::StageStarted {
+                v: 1,
+                stage: StageId::Parse,
+            },
+        );
+        agent.event(id, stage_finished(StageId::Parse, 1.0));
+        fixture.wait_for(id, "parse finished", |s| {
+            s.stages[StageId::Parse.index() - 1].state == jobs::StageState::Done
+        });
+        drop(agent);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fixture.hub.detached(id) {
+            assert!(
+                Instant::now() < deadline,
+                "the master never saw the channel close"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let lease_lost = |answers: &[WelcomeResume]| {
+            answers.iter().all(|answer| {
+                answer.action == ResumeAction::Cancel
+                    && answer.reason == Some(CancelReason::LeaseLost)
+            })
+        };
+        let (_, answers) = FakeAgent::rejoin(fixture.port, TOKENS[1], vec![resume_entry(id, 1, 4)]);
+        assert!(answers.len() == 1 && lease_lost(&answers), "{answers:?}");
+        let (_, answers) = FakeAgent::rejoin(
+            fixture.port,
+            TOKENS[0],
+            vec![resume_entry(id, 2, 4), resume_entry(Uuid::new_v4(), 1, 0)],
+        );
+        assert!(answers.len() == 2 && lease_lost(&answers), "{answers:?}");
+        let (mut back, answers) =
+            FakeAgent::rejoin(fixture.port, TOKENS[0], vec![resume_entry(id, 1, 6)]);
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].action, ResumeAction::Continue);
+        assert_eq!(answers[0].acked_seq, 4);
+        // The agent replays from what it last knew was acknowledged (2):
+        // seqs 3 and 4 are repeats and ignored, the result is seq 5.
+        back.epoch = 1;
+        back.seq = 2;
+        back.event(
+            id,
+            WorkerEvent::StageStarted {
+                v: 1,
+                stage: StageId::Parse,
+            },
+        );
+        back.event(id, stage_finished(StageId::Parse, 1.0));
+        back.deliver(fixture.port, TOKENS[0], id);
+        assert!(matches!(back.recv(), MasterMessage::ResultAccepted { .. }));
+        let row = fixture.wait_for_row(id, "done in the store", |row| row.status == "done");
+        assert_eq!((row.epoch, row.attempt), (1, 1), "{row:?}");
+        let parse = &fixture.snapshot(id).stages[StageId::Parse.index() - 1];
+        assert_eq!(
+            parse.duration_s,
+            Some(1.0),
+            "a replayed event was applied twice"
+        );
+    }
+
+    /// §6 "duplicate or stale result", after a drop, with a scripted agent:
+    /// the result was registered but the channel died before the verdict
+    /// reached the agent. It resumes naming the job, is answered `continue`,
+    /// and hears the verdict again; a repeat of its result is acknowledged
+    /// again, once. The job is registered once.
+    #[test]
+    fn a_verdict_lost_with_the_channel_is_sent_again_on_resume() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let (mut agent, answers) = FakeAgent::rejoin(fixture.port, TOKENS[0], Vec::new());
+        assert!(answers.is_empty());
+        agent.send(&WorkerMessage::Ready { slots_free: 1 });
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        clone_started(&mut agent, id);
+        agent.deliver(fixture.port, TOKENS[0], id);
+        fixture.wait_for_row(id, "registered", |row| row.status == "done");
+        // The verdict is on its way; the channel dies before it is read.
+        drop(agent);
+        let (mut back, answers) =
+            FakeAgent::rejoin(fixture.port, TOKENS[0], vec![resume_entry(id, 1, 2)]);
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].action, ResumeAction::Continue);
+        assert_eq!(answers[0].acked_seq, 2);
+        match back.recv() {
+            MasterMessage::ResultAccepted { job_id, epoch, .. } => {
+                assert_eq!((job_id, epoch), (id.to_string(), 1))
+            }
+            other => panic!("expected the verdict again, got {other:?}"),
+        }
+        back.epoch = 1;
+        back.seq = 2;
+        let again = [
+            ("map", MAP),
+            ("symbols", SYMBOLS),
+            ("symbols_dir/0.json", DISTRICT),
+            ("names", NAMES),
+        ]
+        .iter()
+        .map(|(name, body)| artifact(name, body))
+        .collect();
+        back.event(id, result_event(again));
+        assert!(matches!(back.recv(), MasterMessage::ResultAccepted { .. }));
+        assert!(back.recv_within(Duration::from_millis(300)).is_none());
+        assert_eq!(fixture.snapshot(id).status, JobStatus::Done);
+        let row = fixture
+            .state
+            .store
+            .get("test/demo", COMMIT)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(&row.map_path).unwrap(), MAP);
+    }
+
+    /// §3.6: `hello.resume` is gated on the `resume` feature. An agent that
+    /// did not advertise it and names jobs anyway gets a protocol error,
+    /// and no channel.
+    #[test]
+    fn resume_entries_from_an_agent_that_did_not_advertise_resume_are_a_protocol_error() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = FakeAgent::raw(fixture.port, TOKENS[0]);
+        agent.send(&hello_with(
+            test_build(),
+            (PROTO, PROTO),
+            &[FEATURE_LOCAL_PATHS],
+            vec![resume_entry(Uuid::new_v4(), 1, 0)],
+        ));
+        agent.expect_error("protocol_error");
+        assert_eq!(fixture.hub.lock().conns.len(), 0);
     }
 
     /// The real agent (`agent::run`, in a thread, with a scripted job child)
