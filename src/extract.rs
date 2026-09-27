@@ -5596,24 +5596,30 @@ fn build_output_directory(
     .flatten()
     .collect::<Vec<_>>();
     let first = *fields.first()?;
-    let first_segment = |value: &str| {
-        value
-            .trim_start_matches("./")
-            .split('/')
-            .next()
-            .unwrap_or("")
-    };
-    let segment = first_segment(first);
+    let segment = first_path_segment(first);
     if segment.is_empty()
         || fields
             .iter()
             .copied()
-            .any(|value| segment != first_segment(value))
+            .any(|value| segment != first_path_segment(value))
     {
         return None;
     }
     let build_dir = join_slash(pkg_dir, segment);
     (!repo.join(&build_dir).exists()).then_some(build_dir)
+}
+
+/// The first `/`-separated segment of a manifest field value, with a leading
+/// `./` stripped first -- a plain `fn`, not a closure, so it has the
+/// ordinary `for<'a> fn(&'a str) -> &'a str` signature every call site here
+/// needs; a closure inferred from one call's lifetime does not generalize to
+/// the next.
+fn first_path_segment(value: &str) -> &str {
+    value
+        .trim_start_matches("./")
+        .split('/')
+        .next()
+        .unwrap_or("")
 }
 
 /// `typesVersions`' targets for `subpath` (`None` for the package root,
