@@ -5184,16 +5184,21 @@ async function checkHomeEmptyCatalogue(browser, base) {
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
-  // Static index empty, service unreachable -- the merge (src/data/queries.ts)
-  // has nothing from either side, which is "empty", not "unavailable": the
-  // service ping failing alone must never read as an error state.
+  // Static index AND the (reachable) service both empty -- the merge
+  // (src/data/queries.ts) has nothing from either side, which is "empty",
+  // not "unavailable". The service is left reachable on purpose: a review
+  // screenshot of this state visually confirmed that failing /api/healthz
+  // instead also disabled the submit form and showed its own "service isn't
+  // reachable" line, which reads as two contradictory messages on one
+  // screen -- this is a genuinely empty catalogue, not an outage.
   await page.route("**/maps/index.json", (route) => route.fulfill({ json: [] }));
-  await page.route("**/api/healthz", (route) => route.fulfill({ status: 503, body: "" }));
+  await page.route("**/api/maps", (route) => route.fulfill({ json: [] }));
   await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
   await page.locator("[data-catalogue-empty]").waitFor({ timeout: 15_000 });
   report((await page.locator("[data-catalogue-row]").count()) === 0, `${label}: no rows`);
   report(/no repositories mapped/i.test(await page.locator("[data-catalogue-empty]").innerText()), `${label}: plain empty-state copy, not a raw "0 results"`);
   report((await page.locator("[data-catalogue-error]").count()) === 0, `${label}: not shown as an error -- an empty list is not a failure`);
+  report(!(await page.locator('[data-repo-field]').isDisabled()), `${label}: the service is reachable -- the submit field stays enabled`);
   await context.close();
 }
 

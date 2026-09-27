@@ -806,12 +806,15 @@ try {
       }
     }
 
-    // Empty catalogue: nothing from either source.
+    // Empty catalogue: nothing from either source, service left reachable
+    // (otherwise the submit form's own "isn't reachable" line shows up next
+    // to "no repositories mapped yet" -- two messages for what should read
+    // as one plain empty state).
     for (const profile of PROFILES) {
       const context = await browser.newContext(profile);
       const page = await context.newPage();
       await page.route("**/maps/index.json", (route) => route.fulfill({ json: [] }));
-      await page.route("**/api/healthz", (route) => route.fulfill({ status: 503, body: "" }));
+      await page.route("**/api/maps", (route) => route.fulfill({ json: [] }));
       await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
       await page.locator("[data-catalogue-empty]").waitFor({ timeout: 15_000 });
       await page.screenshot({ path: `${stem}-${profile.name}-empty.png`, fullPage: true });
