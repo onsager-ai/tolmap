@@ -461,8 +461,8 @@ impl Agent {
             current.kill();
         }
         Err(anyhow!(
-            "the channel to the master was lost ({reason}); with no resume in phase 1, \
-             the job this agent held, if any, was killed"
+            "the channel to the master was lost ({reason}); with no resume yet, the job \
+             this agent held, if any, was killed and its lease left to run out"
         ))
     }
 

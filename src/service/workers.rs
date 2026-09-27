@@ -1522,6 +1522,11 @@ pub(crate) fn run_remote(
         return;
     }
     let store = &state.store;
+    // The commit the job was admitted against, which `jobs::prepare` puts
+    // in the `JobSpec`: a result is checked against it (`check_result`).
+    // Read from the snapshot here, so an adopted lease, which skips
+    // `prepare`, checks against the same value.
+    let admitted_commit = tx.borrow().commit.clone().unwrap_or_default();
     // A lease a restarted master found in the store (§6): adopted, not
     // asked for again. Its expiry is a restart, not a lost worker.
     let orphan = registry.take_orphan(job_id);
@@ -1611,7 +1616,7 @@ pub(crate) fn run_remote(
                             started,
                             job_id,
                             &lease.dir,
-                            &job.commit,
+                            &admitted_commit,
                             &event,
                         );
                         match registered {
@@ -4071,6 +4076,13 @@ mod tests {
         let fixture = Fixture::relayed(Duration::from_secs(3), own_build());
         let root = fixture.dir.path();
         let (repo, worker, pid_file) = scripted_job(root);
+        // The executor checks out the admitted commit, so it must be real.
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
         let relay = fixture.relay.as_ref().unwrap();
         let token_file = root.join("agent.token");
         std::fs::write(&token_file, TOKENS[0]).unwrap();
@@ -4088,12 +4100,15 @@ mod tests {
         }
         // The other agent joins second, so the job goes to the real one.
         let mut other = FakeAgent::join(fixture.port, TOKENS[1], own_build());
-        let id = fixture.spawn(RepoRef {
-            slug: "local/demo".to_owned(),
-            owner: "local".to_owned(),
-            repo: "demo".to_owned(),
-            source: RepoSource::Local(repo.clone()),
-        });
+        let id = fixture.spawn_at(
+            RepoRef {
+                slug: "local/demo".to_owned(),
+                owner: "local".to_owned(),
+                repo: "demo".to_owned(),
+                source: RepoSource::Local(repo.clone()),
+            },
+            &head,
+        );
         fixture.wait_for(id, "the child starts parsing", |s| {
             s.status == JobStatus::Indexing
         });
