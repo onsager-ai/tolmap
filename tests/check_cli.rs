@@ -240,7 +240,7 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
     assert_eq!(report["verdict"], "pass");
     assert_eq!(
         report["thresholds"],
-        serde_json::json!({"max_districts": 4, "max_dq": 0.01, "source": "default"}),
+        serde_json::json!({"max_districts": 4, "max_dq": 0.0001, "source": "default"}),
         "no threshold flag: the calibrated defaults apply"
     );
     assert_eq!(report["lower_bound"], true);
@@ -263,7 +263,7 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
     assert!(lines[1].starts_with("delta q: +0.000000"), "{}", run.stdout);
     assert_eq!(
         lines[2],
-        "verdict: pass (districts 1 <= 4, delta q +0.000000 >= -0.010000; default thresholds)",
+        "verdict: pass (districts 1 <= 4, delta q +0.000000 >= -0.000100; default thresholds)",
         "{}",
         run.stdout
     );
@@ -366,7 +366,7 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
 fn the_default_thresholds_fail_a_heavy_coupling_change_without_any_flag() {
     let (_dir, repo, base) = fixture();
     // billing's invoice imports every module of the two other packages: on
-    // a graph this small, far more cross-district weight than 0.01 of q.
+    // a graph this small, far more cross-district weight than 0.0001 of q.
     let modules = PACKAGES[0].1;
     let mut source = module_source("billing", &modules, 0, 1);
     let mut uses = String::new();
@@ -384,7 +384,7 @@ fn the_default_thresholds_fail_a_heavy_coupling_change_without_any_flag() {
     expect_code(&run, 1);
     let report = run.json();
     assert!(
-        report["delta_q"].as_f64().unwrap() < -0.01,
+        report["delta_q"].as_f64().unwrap() < -0.0001,
         "the change must drop q past the default: {report:#}"
     );
     assert_eq!(report["verdict"], "fail");

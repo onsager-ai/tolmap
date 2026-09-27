@@ -89,13 +89,16 @@ const TOUCHED_LANDMARKS: [&str; 2] = ["bridge", "hazard"];
 pub const DEFAULT_MAX_DISTRICTS: usize = 4;
 
 /// The default `--max-dq`, applied when no threshold flag is given.
-/// Calibrated with [`DEFAULT_MAX_DISTRICTS`] (finding 60). `delta_q` moves
-/// on commits that change no file on the map, because the head's co-change
-/// history is one commit longer: that drift reached -0.004191 on django.
-/// The default sits above it, in the knee of django's tail (-0.017309, then
-/// -0.005940), and fires on 1, 0 and 0 of the 200 commits alone; every
-/// commit it fires on there also crossed more than 4 districts.
-pub const DEFAULT_MAX_DQ: f64 = 0.01;
+/// Recalibrated on the same 600 commits once co-change was held at the
+/// base (issue #176, finding 61). A commit that changes no mapped file now
+/// gives Δq exactly 0, and one that adds no cross-district edge moves it by
+/// at most 0.000064. Commits adding 1-3 cross-district imports drop it by
+/// 0.000083-0.000572. 0.0001 sits between the two: it fires on 8 of django's
+/// 9 such commits and all 4 of vuejs/core's, and on 2 commits that add a
+/// cross-district edge made of naming similarity alone. (The first
+/// calibration, finding 60, set 0.01 above a history-drift floor of 0.0042
+/// that no longer exists.)
+pub const DEFAULT_MAX_DQ: f64 = 0.0001;
 
 pub const LOWER_BOUND_NOTE: &str = "numbers are a lower bound: tolmap's graph holds only the references it can resolve (calls through variables, dynamic imports and reflection are missed), so the change couples at least this much";
 
