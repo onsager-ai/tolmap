@@ -1167,11 +1167,14 @@ impl WorkerHub {
                 answers.push(cancel(CancelReason::LeaseLost));
                 continue;
             };
-            if lease.agent != Some(agent)
-                || lease.epoch != entry.epoch
-                || lease.lost
-                || now > lease.deadline
-            {
+            // Run out is run out, whether or not the runner has polled yet:
+            // marked here as `expired` would mark it, so the `released` this
+            // `cancel` brings back is ignored rather than read as a job the
+            // agent gave up unasked.
+            if now > lease.deadline {
+                lease.lost = true;
+            }
+            if lease.agent != Some(agent) || lease.epoch != entry.epoch || lease.lost {
                 answers.push(cancel(CancelReason::LeaseLost));
                 continue;
             }
@@ -4595,7 +4598,7 @@ printf '{"type":"result","v":1,"map_path":"%s/demo.json","symbols_path":"%s/demo
         assert_eq!(parse.duration_s, Some(1.5), "the stage was applied once");
         assert_eq!(stored_map(&fixture, "local/demo", &head), MAP);
         let body = runtime
-            .block_on(tokio::time::timeout(Duration::from_secs(10), events))
+            .block_on(async { tokio::time::timeout(Duration::from_secs(10), events).await })
             .expect("the SSE stream ends with the job")
             .unwrap();
         let frames = String::from_utf8(body.to_vec()).unwrap();
@@ -4659,8 +4662,12 @@ printf '{"type":"result","v":1,"map_path":"%s/demo.json","symbols_path":"%s/demo
         assert_eq!(other.assigned(), id);
         assert_eq!(other.epoch, 2);
         assert!(running(child), "a lost channel killed the job");
-        other.deliver(fixture.port, TOKENS[1], id);
-        assert!(matches!(other.recv(), MasterMessage::ResultAccepted { .. }));
+        let artifacts = upload_all_at(fixture.port, TOKENS[1], id, 2);
+        other.event(id, result_at(artifacts, &head));
+        match other.recv() {
+            MasterMessage::ResultAccepted { epoch, .. } => assert_eq!(epoch, 2),
+            unexpected => panic!("expected result_accepted, got {unexpected:?}"),
+        }
         let row = fixture.wait_for_row(id, "done in the store", |row| row.status == "done");
         assert_eq!((row.epoch, row.attempt), (2, 2), "{row:?}");
         relay.refuse(false);
@@ -4699,8 +4706,12 @@ printf '{"type":"result","v":1,"map_path":"%s/demo.json","symbols_path":"%s/demo
         relay.pause();
         assert_eq!(other.assigned(), id);
         assert_eq!(other.epoch, 2);
-        other.deliver(fixture.port, TOKENS[1], id);
-        assert!(matches!(other.recv(), MasterMessage::ResultAccepted { .. }));
+        let artifacts = upload_all_at(fixture.port, TOKENS[1], id, 2);
+        other.event(id, result_at(artifacts, &head));
+        match other.recv() {
+            MasterMessage::ResultAccepted { epoch, .. } => assert_eq!(epoch, 2),
+            unexpected => panic!("expected result_accepted, got {unexpected:?}"),
+        }
         assert!(running(child), "a stalled channel killed the job");
         relay.resume();
         wait_until_gone(
@@ -4760,6 +4771,18 @@ printf '{"type":"result","v":1,"map_path":"%s/demo.json","symbols_path":"%s/demo
         fixture.hub.shutdown_now();
         let outcome = agent.join().unwrap();
         assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    /// `result_event` for a job admitted against `commit`.
+    fn result_at(artifacts: Vec<Artifact>, commit: &str) -> WorkerEvent {
+        let mut event = result_event(artifacts);
+        if let WorkerEvent::Result {
+            commit: reported, ..
+        } = &mut event
+        {
+            *reported = commit.to_owned();
+        }
+        event
     }
 
     fn stage_finished(stage: StageId, duration_s: f64) -> WorkerEvent {

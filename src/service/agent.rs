@@ -439,11 +439,7 @@ fn dial(endpoint: &Endpoint, token: &str, hello: &WorkerMessage) -> Result<Sessi
                 "the master refused this agent's token: it is not the master that minted it"
             )))
         }
-        Err(error) => {
-            return Err(Dial::Retry(anyhow!(
-                "the master refused the channel: {error}"
-            )))
-        }
+        Err(error) => return Err(Dial::Retry(anyhow!("the channel upgrade failed: {error}"))),
     };
     socket
         .get_ref()
@@ -1051,11 +1047,13 @@ impl Agent {
         // without a word from the master means the channel is dead even
         // though the socket reports nothing: a stalled path or a half-open
         // connection (§6). Redialling is how the agent learns whether its
-        // lease survived.
-        if self.link.is_some()
-            && self.current.is_some()
-            && self.last_heard.elapsed() > self.lease_ttl
-        {
+        // lease survived. A job being let go has no lease to renew, only a
+        // `released` to send once its thread is done.
+        let leased = self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.released.is_none());
+        if self.link.is_some() && leased && self.last_heard.elapsed() > self.lease_ttl {
             let why = format!("no word from the master in {} s", self.lease_ttl.as_secs());
             self.disconnect(&why);
         }
