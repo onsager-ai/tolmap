@@ -226,6 +226,13 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
     assert_eq!(report["version"], 1);
     assert_eq!(report["base"], base.as_str());
     assert!(report["head"].is_null(), "head is the working tree");
+    // Three packages, three districts by construction; every module is on
+    // the map.
+    assert!(
+        report["base_districts"].as_u64().unwrap() >= 3,
+        "{report:#}"
+    );
+    assert!(report["base_files"].as_u64().unwrap() >= 18, "{report:#}");
     assert_eq!(report["districts_crossed"], 1, "{report:#}");
     assert_eq!(report["delta_q"].as_f64(), Some(0.0), "{report:#}");
     assert_eq!(report["modularity_base"], report["modularity_head"]);

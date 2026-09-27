@@ -11,6 +11,11 @@ matrix, for .github/workflows/remote-build.yml's `setup` job.
   - "stability:owner/repo,...": the named entries, 300 commits back unless
     the repository has an override in STABILITY_BACK (httpx uses 200).
   - "prune-measurement": those fixtures plus issue #57's twelve-repo sample.
+  - "check-calibration": issue #170's replay of `tolmap check` over the
+    last CHECK_CALIBRATION_COMMITS first-parent commits of django,
+    prometheus and vuejs/core at their corpus pins, each repository split
+    into CHECK_CALIBRATION_SHARDS jobs. "check-calibration:owner/repo,..."
+    replays the named entries instead.
   - a comma-separated list of slugs ("owner/repo,owner/repo"): exactly
     those entries, in manifest order (duplicates collapsed). This is the
     form issue #59's owed comparison uses (msgraph-sdk-go, aws-sdk-go-v2,
@@ -59,6 +64,16 @@ STABILITY_BACK = {
     "encode/httpx": 200,
 }
 STABILITY_DEFAULT_BACK = 300
+# Issue #170 PR 2: one Python, one Go and one TypeScript repository, the
+# same three the build job already captures worker timelines on. All three
+# are single-language at the root detection picks, which is what `tolmap
+# check` extracts (it takes detection's one source, never --all-sources).
+CHECK_CALIBRATION = ("django/django", "prometheus/prometheus", "vuejs/core")
+CHECK_CALIBRATION_COMMITS = 200
+# Four shards of 50 commits keep each job near ten minutes on django's
+# measured 5.6 s per check (docs/CHECK.md), far inside the job timeout,
+# while 12 jobs stay under the build job's own max-parallel ceiling.
+CHECK_CALIBRATION_SHARDS = 4
 PRUNE_SAMPLE = (
     "microsoftgraph/msgraph-sdk-python",
     "date-fns/date-fns",
@@ -199,6 +214,37 @@ def resolve_stability(entries: list[dict], selector: str) -> list[dict]:
     return matched
 
 
+def resolve_check_calibration(entries: list[dict], selector: str) -> list[dict]:
+    """The check replay's matrix: every named repository once per shard."""
+    _, separator, suffix = selector.partition(":")
+    slugs = (
+        [part.strip() for part in suffix.split(",") if part.strip()]
+        if separator
+        else list(CHECK_CALIBRATION)
+    )
+    if not slugs:
+        raise SystemExit(
+            "check-calibration selector must be 'check-calibration' or "
+            "'check-calibration:owner/repo,...'"
+        )
+    by_slug = {entry["slug"]: entry for entry in entries}
+    unknown = [slug for slug in slugs if slug not in by_slug]
+    if unknown:
+        raise SystemExit(
+            f"check-calibration selector named slug(s) not in {DEFAULT_MANIFEST.name}: "
+            f"{', '.join(unknown)}"
+        )
+    matched = []
+    for slug in dict.fromkeys(slugs):
+        for shard in range(CHECK_CALIBRATION_SHARDS):
+            entry = dict(by_slug[slug])
+            entry["shard"] = shard
+            entry["shards"] = CHECK_CALIBRATION_SHARDS
+            entry["commits"] = CHECK_CALIBRATION_COMMITS
+            matched.append(entry)
+    return matched
+
+
 def to_matrix(entries: list[dict]) -> dict:
     include = []
     for entry in entries:
@@ -210,6 +256,11 @@ def to_matrix(entries: list[dict]) -> dict:
                 "band": entry["band"],
                 "args": list(entry.get("args", ["--all-sources"])),
                 **({"back": entry["back"]} if "back" in entry else {}),
+                **{
+                    key: entry[key]
+                    for key in ("shard", "shards", "commits")
+                    if key in entry
+                },
                 **(
                     {"fixture_no_parcels": entry["fixture_no_parcels"]}
                     if "fixture_no_parcels" in entry
@@ -249,6 +300,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(to_matrix(matched), sort_keys=True))
         print(
             f"matched {len(matched)} warm-start repositories from {args.manifest}",
+            file=sys.stderr,
+        )
+        return 0
+    if args.repos.strip().lower().split(":", 1)[0] == "check-calibration":
+        matched = resolve_check_calibration(entries, args.repos.strip())
+        print(json.dumps(to_matrix(matched), sort_keys=True))
+        print(
+            f"matched {len(matched)} check-calibration shards from {args.manifest}",
             file=sys.stderr,
         )
         return 0

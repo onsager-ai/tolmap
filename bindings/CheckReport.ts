@@ -6,4 +6,4 @@ import type { CheckLandmark } from "./CheckLandmark";
 import type { CheckThresholds } from "./CheckThresholds";
 import type { CheckVerdict } from "./CheckVerdict";
 
-export type CheckReport = { version: number, base: string, head: string | null, districts_crossed: number, districts: Array<CheckDistrict>, files: Array<CheckFile>, unplaced_files: Array<string>, modularity_base: number, modularity_head: number, delta_q: number, edges_added: Array<CheckEdge>, edges_removed: Array<CheckEdge>, landmark_touches: Array<CheckLandmark>, thresholds: CheckThresholds, verdict: CheckVerdict, lower_bound: boolean, };
+export type CheckReport = { version: number, base: string, head: string | null, base_files: number, base_districts: number, districts_crossed: number, districts: Array<CheckDistrict>, files: Array<CheckFile>, unplaced_files: Array<string>, modularity_base: number, modularity_head: number, delta_q: number, edges_added: Array<CheckEdge>, edges_removed: Array<CheckEdge>, landmark_touches: Array<CheckLandmark>, thresholds: CheckThresholds, verdict: CheckVerdict, lower_bound: boolean, };

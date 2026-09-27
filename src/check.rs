@@ -624,6 +624,12 @@ fn compare(
     landmark_touches.dedup();
 
     let districts_crossed = districts.len();
+    let base_districts = base_map
+        .nodes
+        .iter()
+        .map(|node| node.district())
+        .collect::<BTreeSet<_>>()
+        .len();
     let failed = thresholds
         .max_districts
         .is_some_and(|max| districts_crossed > max)
@@ -632,6 +638,8 @@ fn compare(
         version: REPORT_VERSION,
         base,
         head,
+        base_files: base_map.files.len(),
+        base_districts,
         districts_crossed,
         districts,
         files,

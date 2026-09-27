@@ -379,7 +379,11 @@ pub struct MapDocument {
 // written down.
 //
 // `base` is the full commit id of `--base`; `head` is `--head`'s, or null
-// for the working tree (uncommitted and untracked files included). Every
+// for the working tree (uncommitted and untracked files included).
+// `base_files` and `base_districts` are the base map's size: its files and
+// its distinct districts. They are what a threshold scaled to the
+// repository would read, and they let a consumer see how large the map a
+// `districts_crossed` was counted on is. Every
 // float is rounded to 6 decimal places; `delta_q` is computed before that
 // rounding, and the thresholds compare the rounded values that are printed.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
@@ -387,6 +391,8 @@ pub struct CheckReport {
     pub version: u32,
     pub base: String,
     pub head: Option<String>,
+    pub base_files: usize,
+    pub base_districts: usize,
     pub districts_crossed: usize,
     pub districts: Vec<CheckDistrict>,
     pub files: Vec<CheckFile>,
