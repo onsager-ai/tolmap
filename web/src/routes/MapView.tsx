@@ -17,6 +17,8 @@ import { FooterStats } from "@/components/FooterStats";
 import { ZoomControls } from "@/components/ZoomControls";
 import { PackageLegend } from "@/components/PackageLegend";
 import { LoadProgressIndicator } from "@/components/LoadProgressIndicator";
+import { DetailStatusNote } from "@/components/DetailStatusNote";
+import { useEarlyMapJob } from "@/api/useEarlyMapJob";
 import { buildPackageLayout } from "@/map/packageLayout";
 import { useEffectiveTheme } from "@/lib/theme";
 import type { MapSearch } from "@/routes/search";
@@ -40,7 +42,14 @@ export function MapView() {
   const search = useSearch({ strict: false }) as MapSearch;
   const navigate = useNavigate();
   const { data: catalogue } = useCatalogue();
-  const { data: doc, isLoading, isError, error, source } = useMapDocument(owner, repo);
+  // docs/UX.md §12: a map opened before its job's Detail phase finished
+  // (`?job=`) is pinned to that job's commit, and asks for symbols only once
+  // the job is done.
+  const early = useEarlyMapJob(search.job);
+  const { data: doc, isLoading, isError, error, source } = useMapDocument(owner, repo, {
+    commit: early.commit,
+    wait: early.waiting,
+  });
 
   // Issue #82 C2 scope item 1: districts whose symbols the map/sidebar
   // currently want. Two sources add to this set and it only ever grows for
@@ -80,9 +89,19 @@ export function MapView() {
       if (flushTimerRef.current != null) clearTimeout(flushTimerRef.current);
     };
   }, []);
-  const { map: districtSymbolsMap, loading: symbolsLoadingDistricts } = useDistrictSymbolsMap(owner, repo, source, [
-    ...wantedDistricts,
-  ]);
+  const { map: districtSymbolsMap, loading: symbolsLoadingDistricts } = useDistrictSymbolsMap(
+    owner,
+    repo,
+    source,
+    [...wantedDistricts],
+    { commit: early.commit, ready: !early.waiting && !early.detailPending },
+  );
+  // The job ended: the map's URL is the plain one again (a shared link
+  // should not watch a finished job), while the commit stays pinned.
+  useEffect(() => {
+    if (search.job && early.settled) updateSearch({ job: undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.job, early.settled]);
 
   const canvasRef = useRef<MapCanvasHandle>(null);
   const mapAreaRef = useRef<HTMLDivElement>(null);
@@ -698,6 +717,7 @@ export function MapView() {
         <div ref={mapAreaRef} className="absolute inset-0">
           {mapCanvas}
         </div>
+        <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow />
         <PhoneChrome
           doc={doc}
           packageLayout={packageLayout}
@@ -832,6 +852,7 @@ export function MapView() {
           className={`relative min-w-0 flex-1 bg-[var(--canvas)]${isFullscreen ? " fixed inset-0 z-50" : ""}`}
         >
           {mapCanvas}
+          <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
           <SearchBox
             doc={doc}
             onPick={(hit: SearchHit) => selectFile(hit.i, hit.s != null ? { symbol: hit.s } : {})}

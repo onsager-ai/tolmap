@@ -51,6 +51,12 @@ const STAGE_DEFS = [
   { id: "detect", label: "Detecting source", unit: "steps" },
   { id: "parse", label: "Parsing files", unit: "files" },
   { id: "resolve", label: "Resolving imports", unit: "files" },
+  // `--refs scip` only (issue #110): a hand-written job never starts these,
+  // so the mock leaves them pending, as the real service does.
+  { id: "index_go", label: "Indexing Go", unit: "files", scipOnly: true },
+  { id: "index_py", label: "Indexing Python", unit: "files", scipOnly: true },
+  { id: "install", label: "Installing dependencies", unit: "steps", scipOnly: true },
+  { id: "index_ts", label: "Indexing TypeScript", unit: "files", scipOnly: true },
   { id: "history", label: "Reading history", unit: "commits" },
   { id: "blend_prune", label: "Blending and pruning", unit: "steps" },
   { id: "partition", label: "Partitioning districts", unit: "steps" },
@@ -93,6 +99,9 @@ const queue = [];
 // Map documents by slug, seeded with the one pre-cached repo. A job that
 // reaches "done" registers its own slug here too.
 const docs = new Map([[cachedSlug, cachedDoc]]);
+// docs/UX.md §12: maps a running job serves early, by `<slug>@<commit>`,
+// once its write_map stage is done (the real service's `map_ready`).
+const earlyDocs = new Map();
 
 function newStages() {
   return STAGE_DEFS.map((def) => ({ id: def.id, label: def.label, state: "pending", started_at: null, duration_s: null }));
@@ -121,8 +130,9 @@ function snapshot(job) {
     progress: job.progress,
     eta: job.eta,
     eta_start_s: job.eta_start_s,
-    elapsed_s,
+    elapsed_s: job._frozenElapsed ?? elapsed_s,
     stages: job.stages,
+    map_ready: job.map_ready,
   };
 }
 
@@ -167,9 +177,11 @@ function finishJob(job, { status, error = null, error_code = null }) {
   if (job._timer) clearTimeout(job._timer);
   job._timer = null;
   if (status === "done") {
-    job.commit = `mock${Date.now().toString(36)}`;
     docs.set(job.slug, { ...FIXTURE_DOC, repo: job.slug.split("/")[1] });
+  } else {
+    job.map_ready = false;
   }
+  earlyDocs.delete(`${job.slug}@${job.commit}`);
   publish(job);
   closeSubscribers(job);
   if (activeJobId === job.job_id) {
@@ -198,6 +210,7 @@ function runStages(job, stageIndex) {
     return;
   }
   const def = STAGE_DEFS[stageIndex];
+  if (def.scipOnly) return runStages(job, stageIndex + 1);
   const stageRow = job.stages[stageIndex];
   stageRow.state = "running";
   stageRow.started_at = new Date().toISOString();
@@ -206,6 +219,11 @@ function runStages(job, stageIndex) {
   job.stageText = `${def.label.toLowerCase()}`;
   const total = 40 + stageIndex * 17;
   const stageStartedMs = Date.now();
+  // A slug containing "slowdetail" keeps its Detail phase running for a
+  // while, so a check can see the map open before the job is done.
+  const slowDetail = /slowdetail/i.test(job.slug) && ["symbols", "symbol_cards", "write"].includes(def.id);
+  const ticks = slowDetail ? 12 : TICKS_PER_STAGE;
+  const tickMs = slowDetail ? 600 : TICK_MS;
 
   const failure = classify(job.slug);
   // Fails partway through a representative early stage (parse, index 5),
@@ -241,7 +259,7 @@ function runStages(job, stageIndex) {
   let tick = 0;
   const step = () => {
     tick += 1;
-    const done = Math.min(total, Math.round((total * tick) / TICKS_PER_STAGE));
+    const done = Math.min(total, Math.round((total * tick) / ticks));
     const elapsedStageS = (Date.now() - stageStartedMs) / 1000;
     job.progress = {
       stage: def.id,
@@ -262,23 +280,153 @@ function runStages(job, stageIndex) {
       basis: stageIndex <= 2 ? "model" : stageIndex <= 8 ? "blend" : "rate",
     };
     publish(job);
-    if (tick < TICKS_PER_STAGE) {
-      job._timer = setTimeout(step, TICK_MS);
+    if (tick < ticks) {
+      job._timer = setTimeout(step, tickMs);
     } else {
       stageRow.state = "done";
       stageRow.duration_s = (Date.now() - stageStartedMs) / 1000;
+      // docs/UX.md §12: the real service serves the map once write_map is
+      // done and says so with `map_ready`; the page hands over then. A slug
+      // containing "noearly" never does, like a service whose early read
+      // failed, so the page hands over only when the job is done.
+      if (def.id === "write_map" && !/noearly/i.test(job.slug)) {
+        earlyDocs.set(`${job.slug}@${job.commit}`, { ...FIXTURE_DOC, repo: job.slug.split("/")[1] });
+        job.map_ready = true;
+        publish(job);
+      }
       job._timer = setTimeout(() => runStages(job, stageIndex + 1), TICK_MS);
     }
   };
-  job._timer = setTimeout(step, TICK_MS);
+  job._timer = setTimeout(step, tickMs);
 }
 
-function startJob(slug) {
+// ---------------------------------------------------------------------------
+// Scripted, frozen jobs (docs/UX.md §11 phase 4's screenshot states): a slug
+// `mockstate/<state>` gets a job that never advances, so check:view and
+// screenshots.mjs can hold the page in one exact state -- queued, each of the
+// four phases running, and every error_code row of §6.5 -- instead of racing
+// the running mock's twelve seconds. It takes no running slot. Numbers are
+// dify-sized, from the design artboards.
+const FETCHED = { clone: ["done", 1], clone_objects: ["done", 9], clone_deltas: ["done", 3], clone_checkout: ["done", 2] };
+const READ_DONE = { ...FETCHED, detect: ["done", 1], parse: ["done", 38], resolve: ["done", 12], history: ["done", 8] };
+const MAP_DONE = {
+  ...READ_DONE,
+  blend_prune: ["done", 2],
+  partition: ["done", 6],
+  neighbourhoods: ["done", 3],
+  naming: ["done", 1],
+  regions: ["done", 4],
+  footprints: ["done", 3],
+  write_map: ["done", 1],
+};
+
+function progressFor(id, done, total, rate) {
+  const index = STAGE_DEFS.findIndex((d) => d.id === id);
+  const def = STAGE_DEFS[index];
+  return { stage: id, stage_index: index + 1, stage_count: STAGE_DEFS.length, label: def.label, unit: def.unit, done, total, rate_per_s: rate };
+}
+
+// Earlier stages' last progress, sent over SSE ahead of the frozen snapshot
+// so "Found so far" has the facts a page watching from the start would have.
+const PRELUDE_READ = [progressFor("parse", 6347, 6347, 410), progressFor("history", 4000, 4000, 900)];
+const PRELUDE_MAP = [...PRELUDE_READ, progressFor("regions", 19, 19, 5)];
+
+const FAILURES = {
+  detection_uncertain: {
+    rows: { clone: ["done", 2], detect: ["failed", 1] },
+    error:
+      "py at . (972 files, low confidence) -- no pyproject.toml/setup.py package match and no directory with __init__.py; mapping the repository root directly",
+  },
+  detection_failed: { rows: { clone: ["done", 2], detect: ["failed", 1] }, error: "no Python, Go, TypeScript or Rust source files found (1,204 files checked)" },
+  cancelled: { rows: { ...FETCHED, detect: ["done", 1], parse: ["failed", 4] }, error: "job cancelled" },
+  clone_failed: { rows: { clone: ["failed", 3] }, error: "git clone https://github.com/mockstate/failed.git: remote: Repository not found." },
+  worker_crashed: { rows: { ...FETCHED, detect: ["done", 1], parse: ["failed", 51] }, error: "worker exited unexpectedly (signal 9); last stage: Parsing files" },
+  busy: { rows: {}, error: "the index queue is full; please try again later" },
+  server_stopping: { rows: { ...FETCHED }, error: "the service is shutting down and did not finish this job" },
+  rate_limited: { rows: {}, error: "too many index requests for this repository; try again later" },
+  index_failed: { rows: { ...FETCHED, detect: ["done", 1], parse: ["done", 38], resolve: ["failed", 2] }, error: "indexing failed: unexpected token in some/file.py" },
+  internal_error: { rows: { ...READ_DONE, blend_prune: ["done", 2], partition: ["failed", 1] }, error: "internal error: partition produced no districts" },
+  mystery_code: { rows: { ...READ_DONE }, error: "an error code this page has never seen" },
+};
+
+const SCRIPTED = {
+  queued: { status: "queued", queue_position: 2, eta_start_s: 130, eta: { low_s: 480, high_s: 720, basis: "model" }, elapsed: 40, rows: {} },
+  fetch: {
+    status: "cloning",
+    stageText: "receiving objects",
+    rows: { clone: ["done", 1], clone_objects: ["running"] },
+    progress: progressFor("clone_objects", 41234, 98000, 5200),
+    eta: { low_s: 300, high_s: 540, basis: "model" },
+    elapsed: 11,
+  },
+  read: {
+    status: "indexing",
+    stageText: "parsing files",
+    rows: { ...FETCHED, detect: ["done", 1], parse: ["running"] },
+    progress: progressFor("parse", 3912, 6347, 410),
+    eta: { low_s: 180, high_s: 300, basis: "blend" },
+    elapsed: 72,
+  },
+  map: {
+    status: "indexing",
+    stageText: "partitioning districts",
+    rows: { ...READ_DONE, blend_prune: ["done", 2], partition: ["running"] },
+    progress: progressFor("partition", 2, null, null),
+    prelude: PRELUDE_READ,
+    eta: { low_s: 60, high_s: 120, basis: "rate" },
+    elapsed: 131,
+  },
+  // The Detail phase as a page shows it: a service that could not open the
+  // map early (map_ready stays false), so the page is still here.
+  detail: {
+    status: "indexing",
+    stageText: "extracting symbols",
+    rows: { ...MAP_DONE, symbols: ["running"] },
+    progress: progressFor("symbols", 2100, 6347, 350),
+    prelude: PRELUDE_MAP,
+    eta: { low_s: 20, high_s: 60, basis: "rate" },
+    elapsed: 170,
+  },
+};
+
+function startScripted(slug, state) {
+  const failedCode = state.startsWith("failed-") ? state.slice("failed-".length) : null;
+  const failure = failedCode ? FAILURES[failedCode] : null;
+  const script = failure ? { status: "failed", rows: failure.rows, elapsed: 60 } : SCRIPTED[state];
+  if (!script) return null;
+  const job = startJob(slug, { scripted: true });
+  job.status = script.status;
+  job.stageText = script.stageText ?? script.status;
+  job.queue_position = script.queue_position ?? null;
+  job.eta_start_s = script.eta_start_s ?? null;
+  job.eta = script.eta ?? null;
+  job.progress = script.progress ?? null;
+  job._prelude = script.prelude ?? [];
+  job._frozenElapsed = script.status === "queued" ? 0 : script.elapsed;
+  job.started_at = new Date(Date.now() - script.elapsed * 1000).toISOString();
+  for (const stage of job.stages) {
+    const row = script.rows[stage.id];
+    if (!row) continue;
+    stage.state = row[0];
+    stage.duration_s = row[1] ?? null;
+    stage.started_at = job.started_at;
+  }
+  if (failure) {
+    job.error = failure.error;
+    job.error_code = failedCode;
+    job.finished_at = new Date().toISOString();
+  }
+  return job;
+}
+
+function startJob(slug, { scripted = false } = {}) {
   const job_id = `job_${randomUUID()}`;
   const job = {
     job_id,
     slug,
-    commit: null,
+    // The real service resolves the commit before admission (docs/API.md).
+    commit: `mock${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    map_ready: false,
     status: "queued",
     stageText: "queued",
     queue_position: null,
@@ -297,6 +445,7 @@ function startJob(slug) {
     _subscribers: new Set(),
   };
   jobs.set(job_id, job);
+  if (scripted) return job;
   if (activeJobId == null) {
     activeJobId = job_id;
     job.started_at = new Date().toISOString();
@@ -340,6 +489,11 @@ const server = createServer((req, res) => {
         return send(res, 400, { error: "invalid_request", message: `couldn't parse a repository from "${raw}"` });
       }
       const slug = `${slugMatch[1]}/${slugMatch[2]}`;
+      if (slugMatch[1] === "mockstate") {
+        const job = startScripted(slug, slugMatch[2]);
+        if (!job) return send(res, 400, { error: "invalid_request", message: `no scripted state "${slugMatch[2]}"` });
+        return send(res, 202, { job_id: job.job_id, slug: job.slug, status: "queued" });
+      }
       if (slug === cachedSlug) {
         return send(res, 200, { job_id: null, slug, status: "done", commit: "cached123" });
       }
@@ -378,6 +532,11 @@ const server = createServer((req, res) => {
       Connection: "keep-alive",
       "Access-Control-Allow-Origin": "*",
     });
+    // A scripted job replays its earlier stages' progress first (see
+    // PRELUDE_READ), then its frozen snapshot.
+    for (const progress of job._prelude ?? []) {
+      res.write(`data: ${JSON.stringify({ ...snapshot(job), progress })}\n\n`);
+    }
     res.write(`data: ${JSON.stringify(snapshot(job))}\n\n`);
     job._subscribers.add(res);
     req.on("close", () => job._subscribers.delete(res));
@@ -404,7 +563,12 @@ const server = createServer((req, res) => {
   const mapMatch = url.pathname.match(/^\/api\/maps\/([^/]+)\/([^/]+)$/);
   if (req.method === "GET" && mapMatch) {
     const [, o, r] = mapMatch;
-    const doc = docs.get(`${o}/${r}`);
+    const slug = `${o}/${r}`;
+    const commit = url.searchParams.get("commit");
+    // docs/UX.md §12: a running job's map at its own commit only.
+    const early = commit ? earlyDocs.get(`${slug}@${commit}`) : undefined;
+    if (early) return send(res, 200, early);
+    const doc = docs.get(slug);
     if (doc) return send(res, 200, doc);
     return send(res, 404, { error: "not_found", message: "not indexed" });
   }

@@ -118,13 +118,22 @@ export function useCatalogue() {
   return { data, isLoading, isError, error: staticQuery.error ?? serviceQuery.error, serviceAvailable: available === true };
 }
 
-export function useMapDocument(owner: string, repo: string) {
+/** docs/UX.md §12: a map opened before its job's Detail phase finished is
+ * fetched at that job's commit (`commit`), which the service serves early
+ * while the latest map may still be an older commit's. `wait` holds the
+ * fetch until the job's first snapshot names the commit. */
+export interface MapDocumentPin {
+  commit?: string;
+  wait?: boolean;
+}
+
+export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin = {}) {
   const { data: available, isLoading: checkingService } = useServiceAvailable();
 
   const serviceQuery = useQuery({
-    queryKey: ["map", "service", owner, repo],
-    queryFn: () => getServiceMapDocument(owner, repo),
-    enabled: available === true && !!owner && !!repo,
+    queryKey: pin.commit ? ["map", "service", owner, repo, pin.commit] : ["map", "service", owner, repo],
+    queryFn: () => getServiceMapDocument(owner, repo, pin.commit),
+    enabled: available === true && !!owner && !!repo && !pin.wait,
     staleTime: 15_000,
     // A 404 from the service just means this repo hasn't been indexed there
     // yet — fall through to the static copy, don't retry a request that
@@ -145,7 +154,9 @@ export function useMapDocument(owner: string, repo: string) {
   });
 
   const doc = serviceQuery.data ?? staticQuery.data;
-  const isLoading = !doc && (checkingService || (available === true && serviceQuery.isFetching) || (serviceMiss && staticQuery.isFetching));
+  const isLoading =
+    !doc &&
+    (checkingService || !!pin.wait || (available === true && serviceQuery.isFetching) || (serviceMiss && staticQuery.isFetching));
   const isError = !doc && serviceMiss && staticQuery.isError;
 
   return {
@@ -182,18 +193,30 @@ export interface DistrictSymbolsMap {
   loading: Set<number>;
 }
 
+/** docs/UX.md §12: symbols for a map opened early are not requested until
+ * its job is done (`ready`), and then at the job's commit -- the latest
+ * commit's symbols would belong to a different map. */
+export interface SymbolsPin {
+  commit?: string;
+  ready?: boolean;
+}
+
 export function useDistrictSymbolsMap(
   owner: string,
   repo: string,
   source: "static" | "service" | undefined,
   districts: readonly number[],
+  pin: SymbolsPin = {},
 ): DistrictSymbolsMap {
+  const ready = pin.ready ?? true;
   const queries = useQueries({
     queries: districts.map((d) => ({
-      queryKey: ["symbols", source, owner, repo, d],
+      queryKey: pin.commit ? ["symbols", source, owner, repo, d, pin.commit] : ["symbols", source, owner, repo, d],
       queryFn: () =>
-        source === "service" ? getServiceDistrictSymbols(owner, repo, d) : fetchStaticDistrictSymbols(owner, repo, d),
-      enabled: !!source && !!owner && !!repo,
+        source === "service"
+          ? getServiceDistrictSymbols(owner, repo, d, pin.commit)
+          : fetchStaticDistrictSymbols(owner, repo, d),
+      enabled: !!source && !!owner && !!repo && ready,
       staleTime: Infinity,
       retry: false,
     })),
@@ -204,9 +227,9 @@ export function useDistrictSymbolsMap(
   // MapCanvas.tsx's state-render effect, keyed on prop identity). `isLoading`
   // is folded into the signature too, so a fetch settling into a 404 (no
   // `dataUpdatedAt` change) still produces a fresh loading Set.
-  const signature = districts
-    .map((d, i) => `${d}:${queries[i]?.dataUpdatedAt ?? 0}:${queries[i]?.isLoading ? 1 : 0}`)
-    .join(",");
+  const signature =
+    districts.map((d, i) => `${d}:${queries[i]?.dataUpdatedAt ?? 0}:${queries[i]?.isLoading ? 1 : 0}`).join(",") +
+    `|${pin.commit ?? ""}|${ready ? 1 : 0}`;
   return useMemo(() => {
     const map = new Map<number, DistrictSymbols>();
     const loading = new Set<number>();

@@ -22,6 +22,10 @@ export interface MapSearch {
   depth?: number;
   geo: Geo;
   layer: Layer;
+  /** docs/UX.md §12: the indexing job whose map opened before its Detail
+   * phase finished. The map view pins that job's commit and fetches
+   * symbols once the job is done, then drops this. */
+  job?: string;
 }
 
 // "r" only: the geometry toggle that used to set "p" (plots) or "t"
@@ -53,7 +57,8 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const d = !file && !dir && Number.isInteger(dRaw) && dRaw >= 0 ? dRaw : undefined;
   const depthRaw = Number(search.depth);
   const depth = Number.isInteger(depthRaw) && depthRaw > 0 ? depthRaw : undefined;
-  return { file, sym, hsym, d, dir, depth, geo, layer };
+  const job = typeof search.job === "string" && search.job.length > 0 ? search.job : undefined;
+  return { file, sym, hsym, d, dir, depth, geo, layer, job };
 }
 
 /** Search state for the /new progress route (see routes/IndexJobView.tsx).

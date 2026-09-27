@@ -40,6 +40,7 @@
 import { chromium } from "playwright";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { runJobPageChecks } from "./check-view-jobs.mjs";
 
 // Required generated files, relative to web/. The dify fixture is the #79
 // rebuilt main map (not the older terrain-off map). public/maps is gitignored;
@@ -4696,13 +4697,6 @@ async function checkChromeContrast(browser, base) {
   await context.close();
 }
 
-// Issue #97 (live job progress, ETA and cancel): exercises the job progress
-// page against scripts/mock-api-server.mjs, which stands in for a real
-// `tolmap serve` (this job has none -- see that file's own header comment
-// and viewer-check.yml, which starts it before Vite and points
-// TOLMAP_API_PROXY_TARGET at it). Each slug is timestamped so repeated runs
-// (or two checks racing the mock's single concurrency slot) never collide on
-// an old job of the same name.
 // ---------------------------------------------------------------------------
 // docs/UX.md phase 2: the phone shell -- search pill, control column, one
 // bottom sheet with three detents, the back stack, re-centring above the
@@ -5137,182 +5131,6 @@ async function checkPhonePathMode(browser, base, profile) {
   await context.close();
 }
 
-async function submitMockJob(base, slug) {
-  const res = await fetch(`${base}/api/index`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo: slug }),
-  });
-  return res.json();
-}
-
-// The mock models the service's one-concurrent-job default (docs/API.md),
-// so a check that submits a job and never finishes or cancels it leaves that
-// slot occupied for its own ~12s run -- which stacked across several checks
-// used to starve checkWorkerCrashedJobPage's job at the back of the queue
-// past its own timeout. Cancelling a check's job(s) as soon as its own
-// assertions are done frees the slot immediately instead of waiting out the
-// remaining stages.
-async function cancelMockJob(base, jobId) {
-  await fetch(`${base}/api/jobs/${jobId}/cancel`, { method: "POST" }).catch(() => {});
-}
-
-async function checkJobProgressPage(browser, base) {
-  const label = "job progress page (mock API)";
-  console.log(`\n${label}`);
-  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-  const page = await context.newPage();
-
-  const slug = `checkorg/progress-${Date.now()}`;
-  const accepted = await submitMockJob(base, slug);
-  report(accepted.status === "queued" && !!accepted.job_id, `${label}: job accepted`, JSON.stringify(accepted));
-
-  await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("[data-stage-timeline]", { timeout: 15_000 });
-
-  const rowCount = await page.locator("[data-stage-row]").count();
-  report(rowCount > 0, `${label}: stage rows render`, `found ${rowCount}`);
-
-  // The progress bar moves: the mock's early clone/detect stages model an
-  // indeterminate total (no data-progress-pct), same as a cold real worker,
-  // so this waits for the first determinate stage (parse, stage index 5)
-  // and samples its fill width twice.
-  await page.waitForSelector("[data-progress-fill][data-progress-pct]", { timeout: 20_000 });
-  const bar = page.locator("[data-progress-fill][data-progress-pct]").first();
-  const firstPct = await bar.getAttribute("data-progress-pct");
-  await page.waitForTimeout(700);
-  const secondPct = await bar.getAttribute("data-progress-pct");
-  report(firstPct !== null && secondPct !== null && firstPct !== secondPct, `${label}: progress bar moves`, `${firstPct} -> ${secondPct}`);
-
-  const etaText = (await page.locator("[data-eta-range]").first().innerText().catch(() => "")).toLowerCase();
-  report(/left/.test(etaText), `${label}: ETA range text appears`, JSON.stringify(etaText));
-
-  await context.close();
-  await cancelMockJob(base, accepted.job_id);
-}
-
-async function checkQueuedJobPage(browser, base) {
-  const label = "queued job page (mock API)";
-  console.log(`\n${label}`);
-  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-  const page = await context.newPage();
-
-  // Two submissions back to back: the mock (like the real service's default
-  // TOLMAP_MAX_CONCURRENT_JOBS=1) runs one job at a time, so the second
-  // comes back queued behind the first.
-  const runningSlug = `checkorg/queue-running-${Date.now()}`;
-  const queuedSlug = `checkorg/queue-behind-${Date.now()}`;
-  const running = await submitMockJob(base, runningSlug);
-  const queued = await submitMockJob(base, queuedSlug);
-  report(queued.status === "queued", `${label}: second job accepted as queued`, JSON.stringify(queued));
-
-  await page.goto(`${base}/new?job=${queued.job_id}&slug=${encodeURIComponent(queuedSlug)}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("[data-queued-text]", { timeout: 15_000 });
-  const queuedText = await page.locator("[data-queued-text]").innerText();
-  report(/starts in about/.test(queuedText), `${label}: queued text shows "starts in about"`, queuedText);
-  report(/#\d+ in queue/.test(queuedText), `${label}: queued text shows queue position`, queuedText);
-
-  await context.close();
-  await cancelMockJob(base, running.job_id);
-  await cancelMockJob(base, queued.job_id);
-}
-
-async function checkCancelJobPage(browser, base) {
-  const label = "cancel job page (mock API)";
-  console.log(`\n${label}`);
-  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-  const page = await context.newPage();
-
-  const slug = `checkorg/cancel-${Date.now()}`;
-  const accepted = await submitMockJob(base, slug);
-  await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "cancel", exact: true }).waitFor({ timeout: 15_000 });
-  await page.getByRole("button", { name: "cancel", exact: true }).click();
-  await page.getByRole("button", { name: "yes, cancel" }).click();
-  await page.waitForSelector("[data-job-failure]", { timeout: 15_000 });
-  const text = await page.locator("[data-job-failure]").innerText();
-  report(/Cancelled/.test(text), `${label}: cancel ends in "Cancelled"`, text);
-  report(
-    (await page.locator("[data-job-failure]").getAttribute("data-job-failure-code")) === "cancelled",
-    `${label}: failure carries error_code cancelled`,
-  );
-
-  await context.close();
-}
-
-async function checkWorkerCrashedJobPage(browser, base) {
-  const label = "worker_crashed job page (mock API)";
-  console.log(`\n${label}`);
-  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-  const page = await context.newPage();
-
-  // A slug containing "crashes" fails as worker_crashed once the mock
-  // reaches stage index 5 (parse) -- see mock-api-server.mjs's classify().
-  const slug = `checkorg/crashes-${Date.now()}`;
-  const accepted = await submitMockJob(base, slug);
-  await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
-  // A generous timeout: the earlier job-page checks above free their own
-  // concurrency slot as soon as they're done (cancelMockJob), but this still
-  // budgets for this job to sit briefly behind whatever's ahead of it in the
-  // mock's one-at-a-time queue before it can even start.
-  await page.waitForSelector('[data-job-failure][data-job-failure-code="worker_crashed"]', { timeout: 45_000 });
-  const text = await page.locator("[data-job-failure]").innerText();
-  report(
-    /The indexer stopped during .+ — the repository may be too large for this server\./.test(text),
-    `${label}: shows the stage-naming message`,
-    text,
-  );
-  // Issue #162: a failure that might not happen again keeps its retry.
-  report(
-    (await page.getByRole("button", { name: "try again" }).count()) === 1,
-    `${label}: offers "try again"`,
-  );
-
-  await context.close();
-}
-
-// Issue #162: a detection refusal is deterministic, so the page explains it
-// in one plain line above the evidence and offers no "try again" -- checked
-// on a 390 px phone, where the evidence's long unbroken paths are what would
-// push the page into sideways scrolling.
-async function checkDetectionUncertainJobPage(browser, base) {
-  const label = "detection_uncertain job page, phone (mock API)";
-  console.log(`\n${label}`);
-  const phone = PROFILES.find((profile) => profile.name === "phone");
-  const context = await browser.newContext({ ...phone });
-  const page = await context.newPage();
-
-  // A slug containing "uncertain" fails as detection_uncertain at the mock's
-  // detect stage -- see mock-api-server.mjs's classify().
-  const slug = `checkorg/uncertain-${Date.now()}`;
-  const accepted = await submitMockJob(base, slug);
-  await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector('[data-job-failure][data-job-failure-code="detection_uncertain"]', { timeout: 45_000 });
-  const explanation = await page.locator("[data-job-failure-explanation]").innerText().catch(() => "");
-  report(
-    explanation === "tolmap couldn't find this repository's package layout, so it didn't guess.",
-    `${label}: explains the refusal in one plain line`,
-    JSON.stringify(explanation),
-  );
-  const text = await page.locator("[data-job-failure]").innerText();
-  report(/low confidence/.test(text), `${label}: keeps the evidence text`, text);
-  report(
-    (await page.getByRole("button", { name: "try again" }).count()) === 0,
-    `${label}: offers no "try again"`,
-  );
-  report(
-    (await page.getByRole("button", { name: "back to the map index" }).count()) === 1,
-    `${label}: still links back to the map index`,
-  );
-  const widths = await page.evaluate(() => ({
-    scroll: document.documentElement.scrollWidth,
-    viewport: window.innerWidth,
-  }));
-  report(widths.scroll <= widths.viewport, `${label}: no horizontal scroll`, JSON.stringify(widths));
-
-  await context.close();
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   await preflight(args.base);
@@ -5389,12 +5207,10 @@ async function main() {
     await checkPhoneBackStack(browser, args.base, phoneProfile);
     await checkPhoneLayersSheet(browser, args.base, phoneProfile);
     await checkPhonePathMode(browser, args.base, phoneProfile);
-    // Issue #97: live job progress, ETA and cancel (mock-api-server.mjs).
-    await checkJobProgressPage(browser, args.base);
-    await checkQueuedJobPage(browser, args.base);
-    await checkCancelJobPage(browser, args.base);
-    await checkWorkerCrashedJobPage(browser, args.base);
-    await checkDetectionUncertainJobPage(browser, args.base);
+    // docs/UX.md §6 and §12 (phase 4): the indexing, queue and failure
+    // pages and the early handover (check-view-jobs.mjs, against
+    // mock-api-server.mjs). Replaces issue #97's and #162's job-page checks.
+    await runJobPageChecks(browser, args.base, report);
   } finally {
     await browser.close();
   }

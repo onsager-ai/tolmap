@@ -563,12 +563,11 @@ try {
     }
   }
 
-  // Issue #97 (live job progress, ETA and cancel): the job progress page,
-  // mid-build/queued/cancelled, in both themes -- against the same mock API
-  // server (scripts/mock-api-server.mjs) check-view-stability.mjs's own
-  // job-page checks use (viewer-check.yml starts it before Vite for both
-  // scripts to share). Each slug is timestamped so a re-run never collides
-  // with a job from a previous run still sitting in the mock's registry.
+  // docs/UX.md §11 phase 4: the indexing, queue and failure pages -- queued,
+  // each phase running, and every error_code row of §6.5 -- on a phone and a
+  // desktop, in both themes, against the mock API's scripted jobs
+  // (`mockstate/<state>`, frozen in one state; scripts/mock-api-server.mjs).
+  // Then the early handover (§12): the map open while the Detail phase runs.
   {
     const postIndexJob = async (slug) => {
       const res = await fetch(`${base}/api/index`, {
@@ -578,84 +577,69 @@ try {
       });
       return res.json();
     };
-    // The mock models the service's one-concurrent-job default -- a job left
-    // running (or queued) after its own screenshot is taken would otherwise
-    // sit ahead of the next theme's "mid-build" submission, so that frame
-    // could capture "queued" instead of a running build (this is the same
-    // fix check-view-stability.mjs's own job-page checks needed once several
-    // of them ran back to back).
     const cancelJob = (jobId) => fetch(`${base}/api/jobs/${jobId}/cancel`, { method: "POST" }).catch(() => {});
-    const jobStem = `${out}/job-progress`;
-    const desktop = { viewport: { width: 1200, height: 800 }, isMobile: false, hasTouch: false, deviceScaleFactor: 1 };
-
-    for (const colorScheme of ["light", "dark"]) {
-      // Mid-build.
-      {
-        const slug = `shotorg/mid-build-${Date.now()}`;
-        const accepted = await postIndexJob(slug);
-        const context = await browser.newContext({ ...desktop, colorScheme });
+    const RUNNING = ["queued", "fetch", "read", "map", "detail"];
+    const FAILURES = [
+      "detection_uncertain",
+      "detection_failed",
+      "cancelled",
+      "clone_failed",
+      "worker_crashed",
+      "busy",
+      "server_stopping",
+      "rate_limited",
+      "index_failed",
+      "internal_error",
+      "mystery_code",
+    ];
+    for (const profile of PROFILES) {
+      for (const colorScheme of ["light", "dark"]) {
+        const context = await browser.newContext({ ...profile, colorScheme });
         const page = await context.newPage();
-        await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
-        await page.waitForSelector("[data-progress-fill][data-progress-pct]", { timeout: 20_000 }).catch(() => {});
-        await page.waitForTimeout(300);
-        await page.screenshot({ path: `${jobStem}-mid-build-${colorScheme}.png` });
-        console.log(`${jobStem}-mid-build-${colorScheme}.png`);
-        await context.close();
-        await cancelJob(accepted.job_id);
-      }
-
-      // Queued: a second submission while the first still occupies the
-      // mock's one concurrency slot (docs/API.md: TOLMAP_MAX_CONCURRENT_JOBS
-      // defaults to 1).
-      {
-        const runningSlug = `shotorg/queue-running-${Date.now()}`;
-        const queuedSlug = `shotorg/queue-behind-${Date.now()}`;
-        const running = await postIndexJob(runningSlug);
-        const queued = await postIndexJob(queuedSlug);
-        const context = await browser.newContext({ ...desktop, colorScheme });
-        const page = await context.newPage();
-        await page.goto(`${base}/new?job=${queued.job_id}&slug=${encodeURIComponent(queuedSlug)}`, { waitUntil: "domcontentloaded" });
-        await page.waitForSelector("[data-queued-text]", { timeout: 15_000 }).catch(() => {});
-        await page.waitForTimeout(200);
-        await page.screenshot({ path: `${jobStem}-queued-${colorScheme}.png` });
-        console.log(`${jobStem}-queued-${colorScheme}.png`);
-        await context.close();
-        await cancelJob(running.job_id);
-        await cancelJob(queued.job_id);
-      }
-
-      // Issue #162: a detection refusal, on a phone -- the plain-line
-      // explanation above the evidence, and no "try again".
-      {
-        const slug = `shotorg/uncertain-${Date.now()}`;
-        const accepted = await postIndexJob(slug);
-        const phone = PROFILES.find((profile) => profile.name === "phone");
-        const context = await browser.newContext({ ...phone, colorScheme });
-        const page = await context.newPage();
-        await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
-        await page.waitForSelector('[data-job-failure][data-job-failure-code="detection_uncertain"]', { timeout: 30_000 }).catch(() => {});
-        await page.waitForTimeout(200);
-        await page.screenshot({ path: `${jobStem}-detection-uncertain-phone-${colorScheme}.png` });
-        console.log(`${jobStem}-detection-uncertain-phone-${colorScheme}.png`);
+        for (const state of RUNNING) {
+          const accepted = await postIndexJob(`mockstate/${state}`);
+          await page.goto(`${base}/new?job=${accepted.job_id}`, { waitUntil: "domcontentloaded" });
+          await page.waitForSelector("[data-phase-row]", { timeout: 15_000 }).catch(() => {});
+          await page.waitForTimeout(500);
+          await page.screenshot({ path: `${out}/index-${state}-${profile.name}-${colorScheme}.png` });
+          console.log(`${out}/index-${state}-${profile.name}-${colorScheme}.png`);
+          // A phone's Technical details, opened.
+          if (profile.isMobile && state === "read") {
+            await page.locator("details[data-tech-details] summary").click().catch(() => {});
+            await page.locator("details[data-tech-details]").scrollIntoViewIfNeeded().catch(() => {});
+            await page.waitForTimeout(300);
+            await page.screenshot({ path: `${out}/index-read-details-open-${profile.name}-${colorScheme}.png` });
+            console.log(`${out}/index-read-details-open-${profile.name}-${colorScheme}.png`);
+          }
+          await cancelJob(accepted.job_id);
+        }
+        for (const code of FAILURES) {
+          const accepted = await postIndexJob(`mockstate/failed-${code}`);
+          await page.goto(`${base}/new?job=${accepted.job_id}`, { waitUntil: "domcontentloaded" });
+          await page.waitForSelector("[data-job-failure]", { timeout: 15_000 }).catch(() => {});
+          await page.waitForTimeout(300);
+          await page.screenshot({ path: `${out}/failure-${code}-${profile.name}-${colorScheme}.png` });
+          console.log(`${out}/failure-${code}-${profile.name}-${colorScheme}.png`);
+        }
         await context.close();
       }
+    }
 
-      // Cancelled.
-      {
-        const slug = `shotorg/cancel-${Date.now()}`;
-        const accepted = await postIndexJob(slug);
-        const context = await browser.newContext({ ...desktop, colorScheme });
-        const page = await context.newPage();
-        await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
-        await page.getByRole("button", { name: "cancel", exact: true }).waitFor({ timeout: 15_000 }).catch(() => {});
-        await page.getByRole("button", { name: "cancel", exact: true }).click().catch(() => {});
-        await page.getByRole("button", { name: "yes, cancel" }).click().catch(() => {});
-        await page.waitForSelector("[data-job-failure]", { timeout: 15_000 }).catch(() => {});
-        await page.waitForTimeout(200);
-        await page.screenshot({ path: `${jobStem}-cancelled-${colorScheme}.png` });
-        console.log(`${jobStem}-cancelled-${colorScheme}.png`);
-        await context.close();
-      }
+    // §12: the map opened at the end of the Map phase, the Detail phase still
+    // running (the mock keeps a "slowdetail" job's Detail phase going).
+    for (const profile of PROFILES) {
+      const slug = `shotorg/slowdetail-${profile.name}-${Date.now()}`;
+      const accepted = await postIndexJob(slug);
+      const context = await browser.newContext(profile);
+      const page = await context.newPage();
+      await page.goto(`${base}/new?job=${accepted.job_id}&slug=${encodeURIComponent(slug)}`, { waitUntil: "domcontentloaded" });
+      await page.waitForURL((url) => url.searchParams.get("job") === accepted.job_id && url.pathname === `/${slug}`, { timeout: 60_000 }).catch(() => {});
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 }).catch(() => {});
+      await page.waitForTimeout(600);
+      await page.screenshot({ path: `${out}/index-early-handover-${profile.name}.png` });
+      console.log(`${out}/index-early-handover-${profile.name}.png`);
+      await context.close();
+      await cancelJob(accepted.job_id);
     }
   }
   // Issue #110 P2: the "exact (SCIP) vs heuristic" reference-coverage

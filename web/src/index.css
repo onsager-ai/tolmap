@@ -458,3 +458,32 @@ body {
   font-weight: 600;
   word-break: break-all;
 }
+
+/* docs/UX.md §6.2: the indexing page's running phase spins its ring, and a
+   step with no known total shows an indeterminate bar that slides rather
+   than a bar that claims a share. Still, not moving, for reduced motion. */
+@keyframes tolmap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes tolmap-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+.tolmap-spin {
+  animation: tolmap-spin 0.9s linear infinite;
+}
+.tolmap-indeterminate {
+  animation: tolmap-slide 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tolmap-spin,
+  .tolmap-indeterminate {
+    animation: none;
+  }
+}
