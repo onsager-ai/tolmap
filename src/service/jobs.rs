@@ -795,6 +795,10 @@ fn prior_features(config: &ServeConfig) -> RepoFeatures {
     }
 }
 
+/// [`admit`] as it was before worker modes needed its second half: the
+/// signature the tests below were written against. Production admits
+/// through `spawn_job`.
+#[cfg(test)]
 fn enqueue_job(
     state: Arc<AppState>,
     repo_ref: RepoRef,
