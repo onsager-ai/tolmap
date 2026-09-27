@@ -131,7 +131,7 @@ The map eases to the district in the safe rectangle; other districts dim; folder
 
 Opened from the control column. A radio list (District, Churn, Complexity, Package), each with a one-line meaning; Churn and Complexity show the renderer's ramp (`#3E6E88 → #B8B06A → #C0472F`) with its range, which today's phone footer hides entirely. Below it, Appearance: System / Light / Dark. The layers sheet is modal over the map sheet and returns to it on close.
 
-### 4.7 Route
+### 4.7 Path
 
 "Path from here" puts the sheet into path mode (Peek: "From `a.py` · pick a destination", with Cancel); the next file tap sets the destination and the sheet shows the path. This replaces RouteBox, which sat under the drawer on phones (reference used `bottom: calc(58px + safe)`; the port lost it).
 
