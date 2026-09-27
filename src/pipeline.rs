@@ -1383,6 +1383,7 @@ mod tests {
             commits_scanned: 0,
             nodes: Vec::new(),
             references: None,
+            build_output_mirror: 0,
             edges: vec![
                 edge("a", "b", 10.0),
                 edge("b", "c", 10.0),
@@ -1448,6 +1449,7 @@ mod tests {
             commits_scanned: 0,
             nodes: Vec::new(),
             references: None,
+            build_output_mirror: 0,
             edges: vec![SignalEdge {
                 a: "a".to_owned(),
                 b: "b".to_owned(),

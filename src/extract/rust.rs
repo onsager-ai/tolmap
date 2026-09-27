@@ -2180,6 +2180,7 @@ pub(crate) fn resolve(
         fanin,
         uses,
         module_for,
+        build_output_mirror: 0,
     })
 }
 
