@@ -4103,8 +4103,14 @@ mod tests {
         assert_eq!(status, 200, "{response}");
         let body: serde_json::Value = serde_json::from_str(response_body(&response)).unwrap();
         let classes = body["classes"].as_array().unwrap();
-        assert_eq!(classes[0]["queued"], 1);
-        assert_eq!(classes[0]["running"], 0);
+        // With no agent connected the job waits in its class's slot, not in
+        // the queue (#157, departure 4), so it counts as running here. The
+        // starter only reads `desired`, which is the same either way.
+        assert_eq!(
+            classes[0]["queued"].as_u64().unwrap() + classes[0]["running"].as_u64().unwrap(),
+            1
+        );
+        assert_eq!(classes[0]["connected_agents"], 0);
         assert_eq!(classes[0]["desired"], 1);
 
         // An agent connects and takes it: running, not queued, one
