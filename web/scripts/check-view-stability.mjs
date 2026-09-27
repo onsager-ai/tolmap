@@ -167,8 +167,24 @@ async function districtUnionBox(page) {
   });
 }
 
-function fitsWithinPad(box, vw, vh, eps = 2) {
-  const [left, top, right, bottom] = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+/** docs/UX.md §3.3: the rect a fit frames into -- the map box minus the
+ * insets the app measured from its real chrome and framed with (MapCanvas
+ * writes them on its wrapper as `data-fit-insets`; `data-safe-insets` is the
+ * sheet's current detent). In the map box's own CSS px, the space
+ * districtUnionBox() and readDot() report in. The phone checks below also
+ * measure the chrome itself (pill, control column, sheet) independently,
+ * so a wrong inset cannot pass by agreeing with itself. */
+async function mapFrameRect(page, which = "fit") {
+  return page.evaluate((which) => {
+    const wrap = document.querySelector("[data-fit-insets]");
+    const [l, t, r, b] = wrap.getAttribute(which === "fit" ? "data-fit-insets" : "data-safe-insets").split(",").map(Number);
+    const box = wrap.getBoundingClientRect();
+    return [l, t, box.width - r, box.height - b];
+  }, which);
+}
+
+function fitsWithinRect(box, rect, eps = 2) {
+  const [left, top, right, bottom] = rect;
   if (!box) return false;
   return box.x >= left - eps && box.y >= top - eps && box.x + box.w <= right + eps && box.y + box.h <= bottom + eps;
 }
@@ -421,6 +437,61 @@ async function tap(page, profile, x, y) {
   await page.waitForTimeout(400);
 }
 
+// ---- the phone shell (docs/UX.md §3, phase 2) ----
+// On a phone the map has one bottom sheet (Peek / Half / Full), a search
+// pill, a control column and a Layers sheet. These helpers drive them
+// through their real controls, the way a person would.
+
+async function sheetDetent(page) {
+  return page.locator("[data-phone-sheet]").getAttribute("data-detent");
+}
+/** Taps the sheet's grabber -- a real button that cycles peek -> half ->
+ * full (§3.1) -- until the sheet is at `detent`. */
+async function setSheetDetent(page, detent) {
+  for (let i = 0; i < 3 && (await sheetDetent(page)) !== detent; i++) {
+    await page.locator("[data-sheet-grabber]").click();
+    await page.waitForTimeout(380);
+  }
+  return (await sheetDetent(page)) === detent;
+}
+/** The sheet's visible height, CSS px (its top edge to the viewport bottom). */
+async function sheetVisibleHeight(page) {
+  return page.locator("[data-phone-sheet]").evaluate((el) => innerHeight - el.getBoundingClientRect().top);
+}
+async function openLayersSheet(page) {
+  if (await page.locator("[data-layers-sheet]").count()) return;
+  await page.locator('button[aria-label="Map layers"]').click();
+  await page.waitForSelector("[data-layers-sheet]");
+}
+async function closeLayersSheet(page) {
+  if (!(await page.locator("[data-layers-sheet]").count())) return;
+  await page.locator('button[aria-label="Close layers"]').click();
+  await page.waitForTimeout(150);
+}
+const LAYER_TEXT = { d: "district", c: "churn", x: "complexity", p: "package" };
+/** Switches the map layer through the real control: the desktop segmented
+ * group, or the phone's Layers sheet (§4.6). */
+async function setLayer(page, profile, layer) {
+  if (profile.isMobile) {
+    await openLayersSheet(page);
+    await page.locator(`[data-layer-option="${layer}"]`).click();
+    await closeLayersSheet(page);
+  } else {
+    await page.locator('[aria-label="Layer"] button', { hasText: LAYER_TEXT[layer] }).click();
+  }
+  await page.waitForTimeout(200);
+}
+/** Types into search: the desktop box, or the phone's search layer opened
+ * from the pill (§3). */
+async function searchFor(page, profile, text) {
+  if (profile.isMobile) {
+    await page.locator("[data-open-search]").click();
+    await page.waitForSelector('[data-search-layer] input[aria-label="Search files"]');
+  }
+  await page.locator('input[aria-label="Search files"]').fill(text);
+  await page.waitForTimeout(150);
+}
+
 async function runOne({ browser, base, slug, profile }) {
   const label = `${slug} / ${profile.name}`;
   console.log(`\n${label}`);
@@ -440,7 +511,7 @@ async function runOne({ browser, base, slug, profile }) {
   // First load must fit the mainland inside the pad, not overflow the
   // viewport -- the repoKey-effect bug (fit() run against whatever document
   // MapRenderer.state still held, which on first mount is nothing at all).
-  report(fitsWithinPad(await districtUnionBox(page), vw, vh), `${label}: first load fits within the pad`);
+  report(fitsWithinRect(await districtUnionBox(page), await mapFrameRect(page)), `${label}: first load fits within the pad`);
 
   // Desktop used to auto-select the top landmark on load (MapView.tsx).
   // Removed as a readable-overview PR review finding: once selection
@@ -534,13 +605,9 @@ async function runOne({ browser, base, slug, profile }) {
     report(boxesClose(current, await stableBox(page)), `${label}: view unchanged after tapping empty map`);
   }
 
-  // Step 3: change the layer via the UI (not the URL, the real control).
-  if (profile.isMobile) {
-    await page.locator('button[aria-label="Cycle layer"]').click();
-  } else {
-    await page.locator('[aria-label="Layer"] button', { hasText: "churn" }).click();
-  }
-  await page.waitForTimeout(200);
+  // Step 3: change the layer via the UI (not the URL, the real control; on
+  // a phone, the Layers sheet -- docs/UX.md §4.6).
+  await setLayer(page, profile, "c");
   report(boxesClose(current, await stableBox(page)), `${label}: view unchanged after changing layer`);
 
   // Step 4: resize the viewport. Assert the view shifts by EXACTLY half the
@@ -596,14 +663,15 @@ async function checkRepoSwitch(browser, base, profile) {
     deviceScaleFactor: profile.deviceScaleFactor ?? 1,
   });
   const page = await context.newPage();
-  const { width: vw, height: vh } = profile.viewport;
   await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(800);
   const before = await stableBox(page);
 
   // TopBar's <option value> is the bare "owner/repo" slug regardless of how
-  // the visible label is formatted (it appends " · N files" on desktop).
+  // the visible label is formatted (it appends " · N files" on desktop). On a
+  // phone the same native select sits over the pill's switch-repository
+  // button (docs/UX.md §3), so selectOption drives the same control.
   // A plain CSS locator, not getByLabel: the map SVG's own long aria-label
   // ("Pannable, zoomable map...") confused Playwright's fuzzy accessible-name
   // matching into treating getByLabel("Repository") as ambiguous.
@@ -622,7 +690,7 @@ async function checkRepoSwitch(browser, base, profile) {
   // MapRenderer.state still held (the OLD repo, one commit behind), so n8n's
   // geometry painted at django's transform -- massively overflowing the
   // viewport rather than sitting inside the pad.
-  report(fitsWithinPad(await districtUnionBox(page), vw, vh), `${label}: new repo fits within the pad after switching`);
+  report(fitsWithinRect(await districtUnionBox(page), await mapFrameRect(page)), `${label}: new repo fits within the pad after switching`);
   await context.close();
 }
 
@@ -804,6 +872,13 @@ async function checkPackageLayout(browser, base, profile) {
   const page = await context.newPage();
   await page.goto(`${base}/django/django?geo=r&layer=p`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
+  if (profile.isMobile) {
+    // docs/UX.md §4.6: on a phone the package legend is Layers-sheet
+    // content; nothing floats over the map (§3).
+    await page.waitForTimeout(700);
+    report((await page.locator("[data-package-legend]").count()) === 0, `${label}: no package legend floats over the phone map`);
+    await openLayersSheet(page);
+  }
   await page.waitForSelector("[data-package-legend]");
   await page.waitForTimeout(700);
 
@@ -851,13 +926,8 @@ async function checkPackageLayout(browser, base, profile) {
     JSON.stringify({ light: initialLegend.light, dark: initialLegend.dark }),
   );
   if (profile.isMobile) {
-    report(
-      !initialLegend.expanded && initialLegend.rows === 0 && initialLegend.height < 40 && /packages\s*·\s*depth\s+\d/.test(initialLegend.text),
-      `${label}: phone package legend starts as a one-line chip`,
-      JSON.stringify(initialLegend),
-    );
-    await page.getByRole("button", { name: "Expand package legend" }).click();
-    await page.waitForSelector('[data-package-legend][data-package-expanded="true"]');
+    const inSheet = await page.locator("[data-layers-sheet] [data-package-legend]").count();
+    report(inSheet === 1 && initialLegend.expanded && initialLegend.rows >= 3, `${label}: phone package legend is the Layers sheet's, expanded with its swatches`, JSON.stringify(initialLegend));
   } else {
     report(initialLegend.expanded, `${label}: desktop package legend starts expanded`, JSON.stringify(initialLegend));
   }
@@ -881,9 +951,8 @@ async function checkPackageLayout(browser, base, profile) {
     report(false, `${label}: package depth has an available override`);
   }
   if (profile.isMobile) {
-    await page.getByRole("button", { name: "Collapse package legend" }).click();
-    const collapsed = await page.locator("[data-package-legend]").getAttribute("data-package-expanded");
-    report(collapsed === "false", `${label}: expanded phone package legend collapses again`);
+    await closeLayersSheet(page);
+    report((await page.locator("[data-package-legend]").count()) === 0, `${label}: closing the Layers sheet takes the legend off the map again`);
   }
 
   const target = await page.evaluate(async () => {
@@ -914,9 +983,10 @@ async function checkPackageLayout(browser, base, profile) {
   }
 
   if (profile.isMobile) {
-    const header = page.locator("[data-selection-panel] > div").first();
-    const box = await header.boundingBox();
-    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
+    // docs/UX.md §4.3: the folder tree is the sheet's second tab.
+    await setSheetDetent(page, "full");
+    await page.locator('[data-index-tab="folders"]').click();
+    await page.waitForSelector("[data-folder-browser]");
   }
   const treeRow = page.locator('[data-folder-browser] button[data-folder-path]').first();
   const rootPath = await treeRow.getAttribute("data-folder-path");
@@ -998,12 +1068,16 @@ async function checkPackageLayout(browser, base, profile) {
   await page.goto(`${base}/django/django?geo=r&layer=d&d=${target.district}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(600);
-  if (profile.isMobile) {
-    const header = page.locator("[data-selection-panel] > div").first();
-    const box = await header.boundingBox();
-    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
-  }
   const panel = page.locator("[data-selection-panel]");
+  if (profile.isMobile) {
+    // docs/UX.md §3.2: a selection opens the sheet at Peek -- a summary, not
+    // a card over the map (was: a collapsed card within 22% of the screen).
+    const shown = await sheetVisibleHeight(page);
+    report((await sheetDetent(page)) === "peek" && shown <= 844 * 0.22, `${label}: a selected district opens the phone sheet at Peek, within 22% of the viewport`, `detent=${await sheetDetent(page)} shown=${shown}`);
+    await page.locator("[data-sheet-details]").click();
+    await page.waitForTimeout(380);
+    report((await sheetDetent(page)) === "half", `${label}: Details raises the sheet to Half`);
+  }
   const folderToggle = panel.locator("[data-district-folders-toggle]");
   const fileToggle = panel.locator("[data-district-files-toggle]");
   report(
@@ -1012,10 +1086,6 @@ async function checkPackageLayout(browser, base, profile) {
       (await panel.locator("[data-district-path]").count()) === 0,
     `${label}: district folders and key files start collapsed`,
   );
-  if (profile.isMobile) {
-    const height = await panel.evaluate((element) => element.getBoundingClientRect().height);
-    report(height <= 844 * 0.22, `${label}: collapsed phone district card fits 22% of viewport`, `height=${height}`);
-  }
   const beforeZoom = await stableBox(page);
   await panel.getByRole("button", { name: "Zoom to district" }).click();
   await page.waitForTimeout(650);
@@ -1042,6 +1112,9 @@ async function checkPackageLayout(browser, base, profile) {
   } else {
     report(false, `${label}: selected district has a tappable neighbour`);
   }
+  // The neighbour is a new selection, so the phone sheet is back at Peek
+  // (§3.2); raise it to reach the folder rows, as a person would.
+  if (profile.isMobile) await setSheetDetent(page, "full");
   const selectedPathRows = page.locator("[data-district-path]");
   if (await selectedPathRows.count()) {
     const first = selectedPathRows.first();
@@ -1164,7 +1237,7 @@ async function checkDifyDistrictSummary(browser, base, profile) {
   const workflowCount = doc.F.filter((path, i) => doc.N[i][0] === d && path.startsWith("web/app/components/workflow/")).length;
   await page.goto(`${base}/langgenius/dify?geo=r&layer=d&d=${d}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-selection-panel] h3");
-  if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap();
+  if (profile.isMobile) await setSheetDetent(page, "half");
   await page.waitForSelector("[data-district-summary]");
   const panel = page.locator("[data-selection-panel]");
   const text = await panel.innerText();
@@ -1222,8 +1295,9 @@ async function checkFolderIslandFade(browser, base, profile) {
   await page.goto(`${base}/langgenius/dify?geo=r&layer=p`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(2200);
-  if (profile.isMobile) await page.getByRole("button", { name: "Expand package legend" }).click();
+  if (profile.isMobile) await openLayersSheet(page);
   const legendText = await page.locator("[data-package-legend]").innerText();
+  if (profile.isMobile) await closeLayersSheet(page);
   report(
     legendText.includes("(repo root)") && !legendText.includes("(root)/"),
     `${label}: repository-root package uses the explicit legend label`,
@@ -1276,7 +1350,11 @@ async function checkViewerCards(browser, base, profile) {
       firstLandmark: doc.L[0],
     };
   });
-  const sidebarText = await page.locator("aside").first().textContent();
+  // docs/UX.md §4.3: on a phone the district index is the bottom sheet's
+  // Districts tab, read once the sheet is raised the way a person raises it.
+  if (profile.isMobile) await setSheetDetent(page, "half");
+  const sidebarText = await page.locator("[data-district-index]").first().textContent();
+  if (profile.isMobile) await setSheetDetent(page, "peek");
   // Issue #82 "district index": the old rail's flat Landmarks list (every
   // doc.L row shown by basename) is gone -- a landmark's file now surfaces
   // through whichever district-row key-file line fits its kind ("most
@@ -1327,11 +1405,8 @@ async function checkViewerCards(browser, base, profile) {
     report(false, `${label}: tapping a district produces its card`, "no unobstructed district point found");
   }
 
-  if (profile.isMobile && districtTarget) {
-    const header = page.locator("[data-selection-panel] > div").first();
-    const box = await header.boundingBox();
-    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
-  }
+  // Phone: the district's card is at Peek (§3.2), so the file below is
+  // tapped on the map straight away -- no card to collapse first.
   const fileTarget = await page.evaluate((doc) => {
     // B4: `.hit` so a footprint-mode file's own path element counts too.
     const circles = [...document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')];
@@ -1367,6 +1442,47 @@ async function checkViewerCards(browser, base, profile) {
       `${label}: tapping a file produces its card (one or two taps, two-step tap #82 C2)`,
       `expected=${fileTarget.file} url=${page.url()}`,
     );
+    // docs/UX.md phase 2: on a phone the acceptance bar's symbol tap is a
+    // MAP tap too -- zoom toward the selected file until its symbol cards
+    // clear the 40 px gate (unchanged, finding 27) and tap one.
+    if (profile.isMobile) {
+      let card = null;
+      for (let i = 0; i < 6 && !card; i++) {
+        card = await page.evaluate((index) => {
+          for (const el of document.querySelectorAll('svg.map-svg [data-k^="hs:"]')) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 14 || r.height < 14) continue;
+            const x = r.left + r.width / 2;
+            const y = r.top + r.height / 2;
+            if (y > innerHeight - 200 || y < 80 || x > innerWidth - 70 || x < 14) continue;
+            const hit = document.elementFromPoint(x, y)?.closest?.("[data-k]");
+            if (hit === el || hit?.getAttribute("data-k") === el.getAttribute("data-k")) {
+              return { x, y, global: el.getAttribute("data-k").slice(3), file: index };
+            }
+          }
+          return null;
+        }, fileTarget.index);
+        if (!card) {
+          const dot = await page.locator(`svg.map-svg [data-k="f:${fileTarget.index}"]`).first().boundingBox().catch(() => null);
+          await zoomIn(page, dot ? dot.x + dot.width / 2 : fileTarget.x, dot ? dot.y + dot.height / 2 : fileTarget.y);
+        }
+      }
+      if (card) {
+        await tap(page, profile, card.x, card.y);
+        report(
+          new URL(page.url()).searchParams.get("hsym") === card.global && (await page.locator('[data-sheet-card="symbol"]').count()) === 1,
+          `${label}: tapping a symbol card on the map produces its card`,
+          page.url(),
+        );
+      } else {
+        report(false, `${label}: tapping a symbol card on the map produces its card`, "no tappable symbol card after zooming in");
+      }
+      // The sheet's own outline row next (below), from the file card again.
+      await page.goto(`${base}/django/django?file=${encodeURIComponent(fileTarget.file)}`, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector("svg.map-svg path.hit");
+      await page.waitForTimeout(700);
+      await setSheetDetent(page, "full");
+    }
     // CHANGED (issue #82 C2 follow-up): django's bundled symbols fixture
     // covers every district (check-fixtures/README.md), so selecting a file
     // here always has hierarchical data on the way -- the outline tree
@@ -1422,15 +1538,13 @@ async function checkDistrictIndex(browser, base, profile) {
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
   if (profile.isMobile) {
-    await page.locator("aside button", { hasText: /districts/i }).first().click();
-    await page.waitForTimeout(300);
+    // docs/UX.md §4.3: the district index is the sheet's Districts tab.
+    await setSheetDetent(page, "full");
 
-    // Owner review: the collapsed "Folders" panel (SelectionPanel, shown
-    // when nothing is selected) and FooterStats' "N unconnected files" chip
-    // used to render ON TOP of the open drawer (both had a higher z-index
-    // than the drawer's old z-10), covering its rows. Hit-tests a few row
-    // centres with elementFromPoint -- each must resolve to something
-    // inside the drawer itself, never the selection panel or the chip.
+    // Owner review (the old drawer): nothing may render on top of the
+    // index's rows. Hit-tests a few row centres with elementFromPoint --
+    // each must resolve to the sheet itself, never the pill or the control
+    // column floating over the map.
     const rowHits = await page.evaluate(() => {
       const rows = [...document.querySelectorAll("[data-district-index-row]")].slice(0, 3);
       return rows.map((row) => {
@@ -1439,25 +1553,31 @@ async function checkDistrictIndex(browser, base, profile) {
         const y = r.y + Math.min(10, r.height / 2);
         const hit = document.elementFromPoint(x, y);
         return {
-          insideDrawer: !!hit?.closest("aside"),
-          overlapped: !!hit?.closest("[data-selection-panel]") || !!hit?.closest("[data-unconnected-chip]"),
+          insideDrawer: !!hit?.closest("[data-phone-sheet]"),
+          overlapped: !!hit?.closest("[data-search-pill]") || !!hit?.closest("[data-control-column]"),
         };
       });
     });
     report(
       rowHits.length > 0 && rowHits.every((h) => h.insideDrawer && !h.overlapped),
-      `${label}: nothing overlaps the open drawer's rows`,
+      `${label}: nothing overlaps the district index's rows in the sheet`,
       JSON.stringify(rowHits),
     );
+    const rowHeights = await page.locator("[data-district-index-row] > button:first-child").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
+    report(rowHeights.length > 0 && rowHeights.every((h) => h >= 64), `${label}: every district row is at least 64 px tall (§4.3)`, JSON.stringify(rowHeights.slice(0, 5)));
+    const keyHeights = await page.locator("[data-district-index-key-file]").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
+    report(keyHeights.length > 0 && keyHeights.every((h) => h >= 44), `${label}: every key-file line is a 44 px target (§8.2)`, JSON.stringify(keyHeights.slice(0, 5)));
   }
 
   const doc = await (await context.request.get(`${base}/maps/django/django.json`)).json();
-  const asideText = await page.locator("aside").first().innerText();
+  // Desktop: the rail. Phone: the sheet's overview card, whose title
+  // carries the file count (the rail's own heading does on desktop).
+  const asideText = await page.locator(profile.isMobile ? '[data-sheet-card="overview"]' : "aside").first().innerText();
 
   report(!/capital/i.test(asideText), `${label}: no "capital" jargon in the district index`);
   report(!/betweenness/i.test(asideText), `${label}: no "betweenness" jargon in the district index`);
   report(
-    (await page.locator("aside [style*='background']").count()) === 0,
+    (await page.locator("[data-district-index] [style*='background']").count()) === 0,
     `${label}: no colour chips in the district index`,
   );
   report(asideText.includes("files"), `${label}: header is titled with the repository's file count`, asideText.slice(0, 80));
@@ -1531,7 +1651,47 @@ async function checkLinkColourLegend(browser, base, profile) {
 
   await page.goto(`${base}/django/django?file=${encodeURIComponent(file)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-selection-panel]");
-  if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap();
+  if (profile.isMobile) {
+    // docs/UX.md §4.5: "the two counts are the legend" -- a solid ring in
+    // --link-out for Imports, a dashed ring in --link-in for Imported by,
+    // the same strokes the map draws for those directions.
+    await setSheetDetent(page, "half");
+    const counts = page.locator("[data-selection-panel] [data-link-counts]");
+    await counts.waitFor();
+    const info = await counts.evaluate((el) => {
+      const cell = (dir) => {
+        const button = el.querySelector(`[data-link-count="${dir}"]`);
+        const ring = button?.querySelector("circle");
+        return {
+          text: (button?.textContent ?? "").replace(/\s+/g, " ").trim(),
+          dashed: !!ring?.getAttribute("stroke-dasharray"),
+          stroke: ring ? getComputedStyle(ring).stroke : null,
+          height: button?.getBoundingClientRect().height ?? 0,
+        };
+      };
+      const root = getComputedStyle(document.documentElement);
+      return { out: cell("out"), in: cell("in"), linkOut: root.getPropertyValue("--link-out").trim(), linkIn: root.getPropertyValue("--link-in").trim() };
+    });
+    const outDeg = doc.E.filter(([a]) => a === (withBoth ?? 0)).length;
+    const inDeg = doc.E.filter(([, b]) => b === (withBoth ?? 0)).length;
+    report(
+      info.out.text === `Imports${outDeg}` || info.out.text === `Imports ${outDeg}`,
+      `${label}: the Imports count states the file's out-degree in plain words`,
+      JSON.stringify(info.out),
+    );
+    report(
+      info.in.text === `Imported by${inDeg}` || info.in.text === `Imported by ${inDeg}`,
+      `${label}: the Imported-by count states the file's in-degree in plain words`,
+      JSON.stringify(info.in),
+    );
+    report(!info.out.dashed && info.in.dashed, `${label}: Imports carries a solid ring, Imported by a dashed one (direction is never colour alone)`, JSON.stringify(info));
+    report(!!info.out.stroke && !!info.in.stroke && info.out.stroke !== info.in.stroke, `${label}: the two rings use two different colours`, JSON.stringify(info));
+    report(info.out.height >= 44 && info.in.height >= 44, `${label}: each count is a 44 px target that lists its files`, JSON.stringify(info));
+    await page.locator('[data-link-count="in"]').click();
+    report((await page.locator('[data-sheet-file][data-list="in"]').count()) === Math.min(50, inDeg), `${label}: tapping Imported by lists those files`);
+    await context.close();
+    return;
+  }
   await page.waitForSelector("[data-selection-panel] [data-link-legend]");
 
   const legend = page.locator("[data-selection-panel] [data-link-legend]").first();
@@ -1676,7 +1836,11 @@ async function fitFraming(page, doc) {
   return page.evaluate((map) => {
     const svg = document.querySelector("svg.map-svg");
     const { width: vw, height: vh } = svg.getBoundingClientRect();
-    const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+    // docs/UX.md §3.3: the insets the app measured from its chrome (see
+    // mapFrameRect()); this function then re-derives the fit from them
+    // independently and compares against what was drawn.
+    const [il, it, ir, ib] = document.querySelector("[data-fit-insets]").getAttribute("data-fit-insets").split(",").map(Number);
+    const rect = [il, it, vw - ir, vh - ib];
     const b = [Infinity, Infinity, -Infinity, -Infinity];
     const add = ([x, y]) => { b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y); b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y); };
     const mainland = (d) => !["island", "unconnected"].includes(map.districts[String(d)].class);
@@ -1686,8 +1850,9 @@ async function fitFraming(page, doc) {
     }
     const scale = Math.min((rect[2] - rect[0]) / (b[2] - b[0]), (rect[3] - rect[1]) / (b[3] - b[1]));
     const tx = rect[0] + (rect[2] - rect[0] - (b[2] - b[0]) * scale) / 2 - b[0] * scale;
-    const middle = (rect[1] + rect[3]) / 2;
-    const centreY = vw <= 820 ? Math.max(rect[1] + (b[3] - b[1]) * scale / 2, Math.min(middle, 315)) : middle;
+    // Centred in the rect on every profile (the phone's old 315 px clamp
+    // stood in for a sheet height the rect did not know; it does now).
+    const centreY = (rect[1] + rect[3]) / 2;
     const ty = centreY - (b[1] + b[3]) * scale / 2;
     const d = Object.keys(map.districts).find(mainland);
     const actual = document.querySelector(`svg.map-svg path.hit[data-k="d:${d}"]`).getAttribute("d").match(/-?\d+(?:\.\d+)?/g).map(Number);
@@ -1712,14 +1877,23 @@ async function checkFitFraming(browser, base, slug, profile) {
   report(frame.pointError < 2, `${label}: fit projects mainland bounds into the content rectangle`, JSON.stringify(frame));
   report(frame.islandsAtFit === 0, `${label}: invisible islands cannot set the opening frame`);
   const box = await districtUnionBox(page);
-  report(fitsWithinPad(box, frame.viewport[0], frame.viewport[1]), `${label}: mainland clears fit inset`, JSON.stringify(box));
+  report(fitsWithinRect(box, frame.rect), `${label}: mainland clears fit inset`, JSON.stringify(box));
   if (profile.isMobile) {
-    const chip = await page.locator("[data-unconnected-chip]").count()
-      ? await page.locator("[data-unconnected-chip]").boundingBox() : null;
-    const sheet = await page.locator("[data-selection-panel]").boundingBox();
+    // Measured off the chrome itself, not the insets: the opening map sits
+    // below the search pill, left of the control column and above the
+    // sheet at Peek (docs/UX.md §3.3, §4.1). No floating chips (§4.2).
+    const pill = await page.locator("[data-search-pill]").boundingBox();
+    const column = await page.locator("[data-control-column]").boundingBox();
+    const sheet = await page.locator("[data-phone-sheet]").boundingBox();
     const svg = await page.locator("svg.map-svg").boundingBox();
-    report(box.y + box.h + svg.y < Math.min(chip?.y ?? Infinity, sheet?.y ?? Infinity),
-      `${label}: mainland clears chip and bottom sheet`);
+    const top = box.y + svg.y;
+    const bottom = box.y + box.h + svg.y;
+    const right = box.x + box.w + svg.x;
+    report(!!pill && !!column && !!sheet && top >= pill.y + pill.height && bottom <= sheet.y && right <= column.x + 1,
+      `${label}: mainland clears the pill, the control column and the sheet at Peek`,
+      JSON.stringify({ box, pill, column, sheetTop: sheet?.y }));
+    report((await sheetDetent(page)) === "peek" && (await page.locator("[data-unconnected-chip], [data-reference-coverage], [data-fullscreen-summary]").count()) === 0,
+      `${label}: the phone opens at Peek with no floating chips`);
   }
   if (slug === "langgenius/dify" && Object.values(doc.districts).some((d) => d.class === "island")) {
     const islandStroke = () => page.locator('svg.map-svg path.hit[data-k^="d:"]').evaluateAll((els, map) =>
@@ -1821,7 +1995,9 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   const workflowDistrict = doc.N[workflowFile][0];
   const unconnected = doc.N.flatMap((row, i) => doc.districts[String(row[0])].class === "unconnected" ? [i] : []);
   report((await page.locator("[data-folder-label]").count()) === 0, `${label}: no folder labels at fit`);
-  const chip = page.locator("[data-unconnected-chip]");
+  // Desktop: the footer chip. Phone: docs/UX.md §4.2's map-quality row in
+  // the sheet's Peek summary (the floating chips are gone).
+  const chip = page.locator(profile.isMobile ? "[data-map-quality] [data-unconnected-count]" : "[data-unconnected-chip]");
   report((await chip.textContent())?.trim() === `${unconnected.length} unconnected files`, `${label}: chip counts files, not districts`);
   if (doc.coverage) {
     report(await page.locator('[data-coverage-detail]').count() === 0,
@@ -1836,6 +2012,11 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   await page.locator('button[aria-label="Fit map"]').click();
   await page.waitForTimeout(500);
   await chip.click();
+  if (profile.isMobile) {
+    await page.waitForTimeout(380);
+    report((await sheetDetent(page)) === "full" && (await page.locator('[data-sheet-card="quality"]').count()) === 1,
+      `${label}: the map-quality row opens a Full sheet (§4.2)`);
+  }
   report((await page.locator("[data-unconnected-list] details").count()) > 0, `${label}: chip opens grouped folders`);
   if (doc.coverage) report((await page.locator('[data-coverage-detail]').innerText()).includes("py:") &&
     (await page.locator('[data-coverage-detail]').innerText()).includes("ts:"),
@@ -1852,12 +2033,11 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   report(boxesClose(beforePick, await stableBox(page)), `${label}: listed file leaves the map view in place`);
   await page.goto(`${base}/${slug}?sel=${encodeURIComponent(doc.F[index])}`);
   await page.waitForSelector("svg.map-svg path.hit");
-  if (profile.hasTouch) await page.locator("[data-selection-panel] > div").first().click();
   report((await page.locator("[data-selection-panel]").innerText()).includes("not connected to anything, so it isn't placed on the map"),
     `${label}: ?sel= unconnected file deep link opens its card`);
   await page.goto(`${base}/${slug}`);
   await page.waitForSelector("svg.map-svg path.hit");
-  await page.locator('input[aria-label="Search files"]').fill(doc.F[index]);
+  await searchFor(page, profile, doc.F[index]);
   await page.locator('input[aria-label="Search files"]').press("Enter");
   report(new URL(page.url()).searchParams.get("file") === doc.F[index],
     `${label}: search result opens the unconnected file card`);
@@ -1899,8 +2079,7 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   `${label}: repeated basenames show at most one label per district`, JSON.stringify([...shown].filter(([key]) => key.endsWith(":types.ts"))));
 
   for (const layer of ["c", "x", "p"]) {
-    if (profile.isMobile) await page.locator('button[aria-label="Cycle layer"]').click();
-    else await page.locator('[aria-label="Layer"] button', { hasText: layer === "c" ? "churn" : layer === "x" ? "complexity" : "package" }).click();
+    await setLayer(page, profile, layer);
     report((await page.locator('[data-folder-label="web/app/components/workflow"]').count()) > 0,
       `${label}: workflow folder label remains on ${layer} layer`);
     if (layer === "p" && !profile.isMobile) {
@@ -1910,8 +2089,7 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
         `${label}: package legend leaves room for the unconnected chip`);
     }
   }
-  if (profile.isMobile) await page.locator('button[aria-label="Cycle layer"]').click();
-  else await page.locator('[aria-label="Layer"] button', { hasText: "district" }).click();
+  await setLayer(page, profile, "d");
   const workflowLabel = page.locator('[data-folder-label="web/app/components/workflow"]');
   if (await workflowLabel.count()) {
     for (const theme of ["light", "dark"]) {
@@ -2083,12 +2261,8 @@ async function checkBreadcrumbNoMove(browser, base, profile) {
   await page.goto(`${base}/django/django?geo=r&layer=d&file=${encodeURIComponent(doc.F[fileIndex])}&sym=0`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-breadcrumb]");
   await page.waitForTimeout(600);
-  if (profile.isMobile) {
-    const header = page.locator("[data-selection-panel] > div").first();
-    const box = await header.boundingBox();
-    if (box) await tap(page, profile, box.x + box.width / 2, box.y + box.height / 2);
-    await page.waitForTimeout(300);
-  }
+  // Phone: the breadcrumb is in the sheet's Peek header (docs/UX.md §3.2),
+  // on screen without raising anything.
 
   const buttons = page.locator("[data-breadcrumb] button");
   report((await buttons.count()) === 3, `${label}: repo/district/file are all clickable with a symbol selected`, `count=${await buttons.count()}`);
@@ -2110,12 +2284,16 @@ async function checkBreadcrumbNoMove(browser, base, profile) {
   report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after the district segment`);
 
   before = await stableBox(page);
-  await buttons.nth(0).click(); // repo segment
+  // The phone's district card leads with "District" and its name instead
+  // of a breadcrumb (docs/UX.md §3.2's Peek), so there the repo segment's
+  // job -- clear everything -- is the card's close button (§3.5).
+  if (profile.isMobile) await page.locator('[data-selection-panel] button[aria-label="Clear selection"]').click();
+  else await buttons.nth(0).click(); // repo segment
   await page.waitForTimeout(300);
   url = new URL(page.url());
   report(!url.searchParams.has("file") && !url.searchParams.has("d"),
-    `${label}: repo segment clears the selection`, url.toString());
-  report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after the repo segment`);
+    `${label}: ${profile.isMobile ? "the district card's close button" : "repo segment"} clears the selection`, url.toString());
+  report(boxesClose(before, await stableBox(page)), `${label}: view unchanged after ${profile.isMobile ? "closing the card" : "the repo segment"}`);
   await context.close();
 }
 
@@ -2151,6 +2329,15 @@ async function checkFullscreenPreservesView(browser, base, profile) {
   await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
+  if (profile.isMobile) {
+    // docs/UX.md §3: no fullscreen button on phones -- the Fullscreen API
+    // does not exist on iPhone Safari, and the shell already fills the
+    // screen. The CSS fallback stays reachable only where it is on desktop.
+    report((await page.locator('button[aria-label="Enter fullscreen"], button[aria-label="Exit fullscreen"]').count()) === 0,
+      `${label}: there is no fullscreen button on a phone`);
+    await context.close();
+    return;
+  }
   // Zoom in one notch first, off the exact fit-scale view: clampK's floor
   // is fitScale()*0.5, and fitScale() itself moves across this transition
   // (see above) -- starting EXACTLY at fit, where k already sits right at
@@ -2396,7 +2583,10 @@ async function checkSearchPanOffscreen(browser, base) {
       const svg = document.querySelector("svg.map-svg");
       const vw = svg.clientWidth;
       const vh = svg.clientHeight;
-      const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+      // The rect panTo() frames into: the map box minus its safe insets
+      // (docs/UX.md §3.3; MapCanvas writes them on its wrapper).
+      const ins = document.querySelector("[data-safe-insets]").getAttribute("data-safe-insets").split(",").map(Number);
+      const rect = [ins[0], ins[1], vw - ins[2], vh - ins[3]];
       const dots = [...document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')]
         .map((el) => ({
           el,
@@ -2447,7 +2637,8 @@ async function checkSearchPanOffscreen(browser, base) {
     const svg = document.querySelector("svg.map-svg");
     const vw = svg.clientWidth;
     const vh = svg.clientHeight;
-    const rect = vw <= 820 ? [16, 110, vw - 16, vh - 158] : [24, 12, vw - 24, vh - 38];
+    const ins = document.querySelector("[data-safe-insets]").getAttribute("data-safe-insets").split(",").map(Number);
+    const rect = [ins[0], ins[1], vw - ins[2], vh - ins[3]];
     const el = document.querySelector(`[data-k="f:${index}"]`);
     if (!el) return false;
     // B4: a footprint-mode file's own element is a `<path>` -- data-cx/
@@ -2696,12 +2887,39 @@ async function checkRoadTap(browser, base, profile) {
     new URL(page.url()).searchParams.get("file") === baseline,
     `${label}: tapping a road does not change or clear the current selection`,
   );
-  const cardVisible = await page
-    .locator(".tolmap-hover-card")
-    .isVisible()
-    .catch(() => false);
-  const cardText = cardVisible ? await page.locator(".tolmap-hover-card").innerText() : "";
-  report(cardVisible && /import/i.test(cardText), `${label}: tapping a road shows its import-count explanation`, cardText);
+  if (profile.isMobile) {
+    // docs/UX.md §3.2: on a phone the road's card is the sheet's, not a
+    // card floating over the map; §7.1 rule 7: it closes when the map pans.
+    const card = page.locator('[data-structure-card="road"]');
+    const cardText = (await card.count()) ? await card.innerText() : "";
+    report((await card.count()) === 1 && /import/i.test(cardText) && (await page.locator(".tolmap-hover-card:visible").count()) === 0,
+      `${label}: tapping a road shows its import-count explanation in the sheet`, cardText);
+    report((await page.locator('[data-structure-card="road"] [data-sheet-close]').count()) === 1, `${label}: the road card has a close button`);
+    // Start well inside the map, away from the pill, the control column
+    // and the sheet: an uncaptured pointer that slides onto chrome delivers
+    // its moves there, and the drag never becomes a pan. (Any map element
+    // under the finger is fine -- a drag pans whatever it starts on.)
+    const from = [Math.round(profile.viewport.width * 0.4), Math.round(profile.viewport.height * 0.35)];
+    const dx = 60;
+    const dy = 20;
+    const beforePan = await stableBox(page);
+    await page.mouse.move(from[0], from[1]);
+    await page.mouse.down();
+    await page.mouse.move(from[0] + dx, from[1] + dy, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    const panned = !boxesClose(beforePan, await stableBox(page));
+    report(panned && (await page.locator("[data-structure-card]").count()) === 0 && new URL(page.url()).searchParams.get("file") === baseline,
+      `${label}: panning the map closes the road card and keeps the selection (§7.1 rule 7)`,
+      JSON.stringify({ from, panned, cards: await page.locator("[data-structure-card]").count(), url: page.url() }));
+  } else {
+    const cardVisible = await page
+      .locator(".tolmap-hover-card")
+      .isVisible()
+      .catch(() => false);
+    const cardText = cardVisible ? await page.locator(".tolmap-hover-card").innerText() : "";
+    report(cardVisible && /import/i.test(cardText), `${label}: tapping a road shows its import-count explanation`, cardText);
+  }
   await context.close();
 }
 
@@ -3032,12 +3250,19 @@ async function checkStreetsAndTap(browser, base, profile) {
     `${label}: tapping a street does not change or clear the district focus`,
     `data-k=${dataK} url=${page.url()}`,
   );
-  const cardVisible = await page
-    .locator(".tolmap-hover-card")
-    .isVisible()
-    .catch(() => false);
-  const cardText = cardVisible ? await page.locator(".tolmap-hover-card").innerText() : "";
-  report(cardVisible && /import/i.test(cardText), `${label}: tapping a street shows its import-count explanation`, cardText);
+  if (profile.isMobile) {
+    // docs/UX.md §3.2: the sheet shows the street's card.
+    const card = page.locator('[data-structure-card="street"]');
+    const cardText = (await card.count()) ? await card.innerText() : "";
+    report((await card.count()) === 1 && /import/i.test(cardText), `${label}: tapping a street shows its import-count explanation in the sheet`, cardText);
+  } else {
+    const cardVisible = await page
+      .locator(".tolmap-hover-card")
+      .isVisible()
+      .catch(() => false);
+    const cardText = cardVisible ? await page.locator(".tolmap-hover-card").innerText() : "";
+    report(cardVisible && /import/i.test(cardText), `${label}: tapping a street shows its import-count explanation`, cardText);
+  }
   await context.close();
 }
 
@@ -4168,6 +4393,43 @@ async function checkThemeToggleCycles(browser, base, profile) {
   await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
 
+  if (profile.isMobile) {
+    // docs/UX.md §4.6 / principle 4: on a phone the theme control is the
+    // Layers sheet's System / Light / Dark segmented control, not a cycle
+    // button in a top bar (there is none).
+    report((await page.locator("[data-theme-toggle]").count()) === 0, `${label}: no top-bar theme toggle on a phone`);
+    await openLayersSheet(page);
+    const seg = page.locator("[data-theme-segmented]");
+    report((await seg.count()) === 1, `${label}: the Layers sheet carries the Appearance control`);
+    const state = () =>
+      page.evaluate(() => ({
+        attr: document.documentElement.getAttribute("data-theme"),
+        choice: document.querySelector("[data-theme-segmented]")?.getAttribute("data-theme-choice") ?? null,
+        pressed: [...document.querySelectorAll("[data-theme-option]")].filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.getAttribute("data-theme-option")),
+      }));
+    const start = await state();
+    report(start.choice === "system" && start.attr === null && start.pressed.join() === "system", `${label}: starts on System with no data-theme attribute`, JSON.stringify(start));
+    await page.locator('[data-theme-option="light"]').click();
+    const light = await state();
+    report(light.attr === "light" && light.pressed.join() === "light", `${label}: Light sets data-theme="light"`, JSON.stringify(light));
+    await page.locator('[data-theme-option="dark"]').click();
+    const dark = await state();
+    report(dark.attr === "dark" && dark.pressed.join() === "dark", `${label}: Dark sets data-theme="dark"`, JSON.stringify(dark));
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const immediately = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+    report(immediately === "dark", `${label}: the Dark choice survives a reload, applied before the app mounts`, String(immediately));
+    await page.waitForSelector("svg.map-svg path.hit");
+    report((await page.locator("[data-layers-sheet]").count()) === 0, `${label}: a reload never lands in the Layers sheet (§3.4)`);
+    await openLayersSheet(page);
+    const reloaded = await state();
+    report(reloaded.choice === "dark" && reloaded.pressed.join() === "dark", `${label}: the control reflects the persisted choice after mount`, JSON.stringify(reloaded));
+    await page.locator('[data-theme-option="system"]').click();
+    const back = await state();
+    report(back.attr === null && back.pressed.join() === "system", `${label}: System removes data-theme again`, JSON.stringify(back));
+    await context.close();
+    return;
+  }
+
   const toggle = page.locator("[data-theme-toggle]");
   report((await toggle.count()) === 1, `${label}: exactly one theme toggle button in the top bar`);
   report((await toggle.getAttribute("title")) === null, `${label}: no native title attribute on the toggle`);
@@ -4247,12 +4509,24 @@ async function checkThemeRepaintsMapColours(browser, base, profile) {
     // Computed style is also the more general check regardless: it's
     // correct whether the DOM has a literal hex/rgb() or a var() reference.
     const before = await page.locator(selector).first().evaluate((el) => getComputedStyle(el).fill);
-    await page.locator("[data-theme-toggle]").click(); // system -> light
-    await page.locator("[data-theme-toggle]").click(); // light -> dark
+    if (profile.isMobile) {
+      // The phone's control is the Layers sheet's segmented one (§4.6).
+      await openLayersSheet(page);
+      await page.locator('[data-theme-option="light"]').click();
+      await page.locator('[data-theme-option="dark"]').click();
+    } else {
+      await page.locator("[data-theme-toggle]").click(); // system -> light
+      await page.locator("[data-theme-toggle]").click(); // light -> dark
+    }
     await page.waitForTimeout(300);
     const after = await page.locator(selector).first().evaluate((el) => getComputedStyle(el).fill);
     report(!!before && !!after && before !== after, `${label}: ${what} layer fill changes after switching to dark`, `before=${before} after=${after}`);
-    await page.locator("[data-theme-toggle]").click(); // dark -> system, reset for the next iteration/check
+    if (profile.isMobile) {
+      await page.locator('[data-theme-option="system"]').click();
+      await closeLayersSheet(page);
+    } else {
+      await page.locator("[data-theme-toggle]").click(); // dark -> system, reset for the next iteration/check
+    }
   }
 
   await context.close();
@@ -4283,7 +4557,21 @@ async function checkLinkLegendWrapsAtHighDegree(browser, base, profile) {
 
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(doc.F[bestFile])}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-selection-panel]");
-  if (profile.isMobile) await page.locator("[data-selection-panel] > div").first().tap();
+  if (profile.isMobile) {
+    // docs/UX.md §4.5: the phone's two counts are side by side, each a
+    // label over a number; the full count must show, unclipped.
+    await setSheetDetent(page, "half");
+    const cell = page.locator('[data-link-count="in"]');
+    await cell.waitFor();
+    const shape = await cell.evaluate((el) => ({
+      text: (el.textContent ?? "").replace(/\s+/g, " "),
+      clipped: [...el.querySelectorAll("span")].some((s) => s.scrollWidth > s.clientWidth + 1),
+    }));
+    report(shape.text.includes(bestDeg.toLocaleString("en-US")) && !shape.text.includes("…"), `${label}: full three-digit imported-by count is visible, not ellipsised`, JSON.stringify(shape));
+    report(!shape.clipped, `${label}: the count's text is not clipped`, JSON.stringify(shape));
+    await context.close();
+    return;
+  }
   await page.waitForSelector("[data-selection-panel] [data-link-legend]");
 
   const legend = page.locator("[data-selection-panel] [data-link-legend]").first();
@@ -4415,6 +4703,440 @@ async function checkChromeContrast(browser, base) {
 // TOLMAP_API_PROXY_TARGET at it). Each slug is timestamped so repeated runs
 // (or two checks racing the mock's single concurrency slot) never collide on
 // an old job of the same name.
+// ---------------------------------------------------------------------------
+// docs/UX.md phase 2: the phone shell -- search pill, control column, one
+// bottom sheet with three detents, the back stack, re-centring above the
+// sheet, tap-outside dismissal, the Layers sheet and path mode. The pure
+// parts (detents, snap, safe rect, back-stack reducer) are unit-tested in
+// check-phone-shell.ts; these drive the real page.
+// ---------------------------------------------------------------------------
+
+const PHONE_SIZES = [
+  { name: "phone", viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+  { name: "phone-360", viewport: { width: 360, height: 640 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+  { name: "phone-320", viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+];
+
+async function phonePage(browser, profile) {
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    isMobile: profile.isMobile,
+    hasTouch: profile.hasTouch,
+    deviceScaleFactor: profile.deviceScaleFactor ?? 1,
+  });
+  return { context, page: await context.newPage() };
+}
+
+/** A slow or fast vertical drag with the mouse (pointer events either way;
+ * the sheet does not care which pointer type drags it). */
+async function dragVertical(page, x, y0, dy, { slow = false } = {}) {
+  const steps = slow ? Math.max(8, Math.round(Math.abs(dy) / 10)) : 3;
+  await page.mouse.move(x, y0);
+  await page.mouse.down();
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(x, y0 + (dy * i) / steps);
+    if (slow) await page.waitForTimeout(60);
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(420);
+}
+
+/** §3 / §3.1 on each phone size: the chrome, the heights, the grabber and
+ * the drag physics. */
+async function checkPhoneShellChrome(browser, base, profile) {
+  const label = `phone shell chrome and sheet detents (dify) / ${profile.name} ${profile.viewport.width}x${profile.viewport.height}`;
+  console.log(`\n${label}`);
+  const { context, page } = await phonePage(browser, profile);
+  const { width: W, height: H } = profile.viewport;
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+
+  const pill = await page.locator("[data-search-pill]").boundingBox();
+  report(!!pill && Math.abs(pill.y - 12) <= 1 && Math.abs(pill.height - 48) <= 1 && Math.abs(pill.x - 12) <= 1 && Math.abs(pill.x + pill.width - (W - 12)) <= 1,
+    `${label}: a 48 px search pill, 12 px from the top and the sides`, JSON.stringify(pill));
+  const pillText = await page.locator("[data-search-pill]").innerText();
+  report(/Search/.test(pillText) && pillText.includes("langgenius/dify") && (await page.locator('[data-search-pill] select[aria-label="Repository"]').count()) === 1,
+    `${label}: the pill holds the search affordance, the repository and the switch-repository control`, pillText);
+  const controls = await page.locator("[data-control-column] button").evaluateAll((els) => els.map((el) => {
+    const r = el.getBoundingClientRect();
+    return { label: el.getAttribute("aria-label"), w: Math.round(r.width), h: Math.round(r.height) };
+  }));
+  report(controls.map((c) => c.label).join("|") === "Zoom in|Zoom out|Fit map|Map layers" && controls.every((c) => c.w >= 44 && c.h >= 44),
+    `${label}: control column is zoom in, zoom out, fit and layers, each 44 x 44`, JSON.stringify(controls));
+  report((await page.locator('button[aria-label="Enter fullscreen"], [aria-label="Cycle layer"], aside, [data-package-legend], [data-unconnected-chip], [data-reference-coverage], .tolmap-hover-card:visible').count()) === 0,
+    `${label}: no fullscreen button, old top bar, drawer, legend or chip on the phone map`);
+
+  const peek = await sheetVisibleHeight(page);
+  const half = Math.min(480, Math.round(H * 0.57));
+  const full = H - (12 + 48 + 8);
+  report((await sheetDetent(page)) === "peek" && Math.abs(peek - 156) <= 1, `${label}: the sheet opens at Peek, 156 px (no bottom safe inset here)`, `shown=${peek}`);
+  report(/districts · [\d,]+ files/.test(await page.locator('[data-sheet-card="overview"]').innerText()), `${label}: Peek shows the repository summary (§4.1)`);
+
+  const grabber = page.locator("[data-sheet-grabber]");
+  const g = await grabber.boundingBox();
+  report(!!g && g.height >= 44 && g.width >= 44 && (await grabber.getAttribute("aria-expanded")) === "false", `${label}: the grabber is a 44 px button with aria-expanded`, JSON.stringify(g));
+  const seen = [];
+  for (let i = 0; i < 3; i++) {
+    await grabber.click();
+    await page.waitForTimeout(380);
+    seen.push([await sheetDetent(page), Math.round(await sheetVisibleHeight(page))]);
+  }
+  report(JSON.stringify(seen) === JSON.stringify([["half", half], ["full", full], ["peek", 156]]),
+    `${label}: tapping the grabber cycles peek -> half -> full -> peek at the §3.1 heights`, JSON.stringify({ seen, half, full }));
+
+  // Drag physics (the prototype's): a slow drag settles at the nearest
+  // detent, a flick goes one detent in its direction.
+  const sheetTop = () => page.locator("[data-phone-sheet]").evaluate((el) => el.getBoundingClientRect().top);
+  let top = await sheetTop();
+  await dragVertical(page, W / 2, top + 40, -(half - 156) - 20, { slow: true });
+  report((await sheetDetent(page)) === "half", `${label}: a slow drag up past Half settles at Half`, await sheetDetent(page));
+  top = await sheetTop();
+  await dragVertical(page, W / 2, top + 40, 60);
+  report((await sheetDetent(page)) === "peek", `${label}: a quick flick down from Half returns to Peek`, await sheetDetent(page));
+  top = await sheetTop();
+  await dragVertical(page, W / 2, top + 40, -60);
+  report((await sheetDetent(page)) === "half", `${label}: a quick flick up from Peek goes to Half`, await sheetDetent(page));
+  top = await sheetTop();
+  await dragVertical(page, W / 2, top + 40, 40, { slow: true });
+  report((await sheetDetent(page)) === "half", `${label}: a short slow drag springs back to the detent it started at`, await sheetDetent(page));
+  await setSheetDetent(page, "peek");
+  top = await sheetTop();
+  await dragVertical(page, W / 2, top + 40, 120, { slow: true });
+  report((await sheetDetent(page)) === "peek" && Math.abs((await sheetVisibleHeight(page)) - 156) <= 1, `${label}: dragging below Peek springs back to Peek (§3.5)`);
+  await context.close();
+}
+
+/** §3.2, §3.3, §3.5: a selection made by TAPPING THE MAP opens the sheet at
+ * Peek with the target visible above it; raising the sheet keeps it in the
+ * safe rect; panning drops the sheet back to Peek; an empty tap clears. */
+async function checkPhoneTapSelection(browser, base, profile) {
+  const label = `phone map-tap selection above the sheet (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const { context, page } = await phonePage(browser, profile);
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  const sheetTop = () => page.locator("[data-phone-sheet]").evaluate((el) => el.getBoundingClientRect().top);
+
+  const district = await pickDistrictPoint(page, true);
+  if (!district) {
+    report(false, `${label}: setup`, "no tappable district label");
+    await context.close();
+    return;
+  }
+  await tap(page, profile, district.x, district.y);
+  const d = district.key.split(":")[1];
+  report(new URL(page.url()).searchParams.get("d") === d && (await sheetDetent(page)) === "peek" && (await page.locator('[data-sheet-card="district"]').count()) === 1,
+    `${label}: tapping a district on the map opens its card at Peek`);
+  report(district.y < (await sheetTop()), `${label}: the tapped district is above the sheet`);
+
+  // A file inside that district: now one tap (two-step tap, #82 C2).
+  const file = await page.evaluate(() => {
+    for (const el of document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')) {
+      const r = el.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      if (y < 90 || y > innerHeight - 200 || x < 20 || x > innerWidth - 80) continue;
+      const hit = document.elementFromPoint(x, y)?.closest?.("[data-k]");
+      if (hit?.getAttribute("data-k") !== el.getAttribute("data-k")) continue;
+      return { x, y, key: el.getAttribute("data-k") };
+    }
+    return null;
+  });
+  if (!file) {
+    report(false, `${label}: a file on the map is tappable`, "none found");
+    await context.close();
+    return;
+  }
+  const index = Number(file.key.slice(2));
+  await tap(page, profile, file.x, file.y);
+  if (new URL(page.url()).searchParams.get("file") !== doc.F[index]) await tap(page, profile, file.x, file.y);
+  report(new URL(page.url()).searchParams.get("file") === doc.F[index] && (await sheetDetent(page)) === "peek" && (await page.locator('[data-sheet-card="file"]').count()) === 1,
+    `${label}: tapping a file on the map opens its card at Peek`, page.url());
+  const inSafe = async () => {
+    const dot = await readDot(page, file.key);
+    const rect = await mapFrameRect(page, "safe");
+    const top = await sheetTop();
+    return { dot, rect, top, ok: !!dot && dot.cx >= rect[0] && dot.cx <= rect[2] && dot.cy >= rect[1] && dot.cy <= rect[3] && dot.cy < top };
+  };
+  const atPeek = await inSafe();
+  report(atPeek.ok, `${label}: the selected file sits in the safe rect, above the sheet at Peek`, JSON.stringify(atPeek));
+
+  // §3.3: raising the sheet eases the camera only if it would cover the file.
+  await page.locator("[data-sheet-grabber]").click();
+  await page.waitForTimeout(800);
+  const atHalf = await inSafe();
+  report((await sheetDetent(page)) === "half" && atHalf.ok, `${label}: at Half the file is still in the (smaller) safe rect, above the sheet`, JSON.stringify(atHalf));
+
+  // §3.5: panning the map with the sheet raised returns it to Peek (> 24 px).
+  const empty = await findEmptyPoint(page, profile.viewport.width, 360);
+  const from = empty ?? [profile.viewport.width / 2, 200];
+  await page.mouse.move(from[0], from[1]);
+  await page.mouse.down();
+  const sx = from[0] > profile.viewport.width / 2 ? -1 : 1; // stay on screen
+  await page.mouse.move(from[0] + 15 * sx, from[1], { steps: 3 });
+  await page.waitForTimeout(100);
+  const mid = await sheetDetent(page);
+  await page.mouse.move(from[0] + 50 * sx, from[1] + 10, { steps: 4 });
+  await page.mouse.up();
+  await page.waitForTimeout(450);
+  report(mid === "half" && (await sheetDetent(page)) === "peek" && new URL(page.url()).searchParams.get("file") === doc.F[index],
+    `${label}: a pan under 24 px leaves the sheet; past 24 px it returns to Peek, selection kept`, `mid=${mid} after=${await sheetDetent(page)}`);
+
+  // §3.5: a tap on empty map clears the selection in one step (no zoom).
+  const blank = await findEmptyPointWithZoomOut(page, profile.viewport.width, profile.viewport.height);
+  if (blank) {
+    const beforeTap = await stableBox(page);
+    await tap(page, profile, blank[0], blank[1]);
+    const url = new URL(page.url());
+    report(!url.searchParams.has("file") && !url.searchParams.has("d") && (await page.locator('[data-sheet-card="overview"]').count()) === 1,
+      `${label}: one tap on empty map clears the selection`, url.toString());
+    report(boxesClose(beforeTap, await stableBox(page)), `${label}: and does not move or zoom the map`);
+  } else {
+    report(false, `${label}: an empty-map tap clears the selection`, "no empty map point");
+  }
+
+  // The close button clears too (§3.5). (The empty-tap step may have
+  // zoomed out to find water, so the district is picked again.)
+  const again = await pickDistrictPoint(page, true);
+  if (again) await tap(page, profile, again.x, again.y);
+  const close = page.locator('[data-phone-sheet] button[aria-label="Clear selection"]');
+  if (await close.count()) {
+    const box = await close.boundingBox();
+    await close.click();
+    await page.waitForTimeout(300);
+    report(box.width >= 44 && box.height >= 44 && !new URL(page.url()).searchParams.has("d") && !new URL(page.url()).searchParams.has("file"),
+      `${label}: the sheet's 44 px close button clears the selection`);
+  } else {
+    report(false, `${label}: the sheet's close button clears the selection`, "no selection to close");
+  }
+  await context.close();
+}
+
+/** §3.4: back pops search, the Layers sheet, the sheet height and the
+ * selection, in that order, and only then leaves the map. Deep links land
+ * on their selection; a reload never lands in an overlay. */
+async function checkPhoneBackStack(browser, base, profile) {
+  const label = `phone back stack (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const { context, page } = await phonePage(browser, profile);
+  const back = async () => {
+    await page.goBack({ waitUntil: "commit", timeout: 5000 }).catch(() => null);
+    await page.waitForTimeout(500);
+  };
+  const stateOf = async () => {
+    const url = new URL(page.url());
+    return {
+      path: url.pathname,
+      d: url.searchParams.get("d"),
+      file: url.searchParams.get("file"),
+      search: (await page.locator("[data-search-layer]").count()) > 0,
+      layers: (await page.locator("[data-layers-sheet]").count()) > 0,
+      detent: (await page.locator("[data-phone-sheet]").count()) ? await sheetDetent(page) : null,
+    };
+  };
+  const open = async () => {
+    await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("svg.map-svg path.hit");
+    await page.waitForTimeout(700);
+    const pt = await pickDistrictPoint(page, true);
+    if (pt) await tap(page, profile, pt.x, pt.y);
+    return pt?.key.split(":")[1] ?? null;
+  };
+
+  // Selection, Half, Layers.
+  let d = await open();
+  if (!d) {
+    report(false, `${label}: setup`, "no tappable district");
+    await context.close();
+    return;
+  }
+  await page.locator("[data-sheet-details]").click();
+  await page.waitForTimeout(380);
+  await openLayersSheet(page);
+  const s0 = await stateOf();
+  report(s0.d === d && s0.detent === "half" && s0.layers, `${label}: setup -- a district tapped on the map, sheet at Half, Layers open`, JSON.stringify(s0));
+  await back();
+  const s1 = await stateOf();
+  report(!s1.layers && s1.detent === "half" && s1.d === d && s1.path === "/django/django", `${label}: back 1 closes the Layers sheet only`, JSON.stringify(s1));
+  await back();
+  const s2 = await stateOf();
+  report(s2.detent === "peek" && s2.d === d && s2.path === "/django/django", `${label}: back 2 returns the sheet to Peek, selection kept`, JSON.stringify(s2));
+  await back();
+  const s3 = await stateOf();
+  report(!s3.d && !s3.file && s3.path === "/django/django", `${label}: back 3 clears the selection and stays on the map`, JSON.stringify(s3));
+  await back();
+  const s4 = await stateOf();
+  report(s4.path === "/", `${label}: back 4 leaves the map`, JSON.stringify(s4));
+
+  // Selection, Half, Search.
+  d = await open();
+  await page.locator("[data-sheet-details]").click();
+  await page.waitForTimeout(380);
+  await page.locator("[data-open-search]").click();
+  await page.waitForSelector("[data-search-layer]");
+  const input = await page.locator('[data-search-layer] input[aria-label="Search files"]').evaluate((el) => ({
+    focused: document.activeElement === el,
+    size: parseFloat(getComputedStyle(el).fontSize),
+  }));
+  report(input.focused && input.size >= 16, `${label}: the pill opens search full screen, focused, at 16 px`, JSON.stringify(input));
+  await back();
+  const t1 = await stateOf();
+  report(!t1.search && t1.detent === "half" && t1.d === d, `${label}: back first closes search, restoring the selection`, JSON.stringify(t1));
+  await back();
+  const t2 = await stateOf();
+  report(t2.detent === "peek" && t2.d === d, `${label}: then the sheet height`, JSON.stringify(t2));
+  await back();
+  const t3 = await stateOf();
+  report(!t3.d && t3.path === "/django/django", `${label}: then the selection`, JSON.stringify(t3));
+  await back();
+  report((await stateOf()).path === "/", `${label}: and only then leaves the map`);
+
+  // An overlay closed from the UI costs no extra back press.
+  d = await open();
+  await page.locator("[data-sheet-details]").click();
+  await page.waitForTimeout(380);
+  await openLayersSheet(page);
+  await closeLayersSheet(page);
+  await page.locator("[data-sheet-grabber]").click(); // half -> full
+  await page.waitForTimeout(380);
+  await page.locator("[data-sheet-grabber]").click(); // full -> peek
+  await page.waitForTimeout(380);
+  await back();
+  const u1 = await stateOf();
+  report(!u1.d && u1.path === "/django/django", `${label}: with the sheet and Layers closed from the UI, one back clears the selection`, JSON.stringify(u1));
+
+  // A deep link lands on its selection; back clears it before leaving.
+  const doc = await (await context.request.get(`${base}/maps/django/django.json`)).json();
+  const file = doc.F[doc.L[0][0]];
+  await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${base}/django/django?file=${encodeURIComponent(file)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  report(new URL(page.url()).searchParams.get("file") === file && (await page.locator('[data-sheet-card="file"]').count()) === 1 && (await sheetDetent(page)) === "peek",
+    `${label}: a ?file= deep link lands on its card at Peek`);
+  // A reload never lands in an overlay, and keeps the selection (the URL).
+  await page.locator("[data-open-search]").click();
+  await page.waitForSelector("[data-search-layer]");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(700);
+  const r = await stateOf();
+  report(!r.search && !r.layers && r.detent === "peek" && r.file === file, `${label}: a reload never lands in an overlay and keeps the selection`, JSON.stringify(r));
+  await back();
+  const r1 = await stateOf();
+  report(!r1.file && r1.path === "/django/django", `${label}: back from the reloaded deep link clears its selection first`, JSON.stringify(r1));
+  await back();
+  report((await stateOf()).path === "/", `${label}: then leaves the map`);
+  await context.close();
+}
+
+/** §4.6: the Layers sheet -- four layers with a meaning each, the ramp and
+ * its range for churn and complexity, the package legend, Appearance. */
+async function checkPhoneLayersSheet(browser, base, profile) {
+  const label = `phone Layers sheet (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const { context, page } = await phonePage(browser, profile);
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(600);
+  await openLayersSheet(page);
+  const radios = await page.locator('[data-layers-sheet] [role="radio"]').evaluateAll((els) => els.map((el) => ({
+    id: el.getAttribute("data-layer-option"), checked: el.getAttribute("aria-checked"), h: el.getBoundingClientRect().height, text: el.textContent,
+  })));
+  report(radios.map((r) => r.id).join() === "d,c,x,p" && radios.every((r) => r.h >= 44) && radios.filter((r) => r.checked === "true").map((r) => r.id).join() === "d",
+    `${label}: a radio list of District, Churn, Complexity, Package, the current one checked`, JSON.stringify(radios));
+  const maxCh = Math.max(1, ...doc.N.map((row) => row[5]));
+  const maxCx = Math.max(1, ...doc.N.map((row) => row[4]));
+  const ramps = await page.locator("[data-ramp-legend]").evaluateAll((els) => els.map((el) => ({ id: el.getAttribute("data-ramp-legend"), text: el.textContent, gradient: getComputedStyle(el.firstElementChild).backgroundImage })));
+  report(ramps.length === 2 && ramps[0].text.includes(`1 → ${maxCh}`) && ramps[1].text.includes(`0 → ${maxCx}`) && ramps.every((r) => r.gradient.includes("gradient")),
+    `${label}: churn and complexity show the renderer's ramp with its range`, JSON.stringify(ramps));
+  await page.locator('[data-layer-option="c"]').click();
+  report(new URL(page.url()).searchParams.get("layer") === "c" && (await page.locator('[data-layer-option="c"]').getAttribute("aria-checked")) === "true",
+    `${label}: picking Churn switches the map layer`);
+  await page.locator('[data-layer-option="p"]').click();
+  report((await page.locator("[data-layers-sheet] [data-package-legend]").count()) === 1, `${label}: the package legend is shown under Package`);
+  report((await page.locator("[data-layers-sheet] [data-theme-segmented] button").count()) === 3, `${label}: Appearance offers System, Light and Dark`);
+  await page.locator("[data-layers-scrim]").click({ position: { x: 20, y: 20 } });
+  await page.waitForTimeout(200);
+  report((await page.locator("[data-layers-sheet]").count()) === 0 && (await sheetDetent(page)) === "peek", `${label}: tapping the scrim closes it, back to the map sheet`);
+  await context.close();
+}
+
+/** §4.7: "Path from here" puts the sheet into path mode; the next file tap
+ * on the map sets the other end. User-facing copy says path, never route. */
+async function checkPhonePathMode(browser, base, profile) {
+  const label = `phone path mode (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const { context, page } = await phonePage(browser, profile);
+  const doc = await (await context.request.get(`${base}/maps/django/django.json`)).json();
+  const anchor = doc.L[0][0];
+  await page.goto(`${base}/django/django?file=${encodeURIComponent(doc.F[anchor])}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(800);
+  await setSheetDetent(page, "full");
+  // (The card's own symbol list may legitimately name code "route"; the
+  // copy under test is the card's controls.)
+  const pathButtons = await page.locator("[data-path-start]").allInnerTexts();
+  report(pathButtons.join("|") === "Path from here|Path to here",
+    `${label}: the file card offers "Path from here" / "Path to here" (never "route")`, JSON.stringify(pathButtons));
+  await page.locator('[data-path-start="from"]').click();
+  await page.waitForTimeout(400);
+  const picking = page.locator('[data-sheet-card="path"][data-path-state="picking"]');
+  report((await picking.count()) === 1 && (await sheetDetent(page)) === "peek" && (await picking.innerText()).includes(doc.F[anchor].split("/").pop()),
+    `${label}: path mode at Peek: "From <file> · pick a destination"`, (await picking.count()) ? await picking.innerText() : "");
+  // The next file tapped on the map is the destination -- even in another
+  // district (no two-step district tap while picking).
+  // The largest tappable file target on screen: Chromium's touch
+  // adjustment retargets a tap on a tiny dot to a bigger neighbour (a CI run
+  // tapped registry.py's dot and got exceptions.py), which is the browser
+  // choosing the file, not path mode.
+  const target = await page.evaluate((a) => {
+    let best = null;
+    for (const el of document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')) {
+      const k = el.getAttribute("data-k");
+      if (k === `f:${a}`) continue;
+      const r = el.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      if (y < 90 || y > innerHeight - 220 || x < 20 || x > innerWidth - 80) continue;
+      if (document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k") !== k) continue;
+      const area = r.width * r.height;
+      if (!best || area > best.area) best = { x, y, index: Number(k.slice(2)), area };
+    }
+    return best;
+  }, anchor);
+  if (!target) {
+    report(false, `${label}: a destination file is tappable`, "none found");
+    await context.close();
+    return;
+  }
+  await tap(page, profile, target.x, target.y);
+  const card = page.locator('[data-sheet-card="path"]');
+  const state = await card.getAttribute("data-path-state");
+  const ends = await card.getAttribute("data-path-ends");
+  const text = await card.innerText();
+  const tapped = new URL(page.url()).searchParams.get("file") === doc.F[anchor];
+  report((state === "found" || state === "none") && ends === `${anchor},${target.index}` && tapped,
+    `${label}: tapping a file on the map sets the destination and shows the path`,
+    JSON.stringify({ state, ends, expected: `${anchor},${target.index}`, anchor: doc.F[anchor], target: doc.F[target.index], text: text.replace(/\s+/g, " ") }));
+  report(!/\broute\b/i.test(text) && new URL(page.url()).searchParams.get("file") === doc.F[anchor], `${label}: the path card says "path", and the selection is unchanged`);
+  if (state === "found") {
+    await setSheetDetent(page, "half");
+    report((await page.locator("[data-path-files] li").count()) >= 2, `${label}: at Half the path's files are listed in order`);
+  }
+  await page.locator('[data-phone-sheet] button[aria-label="Close path"]').click();
+  await page.waitForTimeout(300);
+  report((await page.locator('[data-sheet-card="path"]').count()) === 0 && (await page.locator('[data-sheet-card="file"]').count()) === 1,
+    `${label}: closing the path returns to the file card`);
+  await context.close();
+}
+
 async function submitMockJob(base, slug) {
   const res = await fetch(`${base}/api/index`, {
     method: "POST",
@@ -4660,6 +5382,13 @@ async function main() {
     for (const profile of PROFILES) await checkThemeRepaintsMapColours(browser, args.base, profile);
     for (const profile of PROFILES) await checkLinkLegendWrapsAtHighDegree(browser, args.base, profile);
     await checkChromeContrast(browser, args.base);
+    // docs/UX.md phase 2: the phone shell.
+    for (const profile of PHONE_SIZES) await checkPhoneShellChrome(browser, args.base, profile);
+    const phoneProfile = PROFILES.find((p) => p.name === "phone");
+    await checkPhoneTapSelection(browser, args.base, phoneProfile);
+    await checkPhoneBackStack(browser, args.base, phoneProfile);
+    await checkPhoneLayersSheet(browser, args.base, phoneProfile);
+    await checkPhonePathMode(browser, args.base, phoneProfile);
     // Issue #97: live job progress, ETA and cancel (mock-api-server.mjs).
     await checkJobProgressPage(browser, args.base);
     await checkQueuedJobPage(browser, args.base);

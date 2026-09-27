@@ -2,13 +2,10 @@ import { useMemo, useState } from "react";
 import type { MapDocument } from "@/types";
 import { buildDistrictIndex, type DistrictIndexRow } from "@/map/districtIndex";
 import type { PackageLayout } from "@/map/packageLayout";
-import { useIsNarrow } from "@/hooks/useIsNarrow";
 
 interface Props {
   doc: MapDocument;
   packageLayout: PackageLayout;
-  open: boolean;
-  onToggleOpen(): void;
   /** A district's own key-file line (most imported / entry / links a bridge)
    * -- selects that file, no view move, the same pan-free contract
    * onPickHub/onPickLandmark had before this list replaced them (issue #82
@@ -26,7 +23,15 @@ interface Props {
  * DistrictIndexRowView below). No colour chip on either: once every
  * district shares one of six hues, a chip repeats too often to identify
  * anything (owner feedback, issue #82 "district index"). */
-function PlainDistrictRow({ doc, d, onSelectDistrict }: { doc: MapDocument; d: string; onSelectDistrict(d: number): void }) {
+function PlainDistrictRow({ doc, d, onSelectDistrict, large = false }: { doc: MapDocument; d: string; onSelectDistrict(d: number): void; large?: boolean }) {
+  if (large) {
+    return (
+      <button type="button" onClick={() => onSelectDistrict(+d)} className="flex min-h-[44px] w-full items-center gap-1.5 px-5 text-left text-small">
+        <span className="min-w-0 flex-1 truncate">{doc.names[d]}</span>
+        <span className="font-mono text-meta text-[var(--dim)]">{doc.districts[d].size}</span>
+      </button>
+    );
+  }
   return (
     <div
       onClick={() => onSelectDistrict(+d)}
@@ -97,11 +102,14 @@ function CollapsibleSection({
   ids,
   doc,
   onSelectDistrict,
+  large = false,
 }: {
   label: string;
   ids: readonly string[];
   doc: MapDocument;
   onSelectDistrict(d: number): void;
+  /** Phone sheet: 44 px rows (docs/UX.md §8.2). */
+  large?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   if (ids.length === 0) return null; // a section with zero members renders nothing, not an empty header
@@ -110,7 +118,8 @@ function CollapsibleSection({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="mb-1.5 mt-3 flex w-full items-center gap-1.5 px-3 text-label uppercase text-[var(--dim)]"
+        aria-expanded={open}
+        className={`flex w-full items-center gap-1.5 text-label uppercase text-[var(--dim)] ${large ? "min-h-[44px] px-5" : "mb-1.5 mt-3 px-3"}`}
       >
         <span className={`inline-block text-meta transition-transform ${open ? "rotate-90" : ""}`}>›</span>
         {ids.length} {label}
@@ -118,7 +127,7 @@ function CollapsibleSection({
       {open && (
         <div>
           {ids.map((d) => (
-            <PlainDistrictRow key={d} doc={doc} d={d} onSelectDistrict={onSelectDistrict} />
+            <PlainDistrictRow key={d} doc={doc} d={d} onSelectDistrict={onSelectDistrict} large={large} />
           ))}
         </div>
       )}
@@ -126,70 +135,115 @@ function CollapsibleSection({
   );
 }
 
-/** The ONE "Districts" list (issue #82 "district index", owner decision
- * AskUserQuestion 2026-09-24): replaces the old rail's three stacked parts
- * (a jargon-heavy Landmarks list, a separate Hubs list, and district rows
- * whose colour chips no longer identified anything once six shared hues
- * started repeating). Desktop: a fixed left rail. Phone: a bottom drawer
- * that peeks a grab handle and opens on tap or drag — the `.side`/`.grab`/
- * `.open` pattern from the reference's CSS, reimplemented as a translateY
- * transition driven by the `open` prop instead of a class toggled directly
- * on the DOM node.
- *
- * Districts split into mainland and islands. Unconnected files still live
- * in the footer list, with no district row to select from here. */
-export function Sidebar({ doc, packageLayout, open, onToggleOpen, onPickKeyFile, onSelectDistrict }: Props) {
-  const narrow = useIsNarrow();
+/** The district index's rows, shared by the desktop rail (`variant="rail"`)
+ * and the phone sheet's Districts tab (`variant="sheet"`, docs/UX.md §4.3:
+ * rows of at least 64 px, 16 px names, every key file a 44 px target).
+ * Same data (map/districtIndex.ts) and the same data attributes in both, so
+ * the viewer checks read one contract. The sheet keeps every key-file line
+ * rather than §4.3's single "key file" mention: those lines are how every
+ * landmark kind stays listed (CLAUDE.md's viewer acceptance bar). */
+export function DistrictIndexList({
+  doc,
+  packageLayout,
+  onPickKeyFile,
+  onSelectDistrict,
+  variant,
+}: {
+  doc: MapDocument;
+  packageLayout: PackageLayout;
+  onPickKeyFile(fileIndex: number): void;
+  onSelectDistrict(d: number): void;
+  variant: "rail" | "sheet";
+}) {
   const index = useMemo(() => buildDistrictIndex(doc, packageLayout), [doc, packageLayout]);
-  // Owner review (issue #82 "district index" follow-up): the title --
-  // "Districts · N files" -- is shown exactly ONCE. Desktop renders it as a
-  // plain heading above the list; the phone drawer instead puts it in the
-  // sticky handle button itself (the one thing visible whether the drawer
-  // is open or peeking its 46px collapsed strip), rather than duplicating a
-  // second "Districts" label there too.
-  const title = `Districts · ${index.totalFiles.toLocaleString("en-US")} files`;
-
-  const list = (
-    <>
+  if (variant === "sheet") {
+    return (
+      <div data-district-index>
+        {index.mainland.map((row) => (
+          <SheetDistrictRow key={row.d} row={row} onPickKeyFile={onPickKeyFile} onSelectDistrict={onSelectDistrict} />
+        ))}
+        <CollapsibleSection label="islands" ids={index.islandIds} doc={doc} onSelectDistrict={onSelectDistrict} large />
+      </div>
+    );
+  }
+  return (
+    <div data-district-index>
       <div>
         {index.mainland.map((row) => (
           <DistrictIndexRowView key={row.d} row={row} onPickKeyFile={onPickKeyFile} onSelectDistrict={onSelectDistrict} />
         ))}
       </div>
       <CollapsibleSection label="islands" ids={index.islandIds} doc={doc} onSelectDistrict={onSelectDistrict} />
-    </>
+    </div>
   );
+}
 
-  if (!narrow) {
-    return (
-      <aside className="w-[250px] flex-none overflow-y-auto border-r border-[var(--rule)] bg-[var(--chrome)] pb-4 text-[var(--on)]">
-        <h2 className="mb-1.5 mt-3 px-3 text-label uppercase text-[var(--dim)]">{title}</h2>
-        {list}
-      </aside>
-    );
-  }
-
+/** docs/UX.md §4.3's phone row: the district is one real button (name,
+ * count, "mostly" line), each key file another. */
+function SheetDistrictRow({
+  row,
+  onPickKeyFile,
+  onSelectDistrict,
+}: {
+  row: DistrictIndexRow;
+  onPickKeyFile(fileIndex: number): void;
+  onSelectDistrict(d: number): void;
+}) {
   return (
-    <aside
-      // Owner review: the collapsed "Folders" panel (SelectionPanel, when
-      // nothing is selected) and FooterStats' "N unconnected files" chip
-      // (max-[820px]:z-20) used to render ON TOP of the open drawer,
-      // covering its rows. The open drawer now outranks both (z-40); closed,
-      // it stays at its old z-10 -- its 46px peek strip never overlapped
-      // either of them, so there's nothing to change for that state.
-      className={`absolute inset-x-0 bottom-0 ${open ? "z-40" : "z-10"} max-h-[68%] overflow-y-auto rounded-t-xl border-t border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-[0_-8px_26px_rgba(0,0,0,.34)] transition-transform duration-[260ms] ease-out`}
-      style={{
-        transform: open ? "translateY(0)" : "translateY(calc(100% - 46px))",
-        paddingBottom: "calc(16px + env(safe-area-inset-bottom, 0px))",
-      }}
-    >
+    <div data-district-index-row={row.d} className="border-b border-[var(--rule)]">
       <button
-        onClick={onToggleOpen}
-        className="sticky top-0 block h-[46px] w-full bg-[var(--chrome)] px-3 text-center text-label uppercase text-[var(--dim)]"
+        type="button"
+        onClick={() => onSelectDistrict(row.d)}
+        className="flex min-h-[64px] w-full items-center gap-3 px-5 py-2.5 text-left"
       >
-        {title}
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-row">{row.name}</span>
+          {row.mostly && (
+            <span className="truncate text-meta text-[var(--dim)]">
+              mostly <span className="font-mono">{row.mostly}</span>
+            </span>
+          )}
+        </span>
+        <span className="flex-none font-mono text-small text-[var(--dim)]">{row.size}</span>
       </button>
-      {list}
+      {row.keyFiles.map((kf) => (
+        <button
+          key={kf.kind}
+          type="button"
+          data-district-index-key-file={kf.file}
+          onClick={() => onPickKeyFile(kf.file)}
+          className="-mt-1 flex min-h-[44px] w-full items-center truncate px-5 text-left text-meta text-[var(--dim)]"
+        >
+          {kf.text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The ONE "Districts" list (issue #82 "district index", owner decision
+ * AskUserQuestion 2026-09-24): replaces the old rail's three stacked parts
+ * (a jargon-heavy Landmarks list, a separate Hubs list, and district rows
+ * whose colour chips no longer identified anything once six shared hues
+ * started repeating). The desktop rail. On a phone the same list is the
+ * bottom sheet's Districts tab (docs/UX.md §4.3, DistrictIndexList above);
+ * the old phone drawer is gone (§3).
+ *
+ * Districts split into mainland and islands. Unconnected files are listed
+ * off the map (the footer list, the phone's map-quality row). */
+export function Sidebar({ doc, packageLayout, onPickKeyFile, onSelectDistrict }: Props) {
+  const totalFiles = useMemo(() => buildDistrictIndex(doc, packageLayout).totalFiles, [doc, packageLayout]);
+  const title = `Districts · ${totalFiles.toLocaleString("en-US")} files`;
+  return (
+    <aside className="w-[250px] flex-none overflow-y-auto border-r border-[var(--rule)] bg-[var(--chrome)] pb-4 text-[var(--on)]">
+      <h2 className="mb-1.5 mt-3 px-3 text-label uppercase text-[var(--dim)]">{title}</h2>
+      <DistrictIndexList
+        doc={doc}
+        packageLayout={packageLayout}
+        onPickKeyFile={onPickKeyFile}
+        onSelectDistrict={onSelectDistrict}
+        variant="rail"
+      />
     </aside>
   );
 }

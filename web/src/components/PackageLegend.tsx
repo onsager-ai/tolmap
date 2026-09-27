@@ -9,14 +9,62 @@ interface Props {
   minDepth: number;
   maxDepth: number;
   onDepth(depth: number): void;
+  /** "sheet": inside the phone's Layers sheet (docs/UX.md §4.6) -- static,
+   * always expanded, 44 px depth buttons. "float" (default): the desktop
+   * legend over the map. */
+  variant?: "float" | "sheet";
 }
 
 /** Package colour key and its only control. It is React chrome over the map,
  * not SVG content: changing depth swaps one precomputed file-colour array in
  * MapRenderer state and leaves the current view transform untouched. */
-export function PackageLegend({ grouping, auto, minDepth, maxDepth, onDepth }: Props) {
+export function PackageLegend({ grouping, auto, minDepth, maxDepth, onDepth, variant = "float" }: Props) {
   const narrow = useIsNarrow();
   const [phoneOpen, setPhoneOpen] = useState(false);
+  if (variant === "sheet") {
+    return (
+      <section aria-label="Package legend" data-package-legend data-package-expanded="true" className="mt-2 text-meta text-[var(--dim)]">
+        <div className="flex items-center gap-2">
+          <span className="mr-auto text-small text-[var(--on)]">Folder depth</span>
+          <button
+            type="button"
+            aria-label="Decrease package depth"
+            disabled={grouping.depth <= minDepth}
+            onClick={() => onDepth(grouping.depth - 1)}
+            className="h-11 w-11 rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] text-body text-[var(--on)] disabled:opacity-30"
+          >
+            −
+          </button>
+          <span className="min-w-[72px] text-center font-mono text-small" data-package-depth>
+            {grouping.depth}{auto ? " · auto" : ""}
+          </span>
+          <button
+            type="button"
+            aria-label="Increase package depth"
+            disabled={grouping.depth >= maxDepth}
+            onClick={() => onDepth(grouping.depth + 1)}
+            className="h-11 w-11 rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] text-body text-[var(--on)] disabled:opacity-30"
+          >
+            +
+          </button>
+        </div>
+        <div className="mt-2" data-package-groups>
+          {grouping.groups.map((group) => (
+            <div
+              key={group.path ?? "other"}
+              className="grid min-h-[36px] grid-cols-[12px_1fr_auto] items-center gap-2 border-t border-[var(--rule)] first:border-t-0"
+            >
+              <i className="h-3 w-3 rounded-sm" style={{ background: group.color }} />
+              <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[var(--on)]">
+                {group.other ? "other" : formatDirectory(group.path!)}
+              </span>
+              <span className="font-mono">{group.count}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+    );
+  }
   const expanded = !narrow || phoneOpen;
 
   return (

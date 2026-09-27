@@ -30,6 +30,7 @@ import type { DirectoryNode, DistrictPathRow, PackageLayout } from "@/map/packag
 import { formatDirectory } from "@/map/packageLayout";
 import { Input } from "@/components/ui/input";
 import { LinkCountsLabel } from "@/components/LinkLegend";
+import { WHY_COLOR, compactCount } from "@/lib/cardText";
 
 interface Props {
   doc: MapDocument;
@@ -222,12 +223,15 @@ export function SelectionPanel({
   );
 }
 
-function UnconnectedList({ layout, doc, onSelectFile }: { layout: PackageLayout; doc: MapDocument; onSelectFile: Props["onSelectFile"] }) {
-  return <div className="mt-2 max-h-[44vh] overflow-y-auto" data-unconnected-list>
+/** `nested={false}` (the phone sheet, docs/UX.md §3.1): no scroller of its
+ * own -- the sheet scrolls at Full, and a list scrolling inside it is the
+ * scroll-inside-scroll §3.1 removes. Rows are 44 px there (§8.2). */
+export function UnconnectedList({ layout, doc, onSelectFile, nested = true }: { layout: PackageLayout; doc: MapDocument; onSelectFile: Props["onSelectFile"]; nested?: boolean }) {
+  return <div className={nested ? "mt-2 max-h-[44vh] overflow-y-auto" : "mt-2"} data-unconnected-list>
     {layout.unconnectedGroups.map((group) => <details key={group.path} className="border-t border-[var(--rule)] py-1">
-      <summary className="cursor-pointer break-all font-mono text-meta text-[var(--on)]">{formatDirectory(group.path)} <span className="text-[var(--dim)]">({group.files.length})</span></summary>
+      <summary className={`cursor-pointer break-all font-mono text-meta text-[var(--on)] ${nested ? "" : "flex min-h-[44px] items-center"}`}>{formatDirectory(group.path)} <span className="text-[var(--dim)]">({group.files.length})</span></summary>
       {group.files.map((i) => <button type="button" key={i} data-unconnected-file={i}
-        className="block w-full break-all py-1 pl-2 text-left font-mono text-meta text-[var(--dim)] hover:text-[var(--on)]"
+        className={`block w-full break-all py-1 pl-2 text-left font-mono text-meta text-[var(--dim)] hover:text-[var(--on)] ${nested ? "" : "min-h-[44px]"}`}
         onClick={() => onSelectFile(i)}>{doc.F[i].split("/").pop()}</button>)}
     </details>)}
   </div>;
@@ -244,14 +248,18 @@ function FolderHead({ layout, activeDirectory }: { layout: PackageLayout; active
   );
 }
 
-function FolderBody({
+/** `nested={false}`: the phone sheet's Folders tab -- no inner scroller
+ * (see UnconnectedList) and 44 px rows. */
+export function FolderBody({
   layout,
   activeDirectory,
   onSelectDirectory,
+  nested = true,
 }: {
   layout: PackageLayout;
   activeDirectory?: string;
   onSelectDirectory: Props["onSelectDirectory"];
+  nested?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const matches = useMemo(() => {
@@ -269,7 +277,7 @@ function FolderBody({
           aria-label="Filter folder paths"
           placeholder="filter folder paths…"
           autoComplete="off"
-          className="h-8 min-w-0 bg-[var(--chrome2)] px-2 font-mono text-[var(--on)]"
+          className={`${nested ? "h-8" : "h-11"} min-w-0 bg-[var(--chrome2)] px-2 font-mono text-[var(--on)]`}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key !== "Enter" || matches.length === 0) return;
@@ -283,7 +291,7 @@ function FolderBody({
           </Button>
         )}
       </div>
-      <div className="mt-1.5 max-h-[300px] overflow-y-auto">
+      <div className={nested ? "mt-1.5 max-h-[300px] overflow-y-auto" : "mt-1.5"} data-folder-rows-large={nested ? undefined : ""}>
         {query.trim() ? (
           matches.length > 0 ? (
             matches.map((directory) => (
@@ -332,7 +340,7 @@ function FolderPickRow({
       data-folder-path={directory.path}
       onClick={() => onPick(directory.path)}
       aria-pressed={active}
-      className={`grid w-full grid-cols-[1fr_auto_auto] gap-2 border-t border-[var(--rule)] px-1 py-1 text-left font-mono text-meta first:border-t-0 ${active ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
+      className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-2 border-t border-[var(--rule)] px-1 py-1 text-left font-mono text-meta first:border-t-0 max-[820px]:min-h-[44px] ${active ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
     >
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">{formatDirectory(directory.path)}</span>
       <span className="text-[var(--dim)]">{repositoryShare(directory.count, totalFiles)}</span>
@@ -364,7 +372,7 @@ function FolderTreeRow({
             type="button"
             aria-label={`${expanded ? "Collapse" : "Expand"} ${directory.path}`}
             onClick={() => setExpanded((value) => !value)}
-            className="h-6 text-meta text-[var(--dim)]"
+            className="h-6 text-meta text-[var(--dim)] max-[820px]:h-11"
           >
             <span className={`inline-block transition-transform ${expanded ? "rotate-90" : ""}`}>›</span>
           </button>
@@ -376,7 +384,7 @@ function FolderTreeRow({
           data-folder-path={directory.path}
           aria-pressed={activeDirectory === directory.path}
           onClick={() => onPick(directory.path)}
-          className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap py-1 text-left font-mono text-meta ${activeDirectory === directory.path ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
+          className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap py-1 text-left font-mono text-meta max-[820px]:min-h-[44px] ${activeDirectory === directory.path ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
           style={{ paddingLeft: `${depth * 7}px` }}
         >
           {directory.name}/
@@ -404,13 +412,6 @@ function repositoryShare(count: number, total: number): string {
   return `${share < 10 ? share.toFixed(1) : Math.round(share)}%`;
 }
 
-function compactCount(count: number): string {
-  if (count < 1000) return String(count);
-  const unit = count >= 1_000_000 ? 1_000_000 : 1000;
-  const value = count / unit;
-  const digits = value < 10 ? Math.floor(value * 10) / 10 : Math.floor(value);
-  return `${digits}${unit === 1000 ? "k" : "m"}`;
-}
 
 function DistrictHead({ doc, d, onZoomDistrict }: { doc: MapDocument; d: number; onZoomDistrict: Props["onZoomDistrict"] }) {
   const files = [...doc.N.keys()].filter((i) => D_(doc, i) === d);
@@ -436,7 +437,7 @@ function DistrictHead({ doc, d, onZoomDistrict }: { doc: MapDocument; d: number;
   );
 }
 
-function DistrictBody({
+export function DistrictBody({
   doc,
   d,
   paths,
@@ -488,7 +489,7 @@ function DistrictBody({
           {nb.map((neighbour, index) => (
             <span key={neighbour.id}>
               {index > 0 ? ", " : ""}
-              <button type="button" data-neighbour-district={neighbour.id} className="text-[var(--on)] hover:text-[var(--accent)]" onClick={() => onSelectDistrict(neighbour.id)}>
+              <button type="button" data-neighbour-district={neighbour.id} className="text-[var(--on)] hover:text-[var(--accent)] max-[820px]:inline-flex max-[820px]:min-h-[44px] max-[820px]:items-center" onClick={() => onSelectDistrict(neighbour.id)}>
                 {neighbour.name}
               </button>
             </span>
@@ -497,7 +498,7 @@ function DistrictBody({
       )}
       {paths.length > 0 && (
         <div data-district-path-breakdown>
-          <button type="button" data-district-folders-toggle aria-expanded={foldersExpanded} onClick={onToggleFolders} className="w-full text-left text-[var(--on)]">
+          <button type="button" data-district-folders-toggle aria-expanded={foldersExpanded} onClick={onToggleFolders} className="w-full text-left text-[var(--on)] max-[820px]:min-h-[44px] max-[820px]:text-small">
             <span className="text-[var(--dim)]">{foldersExpanded ? "⌄" : "›"}</span> folders ({paths.filter((path) => !path.other).length})
           </button>
           {foldersExpanded && paths.map((path, index) =>
@@ -517,7 +518,7 @@ function DistrictBody({
                 data-district-path={path.path}
                 aria-label={`Highlight folder ${path.path}`}
                 onClick={() => onSelectDirectory(path.path!)}
-                className="grid w-full grid-cols-[36px_1fr_auto] gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)]"
+                className="grid w-full grid-cols-[36px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)] max-[820px]:min-h-[44px]"
               >
                 <b className="font-mono">{path.share}%</b>
                 <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono">{formatDirectory(path.path!)}</span>
@@ -528,7 +529,7 @@ function DistrictBody({
         </div>
       )}
       <div>
-        <button type="button" data-district-files-toggle aria-expanded={filesExpanded} onClick={onToggleFiles} className="w-full text-left text-[var(--on)]">
+        <button type="button" data-district-files-toggle aria-expanded={filesExpanded} onClick={onToggleFiles} className="w-full text-left text-[var(--on)] max-[820px]:min-h-[44px] max-[820px]:text-small">
           <span className="text-[var(--dim)]">{filesExpanded ? "⌄" : "›"}</span> key files ({top.length})
         </button>
         {filesExpanded && top.map((i) => (
@@ -536,7 +537,7 @@ function DistrictBody({
             key={i}
             data-district-key-file={i}
             onClick={() => onSelectFile(i)}
-            className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)]"
+            className="grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left text-meta text-[var(--on)] hover:text-[var(--accent)] max-[820px]:min-h-[44px]"
           >
             <i className="h-2 w-2 rounded-sm" style={{ background: districtColor(doc, d) }} />
             <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono">{doc.F[i].split("/").slice(1).join("/")}</span>
@@ -749,30 +750,20 @@ function FileBody({
         </Row>
       </div>
       <div className="mt-2 flex gap-1.5">
+        {/* docs/UX.md §12: "route" is renamed to "path" in the viewer's
+            copy (the glossary keeps Route for a dependency between
+            repositories). */}
         <Button size="sm" variant="outline" className="flex-1" onClick={() => onRouteFrom(i)}>
-          route from
+          Path from here
         </Button>
         <Button size="sm" variant="outline" className="flex-1" onClick={() => onRouteTo(i)}>
-          route to
+          Path to here
         </Button>
       </div>
     </div>
   );
 }
 
-// Theme-alignment audit: these used to be fixed hex values, which read fine
-// against the old dark-only --chrome but drop under WCAG AA against the new
-// light --chrome (index.css's own --why-* comment has the measured ratios).
-// Indirected through CSS custom properties (light/dark variants defined
-// there) rather than a second JS-side light/dark table here, so this file
-// doesn't need to know which theme is active.
-const WHY_COLOR: Record<string, string> = {
-  entry: "var(--why-entry)",
-  bridge: "var(--why-bridge)",
-  hub: "var(--why-hub)",
-  capital: "var(--why-capital)",
-  hazard: "var(--why-hazard)",
-};
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -786,7 +777,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 // The count is an IDE fact. The number of DISTRICTS it crosses is the one
 // the map can tell you and the editor cannot: a change contained in one
 // concern is a different risk from a change that reaches five.
-function BlastLine({ blast, doc }: { blast: ReturnType<typeof computeBlast>; doc: MapDocument }) {
+export function BlastLine({ blast, doc }: { blast: ReturnType<typeof computeBlast>; doc: MapDocument }) {
   if (!blast) return null;
   const n = blast.files.length;
   const d = blast.districts.size;
@@ -810,7 +801,7 @@ function BlastLine({ blast, doc }: { blast: ReturnType<typeof computeBlast>; doc
 // A file's contents belong in a directory, not on the map: you navigate to
 // the building, then read the board. The bar shows what share of the file
 // each symbol occupies, which is the one spatial fact worth carrying up.
-function SymbolDirectory({
+export function SymbolDirectory({
   doc,
   i,
   sy,
@@ -905,7 +896,7 @@ function RelationLine({
   );
 }
 
-function SymbolRelationsCard({
+export function SymbolRelationsCard({
   decoded,
   global,
   onSelectHierSymbol,
@@ -961,18 +952,22 @@ function SymbolRelationsCard({
 // C2 follow-up) rather than sitting alongside it. Still renders nothing for
 // a file with no top-level symbols AND no external references of its own
 // (a config file, say), the same silent degrade the map itself uses.
-function HierOutline({
+export function HierOutline({
   outline,
   external,
   selHSym,
   onSelectHierSymbol,
   onHoverHierSymbol,
+  nested = true,
 }: {
   outline: OutlineRow[];
   external: ExternalRefGroup[];
   selHSym: number | null;
   onSelectHierSymbol: Props["onSelectHierSymbol"];
   onHoverHierSymbol: Props["onHoverHierSymbol"];
+  /** false: the phone sheet at Full -- no inner scrollers (docs/UX.md
+   * §3.1) and 44 px rows (§8.2). */
+  nested?: boolean;
 }) {
   if (outline.length === 0 && external.length === 0) return null;
 
@@ -985,7 +980,7 @@ function HierOutline({
         onMouseLeave={() => onHoverHierSymbol?.(null)}
         onClick={() => onSelectHierSymbol(r.global)}
         style={{ paddingLeft: 6 + depth * 12 }}
-        className={`grid w-full grid-cols-[1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left font-mono text-meta first:border-t-0 ${selHSym === r.global ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
+        className={`grid w-full grid-cols-[1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left font-mono text-meta first:border-t-0 ${nested ? "" : "min-h-[44px] text-small"} ${selHSym === r.global ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
       >
         <span className={`overflow-hidden text-ellipsis whitespace-nowrap ${isBoldKind(r.row[2]) ? "font-semibold" : ""}`}>
           {symbolLabel(r.row, r.children.length, false)}
@@ -1017,7 +1012,7 @@ function HierOutline({
     <div className="mt-2 border-t border-[var(--rule)] pt-1.5">
       <div className="mb-0.5 text-label uppercase text-[var(--dim)]">outline</div>
       {outline.length > 0 ? (
-        <div className="mb-1.5 max-h-[180px] overflow-y-auto" data-outline-tree>
+        <div className={nested ? "mb-1.5 max-h-[180px] overflow-y-auto" : "mb-1.5"} data-outline-tree>
           {outline.map((r) => row(r, 0))}
         </div>
       ) : (
@@ -1026,7 +1021,7 @@ function HierOutline({
       {external.length > 0 && (
         <>
           <div className="mb-0.5 text-label uppercase text-[var(--dim)]">external references</div>
-          <div className="mb-1.5 max-h-[140px] overflow-y-auto">
+          <div className={nested ? "mb-1.5 max-h-[140px] overflow-y-auto" : "mb-1.5"}>
             {external.map((group) => (
               <div key={group.from.global} className="border-t border-[var(--rule)] py-1 font-mono text-meta first:border-t-0">
                 <div className="font-semibold text-[var(--on)]">{symbolLabel(group.from.row, group.from.children.length, false)}</div>

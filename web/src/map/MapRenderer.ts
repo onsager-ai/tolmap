@@ -33,6 +33,7 @@ import {
   districtColor,
   districtWorldArea,
   fileXY,
+  DESKTOP_INSETS,
   fitCentreY,
   fitViewport,
   mainlandBounds,
@@ -46,6 +47,7 @@ import {
   symbolsOf,
   tmCentre,
   worldBounds,
+  type Insets,
 } from "./geometry";
 import { buildFootprintIndex, districtMedianFootprintArea, hitTestFootprint, type FootprintIndex } from "./footprints";
 import { buildAdj, computeBlast, rankedNeighbours, type AdjMap, type RankedEdge, type Route } from "./graph";
@@ -53,7 +55,7 @@ import { computeHubs, hubRingRadius, type HubSet } from "./hubs";
 import { archivoLabelWidth, MAP_LABEL_FONT } from "./labelMetrics";
 import { assignNeighbourhoodShades, neighbourhoodCentroids } from "./neighbourhoods";
 import type { FolderLabel, PackageGrouping } from "./packageLayout";
-import { GestureRecognizer, QUIET_AFTER_GESTURE_MS, type GestureEvent, type GestureEventType, type GestureIntent } from "./gestures";
+import { GestureRecognizer, PAN_DISMISS_PX, QUIET_AFTER_GESTURE_MS, type GestureEvent, type GestureEventType, type GestureIntent } from "./gestures";
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { RenderGate } from "./renderGate";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
@@ -200,6 +202,31 @@ export interface MapRendererCallbacks {
    * transient chrome (the mobile drawer, a suggestion list) the way a real
    * map app does. */
   onDragStart?(): void;
+  /** docs/UX.md §3.5: a pan has travelled more than PAN_DISMISS_PX
+   * (gestures.ts) since it started -- the phone returns a raised sheet to
+   * Peek so the map being moved is not covered. Fired once per pan. */
+  onPanDismiss?(): void;
+  /** docs/UX.md §3.2/§4: a tap on a road, a street or a neighborhood label.
+   * `lines` is the same explanation the floating card shows. Returning
+   * true means the caller showed it (the phone's sheet) and the floating
+   * card is not drawn; false or no handler keeps the floating card
+   * (desktop). */
+  onTapStructure?(key: string, lines: string[]): boolean;
+}
+
+/** Framing for fits and programmatic camera moves (docs/UX.md §3.3), in
+ * CSS pixels from the map box's edges. `frame` is the resting layout (the
+ * phone's pill and Peek sheet): the fit SCALE the level-of-detail rules are
+ * measured against (`zf = k / fitScale()`) comes from it, so raising the
+ * sheet never changes what the map draws. `safe` is the current layout (the
+ * sheet at its current detent): fit, pan-into-view, district zoom and the
+ * zoom buttons frame into it. `centreInSafe` centres a camera move in the
+ * safe rect; off (desktop), moves centre in the viewport as they always
+ * have. */
+export interface FrameInsets {
+  frame: Insets;
+  safe: Insets;
+  centreInSafe: boolean;
 }
 
 export class MapRenderer {
@@ -328,6 +355,7 @@ export class MapRenderer {
     geo: Geo;
     vw: number;
     vh: number;
+    frameKey: string;
     mainland: [number, number, number, number];
     world: [number, number, number, number];
     fit: number;
@@ -339,6 +367,20 @@ export class MapRenderer {
   private ty = 0;
   private VW = 1000;
   private VH = 700;
+  // The wrapper's real CSS size. VW/VH are floored (resize()), so below
+  // 360 px wide the viewBox is wider than the box; insets arrive in CSS px
+  // and are scaled by VW/cssW (the same linear mapping toSvg() uses).
+  private cssW = 1000;
+  private cssH = 700;
+  private insets: FrameInsets = { frame: DESKTOP_INSETS, safe: DESKTOP_INSETS, centreInSafe: false };
+  // docs/UX.md §3.5: the running length of the current pan, CSS px, and
+  // whether onPanDismiss already fired for it.
+  private panTravel = 0;
+  private panDismissed = false;
+  // docs/UX.md §4.7: while the phone is picking a path's other end, a file
+  // tap selects that file directly (the two-step district-first tap would
+  // turn a tap into another district's selection instead).
+  private directFileTaps = false;
 
   // docs/UX.md §7.1: every tap/pan/pinch/double-tap decision is made by
   // gestures.ts's GestureRecognizer, fed from the pointer listeners below;
@@ -802,8 +844,16 @@ export class MapRenderer {
    * the old k. Fitting stays explicit: MapCanvas's repoKey effect (a new
    * document has no "current view" worth preserving) and the fit button. */
   resize(vw: number, vh: number) {
-    const newVW = Math.max(360, vw);
-    const newVH = Math.max(300, vh);
+    this.cssW = vw;
+    this.cssH = vh;
+    // The viewBox keeps its 360 x 300 floor, but scales BOTH axes by the
+    // same factor to reach it: flooring only the width letterboxed a 320 px
+    // phone (a 360-wide viewBox "meet"-fitted into 320 px left bands above
+    // and below the map), and put every CSS-px inset (docs/UX.md §3.3) in
+    // the wrong place vertically. Same aspect, no bands.
+    const floor = Math.max(1, 360 / (vw || 360), 300 / (vh || 300));
+    const newVW = vw * floor;
+    const newVH = vh * floor;
     if (newVW === this.VW && newVH === this.VH) return;
     const prevVW = this.VW;
     const prevVH = this.VH;
@@ -855,7 +905,9 @@ export class MapRenderer {
   private bounds() {
     const { doc, geo } = this.state!;
     const c = this.boundsCache;
-    if (c && c.doc === doc && c.geo === geo && c.vw === this.VW && c.vh === this.VH) return c;
+    const frame = this.viewInsets(this.insets.frame);
+    const frameKey = `${frame.left},${frame.top},${frame.right},${frame.bottom}`;
+    if (c && c.doc === doc && c.geo === geo && c.vw === this.VW && c.vh === this.VH && c.frameKey === frameKey) return c;
     const mainland = mainlandBounds(doc, geo);
     const world = worldBounds(doc, geo);
     const next = {
@@ -863,10 +915,11 @@ export class MapRenderer {
       geo,
       vw: this.VW,
       vh: this.VH,
+      frameKey,
       mainland,
       world,
-      fit: scaleToFit(mainland, this.VW, this.VH),
-      full: scaleToFit(world, this.VW, this.VH),
+      fit: scaleToFit(mainland, this.VW, this.VH, frame),
+      full: scaleToFit(world, this.VW, this.VH, frame),
     };
     this.boundsCache = next;
     return next;
@@ -917,10 +970,14 @@ export class MapRenderer {
       this.renderGate.drop();
     }
     const b = this.frameBounds();
-    const [left, , right] = fitViewport(this.VW, this.VH);
-    const s = this.fitScale();
+    // docs/UX.md §3.3: into the CURRENT safe rect (the sheet at its current
+    // height). On desktop, and on a phone at Peek, safe === frame and this
+    // scale is exactly fitScale().
+    const safe = this.viewInsets(this.insets.safe);
+    const [left, , right] = fitViewport(this.VW, this.VH, safe);
+    const s = scaleToFit(b, this.VW, this.VH, safe);
     const nx = left + ((right - left) - (b[2] - b[0]) * s) / 2 - b[0] * s;
-    const ny = fitCentreY(this.VW, this.VH, (b[3] - b[1]) * s) - ((b[1] + b[3]) / 2) * s;
+    const ny = fitCentreY(this.VW, this.VH, (b[3] - b[1]) * s, safe) - ((b[1] + b[3]) / 2) * s;
     if (anim) this.glide(s, nx, ny);
     else {
       this.cancelPendingGestureWork();
@@ -986,12 +1043,13 @@ export class MapRenderer {
    * (sidebar, search, breadcrumb) keeps the default glide. */
   private panToPoint(wx: number, wy: number, anim = true) {
     if (!this.state) return;
-    const [left, top, right, bottom] = fitViewport(this.VW, this.VH);
+    const [left, top, right, bottom] = fitViewport(this.VW, this.VH, this.viewInsets(this.insets.safe));
     const x = this.X(wx);
     const y = this.Y(wy);
     if (x >= left && x <= right && y >= top && y <= bottom) return;
-    const nx = this.VW / 2 - wx * this.k;
-    const ny = this.VH / 2 - wy * this.k;
+    const [cx, cy] = this.moveCentre();
+    const nx = cx - wx * this.k;
+    const ny = cy - wy * this.k;
     if (anim) this.glide(this.k, nx, ny);
     else {
       this.cancelPendingGestureWork();
@@ -1036,7 +1094,41 @@ export class MapRenderer {
     if (!Number.isFinite(c[0]) || !Number.isFinite(c[1])) c = district.c;
     const narrow = window.innerWidth <= 820;
     const nk = this.fitScale() * (narrow ? 2.2 : 2.6);
-    this.glide(nk, this.VW / 2 - c[0] * nk, this.VH / 2 - c[1] * nk);
+    const [cx, cy] = this.moveCentre();
+    this.glide(nk, cx - c[0] * nk, cy - c[1] * nk);
+  }
+  /** docs/UX.md §3.3: the point a programmatic move centres on -- the safe
+   * rect's centre on a phone (above the sheet, left of the control column),
+   * the viewport's centre on desktop, as before. */
+  private moveCentre(): [number, number] {
+    if (!this.insets.centreInSafe) return [this.VW / 2, this.VH / 2];
+    const [left, top, right, bottom] = fitViewport(this.VW, this.VH, this.viewInsets(this.insets.safe));
+    return [(left + right) / 2, (top + bottom) / 2];
+  }
+  /** CSS-pixel insets in viewBox units (see cssW's comment). */
+  private viewInsets(i: Insets): Insets {
+    const sx = this.VW / (this.cssW || this.VW);
+    const sy = this.VH / (this.cssH || this.VH);
+    return { left: i.left * sx, top: i.top * sy, right: i.right * sx, bottom: i.bottom * sy };
+  }
+  /** docs/UX.md §3.3: the chrome's real extent, from MapCanvas. A new
+   * `frame` (a resize, a safe-area change) moves the level-of-detail
+   * reference, so the map repaints at the same camera; a new `safe` alone
+   * (the sheet changed detent) changes nothing on screen -- it only
+   * reframes the NEXT programmatic move. Never moves the camera itself. */
+  setInsets(next: FrameInsets) {
+    const same = (a: Insets, b: Insets) => a.left === b.left && a.top === b.top && a.right === b.right && a.bottom === b.bottom;
+    const frameChanged = !same(next.frame, this.insets.frame);
+    this.insets = next;
+    if (frameChanged && this.state && !this.gestures.active) {
+      this.cancelPendingGestureWork();
+      this.k = this.clampK(this.k);
+      this.draw();
+    }
+  }
+  /** docs/UX.md §4.7: see `directFileTaps`. */
+  setDirectFileTaps(on: boolean) {
+    this.directFileTaps = on;
   }
   private clampK(v: number) {
     // The lower bound is whichever scale is smaller, so a viewer can always
@@ -1049,7 +1141,8 @@ export class MapRenderer {
     return Math.max(lo, Math.min(this.fitScale() * 40, v));
   }
   zoomBy(f: number) {
-    this.zoomAbout(f, this.VW / 2, this.VH / 2);
+    const [cx, cy] = this.moveCentre();
+    this.zoomAbout(f, cx, cy);
   }
   /** Zooms by `f`, keeping the SVG-space point (x, y) fixed on screen: the
    * zoom buttons use the viewport centre, a double-tap its own tap point
@@ -4133,6 +4226,13 @@ export class MapRenderer {
             this.svg.classList.add("dragging");
             this.callbacks.onDragStart?.();
             this.capture(it.id);
+            this.panTravel = 0;
+            this.panDismissed = false;
+          }
+          this.panTravel += Math.hypot(it.dx, it.dy);
+          if (!this.panDismissed && this.panTravel > PAN_DISMISS_PX) {
+            this.panDismissed = true;
+            this.callbacks.onPanDismiss?.();
           }
           // Intents are in CSS pixels; tx/ty are in viewBox units, which
           // differ once the box is narrower than resize()'s 360 px floor.
@@ -4367,6 +4467,12 @@ export class MapRenderer {
     // behave like a road tap: show the card, touch nothing else.
     if (parts[0] === "r" || parts[0] === "st" || parts[0] === "n") {
       const content = this.hoverContent(kk);
+      // docs/UX.md §3.2: on a phone the explanation is sheet content, not a
+      // card floating over the map (§3 "nothing else floats over the map").
+      if (content && this.callbacks.onTapStructure?.(kk, content.lines)) {
+        this.hideCard();
+        return;
+      }
       if (content) {
         this.showCard(content);
         this.positionCard(e.clientX, e.clientY);
@@ -4405,7 +4511,7 @@ export class MapRenderer {
     // The newest state React asked for, even if its paint is still held
     // (renderGate): the selection it carries is the one the user sees next.
     const state = this.renderGate.latest ?? this.state;
-    if (state && this.hasFootprints) {
+    if (state && this.hasFootprints && !this.directFileTaps) {
       const d = D_(state.doc, i);
       const currentD = state.selD ?? (state.sel != null ? D_(state.doc, state.sel) : null);
       if (currentD !== d) {
