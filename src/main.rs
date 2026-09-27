@@ -156,7 +156,8 @@ enum Command {
     /// districts it crosses and the change in modularity with the base
     /// partition held fixed, with the cross-district edges behind it. Exits
     /// 0 pass, 1 a threshold crossed, 2 usage or input error, 3 internal
-    /// error. With no threshold flag it only reports, and exits 0.
+    /// error. With no threshold flag the calibrated defaults apply
+    /// (--max-districts 4 --max-dq 0.01); --report-only applies none.
     Check {
         /// Any path inside the git repository; the check runs on its top
         /// level.
@@ -175,12 +176,17 @@ enum Command {
         #[arg(long)]
         base_map: Option<PathBuf>,
         /// Fail (exit 1) when the change crosses more than N districts.
+        /// Any threshold flag replaces both defaults.
         #[arg(long)]
         max_districts: Option<usize>,
         /// Fail (exit 1) when modularity drops by more than X, that is when
-        /// delta q < -X. X is a number >= 0.
+        /// delta q < -X. X is a number >= 0. Any threshold flag replaces
+        /// both defaults.
         #[arg(long)]
         max_dq: Option<f64>,
+        /// Apply no threshold: report, and exit 0 whatever the numbers.
+        #[arg(long, conflicts_with_all = ["max_districts", "max_dq"])]
+        report_only: bool,
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
     },
@@ -695,6 +701,7 @@ fn main() -> Result<()> {
             base_map,
             max_districts,
             max_dq,
+            report_only,
             format,
         } => {
             let options = tolmap::check::CheckOptions {
@@ -704,6 +711,7 @@ fn main() -> Result<()> {
                 base_map,
                 max_districts,
                 max_dq,
+                report_only,
             };
             // Not `?`: the exit code is the contract (0/1/2/3), and
             // `main`'s own error path would exit 1 for every failure.

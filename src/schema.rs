@@ -379,7 +379,11 @@ pub struct MapDocument {
 // written down.
 //
 // `base` is the full commit id of `--base`; `head` is `--head`'s, or null
-// for the working tree (uncommitted and untracked files included). Every
+// for the working tree (uncommitted and untracked files included).
+// `base_files` and `base_districts` are the base map's size: its files and
+// its distinct districts. They are what a threshold scaled to the
+// repository would read, and they let a consumer see how large the map a
+// `districts_crossed` was counted on is. Every
 // float is rounded to 6 decimal places; `delta_q` is computed before that
 // rounding, and the thresholds compare the rounded values that are printed.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
@@ -387,6 +391,8 @@ pub struct CheckReport {
     pub version: u32,
     pub base: String,
     pub head: Option<String>,
+    pub base_files: usize,
+    pub base_districts: usize,
     pub districts_crossed: usize,
     pub districts: Vec<CheckDistrict>,
     pub files: Vec<CheckFile>,
@@ -463,13 +469,24 @@ pub struct CheckLandmark {
     pub detail: String,
 }
 
-// The thresholds this run applied; null means the flag was not given.
-// `max_dq` is the largest modularity drop allowed: the check fails when
-// `delta_q < -max_dq`.
+// The thresholds this run applied; null means that threshold was not
+// applied. `max_dq` is the largest modularity drop allowed: the check fails
+// when `delta_q < -max_dq`. `source` says where they came from: the
+// calibrated defaults (no threshold flag given), the flags (which replace
+// the defaults as a set), or `--report-only` (both null).
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 pub struct CheckThresholds {
     pub max_districts: Option<usize>,
     pub max_dq: Option<f64>,
+    pub source: CheckThresholdSource,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckThresholdSource {
+    Default,
+    Flags,
+    ReportOnly,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
