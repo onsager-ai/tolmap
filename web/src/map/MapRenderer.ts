@@ -4676,7 +4676,21 @@ export class MapRenderer {
     const py = clientY - origin.top;
     const gap = 16;
     const margin = 8;
-    const targetBox = target.getBoundingClientRect();
+    // A district's name and its "N files" subtitle are one placed unit
+    // (7d); hovering either keeps the card clear of both, not only of the
+    // line under the pointer (the card used to clip the subtitle's end).
+    let targetBox = target.getBoundingClientRect();
+    const key = target.closest("[data-k]")?.getAttribute("data-k");
+    if (target instanceof SVGTextElement && key?.startsWith("d:")) {
+      let [l, t, r, b] = [targetBox.left, targetBox.top, targetBox.right, targetBox.bottom];
+      for (const element of this.keyElements.get(key) ?? []) {
+        if (!(element instanceof SVGTextElement)) continue;
+        const box = element.getBoundingClientRect();
+        if (box.width === 0 && box.height === 0) continue;
+        [l, t, r, b] = [Math.min(l, box.left), Math.min(t, box.top), Math.max(r, box.right), Math.max(b, box.bottom)];
+      }
+      targetBox = new DOMRect(l, t, r - l, b - t);
+    }
     const tx = targetBox.left - origin.left;
     const ty = targetBox.top - origin.top;
     const tr = tx + targetBox.width;

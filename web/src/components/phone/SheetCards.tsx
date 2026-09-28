@@ -748,9 +748,13 @@ export function PathSheetCard({
   onCancel,
   onSelectFile,
   onDetent,
+  pointer = false,
 }: {
   doc: MapDocument;
   pick: PathPick;
+  /** Desktop panel with a fine pointer (§5.1): the hint says click, and
+   * names the palette, which lists files for this end. */
+  pointer?: boolean;
   route: Route | null;
   /** [from, to] once both ends are picked; null while picking. */
   ends: [number, number] | null;
@@ -768,7 +772,13 @@ export function PathSheetCard({
             {pick.dir === "from" ? "From " : "To "}
             <span className="font-mono text-[20px]">{name(pick.anchor)}</span> · pick {pick.dir === "from" ? "a destination" : "a start"}
           </SheetTitle>
-          <p className="mt-1 truncate text-small text-[var(--dim)]">Tap another file on the map</p>
+          {pointer ? (
+            <p className="mt-1 text-small text-[var(--dim)]">
+              Click a file on the map, or press {typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K"} to search for {pick.dir === "from" ? "the destination" : "the start"}.
+            </p>
+          ) : (
+            <p className="mt-1 truncate text-small text-[var(--dim)]">Tap another file on the map</p>
+          )}
           <div className="mt-3 flex gap-2">
             <SheetButton onClick={onCancel} data-path-cancel="">
               Cancel
@@ -952,7 +962,7 @@ export interface SelectionCardProps {
  * and the inspector closes. */
 export function SelectionCard(p: SelectionCardProps) {
   if (p.pathPick) {
-    return <PathSheetCard doc={p.doc} pick={p.pathPick} route={p.route} ends={p.pathEnds} onCancel={p.onPathCancel} onSelectFile={p.onSelectFile} onDetent={p.onDetent} />;
+    return <PathSheetCard doc={p.doc} pick={p.pathPick} route={p.route} ends={p.pathEnds} onCancel={p.onPathCancel} onSelectFile={p.onSelectFile} onDetent={p.onDetent} pointer={!!p.desktopPanel && !p.touchTargets} />;
   }
   if (p.structure) {
     return <StructureSheetCard doc={p.doc} card={p.structure} onClose={p.onCloseStructure} onSelectFile={p.onSelectFile} onSelectDistrict={p.onSelectDistrict} />;
