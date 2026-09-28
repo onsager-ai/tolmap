@@ -72,8 +72,9 @@ export function selectPins(
   _zf: number,
   sel: number | null,
   // A5 (district labels always on, issue #82): boxes already claimed by
-  // something with HIGHER placement priority than a pin -- today, a
-  // district's own name label. A pin candidate that would land on one of
+  // something with HIGHER placement priority than a pin. Desktop/tablet
+  // reserve fixed hub/chrome boxes before district labels; phone labels
+  // retain priority over pins. A pin candidate that would land on one of
   // these is skipped, same as if another pin had already taken the spot;
   // this is what "district names take priority over pins" actually means
   // in code (previously pins were selected with no knowledge of where
