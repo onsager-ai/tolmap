@@ -325,14 +325,25 @@ complete, the old blob is removed if no other name in the lease references
 it. Re-uploading identical content remains a content-addressed no-op.
 
 The 1 GiB limit is per lease; this decision does not impose a global disk
-cap. A lease may also have at most 8 in-flight artifact uploads. A further
-`PUT` receives HTTP 429 before its body is read. This bounds how many
-`spawn_blocking` writers one lease can hold while still allowing a small
-batch of artifact writes. If no body bytes arrive for 30 seconds, the master
-aborts that upload; the existing incomplete-body response is HTTP 400, and
-the reservation and temporary file are released. The timeout runs while the
-async handler is reading the body, so closing its channel also releases the
-blocking writer.
+cap. A lease may have at most 8 in-flight artifact uploads. A further `PUT`
+receives HTTP 429 before its body is read. Across all leases, the master
+allows at most 32 upload writers at once; when all permits are held, another
+`PUT` receives HTTP 503 before its body is read. This is well below Tokio's
+default 512-thread blocking-pool limit and bounds uploads across jobs as well
+as within one lease.
+
+If no body bytes arrive for 30 seconds, the master aborts that upload. Every
+upload also has a two-hour total deadline, even if bytes keep arriving: the
+largest per-kind cap is 256 MiB, which takes about 68 minutes at 64 KiB/s,
+leaving roughly 52 minutes for variation and filesystem pauses. Either
+timeout returns the existing incomplete-body HTTP 400 response, and releases
+the reservation and temporary file. The deadlines run on the async body
+feeder; dropping its channel releases the blocking writer. Cancelling,
+expiring or reassigning a lease also aborts its in-flight uploads and uses the
+same HTTP 400 incomplete-body response.
+
+The agent retries HTTP 429 and 5xx responses with its existing upload
+backoff, until the result hold deadline. Other 4xx responses are final.
 
 The route's `DefaultBodyLimit` is defence in depth. `Content-Length` is
 required, and every per-kind cap is at most the route ceiling, so a declared
@@ -374,7 +385,7 @@ A map plus its symbols document and per-district files is small for most reposit
 
 Artifacts move as plain HTTPS requests to the master, on the same private listener as the channel (§5.6):
 
-- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch. Per-artifact and per-lease byte/name limits return 413 before reading an over-limit body; the in-flight upload limit returns 429. The exact caps and the body idle timeout are in §3.4.
+- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch. Per-artifact and per-lease byte/name limits return 413 before reading an over-limit body; the per-lease in-flight upload limit returns 429, and the process-wide writer limit returns 503. The exact caps and upload deadlines are in §3.4.
 - `GET` on the input URLs in `assign` fetches the previous map and the names cache, under the same lease check.
 - A retry is harmless: stored artifacts are content-addressed, so a repeat upload is a no-op.
 - Artifacts are stored on the master's disk, as maps are today.

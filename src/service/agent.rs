@@ -135,20 +135,6 @@ const UPLOAD_BACKOFF_CAP: Duration = Duration::from_secs(5);
 /// job carries on without opening its map early.
 const EARLY_MAP_UPLOAD_WINDOW: Duration = Duration::from_secs(20);
 
-/// The worker and master use the same per-artifact limits. Refuse a result
-/// locally when it cannot be accepted, before hashing or starting a PUT.
-fn artifact_size_limit(name: &str) -> Option<u64> {
-    match name {
-        "map" => Some(worker_result::EARLY_MAP_MAX_BYTES),
-        "symbols" => Some(worker_result::FULL_SYMBOLS_MAX_BYTES),
-        "names" => Some(worker_result::NAMES_CACHE_MAX_BYTES),
-        _ if name.starts_with("symbols_dir/") && crate::worker::is_valid_artifact_name(name) => {
-            Some(worker_result::DISTRICT_SYMBOLS_MAX_BYTES)
-        }
-        _ => None,
-    }
-}
-
 /// What `tolmap worker --connect` was given.
 pub struct AgentConfig {
     pub connect: String,
@@ -2202,11 +2188,11 @@ impl JobContext {
     }
 
     /// One `PUT`, with the file's SHA-256 and, from the file's size, its
-    /// `Content-Length` (§4.2). One that got no answer, or a 5xx, is sent
-    /// again with backoff until `deadline`: that is how an agent re-uploads
+    /// `Content-Length` (§4.2). One that got no answer, HTTP 429, or a 5xx
+    /// is sent again with backoff until `deadline`: that is how an agent re-uploads
     /// whatever a drop interrupted, and uploads are content-addressed, so a
-    /// repeat of one the master already holds is a no-op. A 4xx is final --
-    /// the lease is not this agent's any more, or the upload is wrong.
+    /// repeat of one the master already holds is a no-op. HTTP 429 and 5xx
+    /// responses are transient; other 4xx responses are final.
     fn put(
         &self,
         http: &ureq::Agent,
@@ -2224,7 +2210,7 @@ impl JobContext {
         }
         let file = std::fs::File::open(path).map_err(internal)?;
         let bytes = file.metadata().map_err(internal)?.len();
-        let Some(limit) = artifact_size_limit(name) else {
+        let Some(limit) = worker_result::artifact_cap(name) else {
             return Err(ErrorBody {
                 error: "invalid_worker_result".to_owned(),
                 message: format!("worker artifact {name} is not a valid artifact name"),
@@ -2265,7 +2251,9 @@ impl JobContext {
                         bytes,
                     })
                 }
-                Ok(response) if response.status().is_server_error() => {
+                Ok(response)
+                    if response.status().is_server_error() || response.status().as_u16() == 429 =>
+                {
                     response.status().to_string()
                 }
                 Ok(response) => {

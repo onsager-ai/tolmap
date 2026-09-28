@@ -132,7 +132,7 @@ use axum::routing::get;
 use axum::{Json, RequestExt, Router};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
@@ -172,9 +172,19 @@ const WORKER_LEASE_MAX_ARTIFACT_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BY
 /// blocking pool, while still allowing a small batch of artifact writes.
 const WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS: usize = 8;
 
+/// At the largest per-kind cap (256 MiB), a 64 KiB/s link needs about 68
+/// minutes. Two hours leaves room for a slow honest transfer and filesystem
+/// pauses while ensuring a drip cannot hold a writer indefinitely.
+const WORKER_ARTIFACT_UPLOAD_DEADLINE: Duration = Duration::from_secs(2 * 60 * 60);
+
 /// A body that makes no progress for this long is abandoned so its upload
 /// writer, reservation and temporary file can be released.
 const WORKER_ARTIFACT_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Tokio's default blocking pool allows up to 512 threads. Keep artifact
+/// writers to 32 process-wide so one worker cannot occupy that pool across
+/// leases while leaving room for unrelated blocking work.
+const WORKER_MAX_UPLOAD_WRITERS: usize = 32;
 
 const fn max_upload_bytes(left: u64, right: u64) -> u64 {
     if left > right {
@@ -1289,6 +1299,9 @@ struct Lease {
     /// Serializes the short content-addressed blob install/remove phase.
     /// Bodies stream with no hub lock and no blob-operation lock held.
     blob_ops: Arc<Mutex<()>>,
+    /// Cancels async upload feeders when this lease is cancelled, expires,
+    /// is reassigned or ends; dropping their senders releases writer threads.
+    upload_cancel: watch::Sender<bool>,
     /// Master-owned `0700`: the names-cache input, uploads and blobs.
     dir: PathBuf,
 }
@@ -1418,10 +1431,8 @@ pub struct WorkerHub {
     heartbeat_s: u64,
     lease_ttl: Duration,
     artifact_body_idle_timeout: Duration,
-    #[cfg(test)]
     artifact_body_total_timeout: Duration,
-    #[cfg(test)]
-    upload_writers: Arc<tokio::sync::Semaphore>,
+    upload_writers: Arc<Semaphore>,
     /// Lost-worker retries before a job fails (§10.6).
     retries: u32,
     staging: PathBuf,
@@ -1461,10 +1472,8 @@ impl WorkerHub {
             heartbeat_s,
             lease_ttl,
             artifact_body_idle_timeout: WORKER_ARTIFACT_BODY_IDLE_TIMEOUT,
-            #[cfg(test)]
-            artifact_body_total_timeout: Duration::from_secs(2 * 60 * 60),
-            #[cfg(test)]
-            upload_writers: Arc::new(tokio::sync::Semaphore::new(32)),
+            artifact_body_total_timeout: WORKER_ARTIFACT_UPLOAD_DEADLINE,
+            upload_writers: Arc::new(Semaphore::new(WORKER_MAX_UPLOAD_WRITERS)),
             retries,
             staging,
             base_url,
@@ -2057,7 +2066,8 @@ impl WorkerHub {
                 };
                 let message = assign(&conn.base_url);
                 let _ = conn.out.send(Outgoing::Message(message));
-                inner.leases.insert(
+                let (upload_cancel, _) = watch::channel(false);
+                let replaced = inner.leases.insert(
                     job_id,
                     Lease {
                         conn: Some(conn_id),
@@ -2077,16 +2087,27 @@ impl WorkerHub {
                         reservations: BTreeMap::new(),
                         orphaned_blobs: BTreeMap::new(),
                         blob_ops: Arc::new(Mutex::new(())),
+                        upload_cancel,
                         dir: dir.clone(),
                     },
                 );
+                if let Some(replaced) = &replaced {
+                    replaced.upload_cancel.send_replace(true);
+                }
                 self.changed.notify_all();
                 eprintln!("job {job_id}: assigned to worker agent {agent} (epoch {epoch})");
-                return Ok(Some(Claimed {
+                let claimed = Claimed {
                     events: receiver,
-                    dir,
+                    dir: dir.clone(),
                     holder,
-                }));
+                };
+                drop(guard);
+                if let Some(replaced) = replaced {
+                    if replaced.dir != dir {
+                        let _ = std::fs::remove_dir_all(replaced.dir);
+                    }
+                }
+                return Ok(Some(claimed));
             }
             let _ = self
                 .changed
@@ -2118,6 +2139,19 @@ impl WorkerHub {
             _ => None,
         };
         let dir = self.lease_dir(job_id, epoch);
+        let replaced = {
+            let mut inner = self.lock();
+            let replaced = inner.leases.remove(&job_id);
+            if let Some(lease) = &replaced {
+                lease.upload_cancel.send_replace(true);
+            }
+            replaced
+        };
+        if let Some(replaced) = replaced {
+            if replaced.dir != dir {
+                let _ = std::fs::remove_dir_all(replaced.dir);
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
         // `blobs` too, as `claim` makes it: a lease resumed in remote mode
         // takes uploads, which land there.
@@ -2127,8 +2161,9 @@ impl WorkerHub {
             eprintln!("job {job_id}: could not create {}: {error}", dir.display());
         }
         let (events, receiver) = std_mpsc::channel();
+        let (upload_cancel, _) = watch::channel(false);
         let mut inner = self.lock();
-        inner.leases.insert(
+        let replaced = inner.leases.insert(
             job_id,
             Lease {
                 conn: None,
@@ -2148,9 +2183,19 @@ impl WorkerHub {
                 reservations: BTreeMap::new(),
                 orphaned_blobs: BTreeMap::new(),
                 blob_ops: Arc::new(Mutex::new(())),
+                upload_cancel,
                 dir: dir.clone(),
             },
         );
+        if let Some(replaced) = &replaced {
+            replaced.upload_cancel.send_replace(true);
+        }
+        drop(inner);
+        if let Some(replaced) = replaced {
+            if replaced.dir != dir {
+                let _ = std::fs::remove_dir_all(replaced.dir);
+            }
+        }
         eprintln!(
             "job {job_id}: its lease (epoch {epoch}) survived a restart; it runs out within {} s",
             self.lease_ttl_s()
@@ -2182,6 +2227,7 @@ impl WorkerHub {
             return;
         };
         lease.cancelled = true;
+        lease.upload_cancel.send_replace(true);
         if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get(&conn)) {
             let _ = conn.out.send(Outgoing::Message(MasterMessage::Cancel {
                 job_id: job_id.to_string(),
@@ -2203,6 +2249,7 @@ impl WorkerHub {
             return;
         };
         lease.rerouting = true;
+        lease.upload_cancel.send_replace(true);
         if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get(&conn)) {
             let _ = conn.out.send(Outgoing::Message(MasterMessage::Cancel {
                 job_id: job_id.to_string(),
@@ -2229,8 +2276,9 @@ impl WorkerHub {
         let Some(lease) = inner.leases.get_mut(&job_id) else {
             return false;
         };
-        if Instant::now() > lease.deadline {
+        if Instant::now() > lease.deadline && !lease.lost {
             lease.lost = true;
+            lease.upload_cancel.send_replace(true);
         }
         lease.lost
     }
@@ -2288,6 +2336,7 @@ impl WorkerHub {
             // agent gave up unasked.
             if now > lease.deadline {
                 lease.lost = true;
+                lease.upload_cancel.send_replace(true);
             }
             if lease.agent != Some(agent) || lease.epoch != entry.epoch || lease.lost {
                 answers.push(cancel(CancelReason::LeaseLost));
@@ -2372,6 +2421,7 @@ impl WorkerHub {
             let inner = &mut *guard;
             let lease = inner.leases.remove(&job_id);
             if let Some(lease) = &lease {
+                lease.upload_cancel.send_replace(true);
                 if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get_mut(&conn)) {
                     if conn.holding == Some(job_id) {
                         conn.holding = None;
@@ -2393,6 +2443,9 @@ impl WorkerHub {
     pub fn shutdown_now(&self) {
         let mut inner = self.lock();
         inner.stopping = true;
+        for lease in inner.leases.values() {
+            lease.upload_cancel.send_replace(true);
+        }
         for conn in inner.conns.values() {
             let _ = conn.out.send(Outgoing::Message(MasterMessage::Shutdown {
                 mode: ShutdownMode::Now,
@@ -2429,9 +2482,9 @@ impl WorkerHub {
 
     /// The lease an artifact request may act on. Trust decision (§4.2): a
     /// URL is honoured only for the token that holds the job's lease, at
-    /// the lease's epoch, while the lease is live and neither cancelled nor
-    /// finished. Every refusal is the same 403, so a token learns nothing
-    /// about jobs it does not hold.
+    /// the lease's epoch, while the lease is live and not cancelled,
+    /// rerouting, lost or finished. Every refusal is the same 403, so a
+    /// token learns nothing about jobs it does not hold.
     fn with_lease<T>(
         &self,
         agent: usize,
@@ -2441,7 +2494,13 @@ impl WorkerHub {
     ) -> Result<T, StatusCode> {
         let mut inner = self.lock();
         let lease = inner.leases.get_mut(&job_id).ok_or(StatusCode::FORBIDDEN)?;
-        if lease.agent != Some(agent) || lease.epoch != epoch || lease.cancelled || lease.finished {
+        if lease.agent != Some(agent)
+            || lease.epoch != epoch
+            || lease.cancelled
+            || lease.rerouting
+            || lease.lost
+            || lease.finished
+        {
             return Err(StatusCode::FORBIDDEN);
         }
         act(lease)
@@ -3081,11 +3140,11 @@ async fn put_artifact(
     else {
         return refuse(StatusCode::LENGTH_REQUIRED, "a Content-Length is required");
     };
-    let kind_limit = match name.as_str() {
-        "map" => worker_result::EARLY_MAP_MAX_BYTES,
-        "symbols" => worker_result::FULL_SYMBOLS_MAX_BYTES,
-        "names" => worker_result::NAMES_CACHE_MAX_BYTES,
-        _ => worker_result::DISTRICT_SYMBOLS_MAX_BYTES,
+    let Some(kind_limit) = worker_result::artifact_cap(&name) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            format!("{name:?} is not an artifact name"),
+        );
     };
     if length > kind_limit {
         return refuse(
@@ -3133,9 +3192,13 @@ async fn put_artifact(
                 bytes: length,
             },
         );
-        Ok((lease.dir.clone(), lease.blob_ops.clone()))
+        Ok((
+            lease.dir.clone(),
+            lease.blob_ops.clone(),
+            lease.upload_cancel.subscribe(),
+        ))
     });
-    let (dir, blob_ops) = match reservation {
+    let (dir, blob_ops, mut upload_cancel) = match reservation {
         Ok(reservation) => reservation,
         Err(status) => {
             let message = match status {
@@ -3160,6 +3223,14 @@ async fn put_artifact(
         temp: temp.clone(),
         active: true,
     };
+    let writer_permit =
+        match Arc::clone(&hub.upload_writers).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => return refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the service already has the maximum number of in-flight artifact upload writers",
+            ),
+        };
     let file = match create_upload_temp(&temp) {
         Ok(file) => file,
         Err(error) => {
@@ -3170,31 +3241,47 @@ async fn put_artifact(
         }
     };
     let (chunks, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
-    let writer = tokio::task::spawn_blocking(move || write_hashed(file, receiver));
+    let writer = tokio::task::spawn_blocking(move || {
+        let _writer_permit = writer_permit;
+        write_hashed(file, receiver)
+    });
     let mut stream = body.into_data_stream();
     let mut received = 0u64;
     let mut problem: Option<String> = None;
+    let total_timeout = hub.artifact_body_total_timeout;
+    let upload_deadline = tokio::time::Instant::now() + total_timeout;
+    let total_deadline = tokio::time::sleep_until(upload_deadline);
+    tokio::pin!(total_deadline);
     loop {
         // Empty data frames are not upload progress and must not reset the
-        // idle timeout. Keep the wait on this async sender side so timing out
-        // drops `chunks` below and unblocks `write_hashed`'s blocking_recv.
-        let next = match tokio::time::timeout(hub.artifact_body_idle_timeout, async {
-            loop {
-                match stream.next().await {
-                    Some(Ok(bytes)) if bytes.is_empty() => continue,
-                    next => break next,
-                }
-            }
-        })
-        .await
-        {
-            Ok(next) => next,
-            Err(_) => {
-                problem = Some(format!(
-                    "the body was idle for {:?}",
-                    hub.artifact_body_idle_timeout
-                ));
+        // idle timeout. The fixed total timer also covers time waiting for
+        // channel capacity, so a slow drip cannot keep `write_hashed` alive.
+        let next = tokio::select! {
+            biased;
+            _ = &mut total_deadline => {
+                problem = Some(format!("the upload exceeded its total deadline of {total_timeout:?}"));
                 break;
+            }
+            _ = upload_cancel.changed() => {
+                problem = Some("the lease ended during the upload".to_owned());
+                break;
+            }
+            result = tokio::time::timeout(hub.artifact_body_idle_timeout, async {
+                loop {
+                    match stream.next().await {
+                        Some(Ok(bytes)) if bytes.is_empty() => continue,
+                        next => break next,
+                    }
+                }
+            }) => match result {
+                Ok(next) => next,
+                Err(_) => {
+                    problem = Some(format!(
+                        "the body was idle for {:?}",
+                        hub.artifact_body_idle_timeout
+                    ));
+                    break;
+                }
             }
         };
         let Some(chunk) = next else {
@@ -3207,7 +3294,19 @@ async fn put_artifact(
                     problem = Some("the body is longer than its Content-Length".to_owned());
                     break;
                 }
-                if chunks.send(bytes).await.is_err() {
+                let sent = tokio::select! {
+                    biased;
+                    _ = &mut total_deadline => {
+                        problem = Some(format!("the upload exceeded its total deadline of {total_timeout:?}"));
+                        break;
+                    }
+                    _ = upload_cancel.changed() => {
+                        problem = Some("the lease ended during the upload".to_owned());
+                        break;
+                    }
+                    result = chunks.send(bytes) => result,
+                };
+                if sent.is_err() {
                     break;
                 }
             }
@@ -3216,6 +3315,11 @@ async fn put_artifact(
                 break;
             }
         }
+    }
+    if problem.is_none() && tokio::time::Instant::now() >= upload_deadline {
+        problem = Some(format!(
+            "the upload exceeded its total deadline of {total_timeout:?}"
+        ));
     }
     drop(stream);
     drop(chunks);
@@ -6241,6 +6345,7 @@ mod tests {
     #[test]
     fn a_repeated_drip_hits_the_whole_upload_deadline_and_cleans_up() {
         use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let fixture = Fixture::with_upload_timeouts(
             Duration::from_secs(60),
@@ -6269,10 +6374,15 @@ mod tests {
         )
         .unwrap();
         let mut drip = response_stream.try_clone().unwrap();
+        let keep_dripping = Arc::new(AtomicBool::new(true));
+        let stop_dripping = Arc::clone(&keep_dripping);
         let drip_thread = std::thread::spawn(move || {
             let mut sent = 0;
             for _ in 0..16 {
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(200));
+                if !stop_dripping.load(Ordering::Relaxed) {
+                    break;
+                }
                 if drip.write_all(b"x").is_err() {
                     break;
                 }
@@ -6292,8 +6402,11 @@ mod tests {
         }
         let started = Instant::now();
         let mut response = Vec::new();
-        response_stream.read_to_end(&mut response).unwrap();
+        let response_result = response_stream.read_to_end(&mut response);
         let elapsed = started.elapsed();
+        keep_dripping.store(false, Ordering::Relaxed);
+        let sent = drip_thread.join().unwrap();
+        response_result.unwrap();
         let status = String::from_utf8_lossy(&response)
             .split(' ')
             .nth(1)
@@ -6303,12 +6416,9 @@ mod tests {
         assert_eq!(status, 400, "the bounded upload uses the existing refusal");
         assert!(
             elapsed < Duration::from_millis(1500),
-            "a 100 ms drip below the 250 ms idle limit must hit the 750 ms total deadline, took {elapsed:?}"
+            "a 200 ms drip below the 250 ms idle limit must hit the 750 ms total deadline, took {elapsed:?}"
         );
-        assert!(
-            drip_thread.join().unwrap() >= 3,
-            "the client must keep dripping"
-        );
+        assert!(sent >= 3, "the client must keep dripping");
         assert_eq!(lease_upload_state(&fixture, id), (0, 0, 0));
     }
 
