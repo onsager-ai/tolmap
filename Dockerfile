@@ -142,13 +142,12 @@ WORKDIR /app
 # Same whole-repo context as the rust stage, and for the same reason
 # extract.rs/build.rs needed it there: `web/scripts/collect-maps.mjs`
 # (predev/prebuild, see web/package.json) resolves `mapsDir` from
-# web/maps.config.json (".maps", which does not exist in a fresh clone /
-# fresh build context) and falls back to `../data` -- the nine committed
-# fixture maps -- and Vite's `@bindings` alias resolves `../bindings`
-# (web/vite.config.ts). Both are *outside* web/, so this stage's build
-# context has to be the repository root, not `web/` alone, or the build
-# either fails (no maps.config.json fallback dir found -- it would, since
-# ../data still exists at repo root) or resolves @bindings to nothing.
+# web/maps.config.json. This served image disables static map collection:
+# staging and production should show maps the service indexed, while users
+# can map any other repository from Home. Vite's `@bindings` alias resolves
+# `../bindings` (web/vite.config.ts), outside web/, so this stage's build
+# context has to be the repository root, not `web/` alone, or the alias
+# resolves to nothing.
 COPY . .
 WORKDIR /app/web
 RUN pnpm install --frozen-lockfile
@@ -156,7 +155,7 @@ RUN pnpm install --frozen-lockfile
 # web/package.json). Output lands in web/dist (Vite's default), which
 # .dockerignore excludes from every stage's context so a stale local build
 # can never be silently reused here.
-RUN pnpm build
+RUN TOLMAP_STATIC_MAPS=none pnpm build
 
 # ---------------------------------------------------------------------------
 # Stage 4: scip-tools -- pinned SCIP indexers (issue #110 P1b) plus the
