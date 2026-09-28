@@ -3,7 +3,8 @@
 //   - map/backStack.ts: the back-stack reducer (§3.4's pop order, dead
 //     entries, reloads);
 //   - map/phoneShell.ts: sheet detents (§3.1), snap from position and
-//     velocity, the safe rectangle from the chrome's insets (§3.3);
+//     velocity, the safe rectangle from the chrome's insets (§3.3), and who
+//     owns a drag on the sheet (dragOwner: the sheet or its content);
 //   - map/geometry.ts: fitViewport/scaleToFit framing into real insets.
 // No browser: the same standalone-script pattern as check-gestures.ts (no
 // test runner exists in this project -- web/README.md). CI runs it in the
@@ -12,19 +13,22 @@
 //
 // Run: npx tsx web/scripts/check-phone-shell.ts
 
-import { closeOverlay, hasLiveOverlay, initBack, openOverlay, popTo, type BackState, type OverlayKind } from "../src/map/backStack";
+import { closeOverlay, hasLiveOverlay, initBack, isOverlayKind, openOverlay, popTo, type BackState, type OverlayKind } from "../src/map/backStack";
 import {
+  DETENT_ORDER,
   PEEK_BASE_PX,
   SHEET_FLICK_PX_PER_MS,
   SHEET_UNDERSHOOT_PX,
   detentHeights,
   dragHeight,
+  dragOwner,
   nextDetent,
   pillBottom,
   releaseVelocity,
   safeInsets,
   safeRect,
   snapDetent,
+  type DragStart,
   type PhoneMetrics,
 } from "../src/map/phoneShell";
 import { DESKTOP_INSETS, defaultInsets, fitCentreY, fitViewport, scaleToFit } from "../src/map/geometry";
@@ -180,6 +184,29 @@ console.log("\nback-stack reducer (§3.4)");
   t.open("search");
   report(eq(t.back(true), ["search"]) && eq(t.back(true), ["sheet"]) && eq(t.back(true), ["sel"]), "search, then sheet height, then selection");
 
+  // The repository sheet (owner, 2026-09-28): one entry, closed first.
+  const rp = session();
+  rp.open("sel");
+  rp.open("sheet");
+  report(rp.open("repos") === true && rp.index === 3, "opening the repository sheet pushes one entry");
+  report(rp.open("repos") === false && rp.index === 3, "re-opening it pushes nothing");
+  report(eq(rp.back(true), ["repos"]), "back 1: closes the repository sheet only");
+  report(eq(rp.back(true), ["sheet"]) && eq(rp.back(true), ["sel"]), "then the sheet height, then the selection");
+  report(rp.index === 0 && !hasLiveOverlay(rp.state), "then back leaves the map");
+  const rl = session();
+  rl.open("layers");
+  rl.close("layers");
+  rl.open("repos");
+  report(eq(rl.back(false), ["repos"]) && rl.index === 1, "back closes the repository sheet before any other layer, and stops there", `index=${rl.index}`);
+  const rc = session();
+  rc.open("sel");
+  rc.open("repos");
+  rc.close("repos"); // closed from its button or the scrim
+  report(eq(rc.back(true), ["sel"]) && rc.index === 0, "a repository sheet closed from the UI costs no back press", `index=${rc.index}`);
+  const rr = popTo(initBack(3, "repos", true), 2, "sel", true);
+  report(rr.undo.length === 0 && rr.skipBack, "a reload on a repository-sheet entry does not reopen it; back carries on past it");
+  report(isOverlayKind("repos"), "\"repos\" is a marker the page recognises after a reload");
+
   // Closed from the UI: the entry stays, dead, and back skips it.
   const u = session();
   u.open("sel");
@@ -226,6 +253,53 @@ console.log("\nback-stack reducer (§3.4)");
   report(!r6.skipBack && r6.undo.length === 0, "forward onto an overlay entry does not reopen it and does not bounce back");
   const r7 = popTo(initBack(1, "sel", true), 0, undefined, true);
   report(eq(r7.undo, ["sel"]) && !r7.skipBack, "back off the selection entry closes it and stays (the base entry is not ours)");
+}
+
+// ---------------------------------------------------------------- drag owner
+// Owner, 2026-09-28: "when details opened, unable to drag down to collapse
+// because of scrolling". Every combination of detent, scroll position,
+// direction and start zone, against the standard bottom-sheet rule.
+console.log("\nwho owns a drag on the sheet (dragOwner)");
+{
+  const expected = (s: DragStart): "sheet" | "content" => {
+    if (s.zone === "handle") return "sheet"; // the grabber and header never scroll
+    if (s.detent === "peek") return "sheet"; // Peek never scrolls (§3.1)
+    if (!s.canScroll) return "sheet"; // nothing to scroll
+    if (s.direction === "down") return s.scrollTop <= 0 ? "sheet" : "content";
+    return s.detent === "full" ? "content" : "sheet"; // up: raise the sheet first
+  };
+  let all = 0;
+  let agree = 0;
+  const mismatches: string[] = [];
+  for (const detent of DETENT_ORDER)
+    for (const scrollTop of [-12, 0, 1, 240])
+      for (const canScroll of [false, true])
+        for (const direction of ["up", "down"] as const)
+          for (const zone of ["handle", "content"] as const) {
+            if (!canScroll && scrollTop > 0) continue; // cannot be scrolled if it cannot scroll
+            const s: DragStart = { detent, scrollTop, canScroll, direction, zone };
+            all++;
+            if (dragOwner(s) === expected(s)) agree++;
+            else mismatches.push(JSON.stringify(s));
+          }
+  report(agree === all && all === 3 * (2 * 2 * 2 + 4 * 2 * 2), `every combination (${all}) follows the rule`, mismatches.join(" "));
+
+  const at = (detent: DragStart["detent"], scrollTop: number, direction: DragStart["direction"], zone: DragStart["zone"] = "content", canScroll = true) =>
+    dragOwner({ detent, scrollTop, canScroll, direction, zone });
+  report(at("full", 0, "down") === "sheet", "Full, content at its top, drag down: the sheet lowers (the owner's report)");
+  report(at("full", -8, "down") === "sheet", "Full, content bouncing past its top (iOS negative scrollTop), drag down: the sheet");
+  report(at("full", 1, "down") === "content", "Full, content scrolled even 1 px, drag down: the content scrolls toward its top");
+  report(at("full", 400, "down") === "content", "Full, content mid-scroll, drag down: the content scrolls (the next drag moves the sheet)");
+  report(at("full", 0, "up") === "content" && at("full", 400, "up") === "content", "Full, drag up: the content scrolls, from the top or mid-scroll");
+  report(at("half", 0, "up") === "sheet" && at("half", 120, "up") === "sheet", "below Full, drag up: the sheet rises first, whatever the scroll");
+  report(at("half", 0, "down") === "sheet", "Half, content at its top, drag down: the sheet lowers");
+  report(at("half", 120, "down") === "content", "Half, a scroller under the finger mid-scroll, drag down: it scrolls");
+  report(at("peek", 120, "up") === "sheet" && at("peek", 120, "down") === "sheet", "Peek: every drag moves the sheet");
+  report(
+    at("full", 400, "down", "handle") === "sheet" && at("full", 400, "up", "handle") === "sheet" && at("half", 0, "up", "handle") === "sheet",
+    "the grabber and the card header always move the sheet, never scroll",
+  );
+  report(at("full", 0, "up", "content", false) === "sheet" && at("full", 0, "down", "content", false) === "sheet", "content that cannot scroll: the sheet owns every drag");
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

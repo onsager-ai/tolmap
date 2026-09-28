@@ -126,6 +126,7 @@ export function MapView() {
   const [detent, setDetentState] = useState<Detent>("peek");
   const [searchOpen, setSearchOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [reposOpen, setReposOpen] = useState(false);
   const [quality, setQuality] = useState(false);
   const [indexTab, setIndexTab] = useState<"districts" | "folders">("districts");
   const [structure, setStructure] = useState<StructureCardState | null>(null);
@@ -465,6 +466,14 @@ export function MapView() {
     dropOverlay("layers");
     setLayersOpen(false);
   }
+  function openRepos() {
+    pushOverlay("repos");
+    setReposOpen(true);
+  }
+  function closeRepos() {
+    dropOverlay("repos");
+    setReposOpen(false);
+  }
   function clearPath() {
     setPathPick(null);
     setPathEnds(null);
@@ -472,7 +481,8 @@ export function MapView() {
   }
   const undoRef = useRef<(kind: OverlayKind) => void>(() => {});
   undoRef.current = (kind) => {
-    if (kind === "search") setSearchOpen(false);
+    if (kind === "repos") setReposOpen(false);
+    else if (kind === "search") setSearchOpen(false);
     else if (kind === "layers") setLayersOpen(false);
     else if (kind === "sheet") setDetentState("peek");
     else {
@@ -582,6 +592,7 @@ export function MapView() {
     if (narrow) return;
     setSearchOpen(false);
     setLayersOpen(false);
+    setReposOpen(false);
     setDetentState("peek");
     setStructure(null);
     setPathPick(null);
@@ -784,6 +795,9 @@ export function MapView() {
           layersOpen={layersOpen}
           onOpenLayers={openLayers}
           onCloseLayers={closeLayers}
+          reposOpen={reposOpen}
+          onOpenRepos={openRepos}
+          onCloseRepos={closeRepos}
           quality={quality}
           onQuality={(open) => {
             setQuality(open);

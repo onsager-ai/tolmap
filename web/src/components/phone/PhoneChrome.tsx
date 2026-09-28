@@ -1,9 +1,9 @@
-import { useEffect, useRef } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
 import type { CatalogueEntry, DistrictSymbols, MapDocument } from "@/types";
 import type { Layer } from "@/map/constants";
 import type { AdjMap, Route } from "@/map/graph";
-import { RAMP_STOPS } from "@/map/geometry";
+import { RAMP_STOPS, districtClass } from "@/map/geometry";
 import type { PackageGrouping, PackageLayout } from "@/map/packageLayout";
 import type { SearchPick } from "@/map/searchResults";
 import type { Detent, DetentHeights } from "@/map/phoneShell";
@@ -13,7 +13,7 @@ import { PackageLegend } from "@/components/PackageLegend";
 import { ThemeSegmented } from "@/components/ThemeToggle";
 import { SIDE_SHEET_WIDTH_PX } from "@/map/layoutProfile";
 import { BottomSheet, SideSheet } from "./BottomSheet";
-import { CloseIcon, FitIcon, LayersIcon, MinusIcon, PanelIcon, PlusIcon, SearchIcon, SwitchIcon } from "./icons";
+import { ChevronDownIcon, ChevronIcon, CloseIcon, FitIcon, HomeIcon, LayersIcon, MinusIcon, PanelIcon, PlusIcon, SearchIcon } from "./icons";
 import { OverviewCard, SelectionCard, type PathPick, type StructureCardState } from "./SheetCards";
 
 export interface PhoneChromeProps {
@@ -58,6 +58,11 @@ export interface PhoneChromeProps {
   layersOpen: boolean;
   onOpenLayers(): void;
   onCloseLayers(): void;
+  /** The repository sheet (owner, 2026-09-28: "no way to go back or switch
+   * repos"): opened from the pill's repository button. */
+  reposOpen: boolean;
+  onOpenRepos(): void;
+  onCloseRepos(): void;
   quality: boolean;
   onQuality(open: boolean): void;
   indexTab: "districts" | "folders";
@@ -111,7 +116,6 @@ const LAYERS: { id: Layer; name: string; meaning: string }[] = [
  * cards (SheetCards.tsx's SelectionCard). State lives in MapView, which
  * also owns the back stack (map/backStack.ts). */
 export function PhoneChrome(p: PhoneChromeProps) {
-  const navigate = useNavigate();
   const slug = `${p.owner}/${p.repo}`;
   const searchBox = useVisualViewportBox(p.searchOpen);
   // §7.2: closing search returns focus to what opened it, the pill's search
@@ -123,11 +127,6 @@ export function PhoneChrome(p: PhoneChromeProps) {
     }
     searchWasOpen.current = p.searchOpen;
   }, [p.searchOpen]);
-  // TopBar's fix, kept: the current repo always has an option, or a native
-  // select silently shows a stale one.
-  const options = (p.catalogue ?? []).map((m) => m.slug);
-  const withCurrent = options.includes(slug) ? options : [slug, ...options];
-
   const content = (
     <SelectionCard
       doc={p.doc}
@@ -189,10 +188,16 @@ export function PhoneChrome(p: PhoneChromeProps) {
   const controlBtn = "flex h-11 w-11 items-center justify-center border-b border-[var(--rule)] text-[var(--on)] last:border-b-0";
   return (
     <>
-      {/* §3: the search pill -- search and the repository, one 48 px row. */}
+      {/* §3: the search pill -- search and the repository, one 48 px row.
+          The repository is its own button, the slug with a chevron, and
+          opens the repository sheet (other maps, Map another repository,
+          Home). It replaced a native select laid invisibly over a ↓↑ icon
+          (owner, 2026-09-28: "no way to go back or switch repos"): the icon
+          read as sort, not as switch; the slug beside it opened search; and
+          the select could only list other maps, never lead Home. */}
       <div
         data-search-pill
-        className="absolute z-20 flex h-12 items-center gap-0.5 rounded-[24px] border border-[var(--rule)] bg-[var(--chrome2)] px-0.5 shadow-[0_6px_18px_rgba(0,0,0,.25)]"
+        className="absolute z-20 flex h-12 items-center gap-1 rounded-[24px] border border-[var(--rule)] bg-[var(--chrome2)] px-0.5 shadow-[0_6px_18px_rgba(0,0,0,.25)]"
         style={{
           top: "calc(12px + env(safe-area-inset-top, 0px))",
           left: `calc(${mapLeft} + 12px)`,
@@ -204,37 +209,27 @@ export function PhoneChrome(p: PhoneChromeProps) {
           aria-label={`Search ${slug}`}
           data-open-search
           onClick={p.onOpenSearch}
-          className="flex h-11 min-w-0 flex-1 items-center gap-2.5 px-2 text-left"
+          className="flex h-11 min-w-[96px] flex-1 items-center gap-2.5 px-2 text-left"
         >
           <span className="shrink-0 text-[var(--dim)]">
             <SearchIcon />
           </span>
-          <span className="truncate text-body text-[var(--dim)]">
-            Search <span className="font-mono text-[15px] text-[var(--on)]">{slug}</span>
+          <span className="truncate text-body text-[var(--dim)]">Search</span>
+        </button>
+        <button
+          type="button"
+          data-switch-repo
+          aria-label={`Repository ${slug}: switch repository or go home`}
+          aria-haspopup="dialog"
+          aria-expanded={p.reposOpen}
+          onClick={p.onOpenRepos}
+          className="flex h-11 min-w-0 max-w-[68%] shrink items-center gap-1.5 rounded-[22px] border border-[var(--rule)] bg-[var(--chrome)] pl-3.5 pr-2.5 text-[var(--on)]"
+        >
+          <span className="min-w-0 truncate font-mono text-[15px]">{slug}</span>
+          <span className="shrink-0 text-[var(--dim)]">
+            <ChevronDownIcon size={16} />
           </span>
         </button>
-        {/* The switch-repository button is a native select laid over the
-            icon: a tap opens the phone's own picker, with no overlay of ours
-            to dismiss or put on the back stack. */}
-        <span className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[var(--on)]" data-switch-repo>
-          <SwitchIcon />
-          <select
-            aria-label="Repository"
-            title="Switch repository"
-            value={slug}
-            onChange={(e) => {
-              const [o, r] = e.target.value.split("/");
-              navigate({ to: "/$owner/$repo", params: { owner: o, repo: r }, search: { geo: "r", layer: "d" } });
-            }}
-            className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0"
-          >
-            {withCurrent.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </span>
       </div>
 
       {/* §3: the control column. No fullscreen button on phones. Hidden
@@ -288,100 +283,73 @@ export function PhoneChrome(p: PhoneChromeProps) {
 
       {/* §4.6: the Layers sheet, modal over the map sheet. */}
       {p.layersOpen && (
-        <>
-          <div data-layers-scrim className="absolute inset-0 z-40 bg-[rgba(4,8,10,.55)]" onClick={p.onCloseLayers} />
-          {/* §9: in landscape the Layers sheet takes the side sheet's place
-              (left, 360 px, full height) rather than rising over a 390 px
-              tall screen. */}
-          <section
-            aria-label="Map layers and display"
-            data-layers-sheet
-            className={`absolute z-40 overflow-y-auto border-[var(--rule)] bg-[var(--chrome)] px-5 text-[var(--on)] ${
-              p.landscape
-                ? "inset-y-0 left-0 border-r shadow-[8px_0_24px_rgba(0,0,0,.3)]"
-                : "inset-x-0 bottom-0 max-h-[88%] rounded-t-[20px] border-t shadow-[0_-8px_24px_rgba(0,0,0,.3)]"
-            }`}
-            style={{
-              paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))",
-              overscrollBehavior: "contain",
-              ...(p.landscape
-                ? {
-                    width: `calc(${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px))`,
-                    paddingLeft: "calc(20px + env(safe-area-inset-left, 0px))",
-                    paddingTop: "env(safe-area-inset-top, 0px)",
-                  }
-                : {}),
-            }}
-          >
-            <div className="flex justify-center">
-              <span className="mb-3 mt-[11px] block h-[5px] w-9 rounded-[3px] bg-[var(--grabber)]" />
-            </div>
-            <div className="flex items-start gap-2">
-              <h2 className="min-w-0 flex-1 text-sheet-title">Map layer</h2>
-              <button
-                type="button"
-                aria-label="Close layers"
-                onClick={p.onCloseLayers}
-                className="-mr-2.5 -mt-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--chrome2)]"
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div role="radiogroup" aria-label="Map layer" className="mt-1.5 overflow-hidden rounded-[14px] border border-[var(--rule)]">
-              {LAYERS.map((l) => {
-                const on = p.layer === l.id;
-                return (
-                  <div key={l.id} className="border-b border-[var(--rule)] last:border-b-0" style={on ? { background: "color-mix(in srgb, var(--accent) 10%, transparent)" } : undefined}>
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={on}
-                      data-layer-option={l.id}
-                      onClick={() => p.onLayer(l.id)}
-                      className="flex min-h-[60px] w-full items-center gap-3 px-3.5 py-2 text-left"
+        <ModalSheet kind="layers" label="Map layers and display" title="Map layer" closeLabel="Close layers" landscape={p.landscape} onClose={p.onCloseLayers}>
+          <div role="radiogroup" aria-label="Map layer" className="mt-1.5 overflow-hidden rounded-[14px] border border-[var(--rule)]">
+            {LAYERS.map((l) => {
+              const on = p.layer === l.id;
+              return (
+                <div key={l.id} className="border-b border-[var(--rule)] last:border-b-0" style={on ? { background: "color-mix(in srgb, var(--accent) 10%, transparent)" } : undefined}>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    data-layer-option={l.id}
+                    onClick={() => p.onLayer(l.id)}
+                    className="flex min-h-[60px] w-full items-center gap-3 px-3.5 py-2 text-left"
+                  >
+                    <span
+                      className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border-2"
+                      style={{ borderColor: on ? "var(--accent)" : "var(--grabber)" }}
                     >
-                      <span
-                        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border-2"
-                        style={{ borderColor: on ? "var(--accent)" : "var(--grabber)" }}
-                      >
-                        {on && <span className="h-2.5 w-2.5 rounded-full bg-[var(--accent)]" />}
-                      </span>
-                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <span className="text-row">{l.name}</span>
-                        <span className="text-meta text-[var(--dim)]">{l.meaning}</span>
-                        {(l.id === "c" || l.id === "x") && (
-                          <span className="mt-1 flex items-center gap-2" data-ramp-legend={l.id}>
-                            <span
-                              className="h-2 w-32 shrink-0 rounded"
-                              style={{ background: `linear-gradient(90deg,${RAMP_STOPS.join(",")})` }}
-                            />
-                            <span className="font-mono text-meta text-[var(--dim)]">
-                              {l.id === "c" ? `1 → ${p.maxCh} commits` : `0 → ${p.maxCx}`}
-                            </span>
+                      {on && <span className="h-2.5 w-2.5 rounded-full bg-[var(--accent)]" />}
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="text-row">{l.name}</span>
+                      <span className="text-meta text-[var(--dim)]">{l.meaning}</span>
+                      {(l.id === "c" || l.id === "x") && (
+                        <span className="mt-1 flex items-center gap-2" data-ramp-legend={l.id}>
+                          <span
+                            className="h-2 w-32 shrink-0 rounded"
+                            style={{ background: `linear-gradient(90deg,${RAMP_STOPS.join(",")})` }}
+                          />
+                          <span className="font-mono text-meta text-[var(--dim)]">
+                            {l.id === "c" ? `1 → ${p.maxCh} commits` : `0 → ${p.maxCx}`}
                           </span>
-                        )}
-                      </span>
-                    </button>
-                    {l.id === "p" && on && (
-                      <div className="px-3.5 pb-3">
-                        <PackageLegend
-                          grouping={p.packageGrouping}
-                          auto={p.depthAuto}
-                          minDepth={p.packageLayout.minDepth}
-                          maxDepth={p.packageLayout.maxDepth}
-                          onDepth={p.onDepth}
-                          variant="sheet"
-                        />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <h3 className="mt-5 text-[15px] font-semibold">Appearance</h3>
-            <ThemeSegmented />
-          </section>
-        </>
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                  {l.id === "p" && on && (
+                    <div className="px-3.5 pb-3">
+                      <PackageLegend
+                        grouping={p.packageGrouping}
+                        auto={p.depthAuto}
+                        minDepth={p.packageLayout.minDepth}
+                        maxDepth={p.packageLayout.maxDepth}
+                        onDepth={p.onDepth}
+                        variant="sheet"
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <h3 className="mt-5 text-[15px] font-semibold">Appearance</h3>
+          <ThemeSegmented />
+        </ModalSheet>
+      )}
+
+      {/* The repository sheet: the map on screen, the other mapped
+          repositories (the catalogue Home lists), Map another repository
+          and Home. On the back stack like Layers (map/backStack.ts), and
+          back closes it first. Leaving through any row replaces the
+          sheet's own history entry, so back from the new page returns to
+          this map as it was, never to a dead sheet entry. */}
+      {p.reposOpen && (
+        <ModalSheet kind="repo" label="Repositories" title="Repository" closeLabel="Close repositories" landscape={p.landscape} onClose={p.onCloseRepos}>
+          <RepoSheetBody doc={p.doc} slug={slug} catalogue={p.catalogue} onLeave={p.onCloseRepos} />
+        </ModalSheet>
       )}
 
       {/* §4.8: search, full screen and above every map control (z-50; the
@@ -397,6 +365,125 @@ export function PhoneChrome(p: PhoneChromeProps) {
         >
           <SearchBox doc={p.doc} variant="overlay" onPick={p.onSearchPick} onClose={p.onCloseSearch} />
         </section>
+      )}
+    </>
+  );
+}
+
+/** A modal sheet over the map sheet: the Layers sheet (§4.6) and the
+ * repository sheet. A bottom sheet up to 88% tall in portrait; in landscape
+ * (§9) it takes the side sheet's place -- left, 360 px, full height --
+ * rather than rising over a 390 px tall screen. The scrim closes it. */
+function ModalSheet({
+  kind,
+  label,
+  title,
+  closeLabel,
+  landscape,
+  onClose,
+  children,
+}: {
+  kind: "layers" | "repo";
+  label: string;
+  title: string;
+  closeLabel: string;
+  landscape: boolean;
+  onClose(): void;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <div {...{ [`data-${kind}-scrim`]: "" }} className="absolute inset-0 z-40 bg-[rgba(4,8,10,.55)]" onClick={onClose} />
+      <section
+        aria-label={label}
+        {...{ [`data-${kind}-sheet`]: "" }}
+        className={`absolute z-40 overflow-y-auto border-[var(--rule)] bg-[var(--chrome)] px-5 text-[var(--on)] ${
+          landscape ? "inset-y-0 left-0 border-r shadow-[8px_0_24px_rgba(0,0,0,.3)]" : "inset-x-0 bottom-0 max-h-[88%] rounded-t-[20px] border-t shadow-[0_-8px_24px_rgba(0,0,0,.3)]"
+        }`}
+        style={{
+          paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))",
+          overscrollBehavior: "contain",
+          ...(landscape
+            ? {
+                width: `calc(${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px))`,
+                paddingLeft: "calc(20px + env(safe-area-inset-left, 0px))",
+                paddingTop: "env(safe-area-inset-top, 0px)",
+              }
+            : {}),
+        }}
+      >
+        <div className="flex justify-center">
+          <span className="mb-3 mt-[11px] block h-[5px] w-9 rounded-[3px] bg-[var(--grabber)]" />
+        </div>
+        <div className="flex items-start gap-2">
+          <h2 className="min-w-0 flex-1 text-sheet-title">{title}</h2>
+          <button
+            type="button"
+            aria-label={closeLabel}
+            onClick={onClose}
+            className="-mr-2.5 -mt-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--chrome2)]"
+          >
+            <CloseIcon />
+          </button>
+        </div>
+        {children}
+      </section>
+    </>
+  );
+}
+
+/** The repository sheet's content: the map on screen; "Home" and "Map
+ * another repository" (Home's field, focused), right under it so the way
+ * home never sits below a long list; then the other mapped repositories as
+ * 56 px rows (the same catalogue query Home lists). Every row is a real
+ * link that replaces the sheet's history entry (see PhoneChrome). */
+function RepoSheetBody({ doc, slug, catalogue, onLeave }: { doc: MapDocument; slug: string; catalogue: CatalogueEntry[] | undefined; onLeave(): void }) {
+  let mainland = 0;
+  for (const d of Object.values(doc.districts)) if (districtClass(d) === "mainland") mainland++;
+  const others = (catalogue ?? []).filter((m) => m.slug !== slug);
+  const row = "flex min-h-[56px] w-full items-center gap-3 border-b border-[var(--rule)] px-3.5 py-2 text-left last:border-b-0";
+  return (
+    <>
+      <div data-repo-current className="mt-1.5 rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)] px-3.5 py-2.5">
+        <div className="text-meta text-[var(--dim)]">On screen</div>
+        <div className="truncate font-mono text-row">{slug}</div>
+        <div className="text-meta text-[var(--dim)]">
+          <span className="font-mono">{doc.F.length.toLocaleString("en-US")}</span> files · <span className="font-mono">{mainland}</span> districts
+        </div>
+      </div>
+      <div className="mt-3 overflow-hidden rounded-[14px] border border-[var(--rule)]">
+        <Link to="/" replace onClick={onLeave} data-repo-home className={row}>
+          <span className="shrink-0 text-[var(--dim)]">
+            <HomeIcon />
+          </span>
+          <span className="min-w-0 flex-1 text-row">Home</span>
+        </Link>
+        <Link to="/" hash="repo-field" replace onClick={onLeave} data-repo-map-another className={row}>
+          <span className="shrink-0 text-[var(--accent)]">
+            <PlusIcon />
+          </span>
+          <span className="min-w-0 flex-1 text-row">Map another repository</span>
+        </Link>
+      </div>
+      <h3 className="mt-5 text-[15px] font-semibold">Mapped repositories</h3>
+      {others.length ? (
+        <div className="mt-1.5 overflow-hidden rounded-[14px] border border-[var(--rule)]">
+          {others.map((m) => (
+            <Link key={m.slug} to="/$owner/$repo" params={{ owner: m.owner, repo: m.repo }} search={{ geo: "r", layer: "d" }} replace onClick={onLeave} data-repo-row={m.slug} className={row}>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate font-mono text-row">{m.slug}</span>
+                <span className="truncate text-meta text-[var(--dim)]">
+                  <span className="font-mono">{m.files.toLocaleString("en-US")}</span> files · {m.lang}
+                </span>
+              </span>
+              <span className="shrink-0 text-[var(--dim)]" aria-hidden="true">
+                <ChevronIcon />
+              </span>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1.5 text-small text-[var(--dim)]">{catalogue ? "No other repositories are mapped yet." : "loading…"}</p>
       )}
     </>
   );

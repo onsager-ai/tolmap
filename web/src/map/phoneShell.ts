@@ -124,3 +124,57 @@ export function releaseVelocity(samples: ReadonlyArray<readonly [number, number]
   const [t1, y1] = samples[samples.length - 1];
   return (y1 - y0) / Math.max(1, t1 - t0);
 }
+
+/** Who a vertical drag on the bottom sheet belongs to: the sheet (it moves
+ * between detents) or the sheet's content (it scrolls). */
+export type DragOwner = "sheet" | "content";
+
+export interface DragStart {
+  detent: Detent;
+  /** The content's scroll offset when the drag started: the sum over every
+   * scroller between the touched element and the sheet body, so 0 means
+   * each of them is at its top. iOS reports a negative value while the
+   * content rubber-bands past its top; that counts as at the top. */
+  scrollTop: number;
+  /** Whether the content under the finger can scroll at all (its scroll
+   * height exceeds its box). */
+  canScroll: boolean;
+  /** The finger's first clear movement: "down" lowers the sheet or scrolls
+   * the content back toward its top; "up" raises it or scrolls further. */
+  direction: "up" | "down";
+  /** Where the drag started: the grabber or a card header (any element
+   * marked `data-sheet-dragzone`), or the content below them. */
+  zone: "handle" | "content";
+}
+
+/** The standard bottom-sheet rule (owner, 2026-09-28: "when details
+ * opened, unable to drag down to collapse because of scrolling"). Before
+ * this, the content owned every drag at Full except on the grabber and the
+ * card header, and the header scrolls away with the content, so once a card
+ * was scrolled only the 44 px grabber could lower the sheet.
+ *
+ * - The grabber and the header always move the sheet.
+ * - At Peek, and wherever nothing can scroll, the sheet moves.
+ * - Down: the sheet moves if the content is at its top, else the content
+ *   scrolls. A drag that starts mid-scroll stays a scroll for the whole
+ *   gesture: once the browser has begun a native scroll it cancels the
+ *   pointer and no longer lets the page cancel the touch, so the hand-over
+ *   happens on the next drag. (Doing it within one gesture would mean
+ *   replacing native scrolling -- its momentum and edge bounce -- with a
+ *   scripted one.)
+ * - Up: below Full the sheet rises first; at Full the content scrolls.
+ *
+ * The content scrolls only at Full (§3.1: at Peek and Half the body is
+ * clipped, not a scroller), so at Half `canScroll` is false in practice;
+ * the rule does not depend on that. */
+export function dragOwner(s: DragStart): DragOwner {
+  if (s.zone === "handle" || s.detent === "peek" || !s.canScroll) return "sheet";
+  if (s.direction === "down") return s.scrollTop <= 0 ? "sheet" : "content";
+  return s.detent === "full" ? "content" : "sheet";
+}
+
+/** How far (CSS px) the finger must travel before the drag's direction, and
+ * so its owner, is decided. Well under the distance at which a browser
+ * starts a native scroll (about 10 px on iOS, 15 px in Chrome), so the
+ * sheet can still cancel that scroll when the drag is its own. */
+export const DRAG_DECIDE_PX = 3;

@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { SIDE_SHEET_WIDTH_PX } from "@/map/layoutProfile";
 import {
+  DRAG_DECIDE_PX,
   SHEET_DRAG_SLOP_PX,
   dragHeight,
+  dragOwner,
   nextDetent,
   releaseVelocity,
   snapDetent,
   type Detent,
   type DetentHeights,
+  type DragOwner,
 } from "@/map/phoneShell";
 
 interface Props {
@@ -15,6 +18,43 @@ interface Props {
   heights: DetentHeights;
   onDetent(d: Detent): void;
   children: ReactNode;
+}
+
+/** One pointer's drag on the sheet, from pointerdown until it ends. */
+interface Gesture {
+  id: number;
+  y0: number;
+  h0: number;
+  zone: "handle" | "content";
+  scrollTop: number;
+  canScroll: boolean;
+  /** Decided once the finger has moved DRAG_DECIDE_PX vertically
+   * (map/phoneShell.ts's dragOwner); null until then. */
+  owner: DragOwner | null;
+  /** The sheet itself has started moving (past SHEET_DRAG_SLOP_PX). */
+  moved: boolean;
+  samples: Array<[number, number]>;
+}
+
+/** The scroll state under the finger: every scroller from the touched
+ * element up to the sheet body. At Peek and Half the body is clipped
+ * (overflow hidden), so nothing there counts as a scroller. */
+function scrollStateAt(target: Element, body: HTMLElement | null): { scrollTop: number; canScroll: boolean } {
+  let scrollTop = 0;
+  let canScroll = false;
+  if (!body || !body.contains(target)) return { scrollTop, canScroll };
+  for (let el: Element | null = target; el; el = el.parentElement) {
+    const h = el as HTMLElement;
+    const oy = getComputedStyle(h).overflowY;
+    if ((oy === "auto" || oy === "scroll") && h.scrollHeight > h.clientHeight + 1) {
+      canScroll = true;
+      // iOS reports a negative offset while the content bounces past its
+      // top: that is "at the top".
+      scrollTop += Math.max(0, h.scrollTop);
+    }
+    if (el === body) break;
+  }
+  return { scrollTop, canScroll };
 }
 
 /** docs/UX.md §3.1: the phone's one bottom sheet, three detents.
@@ -29,17 +69,33 @@ interface Props {
  * after SHEET_DRAG_SLOP_PX of travel (so a tap on a row is still a tap, and
  * the click that ends a drag is swallowed); release snaps by position and
  * velocity (phoneShell.ts's snapDetent); the grabber is a real button that
- * cycles peek -> half -> full -> peek. At Peek and Half a vertical drag
- * anywhere on the sheet moves the sheet and the content does not scroll; at
- * Full the content scrolls, and only the grabber and the card header (any
- * element marked `data-sheet-dragzone`) drag the sheet -- no scroll inside
- * scroll (§3.1). Dragging below Peek springs back (§3.5). */
+ * cycles peek -> half -> full -> peek. At Peek and Half the body is clipped
+ * and every vertical drag moves the sheet. At Full the body scrolls, and
+ * who owns a drag is phoneShell.ts's dragOwner (the standard bottom-sheet
+ * rule; owner, 2026-09-28): the grabber and the card header (any element
+ * marked `data-sheet-dragzone`) always move the sheet; a downward drag that
+ * starts with the content at its top moves the sheet; one that starts
+ * mid-scroll scrolls; an upward drag scrolls. Dragging below Peek springs
+ * back (§3.5).
+ *
+ * How the sheet takes a drag from a native scroller: the body keeps
+ * `touch-action: pan-y` at Full, so scrolling stays native (momentum, the
+ * edge bounce) and `overscroll-behavior: contain` keeps it from chaining to
+ * the page. Pointer events alone cannot stop a native scroll -- the browser
+ * decides at the first touchmove, and once it scrolls it sends
+ * pointercancel -- and iOS Safari has no directional `touch-action`
+ * (pan-up / pan-down). So a non-passive touchmove listener cancels the
+ * touch whenever dragOwner gave the drag to the sheet; the pointer events
+ * that follow then drive the sheet as at Peek and Half. The grabber and the
+ * headers are `touch-action: none` besides. */
 export function BottomSheet({ detent, heights, onDetent, children }: Props) {
   const [dragH, setDragH] = useState<number | null>(null);
-  const drag = useRef<{ id: number; y0: number; h0: number; moved: boolean; samples: Array<[number, number]> } | null>(null);
+  const drag = useRef<Gesture | null>(null);
   const suppressClick = useRef(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
+  const detentRef = useRef(detent);
+  detentRef.current = detent;
   const full = heights.full;
   const shown = dragH ?? heights[detent];
 
@@ -48,15 +104,51 @@ export function BottomSheet({ detent, heights, onDetent, children }: Props) {
     if (detent !== "full" && bodyRef.current) bodyRef.current.scrollTop = 0;
   }, [detent]);
 
+  /** Decides the drag's owner once it has moved far enough vertically;
+   * returns it (null while undecided). */
+  function decide(g: Gesture, dy: number): DragOwner | null {
+    if (g.owner) return g.owner;
+    if (Math.abs(dy) < DRAG_DECIDE_PX) return null;
+    g.owner = dragOwner({
+      detent: detentRef.current,
+      scrollTop: g.scrollTop,
+      canScroll: g.canScroll,
+      direction: dy > 0 ? "down" : "up",
+      zone: g.zone,
+    });
+    return g.owner;
+  }
+
+  // Non-passive, so it can cancel the native scroll a drag that belongs to
+  // the sheet would otherwise start (React's own touchmove is passive).
+  useEffect(() => {
+    const el = sheetRef.current;
+    if (!el) return;
+    const onTouchMove = (e: TouchEvent) => {
+      const g = drag.current;
+      if (!g || e.touches.length !== 1) return;
+      if (decide(g, e.touches[0].clientY - g.y0) === "sheet" && e.cancelable) e.preventDefault();
+    };
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () => el.removeEventListener("touchmove", onTouchMove);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function onPointerDown(e: ReactPointerEvent) {
+    // A second finger is not a new drag (the first one keeps it). A stale
+    // gesture (a mouse released outside the sheet before it moved, so
+    // never captured) is simply replaced.
+    if (!e.isPrimary) return;
     const target = e.target as Element;
-    if (detent === "full" && bodyRef.current?.contains(target) && !target.closest("[data-sheet-dragzone]")) return;
-    drag.current = { id: e.pointerId, y0: e.clientY, h0: shown, moved: false, samples: [[e.timeStamp, e.clientY]] };
+    const zone = target.closest("[data-sheet-grabber], [data-sheet-dragzone]") ? "handle" : "content";
+    const { scrollTop, canScroll } = scrollStateAt(target, bodyRef.current);
+    drag.current = { id: e.pointerId, y0: e.clientY, h0: shown, zone, scrollTop, canScroll, owner: null, moved: false, samples: [[e.timeStamp, e.clientY]] };
   }
   function onPointerMove(e: ReactPointerEvent) {
     const d = drag.current;
     if (!d || e.pointerId !== d.id) return;
     const dy = e.clientY - d.y0;
+    if (decide(d, dy) !== "sheet") return;
     if (!d.moved) {
       if (Math.abs(dy) < SHEET_DRAG_SLOP_PX) return;
       d.moved = true;
@@ -118,6 +210,7 @@ export function BottomSheet({ detent, heights, onDetent, children }: Props) {
         // sheet only spends the 28 px the design gives the grabber; the
         // extra 16 px overlap only the middle 88 px of the header.
         className="absolute left-1/2 top-0 z-10 flex h-11 w-[88px] -translate-x-1/2 items-start justify-center pt-3"
+        style={{ touchAction: "none" }}
       >
         <span className="block h-[5px] w-9 rounded-[3px] bg-[var(--grabber)]" />
       </button>

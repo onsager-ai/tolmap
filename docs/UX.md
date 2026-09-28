@@ -50,7 +50,8 @@ Screen inventory (each has an artboard unless noted):
 
 Frame: 390 × 844 is the design size; §8 gives the other sizes.
 
-- **Search pill** at the top (inset 12 px from the sides, below the safe-area top inset): a 48 px pill holding a search button ("Search `owner/repo`") and a 44 px switch-repository button. It replaces today's separate repo select, layer button and search row, which together took ~190 px.
+- **Search pill** at the top (inset 12 px from the sides, below the safe-area top inset): a 48 px pill holding a search button ("Search") and the repository as its own 44 px button (`owner/repo` ⌄). It replaces today's separate repo select, layer button and search row, which together took ~190 px.
+- **Repository sheet** (owner, 2026-09-28: "no way to go back or switch repos"): the pill's repository button opens a modal sheet, like the Layers sheet, holding the repository on screen, then "Home" and "Map another repository" (Home's field, focused), then the other mapped repositories as 56 px rows (the catalogue Home lists). The way home sits above the list so a long catalogue never pushes it off screen. It replaced a native select laid invisibly over a ↓↑ icon, which read as sort rather than switch and could never lead Home. Leaving through any row replaces the sheet's history entry.
 - **Control column** on the right edge, below the pill: 44 × 44 buttons for zoom in, zoom out, fit (inward-corners icon, owner 2026-09-24) and layers. There is **no fullscreen button on phones**: the Fullscreen API does not exist on iPhone Safari, and the shell already fills the screen.
 - **One bottom sheet** (owner, 2026-09-27: "One sheet, 3 heights"). It replaces the district drawer, the selection panel, the Folders panel and the floating coverage chips.
 - **Nothing else floats over the map.** RouteBox, legends and the road card are sheet content (§4).
@@ -63,7 +64,7 @@ Frame: 390 × 844 is the design size; §8 gives the other sizes.
 | Half | 480 px, or 57% of the visible height if smaller | lists and file detail |
 | Full | visible height − (search pill bottom + 8 px) | long lists, all symbols, folders |
 
-Heights are computed from `window.visualViewport.height` and `env(safe-area-inset-*)`, never from `vh` (iOS `vh` measures the large viewport, which put the old 58vh sheet over the lower zoom buttons). The sheet drags between detents with a grabber (a real button: tapping it cycles peek → half → full → peek) and by dragging its header. Content scrolls only at Full; at Peek and Half, a vertical drag on the sheet body moves the sheet, not the content, so there is no scroll-inside-scroll (the old folder list at max-height 300 px inside a 44vh body).
+Heights are computed from `window.visualViewport.height` and `env(safe-area-inset-*)`, never from `vh` (iOS `vh` measures the large viewport, which put the old 58vh sheet over the lower zoom buttons). The sheet drags between detents with a grabber (a real button: tapping it cycles peek → half → full → peek) and by dragging its header. Content scrolls only at Full; at Peek and Half, a vertical drag on the sheet body moves the sheet, not the content, so there is no scroll-inside-scroll (the old folder list at max-height 300 px inside a 44vh body). At Full the standard bottom-sheet rule decides who owns a drag (owner, 2026-09-28: "when details opened, unable to drag down to collapse because of scrolling"; `dragOwner` in `web/src/map/phoneShell.ts`): the grabber and the header always move the sheet; a downward drag that starts with the content at its top moves the sheet; one that starts mid-scroll scrolls the content, and the next drag moves the sheet; an upward drag scrolls the content. Below Full an upward drag raises the sheet first.
 
 ### 3.2 Sheet content by state
 
@@ -87,11 +88,12 @@ The map's safe rectangle is `[left 12, top pillBottom + 8, right W − 12 − 44
 
 Opening an overlay pushes exactly one history entry; OS back (Android back, the iOS edge swipe, the browser back button) pops overlays in this order before it leaves the map:
 
-1. search open → close search
-2. layers sheet open → close it
-3. sheet at Half/Full → return to Peek
-4. a selection → clear it (the camera stays)
-5. otherwise → leave the map (the previous page)
+1. repository sheet open → close it
+2. search open → close search
+3. layers sheet open → close it
+4. sheet at Half/Full → return to Peek
+5. a selection → clear it (the camera stays)
+6. otherwise → leave the map (the previous page: Home, when the map was opened from it). A map opened straight from a link has no page of ours behind it; the repository sheet's "Home" is the way there.
 
 Selection changes themselves `replace` the URL (deep links keep working, and the back button is not a selection-history scrubber). The pushed entries carry a marker so a reload or a shared link never lands in an overlay.
 
@@ -148,7 +150,7 @@ A plain one-screen page: wordmark and theme button; "Map a codebase" with one se
 
 ## 5. Desktop layout (artboard "Desktop map · file selected")
 
-- **Top bar**, 56 px: wordmark; repository switcher (mono); search (460 px, `/` focuses it, results drop down beneath with the same grouping as the phone); flexible space; the layer segmented control; the theme button.
+- **Top bar**, 56 px: wordmark (a link Home); repository switcher (mono); search (460 px, `/` focuses it, results drop down beneath with the same grouping as the phone); flexible space; the layer segmented control; the theme button.
 - **Left rail**, 320 px: navigation. The District index with the Districts / Folders tab; the selected district is marked with an accent bar and `aria-current`.
 - **Map**, the rest. The fit safe rectangle is the map element's box minus the inspector when it is open, computed from the real chrome, not from the window width (today a 821–1070 px window got phone margins).
 - **Inspector**, 380 px, floating top-right over the map with 20 px insets: the same card content as the phone sheet's Half detent. Esc closes it.
@@ -324,6 +326,8 @@ Every defect from the 2026-09-27 mobile audit and every still-open owner complai
 | 2026-09-24 | District legend not intuitive (District index) | §4.3, §5 |
 | 2026-09-27 | Mobile: tap/selection, search/nav/controls, "Navigation is quite bad" | §3, §4, §7 |
 | 2026-09-27 | "the loading page for indexing is quite poorly designed" | §6 |
+| 2026-09-28 | iPhone pass: "No way to go back or switch repos" | §3 (repository sheet), §3.4 (#177) |
+| 2026-09-28 | iPhone pass: "when details opened, unable to drag down to collapse because of scrolling" | §3.1 (who owns a drag at Full) (#177) |
 | 2026-09-27 | "Some repos not indexable" (hindsight refused, "try again" offered) | §6.5 (the page); #162 (the detection fix) |
 | 2026-09-21/22 | Large maps: too many markers | not a chrome question; the renderer's ranked pins and count badges (#61 lineage) keep their own track. This design only guarantees chrome never adds markers over the map |
 | 2026-09-24 | Crosses and squares at deep zoom (cards too small to label) | renderer, `fix/card-min-size`; §8.2 keeps the 14 px floor |
