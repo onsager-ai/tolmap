@@ -167,6 +167,15 @@ pub const SHA256_HEADER: &str = "x-tolmap-sha256";
 /// bounding what one worker can put on the master's shared cache volume.
 const WORKER_LEASE_MAX_ARTIFACT_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
 
+/// A stalled upload owns one blocking writer while its body is being hashed.
+/// Keep one lease from occupying an unbounded share of Tokio's process-wide
+/// blocking pool, while still allowing a small batch of artifact writes.
+const WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS: usize = 8;
+
+/// A body that makes no progress for this long is abandoned so its upload
+/// writer, reservation and temporary file can be released.
+const WORKER_ARTIFACT_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 const fn max_upload_bytes(left: u64, right: u64) -> u64 {
     if left > right {
         left
@@ -1407,6 +1416,8 @@ pub struct WorkerHub {
     build: WorkerBuild,
     heartbeat_s: u64,
     lease_ttl: Duration,
+    #[allow(dead_code)] // Read by the streaming handler in the implementation commit.
+    artifact_body_idle_timeout: Duration,
     /// Lost-worker retries before a job fails (§10.6).
     retries: u32,
     staging: PathBuf,
@@ -1445,12 +1456,19 @@ impl WorkerHub {
             build,
             heartbeat_s,
             lease_ttl,
+            artifact_body_idle_timeout: WORKER_ARTIFACT_BODY_IDLE_TIMEOUT,
             retries,
             staging,
             base_url,
             classes,
             on_agents: OnceLock::new(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_artifact_body_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.artifact_body_idle_timeout = timeout;
+        self
     }
 
     /// Remote mode (#97 phase 3): agents authenticate against the owner's
@@ -4597,6 +4615,22 @@ mod tests {
             Self::with(tempfile::tempdir().unwrap(), lease_ttl, build, TOKENS.len())
         }
 
+        fn with_upload_idle_timeout(
+            lease_ttl: Duration,
+            build: WorkerBuild,
+            idle_timeout: Duration,
+        ) -> Self {
+            Self::build_with(
+                tempfile::tempdir().unwrap(),
+                lease_ttl,
+                build,
+                one_class(TOKENS.len()),
+                Limits::default(),
+                false,
+                &|hub| hub.with_artifact_body_idle_timeout(idle_timeout),
+            )
+        }
+
         /// A master with `classes` (at most `TOKENS.len()` agents in all)
         /// and a per-class queue bound of `max_queued_jobs`.
         fn classed(
@@ -5182,6 +5216,41 @@ mod tests {
             .and_then(|code| code.parse().ok())
             .unwrap_or(0);
         (status, response)
+    }
+
+    /// Opens an artifact PUT and leaves its declared body unfinished. The
+    /// connection remains open so the handler sees an idle body, not EOF.
+    fn stalled_artifact_put(port: u16, token: &str, job: Uuid, name: &str) -> TcpStream {
+        use std::io::Write;
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(600)))
+            .unwrap();
+        write!(
+            stream,
+            "PUT /workers/artifacts/{job}/1/{name} HTTP/1.1\r\n\
+             Host: 127.0.0.1\r\n\
+             Connection: close\r\n\
+             Authorization: Bearer {token}\r\n\
+             {SHA256_HEADER}: {}\r\n\
+             Content-Length: 1\r\n\r\n",
+            sha(MAP)
+        )
+        .unwrap();
+        stream
+    }
+
+    fn response_status(stream: &mut TcpStream) -> std::io::Result<u16> {
+        use std::io::Read;
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response)?;
+        Ok(String::from_utf8_lossy(&response)
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0))
     }
 
     /// Sends an HTTP/1.1 chunked PUT without Content-Length. The handler
@@ -5923,6 +5992,82 @@ mod tests {
     }
 
     #[test]
+    fn a_lease_refuses_the_n_plus_one_stalled_artifact_put() {
+        let fixture = Fixture::with_upload_idle_timeout(
+            Duration::from_secs(60),
+            test_build(),
+            Duration::from_millis(150),
+        );
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let mut stalled = (0..WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS)
+            .map(|_| stalled_artifact_put(fixture.port, TOKENS[0], id, "map"))
+            .collect::<Vec<_>>();
+        let reserved_deadline = Instant::now() + Duration::from_millis(100);
+        while lease_upload_state(&fixture, id)
+            != (
+                0,
+                WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS,
+                WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS as u64,
+            )
+        {
+            assert!(
+                Instant::now() < reserved_deadline,
+                "the first N stalled PUTs did not reserve their slots"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let mut extra = stalled_artifact_put(fixture.port, TOKENS[0], id, "map");
+        assert_eq!(
+            response_status(&mut extra).expect("read the N+1 refusal"),
+            429,
+            "the extra stalled PUT must be refused before it reserves a writer"
+        );
+
+        let idle_deadline = Instant::now() + Duration::from_millis(500);
+        while lease_upload_state(&fixture, id) != (0, 0, 0) {
+            assert!(
+                Instant::now() < idle_deadline,
+                "the accepted stalled PUTs did not release their reservations and temp files"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(stalled);
+    }
+
+    #[test]
+    fn an_idle_artifact_put_releases_its_reservation_and_temp_file() {
+        let fixture = Fixture::with_upload_idle_timeout(
+            Duration::from_secs(60),
+            test_build(),
+            Duration::from_millis(150),
+        );
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let mut stalled = stalled_artifact_put(fixture.port, TOKENS[0], id, "map");
+        let reserved_deadline = Instant::now() + Duration::from_millis(100);
+        while lease_upload_state(&fixture, id) != (0, 1, 1) {
+            assert!(
+                Instant::now() < reserved_deadline,
+                "the stalled PUT did not create its reservation and temp file"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        assert_eq!(
+            response_status(&mut stalled).expect("read the idle-body refusal"),
+            400,
+            "an idle body follows the existing incomplete-body failure response"
+        );
+        assert_eq!(lease_upload_state(&fixture, id), (0, 0, 0));
+    }
+
+    #[test]
     fn bytes_after_declared_content_length_fail_without_leaking_upload_state() {
         const DECLARED_BYTES: usize = 64;
         const EXTRA_BYTES: usize = 1024 * 1024;
@@ -5948,14 +6093,20 @@ mod tests {
             DECLARED_BYTES,
         );
 
-        assert_eq!(statuses, [400, 431], "{response}");
+        // Hyper currently reports 400 for the incomplete PUT, then 431 for
+        // the unframed trailing bytes. Keep those observed codes here, but
+        // assert the contract without pinning Hyper's parser details.
+        assert!(
+            statuses.iter().all(|status| (400..500).contains(status)),
+            "expected only 4xx responses, got {statuses:?}: {response}"
+        );
         assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
         assert!(fixture.hub.uploads(id).is_empty());
     }
 
     #[test]
-    fn artifact_put_route_refuses_declared_length_above_its_body_limit_before_reading() {
-        const ROUTE_BODY_LIMIT: u64 = worker_result::EARLY_MAP_MAX_BYTES;
+    fn artifact_put_refuses_declared_length_above_the_kind_cap_before_reading() {
+        const SYMBOLS_KIND_LIMIT: u64 = worker_result::FULL_SYMBOLS_MAX_BYTES;
 
         let fixture = Fixture::new(Duration::from_secs(60), test_build());
         let mut agent = fixture.agent(0);
@@ -5963,8 +6114,13 @@ mod tests {
         assert_eq!(agent.assigned(), id);
 
         let reserved_before = lease_upload_state(&fixture, id).2;
-        let (status, response) =
-            put_declared_without_body(fixture.port, TOKENS[0], id, "symbols", ROUTE_BODY_LIMIT + 1);
+        let (status, response) = put_declared_without_body(
+            fixture.port,
+            TOKENS[0],
+            id,
+            "symbols",
+            SYMBOLS_KIND_LIMIT + 1,
+        );
 
         assert_eq!(status, 413, "{response}");
         assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
@@ -6097,6 +6253,34 @@ mod tests {
 
         assert_eq!(fixture.hub.uploads(id).get("map"), Some(&first));
         assert_eq!(lease_blob_stats(&fixture, id), (1, bytes.len() as u64));
+    }
+
+    #[test]
+    fn publish_uploaded_map_does_not_publish_an_upload_over_the_cap() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let dir = fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                lease.uploads.insert(
+                    "map".to_owned(),
+                    Upload {
+                        sha256: "a".repeat(64),
+                        bytes: worker_result::EARLY_MAP_MAX_BYTES + 1,
+                    },
+                );
+                Ok(lease.dir.clone())
+            })
+            .unwrap();
+        let (tx, _) = tokio::sync::watch::channel(fixture.snapshot(id));
+
+        publish_uploaded_map(&fixture.state.jobs, &fixture.hub, &tx, id, &dir);
+
+        assert!(!fixture.snapshot(id).map_ready);
+        assert!(fixture.state.jobs.early_map("test/demo", COMMIT).is_none());
     }
 
     #[test]

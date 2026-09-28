@@ -2473,6 +2473,39 @@ mod tests {
         }
     }
 
+    /// Reads only through the request headers, answers 413, and closes while
+    /// the PUT body is still unread. This models the master's early refusal.
+    fn serve_413_without_reading_body(listener: TcpListener) -> usize {
+        use std::io::{Read, Write};
+
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut header = Vec::new();
+        loop {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+            if header.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let refusal = br#"{"error":"too_large","message":"artifact exceeds the per-upload limit"}"#;
+        let response = format!(
+            "HTTP/1.1 413 Payload Too Large\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            refusal.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.write_all(refusal).unwrap();
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        1
+    }
+
     #[test]
     fn repeated_map_written_callbacks_upload_only_one_blob() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -2531,6 +2564,74 @@ mod tests {
             error.message
         );
         assert_eq!(server.join().unwrap(), 1, "a 413 must not be retried");
+    }
+
+    #[test]
+    fn an_early_413_that_closes_with_the_body_unread_is_reported_as_worker_crashed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || serve_413_without_reading_body(listener));
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("artifact.bin");
+        // Large enough that the mock can answer after the headers while ureq
+        // is still writing; the unread-body close resets the connection and
+        // masks the 413 response, so the current agent reports worker_crashed.
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(8 * 1024 * 1024)
+            .unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let error = context
+            .put(
+                &http_agent(&context.endpoint),
+                "map",
+                &path,
+                Instant::now() + Duration::from_millis(100),
+                &probe,
+                None,
+            )
+            .unwrap_err();
+
+        assert_eq!(server.join().unwrap(), 1, "the mock must answer one PUT");
+        assert_eq!(error.error, "worker_crashed", "{}", error.message);
+    }
+
+    #[test]
+    fn an_agent_rejects_a_names_cache_over_its_shared_cap_before_the_put() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("oversized-names.json");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(worker_result::NAMES_CACHE_MAX_BYTES + 1)
+            .unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let error = context
+            .put(
+                &http_agent(&context.endpoint),
+                "names",
+                &path,
+                Instant::now(),
+                &probe,
+                None,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.error, "invalid_worker_result", "{}", error.message);
+        assert!(error.message.contains("names"), "{}", error.message);
+        assert!(error.message.contains("16777216"), "{}", error.message);
     }
 
     #[test]
