@@ -4,7 +4,7 @@ import type { Layer } from "@/map/constants";
 import { buildLayerOverview, displayLanguage, layerOverviewHeadline, type LayerOverview } from "@/map/layerOverview";
 import type { PackageGrouping } from "@/map/packageLayout";
 import { formatDirectory } from "@/map/packageLayout";
-import { LAYER_SURFACE_MIX, RAMP_STOPS } from "@/map/geometry";
+import { RAMP_STOPS } from "@/map/geometry";
 
 export function LayerOverviewHeadline({
   overview,
@@ -80,11 +80,11 @@ function packageSpanSummary(districts: number, islands: number): string {
   return parts.length ? parts.join(" + ") : "No District index span";
 }
 
-// The map's own churn/complexity colour for a value: geometry.ts ramp()'s
-// three stops, mixed toward --canvas by LAYER_SURFACE_MIX. The mix is done in
-// CSS rather than with ramp() itself because ramp() reads --canvas once into
-// a cache; a React swatch rendered before a theme switch would keep the old
-// theme's mix, while color-mix() follows the live token.
+// A churn/complexity swatch in the legend's own ramp (geometry.ts
+// RAMP_STOPS, unmixed, as the legend and the row bars draw it). The map's
+// cells are the same ramp softened toward the canvas; softened at swatch
+// size, the cool end all but vanished against the dark panel, leaving an
+// empty-looking square beside every row.
 const RAMP_RGB = RAMP_STOPS.map((hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)));
 function rampSwatch(t: number): string {
   const v = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
@@ -92,7 +92,7 @@ function rampSwatch(t: number): string {
   const b = v < 0.5 ? RAMP_RGB[1] : RAMP_RGB[2];
   const u = v < 0.5 ? v * 2 : (v - 0.5) * 2;
   const rgb = a.map((c, i) => Math.round(c + (b[i] - c) * u));
-  return `color-mix(in srgb, rgb(${rgb.join(",")}) ${Math.round(LAYER_SURFACE_MIX * 100)}%, var(--canvas))`;
+  return `rgb(${rgb.join(",")})`;
 }
 
 /** Hard-edged stripes of each package colour: a district that mixes
@@ -228,9 +228,9 @@ export function LayerOverviewIndex({
   const highlighted = (districts: readonly number[] | null) => onHighlightDistricts?.(districts);
   const hover = (districts: readonly number[]) => (onHighlightDistricts ? (on: boolean) => highlighted(on ? districts : null) : undefined);
 
-  // Swatch colours are the map's own: MapRenderer colours each file by
-  // value / the document's maximum, and a district row takes its median
-  // file's colour (as the District index does on these layers).
+  // Swatch positions on the ramp are the map's: MapRenderer colours each
+  // file by value / the document's maximum, and a district row takes its
+  // median file's value (as the District index does on these layers).
   const scale = useMemo(() => {
     let maxCh = 1;
     let maxCx = 1;
