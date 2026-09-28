@@ -3917,7 +3917,7 @@ async function checkClassExpandsAtShortSide(browser, base) {
 }
 
 // 9(d): tapping a card selects the symbol and sets every level at once
-// (scope item 3) -- the breadcrumb shows both the class and the method.
+// (scope item 3); the desktop panel breadcrumb follows its view stack.
 async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
   const label = "tapping a card selects the symbol and updates the breadcrumb (dify) / desktop";
   console.log(`\n${label}`);
@@ -3932,7 +3932,7 @@ async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
   }
   const path = mapDoc.F[bigFile.file];
   const multiplier = await pickSyntheticMultiplier(page, base, path, bigFile.file);
-  const { json, classGlobal, childGlobal, className, childName } = buildSyntheticClassResponse(mapDoc, bigFile.file, multiplier);
+  const { json, classGlobal, childGlobal, childName } = buildSyntheticClassResponse(mapDoc, bigFile.file, multiplier);
   await page.route("**/maps/langgenius/dify.symbols/0.json", (route) => route.fulfill({ json }));
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
@@ -3970,7 +3970,7 @@ async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
     return {
       elementChain: chain.join(" < "),
       matchingCount: document.querySelectorAll(`[data-k="${want}"]`).length,
-      breadcrumbCount: document.querySelectorAll("[data-breadcrumb]").length,
+      breadcrumbCount: document.querySelectorAll("[data-panel-crumb]").length,
     };
   }, { x: clickX, y: clickY, want: childKey });
   console.log(`  (info) click at (${Math.round(clickX)},${Math.round(clickY)}) hitChain=${hitInfo.elementChain} matchingChildEls=${hitInfo.matchingCount} breadcrumbEls=${hitInfo.breadcrumbCount}`);
@@ -3982,11 +3982,11 @@ async function checkCardTapSelectsSymbolAndBreadcrumb(browser, base) {
     `${label}: tapping the card selects the symbol directly (file + hsym set in one step)`,
     url.toString(),
   );
-  const breadcrumbText = await page.locator("[data-breadcrumb]").innerText();
+  const breadcrumbCrumbs = await page.locator("[data-panel-crumb]").evaluateAll((els) => els.map((el) => el.getAttribute("title") ?? el.textContent?.trim() ?? ""));
   report(
-    breadcrumbText.includes(className) && breadcrumbText.includes(childName),
-    `${label}: the breadcrumb shows the class and the method`,
-    breadcrumbText,
+    breadcrumbCrumbs.length === 4 && breadcrumbCrumbs[2] === path.split("/").pop() && breadcrumbCrumbs[3] === childName,
+    `${label}: the panel breadcrumb follows overview → district → file → symbol`,
+    JSON.stringify(breadcrumbCrumbs),
   );
   await context.close();
 }
@@ -4308,15 +4308,17 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
     `${label}: ${stepLabel}`,
     url.toString(),
   ), "method -> nothing, in one tap");
-  // The breadcrumb still walks up a level at a time without moving the view.
+  // The desktop panel stack uses one crumb per view, so the file crumb steps
+  // back from the nested symbol view to the selected file without moving the map.
   await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}&hsym=${target.childGlobal}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("[data-breadcrumb]");
+  await page.waitForSelector("[data-panel-breadcrumbs]");
   await page.waitForTimeout(700);
-  const exact = new RegExp(`^${String(target.className).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
-  await page.locator("[data-breadcrumb] button", { hasText: exact }).first().click({ timeout: 5000 }).catch(() => null);
+  const fileCrumb = page.locator("[data-panel-crumb='2']");
+  report(await fileCrumb.getAttribute("title") === path.split("/").pop(), `${label}: the symbol trail includes its file crumb`, await fileCrumb.getAttribute("title"));
+  await fileCrumb.click({ timeout: 5000 }).catch(() => null);
   await page.waitForTimeout(300);
-  report(Number(new URL(page.url()).searchParams.get("hsym")) === target.classGlobal && new URL(page.url()).searchParams.get("file") === path,
-    `${label}: the breadcrumb's class segment steps up to the parent symbol`, page.url());
+  report(!new URL(page.url()).searchParams.has("hsym") && new URL(page.url()).searchParams.get("file") === path,
+    `${label}: the file crumb steps from symbol to file`, page.url());
   await context.close();
 }
 
