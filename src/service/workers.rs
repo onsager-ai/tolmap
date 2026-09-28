@@ -3685,6 +3685,13 @@ enum ExecutorClone {
 /// up, uncounted, or fails it on the largest (§6). A lease that runs out
 /// with its last heartbeat within 10% of the class's memory moves the job
 /// to the next class, counted as the lost worker it is (§6).
+/// Test only: set on a thread, `run_remote` on that thread panics right
+/// after it holds its lease, as a bug in the runner would.
+#[cfg(test)]
+thread_local! {
+    static PANIC_AFTER_LEASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub(crate) fn run_remote(
     state: Arc<AppState>,
     hub: &WorkerHub,
@@ -3755,6 +3762,10 @@ pub(crate) fn run_remote(
             }
         }
     };
+    #[cfg(test)]
+    if PANIC_AFTER_LEASE.with(std::cell::Cell::get) {
+        panic!("job {job_id}: a runner panic injected by a test");
+    }
     let mut sink = SnapshotSink::new(&tx, started, Some(registry));
     // An adopted lease that its agent resumes (remote mode) carries on from
     // the snapshot the store kept, which may be past the executor's clone
@@ -7057,6 +7068,151 @@ mod tests {
         for job in [held, next, after] {
             fixture.hub.end_lease(job, false);
         }
+    }
+
+    /// #193 review (5873437803): a lease that has no channel and is past
+    /// its deadline no longer holds its agent's slot, even before any
+    /// runner has found it expired. Nothing but a resume can bring it back,
+    /// and a resume past the deadline marks it lost; a lease its runner
+    /// leaked would otherwise wedge its worker for good. A lease still on a
+    /// channel past its deadline keeps holding the slot.
+    #[test]
+    fn a_detached_lease_past_its_deadline_does_not_hold_its_agent() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut first_channel = fixture.agent(0);
+        let held = Uuid::new_v4();
+        drop(claim_without_runner(&fixture, held, 1));
+        assert_eq!(first_channel.assigned(), held);
+        fixture.hub.lock().leases.get_mut(&held).unwrap().deadline = Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        let mut second_channel = fixture.agent(0);
+
+        let next = Uuid::new_v4();
+        let waiting = {
+            let hub = fixture.hub.clone();
+            std::thread::spawn(move || {
+                let (spec, inputs) = job_without_runner();
+                hub.claim(next, 1, 1, 0, &spec, &inputs, &|| false)
+                    .expect("the claim succeeds")
+                    .map(|claimed| claimed.holder)
+            })
+        };
+        assert!(
+            second_channel
+                .recv_within(Duration::from_millis(300))
+                .is_none(),
+            "a lease still on a channel holds its agent's slot past its deadline"
+        );
+        drop(first_channel);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fixture.hub.detached(held) {
+            assert!(
+                Instant::now() < deadline,
+                "the master never saw the channel close"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        match second_channel.recv_within(Duration::from_secs(2)) {
+            Some(MasterMessage::Assign { job_id, .. }) => assert_eq!(job_id, next.to_string()),
+            other => {
+                panic!("a detached lease past its deadline must not hold agent 0's slot: {other:?}")
+            }
+        }
+        assert!(waiting.join().unwrap().is_some());
+        assert!(
+            !fixture.hub.lock().leases[&held].lost,
+            "no runner or resume has marked it lost: the deadline alone frees the slot"
+        );
+        for job in [held, next] {
+            fixture.hub.end_lease(job, false);
+        }
+    }
+
+    /// The snapshot a restarted master restores for a running job.
+    fn restored_snapshot(id: Uuid) -> JobSnapshot {
+        serde_json::from_str(&stored_job(id, "demo", "running", 1, 1).snapshot_json).unwrap()
+    }
+
+    /// A restarted remote master's lease on job `id`, epoch 1, held by
+    /// worker 0, which has already resumed it on `agent`; the lease is left
+    /// for `id`'s runner, with the job cancelled if `cancelled`.
+    fn resumed_orphan(fixture: &Fixture, id: Uuid, cancelled: bool) -> FakeAgent {
+        let adopted = fixture.hub.adopt(id, 1, Some(WORKER_IDS[0]));
+        let (agent, answers) = FakeAgent::rejoin_remote(
+            fixture.port,
+            TOKENS[0],
+            WORKER_IDS[0],
+            vec![resume_entry(id, 1, 0)],
+        );
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].action, ResumeAction::Continue, "{answers:?}");
+        fixture
+            .state
+            .jobs
+            .orphan_for_test(id, 1, adopted, cancelled);
+        agent
+    }
+
+    /// The worker holding `agent` is free again: it takes the next lease.
+    fn takes_the_next_lease(fixture: &Fixture, agent: &mut FakeAgent) {
+        agent.send(&WorkerMessage::Ready { slots_free: 1 });
+        let next = Uuid::new_v4();
+        drop(claim_without_runner(fixture, next, 1));
+        assert_eq!(agent.assigned(), next);
+        fixture.hub.end_lease(next, false);
+    }
+
+    /// #193 review (5873437803): a restored job the user cancels before its
+    /// runner starts. Its lease is adopted, and its agent may already have
+    /// resumed it (`continue`: the lease was never marked cancelled). The
+    /// runner, finding the job cancelled, must end that lease and tell the
+    /// agent, not return and leave the worker's one lease to no one, with
+    /// the agent running a cancelled job.
+    #[test]
+    fn a_restored_lease_cancelled_before_its_runner_starts_is_ended() {
+        let fixture = Fixture::remote(tempfile::tempdir().unwrap(), Duration::from_secs(60), None);
+        let id = Uuid::new_v4();
+        let mut agent = resumed_orphan(&fixture, id, true);
+        let (tx, _rx) = watch::channel(restored_snapshot(id));
+        run_remote(fixture.state.clone(), &fixture.hub, remote_repo("demo"), tx);
+        assert!(
+            !fixture.hub.lock().leases.contains_key(&id),
+            "a runner that finds its job cancelled must end the lease it adopted"
+        );
+        match agent.recv() {
+            MasterMessage::Cancel { job_id, reason, .. } => {
+                assert_eq!((job_id, reason), (id.to_string(), CancelReason::Cancelled))
+            }
+            other => panic!("expected cancel, got {other:?}"),
+        }
+        takes_the_next_lease(&fixture, &mut agent);
+    }
+
+    /// #193 review (5873437803): a runner that panics while it holds a lease
+    /// ends it on the way out, and tells the agent, rather than leave the
+    /// worker's one lease behind (`worker_loop` fails the job, but knows
+    /// nothing of the lease).
+    #[test]
+    fn a_runner_that_panics_holding_a_lease_ends_it() {
+        let fixture = Fixture::remote(tempfile::tempdir().unwrap(), Duration::from_secs(60), None);
+        let id = Uuid::new_v4();
+        let mut agent = resumed_orphan(&fixture, id, false);
+        let (tx, _rx) = watch::channel(restored_snapshot(id));
+        PANIC_AFTER_LEASE.with(|panics| panics.set(true));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_remote(fixture.state.clone(), &fixture.hub, remote_repo("demo"), tx)
+        }));
+        PANIC_AFTER_LEASE.with(|panics| panics.set(false));
+        assert!(outcome.is_err(), "the injected panic fired");
+        assert!(
+            !fixture.hub.lock().leases.contains_key(&id),
+            "a runner that panics must not leave its lease behind"
+        );
+        match agent.recv() {
+            MasterMessage::Cancel { job_id, .. } => assert_eq!(job_id, id.to_string()),
+            other => panic!("expected cancel, got {other:?}"),
+        }
+        takes_the_next_lease(&fixture, &mut agent);
     }
 
     #[test]
