@@ -2452,6 +2452,66 @@ mod tests {
         }
     }
 
+    fn serve_retry_statuses(
+        listener: TcpListener,
+        statuses: &[u16],
+        idle_after_request: Duration,
+    ) -> usize {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        listener.set_nonblocking(true).unwrap();
+        let mut received = 0;
+        let mut last_request = Instant::now();
+        let started = Instant::now();
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    let mut content_length = 0usize;
+                    while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                        if line.to_ascii_lowercase().starts_with("content-length:") {
+                            content_length = line
+                                .split_once(':')
+                                .and_then(|(_, value)| value.trim().parse().ok())
+                                .unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    let mut body = vec![0; content_length];
+                    reader.read_exact(&mut body).unwrap();
+                    let status = statuses[received];
+                    let reason = match status {
+                        429 => "Too Many Requests",
+                        503 => "Service Unavailable",
+                        _ => "OK",
+                    };
+                    write!(
+                        reader.get_mut(),
+                        "HTTP/1.1 {status} {reason}\r\n\
+                         Content-Length: 0\r\n\
+                         Connection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    received += 1;
+                    last_request = Instant::now();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if (received > 0 && last_request.elapsed() >= idle_after_request)
+                        || started.elapsed() >= Duration::from_secs(5)
+                    {
+                        return received;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept mock artifact PUT: {error}"),
+            }
+        }
+    }
+
     fn serve_413(listener: TcpListener, idle_after_request: Duration) -> usize {
         use std::io::{BufRead, BufReader, Read, Write};
         listener.set_nonblocking(true).unwrap();
@@ -2559,6 +2619,74 @@ mod tests {
             1,
             "repeated write_map success must not make a second artifact PUT"
         );
+    }
+
+    #[test]
+    fn an_agent_retries_a_429_until_the_artifact_put_succeeds() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            serve_retry_statuses(listener, &[429, 200], Duration::from_millis(500))
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("artifact.bin");
+        std::fs::write(&path, b"artifact bytes").unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let uploaded = context.put(
+            &http_agent(&context.endpoint),
+            "map",
+            &path,
+            Instant::now() + Duration::from_secs(3),
+            &probe,
+            None,
+        );
+        assert_eq!(
+            server.join().unwrap(),
+            2,
+            "the master answers 429 once, then 200"
+        );
+        let uploaded = uploaded.expect("429 is transient within the upload hold time");
+        assert_eq!(uploaded.name, "map");
+        assert_eq!(uploaded.bytes, b"artifact bytes".len() as u64);
+    }
+
+    #[test]
+    fn an_agent_retries_a_503_until_the_artifact_put_succeeds() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            serve_retry_statuses(listener, &[503, 200], Duration::from_millis(500))
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("artifact.bin");
+        std::fs::write(&path, b"artifact bytes").unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let uploaded = context.put(
+            &http_agent(&context.endpoint),
+            "map",
+            &path,
+            Instant::now() + Duration::from_secs(3),
+            &probe,
+            None,
+        );
+        assert_eq!(
+            server.join().unwrap(),
+            2,
+            "the master answers 503 once, then 200"
+        );
+        let uploaded = uploaded.expect("503 is transient within the upload hold time");
+        assert_eq!(uploaded.name, "map");
+        assert_eq!(uploaded.bytes, b"artifact bytes".len() as u64);
     }
 
     #[test]
