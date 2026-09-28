@@ -1418,6 +1418,8 @@ pub struct WorkerHub {
     heartbeat_s: u64,
     lease_ttl: Duration,
     artifact_body_idle_timeout: Duration,
+    #[cfg(test)]
+    artifact_body_total_timeout: Duration,
     /// Lost-worker retries before a job fails (§10.6).
     retries: u32,
     staging: PathBuf,
@@ -1457,6 +1459,8 @@ impl WorkerHub {
             heartbeat_s,
             lease_ttl,
             artifact_body_idle_timeout: WORKER_ARTIFACT_BODY_IDLE_TIMEOUT,
+            #[cfg(test)]
+            artifact_body_total_timeout: Duration::from_secs(2 * 60 * 60),
             retries,
             staging,
             base_url,
@@ -1468,6 +1472,12 @@ impl WorkerHub {
     #[cfg(test)]
     fn with_artifact_body_idle_timeout(mut self, timeout: Duration) -> Self {
         self.artifact_body_idle_timeout = timeout;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_artifact_body_total_timeout(mut self, timeout: Duration) -> Self {
+        self.artifact_body_total_timeout = timeout;
         self
     }
 
@@ -4659,6 +4669,20 @@ mod tests {
             build: WorkerBuild,
             idle_timeout: Duration,
         ) -> Self {
+            Self::with_upload_timeouts(
+                lease_ttl,
+                build,
+                idle_timeout,
+                Duration::from_secs(2 * 60 * 60),
+            )
+        }
+
+        fn with_upload_timeouts(
+            lease_ttl: Duration,
+            build: WorkerBuild,
+            idle_timeout: Duration,
+            total_timeout: Duration,
+        ) -> Self {
             Self::build_with(
                 tempfile::tempdir().unwrap(),
                 lease_ttl,
@@ -4666,7 +4690,10 @@ mod tests {
                 one_class(TOKENS.len()),
                 Limits::default(),
                 false,
-                &|hub| hub.with_artifact_body_idle_timeout(idle_timeout),
+                &|hub| {
+                    hub.with_artifact_body_idle_timeout(idle_timeout)
+                        .with_artifact_body_total_timeout(total_timeout)
+                },
             )
         }
 
@@ -6038,7 +6065,7 @@ mod tests {
         let fixture = Fixture::with_upload_idle_timeout(
             Duration::from_secs(60),
             test_build(),
-            Duration::from_millis(250),
+            Duration::from_secs(2),
         );
         let mut agent = fixture.agent(0);
         let id = fixture.spawn(remote_repo("demo"));
@@ -6047,7 +6074,7 @@ mod tests {
         let mut stalled = (0..WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS)
             .map(|_| stalled_artifact_put(fixture.port, TOKENS[0], id, "map"))
             .collect::<Vec<_>>();
-        let reserved_deadline = Instant::now() + Duration::from_millis(200);
+        let reserved_deadline = Instant::now() + Duration::from_secs(1);
         while lease_upload_state(&fixture, id)
             != (
                 0,
@@ -6068,8 +6095,18 @@ mod tests {
             429,
             "the extra stalled PUT must be refused before it reserves a writer"
         );
+        assert_eq!(
+            lease_upload_state(&fixture, id),
+            (
+                0,
+                WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS,
+                WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS as u64,
+            ),
+            "the 429 must leave all N existing reservations unchanged"
+        );
 
-        let idle_deadline = Instant::now() + Duration::from_millis(500);
+        drop(stalled);
+        let idle_deadline = Instant::now() + Duration::from_secs(1);
         while lease_upload_state(&fixture, id) != (0, 0, 0) {
             assert!(
                 Instant::now() < idle_deadline,
@@ -6077,7 +6114,80 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        drop(stalled);
+    }
+
+    #[test]
+    fn a_repeated_drip_hits_the_whole_upload_deadline_and_cleans_up() {
+        use std::io::{Read, Write};
+
+        let fixture = Fixture::with_upload_timeouts(
+            Duration::from_secs(60),
+            test_build(),
+            Duration::from_millis(250),
+            Duration::from_millis(750),
+        );
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let mut response_stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+        response_stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        write!(
+            response_stream,
+            "PUT /workers/artifacts/{id}/1/map HTTP/1.1\r\n\
+             Host: 127.0.0.1\r\n\
+             Connection: close\r\n\
+             Authorization: Bearer {}\r\n\
+             {SHA256_HEADER}: {}\r\n\
+             Content-Length: 64\r\n\r\n",
+            TOKENS[0],
+            sha(MAP)
+        )
+        .unwrap();
+        let mut drip = response_stream.try_clone().unwrap();
+        let drip_thread = std::thread::spawn(move || {
+            let mut sent = 0;
+            for _ in 0..16 {
+                std::thread::sleep(Duration::from_millis(100));
+                if drip.write_all(b"x").is_err() {
+                    break;
+                }
+                sent += 1;
+            }
+            let _ = drip.shutdown(std::net::Shutdown::Write);
+            sent
+        });
+
+        let reserved_deadline = Instant::now() + Duration::from_secs(1);
+        while lease_upload_state(&fixture, id) != (0, 1, 64) {
+            assert!(
+                Instant::now() < reserved_deadline,
+                "the drip did not create its reservation and temporary file"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let started = Instant::now();
+        let mut response = Vec::new();
+        response_stream.read_to_end(&mut response).unwrap();
+        let elapsed = started.elapsed();
+        let status = String::from_utf8_lossy(&response)
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse::<u16>().ok())
+            .unwrap_or(0);
+
+        assert_eq!(status, 400, "the bounded upload uses the existing refusal");
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "a 100 ms drip below the 250 ms idle limit must hit the 750 ms total deadline, took {elapsed:?}"
+        );
+        assert!(
+            drip_thread.join().unwrap() >= 3,
+            "the client must keep dripping"
+        );
+        assert_eq!(lease_upload_state(&fixture, id), (0, 0, 0));
     }
 
     #[test]
