@@ -135,6 +135,21 @@ pub(crate) const FULL_SYMBOLS_MAX_BYTES: u64 = 256 * 1024 * 1024;
 /// allowing one response to consume hundreds of megabytes in the browser.
 pub(crate) const DISTRICT_SYMBOLS_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
+/// The size accepted by the master and agent for one artifact name. Keeping
+/// this mapping beside the caps prevents the worker-side early check and the
+/// master's streamed `PUT` check from drifting apart.
+pub(crate) fn artifact_cap(name: &str) -> Option<u64> {
+    match name {
+        "map" => Some(EARLY_MAP_MAX_BYTES),
+        "symbols" => Some(FULL_SYMBOLS_MAX_BYTES),
+        "names" => Some(NAMES_CACHE_MAX_BYTES),
+        _ if crate::worker::is_valid_artifact_name(name) && name.starts_with("symbols_dir/") => {
+            Some(DISTRICT_SYMBOLS_MAX_BYTES)
+        }
+        _ => None,
+    }
+}
+
 /// Reads the map a job child has written to output_dir, using the filename
 /// derived by OutputNames::for_repo(repo), after its write_map stage ends.
 /// This lets the map open before the symbol stages do (docs/UX.md §12).

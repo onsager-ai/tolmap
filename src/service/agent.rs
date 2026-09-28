@@ -119,8 +119,6 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `shutdown now` waits for a killed job's thread to report.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
-/// The same bound `worker_result` puts on a names cache it reads back.
-const NAMES_CACHE_MAX_BYTES: u64 = 16 << 20;
 /// §3.5: `log` lines kept while they wait for a channel. Later ones are
 /// counted in one marker line instead.
 const LOG_BOUND: usize = 64;
@@ -1941,7 +1939,10 @@ impl JobContext {
                 self.download(http, url, &path)?;
                 let mut bytes = Vec::new();
                 std::fs::File::open(&path)
-                    .and_then(|file| file.take(NAMES_CACHE_MAX_BYTES).read_to_end(&mut bytes))
+                    .and_then(|file| {
+                        file.take(worker_result::NAMES_CACHE_MAX_BYTES)
+                            .read_to_end(&mut bytes)
+                    })
                     .map_err(internal)?;
                 // Strict, unlike `naming::load_cache`: an unreadable cache
                 // read as empty would rename every district, and CLAUDE.md
@@ -2187,11 +2188,11 @@ impl JobContext {
     }
 
     /// One `PUT`, with the file's SHA-256 and, from the file's size, its
-    /// `Content-Length` (§4.2). One that got no answer, or a 5xx, is sent
-    /// again with backoff until `deadline`: that is how an agent re-uploads
+    /// `Content-Length` (§4.2). One that got no answer, HTTP 429, or a 5xx
+    /// is sent again with backoff until `deadline`: that is how an agent re-uploads
     /// whatever a drop interrupted, and uploads are content-addressed, so a
-    /// repeat of one the master already holds is a no-op. A 4xx is final --
-    /// the lease is not this agent's any more, or the upload is wrong.
+    /// repeat of one the master already holds is a no-op. HTTP 429 and 5xx
+    /// responses are transient; other 4xx responses are final.
     fn put(
         &self,
         http: &ureq::Agent,
@@ -2207,9 +2208,23 @@ impl JobContext {
                 "output URL {url} is not on the master this agent dialled"
             )));
         }
-        let (sha256, bytes) = std::fs::File::open(path)
-            .and_then(|file| sha256_reader(file))
-            .map_err(internal)?;
+        let file = std::fs::File::open(path).map_err(internal)?;
+        let bytes = file.metadata().map_err(internal)?.len();
+        let Some(limit) = worker_result::artifact_cap(name) else {
+            return Err(ErrorBody {
+                error: "invalid_worker_result".to_owned(),
+                message: format!("worker artifact {name} is not a valid artifact name"),
+            });
+        };
+        if bytes > limit {
+            return Err(ErrorBody {
+                error: "invalid_worker_result".to_owned(),
+                message: format!(
+                    "worker artifact {name} is {bytes} bytes, exceeding its {limit}-byte cap"
+                ),
+            });
+        }
+        let (sha256, bytes) = sha256_reader(file).map_err(internal)?;
         let mut backoff = REDIAL_FIRST;
         loop {
             if probe.is_cancelled() {
@@ -2236,7 +2251,9 @@ impl JobContext {
                         bytes,
                     })
                 }
-                Ok(response) if response.status().is_server_error() => {
+                Ok(response)
+                    if response.status().is_server_error() || response.status().as_u16() == 429 =>
+                {
                     response.status().to_string()
                 }
                 Ok(response) => {
@@ -2423,6 +2440,66 @@ mod tests {
         }
     }
 
+    fn serve_retry_statuses(
+        listener: TcpListener,
+        statuses: &[u16],
+        idle_after_request: Duration,
+    ) -> usize {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        listener.set_nonblocking(true).unwrap();
+        let mut received = 0;
+        let mut last_request = Instant::now();
+        let started = Instant::now();
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    let mut content_length = 0usize;
+                    while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                        if line.to_ascii_lowercase().starts_with("content-length:") {
+                            content_length = line
+                                .split_once(':')
+                                .and_then(|(_, value)| value.trim().parse().ok())
+                                .unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    let mut body = vec![0; content_length];
+                    reader.read_exact(&mut body).unwrap();
+                    let status = statuses[received];
+                    let reason = match status {
+                        429 => "Too Many Requests",
+                        503 => "Service Unavailable",
+                        _ => "OK",
+                    };
+                    write!(
+                        reader.get_mut(),
+                        "HTTP/1.1 {status} {reason}\r\n\
+                         Content-Length: 0\r\n\
+                         Connection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    received += 1;
+                    last_request = Instant::now();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if (received > 0 && last_request.elapsed() >= idle_after_request)
+                        || started.elapsed() >= Duration::from_secs(5)
+                    {
+                        return received;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept mock artifact PUT: {error}"),
+            }
+        }
+    }
+
     fn serve_413(listener: TcpListener, idle_after_request: Duration) -> usize {
         use std::io::{BufRead, BufReader, Read, Write};
         listener.set_nonblocking(true).unwrap();
@@ -2473,6 +2550,39 @@ mod tests {
         }
     }
 
+    /// Reads only through the request headers, answers 413, and closes while
+    /// the PUT body is still unread. This models the master's early refusal.
+    fn serve_413_without_reading_body(listener: TcpListener) -> usize {
+        use std::io::{Read, Write};
+
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut header = Vec::new();
+        loop {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+            if header.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let refusal = br#"{"error":"too_large","message":"artifact exceeds the per-upload limit"}"#;
+        let response = format!(
+            "HTTP/1.1 413 Payload Too Large\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            refusal.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.write_all(refusal).unwrap();
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        1
+    }
+
     #[test]
     fn repeated_map_written_callbacks_upload_only_one_blob() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -2497,6 +2607,74 @@ mod tests {
             1,
             "repeated write_map success must not make a second artifact PUT"
         );
+    }
+
+    #[test]
+    fn an_agent_retries_a_429_until_the_artifact_put_succeeds() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            serve_retry_statuses(listener, &[429, 200], Duration::from_millis(500))
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("artifact.bin");
+        std::fs::write(&path, b"artifact bytes").unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let uploaded = context.put(
+            &http_agent(&context.endpoint),
+            "map",
+            &path,
+            Instant::now() + Duration::from_secs(3),
+            &probe,
+            None,
+        );
+        assert_eq!(
+            server.join().unwrap(),
+            2,
+            "the master answers 429 once, then 200"
+        );
+        let uploaded = uploaded.expect("429 is transient within the upload hold time");
+        assert_eq!(uploaded.name, "map");
+        assert_eq!(uploaded.bytes, b"artifact bytes".len() as u64);
+    }
+
+    #[test]
+    fn an_agent_retries_a_503_until_the_artifact_put_succeeds() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            serve_retry_statuses(listener, &[503, 200], Duration::from_millis(500))
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("artifact.bin");
+        std::fs::write(&path, b"artifact bytes").unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let uploaded = context.put(
+            &http_agent(&context.endpoint),
+            "map",
+            &path,
+            Instant::now() + Duration::from_secs(3),
+            &probe,
+            None,
+        );
+        assert_eq!(
+            server.join().unwrap(),
+            2,
+            "the master answers 503 once, then 200"
+        );
+        let uploaded = uploaded.expect("503 is transient within the upload hold time");
+        assert_eq!(uploaded.name, "map");
+        assert_eq!(uploaded.bytes, b"artifact bytes".len() as u64);
     }
 
     #[test]
@@ -2531,6 +2709,74 @@ mod tests {
             error.message
         );
         assert_eq!(server.join().unwrap(), 1, "a 413 must not be retried");
+    }
+
+    #[test]
+    fn an_early_413_that_closes_with_the_body_unread_is_reported_as_worker_crashed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || serve_413_without_reading_body(listener));
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("artifact.bin");
+        // Large enough that the mock can answer after the headers while ureq
+        // is still writing; the unread-body close resets the connection and
+        // masks the 413 response, so the current agent reports worker_crashed.
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(8 * 1024 * 1024)
+            .unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let error = context
+            .put(
+                &http_agent(&context.endpoint),
+                "map",
+                &path,
+                Instant::now() + Duration::from_millis(100),
+                &probe,
+                None,
+            )
+            .unwrap_err();
+
+        assert_eq!(server.join().unwrap(), 1, "the mock must answer one PUT");
+        assert_eq!(error.error, "worker_crashed", "{}", error.message);
+    }
+
+    #[test]
+    fn an_agent_rejects_a_names_cache_over_its_shared_cap_before_the_put() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("oversized-names.json");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(worker_result::NAMES_CACHE_MAX_BYTES + 1)
+            .unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let error = context
+            .put(
+                &http_agent(&context.endpoint),
+                "names",
+                &path,
+                Instant::now(),
+                &probe,
+                None,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.error, "invalid_worker_result", "{}", error.message);
+        assert!(error.message.contains("names"), "{}", error.message);
+        assert!(error.message.contains("16777216"), "{}", error.message);
     }
 
     #[test]
