@@ -2596,6 +2596,54 @@ impl WorkerHub {
         }
     }
 
+    /// Ends the lease on `job_id` at `epoch` if it is still there, for a
+    /// runner that is going without having ended it (`RunnerLease`). Its
+    /// agent, if a channel holds the lease, is sent `cancel` `lease_lost`
+    /// unless a cancel went already, so it stops the job rather than run it
+    /// for no one. Fenced by epoch: a re-queued job's next lease, which may
+    /// already be in place, is another epoch's and is left alone. It runs
+    /// while a runner unwinds, so a poisoned lock is taken as it is rather
+    /// than panicking again.
+    fn abandon_lease(&self, job_id: Uuid, epoch: u64) {
+        let dir = {
+            let mut guard = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let inner = &mut *guard;
+            if !inner
+                .leases
+                .get(&job_id)
+                .is_some_and(|lease| lease.epoch == epoch)
+            {
+                return;
+            }
+            let Some(lease) = inner.leases.remove(&job_id) else {
+                return;
+            };
+            eprintln!(
+                "job {job_id}: its runner went without ending its lease (epoch {epoch}); ending it"
+            );
+            if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get_mut(&conn)) {
+                if conn.holding == Some(job_id) {
+                    conn.holding = None;
+                }
+                if !lease.cancelled {
+                    let _ = conn.out.send(Outgoing::Message(MasterMessage::Cancel {
+                        job_id: job_id.to_string(),
+                        epoch,
+                        reason: CancelReason::LeaseLost,
+                    }));
+                }
+            }
+            self.changed.notify_all();
+            // The rest of the lease drops here, under the lock, which ends
+            // its uploads (`Lease::upload_cancel`).
+            lease.dir
+        };
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// `shutdown now` to every agent (§3.2); no job is assigned after this.
     pub fn shutdown_now(&self) {
         let mut inner = self.lock();
@@ -2738,10 +2786,21 @@ impl Drop for UploadGuard<'_> {
 /// be renewed, resumed or uploaded to again, and only waits for its runner
 /// to end it. Nor does a lease on the waiting runner's own job, which its
 /// `claim` replaces.
+///
+/// Nor, since the review of #194 (5873437803), does a lease with no
+/// channel past its deadline, whether or not a runner has found it expired
+/// yet: only a resume could bring it back, and `resume` marks a lease past
+/// its deadline lost. So a lease whose runner is gone without ending it
+/// (a bug; `RunnerLease` ends it on every exit it knows of) holds its
+/// worker for one lease TTL at most, never for good. A lease still on a
+/// channel keeps counting past its deadline: heartbeats may still renew it
+/// until its runner polls, and the agent on it is busy with it.
 fn pick_agent(inner: &HubInner, me: (i64, Uuid)) -> Option<u64> {
+    let now = Instant::now();
     let mut leased: BTreeMap<usize, Vec<Uuid>> = BTreeMap::new();
     for (job_id, lease) in &inner.leases {
-        if let (Some(agent), false) = (lease.agent, lease.lost) {
+        let run_out = lease.conn.is_none() && now > lease.deadline;
+        if let (Some(agent), false, false) = (lease.agent, lease.lost, run_out) {
             leased.entry(agent).or_default().push(*job_id);
         }
     }
@@ -3685,6 +3744,25 @@ enum ExecutorClone {
 /// up, uncounted, or fails it on the largest (§6). A lease that runs out
 /// with its last heartbeat within 10% of the class's memory moves the job
 /// to the next class, counted as the lost worker it is (§6).
+/// `run_remote`'s lease, ended however the runner leaves (#194 review,
+/// 5873437803): every return it plans ends the lease itself, and this
+/// catches the rest -- a return nobody planned, and a panic, after which
+/// `worker_loop` fails the job but knows nothing of the lease. With one
+/// lease per agent (`pick_agent`), a lease left behind would keep its
+/// worker from every other job until it ran out. A no-op when the lease
+/// is already gone or is a later epoch's (`WorkerHub::abandon_lease`).
+struct RunnerLease<'a> {
+    hub: &'a WorkerHub,
+    job_id: Uuid,
+    epoch: u64,
+}
+
+impl Drop for RunnerLease<'_> {
+    fn drop(&mut self) {
+        self.hub.abandon_lease(self.job_id, self.epoch);
+    }
+}
+
 /// Test only: set on a thread, `run_remote` on that thread panics right
 /// after it holds its lease, as a bug in the runner would.
 #[cfg(test)]
@@ -3701,7 +3779,21 @@ pub(crate) fn run_remote(
     let started = Instant::now();
     let job_id = tx.borrow().job_id;
     let registry = &state.jobs;
+    // A lease a restarted master found in the store (§6), adopted by
+    // `jobs::restore` before any agent could connect: not asked for again.
+    // Its expiry is a restart, not a lost worker. Taken before the cancel
+    // check below, so a job cancelled before its runner started does not
+    // leave that lease behind.
+    let orphan = registry.take_orphan(job_id);
     if registry.is_cancelled(job_id) {
+        // #194 review (5873437803): the user cancelled a restored job before
+        // its runner started. Its agent may have resumed the lease already
+        // (`resume` answers `continue`, since nothing marked it cancelled),
+        // so it is told `cancel`, and the lease ends as the guard drops.
+        if let Some((epoch, _)) = orphan {
+            let _lease = RunnerLease { hub, job_id, epoch };
+            hub.cancel(job_id, CancelReason::Cancelled);
+        }
         return;
     }
     let store = &state.store;
@@ -3715,10 +3807,6 @@ pub(crate) fn run_remote(
     // and escalation compare against this, not the job's class: a small job
     // killed for memory on a large agent needs a class larger than that.
     let running_class = registry.slot_class(job_id).unwrap_or(0);
-    // A lease a restarted master found in the store (§6), adopted by
-    // `jobs::restore` before any agent could connect: not asked for again.
-    // Its expiry is a restart, not a lost worker.
-    let orphan = registry.take_orphan(job_id);
     let adopted = orphan.is_some();
     let (lease, epoch, mut table) = match orphan {
         Some((epoch, lease)) => (lease, epoch, "running"),
@@ -3762,6 +3850,7 @@ pub(crate) fn run_remote(
             }
         }
     };
+    let _lease_guard = RunnerLease { hub, job_id, epoch };
     #[cfg(test)]
     if PANIC_AFTER_LEASE.with(std::cell::Cell::get) {
         panic!("job {job_id}: a runner panic injected by a test");
