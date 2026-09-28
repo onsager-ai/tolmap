@@ -2038,14 +2038,16 @@ export class MapRenderer {
    * a fixed, deterministic list, and the first tier with any room wins:
    *   1. the upper part of the district (rows 16-40% down its box);
    *   2. its centroid, then rows further down;
-   *   3. selected district only: a grid over the part of it on screen, so
+   *   3. a district wholly on screen: a fine grid over it, with the looser
+   *      in-polygon test below;
+   *   4. selected district only: a grid over the part of it on screen, so
    *      its name survives zooming into it;
-   *   4. selected district only: tiers 1-3 again without the in-polygon
+   *   5. selected district only: tiers 1-4 again without the in-polygon
    *      test (the name may then overhang its outline).
    * A mainland candidate is kept only if the name box's centre and the
-   * points a quarter of its width either side lie inside the district: a
-   * name may overhang its outline a little, but never sit mostly on a
-   * neighbour. Islands keep the first version's rule (inside the bounding
+   * points a quarter of its width either side lie inside the district (tier
+   * 3: the centre and one of them): a name may overhang its outline, but
+   * never sit mostly on a neighbour. Islands keep the first version's rule (inside the bounding
    * box). Within a tier the first spot with room for the subtitle too wins,
    * otherwise the first spot with room for the name. */
   private desktopDistrictLabelSpot(
@@ -2068,24 +2070,31 @@ export class MapRenderer {
     const onScreen = (x: number, y: number, w: number, h: number) =>
       x >= 0 && x + w <= this.VW && y >= 0 && y + h <= this.VH;
     const inside = (sx: number, sy: number) => this.districtContains(d, (sx - this.tx) / this.k, (sy - this.ty) / this.k);
-    const nameFits = (cx: number, cy: number, strict: boolean) => {
+    // How much of the name must sit on the district: 2 = its centre and
+    // both quarter points, 1 = its centre and at least one quarter point,
+    // 0 = no polygon test (the selected district's last resort).
+    type Fit = 0 | 1 | 2;
+    const nameFits = (cx: number, cy: number, fit: Fit) => {
       const bx = cx - nameWidth / 2;
       const by = cy - nameHeight;
       if (!onScreen(bx, by, nameWidth, nameHeight) || hits(bx, by, nameWidth, nameHeight)) return false;
-      if (!strict) return true;
+      if (fit === 0) return true;
       if (isIsland) {
         if (!isSelected && (bx < this.X(wx0) || bx + nameWidth > this.X(wx1))) return false;
         return by >= this.Y(wy0) && cy <= this.Y(wy1);
       }
       const midY = cy - nameHeight / 2;
-      return inside(cx, midY) && inside(cx - nameWidth / 4, midY) && inside(cx + nameWidth / 4, midY);
+      if (!inside(cx, midY)) return false;
+      const left = inside(cx - nameWidth / 4, midY);
+      const right = inside(cx + nameWidth / 4, midY);
+      return fit === 2 ? left && right : left || right;
     };
-    const subtitleFits = (cx: number, cy: number, strict: boolean) => {
+    const subtitleFits = (cx: number, cy: number, fit: Fit) => {
       if (!subtitle) return false;
       const bx = cx - subtitleWidth / 2;
       const by = cy + SUBTITLE_OFFSET_PX - subtitleHeight;
       if (!onScreen(bx, by, subtitleWidth, subtitleHeight) || hits(bx, by, subtitleWidth, subtitleHeight)) return false;
-      return !strict || inside(cx, by + subtitleHeight / 2);
+      return fit === 0 || inside(cx, by + subtitleHeight / 2);
     };
     const columns = [0.5, 0.35, 0.65, 0.2, 0.8, 0.08, 0.92];
     const grid = (rows: number[]): Array<[number, number]> => {
@@ -2096,14 +2105,33 @@ export class MapRenderer {
       return out;
     };
     const centroid: [number, number] = [this.X(doc.districts[String(d)].c[0]), this.Y(doc.districts[String(d)].c[1])];
-    const tiers: Array<Array<[number, number]>> = isIsland
-      ? [[centroid, ...grid(isSelected ? [0.16, 0.3, 0.04, 0.42, 0.56, 0.72, 0.88] : [0.16, 0.3, 0.04, 0.42])]]
-      : [grid([0.16, 0.24, 0.08, 0.32, 0.4]), [centroid, ...grid([0.5, 0.6, 0.7, 0.8, 0.9])]];
+    const tiers: Array<{ points: Array<[number, number]>; fit: Fit }> = isIsland
+      ? [{ points: [centroid, ...grid(isSelected ? [0.16, 0.3, 0.04, 0.42, 0.56, 0.72, 0.88] : [0.16, 0.3, 0.04, 0.42])], fit: 2 }]
+      : [{ points: grid([0.16, 0.24, 0.08, 0.32, 0.4]), fit: 2 }, { points: [centroid, ...grid([0.5, 0.6, 0.7, 0.8, 0.9])], fit: 2 }];
+    // Tier 3: a fine grid over a mainland district wholly on screen (the
+    // overview case, where file-count priority between neighbours is what
+    // the reader sees). Rows every 6 px, top first, each row centre-out,
+    // with the looser half-on-the-district test. CI review follow-up 2:
+    // dify's "deploy & app-publisher" is about 80 px wide at fit, crowded by
+    // hub rings and its neighbours' names; the coarse rows above missed the
+    // gap a person can see. Kept to wholly visible districts so zooming in
+    // does not add district names in the lower part of the view.
+    const sx0 = this.X(wx0), sx1 = this.X(wx1), sy0 = this.Y(wy0), sy1 = this.Y(wy1);
+    if (!isIsland && sx0 >= 0 && sy0 >= 0 && sx1 <= this.VW && sy1 <= this.VH) {
+      const fine: Array<[number, number]> = [];
+      const rowCount = Math.min(60, Math.max(1, Math.floor((sy1 - sy0) / 6)));
+      const columnOrder = [7, 6, 8, 5, 9, 4, 10, 3, 11, 2, 12, 1, 13, 0, 14];
+      for (let row = 0; row < rowCount; row++) {
+        const py = sy0 + ((sy1 - sy0) * (row + 0.5)) / rowCount;
+        for (const column of columnOrder) fine.push([sx0 + ((sx1 - sx0) * (column + 0.5)) / 15, py + nameHeight / 2]);
+      }
+      tiers.push({ points: fine, fit: 1 });
+    }
     if (isSelected) {
-      const vx0 = Math.max(0, this.X(wx0));
-      const vx1 = Math.min(this.VW, this.X(wx1));
-      const vy0 = Math.max(0, this.Y(wy0));
-      const vy1 = Math.min(this.VH, this.Y(wy1));
+      const vx0 = Math.max(0, sx0);
+      const vx1 = Math.min(this.VW, sx1);
+      const vy0 = Math.max(0, sy0);
+      const vy1 = Math.min(this.VH, sy1);
       if (vx1 > vx0 && vy1 > vy0) {
         const n = 9;
         const visible: Array<{ at: [number, number]; distance: number; index: number }> = [];
@@ -2113,25 +2141,25 @@ export class MapRenderer {
           visible.push({ at: [px, py + nameHeight / 2], distance: Math.hypot(px - (vx0 + vx1) / 2, py - (vy0 + vy1) / 2), index: visible.length });
         }
         visible.sort((a, b) => a.distance - b.distance || a.index - b.index);
-        tiers.push(visible.map(({ at }) => at));
+        tiers.push({ points: visible.map(({ at }) => at), fit: 2 });
       }
     }
-    const pick = (points: Array<[number, number]>, strict: boolean): { at: [number, number]; subtitle: boolean } | null => {
+    const pick = (points: Array<[number, number]>, fit: Fit): { at: [number, number]; subtitle: boolean } | null => {
       let nameOnly: { at: [number, number]; subtitle: boolean } | null = null;
       for (const [cx, cy] of points) {
-        if (!nameFits(cx, cy, strict)) continue;
+        if (!nameFits(cx, cy, fit)) continue;
         if (!subtitle) return { at: [cx, cy], subtitle: false };
-        if (subtitleFits(cx, cy, strict)) return { at: [cx, cy], subtitle: true };
+        if (subtitleFits(cx, cy, fit)) return { at: [cx, cy], subtitle: true };
         nameOnly ??= { at: [cx, cy], subtitle: false };
       }
       return nameOnly;
     };
-    for (const points of tiers) {
-      const spot = pick(points, true);
+    for (const { points, fit } of tiers) {
+      const spot = pick(points, fit);
       if (spot) return spot;
     }
-    if (isSelected) for (const points of tiers) {
-      const spot = pick(points, false);
+    if (isSelected) for (const { points } of tiers) {
+      const spot = pick(points, 0);
       if (spot) return spot;
     }
     return null;
