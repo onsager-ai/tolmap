@@ -40,7 +40,7 @@ const crumbs = desktopPanelCrumbs([
   { type: "path" },
   { type: "quality" },
 ], doc, "langgenius/dify");
-report(eq(crumbs.map((c) => c.label), ["owner/repo", "networking", "file.py", "Worker", "Path", "Map quality"]), "crumb labels use the repo, district, file, symbol and card names", crumbs);
+report(eq(crumbs.map((c) => c.label), ["langgenius/dify", "networking", "file.py", "Worker", "Path", "Map quality"]), "crumb labels use the route repo, district, file, symbol and card names", crumbs);
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures) process.exitCode = 1;
