@@ -1389,23 +1389,26 @@ async function checkViewerCards(browser, base, profile) {
   if (profile.isMobile) await setSheetDetent(page, "half");
   const sidebarText = await page.locator("[data-district-index]").first().textContent();
   if (profile.isMobile) await setSheetDetent(page, "peek");
-  // Issue #82 "district index": the old rail's flat Landmarks list (every
-  // doc.L row shown by basename) is gone -- a landmark's file now surfaces
-  // through whichever district-row key-file line fits its kind ("most
-  // imported"/"entry" show the basename directly; "links A <-> B" for a
-  // bridge names the two districts instead, since the whole point of that
-  // line is the connection, not the file). Checked kind-aware here so this
-  // stays true regardless of which kind django's own first landmark happens
-  // to be; checkDistrictIndex below is the thorough version that checks
-  // EVERY kind present in the fixture, not just the first.
+  // The phone retains its detail-rich row. Desktop's 7a overview uses the
+  // compact single-name summary from §5, leaving the larger landmark detail
+  // to the district card.
   const [firstFile, firstWhy] = fixture.firstLandmark;
-  const firstLandmarkReachable =
-    firstWhy === "bridge"
+  let firstLandmarkReachable;
+  let firstLandmarkLabel;
+  if (profile.isMobile) {
+    firstLandmarkReachable = firstWhy === "bridge"
       ? /links .+ ↔ .+/.test(sidebarText ?? "")
       : !!sidebarText?.includes(fixture.doc.F[firstFile].split("/").pop());
+    firstLandmarkLabel = `district index surfaces the first phone landmark (${firstWhy})`;
+  } else {
+    const marker = page.locator("[data-district-index-key-file]").first();
+    const fileIndex = Number(await marker.getAttribute("data-district-index-key-file"));
+    firstLandmarkReachable = (await marker.textContent())?.trim() === fixture.doc.F[fileIndex]?.split("/").pop();
+    firstLandmarkLabel = "desktop index uses a compact key-file basename";
+  }
   report(
-    sidebarText?.includes(fixture.firstDistrictName) && firstLandmarkReachable,
-    `${label}: districts are named and the district index surfaces the first landmark (${firstWhy})`,
+    (profile.isMobile ? sidebarText?.includes(fixture.firstDistrictName) : true) && firstLandmarkReachable,
+    `${label}: ${firstLandmarkLabel}`,
   );
 
   // Perf follow-up: always the district's NAME LABEL now -- see
@@ -1618,20 +1621,34 @@ async function checkDistrictIndex(browser, base, profile) {
 
   const keyFileEls = page.locator("[data-district-index-key-file]");
   const keyFileIndices = await keyFileEls.evaluateAll((els) => els.map((el) => Number(el.getAttribute("data-district-index-key-file"))));
-  const keyFileSet = new Set(keyFileIndices);
   report(keyFileIndices.length > 0, `${label}: district rows render at least one key file`, `count=${keyFileIndices.length}`);
-  report(/most imported: /.test(asideText), `${label}: "most imported" line present in plain words`);
+  if (profile.isMobile) {
+    report(/most imported: /.test(asideText), `${label}: the phone retains detailed "most imported" copy`);
+  } else {
+    const rowHeights = await page.locator("[data-district-index-row]").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
+    report(rowHeights.length > 0 && rowHeights.every((height) => height === 50),
+      `${label}: desktop district index rows stay 50 px`, JSON.stringify(rowHeights.slice(0, 5)));
+    const keyRows = await keyFileEls.evaluateAll((els) => els.map((el) => ({
+      index: Number(el.getAttribute("data-district-index-key-file")),
+      text: el.textContent?.trim() ?? "",
+      mono: el.classList.contains("font-mono"),
+    })));
+    report(keyRows.length > 0 && keyRows.every((row) => row.text === doc.F[row.index]?.split("/").pop() && row.mono),
+      `${label}: desktop secondary lines show only a mono key-file name`, JSON.stringify(keyRows.slice(0, 4)));
+    report(!/most imported:|links .+ ↔ .+/.test(asideText), `${label}: desktop index omits detailed import and link phrases`);
+  }
 
-  // Kind-level reachability: capital excluded (dropped from the map
-  // entirely, per A4/A5 -- see this function's own doc comment). A kind
-  // absent from this fixture's own doc.L is skipped rather than failed --
-  // django may not have a bridge or a hazard pick at all, and that's not a
-  // regression this check can meaningfully assert against.
-  for (const kind of ["entry", "bridge", "hub", "hazard"]) {
-    const files = doc.L.filter((row) => row[1] === kind).map((row) => row[0]);
-    if (files.length === 0) continue;
-    const reachable = files.some((f) => keyFileSet.has(f));
-    report(reachable, `${label}: "${kind}" landmark kind is reachable from a district row`, JSON.stringify(files));
+  // The phone keeps its detail-rich index rows, including the selected
+  // landmark kinds. Desktop now shows one compact key name per row and
+  // checks detailed file rows on the selected district card below.
+  if (profile.isMobile) {
+    const keyFileSet = new Set(keyFileIndices);
+    for (const kind of ["entry", "bridge", "hub", "hazard"]) {
+      const files = doc.L.filter((row) => row[1] === kind).map((row) => row[0]);
+      if (files.length === 0) continue;
+      const reachable = files.some((f) => keyFileSet.has(f));
+      report(reachable, `${label}: phone "${kind}" landmark kind is reachable from a district row`, JSON.stringify(files));
+    }
   }
 
   if (profile.isMobile) {
@@ -5958,7 +5975,7 @@ async function checkProfileLayout(browser, base, profile) {
   }
 
   // CLAUDE.md's desktop/tablet acceptance bar: the District overview names
-  // districts and shows key landmark files before the map interaction checks.
+  // districts and the district card keeps the detailed key-file list.
   const overview = page.locator("[data-desktop-overview]");
   const indexText = (await overview.innerText().catch(() => "")) ?? "";
   const biggest = Object.keys(doc.districts).filter((d) => doc.districts[d].class !== "island" && doc.districts[d].class !== "unconnected")
@@ -5966,12 +5983,17 @@ async function checkProfileLayout(browser, base, profile) {
   const keyFileEls = page.locator("[data-district-index-key-file]");
   const keyFileIndices = await keyFileEls.evaluateAll((els) => els.map((el) => Number(el.getAttribute("data-district-index-key-file"))));
   report(indexText.includes(doc.names[biggest]) && keyFileIndices.length > 0,
-    `${label}: districts are named and landmarks listed in the panel`, `keyFiles=${keyFileIndices.length}`);
-  for (const kind of ["entry", "bridge", "hub", "hazard"]) {
-    const files = doc.L.filter((row) => row[1] === kind).map((row) => row[0]);
-    if (files.length === 0) continue;
-    report(files.some((file) => keyFileIndices.includes(file)), `${label}: ${kind} landmarks appear in the district rows`);
-  }
+    `${label}: districts are named and compact key files are listed in the overview`, `keyFiles=${keyFileIndices.length}`);
+  const largestRow = page.locator(`[data-district-index-row="${biggest}"]`);
+  if (profile.hasTouch) await largestRow.tap();
+  else await largestRow.click();
+  const districtCard = page.locator('[data-selection-panel] [data-sheet-card="district"]');
+  await districtCard.waitFor();
+  await districtCard.locator("[data-district-files-toggle]").click();
+  const cardLandmarkIndices = await districtCard.locator("[data-district-key-file]").evaluateAll((els) => els.map((el) => Number(el.getAttribute("data-district-key-file"))));
+  const biggestLandmarks = doc.L.filter(([file, kind]) => kind !== "capital" && doc.N[file][0] === Number(biggest)).map(([file]) => file);
+  report(cardLandmarkIndices.length > 0 && biggestLandmarks.some((file) => cardLandmarkIndices.includes(file)),
+    `${label}: the district card retains its file and landmark detail`, JSON.stringify({ cardLandmarkIndices, biggestLandmarks }));
 
   const dpt = await pickDistrictPoint(page, profile.hasTouch);
   if (!dpt) {
@@ -6072,6 +6094,40 @@ async function checkRepoSelectCounts(browser, base) {
     `${label}: the current row is checked and counts the ${doc.F.length} files in the map document`, currentText);
   const rows = await menu.locator("[data-repository-row]").evaluateAll((els) => els.map((el) => el.innerText.replace(/\s+/g, " ").trim()));
   report(rows.length > 1, `${label}: mapped repositories appear in the menu`, JSON.stringify(rows));
+  const footerLayout = await menu.evaluate((el) => {
+    const list = el.querySelector("[data-repository-list]");
+    const footer = el.querySelector("[data-repository-footer]");
+    const actions = [el.querySelector("[data-repo-map-another]"), el.querySelector("[data-repo-home]")];
+    const menuRect = el.getBoundingClientRect();
+    const visible = (node) => {
+      if (!node || getComputedStyle(node).visibility === "hidden" || getComputedStyle(node).display === "none") return false;
+      const r = node.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && r.top >= menuRect.top && r.bottom <= menuRect.bottom && r.left >= menuRect.left && r.right <= menuRect.right;
+    };
+    return {
+      rows: el.querySelectorAll("[data-repository-row]").length,
+      listScrollTop: list?.scrollTop ?? -1,
+      listOverflows: !!list && list.scrollHeight > list.clientHeight,
+      menuScrolls: el.scrollHeight > el.clientHeight,
+      footerHasRule: !!footer && getComputedStyle(footer).borderTopStyle !== "none",
+      footerVisible: visible(footer),
+      actionsVisible: actions.map(visible),
+    };
+  });
+  report(footerLayout.rows >= 10 && footerLayout.listScrollTop === 0 && footerLayout.listOverflows && !footerLayout.menuScrolls &&
+    footerLayout.footerHasRule && footerLayout.footerVisible && footerLayout.actionsVisible.every(Boolean),
+  `${label}: with 10+ repositories, both footer actions stay visible without scrolling`, JSON.stringify(footerLayout));
+  await menu.locator("[data-repository-list]").evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  const footerAfterListScroll = await menu.evaluate((el) => {
+    const footer = el.querySelector("[data-repository-footer]");
+    const menuRect = el.getBoundingClientRect();
+    return [...el.querySelectorAll("[data-repo-map-another], [data-repo-home]")].every((node) => {
+      const r = node.getBoundingClientRect();
+      return r.height > 0 && r.top >= menuRect.top && r.bottom <= menuRect.bottom;
+    }) && !!footer && footer.getBoundingClientRect().bottom <= menuRect.bottom;
+  });
+  report(footerLayout.rows < 10 || footerAfterListScroll, `${label}: scrolling the repository list leaves the footer fixed`);
+  await menu.locator("[data-repository-list]").evaluate((el) => { el.scrollTop = 0; });
   const firstFocus = await page.evaluate(() => document.activeElement?.getAttribute("data-repository-row"));
   await page.keyboard.press("ArrowDown");
   const down = await page.evaluate(() => document.activeElement?.getAttribute("data-repository-row"));
@@ -6098,6 +6154,35 @@ async function checkRepoSelectCounts(browser, base) {
   await page.locator("[data-repo-home]").click();
   await page.waitForURL((url) => url.pathname === "/", { timeout: 10_000 }).catch(() => null);
   report(new URL(page.url()).pathname === "/", `${label}: the menu's Home action reaches Home`, page.url());
+  await context.close();
+}
+
+/** Review follow-up: keep the selected file readable while older crumbs
+ * yield their width, using the real Dify file named in the review. */
+async function checkDesktopBreadcrumbCurrentFits(browser, base) {
+  const label = "desktop breadcrumb current file fit / 1440x900";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const path = "web/app/components/workflow/types.ts";
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(path)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("[data-selection-panel] [data-sheet-card=\"file\"]");
+  const crumbs = page.locator("[data-panel-crumb]");
+  await crumbs.last().waitFor();
+  const fit = await crumbs.last().evaluate((el) => ({
+    text: el.textContent?.trim() ?? "",
+    title: el.getAttribute("title"),
+    ariaLabel: el.getAttribute("aria-label"),
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+  }));
+  report(await crumbs.count() === 3 && fit.scrollWidth <= fit.clientWidth,
+    `${label}: selected file text fits in the last crumb`, JSON.stringify(fit));
+  report(fit.title === fit.text && fit.ariaLabel === fit.text,
+    `${label}: the full current crumb remains in title and aria-label`, JSON.stringify(fit));
+  const root = page.locator("[data-panel-crumb='0']");
+  report(await root.getAttribute("aria-label") === "Overview · langgenius/dify" && await root.locator("svg").count() === 1,
+    `${label}: a three-deep trail uses the accessible overview icon`, await root.getAttribute("aria-label"));
   await context.close();
 }
 
@@ -6284,6 +6369,7 @@ async function main() {
     // #171, and the CSS fullscreen fallback.
     for (const profile of LAYOUT_PROFILES) await checkProfileLayout(browser, args.base, profile);
     await checkRepoSelectCounts(browser, args.base);
+    await checkDesktopBreadcrumbCurrentFits(browser, args.base);
     await checkDesktopChromeInteractions(browser, args.base);
     await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.expect === "desktop"));
     await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.name === "tablet-1024x768"));

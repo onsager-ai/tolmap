@@ -30,6 +30,7 @@ import {
   ChevronIcon,
   FitIcon,
   FullscreenIcon,
+  HomeIcon,
   MinusIcon,
   PanelIcon,
   PlusIcon,
@@ -320,35 +321,38 @@ export function DesktopChrome(p: DesktopChromeProps) {
             aria-label="Mapped repositories"
             data-repository-menu
             onKeyDown={menuKeyDown}
-            className="absolute left-[70px] top-[54px] z-[61] flex max-h-[min(520px,calc(100vh-110px))] min-w-[300px] flex-col overflow-y-auto rounded-[14px] border border-[var(--chrome-glass-border)] bg-[var(--chrome-solid)] p-1.5 text-[var(--on)] shadow-[var(--chrome-shadow)]"
+            className="absolute left-[70px] top-[54px] z-[61] flex max-h-[min(520px,calc(100vh-110px))] min-w-[300px] flex-col overflow-hidden rounded-[14px] border border-[var(--chrome-glass-border)] bg-[var(--chrome-solid)] p-1.5 text-[var(--on)] shadow-[var(--chrome-shadow)]"
           >
-            <div className="px-2.5 pb-1 pt-1.5 text-label font-semibold uppercase tracking-[.06em] text-[var(--dim)]">Mapped repositories</div>
-            {menuRows.map((row) => (
-              <button
-                type="button"
-                role="menuitem"
-                key={row.slug}
-                aria-current={row.current ? "true" : undefined}
-                data-repository-row={row.slug}
-                onClick={() => chooseRepository(row)}
-                className="flex min-h-[48px] w-full items-center gap-2.5 rounded-[9px] px-2.5 py-1 text-left hover:bg-[var(--chrome-hover)] focus-visible:bg-[var(--chrome-hover)]"
-              >
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="truncate font-mono text-small">{row.slug}</span>
-                  {countLabel(row) && <span className="truncate text-meta text-[var(--dim)]">{countLabel(row)}</span>}
-                </span>
-                {row.current && <MonoIcon><path d="M5 12l5 5 9-10" /></MonoIcon>}
-              </button>
-            ))}
-            <span aria-hidden="true" className="mx-1 my-1 border-t border-[var(--rule)]" />
-            <Link to="/" hash="repo-field" replace data-repo-map-another role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
-              <PlusIcon size={16} />
-              <span>Map another repository</span>
-            </Link>
-            <Link to="/" data-repo-home role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
-              <MonoIcon><path d="M4 11l8-7 8 7v9H4z" /></MonoIcon>
-              <span>Home</span>
-            </Link>
+            <div data-repository-list className="min-h-0 flex-auto overflow-y-auto">
+              <div className="px-2.5 pb-1 pt-1.5 text-label font-semibold uppercase tracking-[.06em] text-[var(--dim)]">Mapped repositories</div>
+              {menuRows.map((row) => (
+                <button
+                  type="button"
+                  role="menuitem"
+                  key={row.slug}
+                  aria-current={row.current ? "true" : undefined}
+                  data-repository-row={row.slug}
+                  onClick={() => chooseRepository(row)}
+                  className="flex min-h-[48px] w-full items-center gap-2.5 rounded-[9px] px-2.5 py-1 text-left hover:bg-[var(--chrome-hover)] focus-visible:bg-[var(--chrome-hover)]"
+                >
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate font-mono text-small">{row.slug}</span>
+                    {countLabel(row) && <span className="truncate text-meta text-[var(--dim)]">{countLabel(row)}</span>}
+                  </span>
+                  {row.current && <MonoIcon><path d="M5 12l5 5 9-10" /></MonoIcon>}
+                </button>
+              ))}
+            </div>
+            <div data-repository-footer className="shrink-0 border-t border-[var(--rule)] pt-1">
+              <Link to="/" hash="repo-field" replace data-repo-map-another role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
+                <PlusIcon size={16} />
+                <span>Map another repository</span>
+              </Link>
+              <Link to="/" data-repo-home role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
+                <MonoIcon><path d="M4 11l8-7 8 7v9H4z" /></MonoIcon>
+                <span>Home</span>
+              </Link>
+            </div>
           </div>
         )}
       </div>
@@ -584,21 +588,27 @@ export function DesktopPanel(p: DesktopPanelProps) {
             </button>
           )}
           <nav aria-label="Where you are" className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden whitespace-nowrap" data-panel-breadcrumbs>
-            {crumbs.map((crumb, index) => (
-              <span key={`${crumb.type}-${index}`} className="flex min-w-0 items-center gap-0.5">
-                {index > 0 && <ChevronIcon />}
-                <button
-                  type="button"
-                  data-panel-crumb={index}
-                  aria-current={index === crumbs.length - 1 ? "page" : undefined}
-                  title={crumb.label}
-                  onClick={() => p.onJump(index)}
-                  className={`min-w-0 truncate rounded-[6px] px-1.5 py-1 text-left text-meta hover:bg-[var(--chrome-hover)] touch:min-h-[44px] ${crumb.type === "overview" || crumb.type === "file" || crumb.type === "symbol" ? "font-mono" : ""} ${index === crumbs.length - 1 ? "text-[var(--on)]" : "text-[var(--dim)]"}`}
-                >
-                  {crumb.label}
-                </button>
-              </span>
-            ))}
+            {crumbs.map((crumb, index) => {
+              const current = index === crumbs.length - 1;
+              const compactOverview = crumbs.length >= 3 && index === 0 && crumb.type === "overview";
+              const crumbLabel = compactOverview ? `Overview · ${crumb.label}` : crumb.label;
+              return (
+                <span key={`${crumb.type}-${index}`} className={`flex min-w-0 items-center gap-0.5 ${current ? "shrink-0 max-w-[60%]" : "shrink"}`}>
+                  {index > 0 && <span className="shrink-0"><ChevronIcon /></span>}
+                  <button
+                    type="button"
+                    data-panel-crumb={index}
+                    aria-current={current ? "page" : undefined}
+                    aria-label={crumbLabel}
+                    title={crumbLabel}
+                    onClick={() => p.onJump(index)}
+                    className={`min-w-0 max-w-full truncate rounded-[6px] px-1.5 py-1 text-left text-meta hover:bg-[var(--chrome-hover)] touch:min-h-[44px] ${current ? "shrink-0" : "shrink"} ${crumb.type === "overview" || crumb.type === "file" || crumb.type === "symbol" ? "font-mono" : ""} ${current ? "text-[var(--on)]" : "text-[var(--dim)]"} ${compactOverview ? "flex h-7 w-7 shrink-0 items-center justify-center px-1" : ""}`}
+                  >
+                    {compactOverview ? <HomeIcon size={14} /> : crumb.label}
+                  </button>
+                </span>
+              );
+            })}
           </nav>
           <button type="button" data-hide-panel aria-label="Hide panel" title="Hide panel  [" onClick={() => p.onPanelOpen(false)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)] touch:h-11 touch:w-11">
             <PanelIcon size={17} />
@@ -630,20 +640,20 @@ export function DesktopPanel(p: DesktopPanelProps) {
                 {p.indexTab === "districts" ? (
                   <div className="-mx-2 mt-1 flex flex-col gap-px" data-district-index>
                     {indexRows.map((row) => {
+                      const keyFile = row.keyFiles[0];
                       return (
                         <button key={row.d} type="button" data-district-index-row={row.d} data-panel-district={row.d} onClick={() => p.onSelectDistrict(row.d)} className="flex h-[50px] min-h-[50px] w-full shrink-0 items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-[var(--chrome-hover)]">
                           <i aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: rowColor(row.d) }} />
                           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                             <span className="truncate text-small font-semibold">{row.name}</span>
-                            <span className="flex min-w-0 truncate text-meta text-[var(--dim)]">
-                              {row.mostly && <span className="shrink-0">mostly <span className="font-mono">{row.mostly}</span></span>}
-                              {row.mostly && row.keyFiles.length > 0 && <span className="mx-1 shrink-0">·</span>}
-                              {row.keyFiles.map((file, index) => (
-                                <span key={file.file} data-district-index-key-file={file.file} className="mr-1 shrink-0 font-mono">
-                                  {index > 0 && "· "}{file.text}
+                            <span className="min-w-0 truncate text-meta text-[var(--dim)]">
+                              {row.mostly && <>mostly <span className="font-mono">{row.mostly}</span></>}
+                              {row.mostly && keyFile && " · "}
+                              {keyFile && (
+                                <span data-district-index-key-file={keyFile.file} className="font-mono">
+                                  {p.doc.F[keyFile.file]?.split("/").pop()}
                                 </span>
-                              ))}
-                              {!row.mostly && row.keyFiles.length === 0 && "District"}
+                              )}
                             </span>
                           </span>
                           <span className="shrink-0 font-mono text-meta text-[var(--dim)]">{row.size.toLocaleString("en-US")}</span>
