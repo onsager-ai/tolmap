@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
 import { useCatalogue, useMapDocument, useDistrictSymbolsMap } from "@/data/queries";
 import { MapCanvas, type MapCanvasHandle } from "@/map/MapCanvas";
@@ -6,15 +6,10 @@ import type { FrameInsets, MapRendererCallbacks } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
 import { D_, districtClass, type Insets } from "@/map/geometry";
 import type { SearchPick } from "@/map/searchResults";
-import { TopBar } from "@/components/TopBar";
-import { DistrictRail } from "@/components/Sidebar";
-import { SearchBox } from "@/components/SearchBox";
-import { ZoomControls } from "@/components/ZoomControls";
-import { PackageLegend } from "@/components/PackageLegend";
 import { LoadProgressIndicator } from "@/components/LoadProgressIndicator";
 import { DetailStatusNote } from "@/components/DetailStatusNote";
 import { useEarlyMapJob } from "@/api/useEarlyMapJob";
-import { BottomLeftStack, Inspector, QualityStrip, RampLegend } from "@/components/DesktopChrome";
+import { DesktopChrome, DesktopPanel } from "@/components/DesktopChrome";
 import { buildPackageLayout } from "@/map/packageLayout";
 import { useEffectiveTheme } from "@/lib/theme";
 import type { MapSearch } from "@/routes/search";
@@ -22,13 +17,7 @@ import { useLayoutProfile } from "@/hooks/useLayoutProfile";
 import { usePhoneMetrics } from "@/hooks/usePhoneMetrics";
 import { detentHeights, safeInsets, type Detent } from "@/map/phoneShell";
 import {
-  DESKTOP_GUTTER_PX,
-  FULLSCREEN_SEARCH_HEIGHT_PX,
-  INSPECTOR_INSET_PX,
-  desktopControlSize,
-  desktopLeftEdge,
   desktopSafeInsets,
-  inspectorWidth,
   isPhoneShell,
   isTouchProfile,
   landscapeSafeInsets,
@@ -39,15 +28,14 @@ import { closeOverlay, initBack, openOverlay, OVERLAY_MARKER, popTo, type BackSt
 import { structureDetail } from "@/map/structureCard";
 import { PhoneChrome } from "@/components/phone/PhoneChrome";
 import { SelectionCard, type PathPick, type StructureCardState } from "@/components/phone/SheetCards";
+import { desktopPanelCrumbs, desktopPanelReducer, DESKTOP_PANEL_OVERVIEW, type DesktopPanelView } from "@/map/desktopPanel";
+import { rowName } from "@/map/symbolCards";
 
 /** The /:owner/:repo page. The layout follows docs/UX.md §9's profiles
- * (map/layoutProfile.ts): the phone shell (components/phone/PhoneChrome.tsx:
- * §3's pill, control column and one sheet -- a bottom sheet in portrait, a
- * side sheet in landscape), or the desktop layout (§5: top bar, district
- * rail, the inspector, the map-quality strip and the controls around one
- * MapCanvas), which a tablet shares with a collapsible rail and 44 px
- * targets. The phone sheet and the inspector host the same cards
- * (SheetCards.tsx's SelectionCard, principle 10).
+ * (map/layoutProfile.ts): the phone shell (components/phone/PhoneChrome.tsx)
+ * or §5's full-bleed map with floating desktop/tablet chrome and one left
+ * panel. The panel and phone sheet host the same cards (SheetCards.tsx's
+ * SelectionCard, principle 10).
  * This component owns every piece of application state — selection, geo,
  * layer, route — either directly or via the URL; MapCanvas/MapRenderer only
  * ever receive it as props and report gestures back through callbacks. */
@@ -130,18 +118,24 @@ export function MapView() {
   const touch = isTouchProfile(profile);
   // §9: the landscape side sheet is open (360) or collapsed (0).
   const [sideOpen, setSideOpen] = useState(true);
-  // §9: a tablet's rail is collapsible from the top bar. It starts open
-  // where the map keeps room beside it and the inspector (a landscape
-  // tablet), collapsed on a portrait one.
-  const [railOpen, setRailOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 900);
-  // §5: the inspector shows the phone sheet's Half content; "All N" symbols
-  // asks for Full, as it does on the phone.
-  const [inspectorDetent, setInspectorDetent] = useState<Detent>("half");
+  // §5/§9: the floating panel starts open above 900 px, hidden below.
+  const [desktopPanelOpen, setDesktopPanelOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 900);
+  const [desktopViews, dispatchDesktopView] = useReducer(desktopPanelReducer, DESKTOP_PANEL_OVERVIEW);
+  const [desktopSearchOpen, setDesktopSearchOpen] = useState(false);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
 
   // ---------- the phone shell (docs/UX.md §3) ----------
   const router = useRouter();
   const metrics = usePhoneMetrics();
   const safeArea: SafeArea = { top: metrics.safeTop, right: metrics.safeRight ?? 0, bottom: metrics.safeBottom, left: metrics.safeLeft ?? 0 };
+  const previousDesktopWidth = useRef(metrics.width);
+  useEffect(() => {
+    const previous = previousDesktopWidth.current;
+    if ((previous < 900 && metrics.width >= 900) || (previous >= 900 && metrics.width < 900)) {
+      setDesktopPanelOpen(metrics.width >= 900);
+    }
+    previousDesktopWidth.current = metrics.width;
+  }, [metrics.width]);
   const heights = detentHeights(metrics);
   const [detent, setDetentState] = useState<Detent>("peek");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -156,33 +150,24 @@ export function MapView() {
   // fullscreen on phones). Declared here because the frame below depends on
   // it; the rest is further down.
   const [isFullscreen, setIsFullscreen] = useState(false);
-  // Something for the card to show: the phone sheet's card instead of its
-  // overview, and on desktop and tablet the open inspector (§5).
-  const cardShown = (sel: number | null, selD: number | null) =>
-    !!pathPick || !!structure || quality || sel != null || selD != null;
-
-  // docs/UX.md §3.3 and §5: the safe rectangle from the real chrome. `frame`
-  // is the resting layout, which the level-of-detail scale is measured
-  // against, so opening a sheet or the inspector never changes what the map
-  // draws; `safe` follows the chrome as it is now.
+  // docs/UX.md §3.3 and §5: the safe rectangle from the real chrome.
   //  - Phone portrait: `frame` is pill + Peek; `safe` follows the sheet.
   //  - Phone landscape (§9): the map right of the side sheet; `frame` with
   //    the sheet open, `safe` as it is (collapsed widens it).
-  //  - Desktop and tablet (§5): the map box minus the quality strip and the
-  //    controls, and minus the inspector when it is open (`safe` only).
+  //  - Desktop and tablet (§5): the full-bleed map minus the command row,
+  //    the panel when open and the floating controls.
   const peekInsets = safeInsets(metrics, heights.peek);
-  const desktopInsets = (inspector: boolean): Insets =>
-    desktopSafeInsets({ profile, inspector, rail: profile === "desktop" || railOpen, fullscreen: isFullscreen, safe: safeArea });
+  const desktopInsets = (): Insets => desktopSafeInsets({ profile, panelOpen: desktopPanelOpen, safe: safeArea });
   /** The insets a selection lands in: the sheet at Peek, the side sheet
-   * open, the inspector open. */
+   * open, or the desktop panel. */
   const selectionInsets = (): FrameInsets =>
     !narrow
-      ? { frame: desktopInsets(false), safe: desktopInsets(true), centreInSafe: true }
+      ? { frame: desktopInsets(), safe: desktopInsets(), centreInSafe: true }
       : landscape
         ? { frame: landscapeSafeInsets(true, safeArea), safe: landscapeSafeInsets(true, safeArea), centreInSafe: true }
         : { frame: peekInsets, safe: peekInsets, centreInSafe: true };
   /** Before a camera move made together with a selection (which lands the
-   * sheet at Peek, §3.2, opens the side sheet, or opens the inspector): the
+   * sheet at Peek, §3.2, opens the side sheet, or uses the desktop panel): the
    * renderer frames into that rect now, not after React commits. */
   function framePeekNow() {
     canvasRef.current?.setInsets(selectionInsets());
@@ -205,19 +190,8 @@ export function MapView() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const packageLayout = useMemo(() => (doc ? buildPackageLayout(doc) : null), [doc, effectiveTheme]);
 
-  // Issue #82 A1 scope item 5 (fullscreen). Fullscreened element is the map
-  // AREA (below), not the whole page: TopBar and the rail are its siblings,
-  // so the Fullscreen API path hides them simply by not being part of what
-  // the browser paints while fullscreen is active -- no separate
-  // show/hide logic needed for that path. The CSS fallback (no element
-  // Fullscreen API -- iPad Safari, an embedding that forbids it) instead
-  // covers them with `fixed inset-0`, the same technique the prototype's own
-  // `.mapbox.fs` used (arch20 -- see its setFS/reAspect); either way
-  // `isFullscreen` is the one source of truth the JSX below reads, so React
-  // chrome and the CSS class agree. docs/UX.md §9: the fallback covers the
-  // whole screen, notch included, and the top bar that carried the top
-  // safe-area inset is gone, so everything it floats (search, the
-  // inspector, the controls, the strip) clears the insets itself.
+  // Fullscreen targets the whole desktop shell so its floating command bar,
+  // actions, panel and controls stay present in both the API and CSS paths.
 
   useEffect(() => {
     function onFsChange() {
@@ -295,13 +269,20 @@ export function MapView() {
   // what the breadcrumb/sidebar actually show.
   const selHSym = sel != null && search.hsym != null ? search.hsym : null;
   const selD = sel == null && search.d != null ? search.d : null;
-  const hasCard = cardShown(sel, selD);
+  const previousDesktopPanelOpen = useRef(desktopPanelOpen);
+  useEffect(() => {
+    const wasOpen = previousDesktopPanelOpen.current;
+    previousDesktopPanelOpen.current = desktopPanelOpen;
+    if (narrow || wasOpen || !desktopPanelOpen || !doc) return;
+    if (sel != null && districtClass(doc.districts[String(doc.N[sel][0])]) !== "unconnected") canvasRef.current?.panTo(sel);
+    else if (selD != null) canvasRef.current?.panToDistrict(selD);
+  }, [desktopPanelOpen, narrow, doc, sel, selD]);
   // At Full the phone sheet covers the map up to the pill, leaving no rect
   // to frame into; a camera move made then (Zoom to district from the card)
   // frames as at Half, so it lands where the map shows again once the sheet
   // comes down.
   const frameInsets: FrameInsets = !narrow
-    ? { frame: desktopInsets(false), safe: desktopInsets(hasCard), centreInSafe: true }
+    ? { frame: desktopInsets(), safe: desktopInsets(), centreInSafe: true }
     : landscape
       ? { frame: landscapeSafeInsets(true, safeArea), safe: landscapeSafeInsets(sideOpen, safeArea), centreInSafe: true }
       : { frame: peekInsets, safe: safeInsets(metrics, heights[detent === "full" ? "half" : detent]), centreInSafe: true };
@@ -352,6 +333,13 @@ export function MapView() {
     if (!doc) return;
     const fileIdx = globalSymbolFile.get(global);
     if (fileIdx == null) return;
+    if (!narrow) {
+      const district = D_(doc, fileIdx);
+      const raw = districtSymbolsMap.get(district);
+      const local = raw?.symbol_indices.indexOf(global) ?? -1;
+      const label = raw && local >= 0 ? rowName(raw.symbols[local]) : "Symbol";
+      dispatchDesktopView({ type: "map-symbol", district, file: fileIdx, label, hierarchicalSymbol: global });
+    }
     // Scope item 3: "setting all levels" -- file, symbol, and dropping
     // whatever else (a bare district, a directory highlight, the old `sym`)
     // was selected, in one URL update.
@@ -384,6 +372,15 @@ export function MapView() {
   // no flag to thread through every caller.
   function selectFile(i: number, opts: { symbol?: number } = {}) {
     if (!doc) return;
+    if (!narrow) {
+      const district = D_(doc, i);
+      if (opts.symbol != null) {
+        const label = doc.S?.[String(i)]?.[opts.symbol]?.[0] ?? "Symbol";
+        dispatchDesktopView({ type: "map-symbol", district, file: i, label, symbol: opts.symbol });
+      } else {
+        dispatchDesktopView({ type: "map-file", district, file: i });
+      }
+    }
     updateSearch({ file: doc.F[i], sym: opts.symbol, hsym: undefined, d: undefined, dir: undefined });
     framePeekNow();
     if (districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.panTo(i);
@@ -398,11 +395,18 @@ export function MapView() {
   // panning (its target can be genuinely off screen) -- see the dedicated
   // wrapper passed to <Sidebar> below, which calls this and then pans.
   function selectDistrict(d: number) {
+    if (!narrow) dispatchDesktopView({ type: "map-district", district: d });
     updateSearch({ file: undefined, sym: undefined, d, dir: undefined });
+    if (!narrow) {
+      framePeekNow();
+      canvasRef.current?.panToDistrict(d);
+    }
   }
   // Jumps straight to "nothing selected" -- the breadcrumb's own repo
   // segment, a card's close button, Esc, and an empty-map tap (§3.5).
   function clearAll() {
+    if (!narrow) dispatchDesktopView({ type: "overview" });
+    setQuality(false);
     updateSearch({ file: undefined, sym: undefined, hsym: undefined, d: undefined, dir: undefined });
   }
   // Issue #82 A1 scope item 2 made an empty map tap step back one level at
@@ -499,6 +503,47 @@ export function MapView() {
     setPathEnds(null);
     setRoute(null);
   }
+
+  function applyDesktopPanelView(view: DesktopPanelView) {
+    if (view.type === "overview") {
+      setQuality(false);
+      clearPath();
+      clearAll();
+    } else if (view.type === "district") {
+      setQuality(false);
+      clearPath();
+      selectDistrict(view.district);
+    } else if (view.type === "file") {
+      setQuality(false);
+      clearPath();
+      selectFile(view.file);
+    } else if (view.type === "symbol") {
+      setQuality(false);
+      clearPath();
+      if (view.hierarchicalSymbol != null) selectHierSymbol(view.hierarchicalSymbol);
+      else selectFile(view.file, view.symbol == null ? {} : { symbol: view.symbol });
+    } else if (view.type === "quality") {
+      setQuality(true);
+    }
+  }
+
+  function desktopBack() {
+    if (desktopViews.length <= 1) return false;
+    const current = desktopViews[desktopViews.length - 1];
+    const previous = desktopViews[desktopViews.length - 2];
+    dispatchDesktopView({ type: "pop" });
+    if (current.type === "quality") setQuality(false);
+    if (current.type === "path") clearPath();
+    if (previous) applyDesktopPanelView(previous);
+    return true;
+  }
+
+  function desktopJump(index: number) {
+    const target = desktopViews[index];
+    if (!target) return;
+    dispatchDesktopView({ type: "jump", index });
+    applyDesktopPanelView(target);
+  }
   const undoRef = useRef<(kind: OverlayKind) => void>(() => {});
   undoRef.current = (kind) => {
     if (kind === "repos") setReposOpen(false);
@@ -560,25 +605,53 @@ export function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrow]);
 
-  // docs/UX.md §3.2: every selection opens the sheet at Peek, never higher,
-  // and replaces whatever card (a road, map quality) was showing. In
-  // landscape it also opens a collapsed side sheet (§9); the inspector
-  // shows the new card at Half (§5).
+  // docs/UX.md §3.2: every phone selection opens the sheet at Peek, never
+  // higher, and replaces whatever card (a road, map quality) was showing.
+  // Landscape also opens its collapsed side sheet (§9). Desktop selections
+  // restart the panel trail below.
   const selKey = `${sel}|${selSym}|${selHSym}|${selD}|${search.dir ?? ""}`;
-  const prevSelKeyRef = useRef(selKey);
+  const prevSelKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (prevSelKeyRef.current === selKey) return;
+    if (!doc) return;
+    if (narrow && prevSelKeyRef.current == null) {
+      prevSelKeyRef.current = selKey;
+      return;
+    }
+    const changed = prevSelKeyRef.current !== selKey;
     prevSelKeyRef.current = selKey;
+    if (!narrow) {
+      if (sel != null && selHSym != null) {
+        const d = D_(doc, sel);
+        const raw = districtSymbolsMap.get(d);
+        const local = raw?.symbol_indices.indexOf(selHSym) ?? -1;
+        dispatchDesktopView({ type: "map-symbol", district: d, file: sel, label: raw && local >= 0 ? rowName(raw.symbols[local]) : "Symbol", hierarchicalSymbol: selHSym });
+      } else if (sel != null && selSym != null) {
+        const d = D_(doc, sel);
+        dispatchDesktopView({ type: "map-symbol", district: d, file: sel, label: doc.S?.[String(sel)]?.[selSym]?.[0] ?? "Symbol", symbol: selSym });
+      } else if (sel != null) {
+        dispatchDesktopView({ type: "map-file", district: D_(doc, sel), file: sel });
+      } else if (selD != null) {
+        dispatchDesktopView({ type: "map-district", district: selD });
+      } else {
+        dispatchDesktopView({ type: "overview" });
+      }
+      if (changed) {
+        setQuality(false);
+        setPathPick(null);
+        setPathEnds(null);
+        setRoute(null);
+      }
+      return;
+    }
+    if (!changed) return;
     setQuality(false);
     setStructure(null);
-    setInspectorDetent("half");
-    if (!narrow) return;
     changeDetent("peek");
     if (sel != null || selD != null) setSideOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selKey]);
+  }, [selKey, doc]);
   // Map quality is a Full-sheet view on a phone; the sheet leaving
-  // Half/Full ends it. (The desktop inspector has no detent to leave.)
+  // Half/Full ends it. The desktop view stack owns its own card history.
   useEffect(() => {
     if (narrow && detent === "peek") setQuality(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -628,11 +701,11 @@ export function MapView() {
   }
   /** docs/UX.md §3.5 and §7.1 rule 5, every profile: a tap on empty map
    * clears the selection (one tap, one step -- no zoom), and returns the
-   * phone's sheet to Peek or closes the desktop inspector. A road card, the
+   * phone's sheet to Peek or the desktop panel to its overview. A road card, the
    * map-quality card or a path waiting for its end are the step it takes
    * first. */
   function emptyTap() {
-    if (pathPick && !pathEnds) return;
+    if (narrow && pathPick && !pathEnds) return;
     if (structure) {
       setStructure(null);
       return;
@@ -642,46 +715,50 @@ export function MapView() {
       clearAll();
       return;
     }
-    if (!narrow) setQuality(false);
+    if (!narrow) {
+      setQuality(false);
+      dispatchDesktopView({ type: "overview" });
+    }
     else changeDetent("peek");
   }
-  /** §5: Esc closes the inspector -- whatever card it shows goes, and the
-   * selection with it (as its close button does). */
-  function closeInspector() {
-    setStructure(null);
-    setQuality(false);
-    clearPath();
-    if (sel != null || selD != null) clearAll();
-  }
-  // Esc on desktop and tablet: closes the inspector (§5), else leaves the
-  // CSS fullscreen fallback. The native fullscreen path exits on Esc in the
-  // browser itself and fires fullscreenchange (handled above);
-  // exitFullscreen()'s own guard makes calling it redundantly harmless. A
-  // key already handled (search's own Esc closes its dropdown) or typed
-  // into a field is not ours.
-  const escRef = useRef<() => boolean>(() => false);
-  escRef.current = () => {
-    if (hasCard) {
-      closeInspector();
-      return true;
-    }
-    if (isFullscreen) {
-      void exitFullscreen();
-      return true;
-    }
-    return false;
-  };
+  // Desktop panel shortcuts for phase 7a. Search and repository/dialog
+  // chrome handle their own open/close keys; otherwise Esc pops one view.
   useEffect(() => {
     if (narrow) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.isContentEditable || t.closest("input, textarea, select"))) return;
-      if (escRef.current()) e.preventDefault();
+      const typing = !!t && (t.isContentEditable || !!t.closest("input, textarea, select, [contenteditable]"));
+      if (e.key === "Escape") {
+        if (typing) return;
+        if (desktopSearchOpen) {
+          setDesktopSearchOpen(false);
+          e.preventDefault();
+          return;
+        }
+        if (keyboardOpen) {
+          setKeyboardOpen(false);
+          e.preventDefault();
+          return;
+        }
+        if (desktopBack()) {
+          e.preventDefault();
+          return;
+        }
+        if (isFullscreen) {
+          void exitFullscreen();
+          e.preventDefault();
+        }
+        return;
+      }
+      if (e.key === "[" && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setDesktopPanelOpen((open) => !open);
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [narrow]);
+  }, [narrow, desktopSearchOpen, keyboardOpen, desktopViews, isFullscreen]);
 
   const rendererCallbacks: MapRendererCallbacks = {
     onSelectFile: (i) => (pathPick && !pathEnds ? completePath(i) : selectFile(i)),
@@ -875,12 +952,6 @@ export function MapView() {
   }
 
   // ---------- desktop and tablet (docs/UX.md §5, §9) ----------
-  // One tree for both, so a window crossing 1100 px keeps its MapCanvas (and
-  // its view): only the rail's toggle, the inspector's width and the
-  // targets' size differ.
-  const tablet = profile === "tablet";
-  const railShown = !isFullscreen && (!tablet || railOpen);
-  const controlSize = desktopControlSize(profile);
   const cardProps = {
     doc,
     packageLayout,
@@ -892,8 +963,9 @@ export function MapView() {
     symbolsLoading: selSymbolsLoading,
     adj,
     radj,
-    detent: inspectorDetent,
-    onDetent: (d: Detent) => setInspectorDetent(d === "full" ? "full" : "half"),
+    detent: "full" as const,
+    onDetent: (_d: Detent) => {},
+    compactRows: profile === "desktop",
     quality,
     onCloseQuality: () => setQuality(false),
     structure,
@@ -905,8 +977,9 @@ export function MapView() {
       setRoute(null);
       setPathEnds(null);
       setPathPick({ anchor: i, dir });
+      dispatchDesktopView({ type: "push", view: { type: "path" } });
     },
-    onPathCancel: clearPath,
+    onPathCancel: desktopBack,
     onClearSelection: () => {
       clearPath();
       clearAll();
@@ -921,111 +994,67 @@ export function MapView() {
     onBreadcrumbRepo: clearAll,
     onBreadcrumbFile: (i: number) => updateSearch({ file: doc.F[i], sym: undefined, hsym: undefined, d: undefined, dir: undefined }),
   };
-  const searchBox = <SearchBox doc={doc} onPick={pickSearchResult} touch={touch} />;
-
+  const activeDesktopView = desktopViews[desktopViews.length - 1];
+  const panelTabLabel = activeDesktopView?.type === "overview"
+    ? `Districts ${Object.values(doc.districts).filter((district) => districtClass(district) === "mainland").length.toLocaleString("en-US")}`
+    : desktopPanelCrumbs(desktopViews, doc)[desktopViews.length - 1]?.label ?? "Map details";
   return (
-    <div className="flex h-full flex-col" data-desktop-shell data-profile={profile} data-touch={touch ? "" : undefined}>
-      {!isFullscreen && (
-        <TopBar
-          catalogue={catalogue}
-          doc={doc}
-          owner={owner}
-          repo={repo}
-          layer={search.layer}
-          onLayer={(l) => updateSearch({ layer: l })}
-          search={searchBox}
-          rail={tablet ? { open: railOpen, onToggle: () => setRailOpen((v) => !v) } : undefined}
-          touch={touch}
-        />
-      )}
-      <div className="relative flex min-h-0 flex-1">
-        {railShown && (
-          <DistrictRail
-            doc={doc}
-            packageLayout={packageLayout}
-            tab={activeDirectory ? "folders" : indexTab}
-            onTab={setIndexTab}
-            selected={selD ?? (sel != null ? D_(doc, sel) : null)}
-            activeDirectory={activeDirectory}
-            // Issue #82 "district index": a district row's key-file line
-            // (most imported / entry / links a bridge) selects the file,
-            // panning only to bring it out from under the inspector or in
-            // from off screen (selectFile() is pan-only for every caller,
-            // per A1).
-            onPickKeyFile={(i) => selectFile(i)}
-            onSelectDistrict={(d) => {
-              // Issue #82 A1: a rail row SELECTS the district (mainland and
-              // island rows alike) and pans to it if it's off screen -- or,
-              // §5, under the inspector it opens -- never zooming in.
-              // selectDistrict() itself stays pan-free (it's shared with map
-              // taps and the breadcrumb, which must never move the view);
-              // this is the one place that adds the pan, because a rail
-              // target genuinely can be off screen.
-              selectDistrict(d);
-              framePeekNow();
-              canvasRef.current?.panToDistrict(d);
-            }}
-            onSelectDirectory={selectDirectory}
-          />
-        )}
-        <div
-          ref={mapAreaRef}
-          data-map-area
-          className={`relative min-w-0 flex-1 overflow-hidden bg-[var(--canvas)]${isFullscreen ? " fixed inset-0 z-50" : ""}`}
-        >
-          {mapCanvas}
-          <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
-          {/* Fullscreen: no top bar, so search floats in the map's top-left
-              corner, below the top safe inset (§9: the fallback covers the
-              notch, and search must not sit under it). */}
-          {isFullscreen && (
-            <div
-              data-fullscreen-search
-              // Floating over the map, the field takes the raised chrome
-              // colour (in the top bar it is the canvas colour, §5).
-              className="absolute z-40 rounded-[10px] shadow-[0_6px_18px_rgba(0,0,0,.25)] [&_label]:bg-[var(--chrome2)]"
-              style={{
-                top: `calc(${DESKTOP_GUTTER_PX}px + env(safe-area-inset-top, 0px))`,
-                left: desktopLeftEdge(true),
-                width: `min(460px, calc(100% - ${2 * DESKTOP_GUTTER_PX}px - ${hasCard ? inspectorWidth(profile) + INSPECTOR_INSET_PX : 0}px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)))`,
-                height: FULLSCREEN_SEARCH_HEIGHT_PX,
-              }}
-            >
-              {searchBox}
-            </div>
-          )}
-          {hasCard && (
-            <Inspector profile={profile} fullscreen={isFullscreen}>
-              <SelectionCard {...cardProps} />
-            </Inspector>
-          )}
-          <BottomLeftStack atScreenEdge={isFullscreen || !railShown}>
-            {search.layer === "p" && (
-              <PackageLegend
-                grouping={packageGrouping}
-                auto={search.depth == null}
-                minDepth={packageLayout.minDepth}
-                maxDepth={packageLayout.maxDepth}
-                onDepth={(depth) => updateSearch({ depth: depth === packageLayout.autoDepth ? undefined : depth })}
-              />
-            )}
-            <RampLegend layer={search.layer} maxCh={maxCh} maxCx={maxCx} />
-            <QualityStrip doc={doc} unconnected={packageLayout.unconnectedFiles.length} onOpen={() => setQuality(true)} touch={touch} />
-          </BottomLeftStack>
-          <ZoomControls
-            onZoomIn={() => canvasRef.current?.zoomBy(1.6)}
-            onZoomOut={() => canvasRef.current?.zoomBy(1 / 1.6)}
-            onFit={() => canvasRef.current?.fit(true)}
-            isFullscreen={isFullscreen}
-            onToggleFullscreen={toggleFullscreen}
-            size={controlSize}
-            style={{
-              right: `calc(${DESKTOP_GUTTER_PX}px + env(safe-area-inset-right, 0px))`,
-              bottom: `calc(${DESKTOP_GUTTER_PX}px + env(safe-area-inset-bottom, 0px))`,
-            }}
-          />
-        </div>
-      </div>
+    <div
+      ref={mapAreaRef}
+      data-map-area
+      data-desktop-shell
+      data-profile={profile}
+      data-touch={touch ? "" : undefined}
+      className={`relative h-full overflow-hidden bg-[var(--canvas)]${isFullscreen ? " fixed inset-0 z-50" : ""}`}
+    >
+      {mapCanvas}
+      <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
+      <DesktopChrome
+        catalogue={catalogue}
+        doc={doc}
+        owner={owner}
+        repo={repo}
+        layer={search.layer}
+        onLayer={(layer) => updateSearch({ layer })}
+        touch={touch}
+        panelTabLabel={panelTabLabel}
+        onOpenSearch={() => setDesktopSearchOpen(true)}
+        searchOpen={desktopSearchOpen}
+        onCloseSearch={() => setDesktopSearchOpen(false)}
+        onSearchPick={pickSearchResult}
+        keyboardOpen={keyboardOpen}
+        onKeyboardOpen={setKeyboardOpen}
+        onZoomIn={() => canvasRef.current?.zoomBy(1.6)}
+        onZoomOut={() => canvasRef.current?.zoomBy(1 / 1.6)}
+        onFit={() => canvasRef.current?.fit(true)}
+        isFullscreen={isFullscreen}
+        onToggleFullscreen={toggleFullscreen}
+      />
+      <DesktopPanel
+        doc={doc}
+        packageLayout={packageLayout}
+        packageGrouping={packageGrouping}
+        touch={touch}
+        panelOpen={desktopPanelOpen}
+        panelTabLabel={panelTabLabel}
+        views={desktopViews}
+        layer={search.layer}
+        indexTab={activeDirectory ? "folders" : indexTab}
+        activeDirectory={activeDirectory}
+        onIndexTab={setIndexTab}
+        onPanelOpen={setDesktopPanelOpen}
+        onBack={desktopBack}
+        onJump={desktopJump}
+        onOpenQuality={() => {
+          setQuality(true);
+          dispatchDesktopView({ type: "push", view: { type: "quality" } });
+        }}
+        onSelectDistrict={selectDistrict}
+        onSelectDirectory={selectDirectory}
+        onDepth={(depth) => updateSearch({ depth: depth === packageLayout.autoDepth ? undefined : depth })}
+        packageAuto={search.depth == null}
+        cardProps={cardProps}
+      />
     </div>
   );
 }

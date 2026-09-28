@@ -5,8 +5,8 @@
 //
 // The layout is chosen by the available box, not by `vh` or the window width
 // alone. The old single breakpoint (width <= 820 px, hooks/useIsNarrow.ts)
-// gave an 844 x 390 landscape phone the desktop layout with a 250 px rail and
-// 28 px buttons, and a 768 px portrait tablet the phone shell.
+// gave an 844 x 390 landscape phone the desktop layout and a 768 px portrait
+// tablet the phone shell.
 
 import type { Insets } from "./geometry";
 import { CONTROL_SIZE_PX, FLOAT_GUTTER_PX, PILL_HEIGHT_PX, PILL_TOP_PX, SAFE_GAP_PX } from "./phoneShell";
@@ -38,8 +38,8 @@ export function compactMap(width: number, height: number): boolean {
  *     "height > width"; a box that is <= 600 wide, taller than 500 and not
  *     taller than it is wide (a 580 x 540 window) matches no row of the
  *     table, and the phone shell is the only layout that fits 580 px.
- *  3. width <= 1100: tablet (the desktop layout, rail collapsible, 44 px
- *     touch targets).
+ *  3. width <= 1100: tablet (the desktop layout, panel hidden below 900 px,
+ *     44 px touch targets).
  *  4. otherwise desktop.
  */
 export function layoutProfile(width: number, height: number): LayoutProfile {
@@ -50,8 +50,7 @@ export function layoutProfile(width: number, height: number): LayoutProfile {
 }
 
 /** The phone shell (pill, control column, one sheet) serves both phone
- * profiles; the desktop layout (top bar, rail, inspector) serves the other
- * two. */
+ * profiles; the floating command bar and panel serve the other two. */
 export function isPhoneShell(p: LayoutProfile): boolean {
   return p === "phone" || p === "landscape";
 }
@@ -98,75 +97,48 @@ export function landscapeSafeInsets(open: boolean, safe: SafeArea): Insets {
 
 // ---------------------------------------------------------------- desktop and tablet
 
-/** §5: a 56 px top bar and a 320 px rail. */
-export const TOP_BAR_HEIGHT_PX = 56;
-export const RAIL_WIDTH_PX = 320;
-/** §5: the inspector floats 20 px in from the map's top and right edges;
- * 380 px on desktop, 360 on a tablet (§9). */
-export const INSPECTOR_INSET_PX = 20;
-export function inspectorWidth(p: LayoutProfile): number {
-  return p === "tablet" ? 360 : 380;
-}
+/** §5 floating desktop/tablet chrome. Keep these with desktopSafeInsets():
+ * the map frame and the objects over it use one set of measurements. */
+export const DESKTOP_GUTTER_PX = 16;
+export const COMMAND_BAR_TOP_PX = 16;
+export const COMMAND_BAR_HEIGHT_PX = 44;
+export const DESKTOP_PANEL_LEFT_PX = 16;
+export const DESKTOP_PANEL_TOP_PX = 72;
+export const DESKTOP_PANEL_BOTTOM_PX = 72;
+export const DESKTOP_PANEL_WIDTH_PX = 360;
+export const DESKTOP_LEGEND_BOTTOM_PX = 64;
+export const DESKTOP_CONTROL_BOTTOM_PX = 16;
+/** Extra space after the panel before the safe rectangle starts, matching
+ * the desktop prototype's fit rectangle. */
+export const DESKTOP_PANEL_SAFE_GAP_PX = 24;
+/** The prototype's unoccluded map margin when the panel is hidden. */
+export const DESKTOP_HIDDEN_LEFT_INSET_PX = 24;
+/** Gap after the command row, control group and fit rectangle. */
+export const DESKTOP_GAP_PX = 24;
+export const DESKTOP_COMMAND_SAFE_GAP_PX = 16;
 /** §5: 40 px controls on desktop (a pointer), 44 on a tablet (touch, §8.2). */
 export function desktopControlSize(p: LayoutProfile): number {
   return p === "tablet" ? 44 : 40;
 }
-/** The map-quality strip's height at the bottom-left (a 40 px control, 44
- * on touch). */
-export function qualityStripHeight(p: LayoutProfile): number {
-  return p === "tablet" ? 44 : 40;
-}
-/** The fullscreen fallback's floating search box (the top bar is gone). */
-export const FULLSCREEN_SEARCH_HEIGHT_PX = 44;
-/** Floating chrome's inset from the map box's edges. */
-export const DESKTOP_GUTTER_PX = 20;
-/** Clear space kept between the fit rectangle and chrome. */
-export const DESKTOP_GAP_PX = 12;
-
-/** The left edge of floating chrome, as CSS: the gutter, plus the left
- * safe inset where the map box reaches the screen's edge (no rail, or
- * fullscreen). */
-export function desktopLeftEdge(atScreenEdge: boolean): string {
-  return atScreenEdge ? `calc(${DESKTOP_GUTTER_PX}px + env(safe-area-inset-left, 0px))` : `${DESKTOP_GUTTER_PX}px`;
-}
-
 export interface DesktopChrome {
   profile: LayoutProfile;
-  /** The inspector is open (something is selected). */
-  inspector: boolean;
-  /** The rail is on screen (always on desktop; toggled on a tablet). It
-   * sits outside the map box, so it only decides whether the map box
-   * reaches the left edge of the screen and so has to clear the left safe
-   * inset itself. */
-  rail: boolean;
-  /** Fullscreen (native or the CSS fallback): no top bar and no rail, and
-   * search floats in the map's top-left corner. */
-  fullscreen: boolean;
+  /** The left panel is a real inset while it is visible. */
+  panelOpen: boolean;
   safe: SafeArea;
 }
 
-/** §5 "the fit safe rectangle is the map element's box minus the inspector
- * when it is open, computed from the real chrome": insets from the MAP
- * BOX's edges (not the window's), built from the same constants the chrome
- * is laid out with. The quality strip (bottom-left) and the controls
- * (bottom-right) are cleared along the bottom edge; the inspector, when
- * open, along the right; the safe-area insets wherever the map box reaches
- * the screen's edge (every side in fullscreen; never the top otherwise --
- * the top bar carries it). */
+/** §5's fit rectangle, measured from the full-bleed map. Each edge uses the
+ * same constants as the command bar, panel and controls. */
 export function desktopSafeInsets(c: DesktopChrome): Insets {
-  const edgeLeft = c.fullscreen || !c.rail ? c.safe.left : 0;
-  const edgeTop = c.fullscreen ? c.safe.top : 0;
   const controls = desktopControlSize(c.profile);
-  const top = c.fullscreen
-    ? edgeTop + DESKTOP_GUTTER_PX + FULLSCREEN_SEARCH_HEIGHT_PX + DESKTOP_GAP_PX
-    : DESKTOP_GUTTER_PX;
-  const right = c.inspector
-    ? c.safe.right + INSPECTOR_INSET_PX + inspectorWidth(c.profile) + DESKTOP_GAP_PX
-    : c.safe.right + DESKTOP_GUTTER_PX + controls + DESKTOP_GAP_PX;
   return {
-    left: edgeLeft + DESKTOP_GUTTER_PX,
-    top,
-    right,
-    bottom: c.safe.bottom + DESKTOP_GUTTER_PX + qualityStripHeight(c.profile) + DESKTOP_GAP_PX,
+    left: c.safe.left + (c.panelOpen
+      ? DESKTOP_PANEL_LEFT_PX + DESKTOP_PANEL_WIDTH_PX + DESKTOP_PANEL_SAFE_GAP_PX
+      : DESKTOP_HIDDEN_LEFT_INSET_PX),
+    top: c.safe.top + COMMAND_BAR_TOP_PX + COMMAND_BAR_HEIGHT_PX + DESKTOP_COMMAND_SAFE_GAP_PX,
+    right: c.safe.right + DESKTOP_GUTTER_PX + controls + DESKTOP_GAP_PX,
+    // The prototype leaves 72 px below the fitted map for the floating
+    // controls and legend row, while the controls themselves stay at 16 px.
+    bottom: c.safe.bottom + DESKTOP_PANEL_BOTTOM_PX,
   };
 }

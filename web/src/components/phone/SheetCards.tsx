@@ -24,7 +24,7 @@ import type { Detent } from "@/map/phoneShell";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { DistrictIndexList } from "@/components/Sidebar";
 import { PATH_KIND_TEXT as KIND_TEXT, WHY_COLOR, compactCount } from "@/lib/cardText";
-import { LanguageRow, StatusGlyph } from "@/components/ReferenceCoverageIndicator";
+import { LanguageRow } from "@/components/ReferenceCoverageIndicator";
 import {
   BlastLine,
   DistrictBody,
@@ -34,7 +34,7 @@ import {
   SymbolRelationsCard,
   UnconnectedList,
 } from "@/components/SelectionPanel";
-import { ChevronIcon, CloseIcon, FitIcon } from "./icons";
+import { CloseIcon, FitIcon } from "./icons";
 
 // docs/UX.md §3.2 and §4: what the phone's one bottom sheet shows, by map
 // state. Each card leads with its Peek part (the first ~110 px under the
@@ -90,9 +90,9 @@ function SheetButton({
   );
 }
 
-function Section({ title, aside }: { title: ReactNode; aside?: ReactNode }) {
+function Section({ title, aside, compact = false }: { title: ReactNode; aside?: ReactNode; compact?: boolean }) {
   return (
-    <div className="mt-5 flex min-h-[44px] items-center justify-between">
+    <div className={`flex items-center justify-between ${compact ? "mt-4 min-h-8" : "mt-5 min-h-[44px]"}`}>
       <h4 className="text-[15px] font-semibold">{title}</h4>
       {aside}
     </div>
@@ -134,33 +134,23 @@ function FileRows({ doc, files, onSelectFile, dataKey }: { doc: MapDocument; fil
 /** docs/UX.md §4.2: one row, once, in a fixed place: how references were
  * resolved and how many files are off the map. Replaces the floating
  * chips. */
-function MapQualityRow({ doc, unconnected, onOpen }: { doc: MapDocument; unconnected: number; onOpen(): void }) {
-  const summary = summarizeReferenceCoverage(doc.coverage);
-  if (!summary && unconnected === 0) return null;
+function MapQualityRow({ unconnected, onOpen }: { unconnected: number; onOpen(): void }) {
   return (
     <button
       type="button"
       data-map-quality
       onClick={onOpen}
+      aria-label={`${unconnected.toLocaleString("en-US")} files without links. Open map quality`}
       className="mt-3.5 flex min-h-[48px] w-full items-center gap-2.5 rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] px-3 text-left text-small"
     >
-      <span className="text-[var(--dim)]">
-        <StatusGlyph status={summary?.status ?? "heuristic"} />
-      </span>
-      <span className="min-w-0 flex-1">
-        {summary ? summary.label : "References"}
-        {unconnected > 0 && (
-          <>
-            <span className="text-[var(--dim)]"> · </span>
-            <span data-unconnected-count>{unconnected.toLocaleString("en-US")} unconnected files</span>
-          </>
-        )}
-      </span>
-      <span className="text-[var(--dim)]">
-        <ChevronIcon />
-      </span>
+      <span className="min-w-0 flex-1" data-unconnected-count>{unconnected.toLocaleString("en-US")} files without links</span>
+      <InfoIcon />
     </button>
   );
+}
+
+function InfoIcon() {
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" className="shrink-0 text-[var(--dim)]"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></svg>;
 }
 
 export function OverviewCard({
@@ -206,7 +196,7 @@ export function OverviewCard({
             </button>
           </div>
         ) : (
-          <MapQualityRow doc={doc} unconnected={packageLayout.unconnectedFiles.length} onOpen={onOpenQuality} />
+          <MapQualityRow unconnected={packageLayout.unconnectedFiles.length} onOpen={onOpenQuality} />
         )}
         <div className="mt-5 flex items-center justify-between">
           <h4 className="text-[15px] font-semibold">
@@ -232,7 +222,7 @@ export function OverviewCard({
       </div>
       <div className="-mx-5 mt-2.5 border-t border-[var(--rule)]">
         {tab === "districts" ? (
-          <DistrictIndexList doc={doc} packageLayout={packageLayout} onPickKeyFile={onPickKeyFile} onSelectDistrict={onSelectDistrict} variant="sheet" />
+          <DistrictIndexList doc={doc} packageLayout={packageLayout} onPickKeyFile={onPickKeyFile} onSelectDistrict={onSelectDistrict} />
         ) : (
           <div className="px-5">
             <FolderBody layout={packageLayout} activeDirectory={activeDirectory} onSelectDirectory={onSelectDirectory} nested={false} />
@@ -245,51 +235,58 @@ export function OverviewCard({
 
 // ---------- map quality (§4.2's Full sheet) ----------
 
-export function QualityCard({ doc, packageLayout, onClose, onSelectFile }: { doc: MapDocument; packageLayout: PackageLayout; onClose(): void; onSelectFile(i: number): void }) {
+export function QualityCard({ doc, packageLayout, onClose, onSelectFile, desktopPanel = false, compactRows = false, touchTargets = false }: { doc: MapDocument; packageLayout: PackageLayout; onClose(): void; onSelectFile(i: number): void; desktopPanel?: boolean; compactRows?: boolean; touchTargets?: boolean }) {
   const summary = summarizeReferenceCoverage(doc.coverage);
   const unconnected = packageLayout.unconnectedFiles.length;
+  const qualityTitle = summary?.status === "exact"
+    ? "SCIP references"
+    : summary?.status === "partial"
+      ? "SCIP and hand-written references"
+      : "Some links may be missing";
   return (
-    <div data-sheet-card="quality">
+    <div data-sheet-card="quality" data-desktop-quality={desktopPanel || undefined}>
       <div data-sheet-dragzone className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <Eyebrow>Map quality</Eyebrow>
-          <SheetTitle>{summary?.label ?? "References"}</SheetTitle>
+          <SheetTitle>{qualityTitle}</SheetTitle>
         </div>
-        <CloseButton label="Close map quality" onClick={onClose} />
+        {!desktopPanel && <CloseButton label="Close map quality" onClick={onClose} />}
       </div>
       <p className="mt-3.5 text-body text-[var(--dim)]">
         {summary?.status === "exact"
-          ? "Imports and references come from each language's own indexer."
-          : "Imports are resolved by tolmap's own rules, so some links are missing."}{" "}
-        Every count is a lower bound: the map never guesses a link it cannot see.
+          ? "Imports and references come from each language's own SCIP indexer."
+          : summary?.status === "partial"
+            ? "Some imports and references come from SCIP indexes; the rest use tolmap's own import rules. tolmap can miss a link but never invents one, so every count on the map is a minimum."
+            : "tolmap finds links by reading import statements with its own rules, not by compiling the code. It can miss a link but never invents one, so every count on the map is a minimum."}
       </p>
-      {summary && summary.languages.length > 0 && (
-        <ul className="mt-2 text-small text-[var(--dim)]" data-reference-languages>
-          {summary.languages.map((row) => (
-            <LanguageRow key={row.language} row={row} />
-          ))}
-        </ul>
-      )}
-      {unconnected > 0 && (
-        <>
-          <Section title={`${unconnected.toLocaleString("en-US")} unconnected files`} />
-          {doc.coverage && (
-            <p className="text-small text-[var(--dim)]" data-coverage-detail>
-              {/* Same two counts, and the same wording, as the desktop list
-                  header (SelectionPanel.tsx): the list is files not placed on
-                  the map; coverage counts every file with no kept edge. */}
-              {unconnected.toLocaleString("en-US")} not placed on the map. {doc.coverage.zero_edge_files.toLocaleString("en-US")} files have no detected link in all (
-              {Object.entries(doc.coverage.by_language)
-                .map(([lang, row]) => `${lang}: ${row.zero_edge_files.toLocaleString("en-US")}/${row.total_files.toLocaleString("en-US")}`)
-                .join(" · ")}
-              ); the rest sit in districts by folder.
-            </p>
-          )}
-          <UnconnectedList layout={packageLayout} doc={doc} onSelectFile={onSelectFile} nested={false} />
-        </>
-      )}
+      <section className="mt-4" aria-labelledby="phone-unfollowed-heading">
+        <Section title={<span id="phone-unfollowed-heading">Imports it could not follow</span>} compact={compactRows} />
+        {doc.coverage && Object.keys(doc.coverage.by_language).length > 0 ? (
+          <div className="-mx-2 flex flex-col" data-quality-language-counts>
+            {Object.entries(doc.coverage.by_language).sort(([a], [b]) => a.localeCompare(b)).map(([language, row]) => {
+              const detail = summary?.languages.find((entry) => entry.language === language);
+              return (
+                <div key={language} data-quality-language={language} className={`flex ${touchTargets ? "min-h-[44px]" : compactRows ? "min-h-8" : "min-h-9"} items-center justify-between gap-2 rounded-[8px] px-2 text-small`}>
+                  <span className="min-w-0 truncate text-[var(--on)]">{languageLabel(language)}{detail && <span className="text-meta text-[var(--dim)]"> · {detail.exact ? "SCIP" : "tolmap rules"}{detail.recallPercent == null ? "" : ` · recall ${detail.recallPercent}%`}</span>}</span>
+                  <span className="shrink-0 font-mono text-meta text-[var(--dim)]">{row.zero_edge_files.toLocaleString("en-US")} of {row.total_files.toLocaleString("en-US")} files</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : <p className="text-small text-[var(--dim)]" data-quality-language-counts>Language breakdown is not present in this map document.</p>}
+        {summary?.languages.length ? <ul className="mt-1 text-small text-[var(--dim)]" data-reference-languages>{summary.languages.map((row) => <LanguageRow key={row.language} row={row} />)}</ul> : null}
+      </section>
+      {summary?.languages.length === 0 && doc.coverage?.references == null && <p className="mt-1 text-meta text-[var(--dim)]">References were resolved with tolmap's hand-written rules.</p>}
+      <Section title={<span data-unconnected-count>{unconnected.toLocaleString("en-US")} files without links</span>} compact={compactRows} />
+      {unconnected > 0 && <p className="text-small text-[var(--dim)]">Nothing imports them and they import nothing tolmap could follow, so they are listed here instead of placed on the map.</p>}
+      <UnconnectedList layout={packageLayout} doc={doc} onSelectFile={onSelectFile} nested={false} compactRows={compactRows} touchTargets={touchTargets} />
     </div>
   );
+}
+
+function languageLabel(language: string): string {
+  const labels: Record<string, string> = { py: "Python", go: "Go", ts: "TypeScript", js: "JavaScript", rs: "Rust" };
+  return labels[language] ?? language;
 }
 
 // ---------- a district ----------
@@ -304,6 +301,7 @@ export function DistrictSheetCard({
   onSelectFile,
   onSelectDistrict,
   onSelectDirectory,
+  desktopPanel = false,
 }: {
   doc: MapDocument;
   d: number;
@@ -316,6 +314,7 @@ export function DistrictSheetCard({
   onSelectFile(i: number): void;
   onSelectDistrict(d: number): void;
   onSelectDirectory(path: string): void;
+  desktopPanel?: boolean;
 }) {
   const [foldersExpanded, setFoldersExpanded] = useState(false);
   const [filesExpanded, setFilesExpanded] = useState(false);
@@ -338,7 +337,7 @@ export function DistrictSheetCard({
               )}
             </p>
           </div>
-          <CloseButton label="Clear selection" onClick={onClose} />
+          {!desktopPanel && <CloseButton label="Clear selection" onClick={onClose} />}
         </div>
         <div className="mt-3 flex gap-2">
           <SheetButton aria-label="Zoom to district" onClick={() => onZoomDistrict(d)}>
@@ -433,6 +432,9 @@ export function FileSheetCard({
   onBreadcrumbRepo,
   onBreadcrumbFile,
   onPath,
+  desktopPanel = false,
+  compactRows = desktopPanel,
+  touchTargets = false,
 }: {
   doc: MapDocument;
   i: number;
@@ -454,6 +456,9 @@ export function FileSheetCard({
   onBreadcrumbRepo(): void;
   onBreadcrumbFile(i: number): void;
   onPath(i: number, dir: "from" | "to"): void;
+  desktopPanel?: boolean;
+  compactRows?: boolean;
+  touchTargets?: boolean;
 }) {
   const [listDir, setListDir] = useState<"out" | "in" | null>(null);
   const sy = symbolsOf(doc, i);
@@ -507,7 +512,7 @@ export function FileSheetCard({
       <div data-sheet-dragzone>
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
-            <Breadcrumb
+            {!desktopPanel && <Breadcrumb
               doc={doc}
               sel={i}
               selSym={selSym}
@@ -518,7 +523,7 @@ export function FileSheetCard({
               onSelectDistrict={onSelectDistrict}
               onSelectFile={onBreadcrumbFile}
               onSelectHierSymbol={onSelectHierSymbol}
-            />
+            />}
             {symbolHeader ? (
               <>
                 <SheetTitle mono>{symbolHeader.name}</SheetTitle>
@@ -536,7 +541,7 @@ export function FileSheetCard({
               </>
             )}
           </div>
-          <CloseButton label="Clear selection" onClick={onClose} />
+          {!desktopPanel && <CloseButton label="Clear selection" onClick={onClose} />}
         </div>
         {/* The prototype's "Open <file>" and "References" buttons are the
             breadcrumb's file segment and the sheet's own Half: with the
@@ -594,7 +599,7 @@ export function FileSheetCard({
       <BlastLine blast={blast} doc={doc} />
       {decoded ? (
         detent === "full" ? (
-          <HierOutline outline={outline} external={external} selHSym={selHSym} onSelectHierSymbol={onSelectHierSymbol} onHoverHierSymbol={onHoverHierSymbol} nested={false} />
+          <HierOutline outline={outline} external={external} selHSym={selHSym} onSelectHierSymbol={onSelectHierSymbol} onHoverHierSymbol={onHoverHierSymbol} nested={false} compactRows={compactRows} />
         ) : (
           keyRows.length > 0 && (
             <>
@@ -614,7 +619,7 @@ export function FileSheetCard({
                   onMouseEnter={() => onHoverHierSymbol?.(r.global)}
                   onMouseLeave={() => onHoverHierSymbol?.(null)}
                   onClick={() => onSelectHierSymbol(r.global)}
-                  className={`flex min-h-[44px] w-full items-center justify-between gap-2 border-b border-[var(--rule)] text-left ${selHSym === r.global ? "text-[var(--accent)]" : ""}`}
+                  className={`flex ${compactRows ? "min-h-[34px]" : "min-h-[44px]"} w-full items-center justify-between gap-2 border-b border-[var(--rule)] text-left ${selHSym === r.global ? "text-[var(--accent)]" : ""}`}
                 >
                   <span className="truncate font-mono text-small">{rowName(r.row)}</span>
                   <span className="font-mono text-meta text-[var(--dim)]">
@@ -630,7 +635,7 @@ export function FileSheetCard({
           loading symbols…
         </p>
       ) : detent === "full" ? (
-        <SymbolDirectory doc={doc} i={i} sy={sy} cur={selSym} onSelectSymbol={onSelectSymbol} />
+        <SymbolDirectory doc={doc} i={i} sy={sy} cur={selSym} onSelectSymbol={onSelectSymbol} compactRows={compactRows} touchTargets={touchTargets} />
       ) : (
         flatKey.length > 0 && (
           <>
@@ -648,7 +653,7 @@ export function FileSheetCard({
                 type="button"
                 data-symbol-row={`${i}:${n}`}
                 onClick={() => onSelectSymbol(i, n)}
-                className={`flex min-h-[44px] w-full items-center justify-between gap-2 border-b border-[var(--rule)] text-left ${selSym === n ? "text-[var(--accent)]" : ""}`}
+                className={`flex ${compactRows ? "min-h-[34px]" : "min-h-[44px]"} w-full items-center justify-between gap-2 border-b border-[var(--rule)] text-left ${selSym === n ? "text-[var(--accent)]" : ""}`}
               >
                 <span className="truncate font-mono text-small">{s[0]}</span>
                 <span className="font-mono text-meta text-[var(--dim)]">
@@ -871,6 +876,12 @@ export interface SelectionCardProps {
   onBreadcrumbFile(i: number): void;
   /** The district card's "Details" (the phone only). */
   onDistrictDetails?(): void;
+  /** Desktop panel uses its own view-stack head for breadcrumbs and back. */
+  desktopPanel?: boolean;
+  /** Desktop pointer rows are 34 px; tablet panel rows stay 44 px. */
+  compactRows?: boolean;
+  /** Tablet panel's shared detail cards keep all nested controls touch sized. */
+  touchTargets?: boolean;
 }
 
 /** docs/UX.md principle 10, "one component, two containers": the card for
@@ -887,7 +898,7 @@ export function SelectionCard(p: SelectionCardProps) {
     return <StructureSheetCard doc={p.doc} card={p.structure} onClose={p.onCloseStructure} onSelectFile={p.onSelectFile} onSelectDistrict={p.onSelectDistrict} />;
   }
   if (p.quality) {
-    return <QualityCard doc={p.doc} packageLayout={p.packageLayout} onClose={p.onCloseQuality} onSelectFile={p.onSelectFile} />;
+    return <QualityCard doc={p.doc} packageLayout={p.packageLayout} onClose={p.onCloseQuality} onSelectFile={p.onSelectFile} desktopPanel={p.desktopPanel} compactRows={p.compactRows} touchTargets={p.touchTargets} />;
   }
   if (p.sel != null) {
     return (
@@ -912,6 +923,9 @@ export function SelectionCard(p: SelectionCardProps) {
         onBreadcrumbRepo={p.onBreadcrumbRepo}
         onBreadcrumbFile={p.onBreadcrumbFile}
         onPath={p.onPath}
+        desktopPanel={p.desktopPanel}
+        compactRows={p.compactRows}
+        touchTargets={p.touchTargets}
       />
     );
   }
@@ -927,6 +941,7 @@ export function SelectionCard(p: SelectionCardProps) {
         onSelectFile={p.onSelectFile}
         onSelectDistrict={p.onSelectDistrict}
         onSelectDirectory={p.onSelectDirectory}
+        desktopPanel={p.desktopPanel}
       />
     );
   }

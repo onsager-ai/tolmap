@@ -61,15 +61,15 @@ export function PackageLegend({ grouping, auto, minDepth, maxDepth, onDepth, var
       </section>
     );
   }
-  // "float": the desktop/tablet legend in the map's bottom-left stack, above
-  // the map-quality strip (MapView positions it). Always expanded: the phone,
+  // "float": the desktop/tablet legend in the map's bottom-left corner
+  // (MapView positions it). Always expanded: the phone,
   // which used to collapse it, has it in the Layers sheet instead (§4.6).
   return (
     <section
       aria-label="Package legend"
       data-package-legend
       data-package-expanded="true"
-      className="w-[240px] rounded-[12px] border border-[var(--rule)] bg-[rgba(var(--chrome-float-rgb),0.94)] px-2.5 py-2 text-meta text-[var(--dim)] shadow-lg"
+      className="glass w-[240px] rounded-[12px] px-2.5 py-2 text-meta text-[var(--dim)]"
     >
       <div className="mb-1.5 flex items-center gap-1.5">
         <b className="mr-auto text-label uppercase text-[var(--on)]">packages</b>
