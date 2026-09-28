@@ -695,7 +695,9 @@ export class MapRenderer {
         x1 = Math.max(x1, point[0]); y1 = Math.max(y1, point[1]);
       }
       if (Number.isFinite(x0) && Number.isFinite(y0) && Number.isFinite(x1) && Number.isFinite(y1)) {
-        this.districtUpperLabelAnchor.set(+key, [(x0 + x1) / 2, y0 + (y1 - y0) * 0.28]);
+        // Keep the title and file-count line high enough to clear the file
+        // marks clustered around each district's center/lower area.
+        this.districtUpperLabelAnchor.set(+key, [(x0 + x1) / 2, y0 + (y1 - y0) * 0.16]);
       }
     }
   }
