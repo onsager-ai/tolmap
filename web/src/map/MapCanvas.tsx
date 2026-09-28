@@ -13,6 +13,10 @@ export interface MapCanvasHandle {
    * link -- see MapRenderer.panTo's own doc comment. */
   panTo(i: number, anim?: boolean): void;
   panToDistrict(d: number, anim?: boolean): void;
+  /** Frame several districts together (Package overview row). */
+  frameDistricts(districts: readonly number[]): void;
+  /** Apply the panel's transient multi-district hover through the renderer. */
+  highlightDistricts(districts: readonly number[] | null): void;
   /** Still a real zoom -- the one thing selecting is still allowed to do,
    * because it's the user explicitly asking via the ⤢ button. */
   zoomDistrict(d: number): void;
@@ -116,6 +120,8 @@ export function MapCanvas({
       fit: (anim = true) => rendererRef.current?.fit(anim),
       panTo: (i, anim = true) => rendererRef.current?.panTo(i, anim),
       panToDistrict: (d, anim = true) => rendererRef.current?.panToDistrict(d, anim),
+      frameDistricts: (districts) => rendererRef.current?.frameDistricts(districts),
+      highlightDistricts: (districts) => rendererRef.current?.highlightDistricts(districts),
       zoomDistrict: (d) => rendererRef.current?.zoomDistrict(d),
       zoomBy: (f) => rendererRef.current?.zoomBy(f),
       hoverSymbol: (g) => rendererRef.current?.hoverSymbol(g),

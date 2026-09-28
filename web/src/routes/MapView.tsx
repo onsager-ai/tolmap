@@ -942,6 +942,7 @@ export function MapView() {
             canvasRef.current?.panToDistrict(d);
           }}
           onPickKeyFile={(i) => selectFile(i)}
+          onFrameDistricts={(districts) => canvasRef.current?.frameDistricts(districts)}
           onZoomDistrict={(d) => canvasRef.current?.zoomDistrict(d)}
           onSelectDirectory={selectDirectory}
           onBreadcrumbRepo={clearAll}
@@ -1051,6 +1052,8 @@ export function MapView() {
           dispatchDesktopView({ type: "push", view: { type: "quality" } });
         }}
         onSelectDistrict={selectDistrict}
+        onHighlightDistricts={(districts) => canvasRef.current?.highlightDistricts(districts)}
+        onFrameDistricts={(districts) => canvasRef.current?.frameDistricts(districts)}
         onSelectDirectory={selectDirectory}
         onDepth={(depth) => updateSearch({ depth: depth === packageLayout.autoDepth ? undefined : depth })}
         packageAuto={search.depth == null}

@@ -17,6 +17,10 @@ export interface PackageGroup {
 export interface PackageGrouping {
   depth: number;
   groups: readonly PackageGroup[];
+  /** The package path assigned to each file at this grouping depth. Overview
+   * rows use the same assignments as the renderer, including its collapsed
+   * "other" bucket, rather than parsing paths a second way. */
+  filePackages: readonly string[];
   /** One already-resolved colour per file. MapRenderer only indexes this
    * array in its dot loop; it never splits or walks a file path per paint. */
   fileColors: readonly string[];
@@ -149,6 +153,7 @@ function makeGrouping(fileParts: readonly (readonly string[])[], depth: number):
   return {
     depth,
     groups,
+    filePackages: paths,
     fileColors: paths.map((path) => {
       const index = shownIndex.get(path);
       return index == null ? PACKAGE_OTHER_COLOR : packageColor(index);

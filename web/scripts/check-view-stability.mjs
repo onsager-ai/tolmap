@@ -1035,6 +1035,9 @@ async function checkPackageLayout(browser, base, profile) {
 
   // docs/UX.md §4.3 and §5: the folder tree is the district index's second
   // tab -- in the phone's sheet, and in the desktop rail.
+  report((await page.locator('[data-index-tab="folders"]').count()) === 0, `${label}: Districts / Folders is hidden outside the District layer`);
+  await setLayer(page, profile, "d");
+  report((await page.locator('[data-index-tab="folders"]').count()) === 1, `${label}: Districts / Folders is available on the District layer`);
   if (profile.isMobile) await setSheetDetent(page, "full");
   await page.locator('[data-index-tab="folders"]').click();
   await page.waitForSelector("[data-folder-browser]");
@@ -1808,6 +1811,49 @@ async function checkFitButtonIcon(browser, base, profile) {
     (await fit.getAttribute("aria-label")) === "Fit map",
     `${label}: fit button keeps its aria-label`,
   );
+  await context.close();
+}
+
+// docs/UX.md §5/§4.1 (phase 7c): changing the active layer changes the
+// overview headline on both the desktop panel and phone sheet.
+async function checkLayerAwareOverview(browser, base, profile) {
+  const label = `layer-aware overview headline / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext(profile);
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify?layer=d`, { waitUntil: "domcontentloaded" });
+  const headline = page.locator("[data-overview-headline]");
+  await headline.waitFor();
+  let previous = (await headline.innerText()).trim();
+  report((await headline.getAttribute("data-overview-layer")) === "d", `${label}: District headline is shown initially`, previous);
+  const seen = new Set([previous]);
+  for (const layer of ["c", "x", "p"]) {
+    await setLayer(page, profile, layer);
+    await page.waitForFunction((expected) => document.querySelector("[data-overview-headline]")?.getAttribute("data-overview-layer") === expected, layer);
+    const current = (await headline.innerText()).trim();
+    report(current.length > 0 && current !== previous && !seen.has(current), `${label}: switching to ${LAYER_TEXT[layer]} changes the overview headline`, current);
+    const overview = profile.isMobile
+      ? page.locator('[data-sheet-card="overview"]')
+      : page.locator(`[data-desktop-overview][data-overview-layer="${layer}"]`);
+    const expectedFirstHeading = { c: "Districts by commits", x: "Districts by median complexity", p: "Packages" }[layer];
+    const headings = (await overview.locator("[data-layer-overview-index] h3").allTextContents()).map((text) => text.trim());
+    report(headings[0] === expectedFirstHeading, `${label}: ${LAYER_TEXT[layer]} uses its own list title where Index used to appear`, headings);
+    report(!headings.includes("Index") && (await overview.locator("[data-index-tab]").count()) === 0, `${label}: non-District overview has no generic Index heading or District tabs`, headings);
+    if (layer === "p") {
+      const swatches = await page.locator("[data-package-overview-row]").evaluateAll((rows) =>
+        rows.map((row) => row.querySelector("[data-package-overview-swatch]")?.getAttribute("style") ?? ""),
+      );
+      report(swatches.length > 0 && swatches.every(Boolean), `${label}: every package row carries its map swatch`, JSON.stringify(swatches.slice(0, 5)));
+    }
+    previous = current;
+    seen.add(current);
+  }
+  if (profile.isMobile) {
+    await setSheetDetent(page, "half");
+    const rows = page.locator("[data-overview-district-row], [data-layer-overview-file-row], [data-package-overview-row]");
+    const heights = await rows.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().height));
+    report(heights.length > 0 && heights.every((height) => height >= 64), `${label}: Half-sheet overview rows are at least 64 px`, JSON.stringify(heights.slice(0, 8)));
+  }
   await context.close();
 }
 
@@ -5328,7 +5374,14 @@ async function checkPhoneShellChrome(browser, base, profile) {
   const half = Math.min(480, Math.round(H * 0.57));
   const full = H - (12 + 48 + 8);
   report((await sheetDetent(page)) === "peek" && Math.abs(peek - 156) <= 1, `${label}: the sheet opens at Peek, 156 px (no bottom safe inset here)`, `shown=${peek}`);
-  report(/districts · [\d,]+ files/.test(await page.locator('[data-sheet-card="overview"]').innerText()), `${label}: Peek shows the repository summary (§4.1)`);
+  const overviewHeadline = page.locator('[data-sheet-card="overview"] [data-overview-headline] h3');
+  const headlineMetrics = await overviewHeadline.evaluate((el) => ({
+    text: el.textContent,
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+  }));
+  report(/[\d,]+ districts(?: \+ [\d,]+ islands?)? · [\d,]+ files/.test(headlineMetrics.text ?? "") && headlineMetrics.scrollWidth <= headlineMetrics.clientWidth,
+    `${label}: Peek shows the complete District-layer repository summary (§4.1)`, JSON.stringify(headlineMetrics));
 
   const grabber = page.locator("[data-sheet-grabber]");
   const g = await grabber.boundingBox();
@@ -6846,6 +6899,7 @@ async function main() {
     for (const profile of PROFILES) await checkDistrictIndex(browser, args.base, profile);
     for (const profile of PROFILES) await checkLinkColourLegend(browser, args.base, profile);
     for (const profile of PROFILES) await checkFitButtonIcon(browser, args.base, profile);
+    for (const profile of PROFILES) await checkLayerAwareOverview(browser, args.base, profile);
     await checkLayerBrightnessParity(browser, args.base);
     for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
     // Issue #82 A1

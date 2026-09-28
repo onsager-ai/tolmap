@@ -514,6 +514,12 @@ export class MapRenderer {
   private readonly onHoverMove = (e: PointerEvent) => this.hoverMove(e);
   private readonly onHoverLeave = () => this.clearHover();
   private hoverKey: string | null = null;
+  // A Package overview row can span several districts. Keep it in this same
+  // renderer-owned hover path so map paint and pointer hover never need a
+  // second React-side highlighting model.
+  private overviewDistricts: Set<number> | null = null;
+  private overviewHighlightEls: Element[] = [];
+  private overviewDimEls: Element[] = [];
   // Every element sharing hoverKey's data-k, not just the one the pointer
   // happened to land on: a multi-polygon district's blob draws one <path>
   // per polygon under the SAME "d:N" key (and its label carries it too), so
@@ -597,6 +603,8 @@ export class MapRenderer {
     // applied over this one (see renderGate.ts); fit(false, state) paints
     // the new document's state directly.
     this.renderGate.drop();
+    this.overviewDistricts = null;
+    this.clearOverviewDistrictHighlight();
     this.maxLoc = Math.max(1, ...doc.N.map((r) => r[3]));
     this.maxCh = Math.max(1, ...doc.N.map((r) => r[5]));
     this.maxCx = Math.max(1, ...doc.N.map((r) => r[4]));
@@ -1116,6 +1124,48 @@ export class MapRenderer {
     let c = this.state.geo !== "t" ? district.c : tmCentre(this.state.doc, d);
     if (!Number.isFinite(c[0]) || !Number.isFinite(c[1])) c = district.c;
     this.panToPoint(c[0], c[1], anim);
+  }
+  /** Frame every visible district in a Package overview group into the real
+   * safe rectangle. Unconnected districts have no geometry and are skipped. */
+  frameDistricts(districts: readonly number[]) {
+    if (!this.state || districts.length === 0) return;
+    const { doc, geo } = this.state;
+    const wanted = new Set(districts);
+    const bounds: [number, number, number, number] = [1e9, 1e9, -1e9, -1e9];
+    const put = (x: number, y: number) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      bounds[0] = Math.min(bounds[0], x);
+      bounds[1] = Math.min(bounds[1], y);
+      bounds[2] = Math.max(bounds[2], x);
+      bounds[3] = Math.max(bounds[3], y);
+    };
+    if (geo === "t") {
+      for (let file = 0; file < doc.N.length; file++) {
+        if (!wanted.has(D_(doc, file))) continue;
+        const [x, y, w, h] = RECT(doc, file);
+        put(x, y);
+        put(x + w, y + h);
+      }
+    } else {
+      for (const id of wanted) {
+        for (const polygon of doc.districts[String(id)]?.blob ?? []) {
+          for (const [x, y] of polygon) put(x, y);
+        }
+      }
+    }
+    if (bounds[2] < bounds[0] || bounds[3] < bounds[1]) return;
+    const safe = this.viewInsets(this.insets.safe);
+    const [left, top, right, bottom] = fitViewport(this.VW, this.VH, safe);
+    const scale = this.clampK(scaleToFit(bounds, this.VW, this.VH, safe));
+    const nx = (left + right - (bounds[2] - bounds[0]) * scale) / 2 - bounds[0] * scale;
+    const ny = (top + bottom - (bounds[3] - bounds[1]) * scale) / 2 - bounds[1] * scale;
+    this.glide(scale, nx, ny);
+  }
+  /** Hover linked to a chrome index row. Fine-pointer only; district paths
+   * receive the existing `.hovered` treatment and other district paths dim. */
+  highlightDistricts(districts: readonly number[] | null) {
+    this.overviewDistricts = districts?.length ? new Set(districts) : null;
+    this.applyOverviewDistrictHighlight();
   }
   zoomDistrict(d: number) {
     if (!this.state) return;
@@ -2005,6 +2055,7 @@ export class MapRenderer {
     // is not a repaint of its own, just one more DOM read/write on the
     // paint that already happened.
     if (this.HOVER && this.hoverKey) this.reapplyHover();
+    this.applyOverviewDistrictHighlight();
   }
 
   /** Even-odd point-in-polygon over a district's blob polygons, in world
@@ -4256,6 +4307,7 @@ export class MapRenderer {
       this.hoverEls = [...this.hoverEls, ...(this.keyElements.get(`n:${n}`) ?? []), ...(this.keyElements.get(`d:${d}`) ?? [])];
     }
     for (const e of this.hoverEls) e.classList.add("hovered");
+    this.applyOverviewDistrictHighlight();
     if (!key) {
       this.hideCard();
       return;
@@ -4285,7 +4337,10 @@ export class MapRenderer {
    * pointer moving (a different selection, a layer switch) doesn't leave
    * the preview dark until the mouse next jiggles. */
   private reapplyHover() {
-    if (!this.hoverKey) return;
+    if (!this.hoverKey) {
+      this.applyOverviewDistrictHighlight();
+      return;
+    }
     this.hoverEls = this.keyElements.get(this.hoverKey) ?? [];
     if (this.hoverKey.startsWith("r:")) {
       const [, a, b] = this.hoverKey.split(":");
@@ -4306,6 +4361,7 @@ export class MapRenderer {
         this.hoverImportTimer = setTimeout(() => this.drawImportPreview(i), MapRenderer.IMPORT_PREVIEW_DELAY_MS);
       }
     }
+    this.applyOverviewDistrictHighlight();
   }
 
   private clearHover() {
@@ -4321,6 +4377,37 @@ export class MapRenderer {
     this.clearImportPreview();
     this.hideCard();
     if (wasSymbol) this.renderSymbolRefs(this.state?.selHSym ?? null);
+    this.applyOverviewDistrictHighlight();
+  }
+
+  private clearOverviewDistrictHighlight() {
+    const pointerHover = new Set(this.hoverEls);
+    for (const element of this.overviewHighlightEls) {
+      if (!pointerHover.has(element)) element.classList.remove("hovered");
+    }
+    for (const element of this.overviewDimEls) element.classList.remove("overview-dimmed");
+    this.overviewHighlightEls = [];
+    this.overviewDimEls = [];
+  }
+
+  private applyOverviewDistrictHighlight() {
+    this.clearOverviewDistrictHighlight();
+    if (!this.HOVER || !this.overviewDistricts) return;
+    for (const [key, elements] of this.keyElements) {
+      if (!key.startsWith("d:")) continue;
+      const district = Number(key.slice(2));
+      if (this.overviewDistricts.has(district)) {
+        for (const element of elements) {
+          element.classList.add("hovered");
+          this.overviewHighlightEls.push(element);
+        }
+      } else {
+        for (const element of elements) {
+          element.classList.add("overview-dimmed");
+          this.overviewDimEls.push(element);
+        }
+      }
+    }
   }
 
   private clearImportPreview() {

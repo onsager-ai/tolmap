@@ -90,6 +90,7 @@ export interface PhoneChromeProps {
   /** A district-index row: selects and pans it into the safe rect. */
   onPickDistrict(d: number): void;
   onPickKeyFile(i: number): void;
+  onFrameDistricts(districts: readonly number[]): void;
   onZoomDistrict(d: number): void;
   onSelectDirectory(path?: string): void;
   onBreadcrumbRepo(): void;
@@ -168,12 +169,15 @@ export function PhoneChrome(p: PhoneChromeProps) {
     <OverviewCard
       doc={p.doc}
       slug={slug}
+      layer={p.layer}
       packageLayout={p.packageLayout}
+      packageGrouping={p.packageGrouping}
       activeDirectory={p.activeDirectory}
       tab={p.indexTab}
       onTab={p.onIndexTab}
       onOpenQuality={() => p.onQuality(true)}
       onSelectDistrict={p.onPickDistrict}
+      onFrameDistricts={p.onFrameDistricts}
       onPickKeyFile={p.onPickKeyFile}
       onSelectDirectory={p.onSelectDirectory}
     />

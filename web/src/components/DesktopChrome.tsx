@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState, type ComponentProps, type Keyboar
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { CatalogueEntry, MapDocument } from "@/types";
 import type { Layer } from "@/map/constants";
-import { CH, CX_, districtClass, districtColor, ramp } from "@/map/geometry";
-import { buildDistrictIndex, buildDistrictIndexRow } from "@/map/districtIndex";
+import { CH, CX_, districtColor, ramp } from "@/map/geometry";
+import { displayLanguage, layerOverviewHeadline } from "@/map/layerOverview";
+import { buildDistrictIndexRow, districtIndexDistrictIds } from "@/map/districtIndex";
 import type { PackageGrouping, PackageLayout } from "@/map/packageLayout";
 import {
   COMMAND_BAR_HEIGHT_PX,
@@ -24,6 +25,7 @@ import { SearchBox } from "@/components/SearchBox";
 import type { SearchPick } from "@/map/searchResults";
 import { desktopPanelCrumbs, type DesktopPanelView } from "@/map/desktopPanel";
 import { SelectionCard } from "@/components/phone/SheetCards";
+import { HeadlineText, LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
 import {
   BackIcon,
   ChevronDownIcon,
@@ -64,10 +66,9 @@ const LAYERS: { id: Layer; label: string; key: string; icon: ReactNode }[] = [
   },
 ];
 
-function displayLanguage(lang: string): string {
-  const labels: Record<string, string> = { py: "Python", ts: "TypeScript", go: "Go", rs: "Rust", js: "JavaScript" };
-  return labels[lang] ?? lang;
-}
+// The overview headline on every layer: one balanced line pair at most, in
+// tabular numerals so counts don't jitter as the layer changes.
+const DESKTOP_HEADLINE = "mt-1 text-balance text-[20px] font-semibold leading-[1.25] tracking-[-.015em] tabular-nums";
 
 interface RepoRow {
   slug: string;
@@ -498,6 +499,8 @@ export interface DesktopPanelProps {
   onJump(index: number): void;
   onOpenQuality(): void;
   onSelectDistrict(district: number): void;
+  onHighlightDistricts(districts: readonly number[] | null): void;
+  onFrameDistricts(districts: readonly number[]): void;
   onSelectDirectory(path?: string): void;
   onDepth(depth: number): void;
   packageAuto: boolean;
@@ -510,12 +513,14 @@ export function DesktopPanel(p: DesktopPanelProps) {
   const [districtFilesExpanded, setDistrictFilesExpanded] = useState(false);
   const crumbs = desktopPanelCrumbs(p.views, p.doc, p.repoSlug);
   const top = p.views[p.views.length - 1] ?? { type: "overview" as const };
-  const mainland = useMemo(() => buildDistrictIndex(p.doc, p.packageLayout), [p.doc, p.packageLayout]);
+  const layerOverview = useLayerOverview(p.doc, p.packageGrouping);
+  const onHighlightDistrictsRef = useRef(p.onHighlightDistricts);
+  onHighlightDistrictsRef.current = p.onHighlightDistricts;
   const indexRows = useMemo(() => {
-    const ids = Object.keys(p.doc.districts)
-      .filter((id) => districtClass(p.doc.districts[id]) !== "unconnected")
-      .sort((a, b) => p.doc.districts[b].size - p.doc.districts[a].size || Number(a) - Number(b));
-    return ids.map((id) => buildDistrictIndexRow(p.doc, p.packageLayout, Number(id)));
+    const ids = districtIndexDistrictIds(p.doc).sort((a, b) =>
+      p.doc.districts[String(b)].size - p.doc.districts[String(a)].size || a - b,
+    );
+    return ids.map((id) => buildDistrictIndexRow(p.doc, p.packageLayout, id));
   }, [p.doc, p.packageLayout]);
   const filesByDistrict = useMemo(() => {
     const files = new Map<number, number[]>();
@@ -542,6 +547,10 @@ export function DesktopPanel(p: DesktopPanelProps) {
     setDistrictFoldersExpanded(false);
     setDistrictFilesExpanded(false);
   }, [p.doc]);
+
+  useEffect(() => {
+    onHighlightDistrictsRef.current(null);
+  }, [p.layer, p.doc]);
 
   const colorForDistrict = (district: number): string => {
     const members = filesByDistrict.get(district) ?? [];
@@ -644,66 +653,73 @@ export function DesktopPanel(p: DesktopPanelProps) {
         <div key={`${top.type}-${JSON.stringify(top)}`} data-panel-content data-selection-panel={top.type === "overview" ? undefined : ""} className="min-h-0 overflow-y-auto px-4 pb-4 pt-1 [overscroll-behavior:contain] panel-enter" style={{ scrollbarWidth: "thin" }}>
           {top.type === "overview" ? (
             <>
-              <div data-desktop-overview>
-                <h2 className="balance mt-1 text-[20px] font-semibold leading-[1.25] tracking-[-.015em]">
-                  {mainland.mainland.length} districts · <span className="font-mono text-[18px] font-medium">{p.doc.F.length.toLocaleString("en-US")}</span> files
-                </h2>
-                <p className="mt-1.5 flex flex-wrap items-center gap-x-1 text-meta leading-[1.45] text-[var(--dim)]">
-                  modularity <span className="font-mono">{p.doc.q.toFixed(3)}</span> ·
-                  <button type="button" data-open-map-quality onClick={p.onOpenQuality} className="inline-flex items-center gap-1 rounded px-0.5 hover:text-[var(--on)]" aria-label={`${count.toLocaleString("en-US")} files without links. Open map quality`}>
-                    <span data-unconnected-count>{count.toLocaleString("en-US")} files without links</span><InfoIcon />
-                  </button>
-                </p>
-                <div className="mt-4 flex min-h-8 items-center justify-between gap-2">
-                  <h3 className="text-small font-semibold">Index</h3>
-                  <div role="tablist" aria-label="Browse by" className="flex rounded-[8px] bg-[var(--chrome-hover)] p-0.5">
-                    {(["districts", "folders"] as const).map((tab) => (
-                      <button key={tab} type="button" role="tab" aria-selected={p.indexTab === tab} data-index-tab={tab} onClick={() => p.onIndexTab(tab)} className={`rounded-[6px] px-2.5 text-meta ${p.touch ? "h-11" : "h-[28px]"} ${p.indexTab === tab ? "bg-[var(--chrome2)] font-semibold text-[var(--on)] shadow-[var(--chrome-segment-shadow)]" : "text-[var(--dim)]"}`}>
-                        {tab === "districts" ? "Districts" : "Folders"}
-                      </button>
-                    ))}
+              {p.layer === "d" ? (
+                <div data-desktop-overview data-overview-layer="d">
+                  {/* The same sans, tabular headline as the other three layers: a mono
+                      "6,347" inside the sans line read as "6, 347" (Plex Mono's
+                      comma is a full cell wide). */}
+                  <h2 data-overview-headline data-overview-layer="d" className={DESKTOP_HEADLINE}>
+                    <HeadlineText text={layerOverviewHeadline(layerOverview, "d").primary} />
+                  </h2>
+                  <p className="mt-1.5 flex flex-wrap items-center gap-x-1 text-meta leading-[1.45] text-[var(--dim)]">
+                    modularity <span className="font-mono">{p.doc.q.toFixed(3)}</span> ·
+                    <button type="button" data-open-map-quality onClick={p.onOpenQuality} className="inline-flex items-center gap-1 rounded px-0.5 hover:text-[var(--on)]" aria-label={`${count.toLocaleString("en-US")} files without links. Open map quality`}>
+                      <span data-unconnected-count>{count.toLocaleString("en-US")} files without links</span><InfoIcon />
+                    </button>
+                  </p>
+                  <div className="mt-4 flex min-h-8 items-center justify-between gap-2">
+                    <h3 className="text-small font-semibold">Index</h3>
+                    <div role="tablist" aria-label="Browse by" className="flex rounded-[8px] bg-[var(--chrome-hover)] p-0.5">
+                      {(["districts", "folders"] as const).map((tab) => (
+                        <button key={tab} type="button" role="tab" aria-selected={p.indexTab === tab} data-index-tab={tab} onClick={() => p.onIndexTab(tab)} className={`rounded-[6px] px-2.5 text-meta ${p.touch ? "h-11" : "h-[28px]"} ${p.indexTab === tab ? "bg-[var(--chrome2)] font-semibold text-[var(--on)] shadow-[var(--chrome-segment-shadow)]" : "text-[var(--dim)]"}`}>
+                          {tab === "districts" ? "Districts" : "Folders"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {p.indexTab === "districts" ? (
+                    <div className="-mx-2 mt-1 flex flex-col gap-px" data-district-index>
+                      {indexRows.map((row) => {
+                        const keyFile = row.keyFiles[0];
+                        return (
+                          <button key={row.d} type="button" data-district-index-row={row.d} data-panel-district={row.d} onMouseEnter={() => p.onHighlightDistricts([row.d])} onMouseLeave={() => p.onHighlightDistricts(null)} onFocus={() => p.onHighlightDistricts([row.d])} onBlur={() => p.onHighlightDistricts(null)} onClick={() => { p.onHighlightDistricts(null); p.onSelectDistrict(row.d); }} className="flex h-[50px] min-h-[50px] w-full shrink-0 items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-[var(--chrome-hover)]">
+                            <i aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: rowColor(row.d) }} />
+                            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                              <span className="truncate text-small font-semibold">{row.name}</span>
+                              <span className="flex min-w-0 items-center gap-1 text-meta text-[var(--dim)]">
+                                {row.mostly && <span className="min-w-0 truncate">mostly <span className="font-mono">{row.mostly}</span></span>}
+                                {row.mostly && keyFile && <span className="shrink-0">·</span>}
+                                {keyFile && <span data-district-index-key-file={keyFile.file} className="shrink-0 truncate font-mono">{p.doc.F[keyFile.file]?.split("/").pop()}</span>}
+                              </span>
+                            </span>
+                            <span className="shrink-0 font-mono text-meta text-[var(--dim)]">{row.size.toLocaleString("en-US")}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="px-1" data-folder-tab>
+                      <FolderBody layout={p.packageLayout} activeDirectory={p.activeDirectory} onSelectDirectory={p.onSelectDirectory} touchTargets={p.touch} />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div data-desktop-overview data-overview-layer={p.layer}>
+                  <LayerOverviewHeadline overview={layerOverview} layer={p.layer} className={DESKTOP_HEADLINE} />
+                  <div className="mt-4">
+                    <LayerOverviewIndex
+                      doc={p.doc}
+                      overview={layerOverview}
+                      layer={p.layer}
+                      touch={p.touch}
+                      onSelectDistrict={p.onSelectDistrict}
+                      onSelectFile={p.cardProps.onSelectFile}
+                      onHighlightDistricts={p.onHighlightDistricts}
+                      onFrameDistricts={p.onFrameDistricts}
+                    />
                   </div>
                 </div>
-                {p.indexTab === "districts" ? (
-                  <div className="-mx-2 mt-1 flex flex-col gap-px" data-district-index>
-                    {indexRows.map((row) => {
-                      const keyFile = row.keyFiles[0];
-                      return (
-                        <button key={row.d} type="button" data-district-index-row={row.d} data-panel-district={row.d} onClick={() => p.onSelectDistrict(row.d)} className="flex h-[50px] min-h-[50px] w-full shrink-0 items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-[var(--chrome-hover)]">
-                          <i aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: rowColor(row.d) }} />
-                          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                            <span className="truncate text-small font-semibold">{row.name}</span>
-                            {/* The prototype (line 545) runs this as one inline string,
-                                "mostly <folder> · <key file>", so the two halves sit right
-                                next to each other with no spacer between them. `mostly` is
-                                the only part allowed to shrink and ellipsize -- the key file
-                                is `shrink-0` and always follows it directly, so it stays on
-                                screen even when the folder truncates. */}
-                            <span className="flex min-w-0 items-center gap-1 text-meta text-[var(--dim)]">
-                              {row.mostly && (
-                                <span className="min-w-0 truncate">
-                                  mostly <span className="font-mono">{row.mostly}</span>
-                                </span>
-                              )}
-                              {row.mostly && keyFile && <span className="shrink-0">·</span>}
-                              {keyFile && (
-                                <span data-district-index-key-file={keyFile.file} className="shrink-0 truncate font-mono">
-                                  {p.doc.F[keyFile.file]?.split("/").pop()}
-                                </span>
-                              )}
-                            </span>
-                          </span>
-                          <span className="shrink-0 font-mono text-meta text-[var(--dim)]">{row.size.toLocaleString("en-US")}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="px-1" data-folder-tab>
-                    <FolderBody layout={p.packageLayout} activeDirectory={p.activeDirectory} onSelectDirectory={p.onSelectDirectory} touchTargets={p.touch} />
-                  </div>
-                )}
-              </div>
+              )}
             </>
           ) : (
             <SelectionCard
@@ -773,7 +789,7 @@ function DesktopLegend({
   }
   return (
     <div className="glass absolute z-20 w-[220px] rounded-[12px] px-3 py-2 text-meta text-[var(--dim)]" style={style} data-desktop-legend data-ramp-legend={layer}>
-      <div className="font-semibold text-[var(--on)]">{layer === "c" ? "Commits per file, scanned history" : "Cyclomatic complexity per file"}</div>
+      <div className="font-semibold text-[var(--on)]">{layer === "c" ? "Commits per file" : "Complexity per file"}</div>
       <div className="my-1.5 h-1.5 rounded-full" style={{ background: "linear-gradient(90deg,var(--chrome-ramp-low),var(--chrome-ramp-mid),var(--chrome-ramp-high))" }} />
       <div className="flex justify-between font-mono"><span>low</span><span>high</span></div>
     </div>
