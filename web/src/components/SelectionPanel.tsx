@@ -21,14 +21,15 @@ import { Button } from "@/components/ui/button";
 import type { DirectoryNode, DistrictPathRow, PackageLayout } from "@/map/packageLayout";
 import { formatDirectory } from "@/map/packageLayout";
 import { Input } from "@/components/ui/input";
+import { ChevronIcon } from "@/components/phone/icons";
 
 // The detail blocks of the district, file and symbol cards (docs/UX.md
 // principle 10, "one component, two containers"): the phone sheet and the
-// desktop/tablet inspector both render the cards in phone/SheetCards.tsx,
+// desktop/tablet panel both render the cards in phone/SheetCards.tsx,
 // which compose these. The old desktop-only SelectionPanel card that used to
 // live here (a 260 px corner card with its own header and body per
-// selection) is gone with docs/UX.md phase 5; the inspector hosts the same
-// cards as the phone sheet's Half content instead.
+// selection) was replaced by the shared phone cards in phase 5; phase 7a
+// moves their desktop container to the floating panel.
 
 /** The callbacks the blocks below share. */
 interface Props {
@@ -47,12 +48,12 @@ interface Props {
 /** `nested={false}` (the phone sheet, docs/UX.md §3.1): no scroller of its
  * own -- the sheet scrolls at Full, and a list scrolling inside it is the
  * scroll-inside-scroll §3.1 removes. Rows are 44 px there (§8.2). */
-export function UnconnectedList({ layout, doc, onSelectFile, nested = true }: { layout: PackageLayout; doc: MapDocument; onSelectFile: Props["onSelectFile"]; nested?: boolean }) {
+export function UnconnectedList({ layout, doc, onSelectFile, nested = true, touchTargets = false, compactRows = false }: { layout: PackageLayout; doc: MapDocument; onSelectFile: Props["onSelectFile"]; nested?: boolean; touchTargets?: boolean; compactRows?: boolean }) {
   return <div className={nested ? "mt-2 max-h-[44vh] overflow-y-auto" : "mt-2"} data-unconnected-list>
     {layout.unconnectedGroups.map((group) => <details key={group.path} className="border-t border-[var(--rule)] py-1">
-      <summary className={`cursor-pointer break-all font-mono text-meta text-[var(--on)] ${nested ? "" : "flex min-h-[44px] items-center"}`}>{formatDirectory(group.path)} <span className="text-[var(--dim)]">({group.files.length})</span></summary>
+      <summary className={`cursor-pointer break-all font-mono text-meta text-[var(--on)] ${nested ? touchTargets ? "min-h-[44px]" : "" : `flex ${touchTargets ? "min-h-[44px]" : compactRows ? "min-h-8" : "min-h-[44px]"} items-center`}`}>{formatDirectory(group.path)} <span className="text-[var(--dim)]">({group.files.length})</span></summary>
       {group.files.map((i) => <button type="button" key={i} data-unconnected-file={i}
-        className={`block w-full break-all py-1 pl-2 text-left font-mono text-meta text-[var(--dim)] hover:text-[var(--on)] ${nested ? "" : "min-h-[44px]"}`}
+        className={`block w-full break-all py-1 pl-2 text-left font-mono text-meta text-[var(--dim)] hover:text-[var(--on)] ${nested ? touchTargets ? "min-h-[44px]" : "" : touchTargets ? "min-h-[44px]" : compactRows ? "min-h-8" : "min-h-[44px]"}`}
         onClick={() => onSelectFile(i)}>{doc.F[i].split("/").pop()}</button>)}
     </details>)}
   </div>;
@@ -65,11 +66,13 @@ export function FolderBody({
   activeDirectory,
   onSelectDirectory,
   nested = true,
+  touchTargets = false,
 }: {
   layout: PackageLayout;
   activeDirectory?: string;
   onSelectDirectory: Props["onSelectDirectory"];
   nested?: boolean;
+  touchTargets?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const matches = useMemo(() => {
@@ -87,7 +90,7 @@ export function FolderBody({
           aria-label="Filter folder paths"
           placeholder="filter folder paths…"
           autoComplete="off"
-          className={`${nested ? "h-8" : "h-11"} min-w-0 bg-[var(--chrome2)] px-2 font-mono text-[var(--on)]`}
+          className={`${nested ? touchTargets ? "h-11" : "h-8" : "h-11"} min-w-0 bg-[var(--chrome2)] px-2 font-mono text-[var(--on)]`}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key !== "Enter" || matches.length === 0) return;
@@ -96,7 +99,7 @@ export function FolderBody({
           }}
         />
         {activeDirectory && (
-          <Button size="sm" variant="outline" aria-label="Clear folder highlight" onClick={() => onSelectDirectory(undefined)}>
+          <Button size="sm" variant="outline" aria-label="Clear folder highlight" onClick={() => onSelectDirectory(undefined)} className={touchTargets ? "h-11 min-w-[44px]" : ""}>
             clear
           </Button>
         )}
@@ -261,14 +264,14 @@ export function DistrictBody({
     .sort((a, b) => b[2] - a[2])
     .slice(0, 2)
     .map((r) => ({ id: r[0] === d ? r[1] : r[0], name: doc.names[String(r[0] === d ? r[1] : r[0])] }));
-  const largest = paths.find((path) => !path.other);
   return (
-    <div className="mt-1.5 space-y-1 text-meta" data-district-summary>
-      {largest && largest.share >= 40 && (
-        <p className="truncate text-[var(--dim)]" title={`mostly ${formatDirectory(largest.path!)}`}>
-          mostly <span className="font-mono text-[var(--on)]">{formatDirectory(largest.path!)}</span>
-        </p>
-      )}
+    // The "mostly <folder>" fact used to repeat here, right under "Zoom to
+    // district" -- it already opens the card header (same `paths`/`largest`
+    // computation as there). `data-district-summary` moved with it, onto
+    // that header line in DistrictSheetCard (phone/SheetCards.tsx): that is
+    // what check-view-stability's "no mostly line below 40%"/"wide fan-out
+    // keeps the parent as mostly" checks read.
+    <div className="mt-1.5 space-y-1 text-meta">
       {nb.length > 0 && (
         <p className="truncate text-[var(--dim)]">
           near{" "}
@@ -284,8 +287,15 @@ export function DistrictBody({
       )}
       {paths.length > 0 && (
         <div data-district-path-breakdown>
-          <button type="button" data-district-folders-toggle aria-expanded={foldersExpanded} onClick={onToggleFolders} className="w-full text-left text-[var(--on)] touch:min-h-[44px] touch:text-small">
-            <span className="text-[var(--dim)]">{foldersExpanded ? "⌄" : "›"}</span> folders ({paths.filter((path) => !path.other).length})
+          <button
+            type="button"
+            data-district-folders-toggle
+            aria-expanded={foldersExpanded}
+            onClick={onToggleFolders}
+            className="flex w-full items-center gap-1.5 rounded-[8px] px-1 py-1 text-left text-[var(--on)] hover:bg-[var(--chrome-hover)] touch:min-h-[44px] touch:text-small"
+          >
+            <ChevronIcon className={`shrink-0 text-[var(--dim)] transition-transform ${foldersExpanded ? "rotate-90" : ""}`} />
+            folders ({paths.filter((path) => !path.other).length})
           </button>
           {foldersExpanded && paths.map((path, index) =>
             path.other ? (
@@ -315,8 +325,15 @@ export function DistrictBody({
         </div>
       )}
       <div>
-        <button type="button" data-district-files-toggle aria-expanded={filesExpanded} onClick={onToggleFiles} className="w-full text-left text-[var(--on)] touch:min-h-[44px] touch:text-small">
-          <span className="text-[var(--dim)]">{filesExpanded ? "⌄" : "›"}</span> key files ({top.length})
+        <button
+          type="button"
+          data-district-files-toggle
+          aria-expanded={filesExpanded}
+          onClick={onToggleFiles}
+          className="flex w-full items-center gap-1.5 rounded-[8px] px-1 py-1 text-left text-[var(--on)] hover:bg-[var(--chrome-hover)] touch:min-h-[44px] touch:text-small"
+        >
+          <ChevronIcon className={`shrink-0 text-[var(--dim)] transition-transform ${filesExpanded ? "rotate-90" : ""}`} />
+          key files ({top.length})
         </button>
         {filesExpanded && top.map((i) => (
           <button
@@ -368,22 +385,30 @@ export function SymbolDirectory({
   sy,
   cur,
   onSelectSymbol,
+  compactRows = false,
+  touchTargets = false,
 }: {
   doc: MapDocument;
   i: number;
   sy: SymbolRow[];
   cur: number | null;
   onSelectSymbol: Props["onSelectSymbol"];
+  compactRows?: boolean;
+  touchTargets?: boolean;
 }) {
   if (!sy.length) return null;
   const loc = LOC(doc, i) || 1;
   const used = sy.reduce((a, sm) => a + Math.max(0, sm[3] - sm[2] + 1), 0);
-  const rest = Math.max(0, 1 - used / loc);
+  const usedShare = Math.min(1, used / loc);
+  const rest = Math.max(0, 1 - usedShare);
   const rows = sy.map((sm, n) => ({ sm, n, span: sm[3] - sm[2] + 1 })).sort((a, b) => b.span - a.span);
   const shown = rows.slice(0, 9);
   return (
     <>
-      <div className="my-2 flex h-[7px] gap-px overflow-hidden rounded-sm">
+      <div
+        className="my-2 flex h-[7px] gap-px overflow-hidden rounded-sm"
+        title={`${Math.round(usedShare * 100)}% of the file's lines sit inside one of its symbols`}
+      >
         {sy.map((sm, n) => {
           const share = Math.max(0, sm[3] - sm[2] + 1) / loc;
           if (share <= 0.012) return null;
@@ -391,13 +416,19 @@ export function SymbolDirectory({
         })}
         {rest > 0.012 && <i style={{ flex: rest, background: "var(--rule)" }} />}
       </div>
+      {/* Ties the otherwise-unlabelled bar above to the one number it draws
+          (comment above): what share of the file's lines the bar's coloured
+          run represents. */}
+      <p className="mb-1.5 text-meta text-[var(--dim)]">
+        <span className="font-mono text-[var(--on)]">{Math.round(usedShare * 100)}%</span> of the file is inside a symbol
+      </p>
       <div className="mb-0.5 max-h-[148px] overflow-y-auto">
         {shown.map((r) => (
           <button
             key={r.n}
             data-symbol-row={`${i}:${r.n}`}
             onClick={() => onSelectSymbol(i, r.n)}
-            className={`grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left font-mono text-meta first:border-t-0 ${cur === r.n ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
+            className={`grid w-full grid-cols-[8px_1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left font-mono text-meta first:border-t-0 ${compactRows ? "min-h-[34px]" : touchTargets ? "min-h-[44px]" : ""} ${cur === r.n ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
           >
             <i className="h-2 w-2 rounded-sm" style={{ background: KCOL[r.sm[1]] }} />
             <span className="overflow-hidden text-ellipsis whitespace-nowrap">{r.sm[0]}</span>
@@ -520,6 +551,7 @@ export function HierOutline({
   onSelectHierSymbol,
   onHoverHierSymbol,
   nested = true,
+  compactRows = false,
 }: {
   outline: OutlineRow[];
   external: ExternalRefGroup[];
@@ -529,6 +561,8 @@ export function HierOutline({
   /** false: the phone sheet at Full -- no inner scrollers (docs/UX.md
    * §3.1) and 44 px rows (§8.2). */
   nested?: boolean;
+  /** Desktop panel symbols use the prototype's denser 34 px rows. */
+  compactRows?: boolean;
 }) {
   if (outline.length === 0 && external.length === 0) return null;
 
@@ -541,7 +575,7 @@ export function HierOutline({
         onMouseLeave={() => onHoverHierSymbol?.(null)}
         onClick={() => onSelectHierSymbol(r.global)}
         style={{ paddingLeft: 6 + depth * 12 }}
-        className={`grid w-full grid-cols-[1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left font-mono text-meta first:border-t-0 ${nested ? "" : "min-h-[44px] text-small"} ${selHSym === r.global ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
+        className={`grid w-full grid-cols-[1fr_auto] items-center gap-1.5 border-t border-[var(--rule)] py-1 text-left font-mono text-meta first:border-t-0 ${compactRows ? "min-h-[34px]" : nested ? "" : "min-h-[44px] text-small"} ${selHSym === r.global ? "text-[var(--accent)]" : "text-[var(--on)]"}`}
       >
         <span className={`overflow-hidden text-ellipsis whitespace-nowrap ${isBoldKind(r.row[2]) ? "font-semibold" : ""}`}>
           {symbolLabel(r.row, r.children.length, false)}

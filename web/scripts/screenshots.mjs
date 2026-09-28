@@ -127,7 +127,7 @@ try {
     }
   }
 
-  // Issue #82 "district index": explicit rail (desktop) and opened drawer
+  // Issue #82 "district index": desktop panel and opened phone sheet
   // (phone) frames for dify -- the new Districts list replacing the old
   // Landmarks/Hubs sections is the main subject of this PR, not just an
   // incidental part of the plain zoom-step frames the STEPS loop above
@@ -147,8 +147,8 @@ try {
         await page.screenshot({ path: `${stem}-${profile.name}-district-index-half.png` });
         console.log(`${stem}-${profile.name}-district-index-half.png`);
       } else {
-        await page.screenshot({ path: `${stem}-${profile.name}-district-rail.png` });
-        console.log(`${stem}-${profile.name}-district-rail.png`);
+        await page.screenshot({ path: `${stem}-${profile.name}-district-panel.png` });
+        console.log(`${stem}-${profile.name}-district-panel.png`);
       }
       await context.close();
     }
@@ -292,7 +292,7 @@ try {
   // this file is taken with no colorScheme override, i.e. this runner's
   // default, per CLAUDE.md's "keep all existing checks green, run in the
   // default theme"). Four kinds of frame, named with a `-light`/`-dark`
-  // suffix: the opening zoom, the district rail/drawer, a selected file's
+  // suffix: the opening zoom, the district index/panel, a selected file's
   // card (the link counts that are the legend, docs/UX.md §4.5 -- also
   // where the owner's three-digit-count wrap fix lives), and a deep-zoom symbol-card
   // frame.
@@ -610,25 +610,34 @@ try {
             await shot(page, `${tag}-layers`);
           }
           if (profile.name === "tablet-768x1024") {
-            await page.locator("[data-rail-toggle]").click();
+            await page.locator("[data-panel-tab]").click();
             await page.waitForTimeout(400);
-            await shot(page, `${tag}-rail-open`);
+            await shot(page, `${tag}-panel-open`);
           }
           await open(page, districtQuery);
+          if (profile.name === "tablet-768x1024" && (await page.locator("[data-panel-tab]").count())) {
+            await page.locator("[data-panel-tab]").click();
+          }
           await shot(page, `${tag}-district-selected`);
           if (!profile.name.startsWith("landscape")) {
-            await page.locator("[data-map-quality]").click();
+            await open(page);
+            if (profile.name === "tablet-768x1024") await page.locator("[data-panel-tab]").click();
+            await page.locator("[data-open-map-quality]").click();
             await page.waitForTimeout(300);
             await shot(page, `${tag}-map-quality`);
           }
         }
         await open(page, fileQuery);
+        if (profile.name === "tablet-768x1024" && (await page.locator("[data-panel-tab]").count())) {
+          await page.locator("[data-panel-tab]").click();
+        }
         await shot(page, `${tag}-file-selected`);
         if (colorScheme === "dark" && profile.name === "desktop-1440x900") {
           await open(page, `?layer=p${fileQuery ? `&${fileQuery.slice(1)}` : ""}`);
           await shot(page, `${tag}-package-layer-file-selected`);
           await open(page, "?layer=c");
           await shot(page, `${tag}-churn-layer`);
+          await page.locator("[data-open-desktop-search]").click();
           await page.locator("input[data-search-input]").click();
           await page.locator("input[data-search-input]").fill("workflow");
           await page.waitForTimeout(300);
@@ -795,6 +804,7 @@ try {
       await page.waitForTimeout(150);
       await shot(page, `desktop-${colorScheme}-search-workflow-district-layer`);
       await load(page, "?layer=p");
+      await page.locator("[data-open-desktop-search]").click();
       await page.locator("input[data-search-input]").click();
       await type(page, "a");
       await shot(page, `desktop-${colorScheme}-search-a-package-layer`);
@@ -897,9 +907,9 @@ try {
         await page.goto(`${base}/${SLUG}`, { waitUntil: "domcontentloaded" });
         await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
         // docs/UX.md §4.2 and §5: the map-quality row in the phone sheet, the
-        // map-quality strip on desktop; each opens the same Map quality card
-        // (a Full sheet, the inspector).
-        const trigger = page.locator("[data-map-quality]");
+        // overview entry on desktop; each opens the same Map quality card
+        // (a Full phone sheet or a desktop panel view).
+        const trigger = page.locator(profile.isMobile ? "[data-map-quality]" : "[data-open-map-quality]");
         await trigger.waitFor({ timeout: 10_000 });
         await page.waitForTimeout(300);
         await page.screenshot({ path: `${stem}-${profile.name}-collapsed-${colorScheme}.png` });
@@ -981,6 +991,98 @@ try {
       await page.locator("[data-repo-validation-error]").waitFor({ timeout: 5_000 });
       await page.screenshot({ path: `${stem}-invalid-input.png` });
       console.log(`${stem}-invalid-input.png`);
+      await context.close();
+    }
+  }
+
+  // docs/UX.md §5 and phase 7a: review frames for the map-first desktop and
+  // tablet shell, matching the reference prototype's requested states.
+  {
+    const slug = "langgenius/dify";
+    const doc = await (await fetch(`${base}/maps/${slug}.json`)).json();
+    const file = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
+    const district = doc.N[file][0];
+    const stem = `${out}/${slug.replace("/", "__")}`;
+    for (const viewport of [
+      { name: "1440x900", viewport: { width: 1440, height: 900 }, hasTouch: false },
+      { name: "1024x768", viewport: { width: 1024, height: 768 }, hasTouch: true },
+    ]) {
+      for (const colorScheme of ["light", "dark"]) {
+        const context = await browser.newContext({ ...viewport, colorScheme });
+        const page = await context.newPage();
+        await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+        await page.locator("[data-desktop-overview]").waitFor({ timeout: 15_000 });
+        await page.waitForTimeout(450);
+        await page.screenshot({ path: `${stem}-${viewport.name}-${colorScheme}-overview.png` });
+        console.log(`${stem}-${viewport.name}-${colorScheme}-overview.png`);
+
+        await page.goto(`${base}/${slug}?d=${district}`, { waitUntil: "domcontentloaded" });
+        await page.locator('[data-selection-panel] [data-sheet-card="district"]').waitFor({ timeout: 15_000 });
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: `${stem}-${viewport.name}-${colorScheme}-district.png` });
+        console.log(`${stem}-${viewport.name}-${colorScheme}-district.png`);
+
+        await page.goto(`${base}/${slug}?file=${encodeURIComponent(doc.F[file])}`, { waitUntil: "domcontentloaded" });
+        await page.locator('[data-selection-panel] [data-sheet-card="file"]').waitFor({ timeout: 15_000 });
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: `${stem}-${viewport.name}-${colorScheme}-file.png` });
+        console.log(`${stem}-${viewport.name}-${colorScheme}-file.png`);
+
+        await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+        await page.locator("[data-hide-panel]").waitFor({ timeout: 15_000 });
+        await page.locator("[data-hide-panel]").click();
+        await page.waitForTimeout(350);
+        await page.screenshot({ path: `${stem}-${viewport.name}-${colorScheme}-panel-hidden.png` });
+        console.log(`${stem}-${viewport.name}-${colorScheme}-panel-hidden.png`);
+        await context.close();
+      }
+    }
+
+    // The repository menu open, at its desktop profile size.
+    {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "light" });
+      const page = await context.newPage();
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.locator("[data-repo-switcher]").click();
+      await page.locator("[data-repository-menu]").waitFor();
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: `${stem}-1440x900-repository-menu.png` });
+      console.log(`${stem}-1440x900-repository-menu.png`);
+      await context.close();
+    }
+
+    // At 1100 px the layer buttons are icon-only, with their accessible names.
+    {
+      const context = await browser.newContext({ viewport: { width: 1100, height: 800 }, hasTouch: true });
+      const page = await context.newPage();
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(350);
+      await page.screenshot({ path: `${stem}-1100x800-icon-only-layers.png` });
+      console.log(`${stem}-1100x800-icon-only-layers.png`);
+      await context.close();
+    }
+
+    // Map quality in its new desktop panel view and in the phone's Full sheet.
+    for (const profile of [
+      { name: "desktop", viewport: { width: 1440, height: 900 }, hasTouch: false, isMobile: false },
+      { name: "phone", viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 },
+    ]) {
+      const context = await browser.newContext({ ...profile, colorScheme: "light" });
+      const page = await context.newPage();
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      const trigger = page.locator(profile.isMobile ? "[data-map-quality]" : "[data-open-map-quality]");
+      await trigger.waitFor({ timeout: 15_000 });
+      await trigger.click();
+      if (profile.isMobile) await setSheetDetent(page, "full");
+      const card = profile.isMobile ? '[data-sheet-card="quality"]' : "[data-desktop-quality]";
+      await page.locator(card).waitFor({ timeout: 10_000 });
+      await page.waitForTimeout(350);
+      await page.screenshot({ path: `${stem}-${profile.name}-map-quality.png` });
+      console.log(`${stem}-${profile.name}-map-quality.png`);
       await context.close();
     }
   }

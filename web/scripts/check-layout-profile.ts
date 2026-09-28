@@ -1,9 +1,9 @@
 #!/usr/bin/env -S npx tsx
-// Unit checks for docs/UX.md phase 5's pure parts:
+// Unit checks for docs/UX.md phase 7a's pure parts:
 //   - map/layoutProfile.ts: §9's profile table on its edge cases, and the
 //     safe rectangles of the landscape side sheet and the desktop/tablet
-//     chrome (the inspector, the quality strip, the controls, the fullscreen
-//     fallback's search) with every safe-area inset;
+//     floating desktop/tablet chrome, with the panel open/hidden and safe-area
+//     insets;
 //   - map/phoneShell.ts: the portrait safe rect with left/right insets (§9:
 //     insets apply on every side in every profile);
 //   - lib/repoOptions.ts: issue #171 (the repository select's file counts).
@@ -14,21 +14,24 @@
 // Run: npx tsx web/scripts/check-layout-profile.ts
 
 import {
+  DESKTOP_COMMAND_SAFE_GAP_PX,
   DESKTOP_GAP_PX,
   DESKTOP_GUTTER_PX,
-  FULLSCREEN_SEARCH_HEIGHT_PX,
-  INSPECTOR_INSET_PX,
+  DESKTOP_HIDDEN_LEFT_INSET_PX,
+  DESKTOP_PANEL_BOTTOM_PX,
+  DESKTOP_PANEL_LEFT_PX,
+  DESKTOP_PANEL_SAFE_GAP_PX,
+  DESKTOP_PANEL_TOP_PX,
+  DESKTOP_PANEL_WIDTH_PX,
   NO_SAFE_AREA,
   SIDE_SHEET_WIDTH_PX,
   compactMap,
   desktopControlSize,
   desktopSafeInsets,
-  inspectorWidth,
   isPhoneShell,
   isTouchProfile,
   landscapeSafeInsets,
   layoutProfile,
-  qualityStripHeight,
   sideSheetWidth,
   type LayoutProfile,
   type SafeArea,
@@ -134,33 +137,28 @@ console.log("\nportrait safe rectangle with every inset (§3.3, §9)");
 // ---------------------------------------------------------------- desktop and tablet
 console.log("\ndesktop and tablet safe rectangle (§5)");
 {
-  const base = { rail: true, fullscreen: false, safe: NO_SAFE_AREA };
-  const closed = desktopSafeInsets({ ...base, profile: "desktop", inspector: false });
-  report(eq(closed, { left: 20, top: 20, right: 20 + 40 + 12, bottom: 20 + 40 + 12 }),
-    "desktop, nothing selected: clear of the controls (right) and the quality strip (bottom)", JSON.stringify(closed));
-  const open = desktopSafeInsets({ ...base, profile: "desktop", inspector: true });
-  report(open.right === INSPECTOR_INSET_PX + 380 + DESKTOP_GAP_PX && open.left === closed.left && open.top === closed.top && open.bottom === closed.bottom,
-    "desktop, inspector open: the map box minus the 380 px inspector and its 20 px inset", JSON.stringify(open));
-  // 1440 x 900: the map box is 1120 x 844 (rail 320, top bar 56).
-  const [l, , r] = fitViewport(1440 - 320, 900 - 56, open);
-  report(r - l === 1120 - 20 - 412 && r < 1120 - 20 - 380, "1440x900 with the inspector: the rect ends left of the inspector", JSON.stringify([l, r]));
-  const tab = desktopSafeInsets({ ...base, profile: "tablet", inspector: true });
-  report(tab.right === 20 + 360 + 12 && tab.bottom === 20 + 44 + 12 && inspectorWidth("tablet") === 360 && desktopControlSize("tablet") === 44 && qualityStripHeight("tablet") === 44,
-    "tablet: a 360 px inspector, 44 px controls and strip", JSON.stringify(tab));
-  // 768 x 1024 with the rail collapsed and the inspector open: still a map.
-  const [l2, , r2] = fitViewport(768, 1024 - 56, desktopSafeInsets({ ...base, rail: false, profile: "tablet", inspector: true }));
-  report(r2 - l2 >= 340, "768x1024, rail collapsed, inspector open: over 340 px of map", String(r2 - l2));
-  const inset: SafeArea = { top: 47, right: 20, bottom: 21, left: 30 };
-  const railed = desktopSafeInsets({ profile: "tablet", inspector: false, rail: true, fullscreen: false, safe: inset });
-  report(railed.left === DESKTOP_GUTTER_PX && railed.top === DESKTOP_GUTTER_PX, "with the rail on screen, the rail pads the left inset and the top bar the top one", JSON.stringify(railed));
-  report(railed.right === 20 + 20 + 44 + 12 && railed.bottom === 21 + 20 + 44 + 12, "right and bottom insets are cleared by the map's own chrome", JSON.stringify(railed));
-  const bare = desktopSafeInsets({ profile: "tablet", inspector: false, rail: false, fullscreen: false, safe: inset });
-  report(bare.left === 30 + 20, "rail collapsed: the map reaches the screen's left edge and clears the inset itself", JSON.stringify(bare));
-  const fs = desktopSafeInsets({ profile: "desktop", inspector: false, rail: true, fullscreen: true, safe: inset });
-  report(fs.top === 47 + 20 + FULLSCREEN_SEARCH_HEIGHT_PX + 12 && fs.left === 30 + 20,
-    "the CSS fullscreen fallback keeps the top inset: the rect starts below the notch and the floating search", JSON.stringify(fs));
-  const fsOpen = desktopSafeInsets({ profile: "desktop", inspector: true, rail: true, fullscreen: true, safe: inset });
-  report(fsOpen.right === 20 + 20 + 380 + 12, "fullscreen with the inspector open clears it and the right inset", JSON.stringify(fsOpen));
+  const cases: Array<[number, number, "desktop" | "tablet", boolean, SafeArea, Record<string, number>, number[]]> = [
+    [1440, 900, "desktop", true, NO_SAFE_AREA, { left: 400, top: 76, right: 80, bottom: 72 }, [400, 76, 1360, 828]],
+    [1440, 900, "desktop", false, NO_SAFE_AREA, { left: 24, top: 76, right: 80, bottom: 72 }, [24, 76, 1360, 828]],
+    [1100, 800, "tablet", true, NO_SAFE_AREA, { left: 400, top: 76, right: 84, bottom: 72 }, [400, 76, 1016, 728]],
+    [1100, 800, "tablet", false, NO_SAFE_AREA, { left: 24, top: 76, right: 84, bottom: 72 }, [24, 76, 1016, 728]],
+    [1024, 768, "tablet", true, NO_SAFE_AREA, { left: 400, top: 76, right: 84, bottom: 72 }, [400, 76, 940, 696]],
+    [1024, 768, "tablet", false, NO_SAFE_AREA, { left: 24, top: 76, right: 84, bottom: 72 }, [24, 76, 940, 696]],
+    [768, 1024, "tablet", false, NO_SAFE_AREA, { left: 24, top: 76, right: 84, bottom: 72 }, [24, 76, 684, 952]],
+    [1024, 768, "tablet", true, { top: 47, right: 20, bottom: 21, left: 30 }, { left: 430, top: 123, right: 104, bottom: 93 }, [430, 123, 920, 675]],
+    [768, 1024, "tablet", false, { top: 47, right: 20, bottom: 21, left: 30 }, { left: 54, top: 123, right: 104, bottom: 93 }, [54, 123, 664, 931]],
+  ];
+  for (const [width, height, profile, panelOpen, safe, expectedInsets, expectedRect] of cases) {
+    const insets = desktopSafeInsets({ profile, panelOpen, safe });
+    const rect = fitViewport(width, height, insets);
+    report(eq(insets, expectedInsets) && eq(rect, expectedRect),
+      `${width}x${height} ${profile}, panel ${panelOpen ? "open" : "hidden"}: floating-chrome fit rectangle`, JSON.stringify({ insets, rect }));
+  }
+  report(DESKTOP_PANEL_LEFT_PX + DESKTOP_PANEL_WIDTH_PX + DESKTOP_PANEL_SAFE_GAP_PX === 400 &&
+    DESKTOP_HIDDEN_LEFT_INSET_PX === 24 && DESKTOP_PANEL_TOP_PX + DESKTOP_PANEL_BOTTOM_PX === 144 &&
+    DESKTOP_GUTTER_PX + desktopControlSize("desktop") + DESKTOP_GAP_PX === 80 &&
+    desktopControlSize("tablet") === 44 && DESKTOP_COMMAND_SAFE_GAP_PX === 16,
+  "safe rectangles share panel, command-bar and control measurements with the floating chrome");
 }
 
 // ---------------------------------------------------------------- issue #171

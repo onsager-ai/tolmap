@@ -20,8 +20,12 @@ interface SearchBoxProps {
    * §7.2) -- in the top bar, or floating over the map in fullscreen. It
    * fills the width its container gives it. */
   variant?: "float" | "overlay";
-  /** Overlay only: the back button and Esc close the layer. */
+  /** The close action for an overlay, or the parent dialog for a floating
+   * desktop search opened from a separate icon. */
   onClose?(): void;
+  /** Float dialogs may open from an icon or keyboard shortcut rather than
+   * from the input itself. */
+  autoFocus?: boolean;
   /** Float only: 44 px (a tablet is touch, §9) instead of 36. */
   touch?: boolean;
 }
@@ -36,7 +40,7 @@ const PLACEHOLDER = "Districts, files, classes…";
  * stays in the input while the arrow keys move through the results; the
  * results are grouped District / Files / Symbols (map/searchResults.ts,
  * whose file and symbol ranking is map/search.ts's, unchanged). */
-export function SearchBox({ doc, onPick, variant = "float", onClose, touch = false }: SearchBoxProps) {
+export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus = false, touch = false }: SearchBoxProps) {
   const [value, setValue] = useState("");
   const [cursor, setCursor] = useState(-1);
   const [open, setOpen] = useState(false);
@@ -49,6 +53,12 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, touch = fal
   const optionId = (n: number) => `${listId}-o${n}`;
   const overlay = variant === "overlay";
   const expanded = overlay || open;
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    inputRef.current?.focus();
+    setOpen(true);
+  }, [autoFocus]);
 
   // The highlighted row follows the keyboard into view.
   useEffect(() => {
@@ -80,6 +90,7 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, touch = fal
     // A box opened by a click keeps focus on Esc (the combobox pattern);
     // one opened by `/` hands it back.
     if (openerRef.current) returnFocus();
+    onClose?.();
   }
 
   function pick(item: SearchItem) {
