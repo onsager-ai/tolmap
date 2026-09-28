@@ -1358,18 +1358,7 @@ async function checkFolderIslandFade(browser, base, profile) {
   );
   const before = await visiblePinRanks();
   await page.goto(`${base}/langgenius/dify?geo=r&layer=p&dir=api`, { waitUntil: "domcontentloaded" });
-  if (profile.isMobile) {
-    await page.waitForSelector("svg.map-svg [data-folder-highlight]");
-  } else {
-    // The desktop room gate intentionally withholds folder-only file marks
-    // when their districts have no room, so there is no outline to wait for;
-    // a folder highlight alone is not a §5 exception that should force those
-    // file marks onto the map. Since #196 the Package layer's panel has no
-    // folder browser either, so wait for the map's own sign that api/ is
-    // active: the batched cells of every other file dim to 0.2 (the same
-    // signal checkSelectionDim reads).
-    await page.waitForSelector('svg.map-svg path[data-footprint-batch][fill-opacity="0.2"]');
-  }
+  await page.waitForSelector("svg.map-svg [data-folder-highlight]");
   await page.waitForTimeout(2200);
   const after = await visiblePinRanks();
   const extra = after.filter((rank) => !before.includes(rank));
