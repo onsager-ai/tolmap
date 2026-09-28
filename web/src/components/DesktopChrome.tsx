@@ -593,7 +593,17 @@ export function DesktopPanel(p: DesktopPanelProps) {
               const compactOverview = crumbs.length >= 3 && index === 0 && crumb.type === "overview";
               const crumbLabel = compactOverview ? `Overview · ${crumb.label}` : crumb.label;
               return (
-                <span key={`${crumb.type}-${index}`} className={`flex min-w-0 items-center gap-0.5 ${current ? "shrink-0 max-w-[60%]" : "shrink"}`}>
+                // The brief: the last crumb gets roughly 60% and the
+                // ancestors shrink first. `shrink-0` on the last crumb used
+                // to freeze it at its full content width -- max-width alone
+                // can't make a flex-shrink:0 item ellipsize once that
+                // content is wider than 60%, so it hard-clipped against
+                // nav's own overflow-hidden instead of showing "…". It now
+                // shrinks too (a small, non-zero factor), so it still
+                // ellipsizes if 60% genuinely isn't enough; ancestors carry
+                // a much higher shrink factor so they give way well before
+                // it does.
+                <span key={`${crumb.type}-${index}`} className={`flex min-w-0 items-center gap-0.5 ${current ? "shrink max-w-[60%]" : "shrink-[20]"}`}>
                   {index > 0 && <span className="shrink-0"><ChevronIcon /></span>}
                   <button
                     type="button"
@@ -602,7 +612,7 @@ export function DesktopPanel(p: DesktopPanelProps) {
                     aria-label={crumbLabel}
                     title={crumbLabel}
                     onClick={() => p.onJump(index)}
-                    className={`min-w-0 max-w-full truncate rounded-[6px] px-1.5 py-1 text-left text-meta hover:bg-[var(--chrome-hover)] touch:min-h-[44px] ${current ? "shrink-0" : "shrink"} ${crumb.type === "overview" || crumb.type === "file" || crumb.type === "symbol" ? "font-mono" : ""} ${current ? "text-[var(--on)]" : "text-[var(--dim)]"} ${compactOverview ? "flex h-7 w-7 shrink-0 items-center justify-center px-1" : ""}`}
+                    className={`min-w-0 max-w-full shrink truncate rounded-[6px] px-1.5 py-1 text-left text-meta hover:bg-[var(--chrome-hover)] touch:min-h-[44px] ${crumb.type === "overview" || crumb.type === "file" || crumb.type === "symbol" ? "font-mono" : ""} ${current ? "text-[var(--on)]" : "text-[var(--dim)]"} ${compactOverview ? "flex h-7 w-7 shrink-0 items-center justify-center px-1" : ""}`}
                   >
                     {compactOverview ? <HomeIcon size={14} /> : crumb.label}
                   </button>
