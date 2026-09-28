@@ -1354,8 +1354,10 @@ struct Lease {
     /// anything after it is dropped.
     finished: bool,
     /// `cancel` `reroute` was sent (§2.1 step 3). The job stays live, so a
-    /// result already on its way is still registered; `resume` answers an
-    /// agent whose channel dropped meanwhile with the same `cancel`.
+    /// result whose artifacts were all uploaded before it is still
+    /// registered, but the lease's uploads were aborted and new ones are
+    /// refused (`with_lease`); `resume` answers an agent whose channel
+    /// dropped meanwhile with the same `cancel`.
     rerouting: bool,
     /// The agent's last heartbeat's `rss_bytes`: what the job held when its
     /// agent was last heard from, which tells a worker that died of memory
@@ -2325,10 +2327,13 @@ impl WorkerHub {
     }
 
     /// §2.1 step 3: asks the lease's agent to stop the job so it can move to
-    /// a larger class. Unlike `cancel` the job stays live: a result already
-    /// on its way is still registered, and the lease ends with the agent's
-    /// `released` (`reroute`). An agent whose channel is down meanwhile
-    /// hears it from `resume` instead.
+    /// a larger class, and the lease ends with the agent's `released`
+    /// (`reroute`). Unlike `cancel` the job stays live, so a `result` whose
+    /// artifacts were all uploaded before this is still registered. Uploads
+    /// still in flight are aborted here and `with_lease` refuses new ones,
+    /// so a result that needed one of them fails its check against the
+    /// lease's uploads. An agent whose channel is down meanwhile hears it
+    /// from `resume` instead.
     pub(crate) fn reroute(&self, job_id: Uuid) {
         let mut guard = self.lock();
         let inner = &mut *guard;
@@ -3242,6 +3247,15 @@ async fn put_artifact(
 
     let reservation_id = Uuid::new_v4();
     let reservation = hub.with_lease(agent, job_id, epoch, |lease| {
+        // A lease whose uploads were already told to stop takes no new one.
+        // `shutdown_now` stops them without marking the lease, and
+        // `subscribe` below counts the value it finds as seen, so a PUT
+        // arriving after it would wait on a `changed()` that never comes
+        // (#191). Every `send_replace(true)` holds the hub lock, as this
+        // does, so no stop lands between this check and the subscription.
+        if *lease.upload_cancel.borrow() {
+            return Err(StatusCode::FORBIDDEN);
+        }
         if lease.reservations.len() >= WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS {
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
@@ -3310,6 +3324,16 @@ async fn put_artifact(
         temp: temp.clone(),
         active: true,
     };
+    // #191: taken after the reservation, so a token with no live lease
+    // holds nothing, and before the process-wide permit, so an agent at its
+    // quota never holds one of those even for a moment.
+    let Some(agent_writer) = hub.agent_upload_writers.try_acquire(agent) else {
+        return refuse(
+            StatusCode::TOO_MANY_REQUESTS,
+            "this agent already has the maximum number of in-flight artifact upload writers \
+             across its leases",
+        );
+    };
     let writer_permit =
         match Arc::clone(&hub.upload_writers).try_acquire_owned() {
             Ok(permit) => permit,
@@ -3330,6 +3354,7 @@ async fn put_artifact(
     let (chunks, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
     let writer = tokio::task::spawn_blocking(move || {
         let _writer_permit = writer_permit;
+        let _agent_writer = agent_writer;
         write_hashed(file, receiver)
     });
     let mut stream = body.into_data_stream();

@@ -324,26 +324,17 @@ an existing name consumes no extra artifact slot; once its replacement is
 complete, the old blob is removed if no other name in the lease references
 it. Re-uploading identical content remains a content-addressed no-op.
 
-The 1 GiB limit is per lease; this decision does not impose a global disk
-cap. A lease may have at most 8 in-flight artifact uploads. A further `PUT`
-receives HTTP 429 before its body is read. Across all leases, the master
-allows at most 32 upload writers at once; when all permits are held, another
-`PUT` receives HTTP 503 before its body is read. This is well below Tokio's
-default 512-thread blocking-pool limit and bounds uploads across jobs as well
-as within one lease.
+The 1 GiB limit is per lease; this decision does not impose a global disk cap. A lease may have at most 8 in-flight artifact uploads. A further `PUT` receives HTTP 429 before its body is read. One agent may hold at most 8 upload writers across all of its leases (#191, below); its next `PUT` also receives HTTP 429 before its body is read. Across all leases, the master allows at most 32 upload writers at once; when all permits are held, another `PUT` receives HTTP 503 before its body is read. This is well below Tokio's default 512-thread blocking-pool limit and bounds uploads across jobs as well as within one lease.
 
-If no body bytes arrive for 30 seconds, the master aborts that upload. Every
-upload also has a two-hour total deadline, even if bytes keep arriving: the
-largest per-kind cap is 256 MiB, which takes about 68 minutes at 64 KiB/s,
-leaving roughly 52 minutes for variation and filesystem pauses. Either
-timeout returns the existing incomplete-body HTTP 400 response, and releases
-the reservation and temporary file. The deadlines run on the async body
-feeder; dropping its channel releases the blocking writer. Cancelling,
-expiring or reassigning a lease also aborts its in-flight uploads and uses the
-same HTTP 400 incomplete-body response.
+If no body bytes arrive for 30 seconds, the master aborts that upload. Every upload also has a two-hour total deadline, even if bytes keep arriving: the largest per-kind cap is 256 MiB, which takes about 68 minutes at 64 KiB/s, leaving roughly 52 minutes for variation and filesystem pauses. Either timeout returns the existing incomplete-body HTTP 400 response, and releases the reservation and temporary file. The deadlines run on the async body feeder; dropping its channel releases the blocking writer. Cancelling, expiring, rerouting or reassigning a lease, and the master's `shutdown now`, also abort its in-flight uploads with the same HTTP 400 incomplete-body response, and a `PUT` that arrives afterwards is refused with HTTP 403 before it reserves anything.
 
-The agent retries HTTP 429 and 5xx responses with its existing upload
-backoff, until the result hold deadline. Other 4xx responses are final.
+The agent retries HTTP 429 and 5xx responses with its existing upload backoff, until the result hold deadline. Other 4xx responses are final. Before its first `PUT` the agent checks every artifact against its kind's cap and the whole result against the lease's 1 GiB and 10,000-name limits (`worker_result::check_lease_totals`, counting a blob two names share once, as the master does), and fails the job as `invalid_worker_result` if it does not fit. The master's 413 for those limits comes before it reads the body, and a refusal sent while the agent is still writing that body can reach the agent as a connection reset rather than a 413, which would otherwise report a result too large for its lease as `worker_crashed`.
+
+**Upload writers per agent (#191).** One agent can hold several leases at once. An agent is its token's number in loopback mode and its worker id's number in remote mode, so every token for one worker id is the same agent (`TokenFile`). The master never refuses a second channel for an agent that already has one (`connect`, `serve_agent`, `WorkerHub::add_conn`), each channel can hold one lease, and an artifact `PUT` is checked against the lease's agent rather than its channel (`with_lease`), so a lease whose channel has closed still takes uploads until it runs out. A heartbeat renews a lease with no sign of progress, and nothing caps a job's wall-clock time. Before #191, one worker holding leases on four channels could therefore keep all 32 writers busy indefinitely, by reopening eight slow uploads per lease whenever the old ones timed out, and every other agent's upload would get 503. The per-agent quota bounds this by the identity an attacker actually holds, the worker id: a hostile worker keeps at most 8 of the 32 writers, however many channels and leases it has. An honest agent uploads one artifact at a time and never meets the quota.
+
+*No throughput floor and no deadline scaled to `Content-Length`* (decided in #191). Against a worker that reopens its uploads, neither changes how many writers it holds; the quota does. A floor must sit below the slowest honest link, so a hostile worker meets it at trivial cost (eight uploads at 8 KiB/s is 64 KiB/s in all), and a deadline scaled to the declared length is one the uploader chooses, since it declares the length: declaring 256 MiB buys the full two hours. Both would still cost honest workers, the floor by failing a slow link partway through a large map. The 30-second idle timeout and the two-hour total deadline stay as they are.
+
+*No progress requirement on heartbeats and no job wall-clock cap* (decided in #191). A worker that heartbeats without progress holds its job, not the master's writers: the quota bounds what it can hold on the upload path whatever its leases' lifetimes. Holding a job is §5.3's "hold jobs and do nothing", bounded by the user's cancel and the owner's revocation of the token. A progress requirement would break a legitimate long stage, which §2.2 lets run without a progress event, and a wall-clock cap is a time cap on jobs, which the no-caps ruling (§6) excludes.
 
 The route's `DefaultBodyLimit` is defence in depth. `Content-Length` is
 required, and every per-kind cap is at most the route ceiling, so a declared
@@ -385,7 +376,7 @@ A map plus its symbols document and per-district files is small for most reposit
 
 Artifacts move as plain HTTPS requests to the master, on the same private listener as the channel (§5.6):
 
-- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch. Per-artifact and per-lease byte/name limits return 413 before reading an over-limit body; the per-lease in-flight upload limit returns 429, and the process-wide writer limit returns 503. The exact caps and upload deadlines are in §3.4.
+- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch. Per-artifact and per-lease byte/name limits return 413 before reading an over-limit body; the per-lease in-flight upload limit and the per-agent writer quota return 429, and the process-wide writer limit returns 503. The exact caps and upload deadlines are in §3.4.
 - `GET` on the input URLs in `assign` fetches the previous map and the names cache, under the same lease check.
 - A retry is harmless: stored artifacts are content-addressed, so a repeat upload is a no-op.
 - Artifacts are stored on the master's disk, as maps are today.
@@ -434,7 +425,7 @@ Assume an attacker controls a worker host completely, root included, for example
 | return a wrong map for jobs leased to it | results are accepted only for the current epoch of a job that worker holds; artifacts are schema-checked on registration; determinism spot-checks (§5.4) catch a forged map with the probability of the sampling rate; revoking the token ends it |
 | hold jobs and do nothing | a held job keeps heartbeating, so it is never re-queued by lease expiry; the user can cancel; the operator can revoke the token, which drops the channel, expires the lease and re-queues the job |
 | read the specs, warm-start maps and names caches of jobs assigned to it | the same data is public through the API |
-| flood the master with frames or uploads | per-agent frame-rate and frame-size bounds (§4.3); uploads only to URLs issued for its own lease |
+| flood the master with frames or uploads | per-agent frame-rate and frame-size bounds (§4.3); uploads only to URLs issued for its own lease; at most 8 of the master's 32 upload writers, across all its channels and leases (§3.4) |
 | use its token from elsewhere | the token is per worker and revocable; a stolen token gives exactly the list above |
 
 | cannot | why |

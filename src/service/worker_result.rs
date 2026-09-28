@@ -171,7 +171,27 @@ pub(crate) const LEASE_MAX_ARTIFACTS: usize = 10_000;
 pub(crate) fn check_lease_totals<'a>(
     artifacts: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
 ) -> Result<(), String> {
-    let _ = artifacts.into_iter().count();
+    let mut names = std::collections::BTreeSet::new();
+    let mut blobs = std::collections::BTreeMap::new();
+    for (name, sha256, bytes) in artifacts {
+        names.insert(name);
+        blobs.insert(sha256, bytes);
+    }
+    if names.len() > LEASE_MAX_ARTIFACTS {
+        return Err(format!(
+            "the result has {} artifacts, more than the {LEASE_MAX_ARTIFACTS} one lease may hold",
+            names.len()
+        ));
+    }
+    let total = blobs
+        .values()
+        .try_fold(0u64, |total, bytes| total.checked_add(*bytes));
+    if !total.is_some_and(|total| total <= LEASE_MAX_ARTIFACT_BYTES) {
+        return Err(format!(
+            "the result's unique artifacts come to more than the {LEASE_MAX_ARTIFACT_BYTES} \
+             bytes one lease may hold"
+        ));
+    }
     Ok(())
 }
 

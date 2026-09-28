@@ -1835,6 +1835,30 @@ struct JobContext {
 /// to someone other than the master this agent dialled -- and, to a
 /// `wss://` master, over TLS verified against the same roots as the
 /// channel: `--ca-file`'s alone when given, else ureq's own webpki roots.
+/// The SHA-256 and size of artifact `name` at `path`, once its name and
+/// size are checked against its kind's cap (`worker_result::artifact_cap`),
+/// so an artifact over it fails the job as `invalid_worker_result` before
+/// any `PUT`.
+fn hash_artifact(name: &str, path: &Path) -> Result<(String, u64), ErrorBody> {
+    let file = std::fs::File::open(path).map_err(internal)?;
+    let bytes = file.metadata().map_err(internal)?.len();
+    let Some(limit) = worker_result::artifact_cap(name) else {
+        return Err(ErrorBody {
+            error: "invalid_worker_result".to_owned(),
+            message: format!("worker artifact {name} is not a valid artifact name"),
+        });
+    };
+    if bytes > limit {
+        return Err(ErrorBody {
+            error: "invalid_worker_result".to_owned(),
+            message: format!(
+                "worker artifact {name} is {bytes} bytes, exceeding its {limit}-byte cap"
+            ),
+        });
+    }
+    sha256_reader(file).map_err(internal)
+}
+
 fn http_agent(endpoint: &Endpoint) -> ureq::Agent {
     let mut config = ureq::Agent::config_builder()
         .proxy(None)
@@ -2166,10 +2190,31 @@ impl JobContext {
         if names.is_file() {
             files.push(("names".to_owned(), names));
         }
-        let deadline = Instant::now() + self.hold;
-        let mut artifacts = Vec::with_capacity(files.len());
+        // Each file is hashed once, here, and the lease's own limits are
+        // checked before the first `PUT`, as each kind's cap is in
+        // `hash_artifact` (#191). The master refuses an upload over either
+        // with a 413 before reading its body, and a refusal sent while this
+        // agent is still writing that body can reach it as a reset instead,
+        // which would report a result too large for its lease as a crashed
+        // worker.
+        let mut hashed = Vec::with_capacity(files.len());
         for (name, path) in files {
-            artifacts.push(self.put(http, &name, &path, deadline, probe, None)?);
+            let digest = hash_artifact(&name, &path)?;
+            hashed.push((name, path, digest));
+        }
+        worker_result::check_lease_totals(
+            hashed
+                .iter()
+                .map(|(name, _, (sha256, bytes))| (name.as_str(), sha256.as_str(), *bytes)),
+        )
+        .map_err(|message| ErrorBody {
+            error: "invalid_worker_result".to_owned(),
+            message,
+        })?;
+        let deadline = Instant::now() + self.hold;
+        let mut artifacts = Vec::with_capacity(hashed.len());
+        for (name, path, digest) in hashed {
+            artifacts.push(self.put_hashed(http, &name, &path, digest, deadline, probe, None)?);
         }
         Ok(WorkerEvent::Result {
             v: 1,
@@ -2188,16 +2233,33 @@ impl JobContext {
     }
 
     /// One `PUT`, with the file's SHA-256 and, from the file's size, its
-    /// `Content-Length` (§4.2). One that got no answer, HTTP 429, or a 5xx
-    /// is sent again with backoff until `deadline`: that is how an agent re-uploads
-    /// whatever a drop interrupted, and uploads are content-addressed, so a
-    /// repeat of one the master already holds is a no-op. HTTP 429 and 5xx
-    /// responses are transient; other 4xx responses are final.
+    /// `Content-Length` (§4.2): `hash_artifact`, then `put_hashed`.
     fn put(
         &self,
         http: &ureq::Agent,
         name: &str,
         path: &Path,
+        deadline: Instant,
+        probe: &AgentProbe,
+        request_timeout: Option<Duration>,
+    ) -> Result<Artifact, ErrorBody> {
+        let digest = hash_artifact(name, path)?;
+        self.put_hashed(http, name, path, digest, deadline, probe, request_timeout)
+    }
+
+    /// One `PUT` of a file `hash_artifact` already measured, as `(sha256,
+    /// bytes)`. One that got no answer, HTTP 429, or a 5xx is sent again
+    /// with backoff until `deadline`: that is how an agent re-uploads
+    /// whatever a drop interrupted, and uploads are content-addressed, so a
+    /// repeat of one the master already holds is a no-op. HTTP 429 and 5xx
+    /// responses are transient; other 4xx responses are final.
+    #[allow(clippy::too_many_arguments)]
+    fn put_hashed(
+        &self,
+        http: &ureq::Agent,
+        name: &str,
+        path: &Path,
+        (sha256, bytes): (String, u64),
         deadline: Instant,
         probe: &AgentProbe,
         request_timeout: Option<Duration>,
@@ -2208,23 +2270,6 @@ impl JobContext {
                 "output URL {url} is not on the master this agent dialled"
             )));
         }
-        let file = std::fs::File::open(path).map_err(internal)?;
-        let bytes = file.metadata().map_err(internal)?.len();
-        let Some(limit) = worker_result::artifact_cap(name) else {
-            return Err(ErrorBody {
-                error: "invalid_worker_result".to_owned(),
-                message: format!("worker artifact {name} is not a valid artifact name"),
-            });
-        };
-        if bytes > limit {
-            return Err(ErrorBody {
-                error: "invalid_worker_result".to_owned(),
-                message: format!(
-                    "worker artifact {name} is {bytes} bytes, exceeding its {limit}-byte cap"
-                ),
-            });
-        }
-        let (sha256, bytes) = sha256_reader(file).map_err(internal)?;
         let mut backoff = REDIAL_FIRST;
         loop {
             if probe.is_cancelled() {
