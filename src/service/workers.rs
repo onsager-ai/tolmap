@@ -5154,6 +5154,91 @@ mod tests {
         (status, response)
     }
 
+    /// Sends an HTTP/1.1 chunked PUT without Content-Length. The handler
+    /// should reject the headers before consuming this body; writes may stop
+    /// early after the server closes the refused request.
+    fn put_chunked_without_length(
+        port: u16,
+        token: &str,
+        job: Uuid,
+        name: &str,
+        body: &[u8],
+    ) -> (u16, String) {
+        use std::io::{Read, Write};
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        write!(
+            stream,
+            "PUT /workers/artifacts/{job}/1/{name} HTTP/1.1\r\n\
+             Host: 127.0.0.1\r\n\
+             Connection: close\r\n\
+             Authorization: Bearer {token}\r\n\
+             {SHA256_HEADER}: {}\r\n\
+             Transfer-Encoding: chunked\r\n\r\n",
+            sha(body)
+        )
+        .unwrap();
+        let _ = write!(stream, "{:X}\r\n", body.len());
+        let _ = stream.write_all(body);
+        let _ = stream.write_all(b"\r\n0\r\n\r\n");
+
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response).into_owned();
+        let status = response
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        (status, response)
+    }
+
+    /// Sends `body` verbatim after an HTTP/1.1 request whose Content-Length
+    /// covers only its first `declared_bytes` bytes.
+    fn put_with_extra_after_content_length(
+        port: u16,
+        token: &str,
+        job: Uuid,
+        name: &str,
+        body: &[u8],
+        declared_bytes: usize,
+    ) -> (Vec<u16>, String) {
+        use std::io::{Read, Write};
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let head = format!(
+            "PUT /workers/artifacts/{job}/1/{name} HTTP/1.1\r\n\
+             Host: 127.0.0.1\r\n\
+             Connection: keep-alive\r\n\
+             Authorization: Bearer {token}\r\n\
+             {SHA256_HEADER}: {}\r\n\
+             Content-Length: {declared_bytes}\r\n\r\n",
+            sha(body)
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response).into_owned();
+        let statuses = response
+            .lines()
+            .filter_map(|line| line.strip_prefix("HTTP/1.1 "))
+            .filter_map(|status| status.get(..3)?.parse().ok())
+            .collect();
+        (statuses, response)
+    }
+
     fn lease_blob_stats(fixture: &Fixture, job: Uuid) -> (usize, u64) {
         let dir = fixture
             .hub
@@ -5167,6 +5252,32 @@ mod tests {
             bytes += metadata.len();
         }
         (count, bytes)
+    }
+
+    fn lease_upload_state(fixture: &Fixture, job: Uuid) -> (usize, usize, u64) {
+        let (dir, reserved_bytes) = fixture
+            .hub
+            .with_lease(0, job, 1, |lease| {
+                let reserved_bytes = lease
+                    .reservations
+                    .values()
+                    .map(|reservation| reservation.bytes)
+                    .sum();
+                Ok((lease.dir.clone(), reserved_bytes))
+            })
+            .unwrap();
+        let blobs = std::fs::read_dir(dir.join("blobs")).unwrap().count();
+        let temp_files = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("upload-"))
+            })
+            .count();
+        (blobs, temp_files, reserved_bytes)
     }
 
     fn artifact(name: &str, body: &[u8]) -> Artifact {
@@ -5737,6 +5848,72 @@ mod tests {
                 put_declared_without_body(fixture.port, TOKENS[0], id, name, limit + 1);
             assert_eq!(status, 413, "{name}: {response}");
         }
+        assert!(fixture.hub.uploads(id).is_empty());
+    }
+
+    #[test]
+    fn chunked_upload_without_content_length_is_refused_without_reserving_or_writing() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let body = vec![b'x'; worker_result::NAMES_CACHE_MAX_BYTES as usize + 1];
+        assert!(body.len() as u64 > worker_result::NAMES_CACHE_MAX_BYTES);
+        let reserved_before = lease_upload_state(&fixture, id).2;
+        let (status, response) =
+            put_chunked_without_length(fixture.port, TOKENS[0], id, "names", &body);
+
+        assert_eq!(status, 411, "{response}");
+        assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
+        assert!(fixture.hub.uploads(id).is_empty());
+    }
+
+    #[test]
+    fn bytes_after_declared_content_length_fail_without_leaking_upload_state() {
+        const DECLARED_BYTES: usize = 64;
+        const EXTRA_BYTES: usize = 1024 * 1024;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let body = vec![b'x'; DECLARED_BYTES + EXTRA_BYTES];
+        let reserved_before = lease_upload_state(&fixture, id).2;
+        let (statuses, response) = put_with_extra_after_content_length(
+            fixture.port,
+            TOKENS[0],
+            id,
+            "map",
+            &body,
+            DECLARED_BYTES,
+        );
+
+        assert!(!statuses.is_empty(), "no HTTP response: {response}");
+        assert!(
+            statuses.iter().any(|status| (400..500).contains(status)),
+            "expected a 4xx response, got {statuses:?}: {response}"
+        );
+        assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
+        assert!(fixture.hub.uploads(id).is_empty());
+    }
+
+    #[test]
+    fn artifact_put_route_refuses_declared_length_above_its_body_limit_before_reading() {
+        const ROUTE_BODY_LIMIT: u64 = worker_result::EARLY_MAP_MAX_BYTES;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let reserved_before = lease_upload_state(&fixture, id).2;
+        let (status, response) =
+            put_declared_without_body(fixture.port, TOKENS[0], id, "symbols", ROUTE_BODY_LIMIT + 1);
+
+        assert_eq!(status, 413, "{response}");
+        assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
         assert!(fixture.hub.uploads(id).is_empty());
     }
 
