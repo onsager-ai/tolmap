@@ -59,6 +59,29 @@ export interface DistrictIndex {
   islandIds: readonly string[];
 }
 
+export interface DistrictIndexClassIds {
+  mainland: readonly string[];
+  islands: readonly string[];
+}
+
+/** The domain shown by the District index: named mainland rows plus the
+ * separately collapsible island rows. Unconnected groups are map data, but
+ * the District index deliberately has no rows for them. Layer overviews use
+ * this same domain so their counts and rankings cannot silently include a
+ * second set. */
+export function districtIndexClassIds(doc: MapDocument): DistrictIndexClassIds {
+  const ids = Object.keys(doc.districts);
+  const byClass = (cls: "mainland" | "island") => ids
+    .filter((id) => districtClass(doc.districts[id]) === cls)
+    .sort((a, b) => doc.districts[b].size - doc.districts[a].size || Number(a) - Number(b));
+  return { mainland: byClass("mainland"), islands: byClass("island") };
+}
+
+export function districtIndexDistrictIds(doc: MapDocument): number[] {
+  const ids = districtIndexClassIds(doc);
+  return [...ids.mainland, ...ids.islands].map(Number);
+}
+
 function basename(path: string): string {
   return path.split("/").pop() ?? path;
 }
@@ -214,11 +237,7 @@ export function buildDistrictIndexRow(doc: MapDocument, packageLayout: PackageLa
  * [doc, packageLayout] pair -- Sidebar.tsx memoises this the same way it
  * already memoises computeHubs(). */
 export function buildDistrictIndex(doc: MapDocument, packageLayout: PackageLayout): DistrictIndex {
-  const ids = Object.keys(doc.districts);
-  const byClass = (cls: "mainland" | "island") =>
-    ids
-      .filter((id) => districtClass(doc.districts[id]) === cls)
-      .sort((a, b) => doc.districts[b].size - doc.districts[a].size || Number(a) - Number(b));
-  const mainland = byClass("mainland").map((id) => buildDistrictIndexRow(doc, packageLayout, Number(id)));
-  return { totalFiles: doc.F.length, mainland, islandIds: byClass("island") };
+  const ids = districtIndexClassIds(doc);
+  const mainland = ids.mainland.map((id) => buildDistrictIndexRow(doc, packageLayout, Number(id)));
+  return { totalFiles: doc.F.length, mainland, islandIds: ids.islands };
 }
