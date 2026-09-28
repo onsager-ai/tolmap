@@ -845,7 +845,7 @@ async function checkSelectionDim(browser, base, profile) {
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
 
-  const result = await page.evaluate((i) => {
+  const measureSelectionDim = () => page.evaluate((i) => {
     // B4: `.hit` (not `circle.hit`) so a footprint-mode file's own path
     // element is included -- see visibleDots()'s comment.
     const circles = [...document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')];
@@ -885,6 +885,22 @@ async function checkSelectionDim(browser, base, profile) {
     }
     return { totalCircles: circles.length, dimmedCount: dimmed.length, dimmedBatchCount: dimmedBatches.length, neighbourFull };
   }, target.i);
+  let result = await measureSelectionDim();
+  // Desktop now hides non-neighbour files until their district has room on
+  // screen. Keep this check's original dimming assertion meaningful by
+  // zooming into the selected file's district until an unlinked file can be
+  // drawn; the phone check above remains at its original fit-zoom state.
+  if (profile.name === "desktop" && result.dimmedCount === 0 && result.dimmedBatchCount === 0) {
+    const selectedBox = await page.locator(`svg.map-svg [data-k="f:${target.i}"]`).first().boundingBox();
+    if (selectedBox) {
+      const cx = selectedBox.x + selectedBox.width / 2;
+      const cy = selectedBox.y + selectedBox.height / 2;
+      for (let step = 0; step < 12 && result.dimmedCount === 0 && result.dimmedBatchCount === 0; step++) {
+        await zoomIn(page, cx, cy);
+        result = await measureSelectionDim();
+      }
+    }
+  }
   report(result.dimmedCount > 0 || result.dimmedBatchCount > 0, `${label}: at least one non-neighbour file (or batch) is dimmed`, JSON.stringify(result));
   report(result.neighbourFull != null && result.neighbourFull >= 0.8, `${label}: a ringed neighbour's dot stays at full opacity`, JSON.stringify(result));
   await context.close();
@@ -3171,18 +3187,37 @@ async function checkFootprintModeDrawsPolygons(browser, base, profile) {
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
-  const info = await page.evaluate(() => {
+  const inspect = () => page.evaluate(() => {
     const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="f:"]')];
     const dots = document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"][fill]:not([fill="transparent"])').length;
     return {
       count: paths.length,
       allHaveAnchor: paths.length > 0 && paths.every((p) => p.hasAttribute("data-cx") && p.hasAttribute("data-cy")),
       dotsInstead: dots,
+      batches: document.querySelectorAll("svg.map-svg path[data-footprint-batch]").length,
+      fileLabels: document.querySelectorAll("svg.map-svg text[data-file-label]").length,
     };
   });
-  report(info.count > 0, `${label}: at least one footprint polygon on screen`, JSON.stringify(info));
-  report(info.allHaveAnchor, `${label}: every footprint polygon carries a data-cx/data-cy anchor`, JSON.stringify(info));
-  report(info.dotsInstead === 0, `${label}: no dot-mode circles draw a file when P is present`, JSON.stringify(info));
+  const fit = await inspect();
+  if (profile.isMobile) {
+    report(fit.count > 0, `${label}: at least one footprint polygon on screen`, JSON.stringify(fit));
+    report(fit.allHaveAnchor, `${label}: every footprint polygon carries a data-cx/data-cy anchor`, JSON.stringify(fit));
+    report(fit.dotsInstead === 0, `${label}: no dot-mode circles draw a file when P is present`, JSON.stringify(fit));
+  } else {
+    // §5 gates dots and file labels at desktop fit, while district-colored
+    // cell fills remain visible as individual landmark cells and batches.
+    // Phone retains the exact fit-zoom checks above.
+    report(fit.count > 0 && fit.batches > 0 && fit.dotsInstead === 0,
+      `${label}: low-room fit keeps file-cell fills while file dots stay hidden`, JSON.stringify(fit));
+    report(fit.fileLabels === 0,
+      `${label}: low-room fit hides unselected file labels`, JSON.stringify(fit));
+    for (let i = 0; i < 4; i++) await page.locator('button[aria-label="Zoom in"]').click();
+    await page.waitForTimeout(350);
+    const zoomed = await inspect();
+    report(zoomed.count > 0, `${label}: eligible footprints appear after zooming in`, JSON.stringify(zoomed));
+    report(zoomed.allHaveAnchor, `${label}: every visible footprint carries a data-cx/data-cy anchor`, JSON.stringify(zoomed));
+    report(zoomed.dotsInstead === 0, `${label}: no dot-mode circles draw a file when P is present`, JSON.stringify(zoomed));
+  }
   await context.close();
 }
 
@@ -3224,7 +3259,18 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
   await page.waitForTimeout(700);
 
   const batchCount = await page.locator("svg.map-svg path[data-footprint-batch]").count();
-  report(batchCount > 0, `${label}: at least one batched footprint fill exists at fit zoom`, `${batchCount} batches`);
+  const footprintCount = await page.locator('svg.map-svg path.hit[data-k^="f:"]').count();
+  if (profile.isMobile) {
+    report(batchCount > 0, `${label}: at least one batched footprint fill exists at fit zoom`, `${batchCount} batches`);
+  } else {
+    const fileLabels = await page.locator("svg.map-svg text[data-file-label]").count();
+    const dots = await page.locator('svg.map-svg circle.hit[data-k^="f:"][fill]:not([fill="transparent"])').count();
+    report(batchCount > 0 && footprintCount > 0 && dots === 0,
+      `${label}: low-room fit keeps filled file cells but no file dots`,
+      `${batchCount} batches, ${footprintCount} individual footprints`);
+    report(fileLabels === 0,
+      `${label}: low-room fit keeps unselected file labels hidden`, `${fileLabels} file labels`);
+  }
 
   const point = await page.evaluate(() => {
     const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
@@ -3489,6 +3535,451 @@ async function checkLabelsFitTheirBoxes(browser, base, profile) {
   report(foreign.length === 0, `${label}: no request leaves the app's own origin (fonts are self-hosted)`, JSON.stringify(foreign.slice(0, 5)));
   report(result.measured > 0 && result.overCount === 0, `${label}: no label is drawn wider than the box it reserved`, JSON.stringify(result));
   await context.close();
+}
+
+/** docs/UX.md §5 / phase 7d: desktop labels reserve screen-space boxes in
+ * the shared `placed` list. Check those same boxes at fit and two zoom
+ * levels on both acceptance fixtures, then check the selected district's
+ * own label survives the same camera states. */
+async function checkDesktopLabelPlacement(browser, base) {
+  const profile = { viewport: { width: 1440, height: 900 }, hasTouch: false, colorScheme: "light" };
+  for (const slug of MAPS) {
+    const label = `desktop label placement (${slug}) / 1440x900`;
+    console.log(`\n${label}`);
+    const context = await browser.newContext(profile);
+    const page = await context.newPage();
+    const doc = await (await context.request.get(`${base}/maps/${slug}.json`)).json();
+    const largest = Object.entries(doc.districts)
+      .filter(([, district]) => district.blob?.length)
+      .sort((a, b) => b[1].size - a[1].size || Number(a[0]) - Number(b[0]))[0];
+    report(!!largest, `${label}: fixture has a drawable district to select`);
+    if (!largest) {
+      await context.close();
+      continue;
+    }
+    const districtId = largest[0];
+    const colorDistrictIds = Object.entries(doc.districts)
+      .filter(([, district]) => district.blob?.length)
+      .sort((a, b) => b[1].size - a[1].size || Number(a[0]) - Number(b[0]))
+      .map(([id]) => id);
+    const colorState = async () => page.evaluate((districtIds) => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return null;
+      for (const id of districtIds) {
+        const polygon = svg.querySelector('path.hit[data-k="d:' + id + '"]');
+        const cell = svg.querySelector('[data-footprint-district="' + id + '"][data-footprint-shade="1"]');
+        if (!polygon || !cell) continue;
+        return {
+          district: id,
+          polygonFill: getComputedStyle(polygon).fill,
+          cellFill: getComputedStyle(cell).fill,
+          cellFillOpacity: Number(getComputedStyle(cell).fillOpacity),
+          cellKind: cell.hasAttribute("data-footprint-cell") ? "individual" : "batch",
+        };
+      }
+      return null;
+    }, colorDistrictIds);
+    const labelsState = async () => page.evaluate(() => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return { boxes: [], overlaps: [], markerOverlapCount: 0, chromeOverlapCount: 0 };
+      const boxes = [...svg.querySelectorAll("text[data-label-box]:not([data-symbol-card-label])")].map((text) => {
+        const width = Number(text.getAttribute("data-label-box"));
+        const height = Number(text.getAttribute("font-size")) * 1.25;
+        const anchor = text.getAttribute("text-anchor") ?? "start";
+        const textX = Number(text.getAttribute("x"));
+        const x = anchor === "middle" ? textX - width / 2 : anchor === "end" ? textX - width : textX;
+        const y = Number(text.getAttribute("y")) - height;
+        const matrix = text.getScreenCTM();
+        if (!matrix || !Number.isFinite(width) || !Number.isFinite(height)) return null;
+        const point = svg.createSVGPoint();
+        point.x = x; point.y = y;
+        const topLeft = point.matrixTransform(matrix);
+        point.x = x + width; point.y = y + height;
+        const bottomRight = point.matrixTransform(matrix);
+        return {
+          text: text.textContent,
+          x: topLeft.x,
+          y: topLeft.y,
+          right: bottomRight.x,
+          bottom: bottomRight.y,
+        };
+      }).filter(Boolean);
+      const overlaps = [];
+      for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        if (a.x < b.right && a.right > b.x && a.y < b.bottom && a.bottom > b.y) {
+          overlaps.push({ a: a.text, b: b.text });
+        }
+      }
+      const map = svg.getBoundingClientRect();
+      const screenBox = (el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+      };
+      const markers = [
+        ...svg.querySelectorAll("g[data-landmark-pin]"),
+        ...svg.querySelectorAll("circle[data-hub-ring]"),
+      ].map((el) => ({
+        box: screenBox(el),
+        name: el.hasAttribute("data-landmark-pin") ? "pin " + el.getAttribute("data-landmark-pin") : "hub " + el.getAttribute("data-hub-ring"),
+      })).filter(({ box }) => box.x < map.right && box.right > map.left && box.y < map.bottom && box.bottom > map.top);
+      const markerOverlaps = [];
+      for (const label of boxes) for (const marker of markers) {
+        if (label.x < marker.box.right && label.right > marker.box.x && label.y < marker.box.bottom && label.bottom > marker.box.y) {
+          markerOverlaps.push({ label: label.text, marker: marker.name });
+        }
+      }
+      const chrome = [...document.querySelectorAll("[data-command-bar], [data-desktop-actions], [data-desktop-panel], [data-panel-tab], [data-desktop-legend], [data-map-controls]")]
+        .filter((el) => {
+          const style = getComputedStyle(el);
+          return style.display !== "none" && style.visibility !== "hidden" && el.getAttribute("aria-hidden") !== "true";
+        })
+        .map((el) => ({
+          box: screenBox(el),
+          name: el.hasAttribute("data-desktop-panel") ? "panel" :
+            el.hasAttribute("data-command-bar") ? "command bar" :
+            el.hasAttribute("data-desktop-actions") ? "actions" :
+            el.hasAttribute("data-desktop-legend") ? "legend" :
+            el.hasAttribute("data-map-controls") ? "controls" : "panel tab",
+        }));
+      const chromeOverlaps = [];
+      for (const label of boxes) for (const obstacle of chrome) {
+        if (label.x < obstacle.box.right && label.right > obstacle.box.x && label.y < obstacle.box.bottom && label.bottom > obstacle.box.y) {
+          chromeOverlaps.push({ label: label.text, chrome: obstacle.name });
+        }
+      }
+      return {
+        boxes,
+        overlaps: overlaps.slice(0, 6),
+        overlapCount: overlaps.length,
+        markerOverlaps: markerOverlaps.slice(0, 6),
+        markerOverlapCount: markerOverlaps.length,
+        chromeOverlaps: chromeOverlaps.slice(0, 6),
+        chromeOverlapCount: chromeOverlaps.length,
+      };
+    });
+    const levels = [
+      { name: "fit", clicks: 0 },
+      { name: "zoom-in-2", clicks: 2 },
+      { name: "zoom-in-4", clicks: 4 },
+    ];
+    await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+    await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(700);
+    const colors = await colorState();
+    report(!!colors && colors.polygonFill === colors.cellFill && colors.cellFillOpacity >= 0.8,
+      label + ": desktop fit polygons and file cells share the district palette colour",
+      JSON.stringify(colors));
+    let zoomClicks = 0;
+    for (const level of levels) {
+      while (zoomClicks < level.clicks) {
+        await page.locator('button[aria-label="Zoom in"]').click();
+        zoomClicks++;
+      }
+      await page.waitForTimeout(350);
+      const result = await labelsState();
+      report(result.markerOverlapCount === 0 && result.chromeOverlapCount === 0,
+        label + ": labels avoid landmark/hub markers and desktop chrome at " + level.name,
+        JSON.stringify({
+          markerOverlaps: result.markerOverlaps,
+          markerOverlapCount: result.markerOverlapCount,
+          chromeOverlaps: result.chromeOverlaps,
+          chromeOverlapCount: result.chromeOverlapCount,
+        }));
+      report(result.boxes.length > 0 && result.overlapCount === 0,
+        `${label}: no visible label boxes intersect at ${level.name}`,
+        JSON.stringify({ count: result.boxes.length, overlaps: result.overlaps, overlapCount: result.overlapCount }));
+    }
+
+    const selectedLabelPresent = () => page.evaluate(({ districtId, name }) => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return false;
+      const map = svg.getBoundingClientRect();
+      return [...svg.querySelectorAll(`text.hit[data-k="d:${districtId}"]`)].some((text) => {
+        const box = text.getBoundingClientRect();
+        return text.textContent === name && getComputedStyle(text).display !== "none" &&
+          box.width > 0 && box.height > 0 && box.left < map.right && box.right > map.left &&
+          box.top < map.bottom && box.bottom > map.top;
+      });
+    },
+    { districtId, name: doc.names[districtId] });
+    await page.goto(`${base}/${slug}?d=${districtId}`, { waitUntil: "domcontentloaded" });
+    await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(700);
+    report(await selectedLabelPresent(), `${label}: selected district label is present on its deep link`, districtId);
+    await page.locator('button[aria-label="Fit map"]').click();
+    await page.waitForTimeout(350);
+    report(await selectedLabelPresent(), `${label}: selected district label is present at fit`, districtId);
+    const selectedPoint = await page.locator(`svg.map-svg text.hit[data-k="d:${districtId}"]`).first().evaluate((text) => {
+      const box = text.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
+    for (let i = 1; i <= 4; i++) {
+      // Keep the selected district under the zoom anchor so this verifies
+      // that its priority label survives zoom while the district stays in
+      // view. Center-button zoom can legitimately move a distant selection
+      // off screen, where no label can be visible.
+      await zoomIn(page, selectedPoint.x, selectedPoint.y);
+      if (i === 2 || i === 4) report(await selectedLabelPresent(),
+        `${label}: selected district label is present after ${i} zoom-in steps`, districtId);
+    }
+    await context.close();
+  }
+}
+
+/** docs/UX.md §5 / phase 7d, review follow-up 2: the rules the overlap
+ * checks above cannot see, because each is about a label that is MISSING or
+ * half-present rather than two boxes that collide.
+ * - A district's name and its "N files" subtitle are one unit: a subtitle is
+ *   never drawn without its name (fit and both zoom levels).
+ * - File-count priority holds at fit: a district is never unlabelled while a
+ *   smaller district it touches keeps its name, unless its own polygon is too
+ *   narrow to hold that name at all.
+ * - Landmark pins survive at fit. Pins and hub rings are both fixed markers,
+ *   and a landmark is often a hub itself, so a pin is never dropped for
+ *   sitting on a hub ring.
+ * - No map label overlaps a symbol-card tab or symbol label, no map label or
+ *   card tab is clipped by the map's edge, and no card tab sits under the
+ *   floating chrome (fit and both zoom levels). */
+async function checkDesktopLabelRules(browser, base) {
+  const profile = { viewport: { width: 1440, height: 900 }, hasTouch: false, colorScheme: "light" };
+  const chromeSelector = "[data-command-bar], [data-desktop-actions], [data-desktop-panel], [data-panel-tab], [data-desktop-legend], [data-map-controls]";
+  for (const slug of MAPS) {
+    const label = `desktop label rules (${slug}) / 1440x900`;
+    console.log(`\n${label}`);
+    const context = await browser.newContext(profile);
+    const page = await context.newPage();
+    const doc = await (await context.request.get(`${base}/maps/${slug}.json`)).json();
+    const names = doc.names;
+    const sizes = Object.fromEntries(Object.entries(doc.districts).map(([id, district]) => [id, district.size]));
+    // pins.ts retires capital and hub pins; every other landmark kind can pin.
+    const landmarks = doc.L.filter(([, why]) => why !== "capital" && why !== "hub").map(([i]) => i);
+
+    const orphanSubtitles = () => page.evaluate((names) => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return null;
+      const texts = [...svg.querySelectorAll('text[data-k^="d:"]')];
+      const named = new Set(texts
+        .filter((text) => text.textContent === names[text.getAttribute("data-k").slice(2)])
+        .map((text) => text.getAttribute("data-k")));
+      const subtitles = texts.filter((text) => /^\+?\d+ files$/.test(text.textContent ?? ""));
+      return {
+        subtitles: subtitles.length,
+        orphans: subtitles
+          .filter((text) => !named.has(text.getAttribute("data-k")))
+          .map((text) => ({ district: text.getAttribute("data-k"), text: text.textContent })),
+      };
+    }, names);
+
+    const priorityViolations = () => page.evaluate(({ names, sizes }) => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return null;
+      // District polygons exactly as drawn: "M x yL x y ... Z" in the SVG's
+      // own user space, one path per blob polygon.
+      const polys = new Map();
+      for (const path of svg.querySelectorAll('path.hit[data-k^="d:"]')) {
+        const id = path.getAttribute("data-k").slice(2);
+        const points = (path.getAttribute("d") ?? "").replace(/[MZ]/g, "").split("L")
+          .map((pair) => pair.trim().split(/[ ,]+/).map(Number))
+          .filter((point) => point.length === 2 && point.every(Number.isFinite));
+        if (points.length < 3) continue;
+        if (!polys.has(id)) polys.set(id, []);
+        polys.get(id).push(points);
+      }
+      const nameTexts = [...svg.querySelectorAll('text[data-k^="d:"]')]
+        .filter((text) => text.textContent === names[text.getAttribute("data-k").slice(2)]);
+      const labelled = new Set(nameTexts.map((text) => text.getAttribute("data-k").slice(2)));
+      const fontSize = Math.max(...nameTexts.map((text) => Number(text.getAttribute("font-size")) || 0), 12);
+      const bounds = new Map();
+      for (const [id, rings] of polys) {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const ring of rings) for (const [x, y] of ring) {
+          x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+        }
+        bounds.set(id, [x0, y0, x1, y1]);
+      }
+      const TOUCH = 4;
+      const segmentDistance = ([px, py], [ax, ay], [bx, by]) => {
+        const dx = bx - ax, dy = by - ay;
+        const len = dx * dx + dy * dy;
+        const t = len > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len)) : 0;
+        return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+      };
+      const reaches = (from, to, [tx0, ty0, tx1, ty1]) => {
+        for (const ring of from) for (const point of ring) for (const other of to) {
+          if (point[0] < tx0 - TOUCH || point[0] > tx1 + TOUCH || point[1] < ty0 - TOUCH || point[1] > ty1 + TOUCH) continue;
+          for (let i = 0; i < other.length; i++) {
+            if (segmentDistance(point, other[i], other[(i + 1) % other.length]) < TOUCH) return true;
+          }
+        }
+        return false;
+      };
+      const touching = (a, b) => {
+        const [ax0, ay0, ax1, ay1] = bounds.get(a);
+        const [bx0, by0, bx1, by1] = bounds.get(b);
+        if (ax1 + TOUCH < bx0 || bx1 + TOUCH < ax0 || ay1 + TOUCH < by0 || by1 + TOUCH < ay0) return false;
+        return reaches(polys.get(a), polys.get(b), bounds.get(b)) || reaches(polys.get(b), polys.get(a), bounds.get(a));
+      };
+      const violations = [];
+      for (const id of [...polys.keys()].sort((a, b) => Number(a) - Number(b))) {
+        if (labelled.has(id)) continue;
+        const [x0, y0, x1, y1] = bounds.get(id);
+        // "Cannot hold its name at all": narrower than half the name's
+        // estimated width, or shorter than one label line.
+        const nameWidth = (names[id] ?? "").length * fontSize * 0.6;
+        if (x1 - x0 < nameWidth / 2 || y1 - y0 < fontSize * 1.25) continue;
+        for (const other of labelled) {
+          if (!polys.has(other) || !(sizes[other] < sizes[id])) continue;
+          if (!touching(id, other)) continue;
+          violations.push({ unlabelled: names[id], files: sizes[id], smallerLabelledNeighbour: names[other], neighbourFiles: sizes[other] });
+        }
+      }
+      return { districts: polys.size, labelled: labelled.size, violations };
+    }, { names, sizes });
+
+    const pinState = () => page.evaluate(({ landmarks, chromeSelector }) => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return null;
+      const map = svg.getBoundingClientRect();
+      const intersects = (a, b) => a.x < b.right && a.right > b.x && a.y < b.bottom && a.bottom > b.y;
+      const pinGroups = [...svg.querySelectorAll("g[data-landmark-pin]")];
+      const pins = pinGroups.map((group) => Number(group.getAttribute("data-landmark-pin")));
+      const pinBoxes = pinGroups.map((group) => {
+        const r = group.getBoundingClientRect();
+        return { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+      });
+      const chrome = [...document.querySelectorAll(chromeSelector)]
+        .filter((el) => {
+          const style = getComputedStyle(el);
+          return style.display !== "none" && style.visibility !== "hidden" && el.getAttribute("aria-hidden") !== "true";
+        })
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+        });
+      const droppedOnHubRing = [];
+      for (const i of landmarks) {
+        if (pins.includes(i)) continue;
+        const ring = svg.querySelector(`circle[data-hub-ring="${i}"]`);
+        if (!ring) continue;
+        const r = ring.getBoundingClientRect();
+        const cx = (r.left + r.right) / 2;
+        const cy = (r.top + r.bottom) / 2;
+        // pins.ts's own footprint for a pin whose tip is at (cx, cy).
+        const box = { x: cx - 10, y: cy - 32, right: cx + 10, bottom: cy };
+        if (box.x < map.left || box.right > map.right || box.y < map.top || box.bottom > map.bottom) continue;
+        if (chrome.some((c) => intersects(box, c))) continue;
+        if (pinBoxes.some((p) => intersects(box, p))) continue;
+        droppedOnHubRing.push(i);
+      }
+      return { pins, droppedOnHubRing };
+    }, { landmarks, chromeSelector });
+
+    const edgeState = () => page.evaluate((chromeSelector) => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return null;
+      const map = svg.getBoundingClientRect();
+      const EPS = 0.5;
+      const matrix = svg.getScreenCTM();
+      const toScreen = (x, y, width, height) => {
+        const point = svg.createSVGPoint();
+        point.x = x; point.y = y;
+        const a = point.matrixTransform(matrix);
+        point.x = x + width; point.y = y + height;
+        const b = point.matrixTransform(matrix);
+        return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), right: Math.max(a.x, b.x), bottom: Math.max(a.y, b.y) };
+      };
+      // The same box the existing overlap check reads: data-label-box is
+      // the width the renderer reserved; the height is 1.25 x font-size.
+      const reservedBox = (text) => {
+        const width = Number(text.getAttribute("data-label-box"));
+        const height = Number(text.getAttribute("font-size")) * 1.25;
+        const anchor = text.getAttribute("text-anchor") ?? "start";
+        const textX = Number(text.getAttribute("x"));
+        const x = anchor === "middle" ? textX - width / 2 : anchor === "end" ? textX - width : textX;
+        return toScreen(x, Number(text.getAttribute("y")) - height, width, height);
+      };
+      const mapLabels = [...svg.querySelectorAll("text[data-label-box]:not([data-symbol-card-label])")]
+        .map((text) => ({ text: text.textContent, ...reservedBox(text) }));
+      // A card tab's reserved box is its backing rect; a symbol label's is
+      // the renderer's own [x - w/2 - 2, y - 0.85 fs, w + 4, 1.3 fs] with
+      // w = length x fs x 0.62 (drawSymbolCardsPass).
+      const tabs = [...svg.querySelectorAll("text[data-symbol-card-label]")].map((text) => {
+        const rect = text.previousElementSibling;
+        const r = (rect && rect.tagName.toLowerCase() === "rect" ? rect : text).getBoundingClientRect();
+        return { text: text.textContent, x: r.left, y: r.top, right: r.right, bottom: r.bottom, label: reservedBox(text) };
+      });
+      const symbolLabels = [...svg.querySelectorAll("text[data-label-for]")].map((text) => {
+        const fs = Number(text.getAttribute("font-size"));
+        const w = (text.textContent ?? "").length * fs * 0.62;
+        return { text: text.textContent, ...toScreen(Number(text.getAttribute("x")) - w / 2 - 2, Number(text.getAttribute("y")) - fs * 0.85, w + 4, fs * 1.3) };
+      });
+      const overlap = (a, b) => a.x < b.right - EPS && a.right > b.x + EPS && a.y < b.bottom - EPS && a.bottom > b.y + EPS;
+      const cardOverlaps = [];
+      for (const labelBox of mapLabels) for (const card of [...tabs, ...symbolLabels]) {
+        if (overlap(labelBox, card)) cardOverlaps.push({ label: labelBox.text, card: card.text });
+      }
+      const clipped = [...mapLabels, ...tabs.map((tab) => ({ text: tab.text, ...tab.label }))]
+        .filter((box) => box.x < map.left - EPS || box.right > map.right + EPS || box.y < map.top - EPS || box.bottom > map.bottom + EPS)
+        .map((box) => box.text);
+      const chrome = [...document.querySelectorAll(chromeSelector)]
+        .filter((el) => {
+          const style = getComputedStyle(el);
+          return style.display !== "none" && style.visibility !== "hidden" && el.getAttribute("aria-hidden") !== "true";
+        })
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+        });
+      const tabsUnderChrome = tabs.filter((tab) => chrome.some((c) => overlap(tab, c))).map((tab) => tab.text);
+      return {
+        cards: tabs.length + symbolLabels.length,
+        cardOverlaps: cardOverlaps.slice(0, 6),
+        cardOverlapCount: cardOverlaps.length,
+        clipped: clipped.slice(0, 6),
+        clippedCount: clipped.length,
+        tabsUnderChrome: tabsUnderChrome.slice(0, 6),
+        tabsUnderChromeCount: tabsUnderChrome.length,
+      };
+    }, chromeSelector);
+
+    await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+    await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(700);
+
+    const priority = await priorityViolations();
+    report(!!priority && priority.labelled > 0 && priority.violations.length === 0,
+      `${label}: at fit, no district is unlabelled while a smaller district it touches is labelled`,
+      JSON.stringify(priority && { ...priority, violations: priority.violations.slice(0, 8) }));
+    const pinsAtFit = await pinState();
+    report(!!pinsAtFit && pinsAtFit.pins.length > 0 && pinsAtFit.droppedOnHubRing.length === 0,
+      `${label}: landmark pins are present at fit, none dropped for sitting on a hub ring`,
+      JSON.stringify(pinsAtFit));
+
+    let zoomClicks = 0;
+    for (const level of [{ name: "fit", clicks: 0 }, { name: "zoom-in-2", clicks: 2 }, { name: "zoom-in-4", clicks: 4 }]) {
+      while (zoomClicks < level.clicks) {
+        await page.locator('button[aria-label="Zoom in"]').click();
+        zoomClicks++;
+      }
+      await page.waitForTimeout(350);
+      const subtitles = await orphanSubtitles();
+      report(!!subtitles && subtitles.orphans.length === 0,
+        `${label}: no "N files" subtitle is drawn without its district name at ${level.name}`,
+        JSON.stringify(subtitles));
+      const edges = await edgeState();
+      report(!!edges && edges.cardOverlapCount === 0,
+        `${label}: no map label overlaps a symbol-card tab or symbol label at ${level.name}`,
+        JSON.stringify(edges && { cards: edges.cards, cardOverlaps: edges.cardOverlaps, cardOverlapCount: edges.cardOverlapCount }));
+      report(!!edges && edges.clippedCount === 0,
+        `${label}: no map label or card tab is clipped by the map's edge at ${level.name}`,
+        JSON.stringify(edges && { clipped: edges.clipped, clippedCount: edges.clippedCount }));
+      report(!!edges && edges.tabsUnderChromeCount === 0,
+        `${label}: no symbol-card tab sits under the floating chrome at ${level.name}`,
+        JSON.stringify(edges && { tabsUnderChrome: edges.tabsUnderChrome, tabsUnderChromeCount: edges.tabsUnderChromeCount }));
+    }
+    await context.close();
+  }
 }
 
 // 9(f): an old map with no `P` at all (any committed data/ fixture the
@@ -6544,6 +7035,8 @@ async function main() {
     for (const profile of PROFILES) await checkStreetsAndTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkNeighbourhoodLabelsAtDeeperZoom(browser, args.base, profile);
     for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
+    await checkDesktopLabelPlacement(browser, args.base);
+    await checkDesktopLabelRules(browser, args.base);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
     for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);

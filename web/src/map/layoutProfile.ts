@@ -49,6 +49,12 @@ export function layoutProfile(width: number, height: number): LayoutProfile {
   return "desktop";
 }
 
+/** docs/UX.md §5: desktop label placement applies to the desktop shell and
+ * tablet rail, while both phone shells keep the existing label behaviour. */
+export function hasDesktopMapLabels(profile: LayoutProfile): boolean {
+  return profile === "tablet" || profile === "desktop";
+}
+
 /** The phone shell (pill, control column, one sheet) serves both phone
  * profiles; the floating command bar and panel serve the other two. */
 export function isPhoneShell(p: LayoutProfile): boolean {
