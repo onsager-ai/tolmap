@@ -121,7 +121,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use axum::body::{Body, Bytes};
+use axum::body::Bytes;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path as AxPath, Request, State};
@@ -4531,6 +4531,7 @@ pub async fn start_remote(state: &Arc<AppState>, slots: usize) -> anyhow::Result
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use axum::body::Body;
     use std::net::TcpStream;
 
     use tokio_tungstenite::tungstenite;
@@ -5908,11 +5909,11 @@ mod tests {
         let id = fixture.spawn(remote_repo("demo"));
         assert_eq!(agent.assigned(), id);
 
-        // Hyper frames the PUT body at Content-Length. Because this request
-        // keeps the connection alive, the extra bytes are parsed as a second,
-        // malformed HTTP request. The declared SHA covers the whole wire
-        // body, so the first request also fails its digest check after only
-        // the declared 64 bytes arrive. Both failures must leave no artifact.
+        // Hyper frames the PUT at Content-Length, so only the declared 64
+        // bytes reach its handler. The full-wire digest then makes that
+        // request fail with 400. On this keep-alive connection, the trailing
+        // 1 MiB is parsed as another request and Hyper rejects it with 431.
+        // Neither response may leave an artifact behind.
         let body = vec![b'x'; DECLARED_BYTES + EXTRA_BYTES];
         let reserved_before = lease_upload_state(&fixture, id).2;
         let (statuses, response) = put_with_extra_after_content_length(
@@ -5924,7 +5925,7 @@ mod tests {
             DECLARED_BYTES,
         );
 
-        assert_eq!(statuses, [400, 400], "{response}");
+        assert_eq!(statuses, [400, 431], "{response}");
         assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
         assert!(fixture.hub.uploads(id).is_empty());
     }
