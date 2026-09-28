@@ -5903,7 +5903,7 @@ async function checkProfileLayout(browser, base, profile) {
       `${label}: the search pill sits over the map beside the sheet, as in portrait`, JSON.stringify(pill));
     report(!!column && column.x + column.width <= vw - 11 && column.y + column.height <= vh && (await page.locator("[data-side-toggle]").count()) === 1,
       `${label}: the control column is on screen, with the side-sheet toggle`, JSON.stringify(column));
-    const ctl = await heights("[data-control-column] button");
+    const ctl = await page.locator("[data-control-column] button").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().height)));
     report(ctl.length === 5 && ctl.every((h) => h >= 44), `${label}: control buttons are 44 px`, JSON.stringify(ctl));
     report((await page.locator('[data-desktop-shell], [data-command-bar], [data-desktop-actions], button[aria-label="Enter fullscreen"]').count()) === 0,
       `${label}: never the desktop layout below 500 px of height`);
