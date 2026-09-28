@@ -615,6 +615,9 @@ try {
             await shot(page, `${tag}-panel-open`);
           }
           await open(page, districtQuery);
+          if (profile.name === "tablet-768x1024" && (await page.locator("[data-panel-tab]").count())) {
+            await page.locator("[data-panel-tab]").click();
+          }
           await shot(page, `${tag}-district-selected`);
           if (!profile.name.startsWith("landscape")) {
             await open(page);
@@ -625,6 +628,9 @@ try {
           }
         }
         await open(page, fileQuery);
+        if (profile.name === "tablet-768x1024" && (await page.locator("[data-panel-tab]").count())) {
+          await page.locator("[data-panel-tab]").click();
+        }
         await shot(page, `${tag}-file-selected`);
         if (colorScheme === "dark" && profile.name === "desktop-1440x900") {
           await open(page, `?layer=p${fileQuery ? `&${fileQuery.slice(1)}` : ""}`);

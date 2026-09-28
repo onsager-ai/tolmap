@@ -374,8 +374,8 @@ export function DistrictSheetCard({
           onSelectDirectory={onSelectDirectory}
           foldersExpanded={foldersExpanded}
           filesExpanded={filesExpanded}
-          onToggleFolders={() => setFoldersExpanded((v) => !v)}
-          onToggleFiles={() => setFilesExpanded((v) => !v)}
+          onToggleFolders={onToggleFolders}
+          onToggleFiles={onToggleFiles}
         />
       </div>
     </div>
