@@ -2790,11 +2790,12 @@ impl Drop for UploadGuard<'_> {
 /// Nor, since the review of #194 (5873437803), does a lease with no
 /// channel past its deadline, whether or not a runner has found it expired
 /// yet: only a resume could bring it back, and `resume` marks a lease past
-/// its deadline lost. So a lease whose runner is gone without ending it
-/// (a bug; `RunnerLease` ends it on every exit it knows of) holds its
-/// worker for one lease TTL at most, never for good. A lease still on a
-/// channel keeps counting past its deadline: heartbeats may still renew it
-/// until its runner polls, and the agent on it is busy with it.
+/// its deadline lost. So a lease with no channel whose runner is gone
+/// without ending it holds its worker for one lease TTL at most. A lease
+/// still on a channel keeps counting past its deadline, for as long as it
+/// is there: heartbeats may still renew it until its runner polls, and the
+/// agent on it is busy with it. Nothing here frees one whose runner is
+/// gone; `RunnerLease` ends a runner's lease on every way out instead.
 fn pick_agent(inner: &HubInner, me: (i64, Uuid)) -> Option<u64> {
     let now = Instant::now();
     let mut leased: BTreeMap<usize, Vec<Uuid>> = BTreeMap::new();
@@ -3721,29 +3722,6 @@ enum ExecutorClone {
     Finished,
 }
 
-/// Runs one job in loopback mode: `jobs::prepare`, an agent's executor over
-/// the channel, then `jobs::register_owned` -- the three parts of
-/// docs/WORKER_TIER.md §2 with execute moved behind the channel. Events go
-/// through local mode's own `SnapshotSink`, so the job's snapshots, and the
-/// SSE frames made from them, are what local mode makes from the same
-/// events. The worker slot `worker_loop` gave this job is held until this
-/// returns, which is when the lease has ended.
-///
-/// Durable (phase 2): the job's row moves `queued` → `leased` (written
-/// right after `assign`) → `running` (first event), with the snapshot
-/// written at every stage boundary and at most every `SNAPSHOT_EVERY`
-/// between. A lease that runs out re-queues the job (`requeue`), counted
-/// as a lost worker unless this run adopted a lease a restart left behind.
-/// Terminal rows are written by `worker_loop` once this returns.
-///
-/// Classes (phase 2, step 4): the runner asks for an agent of its slot's
-/// class, which is the class the job runs on. When the job's `features`
-/// predict more than that class holds and a larger class exists, the agent
-/// is told `cancel` `reroute` and, on its `released`, the job moves there
-/// uncounted (§2.1 step 3). A `released` `oom` moves it to the next class
-/// up, uncounted, or fails it on the largest (§6). A lease that runs out
-/// with its last heartbeat within 10% of the class's memory moves the job
-/// to the next class, counted as the lost worker it is (§6).
 /// `run_remote`'s lease, ended however the runner leaves (#194 review,
 /// 5873437803): every return it plans ends the lease itself, and this
 /// catches the rest -- a return nobody planned, and a panic, after which
@@ -3763,8 +3741,9 @@ impl Drop for RunnerLease<'_> {
     }
 }
 
-/// Test only: set on a thread, `run_remote` on that thread panics right
-/// after it holds its lease, as a bug in the runner would.
+// Test only: set on a thread, `run_remote` on that thread panics right
+// after it holds its lease, as a bug in the runner would. A plain comment:
+// a doc comment on a macro call documents nothing (`unused_doc_comments`).
 #[cfg(test)]
 thread_local! {
     static PANIC_AFTER_LEASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -3788,6 +3767,29 @@ fn panic_before_recording(slug: &str, job_id: Uuid) {
     }
 }
 
+/// Runs one job in loopback mode: `jobs::prepare`, an agent's executor over
+/// the channel, then `jobs::register_owned` -- the three parts of
+/// docs/WORKER_TIER.md §2 with execute moved behind the channel. Events go
+/// through local mode's own `SnapshotSink`, so the job's snapshots, and the
+/// SSE frames made from them, are what local mode makes from the same
+/// events. The worker slot `worker_loop` gave this job is held until this
+/// returns, which is when the lease has ended.
+///
+/// Durable (phase 2): the job's row moves `queued` → `leased` (written
+/// right after `assign`) → `running` (first event), with the snapshot
+/// written at every stage boundary and at most every `SNAPSHOT_EVERY`
+/// between. A lease that runs out re-queues the job (`requeue`), counted
+/// as a lost worker unless this run adopted a lease a restart left behind.
+/// Terminal rows are written by `worker_loop` once this returns.
+///
+/// Classes (phase 2, step 4): the runner asks for an agent of its slot's
+/// class, which is the class the job runs on. When the job's `features`
+/// predict more than that class holds and a larger class exists, the agent
+/// is told `cancel` `reroute` and, on its `released`, the job moves there
+/// uncounted (§2.1 step 3). A `released` `oom` moves it to the next class
+/// up, uncounted, or fails it on the largest (§6). A lease that runs out
+/// with its last heartbeat within 10% of the class's memory moves the job
+/// to the next class, counted as the lost worker it is (§6).
 pub(crate) fn run_remote(
     state: Arc<AppState>,
     hub: &WorkerHub,
@@ -3803,13 +3805,22 @@ pub(crate) fn run_remote(
     // check below, so a job cancelled before its runner started does not
     // leave that lease behind.
     let orphan = registry.take_orphan(job_id);
+    // Armed the moment this runner holds a lease -- here for a restored
+    // one, in `claim`'s arm below for a new one -- before anything that
+    // could panic (#194 re-review, 5874156251): a lease still on its
+    // agent's channel is never freed by `pick_agent`'s deadline rule, so a
+    // panic before arming would keep its worker from every other job.
+    let mut _lease_guard = orphan.as_ref().map(|(epoch, _)| RunnerLease {
+        hub,
+        job_id,
+        epoch: *epoch,
+    });
     if registry.is_cancelled(job_id) {
         // #194 review (5873437803): the user cancelled a restored job before
         // its runner started. Its agent may have resumed the lease already
         // (`resume` answers `continue`, since nothing marked it cancelled),
         // so it is told `cancel`, and the lease ends as the guard drops.
-        if let Some((epoch, _)) = orphan {
-            let _lease = RunnerLease { hub, job_id, epoch };
+        if orphan.is_some() {
             hub.cancel(job_id, CancelReason::Cancelled);
         }
         return;
@@ -3855,6 +3866,7 @@ pub(crate) fn run_remote(
                 registry.is_cancelled(job_id)
             }) {
                 Ok(Some(lease)) => {
+                    _lease_guard = Some(RunnerLease { hub, job_id, epoch });
                     #[cfg(test)]
                     panic_before_recording(&repo_ref.slug, job_id);
                     save_state(
@@ -3874,7 +3886,6 @@ pub(crate) fn run_remote(
             }
         }
     };
-    let _lease_guard = RunnerLease { hub, job_id, epoch };
     #[cfg(test)]
     if PANIC_AFTER_LEASE.with(std::cell::Cell::get) {
         panic!("job {job_id}: a runner panic injected by a test");
