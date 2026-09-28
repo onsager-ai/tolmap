@@ -18,8 +18,30 @@ export function LayerOverviewHeadline({
   const headline = layerOverviewHeadline(overview, layer);
   return (
     <>
-      <h2 data-overview-headline data-overview-layer={layer} className={className}>{headline.primary}</h2>
-      {headline.secondary && <p data-overview-subheadline className="mt-1.5 text-meta leading-[1.45] text-[var(--dim)]">{headline.secondary}</p>}
+      <h2 data-overview-headline data-overview-layer={layer} className={className}><HeadlineText text={headline.primary} /></h2>
+      {headline.secondary && (
+        // Each " · " fact wraps as a unit, so a narrow panel breaks between
+        // facts ("Merge commits excluded ·" / "most active district: …")
+        // instead of stranding the tail of a district name on its own line.
+        <p data-overview-subheadline className="mt-1.5 flex flex-wrap gap-x-1 text-meta leading-[1.45] text-[var(--dim)]">
+          {headline.secondary.split(" · ").map((part, i, parts) => (
+            <span key={i}>{part}{i < parts.length - 1 ? " ·" : ""}</span>
+          ))}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** A headline whose counts never split from their unit: "18 islands" and
+ * "6,347 files" stay whole, so a wrap falls at " + " or " · " rather than
+ * leaving "files" (or "islands · …") alone on the next line. The text
+ * content is unchanged; only the break opportunities move. */
+export function HeadlineText({ text }: { text: string }) {
+  const parts = text.split(/(\d[\d,.]*\s\S+)/);
+  return (
+    <>
+      {parts.map((part, i) => (i % 2 === 1 ? <span key={i} className="whitespace-nowrap">{part}</span> : part))}
     </>
   );
 }

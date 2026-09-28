@@ -20,7 +20,7 @@ import { formatDirectory, type PackageGrouping } from "@/map/packageLayout";
 import { neighbourhoodOf } from "@/map/neighbourhoods";
 import { summarizeReferenceCoverage } from "@/map/referenceCoverage";
 import type { Layer } from "@/map/constants";
-import { LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
+import { HeadlineText, LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
 import { layerOverviewHeadline } from "@/map/layerOverview";
 import type { StructureDetail } from "@/map/structureCard";
 import type { Detent } from "@/map/phoneShell";
@@ -55,7 +55,7 @@ export function Eyebrow({ children }: { children: ReactNode }) {
 
 export function SheetTitle({ children, mono = false, truncate = true }: { children: ReactNode; mono?: boolean; truncate?: boolean }) {
   return (
-    <h3 className={`mt-0.5 ${truncate ? "truncate" : "whitespace-normal text-balance"} text-sheet-title tabular-nums ${mono ? "font-mono text-[21px] font-medium" : ""}`}>{children}</h3>
+    <h3 className={`mt-0.5 ${truncate ? "truncate" : "whitespace-normal"} text-sheet-title tabular-nums ${mono ? "font-mono text-[21px] font-medium" : ""}`}>{children}</h3>
   );
 }
 
@@ -192,9 +192,9 @@ export function OverviewCard({
       <div data-sheet-dragzone>
         <div className="font-mono text-meta text-[var(--dim)]">{slug}</div>
         {layer === "d" ? (
-          <div data-overview-headline data-overview-layer="d"><SheetTitle truncate={false}>{layerOverviewHeadline(layerOverview, "d").primary}</SheetTitle></div>
+          <div data-overview-headline data-overview-layer="d"><SheetTitle truncate={false}><HeadlineText text={layerOverviewHeadline(layerOverview, "d").primary} /></SheetTitle></div>
         ) : (
-          <LayerOverviewHeadline overview={layerOverview} layer={layer} className="mt-0.5 text-balance text-sheet-title tabular-nums" />
+          <LayerOverviewHeadline overview={layerOverview} layer={layer} className="mt-0.5 text-sheet-title tabular-nums" />
         )}
         {activeDirectory ? (
           <div className="mt-3.5 flex min-h-[48px] items-center gap-2 rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] pl-3 text-small">

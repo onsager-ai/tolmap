@@ -25,7 +25,7 @@ import { SearchBox } from "@/components/SearchBox";
 import type { SearchPick } from "@/map/searchResults";
 import { desktopPanelCrumbs, type DesktopPanelView } from "@/map/desktopPanel";
 import { SelectionCard } from "@/components/phone/SheetCards";
-import { LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
+import { HeadlineText, LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
 import {
   BackIcon,
   ChevronDownIcon,
@@ -659,7 +659,7 @@ export function DesktopPanel(p: DesktopPanelProps) {
                       "6,347" inside the sans line read as "6, 347" (Plex Mono's
                       comma is a full cell wide). */}
                   <h2 data-overview-headline data-overview-layer="d" className={DESKTOP_HEADLINE}>
-                    {layerOverviewHeadline(layerOverview, "d").primary}
+                    <HeadlineText text={layerOverviewHeadline(layerOverview, "d").primary} />
                   </h2>
                   <p className="mt-1.5 flex flex-wrap items-center gap-x-1 text-meta leading-[1.45] text-[var(--dim)]">
                     modularity <span className="font-mono">{p.doc.q.toFixed(3)}</span> ·
