@@ -3516,9 +3516,30 @@ async function checkDesktopLabelPlacement(browser, base) {
       continue;
     }
     const districtId = largest[0];
+    const colorDistrictIds = Object.entries(doc.districts)
+      .filter(([, district]) => district.blob?.length)
+      .sort((a, b) => b[1].size - a[1].size || Number(a[0]) - Number(b[0]))
+      .map(([id]) => id);
+    const colorState = async () => page.evaluate((districtIds) => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return null;
+      for (const id of districtIds) {
+        const polygon = svg.querySelector('path.hit[data-k="d:' + id + '"]');
+        const cell = svg.querySelector('[data-footprint-district="' + id + '"][data-footprint-shade="1"]');
+        if (!polygon || !cell) continue;
+        return {
+          district: id,
+          polygonFill: getComputedStyle(polygon).fill,
+          cellFill: getComputedStyle(cell).fill,
+          cellFillOpacity: Number(getComputedStyle(cell).fillOpacity),
+          cellKind: cell.hasAttribute("data-footprint-cell") ? "individual" : "batch",
+        };
+      }
+      return null;
+    }, colorDistrictIds);
     const labelsState = async () => page.evaluate(() => {
       const svg = document.querySelector("svg.map-svg");
-      if (!svg) return { boxes: [], overlaps: [] };
+      if (!svg) return { boxes: [], overlaps: [], markerOverlapCount: 0, chromeOverlapCount: 0 };
       const boxes = [...svg.querySelectorAll("text[data-label-box]:not([data-symbol-card-label])")].map((text) => {
         const width = Number(text.getAttribute("data-label-box"));
         const height = Number(text.getAttribute("font-size")) * 1.25;
@@ -3548,7 +3569,52 @@ async function checkDesktopLabelPlacement(browser, base) {
           overlaps.push({ a: a.text, b: b.text });
         }
       }
-      return { boxes, overlaps: overlaps.slice(0, 6), overlapCount: overlaps.length };
+      const map = svg.getBoundingClientRect();
+      const screenBox = (el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+      };
+      const markers = [
+        ...svg.querySelectorAll("g[data-landmark-pin]"),
+        ...svg.querySelectorAll("circle[data-hub-ring]"),
+      ].map((el) => ({
+        box: screenBox(el),
+        name: el.hasAttribute("data-landmark-pin") ? "pin " + el.getAttribute("data-landmark-pin") : "hub " + el.getAttribute("data-hub-ring"),
+      })).filter(({ box }) => box.x < map.right && box.right > map.left && box.y < map.bottom && box.bottom > map.top);
+      const markerOverlaps = [];
+      for (const label of boxes) for (const marker of markers) {
+        if (label.x < marker.box.right && label.right > marker.box.x && label.y < marker.box.bottom && label.bottom > marker.box.y) {
+          markerOverlaps.push({ label: label.text, marker: marker.name });
+        }
+      }
+      const chrome = [...document.querySelectorAll("[data-command-bar], [data-desktop-actions], [data-desktop-panel], [data-panel-tab], [data-desktop-legend], [data-map-controls]")]
+        .filter((el) => {
+          const style = getComputedStyle(el);
+          return style.display !== "none" && style.visibility !== "hidden" && el.getAttribute("aria-hidden") !== "true";
+        })
+        .map((el) => ({
+          box: screenBox(el),
+          name: el.hasAttribute("data-desktop-panel") ? "panel" :
+            el.hasAttribute("data-command-bar") ? "command bar" :
+            el.hasAttribute("data-desktop-actions") ? "actions" :
+            el.hasAttribute("data-desktop-legend") ? "legend" :
+            el.hasAttribute("data-map-controls") ? "controls" : "panel tab",
+        }));
+      const chromeOverlaps = [];
+      for (const label of boxes) for (const obstacle of chrome) {
+        if (label.x < obstacle.box.right && label.right > obstacle.box.x && label.y < obstacle.box.bottom && label.bottom > obstacle.box.y) {
+          chromeOverlaps.push({ label: label.text, chrome: obstacle.name });
+        }
+      }
+      return {
+        boxes,
+        overlaps: overlaps.slice(0, 6),
+        overlapCount: overlaps.length,
+        markerOverlaps: markerOverlaps.slice(0, 6),
+        markerOverlapCount: markerOverlaps.length,
+        chromeOverlaps: chromeOverlaps.slice(0, 6),
+        chromeOverlapCount: chromeOverlaps.length,
+      };
     });
     const levels = [
       { name: "fit", clicks: 0 },
@@ -3558,6 +3624,10 @@ async function checkDesktopLabelPlacement(browser, base) {
     await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
     await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
     await page.waitForTimeout(700);
+    const colors = await colorState();
+    report(!!colors && colors.polygonFill === colors.cellFill && colors.cellFillOpacity >= 0.8,
+      label + ": desktop fit polygons and file cells share the district palette colour",
+      JSON.stringify(colors));
     let zoomClicks = 0;
     for (const level of levels) {
       while (zoomClicks < level.clicks) {
@@ -3566,6 +3636,14 @@ async function checkDesktopLabelPlacement(browser, base) {
       }
       await page.waitForTimeout(350);
       const result = await labelsState();
+      report(result.markerOverlapCount === 0 && result.chromeOverlapCount === 0,
+        label + ": labels avoid landmark/hub markers and desktop chrome at " + level.name,
+        JSON.stringify({
+          markerOverlaps: result.markerOverlaps,
+          markerOverlapCount: result.markerOverlapCount,
+          chromeOverlaps: result.chromeOverlaps,
+          chromeOverlapCount: result.chromeOverlapCount,
+        }));
       report(result.boxes.length > 0 && result.overlapCount === 0,
         `${label}: no visible label boxes intersect at ${level.name}`,
         JSON.stringify({ count: result.boxes.length, overlaps: result.overlaps, overlapCount: result.overlapCount }));
