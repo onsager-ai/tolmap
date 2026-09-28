@@ -2664,6 +2664,9 @@ async function checkSearchPanOffscreen(browser, base) {
 
   const before = await readDot(page, picked.companionKey);
   const beforeTarget = await readDot(page, `f:${picked.index}`);
+  // Phase 7a moved the desktop combobox into the Search action popover.
+  await page.locator("[data-open-desktop-search]").click();
+  await page.waitForSelector("[data-desktop-search] input[data-search-input]");
   await page.locator('input[data-search-input]').fill(picked.file.split("/").pop());
   await page.waitForTimeout(150);
   await page.locator('input[data-search-input]').press("Enter");
