@@ -1019,6 +1019,9 @@ async function checkPackageLayout(browser, base, profile) {
 
   // docs/UX.md §4.3 and §5: the folder tree is the district index's second
   // tab -- in the phone's sheet, and in the desktop rail.
+  report((await page.locator('[data-index-tab="folders"]').count()) === 0, `${label}: Districts / Folders is hidden outside the District layer`);
+  await setLayer(page, profile, "d");
+  report((await page.locator('[data-index-tab="folders"]').count()) === 1, `${label}: Districts / Folders is available on the District layer`);
   if (profile.isMobile) await setSheetDetent(page, "full");
   await page.locator('[data-index-tab="folders"]').click();
   await page.waitForSelector("[data-folder-browser]");
