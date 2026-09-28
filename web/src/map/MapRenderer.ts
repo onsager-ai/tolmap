@@ -1174,11 +1174,11 @@ export class MapRenderer {
       return [transformed.x, transformed.y];
     };
     const boxes: Array<[number, number, number, number]> = [];
-    for (const chrome of this.svg.ownerDocument.querySelectorAll<HTMLElement>(selectors)) {
+    this.svg.ownerDocument.querySelectorAll<HTMLElement>(selectors).forEach((chrome) => {
       const style = window.getComputedStyle(chrome);
-      if (style.display === "none" || style.visibility === "hidden" || chrome.getAttribute("aria-hidden") === "true") continue;
+      if (style.display === "none" || style.visibility === "hidden" || chrome.getAttribute("aria-hidden") === "true") return;
       const r = chrome.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0 || r.right <= map.left || r.left >= map.right || r.bottom <= map.top || r.top >= map.bottom) continue;
+      if (r.width <= 0 || r.height <= 0 || r.right <= map.left || r.left >= map.right || r.bottom <= map.top || r.top >= map.bottom) return;
       const corners = [
         toLocal(r.left, r.top),
         toLocal(r.right, r.top),
@@ -1190,7 +1190,7 @@ export class MapRenderer {
       const x = Math.min(...xs);
       const y = Math.min(...ys);
       boxes.push([x, y, Math.max(...xs) - x, Math.max(...ys) - y]);
-    }
+    });
     return boxes;
   }
   /** docs/UX.md §3.3: the chrome's real extent, from MapCanvas. A new
@@ -2328,7 +2328,6 @@ export class MapRenderer {
   }
 
   private hubCandidates(): HubRingCandidate[] {
-    const { doc } = this.state!;
     const { hubs, maxFi } = this.hubSet;
     const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const rawCandidates: HubRingCandidate[] = [];
