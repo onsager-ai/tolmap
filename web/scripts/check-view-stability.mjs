@@ -1359,11 +1359,13 @@ async function checkFolderIslandFade(browser, base, profile) {
     await page.waitForSelector("svg.map-svg [data-folder-highlight]");
   } else {
     // The desktop room gate intentionally withholds folder-only file marks
-    // when their districts have no room. Confirm the active directory from
-    // the folder browser instead; a folder highlight alone is not a §5
-    // exception that should force those file marks onto the map.
-    await page.waitForSelector('[data-folder-path="api"][aria-pressed="true"]');
-    await page.waitForSelector("svg.map-svg path.hit");
+    // when their districts have no room, so there is no outline to wait for;
+    // a folder highlight alone is not a §5 exception that should force those
+    // file marks onto the map. Since #196 the Package layer's panel has no
+    // folder browser either, so wait for the map's own sign that api/ is
+    // active: the batched cells of every other file dim to 0.2 (the same
+    // signal checkSelectionDim reads).
+    await page.waitForSelector('svg.map-svg path[data-footprint-batch][fill-opacity="0.2"]');
   }
   await page.waitForTimeout(2200);
   const after = await visiblePinRanks();
