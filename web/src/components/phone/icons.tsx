@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 // the prototype draw them: 24-unit strokes in currentColor, so every icon
 // takes the chrome's text colour in both themes.
 
-function Icon({ size = 20, children }: { size?: number; children: ReactNode }) {
+function Icon({ size = 20, className, children }: { size?: number; className?: string; children: ReactNode }) {
   return (
     <svg
       width={size}
@@ -16,6 +16,7 @@ function Icon({ size = 20, children }: { size?: number; children: ReactNode }) {
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
+      className={className}
     >
       {children}
     </svg>
@@ -62,8 +63,8 @@ export const CloseIcon = () => (
     <path d="M6 6l12 12M18 6L6 18" />
   </Icon>
 );
-export const ChevronIcon = () => (
-  <Icon size={14}>
+export const ChevronIcon = ({ className }: { className?: string } = {}) => (
+  <Icon size={14} className={className}>
     <path d="M9 6l6 6-6 6" />
   </Icon>
 );

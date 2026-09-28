@@ -341,7 +341,7 @@ export function DistrictSheetCard({
           <div className="min-w-0 flex-1">
             <Eyebrow>District</Eyebrow>
             <SheetTitle>{doc.names[d] ?? `district ${d}`}</SheetTitle>
-            <p className="mt-1 truncate text-small text-[var(--dim)]">
+            <p className="mt-1 truncate text-small text-[var(--dim)]" data-district-summary>
               <span className="text-[var(--on)]">{compactCount(size)}</span> files
               {largest && largest.share >= 40 && (
                 <>

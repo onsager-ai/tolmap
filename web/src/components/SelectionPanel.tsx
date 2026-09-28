@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import type { DirectoryNode, DistrictPathRow, PackageLayout } from "@/map/packageLayout";
 import { formatDirectory } from "@/map/packageLayout";
 import { Input } from "@/components/ui/input";
+import { ChevronIcon } from "@/components/phone/icons";
 
 // The detail blocks of the district, file and symbol cards (docs/UX.md
 // principle 10, "one component, two containers"): the phone sheet and the
@@ -263,14 +264,14 @@ export function DistrictBody({
     .sort((a, b) => b[2] - a[2])
     .slice(0, 2)
     .map((r) => ({ id: r[0] === d ? r[1] : r[0], name: doc.names[String(r[0] === d ? r[1] : r[0])] }));
-  const largest = paths.find((path) => !path.other);
   return (
-    <div className="mt-1.5 space-y-1 text-meta" data-district-summary>
-      {largest && largest.share >= 40 && (
-        <p className="truncate text-[var(--dim)]" title={`mostly ${formatDirectory(largest.path!)}`}>
-          mostly <span className="font-mono text-[var(--on)]">{formatDirectory(largest.path!)}</span>
-        </p>
-      )}
+    // The "mostly <folder>" fact used to repeat here, right under "Zoom to
+    // district" -- it already opens the card header (same `paths`/`largest`
+    // computation as there). `data-district-summary` moved with it, onto
+    // that header line in DistrictSheetCard (phone/SheetCards.tsx): that is
+    // what check-view-stability's "no mostly line below 40%"/"wide fan-out
+    // keeps the parent as mostly" checks read.
+    <div className="mt-1.5 space-y-1 text-meta">
       {nb.length > 0 && (
         <p className="truncate text-[var(--dim)]">
           near{" "}
@@ -286,8 +287,15 @@ export function DistrictBody({
       )}
       {paths.length > 0 && (
         <div data-district-path-breakdown>
-          <button type="button" data-district-folders-toggle aria-expanded={foldersExpanded} onClick={onToggleFolders} className="w-full text-left text-[var(--on)] touch:min-h-[44px] touch:text-small">
-            <span className="text-[var(--dim)]">{foldersExpanded ? "⌄" : "›"}</span> folders ({paths.filter((path) => !path.other).length})
+          <button
+            type="button"
+            data-district-folders-toggle
+            aria-expanded={foldersExpanded}
+            onClick={onToggleFolders}
+            className="flex w-full items-center gap-1.5 rounded-[8px] px-1 py-1 text-left text-[var(--on)] hover:bg-[var(--chrome-hover)] touch:min-h-[44px] touch:text-small"
+          >
+            <ChevronIcon className={`shrink-0 text-[var(--dim)] transition-transform ${foldersExpanded ? "rotate-90" : ""}`} />
+            folders ({paths.filter((path) => !path.other).length})
           </button>
           {foldersExpanded && paths.map((path, index) =>
             path.other ? (
@@ -317,8 +325,15 @@ export function DistrictBody({
         </div>
       )}
       <div>
-        <button type="button" data-district-files-toggle aria-expanded={filesExpanded} onClick={onToggleFiles} className="w-full text-left text-[var(--on)] touch:min-h-[44px] touch:text-small">
-          <span className="text-[var(--dim)]">{filesExpanded ? "⌄" : "›"}</span> key files ({top.length})
+        <button
+          type="button"
+          data-district-files-toggle
+          aria-expanded={filesExpanded}
+          onClick={onToggleFiles}
+          className="flex w-full items-center gap-1.5 rounded-[8px] px-1 py-1 text-left text-[var(--on)] hover:bg-[var(--chrome-hover)] touch:min-h-[44px] touch:text-small"
+        >
+          <ChevronIcon className={`shrink-0 text-[var(--dim)] transition-transform ${filesExpanded ? "rotate-90" : ""}`} />
+          key files ({top.length})
         </button>
         {filesExpanded && top.map((i) => (
           <button
