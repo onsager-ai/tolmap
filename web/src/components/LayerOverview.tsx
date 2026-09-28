@@ -372,7 +372,7 @@ export function LayerOverviewIndex({
                 meta={`${row.language ? `${displayLanguage(row.language)} · ` : ""}${packageSpanSummary(row.districtCount, row.islandCount)}`}
                 value={row.files.toLocaleString("en-US")}
                 valueTitle={`${row.files.toLocaleString("en-US")} files`}
-                onHighlight={touch ? undefined : hover(row.districtIds)}
+                onHighlight={sheet ? undefined : hover(row.districtIds)}
                 onSelect={() => { highlighted(null); onFrameDistricts(row.districtIds); }}
               />
             ))}

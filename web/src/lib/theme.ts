@@ -13,6 +13,12 @@ import { invalidatePackageColourCache } from "@/map/packageLayout";
 export type ThemeChoice = "system" | "light" | "dark";
 export type EffectiveTheme = "light" | "dark";
 
+const NEXT_THEME: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" };
+
+export function nextThemeChoice(choice: ThemeChoice): ThemeChoice {
+  return NEXT_THEME[choice];
+}
+
 const STORAGE_KEY = "tolmap:theme";
 const CHANGE_EVENT = "tolmap:theme-change";
 

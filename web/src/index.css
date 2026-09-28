@@ -515,23 +515,19 @@ body {
   display: none;
   pointer-events: none;
   max-width: 280px;
-  padding: 6px 9px;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  background: var(--chrome2);
+  padding: 8px 12px;
+  border-radius: 12px;
   color: var(--on);
   /* The hover card's lines are file paths and symbol names: data, so mono
    * (docs/UX.md §8.1), at the scale's 13 px meta size (was 11 px). */
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 13px;
   line-height: 1.45;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
 }
 .tolmap-hover-card-title {
   font-weight: 600;
   word-break: break-all;
 }
-
 /* docs/UX.md §6.2: the indexing page's running phase spins its ring, and a
    step with no known total shows an indeterminate bar that slides rather
    than a bar that claims a share. Still, not moving, for reduced motion. */

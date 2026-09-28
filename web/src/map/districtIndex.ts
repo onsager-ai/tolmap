@@ -18,7 +18,7 @@ import { formatDirectory, type PackageLayout } from "./packageLayout";
 // Reuses the district card's own threshold (SelectionPanel.tsx's
 // DistrictBody: "largest.share >= 40") -- the same folder is either worth
 // calling out or it isn't, regardless of which UI surface is asking.
-const MOSTLY_SHARE_THRESHOLD = 40;
+export const MOSTLY_SHARE_THRESHOLD = 40;
 
 // Two or three key files is the normal case (spec: "most imported", plus
 // whichever of entry/bridge this district actually has). A hazard file is

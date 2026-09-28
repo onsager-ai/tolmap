@@ -6290,6 +6290,37 @@ async function checkDesktopChromeInteractions(browser, base) {
     layers.some((row) => row.title === "Churn  2"),
   `${label}: the four icon-only layer buttons retain accessible names and titles`, JSON.stringify(layers));
 
+  for (const [key, expected] of [["1", "d"], ["2", "c"], ["3", "x"], ["4", "p"]]) {
+    await page.keyboard.press(key);
+    await page.waitForFunction((layer) => (new URL(location.href).searchParams.get("layer") ?? "d") === layer, expected);
+    const actual = await page.evaluate(() => new URL(location.href).searchParams.get("layer") ?? "d");
+    report(actual === expected, `${label}: ${key} switches to the ${expected} layer`, actual);
+  }
+  await page.keyboard.press("1");
+  await page.waitForFunction(() => (new URL(location.href).searchParams.get("layer") ?? "d") === "d");
+
+  await page.locator("[data-open-desktop-search]").click();
+  await page.locator("[data-search-palette]").waitFor();
+  const palette = await page.evaluate(() => ({
+    dialog: document.querySelector("[data-search-palette]")?.getAttribute("role"),
+    listbox: document.querySelector("[data-search-palette] [role=listbox]")?.getAttribute("role"),
+    groups: [...document.querySelectorAll("[data-search-palette] [data-search-group]")].map((group) => group.getAttribute("data-search-group")),
+  }));
+  report(palette.dialog === "dialog" && palette.listbox === "listbox", `${label}: the palette is a dialog with a listbox`, JSON.stringify(palette));
+  report(palette.groups.includes("district") && palette.groups.includes("command"), `${label}: empty query shows districts and commands`, JSON.stringify(palette.groups));
+  await page.keyboard.press("Escape");
+  await page.locator("[data-search-palette]").waitFor({ state: "detached" });
+  report(await page.evaluate(() => document.activeElement?.matches("[data-open-desktop-search]") ?? false),
+    `${label}: Esc closes the palette and restores focus to its opener`);
+
+  await page.keyboard.press("Control+k");
+  await page.locator("input[data-search-input]").waitFor();
+  await page.keyboard.press("f");
+  report(await page.locator("input[data-search-input]").inputValue() === "f",
+    `${label}: a single-letter shortcut is typed in the palette field`);
+  await page.keyboard.press("Escape");
+  await page.locator("[data-search-palette]").waitFor({ state: "detached" });
+
   await page.keyboard.press("BracketLeft");
   await page.waitForTimeout(300);
   report(await page.locator("[data-desktop-panel]").getAttribute("aria-hidden") === "true" &&
@@ -6315,6 +6346,88 @@ async function checkDesktopChromeInteractions(browser, base) {
     `${label}: / opens search on a map route`);
   await page.keyboard.press("Escape");
   await page.locator("[data-desktop-search]").waitFor({ state: "detached" });
+  await page.keyboard.press("Shift+/");
+  await page.locator("[data-keyboard-dialog]").waitFor();
+  report(/District, Churn, Complexity, Package/.test(await page.locator("[data-keyboard-dialog]").innerText()) &&
+    /Zoom to the selection/.test(await page.locator("[data-keyboard-dialog]").innerText()),
+  `${label}: ? opens the complete keyboard list`);
+  await page.keyboard.press("Escape");
+  await page.locator("[data-keyboard-dialog]").waitFor({ state: "detached" });
+  await context.close();
+}
+
+async function hoverAtMapKey(page, selector) {
+  const point = await page.evaluate((query) => {
+    const element = document.querySelector(query);
+    if (!(element instanceof SVGElement)) return null;
+    const box = element.getBoundingClientRect();
+    const key = element.getAttribute("data-k");
+    for (let yi = 1; yi < 20; yi++) {
+      for (let xi = 1; xi < 20; xi++) {
+        const x = box.left + (box.width * xi) / 20;
+        const y = box.top + (box.height * yi) / 20;
+        const hit = document.elementFromPoint(x, y)?.closest("[data-k]");
+        if (hit?.getAttribute("data-k") === key) return { x, y };
+      }
+    }
+    return null;
+  }, selector);
+  if (point) await page.mouse.move(point.x, point.y);
+  return point;
+}
+
+async function checkDesktopOverviewKeyboardAndHover(browser, base) {
+  const label = "desktop overview keyboard and linked hover / 1440x900";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, hasTouch: false });
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify?layer=c`, { waitUntil: "domcontentloaded" });
+  await page.locator("[data-overview-headline]").waitFor({ timeout: 15_000 });
+  await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => document.activeElement?.hasAttribute("data-overview-district-row"));
+  const selectedDistrict = await page.evaluate(() => document.activeElement?.getAttribute("data-overview-district-row"));
+  const lit = page.locator(`svg.map-svg [data-k="d:${selectedDistrict}"].hovered`);
+  await lit.first().waitFor({ timeout: 5_000 });
+  report(!!selectedDistrict && await lit.count() > 0, `${label}: ArrowDown focuses an index row and lights its district`, selectedDistrict);
+
+  for (const [key, layer] of [["1", "d"], ["2", "c"], ["3", "x"], ["4", "p"]]) {
+    await page.keyboard.press(key);
+    await page.waitForFunction((id) => document.querySelector(`[data-overview-headline][data-overview-layer="${id}"]`), layer);
+    await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+    await page.keyboard.press("ArrowDown");
+    await page.waitForFunction(() => document.activeElement?.matches("[data-district-index-row], [data-overview-district-row], [data-overview-file], [data-package-overview-row]"));
+    const activeLayer = await page.locator("[data-overview-headline]").getAttribute("data-overview-layer");
+    const activeRow = await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 180));
+    report(activeLayer === layer, `${label}: ArrowDown reaches the ${layer} overview index`, activeRow);
+  }
+
+  await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
+  await page.locator("[data-district-index-row]").first().waitFor({ timeout: 15_000 });
+  const districtRow = page.locator("[data-district-index-row]").first();
+  const districtId = await districtRow.getAttribute("data-district-index-row");
+  const districtName = (await districtRow.locator("span.truncate").first().innerText()).trim();
+  const districtSelector = `svg.map-svg path.hit[data-k="d:${districtId}"]`;
+  const districtPoint = await hoverAtMapKey(page, districtSelector);
+  const districtCard = page.locator(".tolmap-hover-card");
+  await districtCard.waitFor({ state: "visible", timeout: 5_000 });
+  const districtText = await districtCard.innerText();
+  const districtBox = await districtCard.boundingBox();
+  const districtPointClear = !!districtBox && !!districtPoint && !(districtPoint.x >= districtBox.x && districtPoint.x <= districtBox.x + districtBox.width && districtPoint.y >= districtBox.y && districtPoint.y <= districtBox.y + districtBox.height);
+  report(districtText.includes(districtName) && /\bfiles\b/.test(districtText) && districtText.includes("mostly folder:"), `${label}: district hover shows name, files and mostly-folder`, districtText);
+  report(districtPointClear, `${label}: the district hover card stays away from the pointer target`, JSON.stringify({ districtPoint, districtBox }));
+
+  const map = await (await fetch(`${base}/maps/langgenius/dify.json`)).json();
+  const file = map.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(map.F[file])}`, { waitUntil: "domcontentloaded" });
+  await page.locator(`svg.map-svg [data-k="f:${file}"]`).first().waitFor({ timeout: 15_000 });
+  const filePoint = await hoverAtMapKey(page, `svg.map-svg [data-k="f:${file}"]`);
+  await districtCard.waitFor({ state: "visible", timeout: 5_000 });
+  const fileText = await districtCard.innerText();
+  const fileBox = await districtCard.boundingBox();
+  const filePointClear = !!fileBox && !!filePoint && !(filePoint.x >= fileBox.x && filePoint.x <= fileBox.x + fileBox.width && filePoint.y >= fileBox.y && filePoint.y <= fileBox.y + fileBox.height);
+  report(fileText.includes("types.ts") && fileText.includes("path:") && fileText.includes("imported by") && fileText.includes("landmark:"), `${label}: file hover shows name, path, imported-by and landmark`, fileText);
+  report(filePointClear, `${label}: the file hover card stays away from the pointer target`, JSON.stringify({ filePoint, fileBox }));
   await context.close();
 }
 
@@ -6458,6 +6571,7 @@ async function main() {
     await checkRepoSelectCounts(browser, args.base);
     await checkDesktopBreadcrumbCurrentFits(browser, args.base);
     await checkDesktopChromeInteractions(browser, args.base);
+    await checkDesktopOverviewKeyboardAndHover(browser, args.base);
     await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.expect === "desktop"));
     await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.name === "tablet-1024x768"));
     // docs/UX.md phase 6: Home (§4.9) -- loaded, empty, service-unavailable

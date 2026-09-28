@@ -55,6 +55,8 @@ import { computeHubs, hubRingRadius, type HubSet } from "./hubs";
 import { archivoLabelWidth, MAP_LABEL_FONT } from "./labelMetrics";
 import { assignNeighbourhoodShades, neighbourhoodCentroids } from "./neighbourhoods";
 import type { FolderLabel, PackageGrouping } from "./packageLayout";
+import { formatDirectory } from "./packageLayout";
+import { MOSTLY_SHARE_THRESHOLD } from "./districtIndex";
 import { GestureRecognizer, PAN_DISMISS_PX, QUIET_AFTER_GESTURE_MS, type GestureEvent, type GestureEventType, type GestureIntent } from "./gestures";
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { RenderGate } from "./renderGate";
@@ -161,6 +163,7 @@ export interface MapRenderState {
   selD: number | null;
   route: Route | null;
   packageGrouping: PackageGrouping;
+  districtPaths: ReadonlyMap<number, readonly { path: string | null; share: number; other: boolean }[]>;
   folderFiles: ReadonlySet<number> | null;
   folderOnlyIslands: boolean;
   folderLabels: readonly FolderLabel[];
@@ -1136,7 +1139,7 @@ export class MapRenderer {
     const ny = (top + bottom - (bounds[3] - bounds[1]) * scale) / 2 - bounds[1] * scale;
     this.glide(scale, nx, ny);
   }
-  /** Hover linked to a chrome index row. Fine-pointer only; district paths
+  /** Hover or keyboard focus linked to a chrome index row; district paths
    * receive the existing `.hovered` treatment and other district paths dim. */
   highlightDistricts(districts: readonly number[] | null) {
     this.overviewDistricts = districts?.length ? new Set(districts) : null;
@@ -3842,13 +3845,14 @@ export class MapRenderer {
   }
 
   // ---------- desktop hover (readable-overview PR, scope item 4) ----------
-  // Fine-pointer only (HOVER, checked at construction); touch never
-  // registers onHoverMove/onHoverLeave at all -- see those fields' doc
-  // comment. Everything below is new listeners reading the SAME data-k
-  // convention click() already reads, never a repaint: the highlight is a
-  // class toggle on the element the browser already resolved for us, and
-  // the card is one HTML element this class owns outright, repositioned and
-  // its text replaced on demand -- never a React re-render, per spec.
+  // Pointer hover and cards are fine-pointer only (HOVER, checked at
+  // construction); touch never registers onHoverMove/onHoverLeave at all --
+  // see those fields' doc comment. Chrome index focus can still highlight
+  // the map on a touch-first tablet. The card and pointer highlight read the
+  // SAME data-k convention click() already reads, never a repaint: the
+  // highlight is a class toggle on the element the browser already resolved
+  // for us, and the card is one HTML element this class owns outright,
+  // repositioned and its text replaced on demand -- never a React render.
 
   // Hover-intent dwell before the import preview draws. The cap on how many
   // edges it draws is LINK_PREVIEW_MAX (constants.ts) -- shared with the
@@ -3874,7 +3878,7 @@ export class MapRenderer {
     }
     const key = this.resolveKey(e.target as Element, e.clientX, e.clientY);
     if (key !== this.hoverKey) this.setHover(key);
-    this.positionCard(e.clientX, e.clientY);
+    this.positionCard(e.clientX, e.clientY, e.target as Element);
   }
 
   /** Every hoverable element genuinely under this file is already selected
@@ -4019,7 +4023,7 @@ export class MapRenderer {
 
   private applyOverviewDistrictHighlight() {
     this.clearOverviewDistrictHighlight();
-    if (!this.HOVER || !this.overviewDistricts) return;
+    if (!this.overviewDistricts) return;
     for (const [key, elements] of this.keyElements) {
       if (!key.startsWith("d:")) continue;
       const district = Number(key.slice(2));
@@ -4053,7 +4057,11 @@ export class MapRenderer {
       const d = +parts[1];
       const district = doc.districts[String(d)];
       if (!district) return null;
-      return { lines: [doc.names[d] ?? `district ${d}`, `${district.size} files`] };
+      const largestFolder = this.state?.districtPaths.get(d)?.find((row) => !row.other);
+      const mostly = largestFolder && largestFolder.share >= MOSTLY_SHARE_THRESHOLD
+        ? formatDirectory(largestFolder.path ?? ".")
+        : "none";
+      return { lines: [doc.names[String(d)] ?? `District ${d}`, `${district.size} files`, `mostly folder: ${mostly}`] };
     }
     if (parts[0] === "dir") return { lines: [key.slice(4) + "/", "folder highlight"] };
     if (parts[0] === "r") {
@@ -4099,24 +4107,14 @@ export class MapRenderer {
     }
     if (parts[0] === "f") {
       const i = +parts[1];
-      if (!doc.F[i]) return null;
-      const d = D_(doc, i);
-      const outDeg = this.outAdj.get(i)?.length ?? 0;
+      const filePath = doc.F[i];
+      if (!filePath) return null;
       const inDeg = this.inAdj.get(i)?.length ?? 0;
-      const total = outDeg + inDeg;
-      const lines = [doc.F[i], doc.names[String(d)] ?? "", `${LOC(doc, i)} loc · churn ${CH(doc, i)} · cplx ${CX_(doc, i)}`];
-      // Never hide truncation (spec): stated here, immediately, from the
-      // cheap O(1) degree counts -- not deferred to whenever
-      // drawImportPreview's own 150ms timer fires and actually sorts/slices
-      // the edge list.
-      if (total > 0) {
-        lines.push(
-          total > LINK_PREVIEW_MAX
-            ? `imports: top ${LINK_PREVIEW_MAX} of ${total} shown`
-            : `${outDeg} import${outDeg === 1 ? "" : "s"} out · ${inDeg} in`,
-        );
-      }
-      return { lines };
+      const slash = filePath.lastIndexOf("/");
+      const name = slash < 0 ? filePath : filePath.slice(slash + 1);
+      const path = slash < 0 ? "(repo root)" : filePath.slice(0, slash);
+      const landmark = doc.L.find(([file]) => file === i)?.[1] ?? "none";
+      return { lines: [name, `path: ${path}`, `imported by ${inDeg} ${inDeg === 1 ? "file" : "files"}`, `landmark: ${landmark}`] };
     }
     if (parts[0] === "s") {
       const i = +parts[1];
@@ -4193,7 +4191,7 @@ export class MapRenderer {
   private ensureCard(): HTMLDivElement {
     if (this.hoverCard) return this.hoverCard;
     const card = document.createElement("div");
-    card.className = "tolmap-hover-card";
+    card.className = "tolmap-hover-card glass";
     (this.svg.parentElement ?? this.svg.ownerDocument!.body).appendChild(card);
     this.hoverCard = card;
     return card;
@@ -4205,11 +4203,14 @@ export class MapRenderer {
    * markup on a device this class never activates on -- this card is
    * purely an additional, visual, mouse-only affordance layered on top. */
   private showCard(content: { lines: string[] }) {
+    if (!this.HOVER) return;
     const card = this.ensureCard();
     card.replaceChildren(
       ...content.lines.map((line, idx) => {
         const row = document.createElement("div");
-        if (idx === 0) row.className = "tolmap-hover-card-title";
+        if (idx === 0) {
+          row.className = "tolmap-hover-card-title";
+        }
         row.textContent = line;
         return row;
       }),
@@ -4221,22 +4222,53 @@ export class MapRenderer {
     if (this.hoverCard) this.hoverCard.style.display = "none";
   }
 
-  private positionCard(clientX: number, clientY: number) {
+  private positionCard(clientX: number, clientY: number, target: Element) {
     if (!this.hoverCard || this.hoverCard.style.display === "none") return;
     const host = this.svg.parentElement;
     const origin = host ? host.getBoundingClientRect() : this.svg.getBoundingClientRect();
-    // Offset down-right of the cursor, clamped so the card can't run past
-    // the host's own right/bottom edge (the map wrap, not the window --
-    // this renders inside MapCanvas's positioned wrapper) and get clipped
-    // or overlap chrome outside it.
-    const cardW = 300; // generous estimate; exact width is a DOM read away, not worth it for a tooltip
-    const cardH = 90;
-    let x = clientX - origin.left + 16;
-    let y = clientY - origin.top + 16;
-    x = Math.min(x, host ? host.clientWidth - cardW : x);
-    y = Math.min(y, host ? host.clientHeight - cardH : y);
-    this.hoverCard.style.left = `${Math.max(4, x)}px`;
-    this.hoverCard.style.top = `${Math.max(4, y)}px`;
+    const width = host?.clientWidth ?? origin.width;
+    const height = host?.clientHeight ?? origin.height;
+    const cardW = this.hoverCard.offsetWidth;
+    const cardH = this.hoverCard.offsetHeight;
+    const px = clientX - origin.left;
+    const py = clientY - origin.top;
+    const gap = 16;
+    const margin = 8;
+    const targetBox = target.getBoundingClientRect();
+    const tx = targetBox.left - origin.left;
+    const ty = targetBox.top - origin.top;
+    const tr = tx + targetBox.width;
+    const tb = ty + targetBox.height;
+    const candidates: [number, number][] = [
+      [tr + gap, Math.max(margin, Math.min(height - cardH - margin, py - cardH / 2))],
+      [tx - gap - cardW, Math.max(margin, Math.min(height - cardH - margin, py - cardH / 2))],
+      [Math.max(margin, Math.min(width - cardW - margin, px - cardW / 2)), tb + gap],
+      [Math.max(margin, Math.min(width - cardW - margin, px - cardW / 2)), ty - gap - cardH],
+      [px + gap, py + gap],
+      [px - gap - cardW, py + gap],
+      [px + gap, py - gap - cardH],
+      [px - gap - cardW, py - gap - cardH],
+    ];
+    const fits = (x: number, y: number) => x >= margin && y >= margin && x + cardW <= width - margin && y + cardH <= height - margin;
+    const clearOfPointer = (x: number, y: number) => !(px >= x && px <= x + cardW && py >= y && py <= y + cardH);
+    const clearOfTarget = (x: number, y: number) => x + cardW <= tx || x >= tr || y + cardH <= ty || y >= tb;
+    let [x, y] = candidates.find(([cx, cy]) => fits(cx, cy) && clearOfPointer(cx, cy) && clearOfTarget(cx, cy))
+      ?? candidates.find(([cx, cy]) => fits(cx, cy) && clearOfPointer(cx, cy))
+      ?? candidates[0];
+    x = Math.max(margin, Math.min(width - cardW - margin, x));
+    y = Math.max(margin, Math.min(height - cardH - margin, y));
+    if (!clearOfPointer(x, y)) {
+      const left = px - gap - cardW;
+      const right = px + gap;
+      if (left >= margin) x = left;
+      else if (right + cardW <= width - margin) x = right;
+      const above = py - gap - cardH;
+      const below = py + gap;
+      if (above >= margin) y = above;
+      else if (below + cardH <= height - margin) y = below;
+    }
+    this.hoverCard.style.left = `${Math.round(x)}px`;
+    this.hoverCard.style.top = `${Math.round(y)}px`;
   }
 
   // ---------- pan / zoom / tap (the subtle part) ----------
@@ -4573,7 +4605,7 @@ export class MapRenderer {
       }
       if (content) {
         this.showCard(content);
-        this.positionCard(e.clientX, e.clientY);
+        this.positionCard(e.clientX, e.clientY, e.target as Element);
       }
       return;
     }

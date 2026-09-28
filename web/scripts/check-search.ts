@@ -24,6 +24,7 @@ import {
   findMarks,
   groupResults,
   navKey,
+  paletteResults,
   segments,
   sliceMarks,
 } from "../src/map/searchResults";
@@ -156,6 +157,28 @@ console.log("\ngrouping (§4.8: District, Files, Symbols)");
     "empty query: the largest districts, never unconnected files",
     JSON.stringify(emptyKeys),
   );
+}
+
+// ---------------------------------------------------------------- desktop palette
+console.log("\ndesktop palette (§5.1: commands share search grouping and highlights)");
+{
+  const commands = [
+    { id: "layer:d", label: "Switch to District layer", detail: "Layer 1" },
+    { id: "fit", label: "Fit map", detail: "Fit the map" },
+  ];
+  const empty = paletteResults(doc, "", commands);
+  report(eq(empty.groups.map((group) => group.kind), ["district", "command"]), "empty palette shows largest districts and commands", JSON.stringify(empty.groups.map((group) => group.kind)));
+  report(empty.groups.at(-1)?.label === "Commands" && empty.groups.at(-1)?.items.length === 2, "empty palette includes every command");
+  const commandHit = paletteResults(doc, "district", commands);
+  const districtCommand = commandHit.flat.find((item) => "commandId" in item && item.commandId === "layer:d");
+  report(!!districtCommand && eq(districtCommand.nameMarks, [[10, 18]]), "commands use the same case-insensitive highlighting helper");
+  const path = paletteResults(doc, "workflow", commands, true);
+  report(path.groups.every((group) => group.kind === "file") && path.flat.every((item) => "pick" in item && item.pick.kind === "file"), "path mode contains files only");
+  const sharedFile = path.flat.find((item) => "pick" in item && item.key === "f0");
+  const phoneFile = groupResults(doc, "workflow").flat.find((item) => item.key === "f0");
+  report(!!sharedFile && !!phoneFile && eq(sharedFile.nameMarks, phoneFile.nameMarks) && eq(sharedFile.detailMarks, phoneFile.detailMarks), "path mode keeps phone search file ranking and match highlights");
+  const emptyPath = paletteResults(doc, "", commands, true);
+  report(emptyPath.groups.every((group) => group.kind === "file"), "empty path mode stays file-only");
 }
 
 // ---------------------------------------------------------------- highlight

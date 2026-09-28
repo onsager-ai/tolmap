@@ -1200,6 +1200,9 @@ jobs:
       # docs/UX.md §5 (phase 7a): the desktop panel's view-stack reducer and
       # crumb labels, exercised without a browser.
       - run: npx --yes tsx@4.23.15 scripts/check-desktop-panel.ts
+      # docs/UX.md §5.2 (phase 7b): the pure desktop shortcut dispatch,
+      # including text-field/menu/palette guards and layer/index navigation.
+      - run: npx --yes tsx@4.23.15 scripts/check-desktop-keyboard.ts
       # docs/UX.md §5/§4.1 (phase 7c): each overview's document-derived
       # headlines, rankings, tie order and missing-metric handling.
       - run: npx --yes tsx@4.23.15 scripts/check-layer-overview.ts

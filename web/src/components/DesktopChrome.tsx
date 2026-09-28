@@ -22,8 +22,10 @@ import { FolderBody } from "@/components/SelectionPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PackageLegend } from "@/components/PackageLegend";
 import { SearchBox } from "@/components/SearchBox";
-import type { SearchPick } from "@/map/searchResults";
+import type { SearchCommandDefinition, SearchPick } from "@/map/searchResults";
 import { desktopPanelCrumbs, type DesktopPanelView } from "@/map/desktopPanel";
+import { dispatchDesktopKey, type DesktopFocusScope } from "@/map/desktopKeyboard";
+import { nextThemeChoice, useThemeChoice } from "@/lib/theme";
 import { SelectionCard } from "@/components/phone/SheetCards";
 import { HeadlineText, LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
 import {
@@ -129,6 +131,10 @@ export interface DesktopChromeProps {
   searchOpen: boolean;
   onCloseSearch(): void;
   onSearchPick(pick: SearchPick): void;
+  pathMode: boolean;
+  panelOpen: boolean;
+  onPanelOpen(open: boolean): void;
+  onOpenQuality(): void;
   keyboardOpen: boolean;
   onKeyboardOpen(open: boolean): void;
   onZoomIn(): void;
@@ -145,6 +151,15 @@ export function DesktopChrome(p: DesktopChromeProps) {
   const repoButtonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuRows = useMemo(() => repoRows(p.catalogue, p.doc, p.owner, p.repo), [p.catalogue, p.doc, p.owner, p.repo]);
+  const [themeChoice, setThemeChoice] = useThemeChoice();
+  const commands = useMemo<SearchCommandDefinition[]>(() => [
+    ...LAYERS.map(({ id, label, key }) => ({ id: `layer:${id}`, label: `Switch to ${label} layer`, detail: `Layer ${key}` })),
+    { id: "fit", label: "Fit map", detail: "Fit the map to the safe rectangle" },
+    { id: "quality", label: "Open map quality", detail: "Files without links" },
+    { id: "theme", label: "Cycle theme", detail: `Theme · ${themeChoice} → ${nextThemeChoice(themeChoice)}` },
+    { id: "panel", label: `${p.panelOpen ? "Hide" : "Show"} panel`, detail: "Toggle the overview panel · [" },
+    ...menuRows.map((row) => ({ id: `repo:${row.slug}`, label: `Switch to ${row.slug}`, detail: `Repository${row.current ? " · current" : ""}` })),
+  ], [menuRows, p.panelOpen, themeChoice]);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
   const searchPopoverRef = useRef<HTMLDivElement>(null);
   const searchReturnRef = useRef<HTMLElement | null>(null);
@@ -212,14 +227,27 @@ export function DesktopChrome(p: DesktopChromeProps) {
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.defaultPrevented) return;
       const target = event.target instanceof HTMLElement ? event.target : null;
-      const typing = !!target && (target.isContentEditable || !!target.closest("input, textarea, select, [contenteditable]"));
-      const commandK = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k";
-      const slash = event.key === "/" && !typing && !event.metaKey && !event.ctrlKey && !event.altKey;
-      if (!commandK && !slash) return;
+      if (event.defaultPrevented) return;
+      const focus: DesktopFocusScope = target?.closest("[data-desktop-search], [data-search-palette]")
+        ? "palette"
+        : target?.closest('[role="menu"]')
+          ? "menu"
+          : target?.closest('[role="dialog"]')
+            ? "dialog"
+            : target?.isContentEditable || target?.closest("input, textarea, select, [contenteditable]")
+              ? "text"
+              : "page";
+      const action = dispatchDesktopKey({ key: event.key, focus, metaKey: event.metaKey, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey });
+      if (action.type !== "search") return;
       event.preventDefault();
-      searchReturnRef.current = slash && target && target !== document.body ? target : searchButtonRef.current;
+      if (p.searchOpen) {
+        restoreSearchFocusRef.current = true;
+        p.onCloseSearch();
+        return;
+      }
+      searchReturnRef.current = target && target !== document.body ? target : searchButtonRef.current;
+      restoreSearchFocusRef.current = true;
       setMenuOpen(false);
       if (p.keyboardOpen) {
         restoreKeyboardFocusRef.current = false;
@@ -229,7 +257,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [p.keyboardOpen, p.onKeyboardOpen, p.onOpenSearch]);
+  }, [p.keyboardOpen, p.onCloseSearch, p.onKeyboardOpen, p.onOpenSearch, p.searchOpen]);
 
   function openSearchFromButton() {
     if (p.searchOpen) {
@@ -247,6 +275,22 @@ export function DesktopChrome(p: DesktopChromeProps) {
   function closeSearch(restoreFocus = true) {
     restoreSearchFocusRef.current = restoreFocus;
     p.onCloseSearch();
+  }
+
+  function runCommand(id: string) {
+    if (id.startsWith("layer:")) {
+      p.onLayer(id.slice("layer:".length) as Layer);
+      return;
+    }
+    if (id.startsWith("repo:")) {
+      const row = menuRows.find((candidate) => candidate.slug === id.slice("repo:".length));
+      if (row) chooseRepository(row);
+      return;
+    }
+    if (id === "fit") p.onFit();
+    else if (id === "quality") p.onOpenQuality();
+    else if (id === "theme") setThemeChoice(nextThemeChoice(themeChoice));
+    else if (id === "panel") p.onPanelOpen(!p.panelOpen);
   }
 
   function menuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -387,7 +431,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
           })}
         </div>
         <div className="glass flex items-center gap-0.5 rounded-[14px] p-1" data-action-buttons>
-          <button ref={searchButtonRef} type="button" data-open-desktop-search aria-label="Search districts, files and symbols" title={`Search  ${typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K"}`} onClick={openSearchFromButton} className={`flex ${p.touch ? "h-11 w-11" : "h-9 w-9"} items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]`}>
+          <button ref={searchButtonRef} type="button" data-open-desktop-search aria-haspopup="dialog" aria-expanded={p.searchOpen} aria-label="Search districts, files and symbols" title={`Search  ${typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K"}`} onClick={openSearchFromButton} className={`flex ${p.touch ? "h-11 w-11" : "h-9 w-9"} items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]`}>
             <SearchIcon size={18} />
           </button>
           <ThemeToggle iconSize={18} className={`border-0 bg-transparent text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)] ${p.touch ? "h-11 w-11 rounded-[10px]" : "h-9 w-9 rounded-[10px]"}`} />
@@ -400,19 +444,14 @@ export function DesktopChrome(p: DesktopChromeProps) {
       {menuOpen && <button type="button" aria-label="Close repository menu" tabIndex={-1} onClick={() => setMenuOpen(false)} className="absolute inset-0 z-[35] cursor-default bg-transparent" />}
 
       {p.searchOpen && (
-        <div
-          ref={searchPopoverRef}
-          data-desktop-search
-          className="absolute z-50"
-          style={{
-            right: `calc(${DESKTOP_GUTTER_PX}px + env(safe-area-inset-right, 0px))`,
-            top: `calc(${COMMAND_BAR_TOP_PX + COMMAND_BAR_HEIGHT_PX + 8}px + env(safe-area-inset-top, 0px))`,
-            width: "min(460px, calc(100vw - 32px))",
-          }}
-        >
+        <div ref={searchPopoverRef} data-desktop-search-shell className="absolute inset-0 z-[70]">
           <SearchBox
             doc={p.doc}
-            onPick={(pick) => { p.onSearchPick(pick); closeSearch(); }}
+            onPick={p.onSearchPick}
+            onCommand={runCommand}
+            commands={commands}
+            pathMode={p.pathMode}
+            variant="palette"
             autoFocus
             onClose={() => closeSearch()}
             touch={p.touch}
@@ -464,9 +503,16 @@ function KeyboardDialog({ onClose, touch }: { onClose(): void; touch: boolean })
       <div className="grid grid-cols-2 gap-x-7">
         <Shortcut label="Search" keys={mac ? ["⌘K", "/"] : ["Ctrl K", "/"]} />
         <Shortcut label="Move through search results" keys={["↑", "↓"]} />
-        <Shortcut label="Open highlighted result" keys={["Enter"]} />
+        <Shortcut label="Open highlighted result or index row" keys={["Enter"]} />
+        <Shortcut label="Move through the overview index" keys={["↑", "↓"]} />
         <Shortcut label="Hide or show the panel" keys={["["]} />
-        <Shortcut label="Close an open menu or dialog; step back one card" keys={["Esc"]} />
+        <Shortcut label="District, Churn, Complexity, Package" keys={["1", "2", "3", "4"]} />
+        <Shortcut label="Zoom about the safe rectangle centre" keys={["+", "−"]} />
+        <Shortcut label="Fit the map" keys={["F"]} />
+        <Shortcut label="Zoom to the selection" keys={["Z"]} />
+        <Shortcut label="Cycle the theme" keys={["T"]} />
+        <Shortcut label="Open this keyboard list" keys={["?"]} />
+        <Shortcut label="Close a menu or dialog; step back a card" keys={["Esc"]} />
       </div>
     </section>
   );

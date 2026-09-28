@@ -53,6 +53,36 @@ export interface SearchResults {
   flat: readonly SearchItem[];
 }
 
+export interface SearchCommandDefinition {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+export interface SearchCommandItem {
+  key: string;
+  commandId: string;
+  name: string;
+  detail: string;
+  aside: string;
+  nameMarks: readonly Mark[];
+  detailMarks: readonly Mark[];
+}
+
+export type PaletteItem = SearchItem | SearchCommandItem;
+
+export interface PaletteGroup {
+  kind: SearchKind | "command";
+  label: string;
+  items: readonly PaletteItem[];
+}
+
+export interface PaletteResults {
+  query: string;
+  groups: readonly PaletteGroup[];
+  flat: readonly PaletteItem[];
+}
+
 /** At most this many districts: the district group leads, and a short query
  * ("a") would otherwise push every file below the fold. */
 export const MAX_DISTRICT_HITS = 5;
@@ -166,13 +196,29 @@ function districtItem(doc: MapDocument, d: number, q: string): SearchItem {
   };
 }
 
+function fileItem(doc: MapDocument, i: number, q: string): SearchItem {
+  const path = doc.F[i];
+  const dir = dirOf(path);
+  const base = baseOf(path);
+  const marks = findMarks(path, q);
+  return {
+    key: `f${i}`,
+    pick: { kind: "file", i },
+    name: base,
+    detail: dir || "(repo root)",
+    aside: "",
+    nameMarks: sliceMarks(marks, dir.length, path.length),
+    detailMarks: dir ? sliceMarks(marks, 0, dir.length) : [],
+  };
+}
+
 /** The grouped results for `q` (docs/UX.md §4.8): District, Files, Symbols,
  * each omitted when empty. An empty query gives the empty state: the
  * largest districts, so the layer is never blank. */
-export function groupResults(doc: MapDocument, q: string): SearchResults {
+export function groupResults(doc: MapDocument, q: string, options: { filesOnly?: boolean } = {}): SearchResults {
   const query = q.trim().toLowerCase();
   const groups: SearchGroup[] = [];
-  if (!query) {
+  if (!query && !options.filesOnly) {
     const largest = Object.keys(doc.districts)
       .filter((id) => doc.districts[id].class !== "unconnected")
       .sort((a, b) => doc.districts[b].size - doc.districts[a].size || Number(a) - Number(b))
@@ -182,28 +228,20 @@ export function groupResults(doc: MapDocument, q: string): SearchResults {
     return { query, groups, flat: groups.flatMap((g) => g.items) };
   }
 
-  const districts = districtHits(doc, query).map((d) => districtItem(doc, d, query));
+  const districts = options.filesOnly ? [] : districtHits(doc, query).map((d) => districtItem(doc, d, query));
   const files: SearchItem[] = [];
   const symbols: SearchItem[] = [];
   for (const hit of searchHits(doc, query)) {
+    if (hit.s == null) {
+      files.push(fileItem(doc, hit.i, query));
+      continue;
+    }
+    if (options.filesOnly) continue;
+    const sm = doc.S?.[String(hit.i)]?.[hit.s];
+    if (!sm) continue;
     const path = doc.F[hit.i];
     const dir = dirOf(path);
     const base = baseOf(path);
-    if (hit.s == null) {
-      const marks = findMarks(path, query);
-      files.push({
-        key: `f${hit.i}`,
-        pick: { kind: "file", i: hit.i },
-        name: base,
-        detail: dir || "(repo root)",
-        aside: "",
-        nameMarks: sliceMarks(marks, dir.length, path.length),
-        detailMarks: dir ? sliceMarks(marks, 0, dir.length) : [],
-      });
-      continue;
-    }
-    const sm = doc.S?.[String(hit.i)]?.[hit.s];
-    if (!sm) continue;
     // The file as its parent folder and name ("workflow/types.ts"): enough
     // to tell two same-named files apart without the whole path.
     const parent = baseOf(dir.slice(0, -1));
@@ -222,6 +260,32 @@ export function groupResults(doc: MapDocument, q: string): SearchResults {
   if (files.length) groups.push({ kind: "file", label: plural(files.length, "File", "Files"), items: files });
   if (symbols.length) groups.push({ kind: "symbol", label: plural(symbols.length, "Symbol", "Symbols"), items: symbols });
   return { query, groups, flat: groups.flatMap((g) => g.items) };
+}
+
+/** The desktop palette adds command rows around the phone search's exact
+ * result groups. File and symbol ranking still comes from searchHits(), and
+ * command rows use the same case-folded occurrence/highlight helpers as the
+ * phone rows. Path mode narrows the shared results to files. */
+export function paletteResults(
+  doc: MapDocument,
+  q: string,
+  commands: readonly SearchCommandDefinition[],
+  pathMode = false,
+): PaletteResults {
+  const query = q.trim().toLowerCase();
+  const search = groupResults(doc, query, { filesOnly: pathMode });
+  const groups: PaletteGroup[] = search.groups.map((group) => ({ ...group }));
+  if (!pathMode) {
+    const commandItems: SearchCommandItem[] = commands.flatMap((command) => {
+      const nameMarks = findMarks(command.label, query);
+      const detail = command.detail ?? "";
+      const detailMarks = findMarks(detail, query);
+      if (query && nameMarks.length === 0 && detailMarks.length === 0) return [];
+      return [{ key: `command:${command.id}`, commandId: command.id, name: command.label, detail, aside: "", nameMarks, detailMarks }];
+    });
+    if (commandItems.length) groups.push({ kind: "command", label: "Commands", items: commandItems });
+  }
+  return { query, groups, flat: groups.flatMap((group) => group.items) };
 }
 
 // ---------------------------------------------------------------- keyboard
