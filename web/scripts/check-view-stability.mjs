@@ -3150,18 +3150,36 @@ async function checkFootprintModeDrawsPolygons(browser, base, profile) {
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);
-  const info = await page.evaluate(() => {
+  const inspect = () => page.evaluate(() => {
     const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="f:"]')];
     const dots = document.querySelectorAll('svg.map-svg circle.hit[data-k^="f:"][fill]:not([fill="transparent"])').length;
     return {
       count: paths.length,
       allHaveAnchor: paths.length > 0 && paths.every((p) => p.hasAttribute("data-cx") && p.hasAttribute("data-cy")),
       dotsInstead: dots,
+      batches: document.querySelectorAll("svg.map-svg path[data-footprint-batch]").length,
     };
   });
-  report(info.count > 0, `${label}: at least one footprint polygon on screen`, JSON.stringify(info));
-  report(info.allHaveAnchor, `${label}: every footprint polygon carries a data-cx/data-cy anchor`, JSON.stringify(info));
-  report(info.dotsInstead === 0, `${label}: no dot-mode circles draw a file when P is present`, JSON.stringify(info));
+  const fit = await inspect();
+  if (profile.isMobile) {
+    report(fit.count > 0, `${label}: at least one footprint polygon on screen`, JSON.stringify(fit));
+    report(fit.allHaveAnchor, `${label}: every footprint polygon carries a data-cx/data-cy anchor`, JSON.stringify(fit));
+    report(fit.dotsInstead === 0, `${label}: no dot-mode circles draw a file when P is present`, JSON.stringify(fit));
+  } else {
+    // At desktop fit zoom the Dify districts are below §5's room threshold,
+    // and no file is selected, linked, or past D1's zoomed-in card gate.
+    // Their file footprints must therefore stay out of the DOM. Zooming
+    // exposes eligible footprints again; the separate phone assertions
+    // above keep their original fit-zoom behavior.
+    report(fit.count === 0 && fit.batches === 0,
+      `${label}: low-room fit view draws no unselected file footprints`, JSON.stringify(fit));
+    for (let i = 0; i < 4; i++) await page.locator('button[aria-label="Zoom in"]').click();
+    await page.waitForTimeout(350);
+    const zoomed = await inspect();
+    report(zoomed.count > 0, `${label}: eligible footprints appear after zooming in`, JSON.stringify(zoomed));
+    report(zoomed.allHaveAnchor, `${label}: every visible footprint carries a data-cx/data-cy anchor`, JSON.stringify(zoomed));
+    report(zoomed.dotsInstead === 0, `${label}: no dot-mode circles draw a file when P is present`, JSON.stringify(zoomed));
+  }
   await context.close();
 }
 
@@ -3203,7 +3221,14 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
   await page.waitForTimeout(700);
 
   const batchCount = await page.locator("svg.map-svg path[data-footprint-batch]").count();
-  report(batchCount > 0, `${label}: at least one batched footprint fill exists at fit zoom`, `${batchCount} batches`);
+  const footprintCount = await page.locator('svg.map-svg path.hit[data-k^="f:"]').count();
+  if (profile.isMobile) {
+    report(batchCount > 0, `${label}: at least one batched footprint fill exists at fit zoom`, `${batchCount} batches`);
+  } else {
+    report(batchCount === 0 && footprintCount === 0,
+      `${label}: no unselected file footprint is drawn at low-room fit zoom`,
+      `${batchCount} batches, ${footprintCount} individual footprints`);
+  }
 
   const point = await page.evaluate(() => {
     const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
@@ -3494,10 +3519,12 @@ async function checkDesktopLabelPlacement(browser, base) {
     const labelsState = async () => page.evaluate(() => {
       const svg = document.querySelector("svg.map-svg");
       if (!svg) return { boxes: [], overlaps: [] };
-      const boxes = [...svg.querySelectorAll("text[data-label-box]")].map((text) => {
+      const boxes = [...svg.querySelectorAll("text[data-label-box]:not([data-symbol-card-label])")].map((text) => {
         const width = Number(text.getAttribute("data-label-box"));
         const height = Number(text.getAttribute("font-size")) * 1.25;
-        const x = Number(text.getAttribute("x")) - width / 2;
+        const anchor = text.getAttribute("text-anchor") ?? "start";
+        const textX = Number(text.getAttribute("x"));
+        const x = anchor === "middle" ? textX - width / 2 : anchor === "end" ? textX - width : textX;
         const y = Number(text.getAttribute("y")) - height;
         const matrix = text.getScreenCTM();
         if (!matrix || !Number.isFinite(width) || !Number.isFinite(height)) return null;
@@ -3563,11 +3590,18 @@ async function checkDesktopLabelPlacement(browser, base) {
     await page.locator('button[aria-label="Fit map"]').click();
     await page.waitForTimeout(350);
     report(await selectedLabelPresent(), `${label}: selected district label is present at fit`, districtId);
+    const selectedPoint = await page.locator(`svg.map-svg text.hit[data-k="d:${districtId}"]`).evaluate((text) => {
+      const box = text.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
     for (let i = 1; i <= 4; i++) {
-      await page.locator('button[aria-label="Zoom in"]').click();
-      await page.waitForTimeout(350);
+      // Keep the selected district under the zoom anchor so this verifies
+      // that its priority label survives zoom while the district stays in
+      // view. Center-button zoom can legitimately move a distant selection
+      // off screen, where no label can be visible.
+      await zoomIn(page, selectedPoint.x, selectedPoint.y);
       if (i === 2 || i === 4) report(await selectedLabelPresent(),
-        `${label}: selected district label is present after ${i} zoom-in clicks`, districtId);
+        `${label}: selected district label is present after ${i} zoom-in steps`, districtId);
     }
     await context.close();
   }

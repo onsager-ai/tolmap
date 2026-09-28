@@ -3167,7 +3167,7 @@ export class MapRenderer {
       // decorative for hit-testing -- the polygon underneath already
       // carries the real data-k -- so both get pointer-events:none.
       gLabels.appendChild(el("rect", { x: box[0], y: box[1], width: box[2], height: box[3], rx: 3, fill: "var(--chrome)", "fill-opacity": 0.92, stroke: "var(--dim)", "stroke-width": 0.6, "pointer-events": "none" }));
-      const text = el("text", { x: t.cx, y: t.y0 - 3, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace", fill: "var(--on)", "pointer-events": "none", "data-label-box": tw.toFixed(1) });
+      const text = el("text", { x: t.cx, y: t.y0 - 3, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace", fill: "var(--on)", "pointer-events": "none", "data-label-box": tw.toFixed(1), "data-symbol-card-label": "" });
       text.textContent = t.name;
       gLabels.appendChild(text);
     }
