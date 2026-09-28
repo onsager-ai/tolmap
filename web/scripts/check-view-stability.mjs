@@ -3158,6 +3158,7 @@ async function checkFootprintModeDrawsPolygons(browser, base, profile) {
       allHaveAnchor: paths.length > 0 && paths.every((p) => p.hasAttribute("data-cx") && p.hasAttribute("data-cy")),
       dotsInstead: dots,
       batches: document.querySelectorAll("svg.map-svg path[data-footprint-batch]").length,
+      fileLabels: document.querySelectorAll("svg.map-svg text[data-file-label]").length,
     };
   });
   const fit = await inspect();
@@ -3166,13 +3167,13 @@ async function checkFootprintModeDrawsPolygons(browser, base, profile) {
     report(fit.allHaveAnchor, `${label}: every footprint polygon carries a data-cx/data-cy anchor`, JSON.stringify(fit));
     report(fit.dotsInstead === 0, `${label}: no dot-mode circles draw a file when P is present`, JSON.stringify(fit));
   } else {
-    // At desktop fit zoom the Dify districts are below §5's room threshold,
-    // and no file is selected, linked, or past D1's zoomed-in card gate.
-    // Their file footprints must therefore stay out of the DOM. Zooming
-    // exposes eligible footprints again; the separate phone assertions
-    // above keep their original fit-zoom behavior.
-    report(fit.count === 0 && fit.batches === 0,
-      `${label}: low-room fit view draws no unselected file footprints`, JSON.stringify(fit));
+    // §5 gates dots and file labels at desktop fit, while district-colored
+    // cell fills remain visible as individual landmark cells and batches.
+    // Phone retains the exact fit-zoom checks above.
+    report(fit.count > 0 && fit.batches > 0 && fit.dotsInstead === 0,
+      `${label}: low-room fit keeps file-cell fills while file dots stay hidden`, JSON.stringify(fit));
+    report(fit.fileLabels === 0,
+      `${label}: low-room fit hides unselected file labels`, JSON.stringify(fit));
     for (let i = 0; i < 4; i++) await page.locator('button[aria-label="Zoom in"]').click();
     await page.waitForTimeout(350);
     const zoomed = await inspect();
@@ -3225,9 +3226,13 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
   if (profile.isMobile) {
     report(batchCount > 0, `${label}: at least one batched footprint fill exists at fit zoom`, `${batchCount} batches`);
   } else {
-    report(batchCount === 0 && footprintCount === 0,
-      `${label}: no unselected file footprint is drawn at low-room fit zoom`,
+    const fileLabels = await page.locator("svg.map-svg text[data-file-label]").count();
+    const dots = await page.locator('svg.map-svg circle.hit[data-k^="f:"][fill]:not([fill="transparent"])').count();
+    report(batchCount > 0 && footprintCount > 0 && dots === 0,
+      `${label}: low-room fit keeps filled file cells but no file dots`,
       `${batchCount} batches, ${footprintCount} individual footprints`);
+    report(fileLabels === 0,
+      `${label}: low-room fit keeps unselected file labels hidden`, `${fileLabels} file labels`);
   }
 
   const point = await page.evaluate(() => {
