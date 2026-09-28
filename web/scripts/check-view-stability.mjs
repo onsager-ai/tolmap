@@ -3590,7 +3590,7 @@ async function checkDesktopLabelPlacement(browser, base) {
     await page.locator('button[aria-label="Fit map"]').click();
     await page.waitForTimeout(350);
     report(await selectedLabelPresent(), `${label}: selected district label is present at fit`, districtId);
-    const selectedPoint = await page.locator(`svg.map-svg text.hit[data-k="d:${districtId}"]`).evaluate((text) => {
+    const selectedPoint = await page.locator(`svg.map-svg text.hit[data-k="d:${districtId}"]`).first().evaluate((text) => {
       const box = text.getBoundingClientRect();
       return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
     });
