@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::Body;
 use axum::extract::{ConnectInfo, Path as AxPath, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::sse::{Event, Sse};
@@ -379,7 +380,7 @@ async fn get_map(
                     (header::CONTENT_TYPE, "application/json"),
                     (header::CACHE_CONTROL, "no-store"),
                 ],
-                map.to_vec(),
+                Body::from(map),
             )
                 .into_response());
         }

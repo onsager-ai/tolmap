@@ -1717,6 +1717,8 @@ struct AgentSink<'a> {
     /// The job this sink reports for, which uploads the map early
     /// (docs/UX.md §12, `JobContext::upload_early_map`).
     job: &'a JobContext,
+    early_map_attempted: bool,
+    repeated_write_map_logged: bool,
 }
 
 impl AgentSink<'_> {
@@ -1760,8 +1762,19 @@ impl EventSink for AgentSink<'_> {
     // Called by the executor before it delivers `write_map`'s
     // `stage_finished` to `event` above, so the upload lands before the
     // master sees the stage end (`workers::run_remote`).
-    fn map_written(&mut self, map: Vec<u8>) {
-        self.job.upload_early_map(&map);
+    fn map_written(&mut self, map: axum::body::Bytes) {
+        if self.early_map_attempted {
+            if !self.repeated_write_map_logged {
+                eprintln!(
+                    "job {}: ignoring repeated successful write_map event for the early upload",
+                    self.job.job_id
+                );
+                self.repeated_write_map_logged = true;
+            }
+            return;
+        }
+        self.early_map_attempted = true;
+        self.job.upload_early_map(map.as_ref());
     }
 
     fn child_exited(&mut self, status: std::process::ExitStatus, killed_here: bool) {
@@ -1845,6 +1858,8 @@ impl JobContext {
             out: self.out.clone(),
             peak_rss_bytes: None,
             exit: None,
+            early_map_attempted: false,
+            repeated_write_map_logged: false,
             job: &self,
         };
         let probe = AgentProbe {
@@ -1994,8 +2009,15 @@ impl JobContext {
     /// slow master must not hold up the child, whose events wait in the pipe
     /// meanwhile.
     fn upload_early_map(&self, map: &[u8]) {
-        let Ok(id) = Uuid::parse_str(&self.job_id) else {
-            return;
+        let id = match Uuid::parse_str(&self.job_id) {
+            Ok(id) => id,
+            Err(error) => {
+                eprintln!(
+                    "job {}: the map is not opened early: invalid job id: {error}",
+                    self.job_id
+                );
+                return;
+            }
         };
         let path = self
             .host
@@ -2023,7 +2045,14 @@ impl JobContext {
             child: self.child.clone(),
         };
         let deadline = Instant::now() + EARLY_MAP_UPLOAD_WINDOW;
-        if let Err(error) = self.put(&http_agent(&self.endpoint), "map", &path, deadline, &probe) {
+        if let Err(error) = self.put(
+            &http_agent(&self.endpoint),
+            "map",
+            &path,
+            deadline,
+            &probe,
+            Some(EARLY_MAP_UPLOAD_WINDOW),
+        ) {
             eprintln!(
                 "job {}: the map is not opened early: {}",
                 self.job_id, error.message
@@ -2139,7 +2168,7 @@ impl JobContext {
         let deadline = Instant::now() + self.hold;
         let mut artifacts = Vec::with_capacity(files.len());
         for (name, path) in files {
-            artifacts.push(self.put(http, &name, &path, deadline, probe)?);
+            artifacts.push(self.put(http, &name, &path, deadline, probe, None)?);
         }
         Ok(WorkerEvent::Result {
             v: 1,
@@ -2170,6 +2199,7 @@ impl JobContext {
         path: &Path,
         deadline: Instant,
         probe: &AgentProbe,
+        request_timeout: Option<Duration>,
     ) -> Result<Artifact, ErrorBody> {
         let url = format!("{}/{name}", self.outputs);
         if !self.endpoint.owns(&url) {
@@ -2186,11 +2216,18 @@ impl JobContext {
                 return Err(executor::cancelled_error());
             }
             let file = std::fs::File::open(path).map_err(internal)?;
-            let sent = http
+            let request = http
                 .put(&url)
                 .header("Authorization", &format!("Bearer {}", self.token))
-                .header(SHA256_HEADER, &sha256)
-                .send(file);
+                .header(SHA256_HEADER, &sha256);
+            let sent = match request_timeout {
+                Some(timeout) => request
+                    .config()
+                    .timeout_global(Some(timeout))
+                    .build()
+                    .send(file),
+                None => request.send(file),
+            };
             let failure = match sent {
                 Ok(response) if response.status().is_success() => {
                     return Ok(Artifact {
@@ -2240,6 +2277,7 @@ impl JobContext {
 mod tests {
     use super::*;
     use crate::progress::ProgressValue;
+    use std::net::TcpListener;
 
     fn progress(stage: StageId, done: u64) -> WorkerEvent {
         WorkerEvent::Progress {
@@ -2277,6 +2315,166 @@ mod tests {
             v: 1,
             message: message.to_owned(),
         }
+    }
+
+    const EARLY_MAP: &[u8] = br#"{"F":["a.py"],"districts":{"0":{}}}"#;
+    const LATER_MAP: &[u8] = br#"{"F":["b.py"],"districts":{"1":{}}}"#;
+
+    fn job_context(dir: &Path, port: u16) -> (JobContext, mpsc::Receiver<FromJob>) {
+        let id = Uuid::new_v4();
+        let cache_dir = dir.join("cache");
+        std::fs::create_dir_all(cache_dir.join("inputs").join(id.to_string())).unwrap();
+        let endpoint =
+            Endpoint::parse(&format!("ws://127.0.0.1:{port}/workers/connect"), None).unwrap();
+        let outputs = format!("{}/workers/artifacts/{id}/1", endpoint.origin);
+        let (out, received) = mpsc::channel();
+        (
+            JobContext {
+                job_id: id.to_string(),
+                job: JobSpec {
+                    slug: "test/demo".to_owned(),
+                    owner: "test".to_owned(),
+                    repo: "demo".to_owned(),
+                    source: "unused".to_owned(),
+                    local: false,
+                    commit: "a".repeat(40),
+                    all_sources: false,
+                    prune_variant: "node-relative".to_owned(),
+                    namer: "idf".to_owned(),
+                    namer_model: String::new(),
+                    refs: None,
+                    install: None,
+                },
+                inputs: AssignInputs {
+                    names_cache: None,
+                    previous_maps: Vec::new(),
+                },
+                outputs,
+                endpoint,
+                token: "test-token".to_owned(),
+                host: HostEnv {
+                    cache_dir,
+                    clone_cache_bytes: 0,
+                    worker_exe: PathBuf::from("tolmap"),
+                    worker_uid: executor::current_uid(),
+                    worker_gid: executor::current_gid(),
+                },
+                hold: Duration::from_secs(60),
+                memory_events: None,
+                cancel: Arc::new(AtomicBool::new(false)),
+                child: Arc::new(Mutex::new(None)),
+                out,
+            },
+            received,
+        )
+    }
+
+    fn serve_puts(listener: TcpListener, idle_after_request: Duration) -> usize {
+        use std::io::{BufRead, BufReader, Read, Write};
+        listener.set_nonblocking(true).unwrap();
+        let mut received = 0;
+        let mut last_request = Instant::now();
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    let mut content_length = 0usize;
+                    while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                        if let Some(value) = line
+                            .strip_prefix("Content-Length: ")
+                            .or_else(|| line.strip_prefix("content-length: "))
+                        {
+                            content_length = value.trim().parse().unwrap();
+                        }
+                        line.clear();
+                    }
+                    let mut body = vec![0; content_length];
+                    reader.read_exact(&mut body).unwrap();
+                    reader
+                        .get_mut()
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                    received += 1;
+                    last_request = Instant::now();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if received > 0 && last_request.elapsed() >= idle_after_request {
+                        return received;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept mock artifact PUT: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_map_written_callbacks_upload_only_one_blob() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || serve_puts(listener, Duration::from_millis(300)));
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let mut sink = AgentSink {
+            out: context.out.clone(),
+            peak_rss_bytes: None,
+            exit: None,
+            early_map_attempted: false,
+            repeated_write_map_logged: false,
+            job: &context,
+        };
+
+        sink.map_written(axum::body::Bytes::from_static(EARLY_MAP));
+        sink.map_written(axum::body::Bytes::from_static(LATER_MAP));
+
+        assert_eq!(
+            server.join().unwrap(),
+            1,
+            "repeated write_map success must not make a second artifact PUT"
+        );
+    }
+
+    #[test]
+    fn a_stalled_early_map_put_times_out_and_the_job_forwards_its_event() {
+        use std::io::Read;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0; 4096];
+            while stream.read(&mut bytes).unwrap_or(0) > 0 {}
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (context, received) = job_context(dir.path(), port);
+        let mut sink = AgentSink {
+            out: context.out.clone(),
+            peak_rss_bytes: None,
+            exit: None,
+            early_map_attempted: false,
+            repeated_write_map_logged: false,
+            job: &context,
+        };
+
+        let started = Instant::now();
+        sink.map_written(axum::body::Bytes::from_static(EARLY_MAP));
+        sink.event(finished(StageId::WriteMap));
+        assert!(
+            started.elapsed() <= EARLY_MAP_UPLOAD_WINDOW + Duration::from_secs(3),
+            "a stalled early-map PUT exceeded its window: {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(
+            received.recv_timeout(Duration::from_secs(1)).unwrap(),
+            FromJob::Event(WorkerEvent::StageFinished {
+                stage: StageId::WriteMap,
+                success: true,
+                ..
+            })
+        ));
+        server.join().unwrap();
     }
 
     /// Each entry as `seq:what`, `-` for an unwritten one.
