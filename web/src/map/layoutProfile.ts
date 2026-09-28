@@ -18,6 +18,14 @@ export const LANDSCAPE_MAX_HEIGHT_PX = 500;
 export const PHONE_MAX_WIDTH_PX = 600;
 export const TABLET_MAX_WIDTH_PX = 1100;
 
+/** Issue #180: renderer density follows the map element's available CSS-px
+ * box, using the same width and height edges as §9's layout profiles. A
+ * landscape phone can be wider than 820 px while its short map box still
+ * needs compact labels and hub rings. */
+export function compactMap(width: number, height: number): boolean {
+  return width <= PHONE_MAX_WIDTH_PX || height <= LANDSCAPE_MAX_HEIGHT_PX;
+}
+
 /** §9's table, in the order its rules have to be read:
  *
  *  1. height <= 500 (and wider than tall): phone landscape, whatever the

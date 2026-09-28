@@ -61,6 +61,7 @@ import { RenderGate } from "./renderGate";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
 import { buildRoadGeom, buildRoadPlan, districtRadius, type RoadPlan } from "./roads";
 import { aggregateCrossDistrictFlows, aggregateIntraDistrictFlows, selectCrossDistrictPairs, selectStreetPairs, type CrossFlow, type StreetFlow } from "./streets";
+import { compactMap } from "./layoutProfile";
 import {
   ancestorsOf,
   cardFillRatio,
@@ -372,6 +373,11 @@ export class MapRenderer {
   // and are scaled by VW/cssW (the same linear mapping toSvg() uses).
   private cssW = 1000;
   private cssH = 700;
+  // Level of detail follows the real map SVG box, not the outer window or
+  // the 360x300 floor used to keep the coordinate system usable below it
+  // (docs/UX.md §9, issue #180).
+  private mapBoxW = 0;
+  private mapBoxH = 0;
   private insets: FrameInsets = { frame: DESKTOP_INSETS, safe: DESKTOP_INSETS, centreInSafe: false };
   // docs/UX.md §3.5: the running length of the current pan, CSS px, and
   // whether onPanDismiss already fired for it.
@@ -844,6 +850,13 @@ export class MapRenderer {
    * the old k. Fitting stays explicit: MapCanvas's repoKey effect (a new
    * document has no "current view" worth preserving) and the fit button. */
   resize(vw: number, vh: number) {
+    // Capture the map element's own CSS-pixel box before the internal viewBox
+    // floor below; otherwise a short landscape map is treated as desktop
+    // after clamping (docs/UX.md §9, issue #180).
+    const wasCompact = compactMap(this.mapBoxW, this.mapBoxH);
+    this.mapBoxW = this.svg.clientWidth;
+    this.mapBoxH = this.svg.clientHeight;
+    const compactChanged = compactMap(this.mapBoxW, this.mapBoxH) !== wasCompact;
     this.cssW = vw;
     this.cssH = vh;
     // The viewBox keeps its 360 x 300 floor, but scales BOTH axes by the
@@ -854,7 +867,9 @@ export class MapRenderer {
     const floor = Math.max(1, 360 / (vw || 360), 300 / (vh || 300));
     const newVW = vw * floor;
     const newVH = vh * floor;
-    if (newVW === this.VW && newVH === this.VH) return;
+    // A compact/full transition can happen with the same floored viewBox;
+    // repaint so the box-based level of detail takes effect in that case too.
+    if (newVW === this.VW && newVH === this.VH && !compactChanged) return;
     const prevVW = this.VW;
     const prevVH = this.VH;
     this.VW = newVW;
@@ -1092,8 +1107,8 @@ export class MapRenderer {
     // (geometry.rs::relocate_offshore) -- so it's a correct fallback for a
     // literal NaN too, if that invariant is ever violated from elsewhere.
     if (!Number.isFinite(c[0]) || !Number.isFinite(c[1])) c = district.c;
-    const narrow = window.innerWidth <= 820;
-    const nk = this.fitScale() * (narrow ? 2.2 : 2.6);
+    const compact = compactMap(this.mapBoxW, this.mapBoxH);
+    const nk = this.fitScale() * (compact ? 2.2 : 2.6);
     const [cx, cy] = this.moveCentre();
     this.glide(nk, cx - c[0] * nk, cy - c[1] * nk);
   }
@@ -1182,10 +1197,6 @@ export class MapRenderer {
     if (layer === "x") return ramp(Math.min(1, CX_(doc, i) / (this.maxCx || 1)));
     return packageGrouping.fileColors[i];
   }
-  private narrow() {
-    return window.innerWidth <= 820;
-  }
-
   // ---------- draw ----------
   // Issue #51: performance.mark/measure around paint(), so
   // web/scripts/perf-bench.mjs can read draw() cost straight off the
@@ -1948,7 +1959,7 @@ export class MapRenderer {
       g.appendChild(t);
       return true;
     };
-    const narrow = this.narrow();
+    const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const zf = this.k / this.fitScale();
     // Mainland labels claim the shared collision budget first; an island's
     // `put()` below only succeeds where that leaves room -- "reduced
@@ -1979,7 +1990,7 @@ export class MapRenderer {
       if (x < 0 || x > this.VW || y < 0 || y > this.VH) continue;
       // docs/UX.md §8.1: nothing under 12 px. The phone formula used to start
       // at 10.5 px (zf 0.5) and read 11 px at fit.
-      const size = narrow ? Math.min(13, Math.max(MIN_LABEL_PX, 10 + zf)) : Math.min(17, Math.max(MIN_LABEL_PX, 12 + zf));
+      const size = compact ? Math.min(13, Math.max(MIN_LABEL_PX, 10 + zf)) : Math.min(17, Math.max(MIN_LABEL_PX, 12 + zf));
       // Islands read as minor: smaller, dimmer, lighter weight, and no "N
       // files" subtitle -- with up to hundreds of them on a real repo, a
       // second line per label would be its own kind of clutter even after
@@ -2019,7 +2030,7 @@ export class MapRenderer {
         // passed `+d` as `dk`; the plain "N files" subtitle below (shown
         // instead, once nothing is hidden) had not, and so had no data-k at
         // all -- the exact bug this issue's scope item 6 calls out.
-      } else if (zf < 1.8 && !narrow && !isIsland) {
+      } else if (zf < 1.8 && !compact && !isIsland) {
         put(x, labelY + SUBTITLE_OFFSET_PX, doc.districts[d].size + " files", MIN_LABEL_PX, 0.45, undefined, +d);
       }
     }
@@ -2095,14 +2106,14 @@ export class MapRenderer {
   private drawHubRings(g: SVGGElement): Array<{ hub: { i: number; fi: number; name: string }; cx: number; cy: number; r: number }> {
     const { doc } = this.state!;
     const { hubs, maxFi } = this.hubSet;
-    const narrow = this.narrow();
+    const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const rawCandidates: Array<{ hub: (typeof hubs)[number]; cx: number; cy: number; r: number }> = [];
     for (const hub of hubs) {
       if (this.unconnectedFile[hub.i]) continue;
       const p = this.anchor(hub.i);
       const cx = this.X(p[0]);
       const cy = this.Y(p[1]);
-      const r = hubRingRadius(hub.fi, maxFi, narrow);
+      const r = hubRingRadius(hub.fi, maxFi, compact);
       if (cx < -r - 20 || cx > this.VW + r + 20 || cy < -r - 20 || cy > this.VH + r + 20) continue;
       rawCandidates.push({ hub, cx, cy, r });
     }
@@ -2158,7 +2169,7 @@ export class MapRenderer {
    * file labels. */
   private placeHubLabels(g: SVGGElement, zf0: number, candidates: Array<{ hub: { i: number; fi: number; name: string }; cx: number; cy: number; r: number }>, placed: Array<[number, number, number, number]>) {
     if (candidates.length === 0) return;
-    const narrow = this.narrow();
+    const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const hits = (x: number, y: number, w: number, h: number) =>
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
     // "The number of hub labels is capped by zoom" (spec) -- growing in from
@@ -2169,7 +2180,7 @@ export class MapRenderer {
     // fixtures, not derived from a measurement -- see the PR description;
     // the shared collision list is what actually keeps this legible
     // regardless of the exact numbers.
-    const labelBudget = zf0 < 1.3 ? 0 : zf0 < 2.2 ? 8 : Math.min(candidates.length, narrow ? 20 : 40);
+    const labelBudget = zf0 < 1.3 ? 0 : zf0 < 2.2 ? 8 : Math.min(candidates.length, compact ? 20 : 40);
     let labelled = 0;
     for (const { hub, cx, cy, r } of candidates) {
       if (labelled >= labelBudget) break;
@@ -3381,7 +3392,7 @@ export class MapRenderer {
       g.appendChild(t);
       return true;
     };
-    const narrow = this.narrow();
+    const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const zf = this.k / this.fitScale();
     // A folder earns a label only after its district spans one quarter of
     // the viewport's shorter side. World side, text and medians were all
@@ -3424,7 +3435,7 @@ export class MapRenderer {
     if (this.hasFootprints) this.placeNeighbourhoodLabels(g, placed, this.state!.selD);
     // file labels appear as you zoom in — the budget grows with scale
     if (geo === "p" && zf > BUILD_ZOOM) return; // plots label themselves
-    const budget = Math.round(Math.min(narrow ? 18 : 60, Math.max(0, (zf - 1.5) * (narrow ? 10 : 26))));
+    const budget = Math.round(Math.min(compact ? 18 : 60, Math.max(0, (zf - 1.5) * (compact ? 10 : 26))));
     if (budget > 0) {
       const shownRepeated = new Set<string>();
       let n = 0;
