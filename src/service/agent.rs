@@ -2619,6 +2619,134 @@ mod tests {
         1
     }
 
+    /// Answers every `PUT` with 403 until `stop` is set, and says how many
+    /// it saw. A 403 is final for the agent, so an upload that should not
+    /// have been sent ends at once instead of retrying.
+    fn serve_forbidden_until(listener: TcpListener, stop: Arc<AtomicBool>) -> usize {
+        use std::io::{BufRead, BufReader, Read, Write};
+        listener.set_nonblocking(true).unwrap();
+        let mut received = 0;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    let mut content_length = 0usize;
+                    while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                        if line.to_ascii_lowercase().starts_with("content-length:") {
+                            content_length = line
+                                .split_once(':')
+                                .and_then(|(_, value)| value.trim().parse().ok())
+                                .unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    let mut body = vec![0; content_length];
+                    reader.read_exact(&mut body).unwrap();
+                    reader
+                        .get_mut()
+                        .write_all(
+                            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                    received += 1;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop.load(Ordering::SeqCst) {
+                        return received;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept mock artifact PUT: {error}"),
+            }
+        }
+    }
+
+    /// #193: `upload` checks the whole result against the lease's totals
+    /// (`worker_result::check_lease_totals`) before its first `PUT`. One
+    /// name past the 10,000 a lease may hold -- the map, the symbols file
+    /// and 9,999 district files, all tiny and identical, so only the count
+    /// is over -- fails the job as `invalid_worker_result`, and the master
+    /// sees no `PUT` at all. Without the check the first `PUT` goes out.
+    #[test]
+    fn a_result_over_the_lease_artifact_count_fails_before_any_put() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server = {
+            let stop = stop.clone();
+            std::thread::spawn(move || serve_forbidden_until(listener, stop))
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let id = Uuid::parse_str(&context.job_id).unwrap();
+        let job_dir = dir.path().join("jobs").join(id.to_string());
+        let output_dir = job_dir.join("output");
+        let symbols_dir = output_dir.join("demo.symbols");
+        std::fs::create_dir_all(&symbols_dir).unwrap();
+        std::fs::write(
+            output_dir.join("demo.json"),
+            br#"{"F": ["a.py"], "districts": {"0": {}}}"#,
+        )
+        .unwrap();
+        std::fs::write(output_dir.join("demo.symbols.json"), b"{}").unwrap();
+        for district in 0..worker_result::LEASE_MAX_ARTIFACTS - 1 {
+            std::fs::write(symbols_dir.join(format!("{district}.json")), b"{}").unwrap();
+        }
+        let path = |name: &str| output_dir.join(name).to_string_lossy().into_owned();
+        let executed = Executed {
+            job_dir: job_dir.clone(),
+            output_dir: output_dir.clone(),
+            checkout: crate::service::clone::Materialized {
+                path: job_dir.join("repo"),
+                commit: context.job.commit.clone(),
+                branch: Some("main".to_owned()),
+            },
+            output: executor::WorkerOutput {
+                map_path: path("demo.json"),
+                symbols_path: path("demo.symbols.json"),
+                symbols_dir: path("demo.symbols"),
+                names_cache: path("demo.names.json"),
+                commit: context.job.commit.clone(),
+                lang: "py".to_owned(),
+                files: 1,
+                districts: 1,
+                modularity: 0.0,
+            },
+        };
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let outcome = context.upload(&http_agent(&context.endpoint), id, &executed, &probe);
+        stop.store(true, Ordering::SeqCst);
+        let puts = server.join().unwrap();
+
+        assert_eq!(
+            puts, 0,
+            "a result over the lease's artifact count must be refused before its first PUT"
+        );
+        let error = match outcome {
+            Outcome::Failed(error) => error,
+            Outcome::Result(..) => panic!("the result was uploaded"),
+            Outcome::Cancelled => panic!("the upload was cancelled"),
+            Outcome::OutOfMemory => panic!("the upload reported out of memory"),
+        };
+        assert_eq!(error.error, "invalid_worker_result", "{}", error.message);
+        assert!(
+            error
+                .message
+                .contains(&worker_result::LEASE_MAX_ARTIFACTS.to_string()),
+            "{}",
+            error.message
+        );
+    }
+
     #[test]
     fn repeated_map_written_callbacks_upload_only_one_blob() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();

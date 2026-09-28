@@ -615,6 +615,25 @@ impl JobRegistry {
         }
     }
 
+    /// Test only: `lease`, adopted at `epoch`, left for `id`'s runner as
+    /// `restore` leaves one, and `id` cancelled if `cancelled` -- the state
+    /// a restored job is in when the user cancels it before its runner
+    /// starts, which `restore`'s own spawned runner would race.
+    #[cfg(test)]
+    pub(crate) fn orphan_for_test(
+        &self,
+        id: Uuid,
+        epoch: u64,
+        lease: crate::service::workers::Claimed,
+        cancelled: bool,
+    ) {
+        let mut registry = self.0.lock().expect("job registry mutex poisoned");
+        registry.orphans.insert(id, (epoch, lease));
+        if cancelled {
+            registry.cancelled.insert(id);
+        }
+    }
+
     /// The epoch of the lease a restarted master found `id` holding, and
     /// that lease, adopted; once.
     pub(crate) fn take_orphan(&self, id: Uuid) -> Option<(u64, crate::service::workers::Claimed)> {
