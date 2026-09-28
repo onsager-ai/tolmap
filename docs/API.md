@@ -318,6 +318,11 @@ A remote worker host runs the same `tolmap` binary as an agent that dials the ma
 | `--ca-file <path>` | PEM certificates to verify the master against instead of the public roots: the private certificate's CA. With it, only these roots are trusted, for the channel and for artifacts alike |
 | `--cache-dir <path>` | the agent's own clone cache and job directories |
 
+An agent artifact `PUT` can return `413 Payload Too Large` when its
+per-artifact cap or the lease's byte or artifact-count limit is exceeded.
+The agent treats 413 as a final job failure and does not retry it; the caps
+are listed in `docs/WORKER_TIER.md` §3.4.
+
 An agent that cannot connect, or that loses its channel, redials with backoff and jitter (about 200 ms doubling, up to a quarter of the lease TTL, at most 10 s) and keeps any job it holds running meanwhile, including across a master restart. It exits only when the master tells it to (`shutdown`), refuses its token (`401`), or reports a protocol error (such as `worker_id_mismatch`, `token_revoked` or `rate_limited`), so a supervisor on the worker host should restart it. A remote agent is never offered a job naming a path on the master's host (`{"path": ...}`); it does offer one when it dials a master on its own loopback.
 
 ### `GET /workers/capacity`

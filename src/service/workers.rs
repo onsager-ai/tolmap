@@ -121,14 +121,15 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use axum::body::{Body, Bytes};
+use axum::body::Bytes;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxPath, State};
+use axum::extract::{DefaultBodyLimit, Path as AxPath, Request, State};
+use axum::handler::Handler;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{Json, RequestExt, Router};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
@@ -159,6 +160,39 @@ pub const DEFAULT_LEASE_TTL_S: u64 = 60;
 /// The header an upload declares its SHA-256 in (§4.2), as 64 lowercase hex
 /// digits. Its size is the request's `Content-Length`.
 pub const SHA256_HEADER: &str = "x-tolmap-sha256";
+
+/// One lease may keep at most 1 GiB of unique artifact blobs, with pending
+/// uploads reserved against the same total. This is four map allowances:
+/// enough for the map, full symbols sibling and district files, while
+/// bounding what one worker can put on the master's shared cache volume.
+const WORKER_LEASE_MAX_ARTIFACT_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+const fn max_upload_bytes(left: u64, right: u64) -> u64 {
+    if left > right {
+        left
+    } else {
+        right
+    }
+}
+
+/// The route-level streaming ceiling is the largest per-artifact cap. Keep
+/// this layer on PUT alone; GET artifacts and the worker channel have separate
+/// body semantics. The map and full-symbols caps are both currently 256 MiB.
+const WORKER_ARTIFACT_ROUTE_BODY_LIMIT: u64 = max_upload_bytes(
+    max_upload_bytes(
+        worker_result::EARLY_MAP_MAX_BYTES,
+        worker_result::FULL_SYMBOLS_MAX_BYTES,
+    ),
+    max_upload_bytes(
+        worker_result::DISTRICT_SYMBOLS_MAX_BYTES,
+        worker_result::NAMES_CACHE_MAX_BYTES,
+    ),
+);
+
+/// The lease may name up to 10,000 distinct artifacts, including its fixed
+/// outputs. That leaves room for nearly 10,000 district files while keeping
+/// a worker from creating unbounded tiny files and registry entries.
+const WORKER_LEASE_MAX_ARTIFACTS: usize = 10_000;
 
 /// §10.6: two lost-worker retries per class by default.
 pub const DEFAULT_RETRIES: u32 = 2;
@@ -1152,6 +1186,40 @@ pub(crate) struct Upload {
     pub(crate) bytes: u64,
 }
 
+/// An upload's declared size and name, reserved before its body is read.
+struct UploadReservation {
+    name: String,
+    bytes: u64,
+}
+
+/// The unique bytes already represented by this lease's upload names and
+/// any old blobs awaiting unlink. Returns `None` only for inconsistent
+/// metadata or arithmetic overflow, both treated as over the lease limit.
+fn lease_blob_bytes(lease: &Lease) -> Option<u64> {
+    let mut blobs = BTreeMap::<&str, u64>::new();
+    for upload in lease.uploads.values() {
+        if let Some(previous) = blobs.get(upload.sha256.as_str()) {
+            if *previous != upload.bytes {
+                return None;
+            }
+        } else {
+            blobs.insert(upload.sha256.as_str(), upload.bytes);
+        }
+    }
+    for (sha256, bytes) in &lease.orphaned_blobs {
+        if let Some(previous) = blobs.get(sha256.as_str()) {
+            if *previous != *bytes {
+                return None;
+            }
+        } else {
+            blobs.insert(sha256.as_str(), *bytes);
+        }
+    }
+    blobs
+        .values()
+        .try_fold(0u64, |total, bytes| total.checked_add(*bytes))
+}
+
 /// What the channel delivers to the job's runner (`run_remote`).
 pub(crate) enum LeaseEvent {
     /// One `job_event`, in `seq` order.
@@ -1202,6 +1270,15 @@ struct Lease {
     /// The only files a GET may return for this lease, by name.
     inputs: BTreeMap<String, PathBuf>,
     uploads: BTreeMap<String, Upload>,
+    /// Declared sizes held while their bodies stream, plus names not yet
+    /// present in `uploads` for the artifact-count bound.
+    reservations: BTreeMap<Uuid, UploadReservation>,
+    /// Blobs whose last name was replaced but whose unlink failed. They
+    /// remain on disk and count against the lease until cleanup or expiry.
+    orphaned_blobs: BTreeMap<String, u64>,
+    /// Serializes the short content-addressed blob install/remove phase.
+    /// Bodies stream with no hub lock and no blob-operation lock held.
+    blob_ops: Arc<Mutex<()>>,
     /// Master-owned `0700`: the names-cache input, uploads and blobs.
     dir: PathBuf,
 }
@@ -1959,6 +2036,9 @@ impl WorkerHub {
                         events,
                         inputs: input_files,
                         uploads: BTreeMap::new(),
+                        reservations: BTreeMap::new(),
+                        orphaned_blobs: BTreeMap::new(),
+                        blob_ops: Arc::new(Mutex::new(())),
                         dir: dir.clone(),
                     },
                 );
@@ -2027,6 +2107,9 @@ impl WorkerHub {
                 events,
                 inputs: BTreeMap::new(),
                 uploads: BTreeMap::new(),
+                reservations: BTreeMap::new(),
+                orphaned_blobs: BTreeMap::new(),
+                blob_ops: Arc::new(Mutex::new(())),
                 dir: dir.clone(),
             },
         );
@@ -2325,6 +2408,61 @@ impl WorkerHub {
         }
         act(lease)
     }
+
+    /// Drops a reservation even if the lease became cancelled or finished
+    /// while its body was streaming. A removed lease has already discarded
+    /// the whole accounting record.
+    fn release_upload_reservation(
+        &self,
+        agent: usize,
+        job_id: Uuid,
+        epoch: u64,
+        reservation_id: Uuid,
+    ) {
+        let mut inner = self.lock();
+        if let Some(lease) = inner.leases.get_mut(&job_id) {
+            if lease.agent == Some(agent) && lease.epoch == epoch {
+                lease.reservations.remove(&reservation_id);
+            }
+        }
+    }
+
+    /// A replaced blob was counted as orphaned while unlink ran without the
+    /// hub lock. Forget that accounting entry once it is gone from disk.
+    fn forget_orphaned_blob(&self, job_id: Uuid, epoch: u64, sha256: &str, bytes: u64) {
+        let mut inner = self.lock();
+        if let Some(lease) = inner.leases.get_mut(&job_id) {
+            if lease.epoch == epoch && lease.orphaned_blobs.get(sha256) == Some(&bytes) {
+                lease.orphaned_blobs.remove(sha256);
+            }
+        }
+    }
+}
+
+/// Releases both the reservation and temporary file on every return path,
+/// including a client disconnect that drops the handler future mid-stream.
+struct UploadGuard<'a> {
+    hub: &'a WorkerHub,
+    agent: usize,
+    job_id: Uuid,
+    epoch: u64,
+    reservation_id: Uuid,
+    temp: PathBuf,
+    active: bool,
+}
+
+impl Drop for UploadGuard<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.temp);
+        if self.active {
+            self.hub.release_upload_reservation(
+                self.agent,
+                self.job_id,
+                self.epoch,
+                self.reservation_id,
+            );
+        }
+    }
 }
 
 /// The agent a waiting runner `me` may take now: free agents are handed to
@@ -2383,7 +2521,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/workers/connect", get(connect))
         .route(
             "/workers/artifacts/{job}/{epoch}/{*name}",
-            get(get_artifact).put(put_artifact),
+            get(get_artifact).put(put_artifact.layer(DefaultBodyLimit::max(
+                WORKER_ARTIFACT_ROUTE_BODY_LIMIT as usize,
+            ))),
         )
         .with_state(hub);
     let capacity = Router::new()
@@ -2828,17 +2968,9 @@ async fn get_artifact(
 /// Writes what arrives on `chunks` to a new file at `path`, hashing it on
 /// the way. Blocking: runs on the blocking pool.
 fn write_hashed(
-    path: &Path,
+    mut file: std::fs::File,
     mut chunks: tokio::sync::mpsc::Receiver<Bytes>,
 ) -> std::io::Result<(String, u64)> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
     let mut hasher = Sha256::new();
     let mut total = 0u64;
     while let Some(chunk) = chunks.blocking_recv() {
@@ -2850,15 +2982,30 @@ fn write_hashed(
     Ok((format!("{:x}", hasher.finalize()), total))
 }
 
+fn create_upload_temp(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 /// `PUT` of one result artifact (§4.2): streamed to a temporary file in the
 /// lease's master-owned directory while hashed, never buffered whole, then
 /// kept under its digest only if size and digest match the declaration.
 async fn put_artifact(
     State(hub): State<Arc<WorkerHub>>,
     AxPath((job, epoch, name)): AxPath<(String, u64, String)>,
-    headers: HeaderMap,
-    body: Body,
+    request: Request,
 ) -> Response {
+    let headers = request.headers().clone();
+    // `Body` extraction itself is intentionally unbounded for streaming
+    // handlers. Apply the route's DefaultBodyLimit explicitly so chunked and
+    // unknown-size streams are still capped while they are consumed.
+    let body = request.into_limited_body();
     let Some(agent) = hub.authenticate(&headers) else {
         return unauthorized();
     };
@@ -2891,21 +3038,88 @@ async fn put_artifact(
     else {
         return refuse(StatusCode::LENGTH_REQUIRED, "a Content-Length is required");
     };
-    let dir = match hub.with_lease(agent, job_id, epoch, |lease| Ok(lease.dir.clone())) {
-        Ok(dir) => dir,
+    let kind_limit = match name.as_str() {
+        "map" => worker_result::EARLY_MAP_MAX_BYTES,
+        "symbols" => worker_result::FULL_SYMBOLS_MAX_BYTES,
+        "names" => worker_result::NAMES_CACHE_MAX_BYTES,
+        _ => worker_result::DISTRICT_SYMBOLS_MAX_BYTES,
+    };
+    if length > kind_limit {
+        return refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("artifact {name:?} exceeds its {kind_limit}-byte per-artifact limit"),
+        );
+    }
+
+    let reservation_id = Uuid::new_v4();
+    let reservation = hub.with_lease(agent, job_id, epoch, |lease| {
+        let used_bytes = lease_blob_bytes(lease);
+        let reserved_bytes = lease
+            .reservations
+            .values()
+            .try_fold(0u64, |total, item| total.checked_add(item.bytes));
+        let fits_bytes = used_bytes
+            .and_then(|used| reserved_bytes.and_then(|reserved| used.checked_add(reserved)))
+            .and_then(|reserved| reserved.checked_add(length))
+            .is_some_and(|total| total <= WORKER_LEASE_MAX_ARTIFACT_BYTES);
+        if !fits_bytes {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+
+        let pending_names = lease
+            .reservations
+            .values()
+            .filter(|item| !lease.uploads.contains_key(&item.name))
+            .map(|item| item.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let current_count = lease.uploads.len() + pending_names.len();
+        let name_already_counted = lease.uploads.contains_key(&name)
+            || lease.reservations.values().any(|item| item.name == name);
+        if !name_already_counted && current_count >= WORKER_LEASE_MAX_ARTIFACTS {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+
+        lease.reservations.insert(
+            reservation_id,
+            UploadReservation {
+                name: name.clone(),
+                bytes: length,
+            },
+        );
+        Ok((lease.dir.clone(), lease.blob_ops.clone()))
+    });
+    let (dir, blob_ops) = match reservation {
+        Ok(reservation) => reservation,
         Err(status) => {
+            let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                "the lease's artifact byte or count limit would be exceeded"
+            } else {
+                "this token holds no live lease on that job and epoch"
+            };
+            return refuse(status, message);
+        }
+    };
+    let temp = dir.join(format!("upload-{reservation_id}"));
+    let mut guard = UploadGuard {
+        hub: &hub,
+        agent,
+        job_id,
+        epoch,
+        reservation_id,
+        temp: temp.clone(),
+        active: true,
+    };
+    let file = match create_upload_temp(&temp) {
+        Ok(file) => file,
+        Err(error) => {
             return refuse(
-                status,
-                "this token holds no live lease on that job and epoch",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not create the upload temporary file: {error}"),
             )
         }
     };
-    let temp = dir.join(format!("upload-{}", Uuid::new_v4()));
     let (chunks, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
-    let writer = {
-        let temp = temp.clone();
-        tokio::task::spawn_blocking(move || write_hashed(&temp, receiver))
-    };
+    let writer = tokio::task::spawn_blocking(move || write_hashed(file, receiver));
     let mut stream = body.into_data_stream();
     let mut received = 0u64;
     let mut problem: Option<String> = None;
@@ -2939,10 +3153,7 @@ async fn put_artifact(
             None
         }
     };
-    let bad = |status: StatusCode, message: String| {
-        let _ = std::fs::remove_file(&temp);
-        refuse(status, message)
-    };
+    let bad = |status: StatusCode, message: String| refuse(status, message);
     if let Some(problem) = problem {
         return bad(StatusCode::BAD_REQUEST, problem);
     }
@@ -2964,24 +3175,82 @@ async fn put_artifact(
             format!("digest mismatch: declared {declared}, received {sha256}"),
         );
     }
-    // Content-addressed (§4.2): a repeat upload of the same bytes is a
-    // no-op.
+    // Bodies are complete now. Serialize only this short blob install and
+    // replacement phase; the hub lock below covers accounting only, never
+    // this stream or filesystem work.
+    let _blob_ops = blob_ops
+        .lock()
+        .expect("lease blob-operation mutex poisoned");
     let blob = dir.join("blobs").join(&sha256);
-    if blob.exists() {
-        let _ = std::fs::remove_file(&temp);
+    let blob_existed = blob.exists();
+    if blob_existed {
+        if let Err(error) = std::fs::remove_file(&temp) {
+            return bad(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not discard the duplicate upload: {error}"),
+            );
+        }
     } else if let Err(error) = std::fs::rename(&temp, &blob) {
         return bad(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("could not keep the upload: {error}"),
         );
     }
+    let upload = Upload {
+        sha256: sha256.clone(),
+        bytes,
+    };
     let recorded = hub.with_lease(agent, job_id, epoch, |lease| {
-        lease.uploads.insert(name.clone(), Upload { sha256, bytes });
-        Ok(())
+        let Some(reservation) = lease.reservations.get(&reservation_id) else {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        };
+        if reservation.name != name || reservation.bytes != bytes {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        let old = lease.uploads.insert(name.clone(), upload);
+        lease.reservations.remove(&reservation_id);
+        lease.orphaned_blobs.remove(&sha256);
+        let old_blob = old.filter(|previous| {
+            previous.sha256 != sha256
+                && !lease
+                    .uploads
+                    .values()
+                    .any(|upload| upload.sha256 == previous.sha256)
+        });
+        if let Some(previous) = &old_blob {
+            lease
+                .orphaned_blobs
+                .insert(previous.sha256.clone(), previous.bytes);
+        }
+        Ok(old_blob)
     });
     match recorded {
-        Ok(()) => StatusCode::OK.into_response(),
-        Err(status) => refuse(status, "the lease ended during the upload"),
+        Ok(old_blob) => {
+            if let Some(old_blob) = old_blob {
+                let old_path = dir.join("blobs").join(&old_blob.sha256);
+                match std::fs::remove_file(&old_path) {
+                    Ok(()) => {
+                        hub.forget_orphaned_blob(job_id, epoch, &old_blob.sha256, old_blob.bytes)
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        hub.forget_orphaned_blob(job_id, epoch, &old_blob.sha256, old_blob.bytes)
+                    }
+                    Err(error) => eprintln!(
+                        "job {job_id}: could not remove replaced artifact blob {}: {error}",
+                        old_blob.sha256
+                    ),
+                }
+            }
+            guard.active = false;
+            StatusCode::OK.into_response()
+        }
+        Err(status) => {
+            if !blob_existed {
+                let _ = std::fs::remove_file(&blob);
+            }
+            refuse(status, "the lease ended during the upload")
+        }
     }
 }
 
@@ -4262,6 +4531,7 @@ pub async fn start_remote(state: &Arc<AppState>, slots: usize) -> anyhow::Result
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use axum::body::Body;
     use std::net::TcpStream;
 
     use tokio_tungstenite::tungstenite;
@@ -4877,57 +5147,190 @@ mod tests {
         .0
     }
 
-    /// Sends a repeated byte without keeping a 256 MiB test body in memory.
-    fn put_repeated_at(
+    /// Declares an upload without sending its body. A prompt response proves
+    /// a size refusal happened before the handler tried to read the stream.
+    fn put_declared_without_body(
         port: u16,
         token: &str,
         job: Uuid,
-        epoch: u64,
         name: &str,
-        prefix: &[u8],
-        byte: u8,
         bytes: u64,
-    ) -> u16 {
-        assert!(bytes >= prefix.len() as u64);
-        let block = [byte; 64 * 1024];
-        let mut hasher = Sha256::new();
-        hasher.update(prefix);
-        let mut remaining = bytes - prefix.len() as u64;
-        while remaining > 0 {
-            let count = remaining.min(block.len() as u64) as usize;
-            hasher.update(&block[..count]);
-            remaining -= count as u64;
-        }
-        let digest = format!("{:x}", hasher.finalize());
+    ) -> (u16, String) {
+        use std::io::{Read, Write};
 
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream
-            .set_read_timeout(Some(Duration::from_secs(60)))
+            .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         write!(
             stream,
-            "PUT /workers/artifacts/{job}/{epoch}/{name} HTTP/1.1\r\n\
+            "PUT /workers/artifacts/{job}/1/{name} HTTP/1.1\r\n\
              Host: 127.0.0.1\r\n\
              Connection: close\r\n\
              Authorization: Bearer {token}\r\n\
-             {SHA256_HEADER}: {digest}\r\n\
-             Content-Length: {bytes}\r\n\r\n"
+             {SHA256_HEADER}: {}\r\n\
+             Content-Length: {bytes}\r\n\r\n",
+            sha(MAP)
         )
         .unwrap();
-        stream.write_all(prefix).unwrap();
-        let mut remaining = bytes - prefix.len() as u64;
-        while remaining > 0 {
-            let count = remaining.min(block.len() as u64) as usize;
-            stream.write_all(&block[..count]).unwrap();
-            remaining -= count as u64;
-        }
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
-        String::from_utf8_lossy(&response)
+        let _ = stream.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response).into_owned();
+        let status = response
             .split(' ')
             .nth(1)
-            .and_then(|status| status.parse().ok())
-            .unwrap_or(0)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        (status, response)
+    }
+
+    /// Sends an HTTP/1.1 chunked PUT without Content-Length. The handler
+    /// should reject the headers before consuming this body; writes may stop
+    /// early after the server closes the refused request.
+    fn put_chunked_without_length(
+        port: u16,
+        token: &str,
+        job: Uuid,
+        name: &str,
+        body: &[u8],
+    ) -> (u16, String) {
+        use std::io::{Read, Write};
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        write!(
+            stream,
+            "PUT /workers/artifacts/{job}/1/{name} HTTP/1.1\r\n\
+             Host: 127.0.0.1\r\n\
+             Connection: close\r\n\
+             Authorization: Bearer {token}\r\n\
+             {SHA256_HEADER}: {}\r\n\
+             Transfer-Encoding: chunked\r\n\r\n",
+            sha(body)
+        )
+        .unwrap();
+        let _ = write!(stream, "{:X}\r\n", body.len());
+        let _ = stream.write_all(body);
+        let _ = stream.write_all(b"\r\n0\r\n\r\n");
+
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response).into_owned();
+        let status = response
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        (status, response)
+    }
+
+    /// Sends `body` verbatim after an HTTP/1.1 request whose Content-Length
+    /// covers only its first `declared_bytes` bytes.
+    fn put_with_extra_after_content_length(
+        port: u16,
+        token: &str,
+        job: Uuid,
+        name: &str,
+        body: &[u8],
+        declared_bytes: usize,
+    ) -> (Vec<u16>, String) {
+        use std::io::{Read, Write};
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let head = format!(
+            "PUT /workers/artifacts/{job}/1/{name} HTTP/1.1\r\n\
+             Host: 127.0.0.1\r\n\
+             Connection: keep-alive\r\n\
+             Authorization: Bearer {token}\r\n\
+             {SHA256_HEADER}: {}\r\n\
+             Content-Length: {declared_bytes}\r\n\r\n",
+            sha(body)
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response).into_owned();
+        let mut statuses = Vec::new();
+        let mut remaining = response.as_str();
+        while let Some((headers, body)) = remaining.split_once("\r\n\r\n") {
+            let Some(status) = headers
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse().ok())
+            else {
+                break;
+            };
+            statuses.push(status);
+            let Some(content_length) = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+            else {
+                break;
+            };
+            let Some(next_response) = body.get(content_length..) else {
+                break;
+            };
+            remaining = next_response;
+            if remaining.is_empty() {
+                break;
+            }
+        }
+        (statuses, response)
+    }
+
+    fn lease_blob_stats(fixture: &Fixture, job: Uuid) -> (usize, u64) {
+        let dir = fixture
+            .hub
+            .with_lease(0, job, 1, |lease| Ok(lease.dir.clone()))
+            .unwrap();
+        let mut count = 0;
+        let mut bytes = 0;
+        for entry in std::fs::read_dir(dir.join("blobs")).unwrap() {
+            let metadata = entry.unwrap().metadata().unwrap();
+            count += 1;
+            bytes += metadata.len();
+        }
+        (count, bytes)
+    }
+
+    fn lease_upload_state(fixture: &Fixture, job: Uuid) -> (usize, usize, u64) {
+        let (dir, reserved_bytes) = fixture
+            .hub
+            .with_lease(0, job, 1, |lease| {
+                let reserved_bytes = lease
+                    .reservations
+                    .values()
+                    .map(|reservation| reservation.bytes)
+                    .sum();
+                Ok((lease.dir.clone(), reserved_bytes))
+            })
+            .unwrap();
+        let blobs = std::fs::read_dir(dir.join("blobs")).unwrap().count();
+        let temp_files = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("upload-"))
+            })
+            .count();
+        (blobs, temp_files, reserved_bytes)
     }
 
     fn artifact(name: &str, body: &[u8]) -> Artifact {
@@ -5479,6 +5882,262 @@ mod tests {
     }
 
     #[test]
+    fn each_artifact_kind_rejects_content_length_over_its_cap_before_reading() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        // Keep the values in step with the per-kind limits in
+        // worker_result.rs: symbols use the full-result allowance, each
+        // district is fetched as one viewer JSON response, and names already
+        // have a 16 MiB adoption bound.
+        for (name, limit) in [
+            ("symbols", 256 * 1024 * 1024),
+            ("names", 16 * 1024 * 1024),
+            ("symbols_dir/0.json", 64 * 1024 * 1024),
+        ] {
+            let (status, response) =
+                put_declared_without_body(fixture.port, TOKENS[0], id, name, limit + 1);
+            assert_eq!(status, 413, "{name}: {response}");
+        }
+        assert!(fixture.hub.uploads(id).is_empty());
+    }
+
+    #[test]
+    fn chunked_upload_without_content_length_is_refused_without_reserving_or_writing() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let body = vec![b'x'; worker_result::NAMES_CACHE_MAX_BYTES as usize + 1];
+        assert!(body.len() as u64 > worker_result::NAMES_CACHE_MAX_BYTES);
+        let reserved_before = lease_upload_state(&fixture, id).2;
+        let (status, response) =
+            put_chunked_without_length(fixture.port, TOKENS[0], id, "names", &body);
+
+        assert_eq!(status, 411, "{response}");
+        assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
+        assert!(fixture.hub.uploads(id).is_empty());
+    }
+
+    #[test]
+    fn bytes_after_declared_content_length_fail_without_leaking_upload_state() {
+        const DECLARED_BYTES: usize = 64;
+        const EXTRA_BYTES: usize = 1024 * 1024;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        // Hyper frames the PUT at Content-Length, so only the declared 64
+        // bytes reach its handler. The full-wire digest then makes that
+        // request fail with 400. On this keep-alive connection, the trailing
+        // 1 MiB is parsed as another request and Hyper rejects it with 431.
+        // Neither response may leave an artifact behind.
+        let body = vec![b'x'; DECLARED_BYTES + EXTRA_BYTES];
+        let reserved_before = lease_upload_state(&fixture, id).2;
+        let (statuses, response) = put_with_extra_after_content_length(
+            fixture.port,
+            TOKENS[0],
+            id,
+            "map",
+            &body,
+            DECLARED_BYTES,
+        );
+
+        assert_eq!(statuses, [400, 431], "{response}");
+        assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
+        assert!(fixture.hub.uploads(id).is_empty());
+    }
+
+    #[test]
+    fn artifact_put_route_refuses_declared_length_above_its_body_limit_before_reading() {
+        const ROUTE_BODY_LIMIT: u64 = worker_result::EARLY_MAP_MAX_BYTES;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let reserved_before = lease_upload_state(&fixture, id).2;
+        let (status, response) =
+            put_declared_without_body(fixture.port, TOKENS[0], id, "symbols", ROUTE_BODY_LIMIT + 1);
+
+        assert_eq!(status, 413, "{response}");
+        assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
+        assert!(fixture.hub.uploads(id).is_empty());
+    }
+
+    #[test]
+    fn a_lease_total_overflow_is_refused_before_reading_the_body() {
+        const TEST_LEASE_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                // Represent already-stored bytes without making a 1 GiB
+                // fixture on disk. The reservation check only needs the
+                // lease's existing artifact metadata.
+                lease.uploads.insert(
+                    "map".to_owned(),
+                    Upload {
+                        sha256: "f".repeat(64),
+                        bytes: TEST_LEASE_BYTES - 1,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        let (status, response) =
+            put_declared_without_body(fixture.port, TOKENS[0], id, "symbols", 2);
+        assert_eq!(status, 413, "{response}");
+        assert_eq!(fixture.hub.uploads(id).len(), 1);
+    }
+
+    #[test]
+    fn an_artifact_count_at_the_limit_rejects_new_names_but_allows_replacement() {
+        const TEST_ARTIFACT_COUNT: usize = 10_000;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", b"old map"), 200);
+        fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                for district in 0..TEST_ARTIFACT_COUNT - 1 {
+                    lease.uploads.insert(
+                        format!("symbols_dir/{district}.json"),
+                        Upload {
+                            sha256: "0".repeat(64),
+                            bytes: 0,
+                        },
+                    );
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(fixture.hub.uploads(id).len(), TEST_ARTIFACT_COUNT);
+
+        assert_eq!(
+            put(fixture.port, TOKENS[0], id, "symbols", b"new name"),
+            413
+        );
+        let replacement = b"replacement map";
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", replacement), 200);
+        assert_eq!(
+            fixture.hub.uploads(id).get("map"),
+            Some(&Upload {
+                sha256: sha(replacement),
+                bytes: replacement.len() as u64,
+            })
+        );
+        assert_eq!(fixture.hub.uploads(id).len(), TEST_ARTIFACT_COUNT);
+    }
+
+    #[test]
+    fn replacing_an_artifact_different_bytes_frees_its_blob_and_total() {
+        const TEST_LEASE_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        let original = vec![b'o'; 100];
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", &original), 200);
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", b"new"), 200);
+        assert_eq!(lease_blob_stats(&fixture, id), (1, 3));
+        assert_eq!(
+            fixture.hub.uploads(id).get("map"),
+            Some(&Upload {
+                sha256: sha(b"new"),
+                bytes: b"new".len() as u64,
+            })
+        );
+
+        // The smaller replacement leaves room for one byte exactly at the
+        // lease boundary; a stale reservation of the old 100 bytes would
+        // make this upload fail.
+        fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                lease.uploads.insert(
+                    "symbols".to_owned(),
+                    Upload {
+                        sha256: "f".repeat(64),
+                        bytes: TEST_LEASE_BYTES - 4,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(put(fixture.port, TOKENS[0], id, "names", b"x"), 200);
+    }
+
+    #[test]
+    fn an_identical_reupload_keeps_one_blob_and_counts_its_bytes_once() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        let bytes = b"same artifact contents";
+
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", bytes), 200);
+        let first = fixture.hub.uploads(id).get("map").cloned().unwrap();
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", bytes), 200);
+
+        assert_eq!(fixture.hub.uploads(id).get("map"), Some(&first));
+        assert_eq!(lease_blob_stats(&fixture, id), (1, bytes.len() as u64));
+    }
+
+    #[test]
+    fn a_short_body_releases_its_lease_byte_reservation() {
+        const TEST_LEASE_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                lease.uploads.insert(
+                    "symbols".to_owned(),
+                    Upload {
+                        sha256: "f".repeat(64),
+                        bytes: TEST_LEASE_BYTES - 2,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        assert_ne!(
+            request(
+                fixture.port,
+                "PUT",
+                &format!("/workers/artifacts/{id}/1/names"),
+                &[bearer(TOKENS[0]), (SHA256_HEADER, sha(b"x")),],
+                b"x",
+                Some(2),
+            )
+            .0,
+            200,
+            "a body shorter than its declared length must fail"
+        );
+        assert_eq!(put(fixture.port, TOKENS[0], id, "names", b"xy"), 200);
+    }
+
+    #[test]
     fn an_uploaded_map_over_256_mib_is_not_opened_early_or_served() {
         let fixture = Fixture::new(Duration::from_secs(60), test_build());
         let mut agent = fixture.agent(0);
@@ -5502,26 +6161,14 @@ mod tests {
             snapshot.status == JobStatus::Indexing
         });
 
-        // Trailing JSON whitespace keeps this a valid map if the master
-        // reads the whole upload, so the test fails without the early cap.
+        // Do not send the body: the service must reject this declaration
+        // before polling the stream, rather than start a 256 MiB write.
         let uploaded_bytes = worker_result::EARLY_MAP_MAX_BYTES + 1;
         assert_eq!(
-            put_repeated_at(
-                fixture.port,
-                TOKENS[0],
-                id,
-                1,
-                "map",
-                MAP,
-                b' ',
-                uploaded_bytes,
-            ),
-            200
+            put_declared_without_body(fixture.port, TOKENS[0], id, "map", uploaded_bytes,).0,
+            413
         );
-        assert_eq!(
-            fixture.hub.uploads(id).get("map").unwrap().bytes,
-            uploaded_bytes
-        );
+        assert!(fixture.hub.uploads(id).is_empty());
         agent.event(
             id,
             WorkerEvent::StageFinished {
