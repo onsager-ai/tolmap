@@ -1086,6 +1086,39 @@ try {
       await context.close();
     }
   }
+
+  // docs/UX.md §11 phase 7d: compare the desktop label placement at fit and
+  // two zoom levels on both acceptance maps, in each theme. These are the
+  // plain overview states; the phone screenshot sequence above is untouched.
+  for (const slug of ["langgenius/dify", "django/django"]) {
+    const stem = `${out}/desktop-${slug.replace("/", "__")}-label-placement`;
+    for (const colorScheme of ["light", "dark"]) {
+      const context = await browser.newContext({
+        viewport: { width: 1440, height: 900 },
+        isMobile: false,
+        hasTouch: false,
+        deviceScaleFactor: 1,
+        colorScheme,
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+      await page.locator("[data-desktop-overview]").waitFor({ timeout: 15_000 });
+      await page.waitForTimeout(500);
+      let zoomClicks = 0;
+      for (const step of [0, 2, 4]) {
+        while (zoomClicks < step) {
+          await page.locator('button[aria-label="Zoom in"]').click();
+          zoomClicks++;
+        }
+        await page.waitForTimeout(350);
+        const file = `${stem}-zoom${step}-${colorScheme}.png`;
+        await page.screenshot({ path: file });
+        console.log(file);
+      }
+      await context.close();
+    }
+  }
 } finally {
   await browser.close();
 }

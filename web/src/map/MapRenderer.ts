@@ -61,7 +61,7 @@ import { RenderGate } from "./renderGate";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
 import { buildRoadGeom, buildRoadPlan, districtRadius, type RoadPlan } from "./roads";
 import { aggregateCrossDistrictFlows, aggregateIntraDistrictFlows, selectCrossDistrictPairs, selectStreetPairs, type CrossFlow, type StreetFlow } from "./streets";
-import { compactMap } from "./layoutProfile";
+import { compactMap, hasDesktopMapLabels, layoutProfile } from "./layoutProfile";
 import {
   ancestorsOf,
   cardFillRatio,
@@ -102,6 +102,11 @@ const NS = "http://www.w3.org/2000/svg";
 // docs/UX.md §8.1: the smallest size the map's Archivo labels (district and
 // neighbourhood names and their subtitles) are drawn at.
 const MIN_LABEL_PX = 12;
+// §5's desktop/tablet room gate: a district needs this much projected
+// screen area per file before its file marks and labels add detail over the
+// district silhouette. This is a visual-density threshold, independent of
+// D1's 40 px file-card and 110 px class-member gates.
+const MIN_DESKTOP_DISTRICT_ROOM_PX_PER_FILE = 120;
 // A district's second line sits this far below its name's baseline: one
 // MIN_LABEL_PX line (box height 1.25 x 12 = 15 px) plus 1 px, so its
 // collision box never overlaps the name's.
@@ -247,12 +252,14 @@ export class MapRenderer {
   // (fileRank, districtArea) plus a multiply by k² per file; see dotFactor.
   private districtOrder = new Map<number, number[]>();
   private districtArea = new Map<number, number>();
+  private districtUpperLabelAnchor = new Map<number, [number, number]>();
   private fileRank = new Map<number, number>();
   // Classify once with the other document indices. The dot loop reads one
   // byte per file instead of resolving a district and class every paint.
   private unconnectedFile = new Uint8Array(0);
   private drawableDistrictIds: string[] = [];
   private labelDistrictIds: string[] = [];
+  private desktopLabelDistrictIds: string[] = [];
   private fileLabelOrder: number[] = [];
   private fileBasenames: string[] = [];
   private repeatedBasenames = new Set<string>();
@@ -606,6 +613,7 @@ export class MapRenderer {
     // order today, but "today's iteration order" is not a rule).
     this.districtOrder.clear();
     this.districtArea.clear();
+    this.districtUpperLabelAnchor.clear();
     this.fileRank.clear();
     this.fileBasenames = doc.F.map((path) => path.split("/").pop()!);
     this.fileLabelOrder = [...doc.N.keys()].sort((a, b) =>
@@ -619,15 +627,15 @@ export class MapRenderer {
     this.unconnectedFile = new Uint8Array(doc.N.length);
     this.drawableDistrictIds = Object.keys(doc.districts)
       .filter((d) => districtClass(doc.districts[d]) !== "unconnected");
-    // A5 (district labels always on, issue #82): mainland still claims the
-    // shared label budget before any island (unchanged from before this
-    // PR), but WITHIN each group districts are now visited size-descending,
-    // ties by id ascending -- so when two district names would collide, the
-    // SMALLER one is always the one left unplaced (put()'s hits() check
-    // rejects whichever comes second), never whichever happened to sort
-    // first in doc.districts' own (arbitrary, id-order) key iteration.
+    // A5 (district labels always on, issue #82): phone keeps its
+    // mainland-first label order. Desktop/tablet use the separate order
+    // below so selection and hover can take priority without changing the
+    // phone's cached order. The desktop remainder sorts by file count, then
+    // numeric id, so collisions never depend on object-key iteration order.
     this.labelDistrictIds = [...this.drawableDistrictIds].sort((a, b) =>
       Number(districtClass(doc.districts[a]) === "island") - Number(districtClass(doc.districts[b]) === "island") ||
+      doc.districts[b].size - doc.districts[a].size || +a - +b);
+    this.desktopLabelDistrictIds = [...this.drawableDistrictIds].sort((a, b) =>
       doc.districts[b].size - doc.districts[a].size || +a - +b);
     this.roadPlan = buildRoadPlan(doc);
     this.roadMaxTotal = Math.max(1, ...this.roadPlan.map((r) => r.total));
@@ -679,7 +687,16 @@ export class MapRenderer {
       members.forEach((i, rank) => this.fileRank.set(i, rank));
     }
     for (const key in doc.districts) {
-      this.districtArea.set(+key, districtWorldArea(doc.districts[key]));
+      const district = doc.districts[key];
+      this.districtArea.set(+key, districtWorldArea(district));
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const poly of district.blob) for (const point of poly) {
+        x0 = Math.min(x0, point[0]); y0 = Math.min(y0, point[1]);
+        x1 = Math.max(x1, point[0]); y1 = Math.max(y1, point[1]);
+      }
+      if (Number.isFinite(x0) && Number.isFinite(y0) && Number.isFinite(x1) && Number.isFinite(y1)) {
+        this.districtUpperLabelAnchor.set(+key, [(x0 + x1) / 2, y0 + (y1 - y0) * 0.28]);
+      }
     }
   }
 
@@ -1231,6 +1248,7 @@ export class MapRenderer {
     this.rootG = null;
     if (!state) return;
     const { doc, geo, layer, sel, selSym, selD, route, folderFiles, folderOnlyIslands } = state;
+    const desktopLabels = hasDesktopMapLabels(layoutProfile(this.mapBoxW, this.mapBoxH));
     const g = el("g", {});
     svg.appendChild(g);
     // Issue #51: remember exactly what this paint() drew at, so a later
@@ -1285,6 +1303,28 @@ export class MapRenderer {
           : selNeighbours
             ? new Set([sel!, ...selNeighbours.out, ...selNeighbours.in])
             : null;
+    // The desktop room exception is the selected file and files related to
+    // it by imports, a selected symbol's blast radius, or an active path.
+    // Landmarks and folder highlighting alone do not bypass §5's room gate.
+    const desktopRoomExceptions = new Set<number>();
+    if (desktopLabels) {
+      if (sel != null) {
+        desktopRoomExceptions.add(sel);
+        for (const i of this.outAdj.get(sel) ?? []) desktopRoomExceptions.add(i);
+        for (const i of this.inAdj.get(sel) ?? []) desktopRoomExceptions.add(i);
+      }
+      if (route) for (const i of route.path) desktopRoomExceptions.add(i);
+      if (blast) for (const i of blast.set) desktopRoomExceptions.add(i);
+    }
+    // Room is measured as projected district polygon area per member file.
+    // This is a per-frame O(districts) calculation; the geometry areas and
+    // counts were already indexed once in loadDocument().
+    const desktopRoomDistricts = new Set<number>();
+    if (desktopLabels) for (const d of this.drawableDistrictIds) {
+      const district = doc.districts[d];
+      const screenAreaPerFile = (this.districtArea.get(+d) ?? 0) * this.k * this.k / Math.max(1, district.size);
+      if (screenAreaPerFile >= MIN_DESKTOP_DISTRICT_ROOM_PX_PER_FILE) desktopRoomDistricts.add(+d);
+    }
     // Districts touched by the plain-selection dim set, for fading the
     // ones that aren't (route/blast's district rendering is intentionally
     // untouched -- "keep precedence exactly as today"). Uses the same
@@ -1450,6 +1490,13 @@ export class MapRenderer {
     const filesNeedingCards: number[] = [];
     for (let i = 0; i < doc.N.length; i++) {
       if (this.unconnectedFile[i]) continue;
+      // In footprint mode, retain files that independently cross D1's
+      // existing symbol gate so their cards still have their own geometry.
+      // The selected/linked exception is shared with the desktop dot and
+      // file-label rules; phones never enter this branch.
+      if (desktopLabels && geo !== "t" &&
+        !desktopRoomDistricts.has(D_(doc, i)) && !desktopRoomExceptions.has(i) &&
+        !symbolGateFiles?.has(i)) continue;
       if (CELL && doc.P![String(i)]) {
         const p = this.px(i);
         const cx = this.X(p[0]);
@@ -1763,7 +1810,7 @@ export class MapRenderer {
     // before district names are checked against them" (spec). One shared,
     // growing `placed` array threaded through every step below is the fix.
     const placed: Array<[number, number, number, number]> = [];
-    this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed);
+    this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed, desktopLabels);
     // CI review finding (issue #82 C2): seed the SAME shared list with every
     // carded file's own screen bbox (recorded by drawSymbolCardsPass, which
     // already ran above, before pins/hub labels/folder labels/file labels
@@ -1855,7 +1902,7 @@ export class MapRenderer {
     // A5: folder labels, then hub labels, then file labels -- the tail of
     // the old drawLabels(), now reusing the SAME `placed` list rather than a
     // fresh local one (see placeDistrictLabels's own call above for why).
-    this.placeContentLabels(g, placed, alwaysDrawn, zf0, hubCandidates);
+    this.placeContentLabels(g, placed, alwaysDrawn, zf0, hubCandidates, desktopLabels, desktopRoomDistricts, desktopRoomExceptions);
 
     // Issue #82 C2 scope item 4: reference lines for the selected symbol (if
     // any), topmost so they read over labels/pins/hub rings -- a fresh,
@@ -1902,17 +1949,15 @@ export class MapRenderer {
    * district's name label is placed FIRST, into `placed` (shared with, and
    * mutated for, every subsequent pass -- pins, hub labels, folder labels,
    * file labels, in that order -- see paint()'s own comment on why this
-   * ordering matters). `labelDistrictIds` is already sorted mainland-before-
-   * island then size-descending (loadDocument), so within either group a
-   * same-size collision always resolves the same way and, across the whole
-   * list, the SMALLER of two colliding district names is always the one
-   * `put()` rejects -- "the smaller district's name is hidden first" (spec).
-   * Otherwise unchanged from the pre-A5 drawLabels: same +N-files badge,
-   * same island fade/priority. Font and floor changed with docs/UX.md §8.1:
+   * ordering matters). Phone keeps A5's mainland-first, then size-descending
+   * order. Desktop/tablet put the selected district and hovered district
+   * first, then use the precomputed size-descending/id order. In every case
+   * a collision drops the later label through `put()`; the text is never
+   * shrunk or moved to force a fit. Font and floor follow docs/UX.md §8.1:
    * Archivo, measured by labelMetrics.ts, and never under MIN_LABEL_PX (the
    * phone formula used to read 10.5 px at clampK's loosest zoom-out,
    * `fitScale()*0.5`, i.e. zf=0.5, and islands 0.75x that). */
-  private placeDistrictLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, placed: Array<[number, number, number, number]>) {
+  private placeDistrictLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, placed: Array<[number, number, number, number]>, desktopLabels: boolean) {
     const { doc, geo } = this.state!;
     const hits = (x: number, y: number, w: number, h: number) =>
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
@@ -1921,8 +1966,8 @@ export class MapRenderer {
     // (labelMetrics.ts) -- not the old `length * size * 0.62`, which was
     // IBM Plex Mono's advance and over- or under-reserved a proportional
     // face depending on the letters.
-    const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number) => {
-      const w = archivoLabelWidth(txt, size, weight ?? 400);
+    const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number, mono = false) => {
+      const w = mono ? txt.length * size * 0.62 : archivoLabelWidth(txt, size, weight ?? 400);
       const h = size * 1.25;
       if (hits(x - w / 2, y - h, w, h)) return false;
       placed.push([x - w / 2, y - h, w, h]);
@@ -1933,7 +1978,7 @@ export class MapRenderer {
         "text-anchor": "middle",
         fill: "var(--ink)",
         "fill-opacity": op,
-        "font-family": MAP_LABEL_FONT,
+        "font-family": mono ? "IBM Plex Mono, monospace" : MAP_LABEL_FONT,
         "paint-order": "stroke",
         stroke: "var(--canvas)",
         "stroke-width": 3.2,
@@ -1961,17 +2006,42 @@ export class MapRenderer {
     };
     const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const zf = this.k / this.fitScale();
-    // Mainland labels claim the shared collision budget first; an island's
-    // `put()` below only succeeds where that leaves room -- "reduced
-    // priority within the existing label budget" (issue #34), not a second
-    // pass or a bigger one. At real density (n8n had 269 islands crowded
-    // onto one ring before finding 15's resolver fix, 52 at cb04469;
-    // measured on a 60-island synthetic stress fixture to overlap well
-    // before they'd stop colliding on screen) this is what keeps the
-    // result a sparse, legible scatter of names instead of a solid
-    // unreadable band of overlapping text. Unconnected districts have no
-    // polygon and are listed in the footer panel instead.
-    for (const d of this.labelDistrictIds) {
+    let selectedDistrict: number | null = this.state!.selD;
+    if (selectedDistrict == null && this.state!.sel != null) selectedDistrict = D_(doc, this.state!.sel);
+    let hoveredDistrict: number | null = null;
+    if (this.hoverKey) {
+      const districtHover = /^d:(\d+)$/.exec(this.hoverKey);
+      const fileHover = /^f:(\d+)$/.exec(this.hoverKey);
+      const symbolHover = /^hs:(\d+)$/.exec(this.hoverKey);
+      if (districtHover) hoveredDistrict = Number(districtHover[1]);
+      else if (fileHover && doc.N[Number(fileHover[1])]) hoveredDistrict = D_(doc, Number(fileHover[1]));
+      else if (symbolHover) {
+        const symbol = this.symLocalByGlobal.get(Number(symbolHover[1]));
+        const file = symbol?.decoded.raw.symbols[symbol.local]?.[0];
+        if (file != null) hoveredDistrict = D_(doc, file);
+      }
+    }
+    let districtOrder = this.labelDistrictIds;
+    if (desktopLabels) {
+      const allowed = new Set(this.desktopLabelDistrictIds);
+      const seen = new Set<string>();
+      districtOrder = [];
+      for (const d of [selectedDistrict, hoveredDistrict]) {
+        if (d == null) continue;
+        const key = String(d);
+        if (allowed.has(key) && !seen.has(key)) {
+          districtOrder.push(key);
+          seen.add(key);
+        }
+      }
+      for (const d of this.desktopLabelDistrictIds) if (!seen.has(d)) districtOrder.push(d);
+    }
+    // Phone's A5 order still gives mainlands priority over islands; desktop
+    // follows its selected/hovered/size order. An island's `put()` only
+    // succeeds where that greedy order leaves room, preserving the fade and
+    // the sparse label budget. Unconnected districts have no polygon and
+    // are listed off-map instead.
+    for (const d of districtOrder) {
       const cls = districtClass(doc.districts[d]);
       const isIsland = cls === "island";
       // Issue #63: the SAME fade the polygon and its file dots use (see
@@ -1985,9 +2055,17 @@ export class MapRenderer {
       const iFade = isIsland ? this.islandFadeForDistrict(+d, zf, islandFadeFloorZf, islandExceptionDistricts) : 1;
       if (isIsland && !this.islandFadeVisible(iFade)) continue;
       const c = geo !== "t" ? doc.districts[d].c : tmCentre(doc, +d);
-      const x = this.X(c[0]);
-      const y = this.Y(c[1]);
-      if (x < 0 || x > this.VW || y < 0 || y > this.VH) continue;
+      let labelWorldX = c[0];
+      let labelWorldY = c[1];
+      // Desktop names sit in the upper part of a mainland district. The
+      // polygon bounds provide a stable anchor independent of file order;
+      // the lower, denser centroid remains available to the file marks.
+      if (desktopLabels && !isIsland && geo !== "t") {
+        const upper = this.districtUpperLabelAnchor.get(+d);
+        if (upper) [labelWorldX, labelWorldY] = upper;
+      }
+      let x = this.X(labelWorldX);
+      let y = this.Y(labelWorldY);
       // docs/UX.md §8.1: nothing under 12 px. The phone formula used to start
       // at 10.5 px (zf 0.5) and read 11 px at fit.
       const size = compact ? Math.min(13, Math.max(MIN_LABEL_PX, 10 + zf)) : Math.min(17, Math.max(MIN_LABEL_PX, 12 + zf));
@@ -1995,13 +2073,23 @@ export class MapRenderer {
       // files" subtitle -- with up to hundreds of them on a real repo, a
       // second line per label would be its own kind of clutter even after
       // the priority sort above thins the count that gets placed at all.
-      // Dominant folders have a median close to the district centre. Give
-      // the district name its own line above that centre once zoomed in;
-      // the dots and the folder's measured median stay exactly where they are.
-      const labelY = !isIsland && zf > 1 ? y - 32 : y;
+      // Phone keeps the prior zoomed-in offset above the district centre.
+      // Desktop uses the upper polygon band above; file marks keep their own
+      // anchors in the denser lower part.
+      const labelSize = isIsland ? Math.max(MIN_LABEL_PX, size * 0.75) : size;
+      const isSelected = desktopLabels && selectedDistrict === +d;
+      if (isSelected) {
+        const nameWidth = archivoLabelWidth(doc.names[d], labelSize, isIsland ? 500 : 600);
+        if (x - nameWidth / 2 < 0 || x + nameWidth / 2 > this.VW || y - labelSize * 1.25 < 0 || y > this.VH) {
+          x = this.X(c[0]);
+          y = this.Y(c[1]);
+        }
+      }
+      if (x < 0 || x > this.VW || y < 0 || y > this.VH) continue;
+      const labelY = desktopLabels ? y : !isIsland && zf > 1 ? y - 32 : y;
       // Islands stay "minor" by weight and opacity; their old 0.75x size put
       // them under 12 px, so it is floored like every other label.
-      const labelPlaced = put(x, labelY, doc.names[d], isIsland ? Math.max(MIN_LABEL_PX, size * 0.75) : size, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
+      const labelPlaced = put(x, labelY, doc.names[d], labelSize, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
       // Issue's scope item 2: a "+N files" badge once #49's budget is
       // actually hiding members of this district AND the name label itself
       // found room -- a floating count with no name above it would read
@@ -2020,8 +2108,10 @@ export class MapRenderer {
       // B4 scope item 1: "+N files" badges are a #48 dot-thinning artefact --
       // footprint mode never thins (every file always draws its own
       // footprint), so there is never a hidden count to report there.
-      const hidden = labelPlaced && !this.hasFootprints ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
-      if (hidden > 0) {
+      const hidden = !desktopLabels && labelPlaced && !this.hasFootprints ? this.hiddenFileCount(+d, alwaysDrawn) : 0;
+      if (desktopLabels && labelPlaced && !isIsland) {
+        put(x, labelY + SUBTITLE_OFFSET_PX, `${doc.districts[d].size} files`, MIN_LABEL_PX, 0.45, undefined, +d, true);
+      } else if (hidden > 0) {
         // 12 px (was 8.5/9.5) and a 16 px line below the name (was 10/13):
         // a 12 px line's box is 15 px tall, so the old offsets would have put
         // its box inside the name's and hits() would always reject it.
@@ -3345,6 +3435,9 @@ export class MapRenderer {
     alwaysDrawn: Set<number>,
     zf0: number,
     hubCandidates: Array<{ hub: { i: number; fi: number; name: string }; cx: number; cy: number; r: number }>,
+    desktopLabels: boolean,
+    desktopRoomDistricts: Set<number>,
+    desktopRoomExceptions: Set<number>,
   ) {
     const { doc, geo } = this.state!;
     const hits = (x: number, y: number, w: number, h: number) =>
@@ -3446,6 +3539,10 @@ export class MapRenderer {
         // place. Treemap ("t") dots are left ungated (see the draw() loop),
         // so this check only ever applies to "r"/"p".
         if (this.unconnectedFile[i]) continue;
+        // Desktop/tablet file labels share the same district-room gate as
+        // file marks, with only selected or import-linked files exempted.
+        if (desktopLabels && geo !== "t" &&
+          !desktopRoomDistricts.has(D_(doc, i)) && !desktopRoomExceptions.has(i)) continue;
         // B4 scope item 1: footprint mode never thins, so every file is
         // "drawn" for this gate's purposes -- checking dotFactor() here
         // would apply the OLD dot budget's arithmetic to a file whose

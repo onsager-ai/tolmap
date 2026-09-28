@@ -3445,6 +3445,109 @@ async function checkLabelsFitTheirBoxes(browser, base, profile) {
   await context.close();
 }
 
+/** docs/UX.md §5 / phase 7d: desktop labels reserve screen-space boxes in
+ * the shared `placed` list. Check those same boxes at fit and two zoom
+ * levels on both acceptance fixtures, then check the selected district's
+ * own label survives the same camera states. */
+async function checkDesktopLabelPlacement(browser, base) {
+  const profile = { viewport: { width: 1440, height: 900 }, hasTouch: false, colorScheme: "light" };
+  for (const slug of MAPS) {
+    const label = `desktop label placement (${slug}) / 1440x900`;
+    console.log(`\n${label}`);
+    const context = await browser.newContext(profile);
+    const page = await context.newPage();
+    const doc = await (await context.request.get(`${base}/maps/${slug}.json`)).json();
+    const largest = Object.entries(doc.districts)
+      .filter(([, district]) => district.blob?.length)
+      .sort((a, b) => b[1].size - a[1].size || Number(a[0]) - Number(b[0]))[0];
+    report(!!largest, `${label}: fixture has a drawable district to select`);
+    if (!largest) {
+      await context.close();
+      continue;
+    }
+    const districtId = largest[0];
+    const labelsState = async () => page.evaluate(() => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return { boxes: [], overlaps: [] };
+      const boxes = [...svg.querySelectorAll("text[data-label-box]")].map((text) => {
+        const width = Number(text.getAttribute("data-label-box"));
+        const height = Number(text.getAttribute("font-size")) * 1.25;
+        const x = Number(text.getAttribute("x")) - width / 2;
+        const y = Number(text.getAttribute("y")) - height;
+        const matrix = text.getScreenCTM();
+        if (!matrix || !Number.isFinite(width) || !Number.isFinite(height)) return null;
+        const point = svg.createSVGPoint();
+        point.x = x; point.y = y;
+        const topLeft = point.matrixTransform(matrix);
+        point.x = x + width; point.y = y + height;
+        const bottomRight = point.matrixTransform(matrix);
+        return {
+          text: text.textContent,
+          x: topLeft.x,
+          y: topLeft.y,
+          right: bottomRight.x,
+          bottom: bottomRight.y,
+        };
+      }).filter(Boolean);
+      const overlaps = [];
+      for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        if (a.x < b.right && a.right > b.x && a.y < b.bottom && a.bottom > b.y) {
+          overlaps.push({ a: a.text, b: b.text });
+        }
+      }
+      return { boxes, overlaps: overlaps.slice(0, 6), overlapCount: overlaps.length };
+    });
+    const levels = [
+      { name: "fit", clicks: 0 },
+      { name: "zoom-in-2", clicks: 2 },
+      { name: "zoom-in-4", clicks: 4 },
+    ];
+    await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+    await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(700);
+    let zoomClicks = 0;
+    for (const level of levels) {
+      while (zoomClicks < level.clicks) {
+        await page.locator('button[aria-label="Zoom in"]').click();
+        zoomClicks++;
+      }
+      await page.waitForTimeout(350);
+      const result = await labelsState();
+      report(result.boxes.length > 0 && result.overlapCount === 0,
+        `${label}: no visible label boxes intersect at ${level.name}`,
+        JSON.stringify({ count: result.boxes.length, overlaps: result.overlaps, overlapCount: result.overlapCount }));
+    }
+
+    const selectedLabelPresent = () => page.evaluate(({ districtId, name }) => {
+      const svg = document.querySelector("svg.map-svg");
+      if (!svg) return false;
+      const map = svg.getBoundingClientRect();
+      return [...svg.querySelectorAll(`text.hit[data-k="d:${districtId}"]`)].some((text) => {
+        const box = text.getBoundingClientRect();
+        return text.textContent === name && getComputedStyle(text).display !== "none" &&
+          box.width > 0 && box.height > 0 && box.left < map.right && box.right > map.left &&
+          box.top < map.bottom && box.bottom > map.top;
+      });
+    },
+    { districtId, name: doc.names[districtId] });
+    await page.goto(`${base}/${slug}?d=${districtId}`, { waitUntil: "domcontentloaded" });
+    await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(700);
+    report(await selectedLabelPresent(), `${label}: selected district label is present on its deep link`, districtId);
+    await page.locator('button[aria-label="Fit map"]').click();
+    await page.waitForTimeout(350);
+    report(await selectedLabelPresent(), `${label}: selected district label is present at fit`, districtId);
+    for (let i = 1; i <= 4; i++) {
+      await page.locator('button[aria-label="Zoom in"]').click();
+      await page.waitForTimeout(350);
+      if (i === 2 || i === 4) report(await selectedLabelPresent(),
+        `${label}: selected district label is present after ${i} zoom-in clicks`, districtId);
+    }
+    await context.close();
+  }
+}
+
 // 9(f): an old map with no `P` at all (any committed data/ fixture the
 // catalogue still serves) renders dots, unchanged -- footprint mode is opt-in
 // per document, never forced.
@@ -6364,6 +6467,7 @@ async function main() {
     for (const profile of PROFILES) await checkStreetsAndTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkNeighbourhoodLabelsAtDeeperZoom(browser, args.base, profile);
     for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
+    await checkDesktopLabelPlacement(browser, args.base);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
     for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);
