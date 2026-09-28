@@ -192,6 +192,15 @@ const WORKER_MAX_UPLOAD_WRITERS: usize = 32;
 /// the process-wide writers to everyone else.
 const WORKER_AGENT_MAX_UPLOAD_WRITERS: usize = 8;
 
+/// Live channels one agent may hold at once (#193). An agent is one
+/// process with one channel (`agent::Agent::link`), so two is the one it
+/// uses and one it has already dropped but the master has not yet noticed
+/// die: the channel a resume moves the lease from (§3.5). A channel past
+/// it closes the agent's oldest (`WorkerHub::add_conn`), never the new
+/// one, so an agent redialling a master that missed several drops always
+/// gets in. Leases are bounded separately, at one per agent (`pick_agent`).
+const WORKER_MAX_CHANNELS_PER_AGENT: usize = 2;
+
 const fn max_upload_bytes(left: u64, right: u64) -> u64 {
     if left > right {
         left
@@ -1219,14 +1228,15 @@ struct UploadReservation {
 
 /// Upload writers held per agent (#191). The per-lease cap bounds one
 /// lease and the process-wide semaphore bounds everyone, but neither bounds
-/// one agent: it may hold several leases at once -- `serve_agent` never
-/// refuses a second channel for the same token, and each channel can hold a
-/// lease -- and a heartbeat renews a lease with no progress check, so an
-/// agent that reopened its stalled uploads whenever the old ones timed out
-/// could keep every process-wide writer taken, and every other agent's
-/// `PUT` would get 503. Keyed by `Conn::agent`, which in remote mode is the
-/// worker id's number, so the tokens of one worker id (mid-rotation) share
-/// one quota.
+/// one agent. Before #193 one agent could hold a lease on each of any
+/// number of channels; `claim` now gives it one at a time (`pick_agent`),
+/// but a restarted master still adopts every lease its store names, which
+/// may name one worker more than once. A heartbeat renews a lease with no
+/// progress check, so an agent that reopened its stalled uploads whenever
+/// the old ones timed out could keep every process-wide writer taken, and
+/// every other agent's `PUT` would get 503. Keyed by `Conn::agent`, which
+/// in remote mode is the worker id's number, so the tokens of one worker id
+/// (mid-rotation) share one quota.
 ///
 /// Its own lock, never taken under the hub's: a permit is dropped on the
 /// blocking writer thread and on every return path of `put_artifact`.
@@ -1381,6 +1391,16 @@ struct Lease {
     blob_ops: Arc<Mutex<()>>,
     /// Cancels async upload feeders when this lease is cancelled, expires,
     /// is reassigned or ends; dropping their senders releases writer threads.
+    ///
+    /// The channel's only sender, never cloned, so a feeder's `changed()`
+    /// returns both on `send_replace(true)` and when the lease is dropped
+    /// (#193). A lease that stays in the map while its uploads must stop --
+    /// cancelled, rerouting, found expired by `expired` or `resume`, or the
+    /// master stopping -- needs the send, and each of those has a test that
+    /// fails without it. A lease removed from the map needs nothing more:
+    /// `claim` replacing it, `adopt` and `end_lease` drop it under the hub
+    /// lock, which ends its uploads at the point the send used to, before
+    /// its directory goes. A send there changed nothing a test could see.
     upload_cancel: watch::Sender<bool>,
     /// Master-owned `0700`: the names-cache input, uploads and blobs.
     dir: PathBuf,
@@ -1751,6 +1771,11 @@ impl WorkerHub {
             .unwrap_or_else(|| self.base_url.clone())
     }
 
+    /// A new channel for `agent`, and the answers to its `hello.resume`
+    /// (`resume`). One lock covers the eviction below, the new channel and
+    /// its resume, so no channel is ever evicted between joining and
+    /// resuming: a resume from a channel already gone would move the lease
+    /// onto it and close the channel holding it.
     #[allow(clippy::too_many_arguments)]
     fn add_conn(
         &self,
@@ -1761,10 +1786,37 @@ impl WorkerHub {
         local_paths: bool,
         base_url: String,
         out: tokio::sync::mpsc::UnboundedSender<Outgoing>,
-    ) -> u64 {
-        let mut inner = self.lock();
+        resume: Vec<ResumeEntry>,
+    ) -> (u64, Vec<WelcomeResume>) {
+        let mut guard = self.lock();
+        let inner = &mut *guard;
         let id = inner.next_conn;
         inner.next_conn += 1;
+        // #193: at most `WORKER_MAX_CHANNELS_PER_AGENT` per agent, this one
+        // included; the oldest go. An evicted channel is closed as a lost
+        // one is (`remove_conn`): its lease, if any, is detached and waits
+        // for a resume, which this very channel may be about to make. Its
+        // task finds its sender gone, closes the socket and calls
+        // `remove_conn`, which then has nothing left to do. Conn numbers
+        // only grow, so the first found are the oldest.
+        let own: Vec<u64> = inner
+            .conns
+            .iter()
+            .filter(|(_, conn)| conn.agent == agent)
+            .map(|(conn_id, _)| *conn_id)
+            .collect();
+        let over = (own.len() + 1).saturating_sub(WORKER_MAX_CHANNELS_PER_AGENT);
+        for oldest in own.into_iter().take(over) {
+            if let Some(conn) = inner.conns.remove(&oldest) {
+                eprintln!(
+                    "worker agent {agent} ({worker_id}) opened more than \
+                     {WORKER_MAX_CHANNELS_PER_AGENT} channels; closing its oldest, channel \
+                     {oldest}"
+                );
+                let _ = conn.out.send(Outgoing::Close);
+            }
+            self.detach_leases(inner, oldest);
+        }
         inner.conns.insert(
             id,
             Conn {
@@ -1780,8 +1832,25 @@ impl WorkerHub {
                 out,
             },
         );
+        let answers = self.resume(inner, id, agent, resume);
         self.changed.notify_all();
-        id
+        (id, answers)
+    }
+
+    /// A channel is gone: each lease it held stays, with no channel, until
+    /// its agent resumes it or it runs out.
+    fn detach_leases(&self, inner: &mut HubInner, conn_id: u64) {
+        for (job_id, lease) in inner.leases.iter_mut() {
+            if lease.conn == Some(conn_id) {
+                lease.conn = None;
+                eprintln!(
+                    "job {job_id}: its agent's channel closed; the lease (epoch {}) runs out \
+                     within {} s unless the agent resumes it",
+                    lease.epoch,
+                    self.lease_ttl_s()
+                );
+            }
+        }
     }
 
     /// A closed channel does not end its lease (§6 "channel lost, worker
@@ -1797,17 +1866,7 @@ impl WorkerHub {
                 conn.agent, conn.worker_id
             );
         }
-        for (job_id, lease) in inner.leases.iter_mut() {
-            if lease.conn == Some(conn_id) {
-                lease.conn = None;
-                eprintln!(
-                    "job {job_id}: its agent's channel closed; the lease (epoch {}) runs out \
-                     within {} s unless the agent resumes it",
-                    lease.epoch,
-                    self.lease_ttl_s()
-                );
-            }
-        }
+        self.detach_leases(inner, conn_id);
         self.changed.notify_all();
     }
 
@@ -2156,33 +2215,34 @@ impl WorkerHub {
                 let message = assign(&conn.base_url);
                 let _ = conn.out.send(Outgoing::Message(message));
                 let (upload_cancel, _) = watch::channel(false);
-                let replaced = inner.leases.insert(
-                    job_id,
-                    Lease {
-                        conn: Some(conn_id),
-                        agent: Some(agent),
-                        epoch,
-                        deadline: Instant::now() + self.lease_ttl,
-                        next_seq: 1,
-                        cancelled: false,
-                        lost: false,
-                        finished: false,
-                        rerouting: false,
-                        last_rss: None,
-                        result: None,
-                        events,
-                        inputs: input_files,
-                        uploads: BTreeMap::new(),
-                        reservations: BTreeMap::new(),
-                        orphaned_blobs: BTreeMap::new(),
-                        blob_ops: Arc::new(Mutex::new(())),
-                        upload_cancel,
-                        dir: dir.clone(),
-                    },
-                );
-                if let Some(replaced) = &replaced {
-                    replaced.upload_cancel.send_replace(true);
-                }
+                // Dropped here, under the lock: see `Lease::upload_cancel`.
+                let replaced_dir = inner
+                    .leases
+                    .insert(
+                        job_id,
+                        Lease {
+                            conn: Some(conn_id),
+                            agent: Some(agent),
+                            epoch,
+                            deadline: Instant::now() + self.lease_ttl,
+                            next_seq: 1,
+                            cancelled: false,
+                            lost: false,
+                            finished: false,
+                            rerouting: false,
+                            last_rss: None,
+                            result: None,
+                            events,
+                            inputs: input_files,
+                            uploads: BTreeMap::new(),
+                            reservations: BTreeMap::new(),
+                            orphaned_blobs: BTreeMap::new(),
+                            blob_ops: Arc::new(Mutex::new(())),
+                            upload_cancel,
+                            dir: dir.clone(),
+                        },
+                    )
+                    .map(|replaced| replaced.dir);
                 self.changed.notify_all();
                 eprintln!("job {job_id}: assigned to worker agent {agent} (epoch {epoch})");
                 let claimed = Claimed {
@@ -2191,9 +2251,9 @@ impl WorkerHub {
                     holder,
                 };
                 drop(guard);
-                if let Some(replaced) = replaced {
-                    if replaced.dir != dir {
-                        let _ = std::fs::remove_dir_all(replaced.dir);
+                if let Some(replaced_dir) = replaced_dir {
+                    if replaced_dir != dir {
+                        let _ = std::fs::remove_dir_all(replaced_dir);
                     }
                 }
                 return Ok(Some(claimed));
@@ -2228,17 +2288,16 @@ impl WorkerHub {
             _ => None,
         };
         let dir = self.lease_dir(job_id, epoch);
-        let replaced = {
-            let mut inner = self.lock();
-            let replaced = inner.leases.remove(&job_id);
-            if let Some(lease) = &replaced {
-                lease.upload_cancel.send_replace(true);
-            }
-            replaced
-        };
-        if let Some(replaced) = replaced {
-            if replaced.dir != dir {
-                let _ = std::fs::remove_dir_all(replaced.dir);
+        // Dropped under the lock, as `claim` drops a lease it replaces:
+        // see `Lease::upload_cancel`.
+        let replaced_dir = self
+            .lock()
+            .leases
+            .remove(&job_id)
+            .map(|replaced| replaced.dir);
+        if let Some(replaced_dir) = replaced_dir {
+            if replaced_dir != dir {
+                let _ = std::fs::remove_dir_all(replaced_dir);
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -2252,37 +2311,37 @@ impl WorkerHub {
         let (events, receiver) = std_mpsc::channel();
         let (upload_cancel, _) = watch::channel(false);
         let mut inner = self.lock();
-        let replaced = inner.leases.insert(
-            job_id,
-            Lease {
-                conn: None,
-                agent,
-                epoch,
-                deadline: Instant::now() + self.lease_ttl,
-                next_seq: 1,
-                cancelled: false,
-                lost: false,
-                finished: false,
-                rerouting: false,
-                last_rss: None,
-                result: None,
-                events,
-                inputs: BTreeMap::new(),
-                uploads: BTreeMap::new(),
-                reservations: BTreeMap::new(),
-                orphaned_blobs: BTreeMap::new(),
-                blob_ops: Arc::new(Mutex::new(())),
-                upload_cancel,
-                dir: dir.clone(),
-            },
-        );
-        if let Some(replaced) = &replaced {
-            replaced.upload_cancel.send_replace(true);
-        }
+        let replaced_dir = inner
+            .leases
+            .insert(
+                job_id,
+                Lease {
+                    conn: None,
+                    agent,
+                    epoch,
+                    deadline: Instant::now() + self.lease_ttl,
+                    next_seq: 1,
+                    cancelled: false,
+                    lost: false,
+                    finished: false,
+                    rerouting: false,
+                    last_rss: None,
+                    result: None,
+                    events,
+                    inputs: BTreeMap::new(),
+                    uploads: BTreeMap::new(),
+                    reservations: BTreeMap::new(),
+                    orphaned_blobs: BTreeMap::new(),
+                    blob_ops: Arc::new(Mutex::new(())),
+                    upload_cancel,
+                    dir: dir.clone(),
+                },
+            )
+            .map(|replaced| replaced.dir);
         drop(inner);
-        if let Some(replaced) = replaced {
-            if replaced.dir != dir {
-                let _ = std::fs::remove_dir_all(replaced.dir);
+        if let Some(replaced_dir) = replaced_dir {
+            if replaced_dir != dir {
+                let _ = std::fs::remove_dir_all(replaced_dir);
             }
         }
         eprintln!(
@@ -2376,7 +2435,8 @@ impl WorkerHub {
     }
 
     /// Answers `hello.resume` (§2.5, §3.5) for the channel `conn_id` of
-    /// `agent`. `continue`, with the master's own `acked_seq`, for a lease
+    /// `agent`, which `add_conn` has just added under the same lock.
+    /// `continue`, with the master's own `acked_seq`, for a lease
     /// this agent still holds -- the same token, the same epoch, neither
     /// cancelled nor run out -- which moves to the new channel with a fresh
     /// deadline, closing the old channel if the master had not noticed it
@@ -2387,9 +2447,13 @@ impl WorkerHub {
     /// out, it ended, or a restarted loopback master adopted it (an adopted
     /// lease has a holder only in remote mode, where it is a worker id:
     /// `adopt`).
-    fn resume(&self, conn_id: u64, agent: usize, entries: Vec<ResumeEntry>) -> Vec<WelcomeResume> {
-        let mut guard = self.lock();
-        let inner = &mut *guard;
+    fn resume(
+        &self,
+        inner: &mut HubInner,
+        conn_id: u64,
+        agent: usize,
+        entries: Vec<ResumeEntry>,
+    ) -> Vec<WelcomeResume> {
         let now = Instant::now();
         let mut answers = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -2511,9 +2575,10 @@ impl WorkerHub {
         let dir = {
             let mut guard = self.lock();
             let inner = &mut *guard;
+            // The lease is dropped below, under the lock, which ends its
+            // uploads: see `Lease::upload_cancel`.
             let lease = inner.leases.remove(&job_id);
             if let Some(lease) = &lease {
-                lease.upload_cancel.send_replace(true);
                 if let Some(conn) = lease.conn.and_then(|conn| inner.conns.get_mut(&conn)) {
                     if conn.holding == Some(job_id) {
                         conn.holding = None;
@@ -2659,30 +2724,53 @@ impl Drop for UploadGuard<'_> {
 /// it may use, and `me` gets whatever is left for it. Lowest channel first
 /// is the oldest connected agent, so the choice is deterministic for a
 /// given sequence of connections.
+///
+/// Trust decision (#193): an agent holds one lease at a time, its one slot
+/// (`hello.slots` above 1 is treated as 1), whatever channels it opens. A
+/// lease outlives its channel until it runs out (§6 "channel lost, worker
+/// alive"), so a channel is not free while any other channel of its agent
+/// holds a lease, or while a lease of its agent has no channel. Without
+/// this, capping channels would not cap jobs: one worker id could take a
+/// job on a fresh channel, let the channel go (the lease detaches), take
+/// another on the next, and gather the detached leases back onto one
+/// channel with a single `hello.resume`, until it held every queued job
+/// of its class. A lease already `lost` counts for nothing: it can never
+/// be renewed, resumed or uploaded to again, and only waits for its runner
+/// to end it. Nor does a lease on the waiting runner's own job, which its
+/// `claim` replaces.
 fn pick_agent(inner: &HubInner, me: (i64, Uuid)) -> Option<u64> {
+    let mut leased: BTreeMap<usize, Vec<Uuid>> = BTreeMap::new();
+    for (job_id, lease) in &inner.leases {
+        if let (Some(agent), false) = (lease.agent, lease.lost) {
+            leased.entry(agent).or_default().push(*job_id);
+        }
+    }
+    // Agents already handed to an earlier waiter in this pass.
     let mut taken = BTreeSet::new();
     for (&waiter, &(local, class)) in &inner.waiting {
+        let busy = |agent: usize| {
+            leased
+                .get(&agent)
+                .is_some_and(|jobs| jobs.iter().any(|job| *job != waiter.1))
+        };
         // Trust decision (§3.3): a `local/<name>` job names a path on this
         // host, so it goes only to an agent that said it shares this
         // host's paths.
-        let free = inner
-            .conns
-            .iter()
-            .find(|(id, conn)| {
-                !taken.contains(*id)
-                    && conn.eligible
-                    && conn.ready
-                    && !conn.draining
-                    && conn.holding.is_none()
-                    && conn.class == Some(class)
-                    && (!local || conn.local_paths)
-            })
-            .map(|(id, _)| *id);
+        let free = inner.conns.iter().find(|(_, conn)| {
+            !taken.contains(&conn.agent)
+                && !busy(conn.agent)
+                && conn.eligible
+                && conn.ready
+                && !conn.draining
+                && conn.holding.is_none()
+                && conn.class == Some(class)
+                && (!local || conn.local_paths)
+        });
         if waiter == me {
-            return free;
+            return free.map(|(id, _)| *id);
         }
-        if let Some(id) = free {
-            taken.insert(id);
+        if let Some((_, conn)) = free {
+            taken.insert(conn.agent);
         }
     }
     None
@@ -3025,7 +3113,10 @@ async fn serve_agent(
         return;
     }
     let (out, mut outgoing) = tokio::sync::mpsc::unbounded_channel();
-    let conn = hub.add_conn(
+    // Answered before `welcome` goes out; a verdict `resume` sends again
+    // waits in `outgoing`, which the loop below drains only after
+    // `welcome`, so the agent reads its answers first.
+    let (conn, answers) = hub.add_conn(
         agent,
         worker_id.clone(),
         eligible,
@@ -3033,6 +3124,7 @@ async fn serve_agent(
         local_paths,
         origin,
         out,
+        resume,
     );
     eprintln!(
         "worker agent {agent} ({worker_id}) connected: {} MiB usable (worker class {}), {} CPUs, \
@@ -3041,14 +3133,11 @@ async fn serve_agent(
         worker_class.map_or("none".to_owned(), |class| class.to_string()),
         class.cpus
     );
-    // Answered before `welcome` goes out; a verdict `resume` sends again
-    // waits in `outgoing`, which the loop below drains only after
-    // `welcome`, so the agent reads its answers first.
     let welcome = MasterMessage::Welcome {
         proto,
         heartbeat_s: hub.heartbeat_s,
         lease_ttl_s: hub.lease_ttl_s(),
-        resume: hub.resume(conn, agent, resume),
+        resume: answers,
     };
     // Off the hub's lock: a new agent may let a queued job start.
     hub.agents_changed();
