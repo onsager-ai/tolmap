@@ -5261,11 +5261,34 @@ mod tests {
         let mut response = Vec::new();
         let _ = stream.read_to_end(&mut response);
         let response = String::from_utf8_lossy(&response).into_owned();
-        let statuses = response
-            .lines()
-            .filter_map(|line| line.strip_prefix("HTTP/1.1 "))
-            .filter_map(|status| status.get(..3)?.parse().ok())
-            .collect();
+        let mut statuses = Vec::new();
+        let mut remaining = response.as_str();
+        while let Some((headers, body)) = remaining.split_once("\r\n\r\n") {
+            let Some(status) = headers
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse().ok())
+            else {
+                break;
+            };
+            statuses.push(status);
+            let Some(content_length) = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+            else {
+                break;
+            };
+            let Some(next_response) = body.get(content_length..) else {
+                break;
+            };
+            remaining = next_response;
+            if remaining.is_empty() {
+                break;
+            }
+        }
         (statuses, response)
     }
 
