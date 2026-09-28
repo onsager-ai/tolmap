@@ -6417,7 +6417,10 @@ async function checkDesktopOverviewKeyboardAndHover(browser, base) {
   const districtRow = page.locator("[data-district-index-row]").first();
   const districtId = await districtRow.getAttribute("data-district-index-row");
   const districtName = (await districtRow.locator("span.truncate").first().innerText()).trim();
-  const districtSelector = `svg.map-svg path.hit[data-k="d:${districtId}"]`;
+  // The district polygon sits below file footprints; hitTestFootprint can
+  // resolve a point inside it to a file. Its text label has the same district
+  // key and resolves directly to the district hover card.
+  const districtSelector = `svg.map-svg text.hit[data-k="d:${districtId}"]`;
   const districtPoint = await hoverAtMapKey(page, districtSelector);
   const districtCard = page.locator(".tolmap-hover-card");
   await districtCard.waitFor({ state: "visible", timeout: 5_000 });

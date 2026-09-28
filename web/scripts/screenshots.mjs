@@ -55,20 +55,23 @@ async function wheelZoomIn(page, cx, cy, notches) {
 }
 
 async function hoverMapTarget(page, selector) {
-  const target = page.locator(selector).first();
-  const point = await target.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    const key = element.getAttribute("data-k");
-    for (let yi = 1; yi < 20; yi++) {
-      for (let xi = 1; xi < 20; xi++) {
-        const x = box.left + (box.width * xi) / 20;
-        const y = box.top + (box.height * yi) / 20;
-        const hit = document.elementFromPoint(x, y)?.closest("[data-k]");
-        if (hit?.getAttribute("data-k") === key) return { x, y };
+  const point = await page.evaluate((query) => {
+    for (const element of document.querySelectorAll(query)) {
+      if (!(element instanceof SVGElement)) continue;
+      const box = element.getBoundingClientRect();
+      const key = element.getAttribute("data-k");
+      if (!key || box.width <= 0 || box.height <= 0) continue;
+      for (let yi = 1; yi < 20; yi++) {
+        for (let xi = 1; xi < 20; xi++) {
+          const x = box.left + (box.width * xi) / 20;
+          const y = box.top + (box.height * yi) / 20;
+          const hit = document.elementFromPoint(x, y)?.closest("[data-k]");
+          if (hit?.getAttribute("data-k") === key) return { x, y, key };
+        }
       }
     }
     return null;
-  });
+  }, selector);
   if (!point) throw new Error(`No hit point found for ${selector}`);
   await page.mouse.move(point.x, point.y);
   await page.waitForTimeout(250);
@@ -1145,7 +1148,6 @@ try {
     const slug = "langgenius/dify";
     const doc = await (await fetch(`${base}/maps/${slug}.json`)).json();
     const file = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
-    const district = doc.N[file][0];
     const stem = `${out}/${slug.replace("/", "__")}-1440x900`;
     for (const colorScheme of ["light", "dark"]) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme });
@@ -1205,15 +1207,15 @@ try {
       console.log(`${stem}-keyboard-index-lit-${colorScheme}.png`);
 
       await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
-      await page.locator(`svg.map-svg path.hit[data-k="d:${district}"]`).first().waitFor({ timeout: 15_000 });
-      await hoverMapTarget(page, `svg.map-svg path.hit[data-k="d:${district}"]`);
+      await page.locator('svg.map-svg text.hit[data-k^="d:"]').first().waitFor({ timeout: 15_000 });
+      await hoverMapTarget(page, 'svg.map-svg text.hit[data-k^="d:"]');
       await page.locator(".tolmap-hover-card").waitFor({ state: "visible", timeout: 5_000 });
       await page.screenshot({ path: `${stem}-hover-district-${colorScheme}.png` });
       console.log(`${stem}-hover-district-${colorScheme}.png`);
 
       await page.goto(`${base}/${slug}?file=${encodeURIComponent(doc.F[file])}`, { waitUntil: "domcontentloaded" });
-      await page.locator(`svg.map-svg [data-k="f:${file}"]`).first().waitFor({ timeout: 15_000 });
-      await hoverMapTarget(page, `svg.map-svg [data-k="f:${file}"]`);
+      await page.locator('svg.map-svg [data-k^="f:"]').first().waitFor({ timeout: 15_000 });
+      await hoverMapTarget(page, 'svg.map-svg [data-k^="f:"]');
       await page.locator(".tolmap-hover-card").waitFor({ state: "visible", timeout: 5_000 });
       await page.screenshot({ path: `${stem}-hover-file-${colorScheme}.png` });
       console.log(`${stem}-hover-file-${colorScheme}.png`);
