@@ -156,7 +156,7 @@ function OverviewRow({
       <i aria-hidden="true" data-package-overview-swatch={packageRow} className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: swatch }} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className={`truncate ${nameMono ? `font-mono font-medium ${sheet ? "text-[15px] leading-[22px]" : "text-[13px] leading-5"}` : sheet ? "text-row" : "text-small font-semibold"}`}>{name}</span>
-        <span className={`truncate text-meta text-[var(--dim)] ${metaMono ? "font-mono text-[12px]" : ""}`}>{meta}</span>
+        <span className={`truncate text-meta text-[var(--dim)] ${metaMono ? "font-mono" : ""}`}>{meta}</span>
       </span>
       {bar != null && <RampBar value={bar} sheet={sheet} />}
       {value != null && (
