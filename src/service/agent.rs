@@ -2240,6 +2240,7 @@ impl JobContext {
 mod tests {
     use super::*;
     use crate::progress::ProgressValue;
+    use std::net::TcpListener;
 
     fn progress(stage: StageId, done: u64) -> WorkerEvent {
         WorkerEvent::Progress {
@@ -2277,6 +2278,162 @@ mod tests {
             v: 1,
             message: message.to_owned(),
         }
+    }
+
+    const EARLY_MAP: &[u8] = br#"{"F":["a.py"],"districts":{"0":{}}}"#;
+    const LATER_MAP: &[u8] = br#"{"F":["b.py"],"districts":{"1":{}}}"#;
+
+    fn job_context(dir: &Path, port: u16) -> (JobContext, mpsc::Receiver<FromJob>) {
+        let id = Uuid::new_v4();
+        let cache_dir = dir.join("cache");
+        std::fs::create_dir_all(cache_dir.join("inputs").join(id.to_string())).unwrap();
+        let endpoint =
+            Endpoint::parse(&format!("ws://127.0.0.1:{port}/workers/connect"), None).unwrap();
+        let outputs = format!("{}/workers/artifacts/{id}/1", endpoint.origin);
+        let (out, received) = mpsc::channel();
+        (
+            JobContext {
+                job_id: id.to_string(),
+                job: JobSpec {
+                    slug: "test/demo".to_owned(),
+                    owner: "test".to_owned(),
+                    repo: "demo".to_owned(),
+                    source: "unused".to_owned(),
+                    local: false,
+                    commit: "a".repeat(40),
+                    all_sources: false,
+                    prune_variant: "node-relative".to_owned(),
+                    namer: "idf".to_owned(),
+                    namer_model: String::new(),
+                    refs: None,
+                    install: None,
+                },
+                inputs: AssignInputs {
+                    names_cache: None,
+                    previous_maps: Vec::new(),
+                },
+                outputs,
+                endpoint,
+                token: "test-token".to_owned(),
+                host: HostEnv {
+                    cache_dir,
+                    clone_cache_bytes: 0,
+                    worker_exe: PathBuf::from("tolmap"),
+                    worker_uid: executor::current_uid(),
+                    worker_gid: executor::current_gid(),
+                },
+                hold: Duration::from_secs(60),
+                memory_events: None,
+                cancel: Arc::new(AtomicBool::new(false)),
+                child: Arc::new(Mutex::new(None)),
+                out,
+            },
+            received,
+        )
+    }
+
+    fn serve_puts(listener: TcpListener, idle_after_request: Duration) -> usize {
+        use std::io::{BufRead, BufReader, Read, Write};
+        listener.set_nonblocking(true).unwrap();
+        let mut received = 0;
+        let mut last_request = Instant::now();
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    let mut content_length = 0usize;
+                    while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                        if let Some(value) = line
+                            .strip_prefix("Content-Length: ")
+                            .or_else(|| line.strip_prefix("content-length: "))
+                        {
+                            content_length = value.trim().parse().unwrap();
+                        }
+                        line.clear();
+                    }
+                    let mut body = vec![0; content_length];
+                    reader.read_exact(&mut body).unwrap();
+                    reader
+                        .get_mut()
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                    received += 1;
+                    last_request = Instant::now();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if received > 0 && last_request.elapsed() >= idle_after_request {
+                        return received;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept mock artifact PUT: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_map_written_callbacks_upload_only_one_blob() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || serve_puts(listener, Duration::from_millis(300)));
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let mut sink = AgentSink {
+            out: context.out.clone(),
+            peak_rss_bytes: None,
+            exit: None,
+            job: &context,
+        };
+
+        sink.map_written(EARLY_MAP.to_vec());
+        sink.map_written(LATER_MAP.to_vec());
+
+        assert_eq!(
+            server.join().unwrap(),
+            1,
+            "repeated write_map success must not make a second artifact PUT"
+        );
+    }
+
+    #[test]
+    fn a_stalled_early_map_put_times_out_and_the_job_forwards_its_event() {
+        use std::io::Read;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0; 4096];
+            while stream.read(&mut bytes).unwrap_or(0) > 0 {}
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (context, received) = job_context(dir.path(), port);
+        let mut sink = AgentSink {
+            out: context.out.clone(),
+            peak_rss_bytes: None,
+            exit: None,
+            job: &context,
+        };
+
+        let started = Instant::now();
+        sink.map_written(EARLY_MAP.to_vec());
+        sink.event(finished(StageId::WriteMap));
+        assert!(
+            started.elapsed() <= EARLY_MAP_UPLOAD_WINDOW + Duration::from_secs(3),
+            "a stalled early-map PUT exceeded its window: {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(
+            received.recv_timeout(Duration::from_secs(1)).unwrap(),
+            FromJob::Event(WorkerEvent::StageFinished {
+                stage: StageId::WriteMap,
+                success: true,
+                ..
+            })
+        ));
+        server.join().unwrap();
     }
 
     /// Each entry as `seq:what`, `-` for an unwritten one.

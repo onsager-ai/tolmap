@@ -4853,6 +4853,55 @@ mod tests {
         .0
     }
 
+    /// Sends a repeated byte without keeping a 256 MiB test body in memory.
+    fn put_repeated_at(
+        port: u16,
+        token: &str,
+        job: Uuid,
+        epoch: u64,
+        name: &str,
+        byte: u8,
+        bytes: u64,
+    ) -> u16 {
+        let block = [byte; 64 * 1024];
+        let mut hasher = Sha256::new();
+        let mut remaining = bytes;
+        while remaining > 0 {
+            let count = remaining.min(block.len() as u64) as usize;
+            hasher.update(&block[..count]);
+            remaining -= count as u64;
+        }
+        let digest = format!("{:x}", hasher.finalize());
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .unwrap();
+        write!(
+            stream,
+            "PUT /workers/artifacts/{job}/{epoch}/{name} HTTP/1.1\r\n\
+             Host: 127.0.0.1\r\n\
+             Connection: close\r\n\
+             Authorization: Bearer {token}\r\n\
+             {SHA256_HEADER}: {digest}\r\n\
+             Content-Length: {bytes}\r\n\r\n"
+        )
+        .unwrap();
+        let mut remaining = bytes;
+        while remaining > 0 {
+            let count = remaining.min(block.len() as u64) as usize;
+            stream.write_all(&block[..count]).unwrap();
+            remaining -= count as u64;
+        }
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        String::from_utf8_lossy(&response)
+            .split(' ')
+            .nth(1)
+            .and_then(|status| status.parse().ok())
+            .unwrap_or(0)
+    }
+
     fn artifact(name: &str, body: &[u8]) -> Artifact {
         Artifact {
             name: name.to_owned(),
@@ -4882,6 +4931,7 @@ mod tests {
     // since #97 phase 2's `check_counts` (`worker_result.rs`) now refuses a
     // result whose counts disagree with the map document it shipped.
     const MAP: &[u8] = br#"{"F": ["a.py"], "districts": {"0": {}}}"#;
+    const OTHER_MAP: &[u8] = br#"{"F": ["b.py"], "districts": {"1": {}}}"#;
     const SYMBOLS: &[u8] = b"{\"symbols\":1}";
     const DISTRICT: &[u8] = b"{\"district\":0}";
     const NAMES: &[u8] = b"{}";
@@ -5354,6 +5404,37 @@ mod tests {
         );
         assert!(fixture.state.jobs.early_map("test/demo", "other").is_none());
 
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", OTHER_MAP), 200);
+        agent.event(
+            id,
+            WorkerEvent::StageFinished {
+                v: 1,
+                stage: StageId::WriteMap,
+                duration_s: 0.2,
+                success: true,
+            },
+        );
+        agent.event(
+            id,
+            WorkerEvent::Log {
+                v: 1,
+                message: "after repeated write_map".to_owned(),
+            },
+        );
+        fixture.wait_for(id, "repeated write_map", |snapshot| {
+            snapshot.stage == "after repeated write_map"
+        });
+        assert_eq!(
+            fixture
+                .state
+                .jobs
+                .early_map("test/demo", COMMIT)
+                .unwrap()
+                .as_slice(),
+            MAP,
+            "later write_map events must not replace the first early map"
+        );
+
         let artifacts = upload_all(fixture.port, id);
         agent.event(id, result_event(artifacts));
         match agent.recv() {
@@ -5367,6 +5448,77 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         fixture.wait_for_no_lease();
+    }
+
+    #[test]
+    fn an_uploaded_map_over_256_mib_is_not_opened_early_or_served() {
+        const EARLY_MAP_TEST_CAP: u64 = 256 * 1024 * 1024;
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        let text = agent.recv_text();
+        assert!(
+            matches!(
+                serde_json::from_str::<MasterMessage>(&text).unwrap(),
+                MasterMessage::Assign { .. }
+            ),
+            "expected assign: {text}"
+        );
+        agent.event(
+            id,
+            WorkerEvent::StageStarted {
+                v: 1,
+                stage: StageId::WriteMap,
+            },
+        );
+        fixture.wait_for(id, "indexing", |snapshot| {
+            snapshot.status == JobStatus::Indexing
+        });
+
+        // Trailing JSON whitespace keeps this a valid map if the master
+        // reads the whole upload, so the test fails without the early cap.
+        let uploaded_bytes = EARLY_MAP_TEST_CAP + 1;
+        assert_eq!(
+            put_repeated_at(fixture.port, TOKENS[0], id, 1, "map", b' ', uploaded_bytes,),
+            200
+        );
+        assert_eq!(
+            fixture.hub.uploads(id).get("map").unwrap().bytes,
+            uploaded_bytes
+        );
+        agent.event(
+            id,
+            WorkerEvent::StageFinished {
+                v: 1,
+                stage: StageId::WriteMap,
+                duration_s: 0.1,
+                success: true,
+            },
+        );
+        agent.event(
+            id,
+            WorkerEvent::Log {
+                v: 1,
+                message: "after early map attempt".to_owned(),
+            },
+        );
+        fixture.wait_for(id, "early map attempt", |snapshot| {
+            snapshot.stage == "after early map attempt"
+        });
+        assert!(!fixture.snapshot(id).map_ready);
+        assert!(fixture.state.jobs.early_map("test/demo", COMMIT).is_none());
+        assert_eq!(
+            request(
+                fixture.port,
+                "GET",
+                &format!("/api/maps/test/demo?commit={COMMIT}"),
+                &[],
+                &[],
+                None,
+            )
+            .0,
+            404
+        );
     }
 
     /// §4.2, §9: another agent's token, no token, the wrong epoch, a bad

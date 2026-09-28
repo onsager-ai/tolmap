@@ -542,6 +542,47 @@ mod tests {
     }
 
     #[test]
+    fn an_early_map_larger_than_256_mib_is_refused() {
+        const EARLY_MAP_TEST_CAP: u64 = 256 * 1024 * 1024;
+        let job = Job::new();
+        let path = job.output.join(format!("{REPO}.json"));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(EARLY_MAP_TEST_CAP + 1)
+            .unwrap();
+
+        let message = match read_early_map(&path, Some(job.owner)) {
+            Err(Refused::Invalid(message)) => message,
+            Err(Refused::Io(error)) => panic!("expected a size refusal, got I/O error: {error}"),
+            Ok(_) => panic!("an early map over 256 MiB must be refused"),
+        };
+        assert!(message.contains("256 MiB"), "{message}");
+    }
+
+    #[test]
+    fn an_early_map_is_refused_when_the_output_directory_is_a_symlink() {
+        let job = Job::new();
+        let target = job.dir.path().join("other-output");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(
+            target.join(format!("{REPO}.json")),
+            br#"{"F": ["a.py"], "districts": {"0": {}}}"#,
+        )
+        .unwrap();
+        let original = job.dir.path().join("real-output");
+        std::fs::rename(&job.output, &original).unwrap();
+        symlink(&target, &job.output).unwrap();
+
+        let path = job.output.join(format!("{REPO}.json"));
+        assert!(
+            read_early_map(&path, Some(job.owner)).is_err(),
+            "a valid map behind a symlinked output directory must not be read"
+        );
+    }
+
+    #[test]
     fn an_early_map_that_is_not_a_map_or_not_the_workers_is_refused() {
         fn refused_early(result: Result<Vec<u8>, Refused>) -> String {
             match result {

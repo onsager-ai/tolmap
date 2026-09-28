@@ -3406,16 +3406,20 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         use tower::ServiceExt;
         const MAP: &str = r#"{"F":["a.py"],"districts":{"0":{}}}"#;
+        const LATER_MAP: &str = r#"{"F":["b.py"],"districts":{"1":{}}}"#;
         let (dir, state) = state(Limits::default());
         let output = dir.path().join("out");
         std::fs::create_dir_all(&output).unwrap();
         let gate = dir.path().join("gate");
+        let second_gate = dir.path().join("second-gate");
         let fake_worker = dir.path().join("early-map-worker");
         let script = format!(
-            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{map_json}' > '{map_path}'\nprintf '%s\\n' '{{\"type\":\"stage_finished\",\"v\":1,\"stage\":\"write_map\",\"duration_s\":0.1,\"success\":true}}'\nwhile [ ! -f '{gate}' ]; do sleep 0.05; done\nprintf '%s\\n' '{{\"type\":\"error\",\"v\":1,\"code\":\"index_failed\",\"message\":\"test\"}}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{map_json}' > '{map_path}'\nprintf '%s\\n' '{{\"type\":\"stage_finished\",\"v\":1,\"stage\":\"write_map\",\"duration_s\":0.1,\"success\":true}}'\nwhile [ ! -f '{gate}' ]; do sleep 0.05; done\nprintf '%s' '{later_map}' > '{map_path}'\nprintf '%s\\n' '{{\"type\":\"stage_finished\",\"v\":1,\"stage\":\"write_map\",\"duration_s\":0.2,\"success\":true}}'\nwhile [ ! -f '{second_gate}' ]; do sleep 0.05; done\nprintf '%s\\n' '{{\"type\":\"error\",\"v\":1,\"code\":\"index_failed\",\"message\":\"test\"}}'\n",
             map_json = MAP,
+            later_map = LATER_MAP,
             map_path = output.join("early.json").display(),
             gate = gate.display(),
+            second_gate = second_gate.display(),
         );
         std::fs::write(&fake_worker, script).unwrap();
         std::fs::set_permissions(&fake_worker, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -3482,6 +3486,22 @@ mod tests {
         assert_eq!(other.status(), StatusCode::NOT_FOUND);
 
         std::fs::write(&gate, b"").unwrap();
+        until(|| {
+            snapshot(&state, id).stages[StageId::WriteMap.index() - 1]
+                .duration_s
+                .is_some_and(|duration| duration >= 0.3)
+        })
+        .await;
+        let still_first = get("/api/maps/test/early?commit=a").await.unwrap();
+        assert_eq!(still_first.status(), StatusCode::OK);
+        let body = to_bytes(still_first.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            &body[..],
+            MAP.as_bytes(),
+            "a repeated successful write_map must not replace the first early map"
+        );
+
+        std::fs::write(&second_gate, b"").unwrap();
         until(|| snapshot(&state, id).status == JobStatus::Failed).await;
         assert!(!snapshot(&state, id).map_ready);
         let after = get("/api/maps/test/early?commit=a").await.unwrap();
@@ -3494,6 +3514,15 @@ mod tests {
         let mut snapshot = blank_snapshot("test/requeue");
         snapshot.map_ready = true;
         assert!(!requeued_snapshot(&snapshot, "lost its worker").map_ready);
+    }
+
+    #[test]
+    fn a_done_snapshot_no_longer_claims_an_early_map() {
+        let mut snapshot = blank_snapshot("test/done");
+        snapshot.map_ready = true;
+        let done = done_snapshot(&snapshot);
+        assert_eq!(done.status, JobStatus::Done);
+        assert!(!done.map_ready);
     }
 
     #[cfg(unix)]
