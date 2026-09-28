@@ -6190,6 +6190,55 @@ mod tests {
     }
 
     #[test]
+    fn ending_a_lease_aborts_its_uploads_and_returns_writer_permits() {
+        let fixture = Fixture::with_upload_writer_limit(Duration::from_secs(60), test_build(), 2);
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        let mut first = stalled_artifact_put(fixture.port, TOKENS[0], id, "map");
+        let mut second = stalled_artifact_put(fixture.port, TOKENS[0], id, "symbols");
+        let reserved_deadline = Instant::now() + Duration::from_secs(1);
+        while lease_upload_state(&fixture, id) != (0, 2, 2)
+            || fixture.hub.upload_writers.available_permits() != 0
+        {
+            assert!(
+                Instant::now() < reserved_deadline,
+                "both stalled uploads must hold reservations and writer permits before ending the lease"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let dir = fixture
+            .hub
+            .with_lease(0, id, 1, |lease| Ok(lease.dir.clone()))
+            .unwrap();
+
+        let started = Instant::now();
+        fixture.hub.end_lease(id, false);
+        assert!(
+            !dir.exists(),
+            "ending the lease removes its temporary files"
+        );
+        assert_eq!(
+            response_status(&mut first).expect("read the first cancelled upload response"),
+            400
+        );
+        assert_eq!(
+            response_status(&mut second).expect("read the second cancelled upload response"),
+            400
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "ending a lease must promptly stop its upload handlers"
+        );
+        assert_eq!(fixture.hub.upload_writers.available_permits(), 2);
+        assert!(
+            !dir.exists(),
+            "the upload guards must leave no temporary files"
+        );
+    }
+
+    #[test]
     fn a_repeated_drip_hits_the_whole_upload_deadline_and_cleans_up() {
         use std::io::{Read, Write};
 
