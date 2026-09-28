@@ -5423,6 +5423,39 @@ async function checkHomeEmptyCatalogue(browser, base) {
   report((await page.locator("[data-catalogue-error]").count()) === 0, `${label}: not shown as an error -- an empty list is not a failure`);
   report(!(await page.locator('[data-repo-field]').isDisabled()), `${label}: the service is reachable -- the submit field stays enabled`);
   await context.close();
+
+  // A Docker image can omit the generated index altogether. A missing static
+  // index is the same as an empty one; it must not turn Home into an outage.
+  const missingContext = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const missingPage = await missingContext.newPage();
+  await missingPage.route("**/maps/index.json", (route) => route.fulfill({ status: 404, body: "" }));
+  await missingPage.route("**/api/maps", (route) => route.fulfill({ json: [] }));
+  await missingPage.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+  await missingPage.locator("[data-catalogue-empty]").waitFor({ timeout: 15_000 });
+  report((await missingPage.locator("[data-catalogue-row]").count()) === 0, `${label}: a missing static index has no rows`);
+  report((await missingPage.locator("[data-catalogue-error]").count()) === 0, `${label}: a missing static index is treated as empty, not an error`);
+  report(!(await missingPage.locator('[data-repo-field]').isDisabled()), `${label}: a missing static index leaves the reachable service enabled`);
+  await missingContext.close();
+}
+
+async function checkUnknownMapDeepLink(browser, base) {
+  const label = "Map: unknown deep link reaches the not-mapped state";
+  console.log(`\n${label}`);
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  const slug = "not-mapped-yet/repository";
+  await page.route("**/maps/index.json", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/maps", (route) => route.fulfill({ json: [] }));
+  await page.route(`**/api/maps/${slug}`, (route) => route.fulfill({ status: 404, body: "" }));
+  await page.route(`**/maps/${slug}.json`, (route) => route.fulfill({ status: 404, body: "" }));
+  await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+  const state = page.getByText(`couldn't load ${slug}.`, { exact: true });
+  await state.waitFor({ timeout: 15_000 });
+  report((await state.count()) === 1, `${label}: shows MapView's existing not-mapped state`);
+  report(pageErrors.length === 0, `${label}: no page exception`, pageErrors.join("; "));
+  await context.close();
 }
 
 async function checkHomeServiceUnavailable(browser, base) {
@@ -6139,9 +6172,11 @@ async function main() {
     await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.expect === "desktop"));
     await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.name === "tablet-1024x768"));
     // docs/UX.md phase 6: Home (§4.9) -- loaded, empty, service-unavailable
-    // with a retry, and input validation.
+    // with a retry, and input validation. Empty also covers a missing static
+    // index; an unlisted deep link exercises MapView's not-mapped state.
     await checkHomeLoaded(browser, args.base);
     await checkHomeEmptyCatalogue(browser, args.base);
+    await checkUnknownMapDeepLink(browser, args.base);
     await checkHomeServiceUnavailable(browser, args.base);
     await checkHomeValidation(browser, args.base);
     // docs/UX.md §6 and §12 (phase 4): the indexing, queue and failure

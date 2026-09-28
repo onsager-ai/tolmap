@@ -10,12 +10,6 @@ import {
 } from "@/api/client";
 import { fetchJsonTracked } from "@/api/streaming";
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
-}
-
 // The catalogue index is small (one row per repo) -- no streaming/worker
 // parse needed. The map document and district symbols below are the two
 // documents that can be large enough for that to matter, so only they go
@@ -24,7 +18,11 @@ async function fetchJson<T>(url: string): Promise<T> {
 // the reader doesn't know or care which source produced the bytes it's
 // waiting on.
 function fetchStaticCatalogue(): Promise<CatalogueEntry[]> {
-  return fetchJson<CatalogueEntry[]>("/maps/index.json");
+  return fetch("/maps/index.json").then((res) => {
+    if (res.status === 404) return [];
+    if (!res.ok) throw new Error(`/maps/index.json: ${res.status} ${res.statusText}`);
+    return res.json() as Promise<CatalogueEntry[]>;
+  });
 }
 
 function fetchStaticMap(owner: string, repo: string): Promise<MapDocument> {

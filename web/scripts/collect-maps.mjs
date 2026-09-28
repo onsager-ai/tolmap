@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Copies map JSON into web/public/maps/ and writes an index.json catalogue
 // the app fetches at startup. Runs before `dev` and `build` (see
-// package.json predev/prebuild) so the app never ships without data.
+// package.json predev/prebuild) so local development and default builds have
+// the bundled maps ready.
+// Set TOLMAP_STATIC_MAPS=none to emit only an empty catalogue (the Docker
+// image uses this); unset or `all` keeps the bundled maps used by dev and CI.
+// Any other value is an error.
 //
 // web/public/maps/ is generated and gitignored — this script is the only
 // thing that writes to it.
@@ -147,6 +151,18 @@ async function collectMap(indexBySlug, slug, file) {
 }
 
 async function main() {
+  const staticMaps = process.env.TOLMAP_STATIC_MAPS;
+  if (staticMaps !== undefined && staticMaps !== "all" && staticMaps !== "none") {
+    throw new Error(`unrecognised TOLMAP_STATIC_MAPS value: ${staticMaps} (expected "all" or "none")`);
+  }
+  if (staticMaps === "none") {
+    await rm(OUT_DIR, { recursive: true, force: true });
+    await mkdir(OUT_DIR, { recursive: true });
+    await writeFile(path.join(OUT_DIR, "index.json"), "[]");
+    console.log("[collect-maps] static maps disabled (TOLMAP_STATIC_MAPS=none)");
+    return;
+  }
+
   await mkdir(OUT_DIR, { recursive: true });
   const sourceDir = await resolveSourceDir();
   console.log(`[collect-maps] reading maps from ${sourceDir}`);
