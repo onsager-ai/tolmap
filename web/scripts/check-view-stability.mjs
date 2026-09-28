@@ -845,7 +845,7 @@ async function checkSelectionDim(browser, base, profile) {
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(900);
 
-  const result = await page.evaluate((i) => {
+  const measureSelectionDim = () => page.evaluate((i) => {
     // B4: `.hit` (not `circle.hit`) so a footprint-mode file's own path
     // element is included -- see visibleDots()'s comment.
     const circles = [...document.querySelectorAll('svg.map-svg .hit[data-k^="f:"]')];
@@ -885,6 +885,22 @@ async function checkSelectionDim(browser, base, profile) {
     }
     return { totalCircles: circles.length, dimmedCount: dimmed.length, dimmedBatchCount: dimmedBatches.length, neighbourFull };
   }, target.i);
+  let result = await measureSelectionDim();
+  // Desktop now hides non-neighbour files until their district has room on
+  // screen. Keep this check's original dimming assertion meaningful by
+  // zooming into the selected file's district until an unlinked file can be
+  // drawn; the phone check above remains at its original fit-zoom state.
+  if (profile.name === "desktop" && result.dimmedCount === 0 && result.dimmedBatchCount === 0) {
+    const selectedBox = await page.locator(`svg.map-svg [data-k="f:${target.i}"]`).first().boundingBox();
+    if (selectedBox) {
+      const cx = selectedBox.x + selectedBox.width / 2;
+      const cy = selectedBox.y + selectedBox.height / 2;
+      for (let step = 0; step < 12 && result.dimmedCount === 0 && result.dimmedBatchCount === 0; step++) {
+        await zoomIn(page, cx, cy);
+        result = await measureSelectionDim();
+      }
+    }
+  }
   report(result.dimmedCount > 0 || result.dimmedBatchCount > 0, `${label}: at least one non-neighbour file (or batch) is dimmed`, JSON.stringify(result));
   report(result.neighbourFull != null && result.neighbourFull >= 0.8, `${label}: a ringed neighbour's dot stays at full opacity`, JSON.stringify(result));
   await context.close();
