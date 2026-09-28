@@ -124,11 +124,12 @@ use anyhow::{bail, Context};
 use axum::body::{Body, Bytes};
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxPath, State};
+use axum::extract::{DefaultBodyLimit, Path as AxPath, Request, State};
+use axum::handler::Handler;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{Json, RequestExt, Router};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
@@ -165,6 +166,28 @@ pub const SHA256_HEADER: &str = "x-tolmap-sha256";
 /// enough for the map, full symbols sibling and district files, while
 /// bounding what one worker can put on the master's shared cache volume.
 const WORKER_LEASE_MAX_ARTIFACT_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+const fn max_upload_bytes(left: u64, right: u64) -> u64 {
+    if left > right {
+        left
+    } else {
+        right
+    }
+}
+
+/// The route-level streaming ceiling is the largest per-artifact cap. Keep
+/// this layer on PUT alone; GET artifacts and the worker channel have separate
+/// body semantics. The map and full-symbols caps are both currently 256 MiB.
+const WORKER_ARTIFACT_ROUTE_BODY_LIMIT: u64 = max_upload_bytes(
+    max_upload_bytes(
+        worker_result::EARLY_MAP_MAX_BYTES,
+        worker_result::FULL_SYMBOLS_MAX_BYTES,
+    ),
+    max_upload_bytes(
+        worker_result::DISTRICT_SYMBOLS_MAX_BYTES,
+        worker_result::NAMES_CACHE_MAX_BYTES,
+    ),
+);
 
 /// The lease may name up to 10,000 distinct artifacts, including its fixed
 /// outputs. That leaves room for nearly 10,000 district files while keeping
@@ -2498,7 +2521,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/workers/connect", get(connect))
         .route(
             "/workers/artifacts/{job}/{epoch}/{*name}",
-            get(get_artifact).put(put_artifact),
+            get(get_artifact).put(put_artifact.layer(DefaultBodyLimit::max(
+                WORKER_ARTIFACT_ROUTE_BODY_LIMIT as usize,
+            ))),
         )
         .with_state(hub);
     let capacity = Router::new()
@@ -2974,9 +2999,13 @@ fn create_upload_temp(path: &Path) -> std::io::Result<std::fs::File> {
 async fn put_artifact(
     State(hub): State<Arc<WorkerHub>>,
     AxPath((job, epoch, name)): AxPath<(String, u64, String)>,
-    headers: HeaderMap,
-    body: Body,
+    request: Request,
 ) -> Response {
+    let headers = request.headers().clone();
+    // `Body` extraction itself is intentionally unbounded for streaming
+    // handlers. Apply the route's DefaultBodyLimit explicitly so chunked and
+    // unknown-size streams are still capped while they are consumed.
+    let body = request.into_limited_body();
     let Some(agent) = hub.authenticate(&headers) else {
         return unauthorized();
     };
@@ -5879,6 +5908,11 @@ mod tests {
         let id = fixture.spawn(remote_repo("demo"));
         assert_eq!(agent.assigned(), id);
 
+        // Hyper frames the PUT body at Content-Length. Because this request
+        // keeps the connection alive, the extra bytes are parsed as a second,
+        // malformed HTTP request. The declared SHA covers the whole wire
+        // body, so the first request also fails its digest check after only
+        // the declared 64 bytes arrive. Both failures must leave no artifact.
         let body = vec![b'x'; DECLARED_BYTES + EXTRA_BYTES];
         let reserved_before = lease_upload_state(&fixture, id).2;
         let (statuses, response) = put_with_extra_after_content_length(
@@ -5890,11 +5924,7 @@ mod tests {
             DECLARED_BYTES,
         );
 
-        assert!(!statuses.is_empty(), "no HTTP response: {response}");
-        assert!(
-            statuses.iter().any(|status| (400..500).contains(status)),
-            "expected a 4xx response, got {statuses:?}: {response}"
-        );
+        assert_eq!(statuses, [400, 400], "{response}");
         assert_eq!(lease_upload_state(&fixture, id), (0, 0, reserved_before));
         assert!(fixture.hub.uploads(id).is_empty());
     }
