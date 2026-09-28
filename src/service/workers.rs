@@ -185,8 +185,9 @@ const fn max_upload_bytes(left: u64, right: u64) -> u64 {
 }
 
 /// The route-level streaming ceiling is the largest per-artifact cap. Keep
-/// this layer on PUT alone; GET artifacts and the worker channel have separate
-/// body semantics. The map and full-symbols caps are both currently 256 MiB.
+/// this defence-in-depth layer on PUT alone; GET artifacts and the worker
+/// channel have separate body semantics. The map and full-symbols caps are
+/// both currently 256 MiB, so the per-kind check is the effective limit.
 const WORKER_ARTIFACT_ROUTE_BODY_LIMIT: u64 = max_upload_bytes(
     max_upload_bytes(
         worker_result::EARLY_MAP_MAX_BYTES,
@@ -1416,7 +1417,6 @@ pub struct WorkerHub {
     build: WorkerBuild,
     heartbeat_s: u64,
     lease_ttl: Duration,
-    #[allow(dead_code)] // Read by the streaming handler in the implementation commit.
     artifact_body_idle_timeout: Duration,
     /// Lost-worker retries before a job fails (§10.6).
     retries: u32,
@@ -2537,6 +2537,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .expect("the worker listener starts only after JobRegistry::set_remote");
     let channel = Router::new()
         .route("/workers/connect", get(connect))
+        // This route layer is defence in depth; the required Content-Length
+        // and per-kind cap currently reject every over-limit PUT earlier.
         .route(
             "/workers/artifacts/{job}/{epoch}/{*name}",
             get(get_artifact).put(put_artifact.layer(DefaultBodyLimit::max(
@@ -3021,8 +3023,11 @@ async fn put_artifact(
 ) -> Response {
     let headers = request.headers().clone();
     // `Body` extraction itself is intentionally unbounded for streaming
-    // handlers. Apply the route's DefaultBodyLimit explicitly so chunked and
-    // unknown-size streams are still capped while they are consumed.
+    // handlers. Apply DefaultBodyLimit as defence in depth while the stream
+    // is consumed. Content-Length is required and every per-kind cap is at
+    // most this layer's ceiling, so any declaration over the layer's limit
+    // hits the earlier kind check; no valid artifact request exercises this
+    // layer today.
     let body = request.into_limited_body();
     let Some(agent) = hub.authenticate(&headers) else {
         return unauthorized();
@@ -3071,6 +3076,10 @@ async fn put_artifact(
 
     let reservation_id = Uuid::new_v4();
     let reservation = hub.with_lease(agent, job_id, epoch, |lease| {
+        if lease.reservations.len() >= WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+
         let used_bytes = lease_blob_bytes(lease);
         let reserved_bytes = lease
             .reservations
@@ -3109,10 +3118,14 @@ async fn put_artifact(
     let (dir, blob_ops) = match reservation {
         Ok(reservation) => reservation,
         Err(status) => {
-            let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
-                "the lease's artifact byte or count limit would be exceeded"
-            } else {
-                "this token holds no live lease on that job and epoch"
+            let message = match status {
+                StatusCode::TOO_MANY_REQUESTS => {
+                    "the lease already has the maximum number of in-flight artifact uploads"
+                }
+                StatusCode::PAYLOAD_TOO_LARGE => {
+                    "the lease's artifact byte or count limit would be exceeded"
+                }
+                _ => "this token holds no live lease on that job and epoch",
             };
             return refuse(status, message);
         }
@@ -3141,7 +3154,32 @@ async fn put_artifact(
     let mut stream = body.into_data_stream();
     let mut received = 0u64;
     let mut problem: Option<String> = None;
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // Empty data frames are not upload progress and must not reset the
+        // idle timeout. Keep the wait on this async sender side so timing out
+        // drops `chunks` below and unblocks `write_hashed`'s blocking_recv.
+        let next = match tokio::time::timeout(hub.artifact_body_idle_timeout, async {
+            loop {
+                match stream.next().await {
+                    Some(Ok(bytes)) if bytes.is_empty() => continue,
+                    next => break next,
+                }
+            }
+        })
+        .await
+        {
+            Ok(next) => next,
+            Err(_) => {
+                problem = Some(format!(
+                    "the body was idle for {:?}",
+                    hub.artifact_body_idle_timeout
+                ));
+                break;
+            }
+        };
+        let Some(chunk) = next else {
+            break;
+        };
         match chunk {
             Ok(bytes) => {
                 received += bytes.len() as u64;
@@ -3159,6 +3197,7 @@ async fn put_artifact(
             }
         }
     }
+    drop(stream);
     drop(chunks);
     let written = match writer.await {
         Ok(Ok(written)) => Some(written),
@@ -3198,7 +3237,7 @@ async fn put_artifact(
     // this stream or filesystem work.
     let _blob_ops = blob_ops
         .lock()
-        .expect("lease blob-operation mutex poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let blob = dir.join("blobs").join(&sha256);
     let blob_existed = blob.exists();
     if blob_existed {
@@ -5962,9 +6001,12 @@ mod tests {
         // district is fetched as one viewer JSON response, and names already
         // have a 16 MiB adoption bound.
         for (name, limit) in [
-            ("symbols", 256 * 1024 * 1024),
-            ("names", 16 * 1024 * 1024),
-            ("symbols_dir/0.json", 64 * 1024 * 1024),
+            ("symbols", worker_result::FULL_SYMBOLS_MAX_BYTES),
+            ("names", worker_result::NAMES_CACHE_MAX_BYTES),
+            (
+                "symbols_dir/0.json",
+                worker_result::DISTRICT_SYMBOLS_MAX_BYTES,
+            ),
         ] {
             let (status, response) =
                 put_declared_without_body(fixture.port, TOKENS[0], id, name, limit + 1);
@@ -5996,7 +6038,7 @@ mod tests {
         let fixture = Fixture::with_upload_idle_timeout(
             Duration::from_secs(60),
             test_build(),
-            Duration::from_millis(150),
+            Duration::from_millis(250),
         );
         let mut agent = fixture.agent(0);
         let id = fixture.spawn(remote_repo("demo"));
@@ -6005,7 +6047,7 @@ mod tests {
         let mut stalled = (0..WORKER_LEASE_MAX_IN_FLIGHT_UPLOADS)
             .map(|_| stalled_artifact_put(fixture.port, TOKENS[0], id, "map"))
             .collect::<Vec<_>>();
-        let reserved_deadline = Instant::now() + Duration::from_millis(100);
+        let reserved_deadline = Instant::now() + Duration::from_millis(200);
         while lease_upload_state(&fixture, id)
             != (
                 0,
@@ -6043,14 +6085,14 @@ mod tests {
         let fixture = Fixture::with_upload_idle_timeout(
             Duration::from_secs(60),
             test_build(),
-            Duration::from_millis(150),
+            Duration::from_millis(250),
         );
         let mut agent = fixture.agent(0);
         let id = fixture.spawn(remote_repo("demo"));
         assert_eq!(agent.assigned(), id);
 
         let mut stalled = stalled_artifact_put(fixture.port, TOKENS[0], id, "map");
-        let reserved_deadline = Instant::now() + Duration::from_millis(100);
+        let reserved_deadline = Instant::now() + Duration::from_millis(200);
         while lease_upload_state(&fixture, id) != (0, 1, 1) {
             assert!(
                 Instant::now() < reserved_deadline,
@@ -6113,6 +6155,9 @@ mod tests {
         let id = fixture.spawn(remote_repo("demo"));
         assert_eq!(agent.assigned(), id);
 
+        // Content-Length is required and the per-kind cap is no higher than
+        // the route layer, so this proves the kind check; no valid PUT can
+        // reach DefaultBodyLimit under the current limits.
         let reserved_before = lease_upload_state(&fixture, id).2;
         let (status, response) = put_declared_without_body(
             fixture.port,

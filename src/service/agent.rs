@@ -119,8 +119,6 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `shutdown now` waits for a killed job's thread to report.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
-/// The same bound `worker_result` puts on a names cache it reads back.
-const NAMES_CACHE_MAX_BYTES: u64 = 16 << 20;
 /// §3.5: `log` lines kept while they wait for a channel. Later ones are
 /// counted in one marker line instead.
 const LOG_BOUND: usize = 64;
@@ -136,6 +134,20 @@ const UPLOAD_BACKOFF_CAP: Duration = Duration::from_secs(5);
 /// How long the early map upload (docs/UX.md §12) keeps retrying before the
 /// job carries on without opening its map early.
 const EARLY_MAP_UPLOAD_WINDOW: Duration = Duration::from_secs(20);
+
+/// The worker and master use the same per-artifact limits. Refuse a result
+/// locally when it cannot be accepted, before hashing or starting a PUT.
+fn artifact_size_limit(name: &str) -> Option<u64> {
+    match name {
+        "map" => Some(worker_result::EARLY_MAP_MAX_BYTES),
+        "symbols" => Some(worker_result::FULL_SYMBOLS_MAX_BYTES),
+        "names" => Some(worker_result::NAMES_CACHE_MAX_BYTES),
+        _ if name.starts_with("symbols_dir/") && crate::worker::is_valid_artifact_name(name) => {
+            Some(worker_result::DISTRICT_SYMBOLS_MAX_BYTES)
+        }
+        _ => None,
+    }
+}
 
 /// What `tolmap worker --connect` was given.
 pub struct AgentConfig {
@@ -1941,7 +1953,10 @@ impl JobContext {
                 self.download(http, url, &path)?;
                 let mut bytes = Vec::new();
                 std::fs::File::open(&path)
-                    .and_then(|file| file.take(NAMES_CACHE_MAX_BYTES).read_to_end(&mut bytes))
+                    .and_then(|file| {
+                        file.take(worker_result::NAMES_CACHE_MAX_BYTES)
+                            .read_to_end(&mut bytes)
+                    })
                     .map_err(internal)?;
                 // Strict, unlike `naming::load_cache`: an unreadable cache
                 // read as empty would rename every district, and CLAUDE.md
@@ -2207,9 +2222,23 @@ impl JobContext {
                 "output URL {url} is not on the master this agent dialled"
             )));
         }
-        let (sha256, bytes) = std::fs::File::open(path)
-            .and_then(|file| sha256_reader(file))
-            .map_err(internal)?;
+        let file = std::fs::File::open(path).map_err(internal)?;
+        let bytes = file.metadata().map_err(internal)?.len();
+        let Some(limit) = artifact_size_limit(name) else {
+            return Err(ErrorBody {
+                error: "invalid_worker_result".to_owned(),
+                message: format!("worker artifact {name} is not a valid artifact name"),
+            });
+        };
+        if bytes > limit {
+            return Err(ErrorBody {
+                error: "invalid_worker_result".to_owned(),
+                message: format!(
+                    "worker artifact {name} is {bytes} bytes, exceeding its {limit}-byte cap"
+                ),
+            });
+        }
+        let (sha256, bytes) = sha256_reader(file).map_err(internal)?;
         let mut backoff = REDIAL_FIRST;
         loop {
             if probe.is_cancelled() {

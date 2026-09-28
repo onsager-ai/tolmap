@@ -317,11 +317,27 @@ real caches are a few kilobytes.
 A lease may retain at most 1 GiB of unique artifact blobs and 10,000 distinct
 artifact names, including names currently uploading. Its byte reservations
 include every in-flight declared length, so concurrent `PUT`s cannot spend
-the same remaining capacity. A rejected limit returns HTTP 413 before that
-request's body is read. Failed uploads release their reservation. Replacing
+the same remaining capacity. Byte and artifact-name limit refusals return
+HTTP 413 before that request's body is read. Failed uploads release their
+reservation. Replacing
 an existing name consumes no extra artifact slot; once its replacement is
 complete, the old blob is removed if no other name in the lease references
 it. Re-uploading identical content remains a content-addressed no-op.
+
+The 1 GiB limit is per lease; this decision does not impose a global disk
+cap. A lease may also have at most 8 in-flight artifact uploads. A further
+`PUT` receives HTTP 429 before its body is read. This bounds how many
+`spawn_blocking` writers one lease can hold while still allowing a small
+batch of artifact writes. If no body bytes arrive for 30 seconds, the master
+aborts that upload; the existing incomplete-body response is HTTP 400, and
+the reservation and temporary file are released. The timeout runs while the
+async handler is reading the body, so closing its channel also releases the
+blocking writer.
+
+The route's `DefaultBodyLimit` is defence in depth. `Content-Length` is
+required, and every per-kind cap is at most the route ceiling, so a declared
+size above the route ceiling is refused by the earlier per-kind check. No
+valid artifact PUT can currently reach `DefaultBodyLimit`'s limit.
 
 ### 3.5 Ordering, acknowledgement and resume
 
@@ -358,7 +374,7 @@ A map plus its symbols document and per-district files is small for most reposit
 
 Artifacts move as plain HTTPS requests to the master, on the same private listener as the channel (§5.6):
 
-- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch. Per-artifact or per-lease limits return 413 before reading an over-limit body; the exact caps are in §3.4.
+- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch. Per-artifact and per-lease byte/name limits return 413 before reading an over-limit body; the in-flight upload limit returns 429. The exact caps and the body idle timeout are in §3.4.
 - `GET` on the input URLs in `assign` fetches the previous map and the names cache, under the same lease check.
 - A retry is harmless: stored artifacts are content-addressed, so a repeat upload is a no-op.
 - Artifacts are stored on the master's disk, as maps are today.
