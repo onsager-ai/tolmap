@@ -303,6 +303,26 @@ The forwarded `result` event keeps every v1 field and adds one optional field, s
 
 Owner's change (phase 1): `symbols_dir` is not uploaded as a tar. Each entry the worker wrote into it (`<digits>.json`, see `src/service/worker_result.rs`) is its own artifact, named `symbols_dir/<file name>`, so one failed upload costs one district, not the whole result. An artifact name accepts only `map`, `symbols`, `names` and `symbols_dir/<digits>.json` (`worker::is_valid_artifact_name`); anything else, including one with an extra `/` or a `..` component, is refused. In remote mode the master refuses a `result` whose path fields are anything but `artifact:` names.
 
+Each `PUT` requires its `Content-Length` to be within that artifact kind's
+cap before the master reads the body; the streamed body must still match its
+declared length and SHA-256. The map cap is the shared 256 MiB
+`EARLY_MAP_MAX_BYTES` bound. The full `symbols` sibling is capped at 256 MiB:
+the committed Dify symbols fixture is 10.1 MiB raw, leaving about 25×
+headroom. Each `symbols_dir/<n>.json` is capped at 64 MiB because the viewer
+fetches one complete district response at a time; Dify's largest shipped
+district fixture is 1.7 MiB raw, leaving about 38× headroom. `names` keeps its
+existing 16 MiB adoption bound; it is one short cache entry per district and
+real caches are a few kilobytes.
+
+A lease may retain at most 1 GiB of unique artifact blobs and 10,000 distinct
+artifact names, including names currently uploading. Its byte reservations
+include every in-flight declared length, so concurrent `PUT`s cannot spend
+the same remaining capacity. A rejected limit returns HTTP 413 before that
+request's body is read. Failed uploads release their reservation. Replacing
+an existing name consumes no extra artifact slot; once its replacement is
+complete, the old blob is removed if no other name in the lease references
+it. Re-uploading identical content remains a content-addressed no-op.
+
 ### 3.5 Ordering, acknowledgement and resume
 
 - `seq` starts at 1 for each `(job_id, epoch)` and rises by one per `job_event`. The master applies events in `seq` order and ignores any `seq` it has already applied.
@@ -338,7 +358,7 @@ A map plus its symbols document and per-district files is small for most reposit
 
 Artifacts move as plain HTTPS requests to the master, on the same private listener as the channel (§5.6):
 
-- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch.
+- `PUT /workers/artifacts/{job}/{epoch}/{name}` uploads a result artifact, with the worker token and the artifact's SHA-256. The master checks that this worker holds the lease at that epoch. It streams the body to disk while hashing, never buffering it, and refuses the upload on a digest or size mismatch. Per-artifact or per-lease limits return 413 before reading an over-limit body; the exact caps are in §3.4.
 - `GET` on the input URLs in `assign` fetches the previous map and the names cache, under the same lease check.
 - A retry is harmless: stored artifacts are content-addressed, so a repeat upload is a no-op.
 - Artifacts are stored on the master's disk, as maps are today.
@@ -350,7 +370,7 @@ Artifacts move as plain HTTPS requests to the master, on the same private listen
 
 ### 4.3 Frame and message bounds
 
-These bound the protocol, not jobs: the master rejects a control frame over 1 MiB (the largest legitimate frame is a `features` or `log` event), limits each agent's frame rate, and refuses an artifact whose declared size disagrees with its body. None of these limits a repository's size.
+The master rejects a control frame over 1 MiB (the largest legitimate frame is a `features` or `log` event), limits each agent's frame rate, and refuses an artifact whose declared size disagrees with its body. Artifact upload size and count caps also bound the result data a lease may place on the master; they do not reject a repository at admission.
 
 ## 5. Security
 

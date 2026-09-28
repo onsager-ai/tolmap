@@ -2247,9 +2247,21 @@ impl JobContext {
                         .into_reader()
                         .take(4096)
                         .read_to_string(&mut reason);
+                    let too_large = status.as_u16() == 413;
                     return Err(ErrorBody {
-                        error: "worker_crashed".to_owned(),
-                        message: format!("the master refused {name}: {status}: {reason}"),
+                        error: if too_large {
+                            "invalid_worker_result".to_owned()
+                        } else {
+                            "worker_crashed".to_owned()
+                        },
+                        message: if too_large {
+                            format!(
+                                "worker artifact {name} exceeds the master's upload limits: \
+                                 HTTP {status}: {reason}"
+                            )
+                        } else {
+                            format!("the master refused {name}: {status}: {reason}")
+                        },
                     });
                 }
                 Err(error) => error.to_string(),

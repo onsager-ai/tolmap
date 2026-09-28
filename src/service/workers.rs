@@ -160,6 +160,17 @@ pub const DEFAULT_LEASE_TTL_S: u64 = 60;
 /// digits. Its size is the request's `Content-Length`.
 pub const SHA256_HEADER: &str = "x-tolmap-sha256";
 
+/// One lease may keep at most 1 GiB of unique artifact blobs, with pending
+/// uploads reserved against the same total. This is four map allowances:
+/// enough for the map, full symbols sibling and district files, while
+/// bounding what one worker can put on the master's shared cache volume.
+const WORKER_LEASE_MAX_ARTIFACT_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+/// The lease may name up to 10,000 distinct artifacts, including its fixed
+/// outputs. That leaves room for nearly 10,000 district files while keeping
+/// a worker from creating unbounded tiny files and registry entries.
+const WORKER_LEASE_MAX_ARTIFACTS: usize = 10_000;
+
 /// §10.6: two lost-worker retries per class by default.
 pub const DEFAULT_RETRIES: u32 = 2;
 
@@ -1152,6 +1163,40 @@ pub(crate) struct Upload {
     pub(crate) bytes: u64,
 }
 
+/// An upload's declared size and name, reserved before its body is read.
+struct UploadReservation {
+    name: String,
+    bytes: u64,
+}
+
+/// The unique bytes already represented by this lease's upload names and
+/// any old blobs awaiting unlink. Returns `None` only for inconsistent
+/// metadata or arithmetic overflow, both treated as over the lease limit.
+fn lease_blob_bytes(lease: &Lease) -> Option<u64> {
+    let mut blobs = BTreeMap::<&str, u64>::new();
+    for upload in lease.uploads.values() {
+        if let Some(previous) = blobs.get(upload.sha256.as_str()) {
+            if *previous != upload.bytes {
+                return None;
+            }
+        } else {
+            blobs.insert(upload.sha256.as_str(), upload.bytes);
+        }
+    }
+    for (sha256, bytes) in &lease.orphaned_blobs {
+        if let Some(previous) = blobs.get(sha256.as_str()) {
+            if *previous != *bytes {
+                return None;
+            }
+        } else {
+            blobs.insert(sha256.as_str(), *bytes);
+        }
+    }
+    blobs
+        .values()
+        .try_fold(0u64, |total, bytes| total.checked_add(*bytes))
+}
+
 /// What the channel delivers to the job's runner (`run_remote`).
 pub(crate) enum LeaseEvent {
     /// One `job_event`, in `seq` order.
@@ -1202,6 +1247,15 @@ struct Lease {
     /// The only files a GET may return for this lease, by name.
     inputs: BTreeMap<String, PathBuf>,
     uploads: BTreeMap<String, Upload>,
+    /// Declared sizes held while their bodies stream, plus names not yet
+    /// present in `uploads` for the artifact-count bound.
+    reservations: BTreeMap<Uuid, UploadReservation>,
+    /// Blobs whose last name was replaced but whose unlink failed. They
+    /// remain on disk and count against the lease until cleanup or expiry.
+    orphaned_blobs: BTreeMap<String, u64>,
+    /// Serializes the short content-addressed blob install/remove phase.
+    /// Bodies stream with no hub lock and no blob-operation lock held.
+    blob_ops: Arc<Mutex<()>>,
     /// Master-owned `0700`: the names-cache input, uploads and blobs.
     dir: PathBuf,
 }
@@ -1959,6 +2013,9 @@ impl WorkerHub {
                         events,
                         inputs: input_files,
                         uploads: BTreeMap::new(),
+                        reservations: BTreeMap::new(),
+                        orphaned_blobs: BTreeMap::new(),
+                        blob_ops: Arc::new(Mutex::new(())),
                         dir: dir.clone(),
                     },
                 );
@@ -2027,6 +2084,9 @@ impl WorkerHub {
                 events,
                 inputs: BTreeMap::new(),
                 uploads: BTreeMap::new(),
+                reservations: BTreeMap::new(),
+                orphaned_blobs: BTreeMap::new(),
+                blob_ops: Arc::new(Mutex::new(())),
                 dir: dir.clone(),
             },
         );
@@ -2324,6 +2384,61 @@ impl WorkerHub {
             return Err(StatusCode::FORBIDDEN);
         }
         act(lease)
+    }
+
+    /// Drops a reservation even if the lease became cancelled or finished
+    /// while its body was streaming. A removed lease has already discarded
+    /// the whole accounting record.
+    fn release_upload_reservation(
+        &self,
+        agent: usize,
+        job_id: Uuid,
+        epoch: u64,
+        reservation_id: Uuid,
+    ) {
+        let mut inner = self.lock();
+        if let Some(lease) = inner.leases.get_mut(&job_id) {
+            if lease.agent == Some(agent) && lease.epoch == epoch {
+                lease.reservations.remove(&reservation_id);
+            }
+        }
+    }
+
+    /// A replaced blob was counted as orphaned while unlink ran without the
+    /// hub lock. Forget that accounting entry once it is gone from disk.
+    fn forget_orphaned_blob(&self, job_id: Uuid, epoch: u64, sha256: &str, bytes: u64) {
+        let mut inner = self.lock();
+        if let Some(lease) = inner.leases.get_mut(&job_id) {
+            if lease.epoch == epoch && lease.orphaned_blobs.get(sha256) == Some(&bytes) {
+                lease.orphaned_blobs.remove(sha256);
+            }
+        }
+    }
+}
+
+/// Releases both the reservation and temporary file on every return path,
+/// including a client disconnect that drops the handler future mid-stream.
+struct UploadGuard<'a> {
+    hub: &'a WorkerHub,
+    agent: usize,
+    job_id: Uuid,
+    epoch: u64,
+    reservation_id: Uuid,
+    temp: PathBuf,
+    active: bool,
+}
+
+impl Drop for UploadGuard<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.temp);
+        if self.active {
+            self.hub.release_upload_reservation(
+                self.agent,
+                self.job_id,
+                self.epoch,
+                self.reservation_id,
+            );
+        }
     }
 }
 
@@ -2828,17 +2943,9 @@ async fn get_artifact(
 /// Writes what arrives on `chunks` to a new file at `path`, hashing it on
 /// the way. Blocking: runs on the blocking pool.
 fn write_hashed(
-    path: &Path,
+    mut file: std::fs::File,
     mut chunks: tokio::sync::mpsc::Receiver<Bytes>,
 ) -> std::io::Result<(String, u64)> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
     let mut hasher = Sha256::new();
     let mut total = 0u64;
     while let Some(chunk) = chunks.blocking_recv() {
@@ -2848,6 +2955,17 @@ fn write_hashed(
     }
     file.flush()?;
     Ok((format!("{:x}", hasher.finalize()), total))
+}
+
+fn create_upload_temp(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// `PUT` of one result artifact (§4.2): streamed to a temporary file in the
@@ -2891,21 +3009,88 @@ async fn put_artifact(
     else {
         return refuse(StatusCode::LENGTH_REQUIRED, "a Content-Length is required");
     };
-    let dir = match hub.with_lease(agent, job_id, epoch, |lease| Ok(lease.dir.clone())) {
-        Ok(dir) => dir,
+    let kind_limit = match name.as_str() {
+        "map" => worker_result::EARLY_MAP_MAX_BYTES,
+        "symbols" => worker_result::FULL_SYMBOLS_MAX_BYTES,
+        "names" => worker_result::NAMES_CACHE_MAX_BYTES,
+        _ => worker_result::DISTRICT_SYMBOLS_MAX_BYTES,
+    };
+    if length > kind_limit {
+        return refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("artifact {name:?} exceeds its {kind_limit}-byte per-artifact limit"),
+        );
+    }
+
+    let reservation_id = Uuid::new_v4();
+    let reservation = hub.with_lease(agent, job_id, epoch, |lease| {
+        let used_bytes = lease_blob_bytes(lease);
+        let reserved_bytes = lease
+            .reservations
+            .values()
+            .try_fold(0u64, |total, item| total.checked_add(item.bytes));
+        let fits_bytes = used_bytes
+            .and_then(|used| reserved_bytes.and_then(|reserved| used.checked_add(reserved)))
+            .and_then(|reserved| reserved.checked_add(length))
+            .is_some_and(|total| total <= WORKER_LEASE_MAX_ARTIFACT_BYTES);
+        if !fits_bytes {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+
+        let pending_names = lease
+            .reservations
+            .values()
+            .filter(|item| !lease.uploads.contains_key(&item.name))
+            .map(|item| item.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let current_count = lease.uploads.len() + pending_names.len();
+        let name_already_counted = lease.uploads.contains_key(&name)
+            || lease.reservations.values().any(|item| item.name == name);
+        if !name_already_counted && current_count >= WORKER_LEASE_MAX_ARTIFACTS {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+
+        lease.reservations.insert(
+            reservation_id,
+            UploadReservation {
+                name: name.clone(),
+                bytes: length,
+            },
+        );
+        Ok((lease.dir.clone(), lease.blob_ops.clone()))
+    });
+    let (dir, blob_ops) = match reservation {
+        Ok(reservation) => reservation,
         Err(status) => {
+            let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                "the lease's artifact byte or count limit would be exceeded"
+            } else {
+                "this token holds no live lease on that job and epoch"
+            };
+            return refuse(status, message);
+        }
+    };
+    let temp = dir.join(format!("upload-{reservation_id}"));
+    let mut guard = UploadGuard {
+        hub: &hub,
+        agent,
+        job_id,
+        epoch,
+        reservation_id,
+        temp: temp.clone(),
+        active: true,
+    };
+    let file = match create_upload_temp(&temp) {
+        Ok(file) => file,
+        Err(error) => {
             return refuse(
-                status,
-                "this token holds no live lease on that job and epoch",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not create the upload temporary file: {error}"),
             )
         }
     };
-    let temp = dir.join(format!("upload-{}", Uuid::new_v4()));
     let (chunks, receiver) = tokio::sync::mpsc::channel::<Bytes>(8);
-    let writer = {
-        let temp = temp.clone();
-        tokio::task::spawn_blocking(move || write_hashed(&temp, receiver))
-    };
+    let writer = tokio::task::spawn_blocking(move || write_hashed(file, receiver));
     let mut stream = body.into_data_stream();
     let mut received = 0u64;
     let mut problem: Option<String> = None;
@@ -2939,10 +3124,7 @@ async fn put_artifact(
             None
         }
     };
-    let bad = |status: StatusCode, message: String| {
-        let _ = std::fs::remove_file(&temp);
-        refuse(status, message)
-    };
+    let bad = |status: StatusCode, message: String| refuse(status, message);
     if let Some(problem) = problem {
         return bad(StatusCode::BAD_REQUEST, problem);
     }
@@ -2964,24 +3146,82 @@ async fn put_artifact(
             format!("digest mismatch: declared {declared}, received {sha256}"),
         );
     }
-    // Content-addressed (§4.2): a repeat upload of the same bytes is a
-    // no-op.
+    // Bodies are complete now. Serialize only this short blob install and
+    // replacement phase; the hub lock below covers accounting only, never
+    // this stream or filesystem work.
+    let _blob_ops = blob_ops
+        .lock()
+        .expect("lease blob-operation mutex poisoned");
     let blob = dir.join("blobs").join(&sha256);
-    if blob.exists() {
-        let _ = std::fs::remove_file(&temp);
+    let blob_existed = blob.exists();
+    if blob_existed {
+        if let Err(error) = std::fs::remove_file(&temp) {
+            return bad(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not discard the duplicate upload: {error}"),
+            );
+        }
     } else if let Err(error) = std::fs::rename(&temp, &blob) {
         return bad(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("could not keep the upload: {error}"),
         );
     }
+    let upload = Upload {
+        sha256: sha256.clone(),
+        bytes,
+    };
     let recorded = hub.with_lease(agent, job_id, epoch, |lease| {
-        lease.uploads.insert(name.clone(), Upload { sha256, bytes });
-        Ok(())
+        let Some(reservation) = lease.reservations.get(&reservation_id) else {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        };
+        if reservation.name != name || reservation.bytes != bytes {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        let old = lease.uploads.insert(name.clone(), upload);
+        lease.reservations.remove(&reservation_id);
+        lease.orphaned_blobs.remove(&sha256);
+        let old_blob = old.filter(|previous| {
+            previous.sha256 != sha256
+                && !lease
+                    .uploads
+                    .values()
+                    .any(|upload| upload.sha256 == previous.sha256)
+        });
+        if let Some(previous) = &old_blob {
+            lease
+                .orphaned_blobs
+                .insert(previous.sha256.clone(), previous.bytes);
+        }
+        Ok(old_blob)
     });
     match recorded {
-        Ok(()) => StatusCode::OK.into_response(),
-        Err(status) => refuse(status, "the lease ended during the upload"),
+        Ok(old_blob) => {
+            if let Some(old_blob) = old_blob {
+                let old_path = dir.join("blobs").join(&old_blob.sha256);
+                match std::fs::remove_file(&old_path) {
+                    Ok(()) => {
+                        hub.forget_orphaned_blob(job_id, epoch, &old_blob.sha256, old_blob.bytes)
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        hub.forget_orphaned_blob(job_id, epoch, &old_blob.sha256, old_blob.bytes)
+                    }
+                    Err(error) => eprintln!(
+                        "job {job_id}: could not remove replaced artifact blob {}: {error}",
+                        old_blob.sha256
+                    ),
+                }
+            }
+            guard.active = false;
+            StatusCode::OK.into_response()
+        }
+        Err(status) => {
+            if !blob_existed {
+                let _ = std::fs::remove_file(&blob);
+            }
+            refuse(status, "the lease ended during the upload")
+        }
     }
 }
 

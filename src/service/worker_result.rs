@@ -27,11 +27,6 @@ use axum::body::Bytes;
 
 use crate::naming::NameCache;
 
-/// Bound on the names cache the service reads back. It holds one short entry
-/// per district, so a real one is a few kilobytes; anything near this is not
-/// a names cache.
-const NAMES_CACHE_MAX_BYTES: u64 = 16 << 20;
-
 /// A git object id as `git rev-parse` prints it: 40 lowercase hex digits for
 /// SHA-1, 64 for a SHA-256 repository. The commit becomes a stored file name
 /// (`<commit>.json`), so nothing else is accepted.
@@ -122,6 +117,23 @@ pub(crate) fn check_map_bytes(bytes: &[u8]) -> Result<(), Refused> {
 /// maps are tens of megabytes; 256 MiB leaves headroom without letting N
 /// concurrent jobs each retain a gigabyte.
 pub(crate) const EARLY_MAP_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Bound on the names cache the service reads back and accepts as an upload.
+/// It holds one short entry per district, so a real one is a few kilobytes;
+/// 16 MiB leaves ample headroom while rejecting anything unlike that cache.
+pub(crate) const NAMES_CACHE_MAX_BYTES: u64 = 16 << 20;
+
+/// The full symbols sibling contains every symbol, edge and card geometry
+/// row. The committed Dify viewer fixture is 10.1 MiB raw; 256 MiB leaves
+/// roughly 25× headroom for larger repositories while bounding remote
+/// uploads. Older commits may still be served from their stored sibling.
+pub(crate) const FULL_SYMBOLS_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The viewer fetches a district's complete symbols JSON in one response.
+/// The committed Dify fixture's largest shipped district is 1.7 MiB raw;
+/// 64 MiB leaves about 38× headroom for unusually dense districts without
+/// allowing one response to consume hundreds of megabytes in the browser.
+pub(crate) const DISTRICT_SYMBOLS_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Reads the map a job child has written to output_dir, using the filename
 /// derived by OutputNames::for_repo(repo), after its write_map stage ends.
