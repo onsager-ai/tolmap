@@ -2428,6 +2428,7 @@ impl WorkerHub {
             // agent gave up unasked.
             if now > lease.deadline {
                 lease.lost = true;
+                lease.upload_cancel.send_replace(true);
             }
             if lease.agent != Some(agent) || lease.epoch != entry.epoch || lease.lost {
                 answers.push(cancel(CancelReason::LeaseLost));

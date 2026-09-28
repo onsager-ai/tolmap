@@ -2202,6 +2202,15 @@ impl JobContext {
             let digest = hash_artifact(&name, &path)?;
             hashed.push((name, path, digest));
         }
+        worker_result::check_lease_totals(
+            hashed
+                .iter()
+                .map(|(name, _, (sha256, bytes))| (name.as_str(), sha256.as_str(), *bytes)),
+        )
+        .map_err(|message| ErrorBody {
+            error: "invalid_worker_result".to_owned(),
+            message,
+        })?;
         let deadline = Instant::now() + self.hold;
         let mut artifacts = Vec::with_capacity(hashed.len());
         for (name, path, digest) in hashed {
