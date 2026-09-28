@@ -154,6 +154,38 @@ try {
     }
   }
 
+  // docs/UX.md §5/§4.1 (phase 7c): capture each layer-aware overview in
+  // both themes. The phone frames are taken at Half so the ranked index is
+  // visible; desktop keeps the 7a panel at its normal opening state.
+  if (slugs.includes(DIFY_SLUG)) {
+    const stem = `${out}/${DIFY_SLUG.replace("/", "__")}`;
+    const overviewLayers = [
+      { id: "d", name: "district" },
+      { id: "c", name: "churn" },
+      { id: "x", name: "complexity" },
+      { id: "p", name: "package" },
+    ];
+    for (const profile of PROFILES) {
+      for (const layer of overviewLayers) {
+        for (const theme of ["light", "dark"]) {
+          const context = await browser.newContext(profile);
+          const page = await context.newPage();
+          await page.goto(`${base}/${DIFY_SLUG}?layer=${layer.id}`, { waitUntil: "domcontentloaded" });
+          await page.locator("[data-overview-headline]").waitFor({ timeout: 30_000 });
+          await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+          await page.evaluate((value) => document.documentElement.setAttribute("data-theme", value), theme);
+          if (profile.isMobile) await setSheetDetent(page, "half");
+          await page.waitForTimeout(500);
+          const view = profile.isMobile ? "phone-half" : "desktop";
+          const file = `${stem}-${view}-overview-${layer.name}-${theme}.png`;
+          await page.screenshot({ path: file });
+          console.log(file);
+          await context.close();
+        }
+      }
+    }
+  }
+
   // Owner feedback (issue #82, "layer brightness"): "package layer seems to
   // have larger brightness against others". The fix (geometry.ts's
   // LAYER_SURFACE_MIX, now applied to package colours and the churn/

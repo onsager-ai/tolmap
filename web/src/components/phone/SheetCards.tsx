@@ -16,9 +16,11 @@ import {
   type OutlineRow,
 } from "@/map/symbolCards";
 import type { PackageLayout } from "@/map/packageLayout";
-import { formatDirectory } from "@/map/packageLayout";
+import { formatDirectory, type PackageGrouping } from "@/map/packageLayout";
 import { neighbourhoodOf } from "@/map/neighbourhoods";
 import { summarizeReferenceCoverage } from "@/map/referenceCoverage";
+import type { Layer } from "@/map/constants";
+import { LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
 import type { StructureDetail } from "@/map/structureCard";
 import type { Detent } from "@/map/phoneShell";
 import { Breadcrumb } from "@/components/Breadcrumb";
@@ -156,36 +158,45 @@ function InfoIcon() {
 export function OverviewCard({
   doc,
   slug,
+  layer,
   packageLayout,
+  packageGrouping,
   activeDirectory,
   tab,
   onTab,
   onOpenQuality,
   onSelectDistrict,
+  onFrameDistricts,
   onPickKeyFile,
   onSelectDirectory,
 }: {
   doc: MapDocument;
   /** `owner/repo`, as the pill shows it. */
   slug: string;
+  layer: Layer;
   packageLayout: PackageLayout;
+  packageGrouping: PackageGrouping;
   activeDirectory?: string;
   tab: "districts" | "folders";
   onTab(t: "districts" | "folders"): void;
   onOpenQuality(): void;
   onSelectDistrict(d: number): void;
+  onFrameDistricts(districts: readonly number[]): void;
   onPickKeyFile(i: number): void;
   onSelectDirectory(path?: string): void;
 }) {
   let mainland = 0;
   for (const d of Object.values(doc.districts)) if (districtClass(d) === "mainland") mainland++;
+  const layerOverview = useLayerOverview(doc, packageGrouping);
   return (
     <div data-sheet-card="overview">
       <div data-sheet-dragzone>
         <div className="font-mono text-meta text-[var(--dim)]">{slug}</div>
-        <SheetTitle>
-          {mainland} districts · {doc.F.length.toLocaleString("en-US")} files
-        </SheetTitle>
+        {layer === "d" ? (
+          <div data-overview-headline data-overview-layer="d"><SheetTitle>{mainland} districts · {doc.F.length.toLocaleString("en-US")} files</SheetTitle></div>
+        ) : (
+          <LayerOverviewHeadline overview={layerOverview} layer={layer} className="mt-0.5 text-sheet-title tabular-nums" />
+        )}
         {activeDirectory ? (
           <div className="mt-3.5 flex min-h-[48px] items-center gap-2 rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] pl-3 text-small">
             <span className="min-w-0 flex-1 truncate">
@@ -198,37 +209,54 @@ export function OverviewCard({
         ) : (
           <MapQualityRow unconnected={packageLayout.unconnectedFiles.length} onOpen={onOpenQuality} />
         )}
-        <div className="mt-5 flex items-center justify-between">
-          <h4 className="text-[15px] font-semibold">
-            {tab === "districts" ? "Districts" : "Folders"}{" "}
-            <span className="font-medium text-[var(--dim)]">{tab === "districts" ? mainland : packageLayout.directories.length}</span>
-          </h4>
-          <div role="tablist" aria-label="Browse by" className="flex rounded-[10px] border border-[var(--rule)] bg-[var(--canvas)] p-0.5">
-            {(["districts", "folders"] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                role="tab"
-                aria-selected={tab === t}
-                data-index-tab={t}
-                onClick={() => onTab(t)}
-                className={`h-11 rounded-[8px] px-3.5 text-small ${tab === t ? "bg-[var(--rule)] font-semibold text-[var(--on)]" : "text-[var(--dim)]"}`}
-              >
-                {t === "districts" ? "Districts" : "Folders"}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="-mx-5 mt-2.5 border-t border-[var(--rule)]">
-        {tab === "districts" ? (
-          <DistrictIndexList doc={doc} packageLayout={packageLayout} onPickKeyFile={onPickKeyFile} onSelectDistrict={onSelectDistrict} />
-        ) : (
-          <div className="px-5">
-            <FolderBody layout={packageLayout} activeDirectory={activeDirectory} onSelectDirectory={onSelectDirectory} nested={false} />
+        {layer === "d" && (
+          <div className="mt-5 flex items-center justify-between">
+            <h4 className="text-[15px] font-semibold">
+              {tab === "districts" ? "Districts" : "Folders"}{" "}
+              <span className="font-medium text-[var(--dim)]">{tab === "districts" ? mainland : packageLayout.directories.length}</span>
+            </h4>
+            <div role="tablist" aria-label="Browse by" className="flex rounded-[10px] border border-[var(--rule)] bg-[var(--canvas)] p-0.5">
+              {(["districts", "folders"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === t}
+                  data-index-tab={t}
+                  onClick={() => onTab(t)}
+                  className={`h-11 rounded-[8px] px-3.5 text-small ${tab === t ? "bg-[var(--rule)] font-semibold text-[var(--on)]" : "text-[var(--dim)]"}`}
+                >
+                  {t === "districts" ? "Districts" : "Folders"}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
+      {layer === "d" ? (
+        <div className="-mx-5 mt-2.5 border-t border-[var(--rule)]">
+          {tab === "districts" ? (
+            <DistrictIndexList doc={doc} packageLayout={packageLayout} onPickKeyFile={onPickKeyFile} onSelectDistrict={onSelectDistrict} />
+          ) : (
+            <div className="px-5">
+              <FolderBody layout={packageLayout} activeDirectory={activeDirectory} onSelectDirectory={onSelectDirectory} nested={false} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="-mx-2 mt-2.5 border-t border-[var(--rule)] pt-1">
+          <div className="px-2 pb-1 text-small font-semibold">Index</div>
+          <LayerOverviewIndex
+            doc={doc}
+            overview={layerOverview}
+            layer={layer}
+            touch
+            onSelectDistrict={onSelectDistrict}
+            onSelectFile={onPickKeyFile}
+            onFrameDistricts={onFrameDistricts}
+          />
+        </div>
+      )}
     </div>
   );
 }

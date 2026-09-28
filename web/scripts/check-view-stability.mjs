@@ -1784,6 +1784,36 @@ async function checkFitButtonIcon(browser, base, profile) {
   await context.close();
 }
 
+// docs/UX.md §5/§4.1 (phase 7c): changing the active layer changes the
+// overview headline on both the desktop panel and phone sheet.
+async function checkLayerAwareOverview(browser, base, profile) {
+  const label = `layer-aware overview headline / ${profile.name}`;
+  console.log(`\n${label}`);
+  const context = await browser.newContext(profile);
+  const page = await context.newPage();
+  await page.goto(`${base}/langgenius/dify?layer=d`, { waitUntil: "domcontentloaded" });
+  const headline = page.locator("[data-overview-headline]");
+  await headline.waitFor();
+  let previous = (await headline.innerText()).trim();
+  report((await headline.getAttribute("data-overview-layer")) === "d", `${label}: District headline is shown initially`, previous);
+  const seen = new Set([previous]);
+  for (const layer of ["c", "x", "p"]) {
+    await setLayer(page, profile, layer);
+    await page.waitForFunction((expected) => document.querySelector("[data-overview-headline]")?.getAttribute("data-overview-layer") === expected, layer);
+    const current = (await headline.innerText()).trim();
+    report(current.length > 0 && current !== previous && !seen.has(current), `${label}: switching to ${LAYER_TEXT[layer]} changes the overview headline`, current);
+    previous = current;
+    seen.add(current);
+  }
+  if (profile.isMobile) {
+    await setSheetDetent(page, "half");
+    const rows = page.locator("[data-overview-district-row], [data-layer-overview-file-row], [data-package-overview-row]");
+    const heights = await rows.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().height));
+    report(heights.length > 0 && heights.every((height) => height >= 64), `${label}: Half-sheet overview rows are at least 64 px`, JSON.stringify(heights.slice(0, 8)));
+  }
+  await context.close();
+}
+
 // Owner feedback (issue #82, "layer brightness"): "package layer seems to
 // have larger brightness against others" -- the package layer's `--p0..--p9`
 // swatches and this file's own churn/complexity ramps used to reach a
@@ -6344,6 +6374,7 @@ async function main() {
     for (const profile of PROFILES) await checkDistrictIndex(browser, args.base, profile);
     for (const profile of PROFILES) await checkLinkColourLegend(browser, args.base, profile);
     for (const profile of PROFILES) await checkFitButtonIcon(browser, args.base, profile);
+    for (const profile of PROFILES) await checkLayerAwareOverview(browser, args.base, profile);
     await checkLayerBrightnessParity(browser, args.base);
     for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
     // Issue #82 A1
