@@ -432,10 +432,11 @@ function ModalSheet({
   );
 }
 
-/** The repository sheet's content: the map on screen, the other mapped
- * repositories as 56 px rows (the same catalogue query Home lists), "Map
- * another repository" (Home's field, focused) and "Home". Every row is a
- * real link that replaces the sheet's history entry (see PhoneChrome). */
+/** The repository sheet's content: the map on screen; "Home" and "Map
+ * another repository" (Home's field, focused), right under it so the way
+ * home never sits below a long list; then the other mapped repositories as
+ * 56 px rows (the same catalogue query Home lists). Every row is a real
+ * link that replaces the sheet's history entry (see PhoneChrome). */
 function RepoSheetBody({ doc, slug, catalogue, onLeave }: { doc: MapDocument; slug: string; catalogue: CatalogueEntry[] | undefined; onLeave(): void }) {
   let mainland = 0;
   for (const d of Object.values(doc.districts)) if (districtClass(d) === "mainland") mainland++;
@@ -449,6 +450,20 @@ function RepoSheetBody({ doc, slug, catalogue, onLeave }: { doc: MapDocument; sl
         <div className="text-meta text-[var(--dim)]">
           <span className="font-mono">{doc.F.length.toLocaleString("en-US")}</span> files · <span className="font-mono">{mainland}</span> districts
         </div>
+      </div>
+      <div className="mt-3 overflow-hidden rounded-[14px] border border-[var(--rule)]">
+        <Link to="/" replace onClick={onLeave} data-repo-home className={row}>
+          <span className="shrink-0 text-[var(--dim)]">
+            <HomeIcon />
+          </span>
+          <span className="min-w-0 flex-1 text-row">Home</span>
+        </Link>
+        <Link to="/" hash="repo-field" replace onClick={onLeave} data-repo-map-another className={row}>
+          <span className="shrink-0 text-[var(--accent)]">
+            <PlusIcon />
+          </span>
+          <span className="min-w-0 flex-1 text-row">Map another repository</span>
+        </Link>
       </div>
       <h3 className="mt-5 text-[15px] font-semibold">Mapped repositories</h3>
       {others.length ? (
@@ -470,20 +485,6 @@ function RepoSheetBody({ doc, slug, catalogue, onLeave }: { doc: MapDocument; sl
       ) : (
         <p className="mt-1.5 text-small text-[var(--dim)]">{catalogue ? "No other repositories are mapped yet." : "loading…"}</p>
       )}
-      <div className="mt-4 overflow-hidden rounded-[14px] border border-[var(--rule)]">
-        <Link to="/" hash="repo-field" replace onClick={onLeave} data-repo-map-another className={row}>
-          <span className="shrink-0 text-[var(--accent)]">
-            <PlusIcon />
-          </span>
-          <span className="min-w-0 flex-1 text-row">Map another repository</span>
-        </Link>
-        <Link to="/" replace onClick={onLeave} data-repo-home className={row}>
-          <span className="shrink-0 text-[var(--dim)]">
-            <HomeIcon />
-          </span>
-          <span className="min-w-0 flex-1 text-row">Home</span>
-        </Link>
-      </div>
     </>
   );
 }

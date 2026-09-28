@@ -5183,20 +5183,38 @@ async function checkPhoneSheetDragFromContent(browser, base, profile) {
   const { context, page } = await phonePage(browser, profile);
   const cdp = await context.newCDPSession(page);
   const { width: W, height: H } = profile.viewport;
-  const file = "web/app/components/workflow/types.ts";
-  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(file)}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("svg.map-svg path.hit");
-  await page.waitForTimeout(800);
+  const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
   const body = page.locator("[data-phone-sheet] [data-sheet-body]");
   const scroll = () => body.evaluate((el) => ({ top: Math.round(el.scrollTop), max: el.scrollHeight - el.clientHeight }));
   const toFull = async () => {
     await setSheetDetent(page, "full");
     await page.waitForTimeout(600);
   };
-  await toFull();
-  const s0 = await scroll();
-  report((await sheetDetent(page)) === "full" && (await page.locator('[data-sheet-card="file"]').count()) === 1 && s0.max > 200,
-    `${label}: setup -- ${file}'s details at Full, content taller than the sheet`, JSON.stringify(s0));
+  // Details whose content is taller than the Full sheet: a file's card
+  // first; its key-symbol list is capped, so it may fit, and then the
+  // largest district's card, then the District index (the overview).
+  const sizes = new Map();
+  for (const row of doc.N) sizes.set(row[0], (sizes.get(row[0]) ?? 0) + 1);
+  const largest = [...sizes].sort((a, b) => b[1] - a[1])[0][0];
+  const candidates = [
+    { name: "web/app/components/workflow/types.ts's file card", query: `?file=${encodeURIComponent("web/app/components/workflow/types.ts")}` },
+    { name: `the largest district's card (d=${largest})`, query: `?d=${largest}` },
+    { name: "the District index", query: "" },
+  ];
+  let used = null;
+  let s0 = null;
+  for (const c of candidates) {
+    await page.goto(`${base}/langgenius/dify${c.query}`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("svg.map-svg path.hit");
+    await page.waitForTimeout(800);
+    await toFull();
+    s0 = await scroll();
+    if ((await sheetDetent(page)) === "full" && s0.max > 240) {
+      used = c.name;
+      break;
+    }
+  }
+  report(!!used, `${label}: setup -- details at Full with content taller than the sheet (${used ?? "none found"})`, JSON.stringify(s0));
   // Start in the content, well below the card header (it scrolls away
   // anyway once scrolled) and clear of the grabber.
   const x = W / 2;
@@ -5210,11 +5228,12 @@ async function checkPhoneSheetDragFromContent(browser, base, profile) {
 
   // Mid-scroll: the first drag down scrolls the content, not the sheet...
   await toFull();
-  await body.evaluate((el) => (el.scrollTop = 150));
+  await body.evaluate((el) => (el.scrollTop = 200));
   await page.waitForTimeout(150);
+  const before = await scroll();
   await touchDragVertical(page, cdp, x, yContent, 100);
-  const b = { detent: await sheetDetent(page), scroll: await scroll() };
-  report(b.detent === "full" && b.scroll.top < 150, `${label}: content mid-scroll, the first drag down scrolls the content and the sheet stays at Full`, JSON.stringify(b));
+  const b = { detent: await sheetDetent(page), before, scroll: await scroll() };
+  report(before.top === 200 && b.detent === "full" && b.scroll.top < before.top, `${label}: content mid-scroll, the first drag down scrolls the content and the sheet stays at Full`, JSON.stringify(b));
   // ...and once it is back at its top, the next drag lowers the sheet.
   await body.evaluate((el) => (el.scrollTop = 0));
   await page.waitForTimeout(150);
@@ -5917,9 +5936,11 @@ async function checkSearch(browser, base, profile) {
     await input.click();
     await type("types");
     report((await page.locator("[data-search-dropdown]").count()) === 1, `${label}: typing opens the dropdown`);
-    // The wordmark: top-bar chrome outside the search box (docs/UX.md §5
-    // moved search into the top bar, beside the repository select).
-    await page.locator("[data-wordmark]").click();
+    // Top-bar chrome outside the search box (docs/UX.md §5 moved search
+    // into the top bar): the gap just left of the layer control. (Not the
+    // wordmark, which now links Home, issue #177.)
+    const seg = await page.locator("[data-layer-segmented]").boundingBox();
+    await page.mouse.click(seg.x - 6, seg.y + seg.height / 2);
     await page.waitForTimeout(150);
     report((await page.locator("[data-search-dropdown]").count()) === 0, `${label}: a click outside closes the dropdown`);
 
