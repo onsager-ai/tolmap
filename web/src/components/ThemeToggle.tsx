@@ -5,20 +5,27 @@ import { cn } from "@/lib/utils";
 const NEXT: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" };
 const LABEL: Record<ThemeChoice, string> = { system: "System", light: "Light", dark: "Dark" };
 
-const ICON_PROPS = {
-  width: 15,
-  height: 15,
-  viewBox: "0 0 15 15",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.3,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
+// The glyphs are drawn on a 15-unit canvas; `size` scales the rendered box
+// (viewBox stays fixed) so a caller can match this icon's optical weight to
+// whatever else shares its row -- docs/UX.md §5's desktop action group sits
+// this next to SearchIcon and the keyboard glyph, both drawn at 18px on a
+// 24-unit canvas, and the default 15px box read a size smaller between them.
+function iconProps(size: number) {
+  return {
+    width: size,
+    height: size,
+    viewBox: "0 0 15 15",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.3,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+}
 
-function SunIcon() {
+function SunIcon({ size }: { size: number }) {
   return (
-    <svg {...ICON_PROPS} aria-hidden="true">
+    <svg {...iconProps(size)} aria-hidden="true">
       <circle cx="7.5" cy="7.5" r="2.6" />
       <line x1="7.5" y1="0.9" x2="7.5" y2="2.4" />
       <line x1="7.5" y1="12.6" x2="7.5" y2="14.1" />
@@ -32,17 +39,17 @@ function SunIcon() {
   );
 }
 
-function MoonIcon() {
+function MoonIcon({ size }: { size: number }) {
   return (
-    <svg {...ICON_PROPS} aria-hidden="true">
+    <svg {...iconProps(size)} aria-hidden="true">
       <path d="M 12.6 9.4 A 5.4 5.4 0 1 1 5.6 2.4 A 6.6 6.6 0 0 0 12.6 9.4 Z" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function MonitorIcon() {
+function MonitorIcon({ size }: { size: number }) {
   return (
-    <svg {...ICON_PROPS} aria-hidden="true">
+    <svg {...iconProps(size)} aria-hidden="true">
       <rect x="1.4" y="2.4" width="12.2" height="8" rx="1" />
       <line x1="5.2" y1="13.1" x2="9.8" y2="13.1" />
       <line x1="7.5" y1="10.4" x2="7.5" y2="13.1" />
@@ -50,7 +57,7 @@ function MonitorIcon() {
   );
 }
 
-const ICON: Record<ThemeChoice, () => ReactElement> = { system: MonitorIcon, light: SunIcon, dark: MoonIcon };
+const ICON: Record<ThemeChoice, (p: { size: number }) => ReactElement> = { system: MonitorIcon, light: SunIcon, dark: MoonIcon };
 
 /** Issue #82 owner decision ("Follow system + toggle", AskUserQuestion
  * 2026-09-24): a compact three-state control -- System -> Light -> Dark ->
@@ -67,8 +74,11 @@ const ICON: Record<ThemeChoice, () => ReactElement> = { system: MonitorIcon, lig
  * `className` lets a caller override the default 28px desktop-pointer
  * sizing -- Home (docs/UX.md §4.9) is a phone-first page, and §8.2's touch
  * target rule names "the theme button" among the controls with no
- * exception, so it needs the full 44x44 there. */
-export function ThemeToggle({ className }: { className?: string } = {}) {
+ * exception, so it needs the full 44x44 there. `iconSize` defaults to the
+ * glyph's own drawn size (15) so those callers are untouched; the desktop
+ * command bar (DesktopChrome) passes 18 to match SearchIcon sitting either
+ * side of it in the same action group. */
+export function ThemeToggle({ className, iconSize = 15 }: { className?: string; iconSize?: number } = {}) {
   const [choice, setChoice] = useThemeChoice();
   const Icon = ICON[choice];
   return (
@@ -83,7 +93,7 @@ export function ThemeToggle({ className }: { className?: string } = {}) {
         className,
       )}
     >
-      <Icon />
+      <Icon size={iconSize} />
     </button>
   );
 }

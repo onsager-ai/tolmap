@@ -99,9 +99,9 @@ function repoRows(catalogue: CatalogueEntry[] | undefined, doc: MapDocument, own
   return rows;
 }
 
-function MonoIcon({ children }: { children: ReactNode }) {
+function MonoIcon({ children, size = 16 }: { children: ReactNode; size?: number }) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {children}
     </svg>
   );
@@ -389,9 +389,9 @@ export function DesktopChrome(p: DesktopChromeProps) {
           <button ref={searchButtonRef} type="button" data-open-desktop-search aria-label="Search districts, files and symbols" title={`Search  ${typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K"}`} onClick={openSearchFromButton} className={`flex ${p.touch ? "h-11 w-11" : "h-9 w-9"} items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]`}>
             <SearchIcon size={18} />
           </button>
-          <ThemeToggle className={`border-0 bg-transparent text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)] ${p.touch ? "h-11 w-11 rounded-[10px]" : "h-9 w-9 rounded-[10px]"}`} />
+          <ThemeToggle iconSize={18} className={`border-0 bg-transparent text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)] ${p.touch ? "h-11 w-11 rounded-[10px]" : "h-9 w-9 rounded-[10px]"}`} />
           <button ref={keyboardButtonRef} type="button" data-open-keyboard aria-label="Keyboard shortcuts" title="Keyboard shortcuts" aria-haspopup="dialog" aria-expanded={p.keyboardOpen} onClick={() => p.onKeyboardOpen(!p.keyboardOpen)} className={`flex ${p.touch ? "h-11 w-11" : "h-9 w-9"} items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]`}>
-            <MonoIcon><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></MonoIcon>
+            <MonoIcon size={18}><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></MonoIcon>
           </button>
         </div>
       </div>
