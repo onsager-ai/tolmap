@@ -1355,7 +1355,16 @@ async function checkFolderIslandFade(browser, base, profile) {
   );
   const before = await visiblePinRanks();
   await page.goto(`${base}/langgenius/dify?geo=r&layer=p&dir=api`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("svg.map-svg [data-folder-highlight]");
+  if (profile.isMobile) {
+    await page.waitForSelector("svg.map-svg [data-folder-highlight]");
+  } else {
+    // The desktop room gate intentionally withholds folder-only file marks
+    // when their districts have no room. Confirm the active directory from
+    // the folder browser instead; a folder highlight alone is not a §5
+    // exception that should force those file marks onto the map.
+    await page.waitForSelector('[data-folder-path="api"][aria-pressed="true"]');
+    await page.waitForSelector("svg.map-svg path.hit");
+  }
   await page.waitForTimeout(2200);
   const after = await visiblePinRanks();
   const extra = after.filter((rank) => !before.includes(rank));
