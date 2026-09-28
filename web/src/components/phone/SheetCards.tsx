@@ -53,9 +53,9 @@ export function Eyebrow({ children }: { children: ReactNode }) {
   return <div className="text-meta text-[var(--dim)]">{children}</div>;
 }
 
-export function SheetTitle({ children, mono = false }: { children: ReactNode; mono?: boolean }) {
+export function SheetTitle({ children, mono = false, truncate = true }: { children: ReactNode; mono?: boolean; truncate?: boolean }) {
   return (
-    <h3 className={`mt-0.5 truncate text-sheet-title tabular-nums ${mono ? "font-mono text-[21px] font-medium" : ""}`}>{children}</h3>
+    <h3 className={`mt-0.5 ${truncate ? "truncate" : "whitespace-normal"} text-sheet-title tabular-nums ${mono ? "font-mono text-[21px] font-medium" : ""}`}>{children}</h3>
   );
 }
 
@@ -192,7 +192,7 @@ export function OverviewCard({
       <div data-sheet-dragzone>
         <div className="font-mono text-meta text-[var(--dim)]">{slug}</div>
         {layer === "d" ? (
-          <div data-overview-headline data-overview-layer="d"><SheetTitle>{layerOverviewHeadline(layerOverview, "d").primary}</SheetTitle></div>
+          <div data-overview-headline data-overview-layer="d"><SheetTitle truncate={false}>{layerOverviewHeadline(layerOverview, "d").primary}</SheetTitle></div>
         ) : (
           <LayerOverviewHeadline overview={layerOverview} layer={layer} className="mt-0.5 text-sheet-title tabular-nums" />
         )}

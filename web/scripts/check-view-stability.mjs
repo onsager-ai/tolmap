@@ -4872,7 +4872,14 @@ async function checkPhoneShellChrome(browser, base, profile) {
   const half = Math.min(480, Math.round(H * 0.57));
   const full = H - (12 + 48 + 8);
   report((await sheetDetent(page)) === "peek" && Math.abs(peek - 156) <= 1, `${label}: the sheet opens at Peek, 156 px (no bottom safe inset here)`, `shown=${peek}`);
-  report(/[\d,]+ districts(?: \+ [\d,]+ islands?)? · [\d,]+ files/.test(await page.locator('[data-sheet-card="overview"]').innerText()), `${label}: Peek shows the District-layer repository summary (§4.1)`);
+  const overviewHeadline = page.locator('[data-sheet-card="overview"] [data-overview-headline] h3');
+  const headlineMetrics = await overviewHeadline.evaluate((el) => ({
+    text: el.textContent,
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+  }));
+  report(/[\d,]+ districts(?: \+ [\d,]+ islands?)? · [\d,]+ files/.test(headlineMetrics.text ?? "") && headlineMetrics.scrollWidth <= headlineMetrics.clientWidth,
+    `${label}: Peek shows the complete District-layer repository summary (§4.1)`, JSON.stringify(headlineMetrics));
 
   const grabber = page.locator("[data-sheet-grabber]");
   const g = await grabber.boundingBox();
