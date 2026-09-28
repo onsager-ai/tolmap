@@ -594,16 +594,33 @@ export function DesktopPanel(p: DesktopPanelProps) {
               const crumbLabel = compactOverview ? `Overview · ${crumb.label}` : crumb.label;
               return (
                 // The brief: the last crumb gets roughly 60% and the
-                // ancestors shrink first. `shrink-0` on the last crumb used
-                // to freeze it at its full content width -- max-width alone
-                // can't make a flex-shrink:0 item ellipsize once that
-                // content is wider than 60%, so it hard-clipped against
-                // nav's own overflow-hidden instead of showing "…". It now
-                // shrinks too (a small, non-zero factor), so it still
-                // ellipsizes if 60% genuinely isn't enough; ancestors carry
-                // a much higher shrink factor so they give way well before
-                // it does.
-                <span key={`${crumb.type}-${index}`} className={`flex min-w-0 items-center gap-0.5 ${current ? "shrink max-w-[60%]" : "shrink-[20]"}`}>
+                // ancestors shrink first. The wrapper stays exactly as it
+                // was originally -- `shrink-0` plus `max-w-[60%]` -- which
+                // is what keeps it out of nav's shared shrink budget: giving
+                // IT any flex-shrink, even a sliver weighted far behind the
+                // ancestors', still took a nonzero (if tiny) share of
+                // whatever deficit nav was resolving, which is exactly what
+                // cut a short crumb like "types.ts" a pixel short of its
+                // own content (check-view: 76px of content in a 75px box).
+                // The flex algorithm DOES clamp a `flex-shrink:0` item's own
+                // hypothetical size to its max-width up front (spec 9.7
+                // step 3, before any freezing), so the wrapper itself was
+                // already being held to 60% correctly.
+                //
+                // The bug was one level down: the *button* inside was ALSO
+                // shrink-0, so once its wrapper had been clamped narrower
+                // than its content, the button didn't shrink to match --
+                // it simply overflowed its own (uncapped, non-clipping)
+                // wrapper, and that overflow was only ever caught by nav's
+                // outer `overflow-hidden`, which has no ellipsis to draw.
+                // Making the button (only) shrinkable keeps it fully inside
+                // its wrapper's already-correct 60% box, so it can use its
+                // own `truncate` there -- and since this shrink is scoped to
+                // the button's own two-item inner flex context (itself and
+                // the fixed-width chevron), it has no effect on nav's
+                // cross-crumb distribution at all, so the fits-case is
+                // untouched pixel for pixel.
+                <span key={`${crumb.type}-${index}`} className={`flex min-w-0 items-center gap-0.5 ${current ? "shrink-0 max-w-[60%]" : "shrink"}`}>
                   {index > 0 && <span className="shrink-0"><ChevronIcon /></span>}
                   <button
                     type="button"
