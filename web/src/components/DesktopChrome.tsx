@@ -110,6 +110,10 @@ function HomeMark() {
   return <span aria-hidden="true" className="h-[18px] w-[18px] shrink-0 rounded-[6px] bg-[conic-gradient(from_200deg,var(--link-in),var(--accent),var(--link-out),var(--link-in))]" />;
 }
 
+function InfoIcon() {
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" className="shrink-0 text-[var(--dim)]"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></svg>;
+}
+
 export interface DesktopChromeProps {
   catalogue: CatalogueEntry[] | undefined;
   doc: MapDocument;
@@ -253,7 +257,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
     }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     event.preventDefault();
-    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? []);
     const index = items.indexOf(document.activeElement as HTMLElement);
     const next = index < 0
       ? (event.key === "ArrowDown" ? 0 : items.length - 1)
@@ -496,6 +500,7 @@ export interface DesktopPanelProps {
 }
 
 export function DesktopPanel(p: DesktopPanelProps) {
+  const panelRef = useRef<HTMLElement>(null);
   const crumbs = desktopPanelCrumbs(p.views, p.doc);
   const top = p.views[p.views.length - 1] ?? { type: "overview" as const };
   const mainland = useMemo(() => buildDistrictIndex(p.doc, p.packageLayout), [p.doc, p.packageLayout]);
@@ -518,6 +523,13 @@ export function DesktopPanel(p: DesktopPanelProps) {
     Math.max(1, ...p.doc.N.map((row) => row[5])),
     Math.max(1, ...p.doc.N.map((row) => row[4])),
   ], [p.doc]);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    if (p.panelOpen) panel.removeAttribute("inert");
+    else panel.setAttribute("inert", "");
+  }, [p.panelOpen]);
 
   const colorForDistrict = (district: number): string => {
     const members = filesByDistrict.get(district) ?? [];
@@ -544,10 +556,10 @@ export function DesktopPanel(p: DesktopPanelProps) {
   return (
     <>
       <section
+        ref={panelRef}
         data-desktop-panel
         aria-label="Map details"
         aria-hidden={!p.panelOpen}
-        inert={!p.panelOpen}
         className={`glass desktop-panel absolute z-30 flex flex-col overflow-hidden rounded-[16px] text-[var(--on)] ${p.panelOpen ? "translate-x-0 opacity-100" : "-translate-x-[calc(100%+24px)] opacity-0 pointer-events-none"}`}
         style={{
           left: `calc(${DESKTOP_PANEL_LEFT_PX}px + env(safe-area-inset-left, 0px))`,

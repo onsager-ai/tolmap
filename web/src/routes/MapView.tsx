@@ -27,7 +27,7 @@ import {
 import { closeOverlay, initBack, openOverlay, OVERLAY_MARKER, popTo, type BackState, type OverlayKind } from "@/map/backStack";
 import { structureDetail } from "@/map/structureCard";
 import { PhoneChrome } from "@/components/phone/PhoneChrome";
-import { SelectionCard, type PathPick, type StructureCardState } from "@/components/phone/SheetCards";
+import { type PathPick, type StructureCardState } from "@/components/phone/SheetCards";
 import { desktopPanelCrumbs, desktopPanelReducer, DESKTOP_PANEL_OVERVIEW, type DesktopPanelView } from "@/map/desktopPanel";
 import { rowName } from "@/map/symbolCards";
 

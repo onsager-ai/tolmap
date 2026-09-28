@@ -67,8 +67,8 @@ export const ChevronIcon = () => (
     <path d="M9 6l6 6-6 6" />
   </Icon>
 );
-export const BackIcon = () => (
-  <Icon size={22}>
+export const BackIcon = ({ size = 22 }: { size?: number } = {}) => (
+  <Icon size={size}>
     <path d="M15 5l-7 7 7 7" />
   </Icon>
 );
