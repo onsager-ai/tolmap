@@ -20,6 +20,7 @@ import {
   INSPECTOR_INSET_PX,
   NO_SAFE_AREA,
   SIDE_SHEET_WIDTH_PX,
+  compactMap,
   desktopControlSize,
   desktopSafeInsets,
   inspectorWidth,
@@ -74,6 +75,23 @@ const table: Array<[number, number, LayoutProfile, string]> = [
 for (const [w, h, want, why] of table) {
   const got = layoutProfile(w, h);
   report(got === want, `${w}x${h} -> ${want}: ${why}`, got);
+}
+console.log("\nmap box level of detail (#180)");
+const compactBoxes: Array<[number, number, boolean, string]> = [
+  [390, 844, true, "phone portrait uses compact detail"],
+  [844, 390, true, "a wide but short landscape map uses compact detail"],
+  [667, 375, true, "a small landscape map uses compact detail"],
+  [768, 1024, false, "a portrait tablet map uses full detail"],
+  [1024, 768, false, "a landscape tablet map uses full detail"],
+  [1120, 844, false, "a desktop map area uses full detail"],
+  [600, 900, true, "600 px is the compact width edge"],
+  [601, 900, false, "601 px is above the compact width edge"],
+  [900, 500, true, "500 px is the compact height edge"],
+  [900, 501, false, "501 px is above the compact height edge"],
+];
+for (const [w, h, want, why] of compactBoxes) {
+  const got = compactMap(w, h);
+  report(got === want, `${w}x${h} map box -> ${want}: ${why}`, String(got));
 }
 report(isPhoneShell("phone") && isPhoneShell("landscape") && !isPhoneShell("tablet") && !isPhoneShell("desktop"), "both phone profiles use the phone shell; tablet and desktop the desktop layout");
 report(isTouchProfile("phone") && isTouchProfile("landscape") && isTouchProfile("tablet") && !isTouchProfile("desktop"), "44 px targets on phone, landscape and tablet (§8.2, §9); desktop may be 32-40");
