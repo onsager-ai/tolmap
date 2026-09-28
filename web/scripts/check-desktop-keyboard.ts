@@ -33,6 +33,7 @@ report(eq(dispatchDesktopKey({ key: "Escape" }), { type: "escape" }), "Esc steps
 report(eq(dispatchDesktopKey({ key: "+" }), { type: "zoom-in" }) && eq(dispatchDesktopKey({ key: "-" }), { type: "zoom-out" }), "+ and - zoom");
 report(eq(dispatchDesktopKey({ key: "F" }), { type: "fit" }) && eq(dispatchDesktopKey({ key: "Z" }), { type: "zoom-selection" }) && eq(dispatchDesktopKey({ key: "T" }), { type: "cycle-theme" }), "F, Z and T are case-insensitive");
 report(eq(dispatchDesktopKey({ key: "?" }), { type: "keyboard-list" }), "? opens the keyboard list");
+report(eq(dispatchDesktopKey({ key: "/", shiftKey: true }), { type: "keyboard-list" }), "Shift+/ opens the keyboard list across browser key event forms");
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures) process.exit(1);

@@ -41,6 +41,9 @@ export function dispatchDesktopKey(input: DesktopKeyInput): DesktopKeyAction {
   if (focus !== "page") return NONE;
   if (input.altKey || input.metaKey || input.ctrlKey) return NONE;
 
+  // Browsers and automation stacks differ on whether physical Shift+/ is
+  // reported as "?" or as "/" with shiftKey set.
+  if (key === "?" || (key === "/" && input.shiftKey)) return { type: "keyboard-list" };
   if (key === "Escape") return { type: "escape" };
   if (key === "/" && !input.shiftKey) return { type: "search" };
   if (key === "[" && !input.shiftKey) return { type: "toggle-panel" };
@@ -50,8 +53,6 @@ export function dispatchDesktopKey(input: DesktopKeyInput): DesktopKeyAction {
   if (key.toLowerCase() === "f") return { type: "fit" };
   if (key.toLowerCase() === "z") return { type: "zoom-selection" };
   if (key.toLowerCase() === "t") return { type: "cycle-theme" };
-  if (key === "?") return { type: "keyboard-list" };
-
   if (input.overviewOpen) {
     if (key === "ArrowDown") return { type: "overview-move", direction: 1 };
     if (key === "ArrowUp") return { type: "overview-move", direction: -1 };

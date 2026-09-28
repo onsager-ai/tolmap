@@ -5745,8 +5745,11 @@ async function checkSearch(browser, base, profile) {
   report(!!s && s.role === "combobox" && s.expanded === "true" && s.listRole === "listbox" && s.focused,
     `${label}: search opens as a focused combobox controlling a listbox (§7.2)`, JSON.stringify(s && { role: s.role, expanded: s.expanded, listRole: s.listRole, focused: s.focused }));
   if (phone) report(s.fontSize >= 16, `${label}: the input is 16 px (no iPhone focus zoom, §4.8)`, String(s.fontSize));
-  report(s.state === "empty" && s.groups.length === 1 && s.groups[0].kind === "district" && s.groups[0].rows > 0,
-    `${label}: empty query shows the empty state and the largest districts`, JSON.stringify({ state: s.state, groups: s.groups }));
+  const emptyGroupsExpected = phone
+    ? s.groups.length === 1 && s.groups[0].kind === "district" && s.groups[0].rows > 0
+    : s.groups.length === 2 && s.groups[0].kind === "district" && s.groups[0].rows > 0 && s.groups[1].kind === "command" && s.groups[1].rows > 0;
+  report(s.state === "empty" && emptyGroupsExpected,
+    `${label}: empty query shows the largest districts${phone ? "" : " and commands"}`, JSON.stringify({ state: s.state, groups: s.groups }));
   if (phone) {
     const box = await page.locator("[data-search-layer]").boundingBox();
     report(!!box && box.x === 0 && box.y === 0 && Math.abs(box.width - profile.viewport.width) <= 1 && Math.abs(box.height - profile.viewport.height) <= 1,
@@ -5866,12 +5869,12 @@ async function checkSearch(browser, base, profile) {
     report(!!shown && shown.visibleArea >= 2000,
       `${label}: the picked district is on screen above the sheet`, JSON.stringify({ shown, top2 }));
   } else {
-    // Esc closes the desktop search popover and returns focus to its opener.
+    // Esc closes the desktop command palette and returns focus to its opener.
     await input.press("Escape");
     await page.locator("[data-desktop-search]").waitFor({ state: "detached" });
-    report((await page.locator("[data-search-dropdown]").count()) === 0 &&
+    report((await page.locator("[data-search-palette]").count()) === 0 &&
       (await page.evaluate(() => document.activeElement?.matches("[data-open-desktop-search]") ?? false)),
-      `${label}: Esc closes search and focus returns to Search`);
+      `${label}: Esc closes the palette and focus returns to Search`);
 
     // `/` from a map control opens search; Esc hands focus back to that control.
     const zoomIn = page.locator('button[aria-label="Zoom in"]');
@@ -5883,7 +5886,7 @@ async function checkSearch(browser, base, profile) {
       `${label}: / opens desktop search with its combobox focused`);
     await page.keyboard.press("Escape");
     await page.locator("[data-desktop-search]").waitFor({ state: "detached" });
-    report((await page.locator("[data-search-dropdown]").count()) === 0 &&
+    report((await page.locator("[data-search-palette]").count()) === 0 &&
       (await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))) === "Zoom in",
       `${label}: Esc closes it and focus returns to the opener`);
 
@@ -5898,21 +5901,28 @@ async function checkSearch(browser, base, profile) {
     await input.press("Enter");
     await page.waitForTimeout(500);
     const pickedFile = target ? doc.F[Number(target.key.slice(1))] : null;
-    report(!!target && new URL(page.url()).searchParams.get("file") === pickedFile && (await page.locator("[data-search-dropdown]").count()) === 0,
-      `${label}: Enter picks the highlighted result and closes the dropdown`, JSON.stringify({ target, url: page.url() }));
+    report(!!target && new URL(page.url()).searchParams.get("file") === pickedFile && (await page.locator("[data-search-palette]").count()) === 0,
+      `${label}: Enter picks the highlighted result and closes the palette`, JSON.stringify({ target, url: page.url() }));
     report((await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))) === "Zoom in", `${label}: after a pick, focus is back on the opener`);
 
-    // Clicking another action closes the search popover without stealing
-    // focus back from the control the person chose.
+    // The modal palette owns the page until it closes. Typing filters its
+    // result list; Esc returns to the search icon, and ? opens the keyboard
+    // list from the map.
     await page.locator("[data-open-desktop-search]").click();
     await page.locator("[data-desktop-search] input[data-search-input]").waitFor();
     await input.click();
     await type("types");
-    report((await page.locator("[data-search-dropdown]").count()) === 1, `${label}: typing opens the dropdown`);
-    await page.locator("[data-open-keyboard]").click();
+    report((await page.locator("[data-search-palette]").count()) === 1 &&
+      (await page.locator('[data-search-group="file"]').count()) > 0,
+      `${label}: typing filters results inside the palette`);
+    await input.press("Escape");
     await page.locator("[data-desktop-search]").waitFor({ state: "detached" });
-    report((await page.locator("[data-search-dropdown]").count()) === 0 && (await page.locator("[data-keyboard-dialog]").count()) === 1,
-      `${label}: clicking another action closes search and opens the keyboard dialog`);
+    report((await page.locator("[data-search-palette]").count()) === 0 &&
+      (await page.evaluate(() => document.activeElement?.matches("[data-open-desktop-search]") ?? false)),
+      `${label}: Esc closes the filtered palette and restores focus`);
+    await page.keyboard.press("Shift+/");
+    await page.locator("[data-keyboard-dialog]").waitFor();
+    report((await page.locator("[data-keyboard-dialog]").count()) === 1, `${label}: ? opens the keyboard dialog`);
     await page.keyboard.press("Escape");
     await page.locator("[data-keyboard-dialog]").waitFor({ state: "detached" });
 
@@ -5923,7 +5933,7 @@ async function checkSearch(browser, base, profile) {
     await type("workflow");
     await page.locator('[data-search-option="district"]').first().click();
     await page.waitForTimeout(600);
-    report(new URL(page.url()).searchParams.has("d") && (await page.locator("[data-search-dropdown]").count()) === 0,
+    report(new URL(page.url()).searchParams.has("d") && (await page.locator("[data-search-palette]").count()) === 0,
       `${label}: clicking a district result selects the district`, page.url());
   }
 
