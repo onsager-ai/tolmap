@@ -646,11 +646,15 @@ export function DesktopPanel(p: DesktopPanelProps) {
                           <i aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: rowColor(row.d) }} />
                           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                             <span className="truncate text-small font-semibold">{row.name}</span>
-                            <span className="min-w-0 truncate text-meta text-[var(--dim)]">
-                              {row.mostly && <>mostly <span className="font-mono">{row.mostly}</span></>}
-                              {row.mostly && keyFile && " · "}
+                            <span className="flex min-w-0 items-center truncate text-meta text-[var(--dim)]">
+                              {row.mostly && (
+                                <span className="min-w-0 flex-1 truncate">
+                                  mostly <span className="font-mono">{row.mostly}</span>
+                                </span>
+                              )}
+                              {row.mostly && keyFile && <span className="mx-1 shrink-0">·</span>}
                               {keyFile && (
-                                <span data-district-index-key-file={keyFile.file} className="font-mono">
+                                <span data-district-index-key-file={keyFile.file} className={`shrink-0 truncate font-mono ${row.mostly ? "max-w-[45%]" : "max-w-full"}`}>
                                   {p.doc.F[keyFile.file]?.split("/").pop()}
                                 </span>
                               )}
