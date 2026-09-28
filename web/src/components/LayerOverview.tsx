@@ -38,6 +38,22 @@ function displayNumber(value: number): string {
   return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
+function smallDistrictSummary(districts: number, islands: number): string {
+  const parts = [
+    ...(districts > 0 ? [`${districts} small ${districts === 1 ? "district" : "districts"}`] : []),
+    ...(islands > 0 ? [`${islands} small ${islands === 1 ? "island" : "islands"}`] : []),
+  ];
+  return `${parts.join(" + ")} not ranked`;
+}
+
+function packageSpanSummary(districts: number, islands: number): string {
+  const parts = [
+    ...(districts > 0 ? [`${districts} ${districts === 1 ? "district" : "districts"}`] : []),
+    ...(islands > 0 ? [`${islands} ${islands === 1 ? "island" : "islands"}`] : []),
+  ];
+  return parts.length ? parts.join(" + ") : "No District index span";
+}
+
 function DistrictRow({
   district,
   name,
@@ -123,9 +139,9 @@ function FileRow({
   );
 }
 
-function IndexSection({ title, children }: { title: string; children: ReactNode }) {
+function IndexSection({ title, children, first = false }: { title: string; children: ReactNode; first?: boolean }) {
   return (
-    <section className="mt-4" data-layer-overview-section={title.toLowerCase().replaceAll(" ", "-")}>
+    <section className={first ? "" : "mt-4"} data-layer-overview-section={title.toLowerCase().replaceAll(" ", "-")}>
       <h3 className="mb-1 text-small font-semibold">{title}</h3>
       <div className="-mx-2 flex flex-col gap-px">{children}</div>
     </section>
@@ -147,13 +163,13 @@ export function LayerOverviewIndex({
     <div data-layer-overview-index={layer}>
       {layer === "c" && (
         <>
-          <IndexSection title="Districts by commits">
+          <IndexSection first title="Districts by commits">
             {overview.churn.districts.map((row) => (
               <DistrictRow
                 key={row.district}
                 district={row.district}
                 name={row.name}
-                detail={`${displayNumber(row.commitsPerFile)} commits per file · ${row.knownFiles.toLocaleString("en-US")} files`}
+                detail={`${row.island ? "Island · " : ""}${displayNumber(row.commitsPerFile)} commits per file · ${row.knownFiles.toLocaleString("en-US")} files`}
                 total={`${displayNumber(row.commits)} file commits`}
                 bar={row.bar}
                 touch={touch}
@@ -161,7 +177,8 @@ export function LayerOverviewIndex({
                 onSelect={() => { highlighted(null); onSelectDistrict(row.district); }}
               />
             ))}
-            {overview.churn.districts.length === 0 && <p className="px-2 py-2 text-meta text-[var(--dim)]">Churn values are not present in this map.</p>}
+            {(overview.churn.smallDistrictCount > 0 || overview.churn.smallIslandCount > 0) && <p className="px-2 py-1 text-meta text-[var(--dim)]">{smallDistrictSummary(overview.churn.smallDistrictCount, overview.churn.smallIslandCount)}</p>}
+            {overview.churn.districts.length === 0 && overview.churn.smallDistrictCount === 0 && overview.churn.smallIslandCount === 0 && <p className="px-2 py-2 text-meta text-[var(--dim)]">Churn values are not present in this map.</p>}
           </IndexSection>
           <IndexSection title="Most changed files">
             {overview.churn.files.map((row) => (
@@ -174,19 +191,20 @@ export function LayerOverviewIndex({
 
       {layer === "x" && (
         <>
-          <IndexSection title="Districts by median complexity">
+          <IndexSection first title="Districts by median complexity">
             {overview.complexity.districts.map((row) => (
               <DistrictRow
                 key={row.district}
                 district={row.district}
                 name={row.name}
-                detail={`Median ${displayNumber(row.median)} · ${row.knownFiles.toLocaleString("en-US")} files`}
+                detail={`${row.island ? "Island · " : ""}Median ${displayNumber(row.median)} · ${row.knownFiles.toLocaleString("en-US")} files`}
                 touch={touch}
                 onHighlight={highlighted}
                 onSelect={() => { highlighted(null); onSelectDistrict(row.district); }}
               />
             ))}
-            {overview.complexity.districts.length === 0 && <p className="px-2 py-2 text-meta text-[var(--dim)]">Complexity values are not present in this map.</p>}
+            {(overview.complexity.smallDistrictCount > 0 || overview.complexity.smallIslandCount > 0) && <p className="px-2 py-1 text-meta text-[var(--dim)]">{smallDistrictSummary(overview.complexity.smallDistrictCount, overview.complexity.smallIslandCount)}</p>}
+            {overview.complexity.districts.length === 0 && overview.complexity.smallDistrictCount === 0 && overview.complexity.smallIslandCount === 0 && <p className="px-2 py-2 text-meta text-[var(--dim)]">Complexity values are not present in this map.</p>}
           </IndexSection>
           <IndexSection title="Most complex files">
             {overview.complexity.files.map((row) => (
@@ -199,7 +217,7 @@ export function LayerOverviewIndex({
 
       {layer === "p" && (
         <>
-          <IndexSection title="Packages">
+          <IndexSection first title="Packages">
             {overview.package.groups.map((row) => {
               const label = row.other ? "Other packages" : formatDirectory(row.path ?? ".");
               return (
@@ -213,25 +231,26 @@ export function LayerOverviewIndex({
                   onFocus={!touch ? () => highlighted(row.districtIds) : undefined}
                   onBlur={!touch ? () => highlighted(null) : undefined}
                   onClick={() => { highlighted(null); onFrameDistricts(row.districtIds); }}
-                  className={`flex ${touch ? "min-h-[64px]" : "h-[50px] min-h-[50px]"} w-full shrink-0 items-center justify-between gap-2 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-[var(--chrome-hover)]`}
+                  className={`flex ${touch ? "min-h-[64px]" : "h-[50px] min-h-[50px]"} w-full shrink-0 items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-[var(--chrome-hover)]`}
                 >
+                  <i aria-hidden="true" data-package-overview-swatch={row.path ?? "other"} className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: row.color }} />
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-small font-semibold">{label}</span>
-                    <span className="truncate text-meta text-[var(--dim)]">{overview.package.language ? `${displayLanguage(overview.package.language)} · ` : ""}{row.files.toLocaleString("en-US")} files</span>
+                    <span className="truncate text-meta text-[var(--dim)]">{row.language ? `${displayLanguage(row.language)} · ` : ""}{row.files.toLocaleString("en-US")} files</span>
                   </span>
-                  <span className="shrink-0 font-mono text-meta text-[var(--dim)]">{row.districtIds.length} districts</span>
+                  <span className="shrink-0 font-mono text-meta text-[var(--dim)]">{packageSpanSummary(row.districtCount, row.islandCount)}</span>
                 </button>
               );
             })}
             {overview.package.groups.length === 0 && <p className="px-2 py-2 text-meta text-[var(--dim)]">Package paths are not present in this map.</p>}
           </IndexSection>
-          <IndexSection title="Districts that mix packages">
+          <IndexSection title="Districts and islands that mix packages">
             {overview.package.mixedDistricts.map((row) => (
               <DistrictRow
                 key={row.district}
                 district={row.district}
                 name={row.name}
-                detail={`${row.packages.length} packages · ${row.packages.map((path) => path == null ? "Other packages" : formatDirectory(path)).join(" · ")}`}
+                detail={`${row.island ? "Island · " : ""}${row.packages.length} packages · ${row.packages.map((path) => path == null ? "Other packages" : formatDirectory(path)).join(" · ")}`}
                 touch={touch}
                 onHighlight={highlighted}
                 onSelect={() => { highlighted(null); onSelectDistrict(row.district); }}

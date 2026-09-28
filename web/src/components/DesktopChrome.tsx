@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState, type ComponentProps, type Keyboar
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { CatalogueEntry, MapDocument } from "@/types";
 import type { Layer } from "@/map/constants";
-import { CH, CX_, districtClass, districtColor, ramp } from "@/map/geometry";
+import { CH, CX_, districtColor, ramp } from "@/map/geometry";
 import { displayLanguage } from "@/map/layerOverview";
-import { buildDistrictIndex, buildDistrictIndexRow } from "@/map/districtIndex";
+import { buildDistrictIndexRow, districtIndexDistrictIds } from "@/map/districtIndex";
 import type { PackageGrouping, PackageLayout } from "@/map/packageLayout";
 import {
   COMMAND_BAR_HEIGHT_PX,
@@ -512,12 +512,11 @@ export function DesktopPanel(p: DesktopPanelProps) {
   const layerOverview = useLayerOverview(p.doc, p.packageGrouping);
   const onHighlightDistrictsRef = useRef(p.onHighlightDistricts);
   onHighlightDistrictsRef.current = p.onHighlightDistricts;
-  const mainland = useMemo(() => buildDistrictIndex(p.doc, p.packageLayout), [p.doc, p.packageLayout]);
   const indexRows = useMemo(() => {
-    const ids = Object.keys(p.doc.districts)
-      .filter((id) => districtClass(p.doc.districts[id]) !== "unconnected")
-      .sort((a, b) => p.doc.districts[b].size - p.doc.districts[a].size || Number(a) - Number(b));
-    return ids.map((id) => buildDistrictIndexRow(p.doc, p.packageLayout, Number(id)));
+    const ids = districtIndexDistrictIds(p.doc).sort((a, b) =>
+      p.doc.districts[String(b)].size - p.doc.districts[String(a)].size || a - b,
+    );
+    return ids.map((id) => buildDistrictIndexRow(p.doc, p.packageLayout, id));
   }, [p.doc, p.packageLayout]);
   const filesByDistrict = useMemo(() => {
     const files = new Map<number, number[]>();
@@ -653,7 +652,7 @@ export function DesktopPanel(p: DesktopPanelProps) {
               {p.layer === "d" ? (
                 <div data-desktop-overview data-overview-layer="d">
                   <h2 data-overview-headline data-overview-layer="d" className="balance mt-1 text-[20px] font-semibold leading-[1.25] tracking-[-.015em]">
-                    {mainland.mainland.length} districts · <span className="font-mono text-[18px] font-medium">{p.doc.F.length.toLocaleString("en-US")}</span> files
+                    {layerOverview.district.mainlandDistricts} districts{layerOverview.district.islandDistricts > 0 ? ` + ${layerOverview.district.islandDistricts} ${layerOverview.district.islandDistricts === 1 ? "island" : "islands"}` : ""} · <span className="font-mono text-[18px] font-medium">{layerOverview.district.files.toLocaleString("en-US")}</span> files
                   </h2>
                   <p className="mt-1.5 flex flex-wrap items-center gap-x-1 text-meta leading-[1.45] text-[var(--dim)]">
                     modularity <span className="font-mono">{p.doc.q.toFixed(3)}</span> ·
@@ -700,17 +699,18 @@ export function DesktopPanel(p: DesktopPanelProps) {
               ) : (
                 <div data-desktop-overview data-overview-layer={p.layer}>
                   <LayerOverviewHeadline overview={layerOverview} layer={p.layer} className="balance mt-1 text-[20px] font-semibold leading-[1.25] tracking-[-.015em]" />
-                  <div className="mt-4 flex min-h-8 items-center"><h3 className="text-small font-semibold">Index</h3></div>
-                  <LayerOverviewIndex
-                    doc={p.doc}
-                    overview={layerOverview}
-                    layer={p.layer}
-                    touch={p.touch}
-                    onSelectDistrict={p.onSelectDistrict}
-                    onSelectFile={p.cardProps.onSelectFile}
-                    onHighlightDistricts={p.onHighlightDistricts}
-                    onFrameDistricts={p.onFrameDistricts}
-                  />
+                  <div className="mt-4">
+                    <LayerOverviewIndex
+                      doc={p.doc}
+                      overview={layerOverview}
+                      layer={p.layer}
+                      touch={p.touch}
+                      onSelectDistrict={p.onSelectDistrict}
+                      onSelectFile={p.cardProps.onSelectFile}
+                      onHighlightDistricts={p.onHighlightDistricts}
+                      onFrameDistricts={p.onFrameDistricts}
+                    />
+                  </div>
                 </div>
               )}
             </>

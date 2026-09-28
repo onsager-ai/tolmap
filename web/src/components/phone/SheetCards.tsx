@@ -21,6 +21,7 @@ import { neighbourhoodOf } from "@/map/neighbourhoods";
 import { summarizeReferenceCoverage } from "@/map/referenceCoverage";
 import type { Layer } from "@/map/constants";
 import { LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
+import { layerOverviewHeadline } from "@/map/layerOverview";
 import type { StructureDetail } from "@/map/structureCard";
 import type { Detent } from "@/map/phoneShell";
 import { Breadcrumb } from "@/components/Breadcrumb";
@@ -185,15 +186,13 @@ export function OverviewCard({
   onPickKeyFile(i: number): void;
   onSelectDirectory(path?: string): void;
 }) {
-  let mainland = 0;
-  for (const d of Object.values(doc.districts)) if (districtClass(d) === "mainland") mainland++;
   const layerOverview = useLayerOverview(doc, packageGrouping);
   return (
     <div data-sheet-card="overview">
       <div data-sheet-dragzone>
         <div className="font-mono text-meta text-[var(--dim)]">{slug}</div>
         {layer === "d" ? (
-          <div data-overview-headline data-overview-layer="d"><SheetTitle>{mainland} districts · {doc.F.length.toLocaleString("en-US")} files</SheetTitle></div>
+          <div data-overview-headline data-overview-layer="d"><SheetTitle>{layerOverviewHeadline(layerOverview, "d").primary}</SheetTitle></div>
         ) : (
           <LayerOverviewHeadline overview={layerOverview} layer={layer} className="mt-0.5 text-sheet-title tabular-nums" />
         )}
@@ -245,7 +244,6 @@ export function OverviewCard({
         </div>
       ) : (
         <div className="-mx-2 mt-2.5 border-t border-[var(--rule)] pt-1">
-          <div className="px-2 pb-1 text-small font-semibold">Index</div>
           <LayerOverviewIndex
             doc={doc}
             overview={layerOverview}

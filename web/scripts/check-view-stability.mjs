@@ -1805,6 +1805,19 @@ async function checkLayerAwareOverview(browser, base, profile) {
     await page.waitForFunction((expected) => document.querySelector("[data-overview-headline]")?.getAttribute("data-overview-layer") === expected, layer);
     const current = (await headline.innerText()).trim();
     report(current.length > 0 && current !== previous && !seen.has(current), `${label}: switching to ${LAYER_TEXT[layer]} changes the overview headline`, current);
+    const overview = profile.isMobile
+      ? page.locator('[data-sheet-card="overview"]')
+      : page.locator(`[data-desktop-overview][data-overview-layer="${layer}"]`);
+    const expectedFirstHeading = { c: "Districts by commits", x: "Districts by median complexity", p: "Packages" }[layer];
+    const headings = (await overview.locator("[data-layer-overview-index] h3").allTextContents()).map((text) => text.trim());
+    report(headings[0] === expectedFirstHeading, `${label}: ${LAYER_TEXT[layer]} uses its own list title where Index used to appear`, headings);
+    report(!headings.includes("Index") && (await overview.locator("[data-index-tab]").count()) === 0, `${label}: non-District overview has no generic Index heading or District tabs`, headings);
+    if (layer === "p") {
+      const swatches = await page.locator("[data-package-overview-row]").evaluateAll((rows) =>
+        rows.map((row) => row.querySelector("[data-package-overview-swatch]")?.getAttribute("style") ?? ""),
+      );
+      report(swatches.length > 0 && swatches.every(Boolean), `${label}: every package row carries its map swatch`, JSON.stringify(swatches.slice(0, 5)));
+    }
     previous = current;
     seen.add(current);
   }
