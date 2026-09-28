@@ -1201,6 +1201,11 @@ jobs:
       # district ranking, highlighting and the keyboard reducer
       # (map/searchResults.ts).
       - run: npx --yes tsx@4.23.15 scripts/check-search.ts
+      # docs/UX.md §6 (phase 4): the indexing page's pure parts -- the
+      # stage -> phase table, phase states and shares, "Found so far", the
+      # ETA wording, and the failure pages' error-code table
+      # (lib/indexPhases.ts, lib/jobFailure.ts).
+      - run: npx --yes tsx@4.23.15 scripts/check-index-page.ts
       - run: npx --yes tsx@4.23.15 scripts/check-pinch-math.ts
       # docs/UX.md §4.9 (phase 6): Home's repository field -- parsing and
       # validation (src/api/repoInput.ts), including the reserved-name

@@ -19,4 +19,11 @@ error: string | null,
  * ...), or null. Clients branch on this rather than pattern-matching the
  * message text.
  */
-error_code: string | null, progress: ProgressValue | null, eta: Eta | null, eta_start_s: number | null, elapsed_s: number, stages: Array<StageSnapshot>, };
+error_code: string | null, progress: ProgressValue | null, eta: Eta | null, eta_start_s: number | null, elapsed_s: number, stages: Array<StageSnapshot>, 
+/**
+ * True once the map itself is stored and served at this job's commit
+ * (`GET /api/maps/{owner}/{repo}?commit=`), while the job still runs
+ * the symbol stages. The page may open the map then; symbols arrive
+ * when the job is done.
+ */
+map_ready: boolean, };

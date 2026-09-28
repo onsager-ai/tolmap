@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { JobSnapshot } from "@/types";
+import type { ProgressValue } from "@bindings/ProgressValue";
+import type { StageId } from "@bindings/StageId";
 import { getJob, jobEventsUrl } from "./client";
 
 export type JobConnection = "connecting" | "sse" | "poll";
@@ -29,6 +31,11 @@ export function useJobProgress(jobId: string | undefined) {
   const [job, setJob] = useState<JobSnapshot | null>(null);
   const [connection, setConnection] = useState<JobConnection>("connecting");
   const [fatalError, setFatalError] = useState<string | null>(null);
+  // docs/UX.md §6.3: a snapshot carries only the running stage's progress,
+  // so "Found so far" needs the last value seen for each stage. Kept here,
+  // per snapshot received, not per render: several SSE frames can land
+  // before React renders once, and the page would miss the earlier ones.
+  const [seen, setSeen] = useState<Partial<Record<StageId, ProgressValue>>>({});
 
   useEffect(() => {
     if (!jobId) return;
@@ -44,12 +51,15 @@ export function useJobProgress(jobId: string | undefined) {
     // stream" without a stale closure.
     let lastSnapshot: JobSnapshot | null = null;
     setJob(null);
+    setSeen({});
     setConnection("connecting");
     setFatalError(null);
 
     function applySnapshot(s: JobSnapshot) {
       lastSnapshot = s;
       setJob(s);
+      const progress = s.progress;
+      if (progress) setSeen((prev) => ({ ...prev, [progress.stage]: progress }));
     }
 
     function stopPolling() {
@@ -144,5 +154,5 @@ export function useJobProgress(jobId: string | undefined) {
     };
   }, [jobId]);
 
-  return { job, connection, error: fatalError };
+  return { job, connection, error: fatalError, seen };
 }

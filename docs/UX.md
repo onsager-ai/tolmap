@@ -179,7 +179,7 @@ Stage → phase mapping, from `src/progress.rs` `StageId::ALL` (wire ids as in `
 
 `install` and `index_*` only run for `--refs scip` jobs; as today, a pending `index_*` stage is not shown (`shownStage`). Phase progress is the share of its shown stages done, plus the running stage's `done/total` when `total` is known; an indeterminate stage shows an indeterminate bar.
 
-**When the map is ready:** as today, the page moves to the map when the job reaches `done`. The Detail phase runs last; the map may open when Map finishes if the service publishes the map before symbols (it does write `write_map` before `symbols`), which is a follow-up for the implementer to confirm against `src/service`, not a promise this design makes.
+**When the map is ready:** the page moves to the map when the Map phase finishes, and otherwise when the job reaches `done`. Phase 4 found that the service did not publish the map before symbols (it registered the map only with the job's whole result, after the Detail phase), so it now does: the map is read back when `write_map` finishes, served at the job's commit while the job runs on, and the snapshot says so with `map_ready` (`docs/API.md`, `GET /api/jobs/{job_id}`). The map view keeps `?job=<id>`, pins that commit, asks for symbols once the job is done, and says in one line that classes and functions are still coming until then.
 
 ### 6.3 Found so far
 

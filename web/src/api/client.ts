@@ -52,11 +52,16 @@ export class ApiRequestError extends Error {
   status: number;
   code: string | null;
   tooLarge: boolean;
-  constructor(status: number, body: Partial<ApiError> | null, fallbackMessage: string) {
+  /** Seconds from a `Retry-After` header (docs/API.md: `busy` and
+   * `rate_limited` refusals may carry one), or null. docs/UX.md §6.5: the
+   * busy page's "Try again" waits this long. */
+  retryAfterS: number | null;
+  constructor(status: number, body: Partial<ApiError> | null, fallbackMessage: string, retryAfterS: number | null = null) {
     super(body?.message ?? fallbackMessage);
     this.name = "ApiRequestError";
     this.status = status;
     this.code = body?.error ?? null;
+    this.retryAfterS = retryAfterS;
     // The contract does not name the exact `error` code for a repository
     // that is over the hosted limits — recognise it by the common code
     // spellings and, failing that, by the response status a size refusal
@@ -84,11 +89,21 @@ async function parseErrorBody(res: Response): Promise<Partial<ApiError> | null> 
   return null;
 }
 
+/** `Retry-After` in seconds; the HTTP-date form is read too. */
+function retryAfterSeconds(res: Response): number | null {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds);
+  const at = Date.parse(raw);
+  return Number.isFinite(at) ? Math.max(0, Math.round((at - Date.now()) / 1000)) : null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, init);
   if (!res.ok) {
     const body = await parseErrorBody(res);
-    throw new ApiRequestError(res.status, body, `${path}: ${res.status} ${res.statusText}`);
+    throw new ApiRequestError(res.status, body, `${path}: ${res.status} ${res.statusText}`, retryAfterSeconds(res));
   }
   return res.json() as Promise<T>;
 }

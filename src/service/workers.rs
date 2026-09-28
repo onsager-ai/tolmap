@@ -3226,6 +3226,18 @@ pub(crate) fn run_remote(
                             }
                         }
                     }
+                    // docs/UX.md §12: the agent uploads the map as its `map`
+                    // artifact before it forwards this event
+                    // (`agent::JobContext::upload_early_map`), so a map that
+                    // made it is in this lease's uploads by now.
+                    event @ WorkerEvent::StageFinished {
+                        stage: StageId::WriteMap,
+                        success: true,
+                        ..
+                    } => {
+                        sink.event(event);
+                        publish_uploaded_map(registry, hub, &tx, job_id, &lease.dir);
+                    }
                     event => sink.event(event),
                 }
                 saved.save_if_due(store, &tx, epoch, table);
@@ -3554,6 +3566,38 @@ impl SavedSnapshot {
         self.at = Instant::now();
         self.shape = shape;
     }
+}
+
+/// Publishes the `map` artifact an agent uploaded when its job's `write_map`
+/// stage finished as the job's early map (docs/UX.md §12). Best effort, like
+/// the upload: no upload, or one that is not a map document, leaves the job
+/// to open its map when it is done. The blob was stored under the digest the
+/// master computed itself while receiving it (`put_artifact`), so it is
+/// exactly what the agent sent; `check_map_bytes` is the same check local
+/// mode makes before publishing.
+fn publish_uploaded_map(
+    registry: &jobs::JobRegistry,
+    hub: &WorkerHub,
+    tx: &watch::Sender<JobSnapshot>,
+    job_id: Uuid,
+    dir: &Path,
+) {
+    let Some(upload) = hub.uploads(job_id).remove("map") else {
+        return;
+    };
+    let path = dir.join("blobs").join(&upload.sha256);
+    let map = match std::fs::read(&path) {
+        Ok(map) => map,
+        Err(error) => {
+            eprintln!("job {job_id}: the uploaded map is not opened early: {error}");
+            return;
+        }
+    };
+    if let Err(refused) = worker_result::check_map_bytes(&map) {
+        eprintln!("job {job_id}: the uploaded map is not opened early: {refused}");
+        return;
+    }
+    registry.publish_early_map(tx, map);
 }
 
 /// Checks a forwarded `result` against the uploads, writes the files the
@@ -5260,6 +5304,71 @@ mod tests {
         fixture.wait_for_no_lease();
     }
 
+    /// docs/UX.md §12 in worker modes: the agent uploads the map as `map`
+    /// before forwarding `write_map`'s end, and the master then serves it at
+    /// the job's commit while the symbol stages run -- not before, and not
+    /// once the job is done and its row is registered.
+    #[test]
+    fn an_uploaded_map_opens_early_when_write_map_finishes() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        let text = agent.recv_text();
+        assert!(
+            matches!(
+                serde_json::from_str::<MasterMessage>(&text).unwrap(),
+                MasterMessage::Assign { .. }
+            ),
+            "expected assign: {text}"
+        );
+        agent.event(
+            id,
+            WorkerEvent::StageStarted {
+                v: 1,
+                stage: StageId::WriteMap,
+            },
+        );
+        fixture.wait_for(id, "indexing", |s| s.status == JobStatus::Indexing);
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", MAP), 200);
+        // Uploaded but its stage not over: not served yet.
+        assert!(!fixture.snapshot(id).map_ready);
+        assert!(fixture.state.jobs.early_map("test/demo", COMMIT).is_none());
+        agent.event(
+            id,
+            WorkerEvent::StageFinished {
+                v: 1,
+                stage: StageId::WriteMap,
+                duration_s: 0.1,
+                success: true,
+            },
+        );
+        fixture.wait_for(id, "map_ready", |s| s.map_ready);
+        assert_eq!(
+            fixture
+                .state
+                .jobs
+                .early_map("test/demo", COMMIT)
+                .unwrap()
+                .as_slice(),
+            MAP
+        );
+        assert!(fixture.state.jobs.early_map("test/demo", "other").is_none());
+
+        let artifacts = upload_all(fixture.port, id);
+        agent.event(id, result_event(artifacts));
+        match agent.recv() {
+            MasterMessage::ResultAccepted { job_id, .. } => assert_eq!(job_id, id.to_string()),
+            other => panic!("expected result_accepted, got {other:?}"),
+        }
+        fixture.wait_for(id, "done", |s| s.status == JobStatus::Done);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while fixture.state.jobs.early_map("test/demo", COMMIT).is_some() {
+            assert!(Instant::now() < deadline, "the early map outlived the job");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        fixture.wait_for_no_lease();
+    }
+
     /// §4.2, §9: another agent's token, no token, the wrong epoch, a bad
     /// name, a wrong digest, a missing digest, a short body -- each refused
     /// and none recorded; then a result whose listed size disagrees with
@@ -5940,6 +6049,7 @@ mod tests {
                     duration_s: None,
                 })
                 .collect(),
+            map_ready: false,
         };
         crate::service::store::JobRow {
             job_id: id.to_string(),

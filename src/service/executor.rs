@@ -128,6 +128,15 @@ pub trait EventSink {
     /// the default, which ignores it: there an OOM fails the job as it
     /// always has.
     fn child_exited(&mut self, _status: std::process::ExitStatus, _killed_here: bool) {}
+    /// The child finished its `write_map` stage and the map it wrote has
+    /// been read back and checked (`worker_result::read_early_map`) --
+    /// called just before that `stage_finished` event is delivered, so
+    /// whatever the sink does with the map happens before anyone watching
+    /// the job sees the stage end. docs/UX.md §12: local mode publishes it
+    /// at once (`jobs::SnapshotSink`); an agent uploads it to the master
+    /// ahead of forwarding the event (`agent::AgentSink`). The default
+    /// ignores it, and the job's result is unaffected either way.
+    fn map_written(&mut self, _map: Vec<u8>) {}
 }
 
 /// Whether to stop, and which process to kill when told to. In local mode
@@ -952,6 +961,17 @@ pub(crate) fn run_child(
             message: format!("could not send worker spec: {error}"),
         });
     }
+    // docs/UX.md §12: where the child writes its map
+    // (`geometry::build_from_graph_warm_with_progress`), read back once its
+    // `write_map` stage finishes so the map can open before the symbol
+    // stages do. The owner is the uid the child runs as, as
+    // `jobs::worker_uid_in_effect` works it out.
+    let early_map_path = Path::new(&spec.output_dir).join(format!("{}.json", spec.repo));
+    let child_uid = if is_root() {
+        hardening.uid
+    } else {
+        current_uid()
+    };
     let stdout = child.stdout.take().expect("piped worker stdout");
     let mut outcome = None;
     let mut error = None;
@@ -1030,6 +1050,19 @@ pub(crate) fn run_child(
                         // this a broken pipe; its exit is handled below.
                         let _ = stdin.write_all(&line).and_then(|()| stdin.flush());
                     }
+                }
+            }
+            WorkerEvent::StageFinished {
+                stage: StageId::WriteMap,
+                success: true,
+                ..
+            } => {
+                // Best effort: a map that cannot be read back early is
+                // simply not opened early. The result's own checks
+                // (`worker_result::adopt`) are unchanged.
+                match worker_result::read_early_map(&early_map_path, Some(child_uid)) {
+                    Ok(map) => sink.map_written(map),
+                    Err(reason) => eprintln!("job {id}: the map is not opened early: {reason}"),
                 }
             }
             WorkerEvent::StageFinished { .. }

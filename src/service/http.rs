@@ -368,6 +368,22 @@ async fn get_map(
         Some(commit) => state.store.get(&slug, commit)?,
         None => state.store.latest(&slug)?,
     };
+    // docs/UX.md §12: a job still running its symbol stages serves the map
+    // it has already written, at its own commit only -- the latest map of a
+    // slug stays the last registered one until the job is done.
+    if let (None, Some(commit)) = (&row, &query.commit) {
+        if let Some(map) = state.jobs.early_map(&slug, commit) {
+            return Ok((
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                map.to_vec(),
+            )
+                .into_response());
+        }
+    }
     let row = row.ok_or_else(|| {
         ApiError::not_found(match &query.commit {
             Some(commit) => format!("{slug} has no indexed map at commit {commit}"),

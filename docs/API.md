@@ -222,7 +222,8 @@ be answered in the same request rather than always queuing a job.
   "stages": [
     {"id": "parse", "label": "Parsing files", "state": "pending" | "running" | "done" | "failed",
      "started_at": "<RFC3339>" | null, "duration_s": 1.5 | null}
-  ]
+  ],
+  "map_ready": false
 }
 ```
 
@@ -241,6 +242,8 @@ A result the service does not accept (see "Worker isolation") fails the job with
 free-text description of what is happening right now (e.g. `"cloning
 github.com/django/django"`, `"indexing (partition)"`) -- it is for display,
 not for matching on; only `status` is a stable enum.
+
+`map_ready` (additive; absent reads as `false`) turns `true` once the map itself is stored and served at the job's `commit` while the job still runs its symbol stages (docs/UX.md §12, "opening the map before details finish"): the job child's `write_map` stage has finished, and the service has read the map back and checked it is a map document -- in local mode from the child's output directory (opened without following a symlink, a regular file with one link owned by the worker's uid), in worker modes from the `map` artifact the agent uploads before it forwards that stage's end. Until the job is done, `GET /api/maps/{owner}/{repo}?commit=<commit>` then answers with that map (`Cache-Control: no-store`), and `/symbols` still answers 404 at that commit. The early map is held in memory, never in the `maps` table: a job that then fails leaves nothing servable (`map_ready` goes back to `false` on failure and on a re-queue), `POST /api/index` never answers `done` for it, and the slug's latest map, and `GET /api/maps`, stay the last registered ones. Best effort: a map that cannot be read back or uploaded in time is simply not opened early, and the job's result is unaffected.
 
 ### `POST /api/jobs/{job_id}/cancel`
 
@@ -349,7 +352,10 @@ One row per `(slug)`, showing its most recently indexed commit. Ordered by
 The `MapDocument` (see `src/schema.rs`, `bindings/MapDocument.ts`) for the
 most recently indexed commit of `owner/repo`. `?commit=<sha>` fetches a
 specific previously-indexed commit instead of the latest. `404` if the
-slug, or that commit of it, has never been indexed.
+slug, or that commit of it, has never been indexed -- except that a job
+at that commit whose snapshot says `map_ready` serves its map early (see
+`GET /api/jobs/{job_id}`); without `?commit=` the latest registered map is
+served as before.
 
 ### `GET /api/healthz`
 
