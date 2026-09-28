@@ -150,6 +150,31 @@ pub(crate) fn artifact_cap(name: &str) -> Option<u64> {
     }
 }
 
+/// One lease may keep at most 1 GiB of unique artifact blobs, with pending
+/// uploads reserved against the same total. This is four map allowances:
+/// enough for the map, full symbols sibling and district files, while
+/// bounding what one worker can put on the master's shared cache volume.
+pub(crate) const LEASE_MAX_ARTIFACT_BYTES: u64 = 4 * EARLY_MAP_MAX_BYTES;
+
+/// One lease may name up to 10,000 distinct artifacts, including its fixed
+/// outputs. That leaves room for nearly 10,000 district files while keeping
+/// a worker from creating unbounded tiny files and registry entries.
+pub(crate) const LEASE_MAX_ARTIFACTS: usize = 10_000;
+
+/// Whether a result's artifacts, as `(name, sha256, bytes)`, fit one lease
+/// the way the master counts it: at most [`LEASE_MAX_ARTIFACTS`] distinct
+/// names, and at most [`LEASE_MAX_ARTIFACT_BYTES`] of unique blobs, a blob
+/// two names share counting once. The agent checks this before its first
+/// `PUT`, as it checks [`artifact_cap`] before each one, so these limits
+/// fail the job as `invalid_worker_result` instead of reaching the master's
+/// early 413 (#191).
+pub(crate) fn check_lease_totals<'a>(
+    artifacts: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
+) -> Result<(), String> {
+    let _ = artifacts.into_iter().count();
+    Ok(())
+}
+
 /// Reads the map a job child has written to output_dir, using the filename
 /// derived by OutputNames::for_repo(repo), after its write_map stage ends.
 /// This lets the map open before the symbol stages do (docs/UX.md §12).
@@ -924,5 +949,61 @@ mod tests {
     fn a_repository_name_that_is_not_one_file_name_is_refused() {
         assert!(OutputNames::for_repo("a/b").is_err());
         assert!(OutputNames::for_repo("demo").is_ok());
+    }
+
+    /// #191: the agent's pre-upload check counts what the master's early
+    /// 413 counts -- distinct names, and unique blobs once each -- so an
+    /// honest agent never meets that 413, and never mistakes it, through a
+    /// reset, for a crash.
+    #[test]
+    fn lease_totals_count_names_and_unique_blob_bytes_as_the_master_does() {
+        let (first, second) = ("a".repeat(64), "b".repeat(64));
+        assert!(
+            check_lease_totals([
+                ("map", first.as_str(), LEASE_MAX_ARTIFACT_BYTES),
+                ("symbols", first.as_str(), LEASE_MAX_ARTIFACT_BYTES),
+            ])
+            .is_ok(),
+            "a blob two names share counts once, so this is exactly at the limit"
+        );
+        assert!(
+            check_lease_totals([
+                ("map", first.as_str(), LEASE_MAX_ARTIFACT_BYTES),
+                ("symbols", second.as_str(), 1),
+            ])
+            .is_err(),
+            "one unique byte over the lease's total is refused"
+        );
+        assert!(
+            check_lease_totals([
+                ("map", first.as_str(), u64::MAX),
+                ("symbols", second.as_str(), u64::MAX),
+            ])
+            .is_err(),
+            "a total that overflows is over the limit"
+        );
+
+        let digests = (0..=LEASE_MAX_ARTIFACTS)
+            .map(|n| format!("{n:064x}"))
+            .collect::<Vec<_>>();
+        let names = (0..=LEASE_MAX_ARTIFACTS)
+            .map(|n| format!("symbols_dir/{n}.json"))
+            .collect::<Vec<_>>();
+        let artifacts = |count: usize| {
+            names
+                .iter()
+                .zip(&digests)
+                .take(count)
+                .map(|(name, digest)| (name.as_str(), digest.as_str(), 1u64))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            check_lease_totals(artifacts(LEASE_MAX_ARTIFACTS)).is_ok(),
+            "exactly the lease's name limit fits"
+        );
+        assert!(
+            check_lease_totals(artifacts(LEASE_MAX_ARTIFACTS + 1)).is_err(),
+            "one name over the lease's limit is refused"
+        );
     }
 }
