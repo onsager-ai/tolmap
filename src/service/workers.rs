@@ -3115,6 +3115,8 @@ pub(crate) fn run_remote(
         ExecutorClone::NotStarted
     };
     let mut cancel_sent = false;
+    let mut early_map_attempted = false;
+    let mut repeated_write_map_logged = false;
     // Set once `cancel` `reroute` is sent: the class the job moves to.
     // Asked at most once per lease, whatever further `features` say.
     let mut reroute_to: Option<usize> = None;
@@ -3236,7 +3238,13 @@ pub(crate) fn run_remote(
                         ..
                     } => {
                         sink.event(event);
-                        publish_uploaded_map(registry, hub, &tx, job_id, &lease.dir);
+                        if !early_map_attempted {
+                            early_map_attempted = true;
+                            publish_uploaded_map(registry, hub, &tx, job_id, &lease.dir);
+                        } else if !repeated_write_map_logged {
+                            eprintln!("job {job_id}: ignoring repeated successful write_map event for the early map");
+                            repeated_write_map_logged = true;
+                        }
                     }
                     event => sink.event(event),
                 }
@@ -3583,21 +3591,37 @@ fn publish_uploaded_map(
     dir: &Path,
 ) {
     let Some(upload) = hub.uploads(job_id).remove("map") else {
+        eprintln!("job {job_id}: no uploaded map to open early");
         return;
     };
+    if upload.bytes > worker_result::EARLY_MAP_MAX_BYTES {
+        eprintln!(
+            "job {job_id}: the uploaded map is not opened early: {} bytes exceeds the 256 MiB cap",
+            upload.bytes
+        );
+        return;
+    }
     let path = dir.join("blobs").join(&upload.sha256);
-    let map = match std::fs::read(&path) {
-        Ok(map) => map,
-        Err(error) => {
-            eprintln!("job {job_id}: the uploaded map is not opened early: {error}");
-            return;
-        }
-    };
+    let mut map = Vec::new();
+    let read = std::fs::File::open(&path).and_then(|file| {
+        file.take(worker_result::EARLY_MAP_MAX_BYTES + 1)
+            .read_to_end(&mut map)
+    });
+    if let Err(error) = read {
+        eprintln!("job {job_id}: the uploaded map is not opened early: {error}");
+        return;
+    }
+    if map.len() as u64 > worker_result::EARLY_MAP_MAX_BYTES {
+        eprintln!(
+            "job {job_id}: the uploaded map is not opened early: its size on disk exceeds the 256 MiB cap"
+        );
+        return;
+    }
     if let Err(refused) = worker_result::check_map_bytes(&map) {
         eprintln!("job {job_id}: the uploaded map is not opened early: {refused}");
         return;
     }
-    registry.publish_early_map(tx, map);
+    registry.publish_early_map(tx, axum::body::Bytes::from(map));
 }
 
 /// Checks a forwarded `result` against the uploads, writes the files the
@@ -4860,12 +4884,15 @@ mod tests {
         job: Uuid,
         epoch: u64,
         name: &str,
+        prefix: &[u8],
         byte: u8,
         bytes: u64,
     ) -> u16 {
+        assert!(bytes >= prefix.len() as u64);
         let block = [byte; 64 * 1024];
         let mut hasher = Sha256::new();
-        let mut remaining = bytes;
+        hasher.update(prefix);
+        let mut remaining = bytes - prefix.len() as u64;
         while remaining > 0 {
             let count = remaining.min(block.len() as u64) as usize;
             hasher.update(&block[..count]);
@@ -4887,7 +4914,8 @@ mod tests {
              Content-Length: {bytes}\r\n\r\n"
         )
         .unwrap();
-        let mut remaining = bytes;
+        stream.write_all(prefix).unwrap();
+        let mut remaining = bytes - prefix.len() as u64;
         while remaining > 0 {
             let count = remaining.min(block.len() as u64) as usize;
             stream.write_all(&block[..count]).unwrap();
@@ -5399,7 +5427,7 @@ mod tests {
                 .jobs
                 .early_map("test/demo", COMMIT)
                 .unwrap()
-                .as_slice(),
+                .as_ref(),
             MAP
         );
         assert!(fixture.state.jobs.early_map("test/demo", "other").is_none());
@@ -5430,7 +5458,7 @@ mod tests {
                 .jobs
                 .early_map("test/demo", COMMIT)
                 .unwrap()
-                .as_slice(),
+                .as_ref(),
             MAP,
             "later write_map events must not replace the first early map"
         );
@@ -5452,7 +5480,6 @@ mod tests {
 
     #[test]
     fn an_uploaded_map_over_256_mib_is_not_opened_early_or_served() {
-        const EARLY_MAP_TEST_CAP: u64 = 256 * 1024 * 1024;
         let fixture = Fixture::new(Duration::from_secs(60), test_build());
         let mut agent = fixture.agent(0);
         let id = fixture.spawn(remote_repo("demo"));
@@ -5477,9 +5504,18 @@ mod tests {
 
         // Trailing JSON whitespace keeps this a valid map if the master
         // reads the whole upload, so the test fails without the early cap.
-        let uploaded_bytes = EARLY_MAP_TEST_CAP + 1;
+        let uploaded_bytes = worker_result::EARLY_MAP_MAX_BYTES + 1;
         assert_eq!(
-            put_repeated_at(fixture.port, TOKENS[0], id, 1, "map", b' ', uploaded_bytes,),
+            put_repeated_at(
+                fixture.port,
+                TOKENS[0],
+                id,
+                1,
+                "map",
+                MAP,
+                b' ',
+                uploaded_bytes,
+            ),
             200
         );
         assert_eq!(

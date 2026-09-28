@@ -23,6 +23,8 @@
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+use axum::body::Bytes;
+
 use crate::naming::NameCache;
 
 /// Bound on the names cache the service reads back. It holds one short entry
@@ -116,36 +118,52 @@ pub(crate) fn check_map_bytes(bytes: &[u8]) -> Result<(), Refused> {
         .map_err(|error| invalid(format!("the map is not a valid map document: {error}")))
 }
 
-/// Bound on a map read back while its worker still runs. The largest corpus
-/// maps are tens of megabytes; anything near this is not a map.
-const EARLY_MAP_MAX_BYTES: u64 = 1 << 30;
+/// Early maps are held once per active job in the master. The largest corpus
+/// maps are tens of megabytes; 256 MiB leaves headroom without letting N
+/// concurrent jobs each retain a gigabyte.
+pub(crate) const EARLY_MAP_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Reads the map a job child has just written at `path` -- its output
-/// directory's `<repo>.json`, once its `write_map` stage has finished -- so
-/// it can open before the symbol stages do (docs/UX.md §12).
+/// Reads the map a job child has written to output_dir, using the filename
+/// derived by OutputNames::for_repo(repo), after its write_map stage ends.
+/// This lets the map open before the symbol stages do (docs/UX.md §12).
 ///
-/// Unlike [`adopt`], the child is still running and still owns the
-/// directory, so the file cannot be moved out of its reach first. It is
-/// opened instead, never through a symlink at the last component and never
-/// blocking on a FIFO, and everything is checked on the open file itself
-/// rather than on the path: a regular file with one link, owned by `owner`
-/// when given (the worker's uid). Whatever the path named, then, what is
-/// read is a file the worker's own uid owns, which is content the worker
-/// could have written as its map anyway. The bytes are copied out whole,
-/// so a later write by the child changes nothing already read, and they
-/// must be a map document ([`check_map_bytes`]).
-pub(crate) fn read_early_map(path: &Path, owner: Option<u32>) -> Result<Vec<u8>, Refused> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
+/// Unlike adopt, the child is still running and owns the directory, so the
+/// file cannot be moved out of its reach first. On Unix, output_dir itself
+/// is opened with O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, checked as a real
+/// directory owned by owner when given, and pinned by its fd. The map leaf
+/// is then opened relative to that fd with openat, O_NOFOLLOW, and
+/// O_NONBLOCK. Its opened file must be regular, have one link, and be owned
+/// by owner when given. This refuses a swapped output symlink and pins the
+/// selected directory while the leaf is opened.
+///
+/// In root mode, the service-owned path components above job_dir are assumed
+/// not writable by the worker; the executor creates them outside the
+/// recursively chowned job directory. This function relies on that layout
+/// and does not walk or validate those ancestors. The job directory itself
+/// is worker-owned and writable, so it may swap its output entry; the
+/// no-follow directory open rejects that entry if it is a symlink and pins
+/// the selected directory. An ancestor permission walk is not done because
+/// the worker uid alone does not account reliably for group access and
+/// sticky-directory rules.
+///
+/// On non-Unix targets, ordinary path opening is used: the common checks
+/// still require a regular file within the byte cap that is a map document,
+/// but no-follow, link-count, and owner checks are unavailable. Reads are
+/// copied into immutable bytes. This does not verify semantic correctness;
+/// the result checks run when the job is done.
+pub(crate) fn read_early_map(
+    output_dir: &Path,
+    repo: &str,
+    owner: Option<u32>,
+) -> Result<Bytes, Refused> {
+    let map_name = OutputNames::for_repo(repo)?.map;
+    let mut file = open_early_map_file(output_dir, &map_name, owner)?;
     let meta = file.metadata()?;
     if !meta.file_type().is_file() {
         return Err(invalid("the map is not a regular file"));
+    }
+    if meta.len() > EARLY_MAP_MAX_BYTES {
+        return Err(invalid("the map is larger than the 256 MiB early-map cap"));
     }
     #[cfg(unix)]
     {
@@ -162,10 +180,66 @@ pub(crate) fn read_early_map(path: &Path, owner: Option<u32>) -> Result<Vec<u8>,
     let mut bytes = Vec::new();
     file.take(EARLY_MAP_MAX_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > EARLY_MAP_MAX_BYTES {
-        return Err(invalid("the map is larger than any map tolmap writes"));
+        return Err(invalid("the map is larger than the 256 MiB early-map cap"));
     }
     check_map_bytes(&bytes)?;
-    Ok(bytes)
+    Ok(Bytes::from(bytes))
+}
+
+#[cfg(unix)]
+fn open_early_map_file(
+    output_dir: &Path,
+    map_name: &str,
+    owner: Option<u32>,
+) -> Result<std::fs::File, Refused> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let directory = std::ffi::CString::new(output_dir.as_os_str().as_bytes())
+        .map_err(|_| invalid("the output directory path contains a NUL byte"))?;
+    let directory_fd = unsafe {
+        libc::open(
+            directory.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if directory_fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let directory = unsafe { std::fs::File::from_raw_fd(directory_fd) };
+    let metadata = directory.metadata()?;
+    if !metadata.file_type().is_dir() {
+        return Err(invalid("the output path is not a directory"));
+    }
+    if owner.is_some_and(|uid| metadata.uid() != uid) {
+        return Err(invalid("the output directory is not owned by the worker"));
+    }
+
+    let map_name = std::ffi::CString::new(map_name)
+        .map_err(|_| invalid("the map file name contains a NUL byte"))?;
+    let map_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            map_name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if map_fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(map_fd) })
+}
+
+#[cfg(not(unix))]
+fn open_early_map_file(
+    output_dir: &Path,
+    map_name: &str,
+    _owner: Option<u32>,
+) -> Result<std::fs::File, Refused> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    Ok(options.open(output_dir.join(map_name))?)
 }
 
 /// The paths and counts a worker reports in its `result` event. `files` and
@@ -536,24 +610,24 @@ mod tests {
     fn an_early_map_is_read_from_a_regular_file_the_worker_owns() {
         let job = Job::new();
         let path = job.output.join(format!("{REPO}.json"));
-        let map = read_early_map(&path, Some(job.owner)).unwrap();
-        assert_eq!(map, std::fs::read(&path).unwrap());
+        let map = read_early_map(&job.output, REPO, Some(job.owner)).unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        assert_eq!(map.as_ref(), expected.as_slice());
         assert!(path.is_file(), "an early read leaves the map where it is");
     }
 
     #[test]
     fn an_early_map_larger_than_256_mib_is_refused() {
-        const EARLY_MAP_TEST_CAP: u64 = 256 * 1024 * 1024;
         let job = Job::new();
         let path = job.output.join(format!("{REPO}.json"));
         std::fs::OpenOptions::new()
             .write(true)
             .open(&path)
             .unwrap()
-            .set_len(EARLY_MAP_TEST_CAP + 1)
+            .set_len(EARLY_MAP_MAX_BYTES + 1)
             .unwrap();
 
-        let message = match read_early_map(&path, Some(job.owner)) {
+        let message = match read_early_map(&job.output, REPO, Some(job.owner)) {
             Err(Refused::Invalid(message)) => message,
             Err(Refused::Io(error)) => panic!("expected a size refusal, got I/O error: {error}"),
             Ok(_) => panic!("an early map over 256 MiB must be refused"),
@@ -577,14 +651,14 @@ mod tests {
 
         let path = job.output.join(format!("{REPO}.json"));
         assert!(
-            read_early_map(&path, Some(job.owner)).is_err(),
+            read_early_map(&job.output, REPO, Some(job.owner)).is_err(),
             "a valid map behind a symlinked output directory must not be read"
         );
     }
 
     #[test]
     fn an_early_map_that_is_not_a_map_or_not_the_workers_is_refused() {
-        fn refused_early(result: Result<Vec<u8>, Refused>) -> String {
+        fn refused_early(result: Result<Bytes, Refused>) -> String {
             match result {
                 Err(refused) => refused.to_string(),
                 Ok(_) => panic!("expected the early map to be refused"),
@@ -594,31 +668,31 @@ mod tests {
         let path = job.output.join(format!("{REPO}.json"));
 
         std::fs::write(&path, b"not json").unwrap();
-        let message = refused_early(read_early_map(&path, Some(job.owner)));
+        let message = refused_early(read_early_map(&job.output, REPO, Some(job.owner)));
         assert!(message.contains("not a valid map document"), "{message}");
 
         std::fs::write(&path, br#"{"F": [], "districts": {}}"#).unwrap();
-        let message = refused_early(read_early_map(&path, Some(job.owner + 1)));
+        let message = refused_early(read_early_map(&job.output, REPO, Some(job.owner + 1)));
         assert!(message.contains("not owned by the worker"), "{message}");
 
         // A symlink at the last component is never followed.
         std::fs::remove_file(&path).unwrap();
         symlink(job.outside(), &path).unwrap();
-        assert!(read_early_map(&path, Some(job.owner)).is_err());
+        assert!(read_early_map(&job.output, REPO, Some(job.owner)).is_err());
 
         // A second name for a file elsewhere is not something the worker wrote.
         std::fs::remove_file(&path).unwrap();
         let other = job.dir.path().join("other.json");
         std::fs::write(&other, br#"{"F": [], "districts": {}}"#).unwrap();
         std::fs::hard_link(&other, &path).unwrap();
-        let message = refused_early(read_early_map(&path, Some(job.owner)));
+        let message = refused_early(read_early_map(&job.output, REPO, Some(job.owner)));
         assert!(message.contains("more than one link"), "{message}");
 
         // A FIFO neither blocks the read nor passes for a map.
         std::fs::remove_file(&path).unwrap();
         let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
-        let message = refused_early(read_early_map(&path, Some(job.owner)));
+        let message = refused_early(read_early_map(&job.output, REPO, Some(job.owner)));
         assert!(message.contains("not a regular file"), "{message}");
     }
 

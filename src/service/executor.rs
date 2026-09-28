@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use axum::body::Bytes;
 use uuid::Uuid;
 
 use crate::progress::StageId;
@@ -136,7 +137,7 @@ pub trait EventSink {
     /// at once (`jobs::SnapshotSink`); an agent uploads it to the master
     /// ahead of forwarding the event (`agent::AgentSink`). The default
     /// ignores it, and the job's result is unaffected either way.
-    fn map_written(&mut self, _map: Vec<u8>) {}
+    fn map_written(&mut self, _map: Bytes) {}
 }
 
 /// Whether to stop, and which process to kill when told to. In local mode
@@ -961,12 +962,10 @@ pub(crate) fn run_child(
             message: format!("could not send worker spec: {error}"),
         });
     }
-    // docs/UX.md §12: where the child writes its map
-    // (`geometry::build_from_graph_warm_with_progress`), read back once its
-    // `write_map` stage finishes so the map can open before the symbol
-    // stages do. The owner is the uid the child runs as, as
-    // `jobs::worker_uid_in_effect` works it out.
-    let early_map_path = Path::new(&spec.output_dir).join(format!("{}.json", spec.repo));
+    // docs/UX.md §12: read back the map on the first successful write_map
+    // event only. The child is untrusted and can repeat protocol events;
+    // even a refused read must not be repeated. The owner is its effective
+    // uid, as jobs::worker_uid_in_effect works it out.
     let child_uid = if is_root() {
         hardening.uid
     } else {
@@ -976,6 +975,8 @@ pub(crate) fn run_child(
     let mut outcome = None;
     let mut error = None;
     let mut last_stage = None;
+    let mut early_map_attempted = false;
+    let mut repeated_write_map_logged = false;
     for line in BufReader::new(stdout).lines() {
         let line = match line {
             Ok(line) => line,
@@ -1056,13 +1057,30 @@ pub(crate) fn run_child(
                 stage: StageId::WriteMap,
                 success: true,
                 ..
-            } => {
+            } if !early_map_attempted => {
+                early_map_attempted = true;
                 // Best effort: a map that cannot be read back early is
                 // simply not opened early. The result's own checks
                 // (`worker_result::adopt`) are unchanged.
-                match worker_result::read_early_map(&early_map_path, Some(child_uid)) {
+                match worker_result::read_early_map(
+                    Path::new(&spec.output_dir),
+                    &spec.repo,
+                    Some(child_uid),
+                ) {
                     Ok(map) => sink.map_written(map),
                     Err(reason) => eprintln!("job {id}: the map is not opened early: {reason}"),
+                }
+            }
+            WorkerEvent::StageFinished {
+                stage: StageId::WriteMap,
+                success: true,
+                ..
+            } => {
+                if !repeated_write_map_logged {
+                    eprintln!(
+                        "job {id}: ignoring repeated successful write_map event for the early map"
+                    );
+                    repeated_write_map_logged = true;
                 }
             }
             WorkerEvent::StageFinished { .. }

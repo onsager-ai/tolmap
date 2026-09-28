@@ -21,9 +21,10 @@ error: string | null,
  */
 error_code: string | null, progress: ProgressValue | null, eta: Eta | null, eta_start_s: number | null, elapsed_s: number, stages: Array<StageSnapshot>, 
 /**
- * True once the map itself is stored and served at this job's commit
- * (`GET /api/maps/{owner}/{repo}?commit=`), while the job still runs
- * the symbol stages. The page may open the map then; symbols arrive
- * when the job is done.
+ * True while the job is active after its early map has been checked and
+ * made available at its own commit (`GET /api/maps/{owner}/{repo}?commit=`).
+ * The map has not passed the result checks yet. Cleared when the job is
+ * done, failed, or re-queued; the viewer uses the registered map on
+ * Done and keeps the job handover only while details are still pending.
  */
 map_ready: boolean, };
