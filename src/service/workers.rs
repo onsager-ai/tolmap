@@ -5805,7 +5805,10 @@ mod tests {
         assert_eq!(put(fixture.port, TOKENS[0], id, "map", replacement), 200);
         assert_eq!(
             fixture.hub.uploads(id).get("map"),
-            Some(&artifact("map", replacement))
+            Some(&Upload {
+                sha256: sha(replacement),
+                bytes: replacement.len() as u64,
+            })
         );
         assert_eq!(fixture.hub.uploads(id).len(), TEST_ARTIFACT_COUNT);
     }
@@ -5824,7 +5827,10 @@ mod tests {
         assert_eq!(lease_blob_stats(&fixture, id), (1, 3));
         assert_eq!(
             fixture.hub.uploads(id).get("map"),
-            Some(&artifact("map", b"new"))
+            Some(&Upload {
+                sha256: sha(b"new"),
+                bytes: b"new".len() as u64,
+            })
         );
 
         // The smaller replacement leaves room for one byte exactly at the
