@@ -4877,57 +4877,56 @@ mod tests {
         .0
     }
 
-    /// Sends a repeated byte without keeping a 256 MiB test body in memory.
-    fn put_repeated_at(
+    /// Declares an upload without sending its body. A prompt response proves
+    /// a size refusal happened before the handler tried to read the stream.
+    fn put_declared_without_body(
         port: u16,
         token: &str,
         job: Uuid,
-        epoch: u64,
         name: &str,
-        prefix: &[u8],
-        byte: u8,
         bytes: u64,
-    ) -> u16 {
-        assert!(bytes >= prefix.len() as u64);
-        let block = [byte; 64 * 1024];
-        let mut hasher = Sha256::new();
-        hasher.update(prefix);
-        let mut remaining = bytes - prefix.len() as u64;
-        while remaining > 0 {
-            let count = remaining.min(block.len() as u64) as usize;
-            hasher.update(&block[..count]);
-            remaining -= count as u64;
-        }
-        let digest = format!("{:x}", hasher.finalize());
+    ) -> (u16, String) {
+        use std::io::{Read, Write};
 
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream
-            .set_read_timeout(Some(Duration::from_secs(60)))
+            .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         write!(
             stream,
-            "PUT /workers/artifacts/{job}/{epoch}/{name} HTTP/1.1\r\n\
+            "PUT /workers/artifacts/{job}/1/{name} HTTP/1.1\r\n\
              Host: 127.0.0.1\r\n\
              Connection: close\r\n\
              Authorization: Bearer {token}\r\n\
-             {SHA256_HEADER}: {digest}\r\n\
-             Content-Length: {bytes}\r\n\r\n"
+             {SHA256_HEADER}: {}\r\n\
+             Content-Length: {bytes}\r\n\r\n",
+            sha(MAP)
         )
         .unwrap();
-        stream.write_all(prefix).unwrap();
-        let mut remaining = bytes - prefix.len() as u64;
-        while remaining > 0 {
-            let count = remaining.min(block.len() as u64) as usize;
-            stream.write_all(&block[..count]).unwrap();
-            remaining -= count as u64;
-        }
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
-        String::from_utf8_lossy(&response)
+        let _ = stream.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response).into_owned();
+        let status = response
             .split(' ')
             .nth(1)
-            .and_then(|status| status.parse().ok())
-            .unwrap_or(0)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        (status, response)
+    }
+
+    fn lease_blob_stats(fixture: &Fixture, job: Uuid) -> (usize, u64) {
+        let dir = fixture
+            .hub
+            .with_lease(0, job, 1, |lease| Ok(lease.dir.clone()))
+            .unwrap();
+        let mut count = 0;
+        let mut bytes = 0;
+        for entry in std::fs::read_dir(dir.join("blobs")).unwrap() {
+            let metadata = entry.unwrap().metadata().unwrap();
+            count += 1;
+            bytes += metadata.len();
+        }
+        (count, bytes)
     }
 
     fn artifact(name: &str, body: &[u8]) -> Artifact {
@@ -5479,6 +5478,189 @@ mod tests {
     }
 
     #[test]
+    fn each_artifact_kind_rejects_content_length_over_its_cap_before_reading() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+
+        // Keep the values in step with the per-kind limits in
+        // worker_result.rs: symbols use the full-result allowance, each
+        // district is fetched as one viewer JSON response, and names already
+        // have a 16 MiB adoption bound.
+        for (name, limit) in [
+            ("symbols", 256 * 1024 * 1024),
+            ("names", 16 * 1024 * 1024),
+            ("symbols_dir/0.json", 64 * 1024 * 1024),
+        ] {
+            let (status, response) =
+                put_declared_without_body(fixture.port, TOKENS[0], id, name, limit + 1);
+            assert_eq!(status, 413, "{name}: {response}");
+        }
+        assert!(fixture.hub.uploads(id).is_empty());
+    }
+
+    #[test]
+    fn a_lease_total_overflow_is_refused_before_reading_the_body() {
+        const TEST_LEASE_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                // Represent already-stored bytes without making a 1 GiB
+                // fixture on disk. The reservation check only needs the
+                // lease's existing artifact metadata.
+                lease.uploads.insert(
+                    "map".to_owned(),
+                    Upload {
+                        sha256: "f".repeat(64),
+                        bytes: TEST_LEASE_BYTES - 1,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        let (status, response) =
+            put_declared_without_body(fixture.port, TOKENS[0], id, "symbols", 2);
+        assert_eq!(status, 413, "{response}");
+        assert_eq!(fixture.hub.uploads(id).len(), 1);
+    }
+
+    #[test]
+    fn an_artifact_count_at_the_limit_rejects_new_names_but_allows_replacement() {
+        const TEST_ARTIFACT_COUNT: usize = 10_000;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", b"old map"), 200);
+        fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                for district in 0..TEST_ARTIFACT_COUNT - 1 {
+                    lease.uploads.insert(
+                        format!("symbols_dir/{district}.json"),
+                        Upload {
+                            sha256: "0".repeat(64),
+                            bytes: 0,
+                        },
+                    );
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(fixture.hub.uploads(id).len(), TEST_ARTIFACT_COUNT);
+
+        assert_eq!(
+            put(fixture.port, TOKENS[0], id, "symbols", b"new name"),
+            413
+        );
+        let replacement = b"replacement map";
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", replacement), 200);
+        assert_eq!(
+            fixture.hub.uploads(id).get("map"),
+            Some(&artifact("map", replacement))
+        );
+        assert_eq!(fixture.hub.uploads(id).len(), TEST_ARTIFACT_COUNT);
+    }
+
+    #[test]
+    fn replacing_an_artifact_different_bytes_frees_its_blob_and_total() {
+        const TEST_LEASE_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        let original = vec![b'o'; 100];
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", &original), 200);
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", b"new"), 200);
+        assert_eq!(lease_blob_stats(&fixture, id), (1, 3));
+        assert_eq!(
+            fixture.hub.uploads(id).get("map"),
+            Some(&artifact("map", b"new"))
+        );
+
+        // The smaller replacement leaves room for one byte exactly at the
+        // lease boundary; a stale reservation of the old 100 bytes would
+        // make this upload fail.
+        fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                lease.uploads.insert(
+                    "symbols".to_owned(),
+                    Upload {
+                        sha256: "f".repeat(64),
+                        bytes: TEST_LEASE_BYTES - 4,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(put(fixture.port, TOKENS[0], id, "names", b"x"), 200);
+    }
+
+    #[test]
+    fn an_identical_reupload_keeps_one_blob_and_counts_its_bytes_once() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        let bytes = b"same artifact contents";
+
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", bytes), 200);
+        let first = fixture.hub.uploads(id).get("map").cloned().unwrap();
+        assert_eq!(put(fixture.port, TOKENS[0], id, "map", bytes), 200);
+
+        assert_eq!(fixture.hub.uploads(id).get("map"), Some(&first));
+        assert_eq!(lease_blob_stats(&fixture, id), (1, bytes.len() as u64));
+    }
+
+    #[test]
+    fn a_short_body_releases_its_lease_byte_reservation() {
+        const TEST_LEASE_BYTES: u64 = 4 * worker_result::EARLY_MAP_MAX_BYTES;
+
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("demo"));
+        assert_eq!(agent.assigned(), id);
+        fixture
+            .hub
+            .with_lease(0, id, 1, |lease| {
+                lease.uploads.insert(
+                    "symbols".to_owned(),
+                    Upload {
+                        sha256: "f".repeat(64),
+                        bytes: TEST_LEASE_BYTES - 2,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        assert_ne!(
+            request(
+                fixture.port,
+                "PUT",
+                &format!("/workers/artifacts/{id}/1/names"),
+                &[bearer(TOKENS[0]), (SHA256_HEADER, sha(b"x")),],
+                b"x",
+                Some(2),
+            )
+            .0,
+            200,
+            "a body shorter than its declared length must fail"
+        );
+        assert_eq!(put(fixture.port, TOKENS[0], id, "names", b"xy"), 200);
+    }
+
+    #[test]
     fn an_uploaded_map_over_256_mib_is_not_opened_early_or_served() {
         let fixture = Fixture::new(Duration::from_secs(60), test_build());
         let mut agent = fixture.agent(0);
@@ -5502,26 +5684,14 @@ mod tests {
             snapshot.status == JobStatus::Indexing
         });
 
-        // Trailing JSON whitespace keeps this a valid map if the master
-        // reads the whole upload, so the test fails without the early cap.
+        // Do not send the body: the service must reject this declaration
+        // before polling the stream, rather than start a 256 MiB write.
         let uploaded_bytes = worker_result::EARLY_MAP_MAX_BYTES + 1;
         assert_eq!(
-            put_repeated_at(
-                fixture.port,
-                TOKENS[0],
-                id,
-                1,
-                "map",
-                MAP,
-                b' ',
-                uploaded_bytes,
-            ),
-            200
+            put_declared_without_body(fixture.port, TOKENS[0], id, "map", uploaded_bytes,).0,
+            413
         );
-        assert_eq!(
-            fixture.hub.uploads(id).get("map").unwrap().bytes,
-            uploaded_bytes
-        );
+        assert!(fixture.hub.uploads(id).is_empty());
         agent.event(
             id,
             WorkerEvent::StageFinished {

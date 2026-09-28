@@ -2411,6 +2411,56 @@ mod tests {
         }
     }
 
+    fn serve_413(listener: TcpListener, idle_after_request: Duration) -> usize {
+        use std::io::{BufRead, BufReader, Read, Write};
+        listener.set_nonblocking(true).unwrap();
+        let refusal = br#"{"error":"too_large","message":"artifact exceeds the per-upload limit"}"#;
+        let mut received = 0;
+        let mut last_request = Instant::now();
+        let started = Instant::now();
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    let mut content_length = 0usize;
+                    while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                        if line.to_ascii_lowercase().starts_with("content-length:") {
+                            content_length = line
+                                .split_once(':')
+                                .and_then(|(_, value)| value.trim().parse().ok())
+                                .unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    let mut body = vec![0; content_length];
+                    reader.read_exact(&mut body).unwrap();
+                    write!(
+                        reader.get_mut(),
+                        "HTTP/1.1 413 Payload Too Large\r\n\
+                         Content-Type: application/json\r\n\
+                         Content-Length: {}\r\n\
+                         Connection: close\r\n\r\n",
+                        refusal.len()
+                    )
+                    .unwrap();
+                    reader.get_mut().write_all(refusal).unwrap();
+                    received += 1;
+                    last_request = Instant::now();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if (received > 0 && last_request.elapsed() >= idle_after_request)
+                        || started.elapsed() >= Duration::from_secs(5)
+                    {
+                        return received;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept mock artifact PUT: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn repeated_map_written_callbacks_upload_only_one_blob() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -2435,6 +2485,40 @@ mod tests {
             1,
             "repeated write_map success must not make a second artifact PUT"
         );
+    }
+
+    #[test]
+    fn a_413_fails_the_job_artifact_upload_without_retrying() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || serve_413(listener, Duration::from_millis(500)));
+        let dir = tempfile::tempdir().unwrap();
+        let (context, _received) = job_context(dir.path(), port);
+        let path = dir.path().join("artifact.bin");
+        std::fs::write(&path, b"artifact bytes").unwrap();
+        let probe = AgentProbe {
+            cancel: context.cancel.clone(),
+            child: context.child.clone(),
+        };
+
+        let error = context
+            .put(
+                &http_agent(&context.endpoint),
+                "map",
+                &path,
+                Instant::now() + Duration::from_secs(3),
+                &probe,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.error, "invalid_worker_result");
+        assert!(error.message.contains("413"), "{}", error.message);
+        assert!(
+            error.message.contains("per-upload limit"),
+            "{}",
+            error.message
+        );
+        assert_eq!(server.join().unwrap(), 1, "a 413 must not be retried");
     }
 
     #[test]
