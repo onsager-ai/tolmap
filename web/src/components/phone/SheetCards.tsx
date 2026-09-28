@@ -301,6 +301,10 @@ export function DistrictSheetCard({
   onSelectFile,
   onSelectDistrict,
   onSelectDirectory,
+  foldersExpanded: controlledFoldersExpanded,
+  filesExpanded: controlledFilesExpanded,
+  onToggleFolders: onToggleFoldersProp,
+  onToggleFiles: onToggleFilesProp,
   desktopPanel = false,
 }: {
   doc: MapDocument;
@@ -314,10 +318,19 @@ export function DistrictSheetCard({
   onSelectFile(i: number): void;
   onSelectDistrict(d: number): void;
   onSelectDirectory(path: string): void;
+  /** Desktop keeps these open while selecting a neighbouring district. */
+  foldersExpanded?: boolean;
+  filesExpanded?: boolean;
+  onToggleFolders?(): void;
+  onToggleFiles?(): void;
   desktopPanel?: boolean;
 }) {
-  const [foldersExpanded, setFoldersExpanded] = useState(false);
-  const [filesExpanded, setFilesExpanded] = useState(false);
+  const [localFoldersExpanded, setLocalFoldersExpanded] = useState(false);
+  const [localFilesExpanded, setLocalFilesExpanded] = useState(false);
+  const foldersExpanded = controlledFoldersExpanded ?? localFoldersExpanded;
+  const filesExpanded = controlledFilesExpanded ?? localFilesExpanded;
+  const onToggleFolders = onToggleFoldersProp ?? (() => setLocalFoldersExpanded((v) => !v));
+  const onToggleFiles = onToggleFilesProp ?? (() => setLocalFilesExpanded((v) => !v));
   const paths = packageLayout.districtPaths.get(d) ?? [];
   const largest = paths.find((p) => !p.other);
   const size = doc.districts[String(d)]?.size ?? 0;
@@ -882,6 +895,11 @@ export interface SelectionCardProps {
   compactRows?: boolean;
   /** Tablet panel's shared detail cards keep all nested controls touch sized. */
   touchTargets?: boolean;
+  /** The desktop panel retains district disclosures when a neighbour is selected. */
+  districtFoldersExpanded?: boolean;
+  districtFilesExpanded?: boolean;
+  onToggleDistrictFolders?(): void;
+  onToggleDistrictFiles?(): void;
 }
 
 /** docs/UX.md principle 10, "one component, two containers": the card for
@@ -941,6 +959,10 @@ export function SelectionCard(p: SelectionCardProps) {
         onSelectFile={p.onSelectFile}
         onSelectDistrict={p.onSelectDistrict}
         onSelectDirectory={p.onSelectDirectory}
+        foldersExpanded={p.districtFoldersExpanded}
+        filesExpanded={p.districtFilesExpanded}
+        onToggleFolders={p.onToggleDistrictFolders}
+        onToggleFiles={p.onToggleDistrictFiles}
         desktopPanel={p.desktopPanel}
       />
     );

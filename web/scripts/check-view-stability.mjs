@@ -504,6 +504,11 @@ async function searchFor(page, profile, text) {
   if (profile.isMobile) {
     await page.locator("[data-open-search]").click();
     await page.waitForSelector('[data-search-layer] input[data-search-input]');
+  } else if (!(await page.locator('input[data-search-input]').count())) {
+    // The phase 7a desktop action opens the existing SearchBox popover; the
+    // old inline top-bar combobox is no longer mounted on the map route.
+    await page.locator("[data-open-desktop-search]").click();
+    await page.waitForSelector('[data-desktop-search] input[data-search-input]');
   }
   await page.locator('input[data-search-input]').fill(text);
   await page.waitForTimeout(150);

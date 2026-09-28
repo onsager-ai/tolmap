@@ -501,6 +501,8 @@ export interface DesktopPanelProps {
 
 export function DesktopPanel(p: DesktopPanelProps) {
   const panelRef = useRef<HTMLElement>(null);
+  const [districtFoldersExpanded, setDistrictFoldersExpanded] = useState(false);
+  const [districtFilesExpanded, setDistrictFilesExpanded] = useState(false);
   const crumbs = desktopPanelCrumbs(p.views, p.doc);
   const top = p.views[p.views.length - 1] ?? { type: "overview" as const };
   const mainland = useMemo(() => buildDistrictIndex(p.doc, p.packageLayout), [p.doc, p.packageLayout]);
@@ -530,6 +532,11 @@ export function DesktopPanel(p: DesktopPanelProps) {
     if (p.panelOpen) panel.removeAttribute("inert");
     else panel.setAttribute("inert", "");
   }, [p.panelOpen]);
+
+  useEffect(() => {
+    setDistrictFoldersExpanded(false);
+    setDistrictFilesExpanded(false);
+  }, [p.doc]);
 
   const colorForDistrict = (district: number): string => {
     const members = filesByDistrict.get(district) ?? [];
@@ -651,7 +658,17 @@ export function DesktopPanel(p: DesktopPanelProps) {
               </div>
             </>
           ) : (
-            <SelectionCard {...p.cardProps} quality={top.type === "quality" || p.cardProps.quality} desktopPanel compactRows={!p.touch} touchTargets={p.touch} />
+            <SelectionCard
+              {...p.cardProps}
+              quality={top.type === "quality" || p.cardProps.quality}
+              desktopPanel
+              compactRows={!p.touch}
+              touchTargets={p.touch}
+              districtFoldersExpanded={districtFoldersExpanded}
+              districtFilesExpanded={districtFilesExpanded}
+              onToggleDistrictFolders={() => setDistrictFoldersExpanded((expanded) => !expanded)}
+              onToggleDistrictFiles={() => setDistrictFilesExpanded((expanded) => !expanded)}
+            />
           )}
         </div>
       </section>

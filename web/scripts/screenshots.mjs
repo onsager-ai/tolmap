@@ -292,7 +292,7 @@ try {
   // this file is taken with no colorScheme override, i.e. this runner's
   // default, per CLAUDE.md's "keep all existing checks green, run in the
   // default theme"). Four kinds of frame, named with a `-light`/`-dark`
-  // suffix: the opening zoom, the district rail/drawer, a selected file's
+  // suffix: the opening zoom, the district index/panel, a selected file's
   // card (the link counts that are the legend, docs/UX.md §4.5 -- also
   // where the owner's three-digit-count wrap fix lives), and a deep-zoom symbol-card
   // frame.
@@ -610,14 +610,16 @@ try {
             await shot(page, `${tag}-layers`);
           }
           if (profile.name === "tablet-768x1024") {
-            await page.locator("[data-rail-toggle]").click();
+            await page.locator("[data-panel-tab]").click();
             await page.waitForTimeout(400);
-            await shot(page, `${tag}-rail-open`);
+            await shot(page, `${tag}-panel-open`);
           }
           await open(page, districtQuery);
           await shot(page, `${tag}-district-selected`);
           if (!profile.name.startsWith("landscape")) {
-            await page.locator("[data-map-quality]").click();
+            await open(page);
+            if (profile.name === "tablet-768x1024") await page.locator("[data-panel-tab]").click();
+            await page.locator("[data-open-map-quality]").click();
             await page.waitForTimeout(300);
             await shot(page, `${tag}-map-quality`);
           }
@@ -629,6 +631,7 @@ try {
           await shot(page, `${tag}-package-layer-file-selected`);
           await open(page, "?layer=c");
           await shot(page, `${tag}-churn-layer`);
+          await page.locator("[data-open-desktop-search]").click();
           await page.locator("input[data-search-input]").click();
           await page.locator("input[data-search-input]").fill("workflow");
           await page.waitForTimeout(300);
@@ -795,6 +798,7 @@ try {
       await page.waitForTimeout(150);
       await shot(page, `desktop-${colorScheme}-search-workflow-district-layer`);
       await load(page, "?layer=p");
+      await page.locator("[data-open-desktop-search]").click();
       await page.locator("input[data-search-input]").click();
       await type(page, "a");
       await shot(page, `desktop-${colorScheme}-search-a-package-layer`);
