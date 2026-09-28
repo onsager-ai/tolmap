@@ -782,7 +782,7 @@ function DesktopLegend({
   }
   return (
     <div className="glass absolute z-20 w-[220px] rounded-[12px] px-3 py-2 text-meta text-[var(--dim)]" style={style} data-desktop-legend data-ramp-legend={layer}>
-      <div className="font-semibold text-[var(--on)]">{layer === "c" ? "Commits per file, scanned history" : "Cyclomatic complexity per file"}</div>
+      <div className="font-semibold text-[var(--on)]">{layer === "c" ? "Commits per file, scanned history" : "Complexity per file"}</div>
       <div className="my-1.5 h-1.5 rounded-full" style={{ background: "linear-gradient(90deg,var(--chrome-ramp-low),var(--chrome-ramp-mid),var(--chrome-ramp-high))" }} />
       <div className="flex justify-between font-mono"><span>low</span><span>high</span></div>
     </div>
