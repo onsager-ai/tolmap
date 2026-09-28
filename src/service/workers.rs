@@ -1420,6 +1420,8 @@ pub struct WorkerHub {
     artifact_body_idle_timeout: Duration,
     #[cfg(test)]
     artifact_body_total_timeout: Duration,
+    #[cfg(test)]
+    upload_writers: Arc<tokio::sync::Semaphore>,
     /// Lost-worker retries before a job fails (§10.6).
     retries: u32,
     staging: PathBuf,
@@ -1461,6 +1463,8 @@ impl WorkerHub {
             artifact_body_idle_timeout: WORKER_ARTIFACT_BODY_IDLE_TIMEOUT,
             #[cfg(test)]
             artifact_body_total_timeout: Duration::from_secs(2 * 60 * 60),
+            #[cfg(test)]
+            upload_writers: Arc::new(tokio::sync::Semaphore::new(32)),
             retries,
             staging,
             base_url,
@@ -1478,6 +1482,12 @@ impl WorkerHub {
     #[cfg(test)]
     fn with_artifact_body_total_timeout(mut self, timeout: Duration) -> Self {
         self.artifact_body_total_timeout = timeout;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_upload_writer_limit(mut self, limit: usize) -> Self {
+        self.upload_writers = Arc::new(tokio::sync::Semaphore::new(limit));
         self
     }
 
@@ -4697,6 +4707,18 @@ mod tests {
             )
         }
 
+        fn with_upload_writer_limit(lease_ttl: Duration, build: WorkerBuild, limit: usize) -> Self {
+            Self::build_with(
+                tempfile::tempdir().unwrap(),
+                lease_ttl,
+                build,
+                one_class(TOKENS.len()),
+                Limits::default(),
+                false,
+                &|hub| hub.with_upload_writer_limit(limit),
+            )
+        }
+
         /// A master with `classes` (at most `TOKENS.len()` agents in all)
         /// and a per-class queue bound of `max_queued_jobs`.
         fn classed(
@@ -5443,9 +5465,13 @@ mod tests {
     }
 
     fn lease_upload_state(fixture: &Fixture, job: Uuid) -> (usize, usize, u64) {
+        lease_upload_state_for(fixture, 0, job)
+    }
+
+    fn lease_upload_state_for(fixture: &Fixture, agent: usize, job: Uuid) -> (usize, usize, u64) {
         let (dir, reserved_bytes) = fixture
             .hub
-            .with_lease(0, job, 1, |lease| {
+            .with_lease(agent, job, 1, |lease| {
                 let reserved_bytes = lease
                     .reservations
                     .values()
@@ -6113,6 +6139,53 @@ mod tests {
                 "the accepted stalled PUTs did not release their reservations and temp files"
             );
             std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_process_wide_upload_writer_cap_spans_multiple_leases() {
+        let fixture = Fixture::with_upload_writer_limit(Duration::from_secs(60), test_build(), 2);
+        let mut agent0 = fixture.agent(0);
+        let first_job = fixture.spawn(remote_repo("first"));
+        assert_eq!(agent0.assigned(), first_job);
+        let mut agent1 = fixture.agent(1);
+        let second_job = fixture.spawn(remote_repo("second"));
+        assert_eq!(agent1.assigned(), second_job);
+
+        let first = stalled_artifact_put(fixture.port, TOKENS[0], first_job, "map");
+        let second = stalled_artifact_put(fixture.port, TOKENS[1], second_job, "map");
+        let reserved_deadline = Instant::now() + Duration::from_secs(1);
+        while lease_upload_state_for(&fixture, 0, first_job) != (0, 1, 1)
+            || lease_upload_state_for(&fixture, 1, second_job) != (0, 1, 1)
+            || fixture.hub.upload_writers.available_permits() != 0
+        {
+            assert!(
+                Instant::now() < reserved_deadline,
+                "two stalled PUTs across separate leases must consume both process-wide writer permits"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let mut extra = stalled_artifact_put(fixture.port, TOKENS[0], first_job, "map");
+        assert_eq!(
+            response_status(&mut extra).expect("read the process-wide writer refusal"),
+            503,
+            "a full process-wide writer pool must refuse another PUT"
+        );
+        assert_eq!(lease_upload_state_for(&fixture, 0, first_job), (0, 1, 1));
+        assert_eq!(lease_upload_state_for(&fixture, 1, second_job), (0, 1, 1));
+
+        drop((first, second));
+        let released_deadline = Instant::now() + Duration::from_secs(1);
+        while lease_upload_state_for(&fixture, 0, first_job) != (0, 0, 0)
+            || lease_upload_state_for(&fixture, 1, second_job) != (0, 0, 0)
+            || fixture.hub.upload_writers.available_permits() != 2
+        {
+            assert!(
+                Instant::now() < released_deadline,
+                "disconnects must release both process-wide permits and upload reservations"
+            );
+            std::thread::sleep(Duration::from_millis(2));
         }
     }
 
