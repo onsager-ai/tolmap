@@ -3,7 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import type { CatalogueEntry, MapDocument } from "@/types";
 import type { Layer } from "@/map/constants";
 import { CH, CX_, districtColor, ramp } from "@/map/geometry";
-import { displayLanguage } from "@/map/layerOverview";
+import { displayLanguage, layerOverviewHeadline } from "@/map/layerOverview";
 import { buildDistrictIndexRow, districtIndexDistrictIds } from "@/map/districtIndex";
 import type { PackageGrouping, PackageLayout } from "@/map/packageLayout";
 import {
@@ -65,6 +65,10 @@ const LAYERS: { id: Layer; label: string; key: string; icon: ReactNode }[] = [
     icon: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M4 7.5l8 4.5 8-4.5M12 12v9" /></>,
   },
 ];
+
+// The overview headline on every layer: one balanced line pair at most, in
+// tabular numerals so counts don't jitter as the layer changes.
+const DESKTOP_HEADLINE = "mt-1 text-balance text-[20px] font-semibold leading-[1.25] tracking-[-.015em] tabular-nums";
 
 interface RepoRow {
   slug: string;
@@ -651,8 +655,11 @@ export function DesktopPanel(p: DesktopPanelProps) {
             <>
               {p.layer === "d" ? (
                 <div data-desktop-overview data-overview-layer="d">
-                  <h2 data-overview-headline data-overview-layer="d" className="balance mt-1 text-[20px] font-semibold leading-[1.25] tracking-[-.015em]">
-                    {layerOverview.district.mainlandDistricts} districts{layerOverview.district.islandDistricts > 0 ? ` + ${layerOverview.district.islandDistricts} ${layerOverview.district.islandDistricts === 1 ? "island" : "islands"}` : ""} · <span className="font-mono text-[18px] font-medium">{layerOverview.district.files.toLocaleString("en-US")}</span> files
+                  {/* The same sans, tabular headline as the other three layers: a mono
+                      "6,347" inside the sans line read as "6, 347" (Plex Mono's
+                      comma is a full cell wide). */}
+                  <h2 data-overview-headline data-overview-layer="d" className={DESKTOP_HEADLINE}>
+                    {layerOverviewHeadline(layerOverview, "d").primary}
                   </h2>
                   <p className="mt-1.5 flex flex-wrap items-center gap-x-1 text-meta leading-[1.45] text-[var(--dim)]">
                     modularity <span className="font-mono">{p.doc.q.toFixed(3)}</span> ·
@@ -698,7 +705,7 @@ export function DesktopPanel(p: DesktopPanelProps) {
                 </div>
               ) : (
                 <div data-desktop-overview data-overview-layer={p.layer}>
-                  <LayerOverviewHeadline overview={layerOverview} layer={p.layer} className="balance mt-1 text-[20px] font-semibold leading-[1.25] tracking-[-.015em]" />
+                  <LayerOverviewHeadline overview={layerOverview} layer={p.layer} className={DESKTOP_HEADLINE} />
                   <div className="mt-4">
                     <LayerOverviewIndex
                       doc={p.doc}
@@ -782,7 +789,7 @@ function DesktopLegend({
   }
   return (
     <div className="glass absolute z-20 w-[220px] rounded-[12px] px-3 py-2 text-meta text-[var(--dim)]" style={style} data-desktop-legend data-ramp-legend={layer}>
-      <div className="font-semibold text-[var(--on)]">{layer === "c" ? "Commits per file, scanned history" : "Complexity per file"}</div>
+      <div className="font-semibold text-[var(--on)]">{layer === "c" ? "Commits per file" : "Complexity per file"}</div>
       <div className="my-1.5 h-1.5 rounded-full" style={{ background: "linear-gradient(90deg,var(--chrome-ramp-low),var(--chrome-ramp-mid),var(--chrome-ramp-high))" }} />
       <div className="flex justify-between font-mono"><span>low</span><span>high</span></div>
     </div>

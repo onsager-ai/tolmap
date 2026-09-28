@@ -320,9 +320,11 @@ export function layerOverviewHeadline(overview: LayerOverview, layer: Layer): { 
     }
     case "c":
       if (overview.churn.knownFiles === 0) return { primary: "No churn data" };
+      // A short title that fits one line in the panel and the sheet; the
+      // "non-merge" qualifier moves to the quiet line rather than being lost.
       return {
-        primary: `Churn · up to ${overview.churn.windowCommits.toLocaleString("en-US")} non-merge commits`,
-        ...(overview.churn.mostActiveDistrict ? { secondary: `Most active ${overview.churn.mostActiveDistrict.island ? "island" : "district"}: ${overview.churn.mostActiveDistrict.name}` } : {}),
+        primary: `Churn · up to ${overview.churn.windowCommits.toLocaleString("en-US")} commits`,
+        secondary: `Merge commits excluded${overview.churn.mostActiveDistrict ? ` · most active ${overview.churn.mostActiveDistrict.island ? "island" : "district"}: ${overview.churn.mostActiveDistrict.name}` : ""}`,
       };
     case "x":
       return {
