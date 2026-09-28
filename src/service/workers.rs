@@ -6539,23 +6539,31 @@ mod tests {
         let id = fixture.spawn(remote_repo("demo"));
         assert_eq!(agent.assigned(), id);
 
+        let digest = sha(MAP);
         let dir = fixture
             .hub
             .with_lease(0, id, 1, |lease| {
                 lease.uploads.insert(
                     "map".to_owned(),
                     Upload {
-                        sha256: "a".repeat(64),
+                        sha256: digest.clone(),
                         bytes: worker_result::EARLY_MAP_MAX_BYTES + 1,
                     },
                 );
                 Ok(lease.dir.clone())
             })
             .unwrap();
-        let (tx, _) = tokio::sync::watch::channel(fixture.snapshot(id));
+        // The real blob is a small valid map; without the recorded-byte cap
+        // guard it would pass the on-disk size and document checks below.
+        std::fs::write(dir.join("blobs").join(&digest), MAP).unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(fixture.snapshot(id));
 
         publish_uploaded_map(&fixture.state.jobs, &fixture.hub, &tx, id, &dir);
 
+        assert!(
+            !rx.borrow().map_ready,
+            "the channel passed to publish_early_map must remain unset"
+        );
         assert!(!fixture.snapshot(id).map_ready);
         assert!(fixture.state.jobs.early_map("test/demo", COMMIT).is_none());
     }
