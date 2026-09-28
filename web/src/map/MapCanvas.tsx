@@ -3,7 +3,7 @@ import type { DistrictSymbols, MapDocument } from "@/types";
 import { MapRenderer, type FrameInsets, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
 import type { Geo, Layer } from "./constants";
 import type { Route } from "./graph";
-import type { FolderLabel, PackageGrouping } from "./packageLayout";
+import type { FolderLabel, PackageGrouping, PackageLayout } from "./packageLayout";
 
 export interface MapCanvasHandle {
   fit(anim?: boolean): void;
@@ -42,6 +42,7 @@ interface MapCanvasProps {
   selD: number | null;
   route: Route | null;
   packageGrouping: PackageGrouping;
+  districtPaths: PackageLayout["districtPaths"];
   folderFiles: ReadonlySet<number> | null;
   folderOnlyIslands: boolean;
   folderLabels: readonly FolderLabel[];
@@ -72,6 +73,7 @@ export function MapCanvas({
   selD,
   route,
   packageGrouping,
+  districtPaths,
   folderFiles,
   folderOnlyIslands,
   folderLabels,
@@ -175,6 +177,7 @@ export function MapCanvas({
       selD,
       route,
       packageGrouping,
+      districtPaths,
       folderFiles,
       folderOnlyIslands,
       folderLabels,
@@ -214,6 +217,7 @@ export function MapCanvas({
       selD,
       route,
       packageGrouping,
+      districtPaths,
       folderFiles,
       folderOnlyIslands,
       folderLabels,
@@ -222,7 +226,7 @@ export function MapCanvas({
       selHSym,
     };
     renderer.render(state);
-  }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
+  }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, districtPaths, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
 
   // docs/UX.md §3.3: new chrome insets (a sheet detent, a resize) reach the
   // renderer without moving the camera -- MapView decides when a move is

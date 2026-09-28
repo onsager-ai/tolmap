@@ -54,6 +54,29 @@ async function wheelZoomIn(page, cx, cy, notches) {
   await page.waitForTimeout(650);
 }
 
+async function hoverMapTarget(page, selector) {
+  const point = await page.evaluate((query) => {
+    for (const element of document.querySelectorAll(query)) {
+      if (!(element instanceof SVGElement)) continue;
+      const box = element.getBoundingClientRect();
+      const key = element.getAttribute("data-k");
+      if (!key || box.width <= 0 || box.height <= 0) continue;
+      for (let yi = 1; yi < 20; yi++) {
+        for (let xi = 1; xi < 20; xi++) {
+          const x = box.left + (box.width * xi) / 20;
+          const y = box.top + (box.height * yi) / 20;
+          const hit = document.elementFromPoint(x, y)?.closest("[data-k]");
+          if (hit?.getAttribute("data-k") === key) return { x, y, key };
+        }
+      }
+    }
+    return null;
+  }, selector);
+  if (!point) throw new Error(`No hit point found for ${selector}`);
+  await page.mouse.move(point.x, point.y);
+  await page.waitForTimeout(250);
+}
+
 await mkdir(out, { recursive: true });
 const browser = await chromium.launch();
 try {
@@ -1115,6 +1138,88 @@ try {
       await page.waitForTimeout(350);
       await page.screenshot({ path: `${stem}-${profile.name}-map-quality.png` });
       console.log(`${stem}-${profile.name}-map-quality.png`);
+      await context.close();
+    }
+  }
+
+  // docs/UX.md §5.1/§5.2 (phase 7b): palette, keyboard list/index highlight,
+  // and both renderer hover-card kinds at the required 1440 x 900 desktop.
+  {
+    const slug = "langgenius/dify";
+    const doc = await (await fetch(`${base}/maps/${slug}.json`)).json();
+    const file = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
+    const stem = `${out}/${slug.replace("/", "__")}-1440x900`;
+    for (const colorScheme of ["light", "dark"]) {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme });
+      const page = await context.newPage();
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+
+      await page.locator("[data-open-desktop-search]").click();
+      await page.locator("[data-search-palette]").waitFor();
+      await page.locator("input[data-search-input]").fill("workflow");
+      await page.locator('[data-search-option="file"]').first().waitFor();
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: `${stem}-palette-query-${colorScheme}.png` });
+      console.log(`${stem}-palette-query-${colorScheme}.png`);
+
+      await page.keyboard.press("Escape");
+      await page.locator("[data-search-palette]").waitFor({ state: "detached" });
+      await page.keyboard.press("Control+k");
+      await page.locator('[data-search-group="command"]').waitFor();
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: `${stem}-palette-commands-${colorScheme}.png` });
+      console.log(`${stem}-palette-commands-${colorScheme}.png`);
+
+      await page.keyboard.press("Escape");
+      await page.locator("[data-search-palette]").waitFor({ state: "detached" });
+      await page.goto(`${base}/${slug}?file=${encodeURIComponent(doc.F[file])}`, { waitUntil: "domcontentloaded" });
+      await page.locator('[data-sheet-card="file"]').waitFor({ timeout: 15_000 });
+      await page.locator('button[data-path-start="to"]').click();
+      await page.locator('[data-sheet-card="path"][data-path-state="picking"]').waitFor({ timeout: 10_000 });
+      await page.keyboard.press("Control+k");
+      await page.locator("[data-path-destination-tag]").waitFor();
+      await page.locator("input[data-search-input]").fill("types");
+      await page.locator('[data-search-group="file"]').waitFor();
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: `${stem}-palette-path-mode-${colorScheme}.png` });
+      console.log(`${stem}-palette-path-mode-${colorScheme}.png`);
+
+      await page.keyboard.press("Escape");
+      await page.locator("[data-search-palette]").waitFor({ state: "detached" });
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.keyboard.press("Shift+/");
+      await page.locator("[data-keyboard-dialog]").waitFor();
+      await page.waitForTimeout(250);
+      await page.screenshot({ path: `${stem}-keyboard-list-${colorScheme}.png` });
+      console.log(`${stem}-keyboard-list-${colorScheme}.png`);
+
+      await page.keyboard.press("Escape");
+      await page.locator("[data-keyboard-dialog]").waitFor({ state: "detached" });
+      await page.goto(`${base}/${slug}?layer=c`, { waitUntil: "domcontentloaded" });
+      await page.locator("[data-overview-headline]").waitFor({ timeout: 15_000 });
+      await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+      await page.keyboard.press("ArrowDown");
+      await page.waitForFunction(() => document.activeElement?.hasAttribute("data-overview-district-row"));
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: `${stem}-keyboard-index-lit-${colorScheme}.png` });
+      console.log(`${stem}-keyboard-index-lit-${colorScheme}.png`);
+
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator('svg.map-svg text.hit[data-k^="d:"]').first().waitFor({ timeout: 15_000 });
+      await hoverMapTarget(page, 'svg.map-svg text.hit[data-k^="d:"]');
+      await page.locator(".tolmap-hover-card").waitFor({ state: "visible", timeout: 5_000 });
+      await page.screenshot({ path: `${stem}-hover-district-${colorScheme}.png` });
+      console.log(`${stem}-hover-district-${colorScheme}.png`);
+
+      await page.goto(`${base}/${slug}?file=${encodeURIComponent(doc.F[file])}`, { waitUntil: "domcontentloaded" });
+      await page.locator('svg.map-svg [data-k^="f:"]').first().waitFor({ timeout: 15_000 });
+      await hoverMapTarget(page, 'svg.map-svg [data-k^="f:"]');
+      await page.locator(".tolmap-hover-card").waitFor({ state: "visible", timeout: 5_000 });
+      await page.screenshot({ path: `${stem}-hover-file-${colorScheme}.png` });
+      console.log(`${stem}-hover-file-${colorScheme}.png`);
+
       await context.close();
     }
   }

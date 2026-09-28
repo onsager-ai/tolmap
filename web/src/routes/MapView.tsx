@@ -6,12 +6,13 @@ import type { FrameInsets, MapRendererCallbacks } from "@/map/MapRenderer";
 import { buildAdj, findRoute, type Route } from "@/map/graph";
 import { D_, districtClass, type Insets } from "@/map/geometry";
 import type { SearchPick } from "@/map/searchResults";
+import { dispatchDesktopKey, type DesktopFocusScope } from "@/map/desktopKeyboard";
 import { LoadProgressIndicator } from "@/components/LoadProgressIndicator";
 import { DetailStatusNote } from "@/components/DetailStatusNote";
 import { useEarlyMapJob } from "@/api/useEarlyMapJob";
 import { DesktopChrome, DesktopPanel } from "@/components/DesktopChrome";
 import { buildPackageLayout } from "@/map/packageLayout";
-import { useEffectiveTheme } from "@/lib/theme";
+import { nextThemeChoice, useEffectiveTheme, useThemeChoice } from "@/lib/theme";
 import type { MapSearch } from "@/routes/search";
 import { useLayoutProfile } from "@/hooks/useLayoutProfile";
 import { usePhoneMetrics } from "@/hooks/usePhoneMetrics";
@@ -123,6 +124,8 @@ export function MapView() {
   const [desktopViews, dispatchDesktopView] = useReducer(desktopPanelReducer, DESKTOP_PANEL_OVERVIEW);
   const [desktopSearchOpen, setDesktopSearchOpen] = useState(false);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const desktopIndexFocusRef = useRef<HTMLElement | null>(null);
+  const [themeChoice, setThemeChoice] = useThemeChoice();
 
   // ---------- the phone shell (docs/UX.md §3) ----------
   const router = useRouter();
@@ -423,6 +426,10 @@ export function MapView() {
    * phone); a district pans like a District index row, a file or symbol
    * like any other selection (pan only if off screen, issue #82 A1). */
   function pickSearchResult(pick: SearchPick) {
+    if (pathPick && !pathEnds && pick.kind === "file") {
+      completePath(pick.i);
+      return;
+    }
     if (pick.kind === "district") {
       selectDistrict(pick.d);
       framePeekNow();
@@ -543,6 +550,37 @@ export function MapView() {
     if (!target) return;
     dispatchDesktopView({ type: "jump", index });
     applyDesktopPanelView(target);
+  }
+
+  function openDesktopQuality() {
+    setQuality(true);
+    dispatchDesktopView({ type: "push", view: { type: "quality" } });
+  }
+
+  function desktopOverviewRows(): HTMLElement[] {
+    const panel = mapAreaRef.current?.querySelector<HTMLElement>("[data-desktop-panel]");
+    if (!panel || !desktopPanelOpen || desktopViews.at(-1)?.type !== "overview") return [];
+    return Array.from(panel.querySelectorAll<HTMLElement>(
+      "[data-district-index-row], [data-overview-district-row], [data-overview-file], [data-package-overview-row]",
+    )).filter((row) => row.getClientRects().length > 0);
+  }
+
+  function moveDesktopOverviewIndex(direction: -1 | 1) {
+    const rows = desktopOverviewRows();
+    if (!rows.length) return;
+    const current = rows.indexOf(document.activeElement as HTMLElement);
+    const index = current < 0 ? (direction > 0 ? 0 : rows.length - 1) : (current + direction + rows.length) % rows.length;
+    const row = rows[index];
+    desktopIndexFocusRef.current = row;
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: "nearest" });
+  }
+
+  function activateDesktopOverviewIndex() {
+    const rows = desktopOverviewRows();
+    const active = document.activeElement as HTMLElement;
+    const row = rows.includes(active) ? active : desktopIndexFocusRef.current && rows.includes(desktopIndexFocusRef.current) ? desktopIndexFocusRef.current : null;
+    row?.click();
   }
   const undoRef = useRef<(kind: OverlayKind) => void>(() => {});
   undoRef.current = (kind) => {
@@ -721,44 +759,54 @@ export function MapView() {
     }
     else changeDetent("peek");
   }
-  // Desktop panel shortcuts for phase 7a. Search and repository/dialog
-  // chrome handle their own open/close keys; otherwise Esc pops one view.
+  // docs/UX.md §5.2: one pure dispatcher routes page shortcuts; fields,
+  // menus and dialogs keep their own keyboard behaviour.
   useEffect(() => {
     if (narrow) return;
     function onKey(e: KeyboardEvent) {
       if (e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
-      const typing = !!t && (t.isContentEditable || !!t.closest("input, textarea, select, [contenteditable]"));
-      if (e.key === "Escape") {
-        if (typing) return;
-        if (desktopSearchOpen) {
-          setDesktopSearchOpen(false);
-          e.preventDefault();
-          return;
-        }
-        if (keyboardOpen) {
-          setKeyboardOpen(false);
-          e.preventDefault();
-          return;
-        }
-        if (desktopBack()) {
-          e.preventDefault();
-          return;
-        }
-        if (isFullscreen) {
-          void exitFullscreen();
-          e.preventDefault();
-        }
-        return;
-      }
-      if (e.key === "[" && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        setDesktopPanelOpen((open) => !open);
+      const focus: DesktopFocusScope = t?.closest("[data-desktop-search], [data-search-palette]")
+        ? "palette"
+        : t?.closest('[role="menu"]')
+          ? "menu"
+          : t?.closest('[role="dialog"]')
+            ? "dialog"
+            : t?.isContentEditable || t?.closest("input, textarea, select, [contenteditable]")
+              ? "text"
+              : "page";
+      const action = dispatchDesktopKey({
+        key: e.key,
+        focus,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        shiftKey: e.shiftKey,
+        overviewOpen: desktopPanelOpen && desktopViews.at(-1)?.type === "overview",
+      });
+      if (action.type === "none" || action.type === "search") return; // SearchChrome owns focus capture.
+      e.preventDefault();
+      if (action.type === "toggle-panel") setDesktopPanelOpen((open) => !open);
+      else if (action.type === "layer") updateSearch({ layer: action.layer });
+      else if (action.type === "zoom-in") canvasRef.current?.zoomBy(1.6);
+      else if (action.type === "zoom-out") canvasRef.current?.zoomBy(1 / 1.6);
+      else if (action.type === "fit") canvasRef.current?.fit(true);
+      else if (action.type === "zoom-selection") {
+        if (selD != null) canvasRef.current?.zoomDistrict(selD);
+        else if (doc && sel != null) canvasRef.current?.zoomDistrict(D_(doc, sel));
+      } else if (action.type === "cycle-theme") setThemeChoice(nextThemeChoice(themeChoice));
+      else if (action.type === "keyboard-list") setKeyboardOpen(true);
+      else if (action.type === "overview-move") moveDesktopOverviewIndex(action.direction);
+      else if (action.type === "overview-activate") activateDesktopOverviewIndex();
+      else if (action.type === "escape") {
+        if (desktopSearchOpen) setDesktopSearchOpen(false);
+        else if (keyboardOpen) setKeyboardOpen(false);
+        else if (!desktopBack() && isFullscreen) void exitFullscreen();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [narrow, desktopSearchOpen, keyboardOpen, desktopViews, isFullscreen]);
+  }, [narrow, desktopPanelOpen, desktopViews, desktopSearchOpen, keyboardOpen, isFullscreen, selD, sel, doc, themeChoice]);
 
   const rendererCallbacks: MapRendererCallbacks = {
     onSelectFile: (i) => (pathPick && !pathEnds ? completePath(i) : selectFile(i)),
@@ -830,6 +878,7 @@ export function MapView() {
       selD={selD}
       route={route}
       packageGrouping={packageGrouping}
+      districtPaths={packageLayout.districtPaths}
       folderFiles={folderFiles}
       folderOnlyIslands={folderOnlyIslands}
       folderLabels={packageLayout.folderLabels}
@@ -1023,6 +1072,11 @@ export function MapView() {
         searchOpen={desktopSearchOpen}
         onCloseSearch={() => setDesktopSearchOpen(false)}
         onSearchPick={pickSearchResult}
+        pathMode={!!pathPick && !pathEnds}
+        pathEnd={pathPick?.dir === "to" ? "start" : "destination"}
+        panelOpen={desktopPanelOpen}
+        onPanelOpen={setDesktopPanelOpen}
+        onOpenQuality={openDesktopQuality}
         keyboardOpen={keyboardOpen}
         onKeyboardOpen={setKeyboardOpen}
         onZoomIn={() => canvasRef.current?.zoomBy(1.6)}
@@ -1047,10 +1101,7 @@ export function MapView() {
         onPanelOpen={setDesktopPanelOpen}
         onBack={desktopBack}
         onJump={desktopJump}
-        onOpenQuality={() => {
-          setQuality(true);
-          dispatchDesktopView({ type: "push", view: { type: "quality" } });
-        }}
+        onOpenQuality={openDesktopQuality}
         onSelectDistrict={selectDistrict}
         onHighlightDistricts={(districts) => canvasRef.current?.highlightDistricts(districts)}
         onFrameDistricts={(districts) => canvasRef.current?.frameDistricts(districts)}

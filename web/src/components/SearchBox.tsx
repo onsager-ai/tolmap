@@ -4,9 +4,12 @@ import {
   groupResults,
   isNavKey,
   navKey,
+  paletteResults,
   segments,
   type Mark,
-  type SearchItem,
+  type PaletteItem,
+  type PaletteResults,
+  type SearchCommandDefinition,
   type SearchPick,
   type SearchResults,
 } from "@/map/searchResults";
@@ -19,13 +22,22 @@ interface SearchBoxProps {
    * "float" (default): the desktop and tablet box with its dropdown (§5,
    * §7.2) -- in the top bar, or floating over the map in fullscreen. It
    * fills the width its container gives it. */
-  variant?: "float" | "overlay";
+  variant?: "float" | "overlay" | "palette";
   /** The close action for an overlay, or the parent dialog for a floating
    * desktop search opened from a separate icon. */
   onClose?(): void;
   /** Float dialogs may open from an icon or keyboard shortcut rather than
    * from the input itself. */
   autoFocus?: boolean;
+  /** Palette only: Commands share the same result list, cursor and matcher. */
+  commands?: readonly SearchCommandDefinition[];
+  onCommand?(id: string): void;
+  /** Palette only: the path card's next endpoint accepts files only. */
+  pathMode?: boolean;
+  /** Palette path mode: which end the picked file becomes. "Path to here"
+   * waits for a start, "Path from here" for a destination; the field's tag
+   * names the one being chosen. */
+  pathEnd?: "start" | "destination";
   /** Float only: 44 px (a tablet is touch, §9) instead of 36. */
   touch?: boolean;
 }
@@ -34,17 +46,33 @@ interface SearchBoxProps {
  * districts as well as files and symbols. */
 export const SEARCH_LABEL = "Search districts, files and symbols";
 const PLACEHOLDER = "Districts, files, classes…";
+/** The palette's field also answers commands (§5.1), so it says so. */
+const PALETTE_PLACEHOLDER = "Search districts, files, classes, or type a command";
 
 /** docs/UX.md §4.8 and §7.2: one search, two containers. The input is an
  * ARIA combobox driving a listbox through aria-activedescendant, so focus
  * stays in the input while the arrow keys move through the results; the
  * results are grouped District / Files / Symbols (map/searchResults.ts,
  * whose file and symbol ranking is map/search.ts's, unchanged). */
-export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus = false, touch = false }: SearchBoxProps) {
+export function SearchBox({
+  doc,
+  onPick,
+  variant = "float",
+  onClose,
+  autoFocus = false,
+  touch = false,
+  commands = [],
+  onCommand,
+  pathMode = false,
+  pathEnd = "destination",
+}: SearchBoxProps) {
   const [value, setValue] = useState("");
   const [cursor, setCursor] = useState(-1);
   const [open, setOpen] = useState(false);
-  const results = useMemo(() => groupResults(doc, value), [doc, value]);
+  const results = useMemo(
+    () => variant === "palette" ? paletteResults(doc, value, commands, pathMode) : groupResults(doc, value),
+    [doc, value, variant, commands, pathMode],
+  );
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   /** Desktop: the element that had focus when `/` opened search. */
@@ -52,7 +80,8 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus =
   const listId = useId();
   const optionId = (n: number) => `${listId}-o${n}`;
   const overlay = variant === "overlay";
-  const expanded = overlay || open;
+  const palette = variant === "palette";
+  const expanded = overlay || palette || open;
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -82,7 +111,7 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus =
 
   function close() {
     setCursor(-1);
-    if (overlay) {
+    if (overlay || palette) {
       onClose?.();
       return;
     }
@@ -93,9 +122,20 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus =
     onClose?.();
   }
 
-  function pick(item: SearchItem) {
+  function pick(item: PaletteItem) {
     setValue("");
     setCursor(-1);
+    if ("commandId" in item) {
+      if (!palette) return;
+      onCommand?.(item.commandId);
+      onClose?.();
+      return;
+    }
+    if (palette) {
+      onPick(item.pick);
+      onClose?.();
+      return;
+    }
     if (!overlay) {
       setOpen(false);
       returnFocus();
@@ -122,7 +162,7 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus =
 
   // Desktop, §7.2: `/` focuses search from anywhere that isn't a text field.
   useEffect(() => {
-    if (overlay) return;
+    if (variant !== "float") return;
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
@@ -134,12 +174,12 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus =
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [overlay]);
+  }, [variant]);
 
   // Desktop, §7.2: a pointerdown anywhere outside the box closes the
   // dropdown (audit defect 8: it never closed on an outside tap).
   useEffect(() => {
-    if (overlay || !open) return;
+    if (variant !== "float" || !open) return;
     const onDown = (e: PointerEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -149,12 +189,12 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus =
     };
     document.addEventListener("pointerdown", onDown, true);
     return () => document.removeEventListener("pointerdown", onDown, true);
-  }, [overlay, open]);
+  }, [variant, open]);
 
   const comboProps = {
     ref: inputRef,
     role: "combobox",
-    "aria-label": SEARCH_LABEL,
+    "aria-label": pathMode ? `Search files for path ${pathEnd}` : SEARCH_LABEL,
     "aria-expanded": expanded,
     "aria-controls": listId,
     "aria-autocomplete": "list" as const,
@@ -187,6 +227,87 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus =
       onHover={overlay ? undefined : setCursor}
     />
   );
+
+  if (palette) {
+    return (
+      <div className="absolute inset-0 z-[70] flex items-start justify-center bg-[var(--chrome-scrim)] px-4 pt-[14vh]" data-desktop-search>
+        <button type="button" aria-label="Close search" tabIndex={-1} onClick={() => close()} className="absolute inset-0 h-full w-full cursor-default" />
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-label="Search and commands"
+          data-search-palette
+          className="relative z-[1] flex w-[min(640px,100%)] flex-col overflow-hidden rounded-[16px] border border-[var(--chrome-glass-border)] bg-[var(--chrome-solid)] text-[var(--on)] shadow-[var(--chrome-shadow)]"
+          style={{ maxHeight: "min(70vh, calc(100vh - 32px))" }}
+          onKeyDown={(event) => {
+            if (event.defaultPrevented) return;
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              close();
+              return;
+            }
+            if (event.key === "Tab") {
+              const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("input:not([disabled]), button:not([disabled]):not([tabindex='-1'])"));
+              const first = focusable[0];
+              const last = focusable[focusable.length - 1];
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+              }
+            }
+          }}
+        >
+          {/* docs/UX.md §5.1 and the approved prototype: the field IS the
+              header -- magnifier, input, the path tag, Esc -- so the dialog
+              carries no second title or close button over it. The scrim and
+              Esc close it; the footer names the keys. */}
+          <label className="flex h-14 shrink-0 items-center gap-2.5 border-b border-[var(--chrome-glass-border)] px-4 text-[var(--dim)]">
+            <SearchIcon size={18} />
+            {pathMode && (
+              <span
+                data-path-destination-tag
+                className="shrink-0 whitespace-nowrap rounded-[6px] px-2 py-[3px] text-meta text-[var(--accent)]"
+                style={{ background: "color-mix(in srgb, var(--accent) 12%, transparent)" }}
+              >
+                {pathEnd === "start" ? "Path start" : "Path destination"}
+              </span>
+            )}
+            <input
+              {...comboProps}
+              autoFocus
+              type="text"
+              className="h-10 min-w-0 flex-1 bg-transparent text-[16px] text-[var(--on)] outline-none placeholder:text-[var(--dim)]"
+              placeholder={pathMode ? (pathEnd === "start" ? "Search files for the start" : "Search files for the destination") : PALETTE_PLACEHOLDER}
+            />
+            {value && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                data-search-clear
+                onClick={() => { setValue(""); setCursor(-1); inputRef.current?.focus(); }}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]"
+              >
+                <ClearIcon />
+              </button>
+            )}
+            <Kbd>esc</Kbd>
+          </label>
+          <div data-search-results className="min-h-0 flex-1 overflow-y-auto p-1.5" style={{ overscrollBehavior: "contain", scrollbarWidth: "thin" }}>
+            {list}
+          </div>
+          <div aria-hidden="true" className="flex shrink-0 items-center gap-4 border-t border-[var(--chrome-glass-border)] px-4 py-2.5 text-meta text-[var(--dim)]">
+            <span className="flex items-center gap-1.5"><Kbd>↑</Kbd><Kbd>↓</Kbd> move</span>
+            <span className="flex items-center gap-1.5"><Kbd>↵</Kbd> open</span>
+            <span className="flex items-center gap-1.5"><Kbd>esc</Kbd> close</span>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   if (overlay) {
     return (
@@ -282,12 +403,21 @@ export function SearchBox({ doc, onPick, variant = "float", onClose, autoFocus =
   );
 }
 
-function Marked({ text, marks }: { text: string; marks: readonly Mark[] }) {
+/** The prototype's key cap: 20 px, mono, on the key token. */
+function Kbd({ children }: { children: ReactNode }) {
+  return (
+    <kbd className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-[5px] border border-[var(--chrome-glass-border)] bg-[var(--chrome-key)] px-[5px] font-mono text-[11px] font-normal leading-none text-[var(--dim)]">
+      {children}
+    </kbd>
+  );
+}
+
+function Marked({ text, marks, accent = false }: { text: string; marks: readonly Mark[]; accent?: boolean }) {
   return (
     <>
       {segments(text, marks).map((s, n) =>
         s.hit ? (
-          <mark key={n} className="bg-transparent font-bold text-[var(--on)]">
+          <mark key={n} className={`bg-transparent ${accent ? "font-semibold text-[var(--accent)]" : "font-bold text-[var(--on)]"}`}>
             {s.text}
           </mark>
         ) : (
@@ -306,12 +436,12 @@ const ICONS: Record<SearchPick["kind"], (p: { size?: number }) => ReactNode> = {
 
 interface ResultListProps {
   id: string;
-  results: SearchResults;
+  results: SearchResults | PaletteResults;
   value: string;
   cursor: number;
   optionId(n: number): string;
-  variant: "float" | "overlay";
-  onPick(item: SearchItem): void;
+  variant: "float" | "overlay" | "palette";
+  onPick(item: PaletteItem): void;
   onHover?(n: number): void;
 }
 
@@ -320,17 +450,23 @@ interface ResultListProps {
  * anywhere, so a long one wraps instead of widening the row. */
 function ResultList({ id, results, value, cursor, optionId, variant, onPick, onHover }: ResultListProps) {
   const phone = variant === "overlay";
+  const palette = variant === "palette";
   let n = -1;
   return (
     <>
       {!results.query && (
-        <p data-search-state="empty" className={`text-[var(--dim)] ${phone ? "px-5 pt-4 text-small" : "px-3 pt-2.5 text-meta"}`}>
-          Type a district, file, class or function name.
+        // The palette's placeholder already says what to type (the
+        // prototype has no hint line over the groups); the state stays for
+        // screen readers and check:view.
+        <p data-search-state="empty" className={palette ? "sr-only" : `text-[var(--dim)] ${phone ? "px-5 pt-4 text-small" : "px-3 pt-2.5 text-meta"}`}>
+          {variant === "palette"
+            ? (results.groups.some((group) => group.kind === "command") ? "Type a district, file, symbol or command." : "Type a file path to choose a destination.")
+            : "Type a district, file, class or function name."}
         </p>
       )}
       {results.query && results.flat.length === 0 && (
-        <p data-search-state="no-results" role="status" className={`text-[var(--dim)] ${phone ? "px-5 py-7 text-body" : "px-3 py-3 text-small"}`}>
-          No district, file or symbol matches “{value.trim()}”.
+        <p data-search-state="no-results" role="status" className={`text-[var(--dim)] ${phone ? "px-5 py-7 text-body" : palette ? "px-2.5 py-6 text-small" : "px-3 py-3 text-small"}`}>
+          {variant === "palette" ? (value.trim() ? `No results for “${value.trim()}”.` : "No files are available as a path destination.") : `No district, file or symbol matches “${value.trim()}”.`}
         </p>
       )}
       <div role="listbox" id={id} aria-label="Results">
@@ -339,7 +475,7 @@ function ResultList({ id, results, value, cursor, optionId, variant, onPick, onH
             <div
               aria-hidden="true"
               data-search-group-header
-              className={`flex items-baseline justify-between gap-3 text-label uppercase text-[var(--dim)] ${phone ? "px-5 pb-1.5 pt-3.5" : "px-3 pb-1 pt-2.5"}`}
+              className={`flex items-baseline justify-between gap-3 uppercase text-[var(--dim)] ${phone ? "px-5 pb-1.5 pt-3.5 text-label" : palette ? "px-2.5 pb-1 pt-2.5 text-[11px] font-semibold tracking-[0.06em]" : "px-3 pb-1 pt-2.5 text-label"}`}
             >
               <span>{g.label}</span>
               <span className="font-mono tabular-nums">{g.items.length}</span>
@@ -348,8 +484,10 @@ function ResultList({ id, results, value, cursor, optionId, variant, onPick, onH
               n++;
               const at = n;
               const active = at === cursor;
-              const Icon = ICONS[it.pick.kind];
-              const mono = it.pick.kind !== "district";
+              const command = "commandId" in it;
+              const kind = command ? "command" : it.pick.kind;
+              const Icon = command ? null : ICONS[it.pick.kind];
+              const mono = !command && it.pick.kind !== "district";
               return (
                 <button
                   type="button"
@@ -358,34 +496,60 @@ function ResultList({ id, results, value, cursor, optionId, variant, onPick, onH
                   key={it.key}
                   aria-selected={active}
                   tabIndex={-1}
-                  data-search-option={it.pick.kind}
+                  data-search-option={kind}
                   data-search-key={it.key}
                   // Keep focus in the input (the combobox) on desktop.
                   onMouseDown={(e) => e.preventDefault()}
                   onMouseMove={onHover ? () => at !== cursor && onHover(at) : undefined}
                   onClick={() => onPick(it)}
                   className={`flex w-full items-center text-left text-[var(--on)] outline-none ${
-                    phone ? "min-h-[56px] gap-3 border-b border-[var(--rule)] px-5 py-2" : "min-h-[40px] gap-2.5 px-3 py-1.5 touch:min-h-[44px]"
+                    phone
+                      ? "min-h-[56px] gap-3 border-b border-[var(--rule)] px-5 py-2"
+                      : palette
+                        ? "min-h-[44px] gap-3 rounded-[9px] px-2.5 py-1.5"
+                        : "min-h-[40px] gap-2.5 px-3 py-1.5 touch:min-h-[44px]"
                   }`}
-                  style={active ? { background: "color-mix(in srgb, var(--accent) 14%, transparent)" } : undefined}
+                  style={active ? { background: palette ? "var(--chrome-hover)" : "color-mix(in srgb, var(--accent) 14%, transparent)" } : undefined}
                 >
-                  <span className="shrink-0 text-[var(--dim)]">
-                    <Icon size={phone ? 20 : 16} />
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  {palette ? (
+                    // The prototype's 28 px kind tile: one quiet square per
+                    // row, so districts, files, symbols and commands read
+                    // apart at a glance without four icon styles.
+                    <span aria-hidden="true" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] bg-[var(--chrome-hover)] text-[var(--dim)]">
+                      {Icon ? <Icon size={15} /> : <span className="font-mono text-[14px] leading-none">›</span>}
+                    </span>
+                  ) : (
+                    <span className="shrink-0 text-[var(--dim)]">
+                      {Icon ? <Icon size={phone ? 20 : 16} /> : null}
+                    </span>
+                  )}
+                  <span className="flex min-w-0 flex-1 flex-col gap-px">
                     <span
                       data-search-name
-                      className={`[overflow-wrap:anywhere] ${mono ? `font-mono ${phone ? "text-[15px] leading-[21px]" : "text-small"}` : phone ? "text-body" : "text-small"}`}
+                      className={`[overflow-wrap:anywhere] ${
+                        palette
+                          ? mono ? "font-mono text-[13.5px] leading-5" : "text-[14px] leading-5"
+                          : mono ? `font-mono ${phone ? "text-[15px] leading-[21px]" : "text-small"}` : phone ? "text-body" : "text-small"
+                      }`}
                     >
-                      <Marked text={it.name} marks={it.nameMarks} />
+                      <Marked text={it.name} marks={it.nameMarks} accent={palette} />
                     </span>
                     {it.detail && (
-                      <span data-search-detail className="font-mono text-meta text-[var(--dim)] [overflow-wrap:anywhere]">
-                        <Marked text={it.detail} marks={it.detailMarks} />
+                      <span
+                        data-search-detail
+                        className={`${command ? "" : "font-mono"} ${palette ? (command ? "text-[12px]" : "text-[11.5px]") : "text-meta"} text-[var(--dim)] [overflow-wrap:anywhere]`}
+                      >
+                        <Marked text={it.detail} marks={it.detailMarks} accent={palette} />
                       </span>
                     )}
                   </span>
-                  {it.aside && <span className="shrink-0 font-mono text-meta text-[var(--dim)]">{it.aside}</span>}
+                  {command && it.aside ? (
+                    <Kbd>{it.aside}</Kbd>
+                  ) : it.aside ? (
+                    <span className="shrink-0 font-mono text-meta text-[var(--dim)]">{it.aside}</span>
+                  ) : palette ? (
+                    <span aria-hidden="true" className={`shrink-0 text-[11px] text-[var(--dim)] ${active ? "opacity-100" : "opacity-0"}`}>↵</span>
+                  ) : null}
                 </button>
               );
             })}

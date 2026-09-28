@@ -22,8 +22,10 @@ import { FolderBody } from "@/components/SelectionPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PackageLegend } from "@/components/PackageLegend";
 import { SearchBox } from "@/components/SearchBox";
-import type { SearchPick } from "@/map/searchResults";
+import type { SearchCommandDefinition, SearchPick } from "@/map/searchResults";
 import { desktopPanelCrumbs, type DesktopPanelView } from "@/map/desktopPanel";
+import { dispatchDesktopKey, type DesktopFocusScope } from "@/map/desktopKeyboard";
+import { nextThemeChoice, useThemeChoice } from "@/lib/theme";
 import { SelectionCard } from "@/components/phone/SheetCards";
 import { HeadlineText, LayerOverviewHeadline, LayerOverviewIndex, useLayerOverview } from "@/components/LayerOverview";
 import {
@@ -38,6 +40,8 @@ import {
   PlusIcon,
   SearchIcon,
 } from "@/components/phone/icons";
+
+const THEME_WORD = { system: "System", light: "Light", dark: "Dark" } as const;
 
 const LAYERS: { id: Layer; label: string; key: string; icon: ReactNode }[] = [
   {
@@ -129,6 +133,12 @@ export interface DesktopChromeProps {
   searchOpen: boolean;
   onCloseSearch(): void;
   onSearchPick(pick: SearchPick): void;
+  pathMode: boolean;
+  /** Which end of the path the palette's file pick becomes (§5.1's tag). */
+  pathEnd: "start" | "destination";
+  panelOpen: boolean;
+  onPanelOpen(open: boolean): void;
+  onOpenQuality(): void;
   keyboardOpen: boolean;
   onKeyboardOpen(open: boolean): void;
   onZoomIn(): void;
@@ -145,6 +155,18 @@ export function DesktopChrome(p: DesktopChromeProps) {
   const repoButtonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuRows = useMemo(() => repoRows(p.catalogue, p.doc, p.owner, p.repo), [p.catalogue, p.doc, p.owner, p.repo]);
+  const [themeChoice, setThemeChoice] = useThemeChoice();
+  const commands = useMemo<SearchCommandDefinition[]>(() => [
+    // §5.1's commands, each with the §5.2 key that does the same thing shown
+    // as a key cap (the prototype's command rows): one line, no restated
+    // shortcut in a second line.
+    ...LAYERS.map(({ id, label, key }) => ({ id: `layer:${id}`, label: `Switch to ${label} layer`, shortcut: key })),
+    { id: "fit", label: "Fit the map", shortcut: "F" },
+    { id: "quality", label: "Open map quality", detail: "Files without links" },
+    { id: "theme", label: "Cycle the theme", detail: `${THEME_WORD[themeChoice]} now, ${THEME_WORD[nextThemeChoice(themeChoice)].toLowerCase()} next`, shortcut: "T" },
+    { id: "panel", label: `${p.panelOpen ? "Hide" : "Show"} the panel`, shortcut: "[" },
+    ...menuRows.map((row) => ({ id: `repo:${row.slug}`, label: `Switch to ${row.slug}`, detail: row.current ? "Current repository" : "Repository" })),
+  ], [menuRows, p.panelOpen, themeChoice]);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
   const searchPopoverRef = useRef<HTMLDivElement>(null);
   const searchReturnRef = useRef<HTMLElement | null>(null);
@@ -212,14 +234,27 @@ export function DesktopChrome(p: DesktopChromeProps) {
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.defaultPrevented) return;
       const target = event.target instanceof HTMLElement ? event.target : null;
-      const typing = !!target && (target.isContentEditable || !!target.closest("input, textarea, select, [contenteditable]"));
-      const commandK = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k";
-      const slash = event.key === "/" && !typing && !event.metaKey && !event.ctrlKey && !event.altKey;
-      if (!commandK && !slash) return;
+      if (event.defaultPrevented) return;
+      const focus: DesktopFocusScope = target?.closest("[data-desktop-search], [data-search-palette]")
+        ? "palette"
+        : target?.closest('[role="menu"]')
+          ? "menu"
+          : target?.closest('[role="dialog"]')
+            ? "dialog"
+            : target?.isContentEditable || target?.closest("input, textarea, select, [contenteditable]")
+              ? "text"
+              : "page";
+      const action = dispatchDesktopKey({ key: event.key, focus, metaKey: event.metaKey, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey });
+      if (action.type !== "search") return;
       event.preventDefault();
-      searchReturnRef.current = slash && target && target !== document.body ? target : searchButtonRef.current;
+      if (p.searchOpen) {
+        restoreSearchFocusRef.current = true;
+        p.onCloseSearch();
+        return;
+      }
+      searchReturnRef.current = target && target !== document.body ? target : searchButtonRef.current;
+      restoreSearchFocusRef.current = true;
       setMenuOpen(false);
       if (p.keyboardOpen) {
         restoreKeyboardFocusRef.current = false;
@@ -229,7 +264,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [p.keyboardOpen, p.onKeyboardOpen, p.onOpenSearch]);
+  }, [p.keyboardOpen, p.onCloseSearch, p.onKeyboardOpen, p.onOpenSearch, p.searchOpen]);
 
   function openSearchFromButton() {
     if (p.searchOpen) {
@@ -247,6 +282,22 @@ export function DesktopChrome(p: DesktopChromeProps) {
   function closeSearch(restoreFocus = true) {
     restoreSearchFocusRef.current = restoreFocus;
     p.onCloseSearch();
+  }
+
+  function runCommand(id: string) {
+    if (id.startsWith("layer:")) {
+      p.onLayer(id.slice("layer:".length) as Layer);
+      return;
+    }
+    if (id.startsWith("repo:")) {
+      const row = menuRows.find((candidate) => candidate.slug === id.slice("repo:".length));
+      if (row) chooseRepository(row);
+      return;
+    }
+    if (id === "fit") p.onFit();
+    else if (id === "quality") p.onOpenQuality();
+    else if (id === "theme") setThemeChoice(nextThemeChoice(themeChoice));
+    else if (id === "panel") p.onPanelOpen(!p.panelOpen);
   }
 
   function menuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -387,7 +438,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
           })}
         </div>
         <div className="glass flex items-center gap-0.5 rounded-[14px] p-1" data-action-buttons>
-          <button ref={searchButtonRef} type="button" data-open-desktop-search aria-label="Search districts, files and symbols" title={`Search  ${typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K"}`} onClick={openSearchFromButton} className={`flex ${p.touch ? "h-11 w-11" : "h-9 w-9"} items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]`}>
+          <button ref={searchButtonRef} type="button" data-open-desktop-search aria-haspopup="dialog" aria-expanded={p.searchOpen} aria-label="Search districts, files and symbols" title={`Search  ${typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K"}`} onClick={openSearchFromButton} className={`flex ${p.touch ? "h-11 w-11" : "h-9 w-9"} items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]`}>
             <SearchIcon size={18} />
           </button>
           <ThemeToggle iconSize={18} className={`border-0 bg-transparent text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)] ${p.touch ? "h-11 w-11 rounded-[10px]" : "h-9 w-9 rounded-[10px]"}`} />
@@ -400,19 +451,15 @@ export function DesktopChrome(p: DesktopChromeProps) {
       {menuOpen && <button type="button" aria-label="Close repository menu" tabIndex={-1} onClick={() => setMenuOpen(false)} className="absolute inset-0 z-[35] cursor-default bg-transparent" />}
 
       {p.searchOpen && (
-        <div
-          ref={searchPopoverRef}
-          data-desktop-search
-          className="absolute z-50"
-          style={{
-            right: `calc(${DESKTOP_GUTTER_PX}px + env(safe-area-inset-right, 0px))`,
-            top: `calc(${COMMAND_BAR_TOP_PX + COMMAND_BAR_HEIGHT_PX + 8}px + env(safe-area-inset-top, 0px))`,
-            width: "min(460px, calc(100vw - 32px))",
-          }}
-        >
+        <div ref={searchPopoverRef} data-desktop-search-shell className="absolute inset-0 z-[70]">
           <SearchBox
             doc={p.doc}
-            onPick={(pick) => { p.onSearchPick(pick); closeSearch(); }}
+            onPick={p.onSearchPick}
+            onCommand={runCommand}
+            commands={commands}
+            pathMode={p.pathMode}
+            pathEnd={p.pathEnd}
+            variant="palette"
             autoFocus
             onClose={() => closeSearch()}
             touch={p.touch}
@@ -453,30 +500,49 @@ function KeyboardDialog({ onClose, touch }: { onClose(): void; touch: boolean })
       onKeyDown={(event) => {
         if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); }
       }}
-      className="absolute left-1/2 top-1/2 z-[71] w-[min(560px,calc(100%-32px))] -translate-x-1/2 -translate-y-1/2 rounded-[16px] border border-[var(--chrome-glass-border)] bg-[var(--chrome-solid)] p-5 text-[var(--on)] shadow-[var(--chrome-shadow)]"
+      // outline-none: the section takes focus programmatically so Esc lands
+      // here; the browser's focus ring on the whole dialog read as a black
+      // frame, not as a focus position.
+      className="absolute left-1/2 top-1/2 z-[71] w-[min(560px,calc(100%-32px))] -translate-x-1/2 -translate-y-1/2 rounded-[16px] border border-[var(--chrome-glass-border)] bg-[var(--chrome-solid)] px-[22px] pb-5 pt-4 text-[var(--on)] shadow-[var(--chrome-shadow)] outline-none"
     >
-      <div className="mb-3 flex items-center">
+      <div className="mb-2 flex items-center">
         <h2 className="mr-auto text-[17px] font-semibold">Keyboard</h2>
-        <button type="button" aria-label="Close keyboard shortcuts" onClick={onClose} className={`flex items-center justify-center rounded-[10px] hover:bg-[var(--chrome-hover)] ${touch ? "h-11 w-11" : "h-9 w-9"}`}>
+        <button type="button" aria-label="Close keyboard shortcuts" onClick={onClose} className={`-mr-2 flex items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)] ${touch ? "h-11 w-11" : "h-9 w-9"}`}>
           <MonoIcon><path d="M6 6l12 12M18 6L6 18" /></MonoIcon>
         </button>
       </div>
+      {/* docs/UX.md §5.2 in the prototype's order and words: short labels in
+          two columns, one line each; the layer keys take a full row so the
+          four layer names fit beside their keys. */}
       <div className="grid grid-cols-2 gap-x-7">
-        <Shortcut label="Search" keys={mac ? ["⌘K", "/"] : ["Ctrl K", "/"]} />
-        <Shortcut label="Move through search results" keys={["↑", "↓"]} />
-        <Shortcut label="Open highlighted result" keys={["Enter"]} />
+        <Shortcut label="Search and commands" keys={mac ? ["⌘K", "/"] : ["Ctrl K", "/"]} />
+        <Shortcut label="Close, or step back a card" keys={["esc"]} />
+        <Shortcut label="Move in the index" keys={["↑", "↓"]} />
+        <Shortcut label="Open the highlighted row" keys={["↵"]} />
         <Shortcut label="Hide or show the panel" keys={["["]} />
-        <Shortcut label="Close an open menu or dialog; step back one card" keys={["Esc"]} />
+        <Shortcut label="Fit the map" keys={["F"]} />
+        <Shortcut label="Zoom" keys={["+", "−"]} />
+        <Shortcut label="Zoom to the selection" keys={["Z"]} />
+        <Shortcut label="Cycle the theme" keys={["T"]} />
+        <Shortcut label="This list" keys={["?"]} />
+        <div className="col-span-2">
+          <Shortcut label="District, Churn, Complexity, Package" keys={["1", "2", "3", "4"]} />
+        </div>
       </div>
+      <p className="mt-3 text-meta text-[var(--dim)]">Mouse: drag pans, the wheel zooms at the cursor, Shift + wheel pans sideways, double-click zooms in.</p>
     </section>
   );
 }
 
 function Shortcut({ label, keys }: { label: string; keys: string[] }) {
   return (
-    <div className="flex min-h-9 items-center justify-between gap-2 border-b border-[var(--rule)] py-1.5 text-small">
+    <div className="flex min-h-8 items-center justify-between gap-2 border-b border-[var(--chrome-glass-border)] py-1 text-[13px]">
       <span>{label}</span>
-      <span className="flex shrink-0 gap-1">{keys.map((key) => <kbd key={key} className="rounded-[5px] border border-[var(--chrome-glass-border)] bg-[var(--chrome-key)] px-1.5 font-mono text-label text-[var(--dim)]">{key}</kbd>)}</span>
+      <span className="flex shrink-0 gap-1">
+        {keys.map((key) => (
+          <kbd key={key} className="inline-flex h-5 min-w-5 items-center justify-center rounded-[5px] border border-[var(--chrome-glass-border)] bg-[var(--chrome-key)] px-[5px] font-mono text-[11px] font-normal leading-none text-[var(--dim)]">{key}</kbd>
+        ))}
+      </span>
     </div>
   );
 }
@@ -682,7 +748,7 @@ export function DesktopPanel(p: DesktopPanelProps) {
                       {indexRows.map((row) => {
                         const keyFile = row.keyFiles[0];
                         return (
-                          <button key={row.d} type="button" data-district-index-row={row.d} data-panel-district={row.d} onMouseEnter={() => p.onHighlightDistricts([row.d])} onMouseLeave={() => p.onHighlightDistricts(null)} onFocus={() => p.onHighlightDistricts([row.d])} onBlur={() => p.onHighlightDistricts(null)} onClick={() => { p.onHighlightDistricts(null); p.onSelectDistrict(row.d); }} className="flex h-[50px] min-h-[50px] w-full shrink-0 items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-[var(--chrome-hover)]">
+                          <button key={row.d} type="button" data-district-index-row={row.d} data-panel-district={row.d} onMouseEnter={() => p.onHighlightDistricts([row.d])} onMouseLeave={() => p.onHighlightDistricts(null)} onFocus={() => p.onHighlightDistricts([row.d])} onBlur={() => p.onHighlightDistricts(null)} onClick={() => { p.onHighlightDistricts(null); p.onSelectDistrict(row.d); }} className="flex h-[50px] min-h-[50px] w-full shrink-0 items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-[var(--chrome-hover)] outline-none focus-visible:bg-[color-mix(in_srgb,var(--accent)_12%,transparent)]">
                             <i aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: rowColor(row.d) }} />
                             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                               <span className="truncate text-small font-semibold">{row.name}</span>

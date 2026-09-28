@@ -1,8 +1,7 @@
 import type { ReactElement } from "react";
-import { useThemeChoice, type ThemeChoice } from "@/lib/theme";
+import { nextThemeChoice, useThemeChoice, type ThemeChoice } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-const NEXT: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" };
 const LABEL: Record<ThemeChoice, string> = { system: "System", light: "Light", dark: "Dark" };
 
 // The glyphs are drawn on a 15-unit canvas; `size` scales the rendered box
@@ -86,8 +85,8 @@ export function ThemeToggle({ className, iconSize = 15 }: { className?: string; 
       type="button"
       data-theme-toggle
       data-theme-choice={choice}
-      aria-label={`Theme: ${LABEL[choice]}. Click to switch to ${LABEL[NEXT[choice]]}.`}
-      onClick={() => setChoice(NEXT[choice])}
+      aria-label={`Theme: ${LABEL[choice]}. Click to switch to ${LABEL[nextThemeChoice(choice)]}.`}
+      onClick={() => setChoice(nextThemeChoice(choice))}
       className={cn(
         "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[var(--rule)] bg-[var(--chrome2)] text-[var(--on)]",
         className,

@@ -503,6 +503,17 @@ body {
   opacity: 0.28;
 }
 
+/* A hovered or index-lit district keys its name and "N files" labels too
+   (they share its data-k). The filter above, on a label drawn with its 3.2 px
+   canvas halo, glowed the halo's outline into a tinted box behind the text
+   (phase 7b's keyboard-lit frame). Labels instead just come up to full ink;
+   the polygon carries the glow. Opacity only, so 7d's placed boxes, measured
+   from the text's width, are untouched. */
+.map-svg text.hovered {
+  filter: none;
+  fill-opacity: 1;
+}
+
 /* The desktop-hover quick card (MapRenderer's ensureCard/showCard):
    replaces the native SVG <title> tooltip on fine pointers only -- the
    <title> elements themselves are untouched, so a keyboard/screen-reader
@@ -514,24 +525,47 @@ body {
   z-index: 20;
   display: none;
   pointer-events: none;
-  max-width: 280px;
-  padding: 6px 9px;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  background: var(--chrome2);
+  max-width: 300px;
+  padding: 8px 10px;
+  border-radius: 10px;
   color: var(--on);
-  /* The hover card's lines are file paths and symbol names: data, so mono
-   * (docs/UX.md §8.1), at the scale's 13 px meta size (was 11 px). */
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 13px;
-  line-height: 1.45;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  /* docs/UX.md §8.1 and the prototype's hover card: sans for the words, mono
+   * only for the data inside them (paths, names, counts). The card used to
+   * be all mono, which read as a key-value dump. */
+  font-family: Archivo, ui-sans-serif, system-ui, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.4;
 }
 .tolmap-hover-card-title {
+  font-size: 13px;
   font-weight: 600;
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
-
+.tolmap-hover-card-title.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 500;
+}
+.tolmap-hover-card-sub {
+  margin-top: 2px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.tolmap-hover-card-sub .mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+/* The file card's landmark badge, inline after "imported by N files". */
+.tolmap-hover-card-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-transform: capitalize;
+  vertical-align: 1px;
+}
 /* docs/UX.md §6.2: the indexing page's running phase spins its ring, and a
    step with no known total shows an indeterminate bar that slides rather
    than a bar that claims a share. Still, not moving, for reduced motion. */
