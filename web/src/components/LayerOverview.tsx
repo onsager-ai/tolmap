@@ -159,7 +159,10 @@ function OverviewRow({
 }) {
   const frame = sheet
     ? "min-h-[64px] gap-3 border-b border-[var(--rule)] px-5 py-2.5 active:bg-[var(--chrome-hover)]"
-    : `${touch ? "min-h-[64px]" : "h-[50px] min-h-[50px]"} gap-2.5 rounded-[10px] px-2.5 py-1.5 hover:bg-[var(--chrome-hover)]`;
+    // §5.2: ↑ ↓ move focus through these rows; the focused row takes the
+    // palette's accent tint (the browser's default ring drew a hard black
+    // frame around a rounded row).
+    : `${touch ? "min-h-[64px]" : "h-[50px] min-h-[50px]"} gap-2.5 rounded-[10px] px-2.5 py-1.5 hover:bg-[var(--chrome-hover)] outline-none focus-visible:bg-[color-mix(in_srgb,var(--accent)_12%,transparent)]`;
   return (
     <button
       type="button"

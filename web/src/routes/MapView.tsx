@@ -1073,6 +1073,7 @@ export function MapView() {
         onCloseSearch={() => setDesktopSearchOpen(false)}
         onSearchPick={pickSearchResult}
         pathMode={!!pathPick && !pathEnds}
+        pathEnd={pathPick?.dir === "to" ? "start" : "destination"}
         panelOpen={desktopPanelOpen}
         onPanelOpen={setDesktopPanelOpen}
         onOpenQuality={openDesktopQuality}

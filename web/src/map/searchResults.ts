@@ -57,6 +57,9 @@ export interface SearchCommandDefinition {
   id: string;
   label: string;
   detail?: string;
+  /** The §5.2 key that runs the same command, shown as a key cap on the
+   * row (the row's `aside`); never matched against the query. */
+  shortcut?: string;
 }
 
 export interface SearchCommandItem {
@@ -281,7 +284,7 @@ export function paletteResults(
       const detail = command.detail ?? "";
       const detailMarks = findMarks(detail, query);
       if (query && nameMarks.length === 0 && detailMarks.length === 0) return [];
-      return [{ key: `command:${command.id}`, commandId: command.id, name: command.label, detail, aside: "", nameMarks, detailMarks }];
+      return [{ key: `command:${command.id}`, commandId: command.id, name: command.label, detail, aside: command.shortcut ?? "", nameMarks, detailMarks }];
     });
     if (commandItems.length) groups.push({ kind: "command", label: "Commands", items: commandItems });
   }

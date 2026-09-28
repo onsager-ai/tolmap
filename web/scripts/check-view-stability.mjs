@@ -6918,7 +6918,13 @@ async function checkDesktopOverviewKeyboardAndHover(browser, base) {
   const districtText = await districtCard.innerText();
   const districtBox = await districtCard.boundingBox();
   const districtPointClear = !!districtBox && !!districtPoint && !(districtPoint.x >= districtBox.x && districtPoint.x <= districtBox.x + districtBox.width && districtPoint.y >= districtBox.y && districtPoint.y <= districtBox.y + districtBox.height);
-  report(districtText.includes(districtName) && /\bfiles\b/.test(districtText) && districtText.includes("mostly folder:"), `${label}: district hover shows name, files and mostly-folder`, districtText);
+  // The card is a title and a sans subline ("919 files · mostly api/"); each
+  // value carries data-hover-field, so the check reads the fields rather than
+  // the old "mostly folder:" key-value wording.
+  const districtFields = await districtCard.evaluate((card) => Object.fromEntries([...card.querySelectorAll("[data-hover-field]")].map((el) => [el.getAttribute("data-hover-field"), el.textContent])));
+  report(districtText.includes(districtName) && /\bfiles\b/.test(districtText) && /^\d+$/.test(districtFields.files ?? "") &&
+    (districtFields.mostly === "mixed folders" || (!!districtFields.mostly && districtText.includes(`mostly ${districtFields.mostly}`))),
+  `${label}: district hover shows name, files and mostly-folder`, JSON.stringify({ districtText, districtFields }));
   report(districtPointClear, `${label}: the district hover card stays away from the pointer target`, JSON.stringify({ districtPoint, districtBox }));
 
   const map = await (await fetch(`${base}/maps/langgenius/dify.json`)).json();
@@ -6930,7 +6936,14 @@ async function checkDesktopOverviewKeyboardAndHover(browser, base) {
   const fileText = await districtCard.innerText();
   const fileBox = await districtCard.boundingBox();
   const filePointClear = !!fileBox && !!filePoint && !(filePoint.x >= fileBox.x && filePoint.x <= fileBox.x + fileBox.width && filePoint.y >= fileBox.y && filePoint.y <= fileBox.y + fileBox.height);
-  report(fileText.includes("types.ts") && fileText.includes("path:") && fileText.includes("imported by") && fileText.includes("landmark:"), `${label}: file hover shows name, path, imported-by and landmark`, fileText);
+  const fileFields = await districtCard.evaluate((card) => Object.fromEntries([...card.querySelectorAll("[data-hover-field]")].map((el) => [el.getAttribute("data-hover-field"), el.textContent])));
+  // The landmark is the file card's badge, present exactly when the map
+  // document lists the file as a landmark, and naming the same kind.
+  const expectedLandmark = map.L.find(([landmarkFile]) => landmarkFile === file)?.[1] ?? null;
+  report(fileText.includes("types.ts") && fileFields.path === "web/app/components/workflow" &&
+    /imported by \d+ files?/.test(fileText) && /^\d+$/.test(fileFields["imported-by"] ?? "") &&
+    (fileFields.landmark ?? null) === expectedLandmark,
+  `${label}: file hover shows name, path, imported-by and landmark`, JSON.stringify({ fileText, fileFields, expectedLandmark }));
   report(filePointClear, `${label}: the file hover card stays away from the pointer target`, JSON.stringify({ filePoint, fileBox }));
   await context.close();
 }

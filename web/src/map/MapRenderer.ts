@@ -57,6 +57,7 @@ import { assignNeighbourhoodShades, neighbourhoodCentroids } from "./neighbourho
 import type { FolderLabel, PackageGrouping } from "./packageLayout";
 import { formatDirectory } from "./packageLayout";
 import { MOSTLY_SHARE_THRESHOLD } from "./districtIndex";
+import { WHY_COLOR } from "@/lib/cardText";
 import { GestureRecognizer, PAN_DISMISS_PX, QUIET_AFTER_GESTURE_MS, type GestureEvent, type GestureEventType, type GestureIntent } from "./gestures";
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { RenderGate } from "./renderGate";
@@ -101,6 +102,26 @@ declare global {
 }
 
 const NS = "http://www.w3.org/2000/svg";
+/** One run of a hover card's subline: plain text, mono data, or the file
+ * card's landmark badge (`badge` is its colour). `field` names the value
+ * for check:view. */
+type HoverSpan = string | { text: string; mono?: boolean; badge?: string; field?: string };
+/** docs/UX.md §5 linked hover, as the prototype draws it: a title line
+ * (mono when it is a path or a symbol) over quiet sans sublines. */
+interface HoverCardContent {
+  title: string;
+  titleMono?: boolean;
+  rows: HoverSpan[][];
+}
+/** The card as plain lines, title first: the phone sheet's structure card
+ * (onTapStructure) shows the same words as text. */
+function cardLines(content: HoverCardContent): string[] {
+  return [content.title, ...content.rows.map((row) => row.map((span) => (typeof span === "string" ? span : span.text)).join(""))];
+}
+/** A card that is only lines of text: the first is the title. */
+function plainCard(lines: string[], titleMono = false): HoverCardContent {
+  return { title: lines[0], titleMono, rows: lines.slice(1).map((line) => [line]) };
+}
 type HubRingCandidate = { hub: HubSet["hubs"][number]; cx: number; cy: number; r: number };
 // docs/UX.md §8.1: the smallest size the map's Archivo labels (district and
 // neighbourhood names and their subtitles) are drawn at.
@@ -2300,7 +2321,14 @@ export class MapRenderer {
       const allowed = new Set(this.desktopLabelDistrictIds);
       const seen = new Set<string>();
       districtOrder = [];
-      for (const d of [selectedDistrict, hoveredDistrict]) {
+      // Phase 7b: a district lit from the panel (an index row under the
+      // pointer or the keyboard, §5 linked hover) is the hovered district seen
+      // from the other side, so it takes the hovered slot's priority here --
+      // through this same greedy, no-overlap placement, never around it. Like
+      // a map hover, lighting a row does not itself repaint; the order holds
+      // for whatever paint comes next.
+      const lit = this.overviewDistricts ? this.desktopLabelDistrictIds.filter((id) => this.overviewDistricts!.has(Number(id))).map(Number) : [];
+      for (const d of [selectedDistrict, hoveredDistrict, ...lit]) {
         if (d == null) continue;
         const key = String(d);
         if (allowed.has(key) && !seen.has(key)) {
@@ -4423,7 +4451,7 @@ export class MapRenderer {
    * click() dispatches on. Returns null for a key whose target this paint
    * doesn't actually have data for (e.g. a stale key from just before a
    * document swap); callers treat that as "nothing to show." */
-  private hoverContent(key: string): { lines: string[] } | null {
+  private hoverContent(key: string): HoverCardContent | null {
     const { doc } = this.state!;
     const parts = key.split(":");
     if (parts[0] === "d") {
@@ -4433,10 +4461,19 @@ export class MapRenderer {
       const largestFolder = this.state?.districtPaths.get(d)?.find((row) => !row.other);
       const mostly = largestFolder && largestFolder.share >= MOSTLY_SHARE_THRESHOLD
         ? formatDirectory(largestFolder.path ?? ".")
-        : "none";
-      return { lines: [doc.names[String(d)] ?? `District ${d}`, `${district.size} files`, `mostly folder: ${mostly}`] };
+        : null;
+      // §5 linked hover: name, files, mostly-folder -- the prototype's title
+      // line and one quiet subline, mono only for the data in it.
+      return {
+        title: doc.names[String(d)] ?? `District ${d}`,
+        rows: [[
+          { text: String(district.size), mono: true, field: "files" },
+          ` ${district.size === 1 ? "file" : "files"} · `,
+          ...(mostly ? ["mostly ", { text: mostly, mono: true, field: "mostly" }] : [{ text: "mixed folders", field: "mostly" }]),
+        ]],
+      };
     }
-    if (parts[0] === "dir") return { lines: [key.slice(4) + "/", "folder highlight"] };
+    if (parts[0] === "dir") return plainCard([key.slice(4) + "/", "folder highlight"], true);
     if (parts[0] === "r") {
       // A3 (road hover/tap card, issue #82): "A -> B: n imports · B -> A: m
       // imports" -- read straight off this.roadPlan (built once per
@@ -4449,7 +4486,7 @@ export class MapRenderer {
       if (!plan) return null;
       const nameA = doc.names[String(a)] ?? `district ${a}`;
       const nameB = doc.names[String(b)] ?? `district ${b}`;
-      return { lines: [`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`] };
+      return plainCard([`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`]);
     }
     // B4 scope item 4: streets. Read straight off the currently-cached
     // street plan (getStreetPlan) rather than re-aggregating doc.E, for the
@@ -4462,7 +4499,7 @@ export class MapRenderer {
       if (!plan) return null;
       const nameA = doc.neighbourhoods?.[a]?.label ?? a;
       const nameB = doc.neighbourhoods?.[b]?.label ?? b;
-      return { lines: [`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`] };
+      return plainCard([`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`]);
     }
     if (parts[0] === "st" && parts[1] === "c") {
       const n = parts[2];
@@ -4471,12 +4508,12 @@ export class MapRenderer {
       if (!plan) return null;
       const nameN = doc.neighbourhoods?.[n]?.label ?? n;
       const nameD = doc.names[String(d)] ?? `district ${d}`;
-      return { lines: [`${nameN} ↔ ${nameD}`, `${nameN} → ${nameD}: ${plan.out} imports · ${nameD} → ${nameN}: ${plan.in} imports`] };
+      return plainCard([`${nameN} ↔ ${nameD}`, `${nameN} → ${nameD}: ${plan.out} imports · ${nameD} → ${nameN}: ${plan.in} imports`]);
     }
     if (parts[0] === "n") {
       const n = doc.neighbourhoods?.[parts[1]];
       if (!n) return null;
-      return { lines: [n.label, `${n.size} files`] };
+      return plainCard([n.label, `${n.size} files`]);
     }
     if (parts[0] === "f") {
       const i = +parts[1];
@@ -4486,15 +4523,29 @@ export class MapRenderer {
       const slash = filePath.lastIndexOf("/");
       const name = slash < 0 ? filePath : filePath.slice(slash + 1);
       const path = slash < 0 ? "(repo root)" : filePath.slice(0, slash);
-      const landmark = doc.L.find(([file]) => file === i)?.[1] ?? "none";
-      return { lines: [name, `path: ${path}`, `imported by ${inDeg} ${inDeg === 1 ? "file" : "files"}`, `landmark: ${landmark}`] };
+      const landmark = doc.L.find(([file]) => file === i)?.[1];
+      // §5 linked hover: name, path, imported-by, landmark. The landmark is
+      // the file card's own badge; a file that is not one shows none.
+      return {
+        title: name,
+        titleMono: true,
+        rows: [
+          [{ text: path, mono: true, field: "path" }],
+          [
+            "imported by ",
+            { text: String(inDeg), mono: true, field: "imported-by" },
+            ` ${inDeg === 1 ? "file" : "files"}`,
+            ...(landmark ? [{ text: landmark, badge: WHY_COLOR[landmark] ?? "var(--dim)", field: "landmark" }] : []),
+          ],
+        ],
+      };
     }
     if (parts[0] === "s") {
       const i = +parts[1];
       const s = +parts[2];
       const sm = symbolsOf(doc, i)[s];
       if (!sm) return null;
-      return { lines: [sm[0], KIND[sm[1]] ?? "symbol", `lines ${sm[2]}-${sm[3]}`] };
+      return plainCard([sm[0], KIND[sm[1]] ?? "symbol", `lines ${sm[2]}-${sm[3]}`], true);
     }
     // Issue #82 C2: a symbol card. `global` is the DistrictSymbols'
     // "symbol_indices" space (docs/API.md), not the "s:" branch's file-local
@@ -4511,14 +4562,12 @@ export class MapRenderer {
       const { out, in: inn } = rollReferences(decoded, local, this.symVisible);
       const outTotal = [...out.values()].reduce((a, b) => a + b, 0);
       const inTotal = [...inn.values()].reduce((a, b) => a + b, 0);
-      return {
-        lines: [
-          rowName(row),
-          `${KIND_NAMES[rowKind(row)] ?? "symbol"}${memberCount ? ` · ${memberCount} members` : ""}`,
-          `lines ${row[3]}-${row[4]}`,
-          `refs out ${outTotal} (${out.size} places) · in ${inTotal} (${inn.size} places)`,
-        ],
-      };
+      return plainCard([
+        rowName(row),
+        `${KIND_NAMES[rowKind(row)] ?? "symbol"}${memberCount ? ` · ${memberCount} members` : ""}`,
+        `lines ${row[3]}-${row[4]}`,
+        `refs out ${outTotal} (${out.size} places) · in ${inTotal} (${inn.size} places)`,
+      ], true);
     }
     return null;
   }
@@ -4575,16 +4624,36 @@ export class MapRenderer {
    * cost the aria-label a screen reader / keyboard user gets from the same
    * markup on a device this class never activates on -- this card is
    * purely an additional, visual, mouse-only affordance layered on top. */
-  private showCard(content: { lines: string[] }) {
+  private showCard(content: HoverCardContent) {
     if (!this.HOVER) return;
     const card = this.ensureCard();
+    const title = document.createElement("div");
+    title.className = content.titleMono ? "tolmap-hover-card-title mono" : "tolmap-hover-card-title";
+    title.textContent = content.title;
     card.replaceChildren(
-      ...content.lines.map((line, idx) => {
+      title,
+      ...content.rows.map((spans) => {
         const row = document.createElement("div");
-        if (idx === 0) {
-          row.className = "tolmap-hover-card-title";
+        row.className = "tolmap-hover-card-sub";
+        for (const span of spans) {
+          if (typeof span === "string") {
+            row.appendChild(document.createTextNode(span));
+            continue;
+          }
+          const node = document.createElement("span");
+          node.textContent = span.text;
+          if (span.field) node.dataset.hoverField = span.field;
+          if (span.badge) {
+            // The file card's landmark badge (SheetCards' file facts): the
+            // landmark's colour on a 16% tint of itself.
+            node.className = "tolmap-hover-card-badge";
+            node.style.color = span.badge;
+            node.style.background = `color-mix(in srgb, ${span.badge} 16%, transparent)`;
+          } else if (span.mono) {
+            node.className = "mono";
+          }
+          row.appendChild(node);
         }
-        row.textContent = line;
         return row;
       }),
     );
@@ -4972,7 +5041,7 @@ export class MapRenderer {
       const content = this.hoverContent(kk);
       // docs/UX.md §3.2: on a phone the explanation is sheet content, not a
       // card floating over the map (§3 "nothing else floats over the map").
-      if (content && this.callbacks.onTapStructure?.(kk, content.lines)) {
+      if (content && this.callbacks.onTapStructure?.(kk, cardLines(content))) {
         this.hideCard();
         return;
       }
