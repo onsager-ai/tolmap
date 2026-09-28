@@ -28,9 +28,11 @@ export const SearchIcon = ({ size = 20 }: { size?: number }) => (
     <path d="M20 20l-3.5-3.5" />
   </Icon>
 );
-export const SwitchIcon = () => (
-  <Icon>
-    <path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3" />
+/** The repository sheet's "Home" row: a house. */
+export const HomeIcon = ({ size = 20 }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M4 11l8-7 8 7" />
+    <path d="M6 9.5V20h12V9.5" />
   </Icon>
 );
 export const PlusIcon = ({ size = 20 }: { size?: number }) => (

@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import { validateRepoInput } from "@/api/repoInput";
 import { postIndexJob, ApiRequestError } from "@/api/client";
 import { useServiceAvailable } from "@/data/queries";
@@ -21,6 +21,16 @@ export function SubmitRepoForm() {
   const [submitting, setSubmitting] = useState(false);
 
   const disabled = serviceAvailable === false;
+
+  // `/#repo-field` lands with the field focused: the map's repository sheet
+  // sends "Map another repository" here. (iOS raises the keyboard only for
+  // a focus inside the tap's own handler, so there the field is focused
+  // and one more tap raises the keyboard.)
+  const hash = useLocation({ select: (l) => l.hash });
+  const fieldRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (hash === "repo-field") fieldRef.current?.focus();
+  }, [hash]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -63,6 +73,7 @@ export function SubmitRepoForm() {
       </label>
       <input
         id="repo-field"
+        ref={fieldRef}
         data-repo-field
         value={value}
         onChange={(e) => {

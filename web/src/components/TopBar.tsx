@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import type { CatalogueEntry, MapDocument } from "@/types";
 import { repoOptions } from "@/lib/repoOptions";
 import type { Layer } from "@/map/constants";
@@ -64,9 +64,10 @@ export function TopBar({ catalogue, doc, owner, repo, layer, onLayer, search, ra
           <PanelIcon />
         </button>
       )}
-      <span data-wordmark className="mr-1 shrink-0 text-[18px] font-bold tracking-[-0.02em] max-[899px]:hidden">
+      {/* The wordmark leads Home (owner, 2026-09-28: "no way to go back"). */}
+      <Link to="/" data-wordmark aria-label="tolmap home" className="mr-1 shrink-0 text-[18px] font-bold tracking-[-0.02em] max-[899px]:hidden">
         tolmap
-      </span>
+      </Link>
       {/* A native select laid under a styled face: the browser's own picker
           opens (a tablet's too), with nothing of ours to dismiss. The face
           shows the slug alone; each option also carries its file count

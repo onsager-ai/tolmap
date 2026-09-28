@@ -370,6 +370,16 @@ body {
   }
 }
 
+/* docs/UX.md §3.1: a phone sheet card's header always drags the sheet and
+   never scrolls the content under it (components/phone/BottomSheet.tsx). At
+   Full the body is a pan-y scroller; `none` here takes the header out of
+   it, so a drag that starts on the header never begins a native scroll.
+   Only in the bottom sheet: the landscape side sheet and the tablet
+   inspector have no drag, and their headers scroll with the rest. */
+[data-phone-sheet]:not([data-side-sheet]) [data-sheet-dragzone] {
+  touch-action: none;
+}
+
 /* The map's own <svg> never gets touch-scroll gestures — panning and pinching
    are handled entirely by the pointer handlers in MapRenderer. See the
    pointerdown/pointermove comments there for why capture is deferred. */

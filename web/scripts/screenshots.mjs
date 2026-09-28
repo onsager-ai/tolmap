@@ -660,6 +660,57 @@ try {
   }
 
 
+  // Issue #177, the owner's iPhone pass (2026-09-28): "no way to go back or
+  // switch repos" and "when details opened, unable to drag down to collapse
+  // because of scrolling". The pill with its repository button, the
+  // repository sheet (phone, both themes; landscape dark), and a file's
+  // details at Full, at the top and scrolled.
+  if (slugs.includes(DIFY_SLUG)) {
+    const stem = `${out}/phonefix`;
+    const shot = async (page, name) => {
+      await page.screenshot({ path: `${stem}-${name}.png` });
+      console.log(`${stem}-${name}.png`);
+    };
+    const open = async (page, query = "") => {
+      await page.goto(`${base}/${DIFY_SLUG}${query}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg [data-k]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(700);
+    };
+    const fileQuery = `?file=${encodeURIComponent("web/app/components/workflow/types.ts")}`;
+    const phone = PROFILES.find((p) => p.name === "phone");
+    for (const colorScheme of ["dark", "light"]) {
+      const context = await browser.newContext({ ...phone, colorScheme });
+      const page = await context.newPage();
+      await open(page);
+      await page.locator("[data-switch-repo]").click();
+      await page.waitForTimeout(400);
+      await shot(page, `phone-repo-sheet-${colorScheme}`);
+      await open(page, fileQuery);
+      await setSheetDetent(page, "full");
+      await page.waitForTimeout(700);
+      await shot(page, `phone-file-full-${colorScheme}`);
+      await page.locator("[data-sheet-body]").evaluate((el) => {
+        el.scrollTop = Math.round((el.scrollHeight - el.clientHeight) / 2);
+      });
+      await page.waitForTimeout(200);
+      await shot(page, `phone-file-full-scrolled-${colorScheme}`);
+      await context.close();
+    }
+    for (const profile of [
+      { name: "phone320", viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+      { name: "landscape844", viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+    ]) {
+      const context = await browser.newContext({ ...profile, colorScheme: "dark" });
+      const page = await context.newPage();
+      await open(page);
+      await shot(page, `${profile.name}-pill`);
+      await page.locator("[data-switch-repo]").click();
+      await page.waitForTimeout(400);
+      await shot(page, `${profile.name}-repo-sheet`);
+      await context.close();
+    }
+  }
+
   // docs/UX.md §11 phase 3: search. Focused with results on the district
   // layer and the package layer, phone and desktop, dark (the approved
   // "Search active" artboard) and light; the empty and no-results states; a

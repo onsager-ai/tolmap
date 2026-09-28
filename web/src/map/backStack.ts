@@ -5,8 +5,11 @@
 // back, the iOS edge swipe, the browser button) closes overlays before it
 // leaves the map. The UI opens them in a nesting order (a selection, then the
 // sheet raised, then layers or search on top), so popping last-opened-first
-// gives §3.4's order: search, layers, sheet height, selection, then the
-// previous page.
+// gives §3.4's order: the repository sheet, search, layers, sheet height,
+// selection, then the previous page. The repository sheet (opened from the
+// pill; owner, 2026-09-28: "no way to go back or switch repos") is modal
+// over everything but search, and search covers the pill that opens it, so
+// it is always the last opened and back always closes it first.
 //
 // Entries are identified by the router's own history index (TanStack's
 // `__TSR_index`), not by a count kept here: a `replace` keeps the index, so a
@@ -23,7 +26,7 @@
 // it LANDS on a dead entry; popping a dead entry onto a live one then did
 // nothing visible. Here that press carries on to the live one.)
 
-export type OverlayKind = "search" | "layers" | "sheet" | "sel";
+export type OverlayKind = "repos" | "search" | "layers" | "sheet" | "sel";
 
 /** Key in history.state that marks an entry this module pushed. */
 export const OVERLAY_MARKER = "tolmapOverlay";
@@ -43,7 +46,7 @@ export interface BackState {
 }
 
 export function isOverlayKind(value: unknown): value is OverlayKind {
-  return value === "search" || value === "layers" || value === "sheet" || value === "sel";
+  return value === "repos" || value === "search" || value === "layers" || value === "sheet" || value === "sel";
 }
 
 /** The page just loaded at `index`. `marker` is that entry's OVERLAY_MARKER,

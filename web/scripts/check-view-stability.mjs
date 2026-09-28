@@ -685,18 +685,26 @@ async function checkRepoSwitch(browser, base, profile) {
   const before = await stableBox(page);
 
   // TopBar's <option value> is the bare "owner/repo" slug regardless of how
-  // the visible label is formatted (it appends " · N files" on desktop). On a
-  // phone the same native select sits over the pill's switch-repository
-  // button (docs/UX.md §3), so selectOption drives the same control.
+  // the visible label is formatted (it appends " · N files" on desktop).
   // A plain CSS locator, not getByLabel: the map SVG's own long aria-label
   // ("Pannable, zoomable map...") confused Playwright's fuzzy accessible-name
   // matching into treating getByLabel("Repository") as ambiguous.
-  const available = await page.locator('select[aria-label="Repository"] option').evaluateAll((options) =>
-    options.map((option) => option.value),
-  );
-  await page.locator('select[aria-label="Repository"]').selectOption(
-    available.includes("langgenius/dify") ? "langgenius/dify" : "prometheus/prometheus",
-  );
+  // Issue #177: on a phone the pill's repository button opens the
+  // repository sheet, whose rows are links to the other mapped maps.
+  if (profile.isMobile) {
+    await page.locator("[data-switch-repo]").click();
+    await page.waitForSelector("[data-repo-sheet]");
+    const rows = await page.locator("[data-repo-row]").evaluateAll((els) => els.map((el) => el.getAttribute("data-repo-row")));
+    const target = rows.includes("langgenius/dify") ? "langgenius/dify" : rows.includes("prometheus/prometheus") ? "prometheus/prometheus" : rows[0];
+    await page.locator(`[data-repo-row="${target}"]`).click();
+  } else {
+    const available = await page.locator('select[aria-label="Repository"] option').evaluateAll((options) =>
+      options.map((option) => option.value),
+    );
+    await page.locator('select[aria-label="Repository"]').selectOption(
+      available.includes("langgenius/dify") ? "langgenius/dify" : "prometheus/prometheus",
+    );
+  }
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(1000);
   const after = await stableBox(page);
@@ -4741,8 +4749,12 @@ async function checkPhoneShellChrome(browser, base, profile) {
   report(!!pill && Math.abs(pill.y - 12) <= 1 && Math.abs(pill.height - 48) <= 1 && Math.abs(pill.x - 12) <= 1 && Math.abs(pill.x + pill.width - (W - 12)) <= 1,
     `${label}: a 48 px search pill, 12 px from the top and the sides`, JSON.stringify(pill));
   const pillText = await page.locator("[data-search-pill]").innerText();
-  report(/Search/.test(pillText) && pillText.includes("langgenius/dify") && (await page.locator('[data-search-pill] select[aria-label="Repository"]').count()) === 1,
-    `${label}: the pill holds the search affordance, the repository and the switch-repository control`, pillText);
+  const switchRepo = await page.locator("[data-search-pill] button[data-switch-repo]").evaluateAll((els) => els.map((el) => {
+    const r = el.getBoundingClientRect();
+    return { text: el.textContent, popup: el.getAttribute("aria-haspopup"), h: Math.round(r.height), right: Math.round(r.right) };
+  }));
+  report(/Search/.test(pillText) && switchRepo.length === 1 && switchRepo[0].text.includes("langgenius/dify") && switchRepo[0].popup === "dialog" && switchRepo[0].h >= 44 && switchRepo[0].right <= W - 12,
+    `${label}: the pill holds the search affordance and the repository as its own 44 px button (issue #177), inside the pill`, JSON.stringify({ pillText, switchRepo }));
   const controls = await page.locator("[data-control-column] button").evaluateAll((els) => els.map((el) => {
     const r = el.getBoundingClientRect();
     return { label: el.getAttribute("aria-label"), w: Math.round(r.width), h: Math.round(r.height) };
@@ -5017,6 +5029,219 @@ async function checkPhoneBackStack(browser, base, profile) {
   report(!r1.file && r1.path === "/django/django", `${label}: back from the reloaded deep link clears its selection first`, JSON.stringify(r1));
   await back();
   report((await stateOf()).path === "/", `${label}: then leaves the map`);
+  await context.close();
+}
+
+/** Issue #177 (the owner's iPhone pass, 2026-09-28: "no way to go back or
+ * switch repos"): the pill's repository button opens the repository sheet
+ * -- the map on screen, the other mapped repositories as 56 px rows, Map
+ * another repository, Home. Picking a row loads that map; Home reaches /;
+ * Map another repository reaches Home's field, focused; back closes the
+ * sheet first. Also in landscape, where it opens as a left panel. */
+async function checkPhoneRepoSheet(browser, base, profile) {
+  const label = `phone repository sheet (django) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const { context, page } = await phonePage(browser, profile);
+  const back = async () => {
+    await page.goBack({ waitUntil: "commit", timeout: 5000 }).catch(() => null);
+    await page.waitForTimeout(500);
+  };
+  const open = async (query = "") => {
+    await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    await page.goto(`${base}/django/django${query}`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("svg.map-svg path.hit");
+    await page.waitForTimeout(700);
+  };
+  const openSheet = async () => {
+    await page.locator("[data-switch-repo]").click();
+    await page.waitForSelector("[data-repo-sheet]");
+    await page.waitForTimeout(200);
+  };
+
+  await open();
+  await openSheet();
+  const sheet = await page.evaluate(() => {
+    const el = document.querySelector("[data-repo-sheet]");
+    const r = el.getBoundingClientRect();
+    return {
+      current: el.querySelector("[data-repo-current]")?.textContent ?? "",
+      rows: [...el.querySelectorAll("[data-repo-row]")].map((a) => ({ slug: a.getAttribute("data-repo-row"), h: Math.round(a.getBoundingClientRect().height), href: a.getAttribute("href") })),
+      another: el.querySelector("[data-repo-map-another]")?.getBoundingClientRect().height ?? 0,
+      home: el.querySelector("[data-repo-home]")?.getBoundingClientRect().height ?? 0,
+      box: { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) },
+      expanded: document.querySelector("[data-switch-repo]")?.getAttribute("aria-expanded"),
+    };
+  });
+  report(sheet.current.includes("django/django") && /files/.test(sheet.current), `${label}: the sheet shows the repository on screen`, sheet.current);
+  report(sheet.rows.length > 0 && sheet.rows.every((r) => r.h >= 56 && r.slug !== "django/django" && r.href?.startsWith("/")),
+    `${label}: the other mapped repositories are 56 px rows, links to their maps`, JSON.stringify(sheet.rows));
+  report(sheet.another >= 56 && sheet.home >= 56, `${label}: "Map another repository" and "Home" are 56 px rows`, JSON.stringify({ another: sheet.another, home: sheet.home }));
+  report(sheet.expanded === "true", `${label}: the pill's repository button says the sheet is open`);
+  const vw = profile.viewport.width;
+  const vh = profile.viewport.height;
+  report(
+    profile.landscape ? sheet.box.left === 0 && sheet.box.top === 0 && sheet.box.bottom === vh && sheet.box.right <= 400 : sheet.box.left === 0 && sheet.box.right === vw && sheet.box.bottom === vh,
+    `${label}: it opens as ${profile.landscape ? "a left panel, full height (§9)" : "a bottom sheet"}`,
+    JSON.stringify(sheet.box),
+  );
+
+  // Back closes it first: a selection and a raised sheet stay.
+  const pt = await (async () => {
+    await page.locator('button[aria-label="Close repositories"]').click();
+    await page.waitForTimeout(200);
+    return pickDistrictPoint(page, true);
+  })();
+  if (pt) {
+    await tap(page, profile, pt.x, pt.y);
+    const d = pt.key.split(":")[1];
+    if (!profile.landscape) {
+      await page.locator("[data-sheet-details]").click();
+      await page.waitForTimeout(380);
+    }
+    await openSheet();
+    await back();
+    const after = {
+      path: new URL(page.url()).pathname,
+      d: new URL(page.url()).searchParams.get("d"),
+      repos: await page.locator("[data-repo-sheet]").count(),
+      detent: await sheetDetent(page),
+    };
+    report(after.repos === 0 && after.path === "/django/django" && after.d === d && after.detent === (profile.landscape ? "peek" : "half"),
+      `${label}: back closes the repository sheet first, keeping the selection and the sheet height`, JSON.stringify(after));
+  } else {
+    report(false, `${label}: back closes the repository sheet first`, "no tappable district");
+  }
+
+  // Picking another mapped repository loads its map.
+  await open();
+  await openSheet();
+  const target = sheet.rows.find((r) => r.slug === "prometheus/prometheus")?.slug ?? sheet.rows[0]?.slug;
+  if (target) {
+    await page.locator(`[data-repo-row="${target}"]`).click();
+    await page.waitForURL((u) => u.pathname === `/${target}`, { timeout: 10_000 }).catch(() => null);
+    await page.waitForSelector("svg.map-svg path.hit");
+    await page.waitForTimeout(800);
+    const pill = await page.locator("[data-switch-repo]").textContent();
+    report(new URL(page.url()).pathname === `/${target}` && pill.includes(target) && (await page.locator("[data-repo-sheet]").count()) === 0,
+      `${label}: picking ${target} loads its map, with the sheet closed`, `${page.url()} pill=${pill}`);
+    report(fitsWithinRect(await districtUnionBox(page), await mapFrameRect(page)), `${label}: and the new map fits its own frame`);
+    await back();
+    report(new URL(page.url()).pathname === "/django/django" && (await page.locator("[data-repo-sheet]").count()) === 0,
+      `${label}: back from it returns to the previous map, not to a stale repository sheet`, page.url());
+  } else {
+    report(false, `${label}: picking another mapped repository loads its map`, "the catalogue lists no other repository");
+  }
+
+  // Home from the sheet reaches /.
+  await open();
+  await openSheet();
+  await page.locator("[data-repo-home]").click();
+  await page.waitForURL((u) => u.pathname === "/", { timeout: 10_000 }).catch(() => null);
+  await page.waitForTimeout(400);
+  report(new URL(page.url()).pathname === "/" && (await page.locator("[data-catalogue-row], [data-repo-field]").count()) > 0, `${label}: Home in the sheet reaches Home (/)`, page.url());
+
+  // Map another repository: Home's field, focused.
+  await open();
+  await openSheet();
+  await page.locator("[data-repo-map-another]").click();
+  await page.waitForURL((u) => u.pathname === "/", { timeout: 10_000 }).catch(() => null);
+  await page.waitForTimeout(500);
+  const focused = await page.evaluate(() => document.activeElement?.hasAttribute("data-repo-field") ?? false);
+  report(new URL(page.url()).pathname === "/" && focused, `${label}: "Map another repository" lands on Home with the repository field focused`, `${page.url()} focused=${focused}`);
+
+  // Back from the map reaches Home when Home is where it was opened from.
+  await open();
+  await back();
+  report(new URL(page.url()).pathname === "/", `${label}: back from a map opened from Home reaches Home`, page.url());
+  await context.close();
+}
+
+/** Drags a finger through Chromium's real touch pipeline (CDP), so
+ * touch-action, native scrolling and pointercancel all apply as on a phone
+ * -- Playwright's mouse would never scroll the sheet's content. */
+async function touchDragVertical(page, cdp, x, y0, dy, steps = 14) {
+  const pt = (y) => [{ x, y, id: 1, radiusX: 4, radiusY: 4, force: 1 }];
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: pt(y0) });
+  for (let i = 1; i <= steps; i++) {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: pt(y0 + (dy * i) / steps) });
+    await page.waitForTimeout(24);
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await page.waitForTimeout(500);
+}
+
+/** Issue #177 (owner, 2026-09-28: "when details opened, unable to drag down
+ * to collapse because of scrolling"): at Full, a downward drag that starts
+ * with the content at its top lowers the sheet; one that starts mid-scroll
+ * scrolls the content, and the next drag lowers the sheet; an upward drag
+ * scrolls; the grabber always drags. map/phoneShell.ts's dragOwner is the
+ * rule; this drives it with real touches. */
+async function checkPhoneSheetDragFromContent(browser, base, profile) {
+  const label = `phone sheet drag from scrolled content (dify) / ${profile.name}`;
+  console.log(`\n${label}`);
+  const { context, page } = await phonePage(browser, profile);
+  const cdp = await context.newCDPSession(page);
+  const { width: W, height: H } = profile.viewport;
+  const file = "web/app/components/workflow/types.ts";
+  await page.goto(`${base}/langgenius/dify?file=${encodeURIComponent(file)}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("svg.map-svg path.hit");
+  await page.waitForTimeout(800);
+  const body = page.locator("[data-phone-sheet] [data-sheet-body]");
+  const scroll = () => body.evaluate((el) => ({ top: Math.round(el.scrollTop), max: el.scrollHeight - el.clientHeight }));
+  const toFull = async () => {
+    await setSheetDetent(page, "full");
+    await page.waitForTimeout(600);
+  };
+  await toFull();
+  const s0 = await scroll();
+  report((await sheetDetent(page)) === "full" && (await page.locator('[data-sheet-card="file"]').count()) === 1 && s0.max > 200,
+    `${label}: setup -- ${file}'s details at Full, content taller than the sheet`, JSON.stringify(s0));
+  // Start in the content, well below the card header (it scrolls away
+  // anyway once scrolled) and clear of the grabber.
+  const x = W / 2;
+  const yContent = Math.round(H * 0.62);
+
+  // Scrolled to the top: a drag down lowers the sheet.
+  await body.evaluate((el) => (el.scrollTop = 0));
+  await touchDragVertical(page, cdp, x, yContent, 260);
+  const a = { detent: await sheetDetent(page), scroll: await scroll() };
+  report(a.detent !== "full", `${label}: content at its top, a touch drag down lowers the sheet`, JSON.stringify(a));
+
+  // Mid-scroll: the first drag down scrolls the content, not the sheet...
+  await toFull();
+  await body.evaluate((el) => (el.scrollTop = 150));
+  await page.waitForTimeout(150);
+  await touchDragVertical(page, cdp, x, yContent, 100);
+  const b = { detent: await sheetDetent(page), scroll: await scroll() };
+  report(b.detent === "full" && b.scroll.top < 150, `${label}: content mid-scroll, the first drag down scrolls the content and the sheet stays at Full`, JSON.stringify(b));
+  // ...and once it is back at its top, the next drag lowers the sheet.
+  await body.evaluate((el) => (el.scrollTop = 0));
+  await page.waitForTimeout(150);
+  await touchDragVertical(page, cdp, x, yContent, 260);
+  const c = { detent: await sheetDetent(page), scroll: await scroll() };
+  report(c.detent !== "full", `${label}: back at the top, the next drag down lowers the sheet`, JSON.stringify(c));
+
+  // At Full a drag up scrolls the content.
+  await toFull();
+  await body.evaluate((el) => (el.scrollTop = 0));
+  await page.waitForTimeout(150);
+  await touchDragVertical(page, cdp, x, yContent, -180);
+  const d = { detent: await sheetDetent(page), scroll: await scroll() };
+  report(d.detent === "full" && d.scroll.top > 0, `${label}: at Full a drag up scrolls the content`, JSON.stringify(d));
+
+  // The grabber drags the sheet even with the content scrolled.
+  const g = await page.locator("[data-sheet-grabber]").boundingBox();
+  await touchDragVertical(page, cdp, g.x + g.width / 2, g.y + g.height / 2, 300);
+  const e = { detent: await sheetDetent(page), scroll: await scroll() };
+  report(e.detent !== "full", `${label}: with the content scrolled, a drag on the grabber still lowers the sheet`, JSON.stringify(e));
+
+  // Below Full, a drag up raises the sheet.
+  await setSheetDetent(page, "half");
+  await page.waitForTimeout(500);
+  const top = await page.locator("[data-phone-sheet]").evaluate((el) => el.getBoundingClientRect().top);
+  await touchDragVertical(page, cdp, x, Math.min(H - 40, top + 200), -260);
+  report((await sheetDetent(page)) === "full", `${label}: at Half a drag up in the content raises the sheet`, await sheetDetent(page));
   await context.close();
 }
 
@@ -5928,6 +6153,11 @@ async function checkRepoSelectCounts(browser, base) {
   const current = options.find((o) => o.selected);
   report(current?.text === `langgenius/dify · ${doc.F.length.toLocaleString("en-US")} files`, `${label}: the current map's option counts its ${doc.F.length} files`, JSON.stringify(current));
   report(options.length > 1 && options.every((o) => !/ 0 files$/.test(o.text ?? "")), `${label}: no option says "0 files"`, JSON.stringify(options));
+  // Issue #177: the desktop's way home is the wordmark.
+  report((await page.locator("a[data-wordmark]").getAttribute("href")) === "/", `${label}: the top bar's wordmark links Home`);
+  await page.locator("a[data-wordmark]").click();
+  await page.waitForURL((u) => u.pathname === "/", { timeout: 10_000 }).catch(() => null);
+  report(new URL(page.url()).pathname === "/", `${label}: and clicking it reaches Home`, page.url());
   await context.close();
 }
 
@@ -6053,6 +6283,11 @@ async function main() {
     const phoneProfile = PROFILES.find((p) => p.name === "phone");
     await checkPhoneTapSelection(browser, args.base, phoneProfile);
     await checkPhoneBackStack(browser, args.base, phoneProfile);
+    // Issue #177: the owner's iPhone pass -- a way home and a working
+    // repository switch; the sheet drags down from scrolled content.
+    await checkPhoneRepoSheet(browser, args.base, phoneProfile);
+    await checkPhoneRepoSheet(browser, args.base, { name: "landscape-844x390", viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, landscape: true });
+    await checkPhoneSheetDragFromContent(browser, args.base, phoneProfile);
     await checkPhoneLayersSheet(browser, args.base, phoneProfile);
     await checkPhonePathMode(browser, args.base, phoneProfile);
     // docs/UX.md phase 3: search on both profiles, and the narrowest phone.
