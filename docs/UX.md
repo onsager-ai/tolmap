@@ -112,7 +112,7 @@ The first thing a phone shows after a map loads: pill, control column, the map f
 
 ### 4.2 Map-quality row
 
-One row in the Peek summary: a dotted-circle icon, "Heuristic references" (or "SCIP references" when the map carries them), and "N unconnected files". It opens a Full sheet with the two explanations and the unconnected-file list (the footer list from #81). It replaces the two floating chips, which overlapped the selection card on phones.
+One row in the Peek summary: "N files without links ⓘ". It opens a Full sheet with the Map quality card of §5 ("Some links may be missing", or the SCIP wording when the map carries SCIP references) and the list of files without links (the footer list from #81). It replaces the two floating chips, which overlapped the selection card on phones. The wording "Heuristic references" and "unconnected files" is retired (owner, 2026-09-28: "quite confusing").
 
 ### 4.3 District index (artboard "District index · half")
 
@@ -148,15 +148,55 @@ Opened from the control column. A radio list (District, Churn, Complexity, Packa
 
 A plain one-screen page: wordmark and theme button; "Map a codebase" with one sentence of what tolmap does; the repository field (16 px, mono) and a full-width "Map it" button; then "Mapped repositories" as 64 px rows with files, districts and language. On desktop the same content sits in a 640 px column.
 
-## 5. Desktop layout (artboard "Desktop map · file selected")
+## 5. Desktop layout: map-first, floating (prototype "tolmap desktop prototype")
 
-- **Top bar**, 56 px: wordmark (a link Home); repository switcher (mono); search (460 px, `/` focuses it, results drop down beneath with the same grouping as the phone); flexible space; the layer segmented control; the theme button.
-- **Left rail**, 320 px: navigation. The District index with the Districts / Folders tab; the selected district is marked with an accent bar and `aria-current`.
-- **Map**, the rest. The fit safe rectangle is the map element's box minus the inspector when it is open, computed from the real chrome, not from the window width (today a 821–1070 px window got phone margins).
-- **Inspector**, 380 px, floating top-right over the map with 20 px insets: the same card content as the phone sheet's Half detent. Esc closes it.
-- **Map-quality strip**, bottom-left of the map: files, districts, modularity, reference kind, unconnected files; the same content as the phone's row.
-- Controls bottom-right: zoom in, zoom out, fit, fullscreen (40 px; desktop pointer targets may be 40 px, touch targets may not).
-- Hover: instant highlight and a hover card for districts, files and roads (principle 3).
+This section was redesigned on 2026-09-28 after phase 5 shipped the first desktop layout (#179). The owner asked for the desktop to be "as modern and elegant as mobile". The #179 layout matched its artboard, but it read as a dashboard: a full-width top bar, a dense 320 px rail and a boxed inspector. The owner chose "Map-first, floating" and approved the clickable prototype after six rounds of changes (§12). The prototype is the reference for spacing, copy and behaviour. Where this text and the prototype disagree, this text wins.
+
+The phone and the desktop now share one idea: **the map fills the window, and a few floating objects sit over it.** The desktop's one panel is the phone sheet, docked left.
+
+- **Map**, full-bleed, edge to edge. There is no top bar, no rail and no footer strip.
+- **Command bar**, floating top-left, 16 px from the edges, 44 px tall. It holds the wordmark (a link Home) and the repository menu (mono name and a chevron). The menu lists the mapped repositories from the catalogue (name, files, districts, languages; a check on the current one), then "Map another repository" (Home with the field focused) and "Home". Arrow keys move through it and Esc closes it.
+- **Actions**, floating top-right, as two groups:
+  - The **layer switch**: a segmented control with an icon and a label per layer: District (overlapping circles), Churn (a pulse line), Complexity (a branching graph), Package (a box). The active layer's icon takes the accent colour. Below 1180 px wide only the icons show, and each keeps a tooltip ("Churn  2") and an `aria-label`. No colour-palette squares.
+  - **Search, theme and keyboard**: three 36 px icon buttons. Search is an icon only, with no placeholder text and no shortcut badge; its tooltip carries "Search  ⌘K" (Ctrl K off a Mac).
+- **Panel**, floating left, 360 px wide, from 72 px below the top to 72 px above the bottom, sized to its content and scrolling inside itself. It carries the phone sheet's cards (principle 10) as a stack of views: overview, district, file, symbol, path, map quality.
+  - The panel head is a **breadcrumb trail** of that stack (`langgenius/dify › workflow & components › types.ts`) with a back arrow when the stack is deeper than the overview. Every crumb is a button.
+  - A hide button in the head collapses the panel off-screen. What remains is a small floating tab at the same place ("Districts 19", or the current card's name) that brings it back. `[` toggles it. The tab carries no key badge; the shortcut lives in its tooltip.
+  - Card changes cross-fade with a 4 px rise, 180 ms (none under reduced motion).
+- **The overview follows the layer.** The panel's overview shows that layer's headline numbers and a ranked index, so every layer has its own basic stats:
+  - **District**: "19 districts · 6,347 files", then one quiet line, "modularity 0.737 · 126 files without links ⓘ", then the District index with the Districts / Folders tab (§4.3, rows 50 px on desktop: a swatch, the name, one "mostly `folder/` · `key file`" line, the count).
+  - **Churn**: the commits touching the mapped files within the indexer's history window (today the last 4,000 commits), the most active district, districts ranked by commits (commits per file, a bar, the total), then the most-changed files.
+  - **Complexity**: the median cyclomatic complexity per file, the most complex district, districts ranked by median complexity, then the most complex files.
+  - **Package**: the top-level packages (language, file count, how many districts each spans), then the districts that mix packages. Hovering a package row lights all its districts and dims the rest; clicking it frames them.
+  - Every number is computed in the viewer from what the map document already carries per file (`churn`, `complexity`, the file's folder). A figure the document does not carry is left out, never estimated. Thresholds (for example "files above N") come from a named constant with a comment, not from the copy.
+- **Linked hover.** Hovering an index row highlights its district on the map, and hovering the map shows a small hover card (district: name, files, mostly-folder; file: name, path, imported-by, landmark). The index and the map read as one object.
+- **Map quality** moves into the panel (the footer strip is gone). "126 files without links ⓘ" opens the Map quality card: title "Some links may be missing"; one paragraph saying tolmap finds links by reading import statements with its own rules, not by compiling, so it can miss a link but never invents one, and every count is a minimum; "Imports it could not follow" per language; the files without links by folder, which are listed rather than placed on the map. When the map carries SCIP references the title and paragraph say so instead. The same copy replaces "Heuristic references" and "unconnected" on the phone (§4.2).
+- **Legend**, bottom-left beside the panel (or at the left edge when the panel is hidden), only for Churn, Complexity and Package: the ramp with its range, or the package swatches.
+- **Controls**, bottom-right: zoom in, zoom out, fit, fullscreen, 40 px, in one floating group.
+- **Surfaces.** Floating chrome uses a translucent chrome token with a backdrop blur, a hairline border and a soft two-layer shadow; menus and dialogs use the solid chrome colour. No element has both a heavy border and a heavy shadow.
+- **Selection and camera.** The fit safe rectangle is the window minus the command bar row, the panel when it is open, and the controls. A selection outside it, or too small to read, eases into it. Clicking empty map clears the selection and returns the panel to the overview (§3.5).
+- **Map labels on desktop.** District labels are placed greedily, largest district first, with the selection and the hovered district first of all, and **no label overlaps another**. A label that would overlap is dropped, not shrunk. A big district's label sits in its upper part, clear of its file dots, with a "N files" subtitle when there is room. File dots and file labels appear only when their district has room on screen, or when the file is selected or linked to the selection. The symbol gates of D1 are unchanged.
+
+### 5.1 Search and commands (⌘K)
+
+Search is a centred command palette, 640 px wide, opened by ⌘K / Ctrl K, `/`, or the search icon. It groups results as Districts, Files, Symbols and **Commands** (switch layer, fit, map quality, theme, hide the panel, switch repository); with an empty query it shows the largest districts and the commands. Arrow keys move, Enter opens, Esc closes and returns focus. In path mode it lists files only and a "Path destination" tag shows in the field. §4.8's grouping and match highlighting apply.
+
+### 5.2 Keyboard
+
+| Key | Action |
+|---|---|
+| ⌘K, Ctrl K, `/` | Search and commands |
+| Esc | Close the open menu or dialog; otherwise step back one card in the panel |
+| ↑ ↓, Enter | Move through the overview's index (and light the district on the map); open the row |
+| `[` | Hide or show the panel |
+| 1 2 3 4 | District, Churn, Complexity, Package |
+| + − | Zoom about the safe rectangle's centre |
+| F | Fit the map |
+| Z | Zoom to the selection |
+| T | Cycle the theme (system, light, dark) |
+| ? | The keyboard list |
+
+Single-letter keys never fire while a text field has focus. Mouse: drag pans, the wheel (or a trackpad pinch) zooms at the cursor, Shift + wheel pans sideways, double-click zooms in.
 
 ## 6. Indexing, queue and error pages
 
@@ -281,7 +321,7 @@ Layout is chosen by the available box, not by `vh` or the window width alone.
 |---|---|---|
 | Phone portrait | width ≤ 600 and height > width | §3–4: pill, control column, one sheet |
 | Phone landscape | height ≤ 500 | pill and controls as portrait; the sheet becomes a **side sheet** on the left, 360 px wide, full height, with the same detents mapped to widths (collapsed 0, peek 360); map safe rectangle is the rest. The desktop layout is never used below 500 px of height (today an 844 × 390 phone got the 250 px rail and 28 px buttons) |
-| Tablet | 600 < width ≤ 1100, height > 500 | desktop layout with the rail collapsible (a button in the top bar), inspector as a 360 px panel; touch targets 44 px because tablets are touch |
+| Tablet | 600 < width ≤ 1100, height > 500 | the desktop layout of §5: the panel starts hidden below 900 px wide; below 1180 px the layer switch shows icons only; touch targets 44 px because tablets are touch |
 | Desktop | width > 1100 | §5 |
 
 Safe-area insets (`env(safe-area-inset-*)`, with `viewport-fit=cover`) apply on every side in every profile, including the CSS fullscreen fallback, which today hides the top bar that carried the top inset and puts the search box under the notch.
@@ -342,6 +382,11 @@ Each phase ships a coherent slice behind no flag, with the CI screenshot states 
 4. **Indexing and failure pages.** §6 in full, with the phase mapping as a tested pure function. Screenshots: queued, each phase running, done-redirect, every `error_code` row of §6.5 in both themes, on phone and desktop.
 5. **Landscape, tablet and desktop alignment.** §5 and §9: the landscape side sheet, the tablet collapsible rail, the desktop inspector built from the same components, the safe rectangle from real chrome, the CSS fullscreen fallback with insets. Screenshots: 667 × 375, 844 × 390, 768 × 1024, 1024 × 768, fullscreen with `requestFullscreen` stubbed out.
 6. **Home.** §4.9. Screenshots: home on phone and desktop, empty catalogue, service unavailable.
+7. **Desktop, map-first (2026-09-28 redesign of §5).** Built in slices, each its own PR:
+   - **7a. Floating chrome and the panel.** Remove the top bar, rail, inspector and footer strip on desktop and tablet; the command bar with the repository menu; the actions (icon layer switch, search, theme, keyboard); the left panel with the view stack, breadcrumbs and hide/show; the legend and controls; the safe rectangle; the Map quality copy on both profiles. Screenshots: 1440 × 900 and 1024 × 768 in both themes, with the overview, a district, a file and the panel hidden; the repository menu open; 1100 × 800 with icon-only layers.
+   - **7b. Search and keyboard.** §5.1 and §5.2, linked hover and the hover card. Screenshots: the palette with a query, with commands, and in path mode; the keyboard list; an index row highlighted by the keyboard with its district lit.
+   - **7c. Layer-aware overview.** The Churn, Complexity and Package overviews of §5, computed from the map document. Screenshots: each layer's overview in both themes.
+   - **7d. Desktop label placement.** The no-overlap label rule of §5 in the renderer, desktop and tablet profiles only. Screenshots: the dify and django overviews at fit and at two zoom steps, compared with today's.
 
 After phases 2 and 3 the owner checks on an iPhone on staging, because some behaviour cannot be settled in CI: focus zoom, the edge-swipe back gesture, real finger jitter against the 10 px slop, pointer capture after node removal in WebKit, the keyboard's effect on `visualViewport`, and safe-area insets in landscape.
 
@@ -351,3 +396,9 @@ Settled by the owner on 2026-09-27 (session `16030105-19f0-4a84-933b-c5953f23c6b
 
 - **"Route" in the UI:** renamed to **"Path from / Path to"** (and "path mode" for route mode). GLOSSARY keeps Route for an aggregated dependency between repositories. §4.7 and every "route" in the viewer's copy follow this. Code identifiers such as `RouteBox` may keep their names.
 - **Opening the map before details finish:** yes. The indexing page hands over to the map when the Map phase finishes, and symbols fill in at close zoom when the Detail phase lands. Phase 4 first confirms against `src/service` that the map is published before symbols, and makes the smallest service change needed if it isn't.
+
+Settled by the owner on 2026-09-28 (session `16030105-19f0-4a84-933b-c5953f23c6b3`), redesigning §5:
+
+- **Direction:** "Map-first, floating (Recommended)" (AskUserQuestion, transcript line 13110, 02:41:43Z), after "i think we should support desktop web as well while keep mobile UI/UX" (line 13014, 02:35:25Z) and "basically we should make desktop web as modern and elegant as mobile" (line 13065, 02:35:50Z).
+- **Process:** "Prototype first (Recommended)". The prototype was revised on the owner's notes: no key badge on the collapsed panel tab; icons, not colour squares, in the layer switch; search as an icon only, moved to the right-hand actions; the confusing "Heuristic references" footer replaced, then folded into the panel; basic stats for every layer, not only District. Approved with "i'm okay with the mockup now" (line 13601, 03:06:37Z).
+
