@@ -212,7 +212,7 @@ export function OverviewCard({
           <div className="mt-5 flex items-center justify-between">
             <h4 className="text-[15px] font-semibold">
               {tab === "districts" ? "Districts" : "Folders"}{" "}
-              <span className="font-medium text-[var(--dim)]">{tab === "districts" ? mainland : packageLayout.directories.length}</span>
+              <span className="font-medium text-[var(--dim)]">{tab === "districts" ? layerOverview.district.mainlandDistricts : packageLayout.directories.length}</span>
             </h4>
             <div role="tablist" aria-label="Browse by" className="flex rounded-[10px] border border-[var(--rule)] bg-[var(--canvas)] p-0.5">
               {(["districts", "folders"] as const).map((t) => (
