@@ -31,7 +31,7 @@ report(eq(stack.map((v) => v.type), ["overview", "district"]), "a crumb jumps ba
 stack = desktopPanelReducer(stack, { type: "map-district", district: 7 });
 report(eq(stack.map((v) => v.type), ["overview", "district"]) && (stack.at(-1) as { district?: number }).district === 7, "a new map selection starts a fresh trail", stack);
 
-const doc = { repo: "owner/repo", names: { "4": "networking" }, F: ["src/main.ts", "pkg/file.py"] } as unknown as MapDocument;
+const doc = { repo: "langgenius__dify", names: { "4": "networking" }, F: ["src/main.ts", "pkg/file.py"] } as unknown as MapDocument;
 const crumbs = desktopPanelCrumbs([
   { type: "overview" },
   { type: "district", district: 4 },
@@ -39,7 +39,7 @@ const crumbs = desktopPanelCrumbs([
   { type: "symbol", district: 4, file: 1, label: "Worker" },
   { type: "path" },
   { type: "quality" },
-], doc);
+], doc, "langgenius/dify");
 report(eq(crumbs.map((c) => c.label), ["owner/repo", "networking", "file.py", "Worker", "Path", "Map quality"]), "crumb labels use the repo, district, file, symbol and card names", crumbs);
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

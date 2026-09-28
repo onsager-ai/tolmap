@@ -997,7 +997,7 @@ export function MapView() {
   const activeDesktopView = desktopViews[desktopViews.length - 1];
   const panelTabLabel = activeDesktopView?.type === "overview"
     ? `Districts ${Object.values(doc.districts).filter((district) => districtClass(district) === "mainland").length.toLocaleString("en-US")}`
-    : desktopPanelCrumbs(desktopViews, doc)[desktopViews.length - 1]?.label ?? "Map details";
+    : desktopPanelCrumbs(desktopViews, doc, `${owner}/${repo}`)[desktopViews.length - 1]?.label ?? "Map details";
   return (
     <div
       ref={mapAreaRef}
@@ -1032,6 +1032,7 @@ export function MapView() {
       />
       <DesktopPanel
         doc={doc}
+        repoSlug={`${owner}/${repo}`}
         packageLayout={packageLayout}
         packageGrouping={packageGrouping}
         touch={touch}

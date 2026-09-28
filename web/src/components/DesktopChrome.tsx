@@ -478,6 +478,7 @@ function Shortcut({ label, keys }: { label: string; keys: string[] }) {
 
 export interface DesktopPanelProps {
   doc: MapDocument;
+  repoSlug: string;
   packageLayout: PackageLayout;
   packageGrouping: PackageGrouping;
   touch: boolean;
@@ -503,7 +504,7 @@ export function DesktopPanel(p: DesktopPanelProps) {
   const panelRef = useRef<HTMLElement>(null);
   const [districtFoldersExpanded, setDistrictFoldersExpanded] = useState(false);
   const [districtFilesExpanded, setDistrictFilesExpanded] = useState(false);
-  const crumbs = desktopPanelCrumbs(p.views, p.doc);
+  const crumbs = desktopPanelCrumbs(p.views, p.doc, p.repoSlug);
   const top = p.views[p.views.length - 1] ?? { type: "overview" as const };
   const mainland = useMemo(() => buildDistrictIndex(p.doc, p.packageLayout), [p.doc, p.packageLayout]);
   const indexRows = useMemo(() => {

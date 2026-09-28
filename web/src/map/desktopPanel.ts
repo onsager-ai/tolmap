@@ -71,12 +71,16 @@ export interface DesktopPanelCrumb {
 
 /** Labels are plain map-document values so the head and collapsed tab use
  * the same spelling as the map and card. */
-export function desktopPanelCrumbs(views: readonly DesktopPanelView[], doc: MapDocument): DesktopPanelCrumb[] {
+export function desktopPanelCrumbs(
+  views: readonly DesktopPanelView[],
+  doc: MapDocument,
+  repoSlug = doc.repo,
+): DesktopPanelCrumb[] {
   return views.map((view, index) => {
     let label: string;
     switch (view.type) {
       case "overview":
-        label = doc.repo;
+        label = repoSlug;
         break;
       case "district":
         label = doc.names[String(view.district)] ?? `District ${view.district}`;
