@@ -646,15 +646,21 @@ export function DesktopPanel(p: DesktopPanelProps) {
                           <i aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: rowColor(row.d) }} />
                           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                             <span className="truncate text-small font-semibold">{row.name}</span>
-                            <span className="flex min-w-0 items-center truncate text-meta text-[var(--dim)]">
+                            {/* The prototype (line 545) runs this as one inline string,
+                                "mostly <folder> · <key file>", so the two halves sit right
+                                next to each other with no spacer between them. `mostly` is
+                                the only part allowed to shrink and ellipsize -- the key file
+                                is `shrink-0` and always follows it directly, so it stays on
+                                screen even when the folder truncates. */}
+                            <span className="flex min-w-0 items-center gap-1 text-meta text-[var(--dim)]">
                               {row.mostly && (
-                                <span className="min-w-0 flex-1 truncate">
+                                <span className="min-w-0 truncate">
                                   mostly <span className="font-mono">{row.mostly}</span>
                                 </span>
                               )}
-                              {row.mostly && keyFile && <span className="mx-1 shrink-0">·</span>}
+                              {row.mostly && keyFile && <span className="shrink-0">·</span>}
                               {keyFile && (
-                                <span data-district-index-key-file={keyFile.file} className={`shrink-0 truncate font-mono ${row.mostly ? "max-w-[45%]" : "max-w-full"}`}>
+                                <span data-district-index-key-file={keyFile.file} className="shrink-0 truncate font-mono">
                                   {p.doc.F[keyFile.file]?.split("/").pop()}
                                 </span>
                               )}

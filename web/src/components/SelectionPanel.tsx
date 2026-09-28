@@ -384,12 +384,16 @@ export function SymbolDirectory({
   if (!sy.length) return null;
   const loc = LOC(doc, i) || 1;
   const used = sy.reduce((a, sm) => a + Math.max(0, sm[3] - sm[2] + 1), 0);
-  const rest = Math.max(0, 1 - used / loc);
+  const usedShare = Math.min(1, used / loc);
+  const rest = Math.max(0, 1 - usedShare);
   const rows = sy.map((sm, n) => ({ sm, n, span: sm[3] - sm[2] + 1 })).sort((a, b) => b.span - a.span);
   const shown = rows.slice(0, 9);
   return (
     <>
-      <div className="my-2 flex h-[7px] gap-px overflow-hidden rounded-sm">
+      <div
+        className="my-2 flex h-[7px] gap-px overflow-hidden rounded-sm"
+        title={`${Math.round(usedShare * 100)}% of the file's lines sit inside one of its symbols`}
+      >
         {sy.map((sm, n) => {
           const share = Math.max(0, sm[3] - sm[2] + 1) / loc;
           if (share <= 0.012) return null;
@@ -397,6 +401,12 @@ export function SymbolDirectory({
         })}
         {rest > 0.012 && <i style={{ flex: rest, background: "var(--rule)" }} />}
       </div>
+      {/* Ties the otherwise-unlabelled bar above to the one number it draws
+          (comment above): what share of the file's lines the bar's coloured
+          run represents. */}
+      <p className="mb-1.5 text-meta text-[var(--dim)]">
+        <span className="font-mono text-[var(--on)]">{Math.round(usedShare * 100)}%</span> of the file is inside a symbol
+      </p>
       <div className="mb-0.5 max-h-[148px] overflow-y-auto">
         {shown.map((r) => (
           <button

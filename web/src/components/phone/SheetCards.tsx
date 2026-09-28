@@ -486,6 +486,14 @@ export function FileSheetCard({
   const blast = computeBlast(doc, i, selSym);
   const unconnected = districtClass(doc.districts[String(D_(doc, i))]) === "unconnected";
   const hood = neighbourhoodOf(doc, i);
+  // src/neighbourhoods.rs's unique_suffix() usually returns a plain folder
+  // path, but falls back to "<path> #<n>" when the plain suffix collides
+  // with a sibling neighbourhood -- pull that disambiguating "#n" out so it
+  // can sit on the quiet meta line with the code-line count instead of
+  // wrapping the mono path onto a second line.
+  const hoodSuffix = hood?.label.match(/^(.*) (#\d+)$/);
+  const hoodPath = hoodSuffix ? hoodSuffix[1] : (hood?.label ?? "");
+  const hoodOrdinal = hoodSuffix?.[2];
 
   // The selected hierarchical symbol, for the symbol card's own header.
   const hsymRow = decoded && selHSym != null ? (() => {
@@ -605,9 +613,16 @@ export function FileSheetCard({
         </span>
       </div>
       {hood && (
-        <p className="mt-1.5 text-small text-[var(--dim)]">
-          neighborhood <span className="text-[var(--on)]">{hood.label}</span> · {CODE_LINES(doc, i)} code lines
-        </p>
+        <div>
+          <Section title="Neighborhood" compact={compactRows} />
+          <p className="truncate font-mono text-small text-[var(--on)]" title={hood.label}>
+            {hoodPath}
+          </p>
+          <p className="mt-0.5 text-meta text-[var(--dim)]">
+            {hoodOrdinal && <>{hoodOrdinal} · </>}
+            {CODE_LINES(doc, i).toLocaleString("en-US")} code lines
+          </p>
+        </div>
       )}
       <BlastLine blast={blast} doc={doc} />
       {decoded ? (
