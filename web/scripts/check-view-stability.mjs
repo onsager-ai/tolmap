@@ -4629,12 +4629,13 @@ async function checkLinkLegendWrapsAtHighDegree(browser, base, profile) {
 }
 
 async function checkChromeContrast(browser, base) {
-  const label = "chrome text contrast (rail palette)";
+  const label = "floating chrome text contrast";
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
   await page.goto(`${base}/django/django`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("aside");
+  await page.waitForSelector("[data-command-bar]");
+  await page.waitForSelector("[data-desktop-panel].glass");
 
   const ratios = await page.evaluate(() => {
     const lum = (rgb) => {
