@@ -5103,8 +5103,23 @@ export class MapRenderer {
       const wy = (sy - this.ty) / this.k;
       const i = hitTestFootprint(this.state.doc, this.footprintIndex, wx, wy);
       if (window.__TOLMAP_LABEL_RESERVATION_DEBUG__) {
+        const rect = this.svg.getBoundingClientRect();
+        const matrix = this.svg.getScreenCTM();
+        let exactSvg: [number, number] | null = null;
+        let exactWorld: [number, number] | null = null;
+        let exactFile: number | null = null;
+        if (matrix) {
+          const point = this.svg.createSVGPoint();
+          point.x = clientX;
+          point.y = clientY;
+          const transformed = point.matrixTransform(matrix.inverse());
+          exactSvg = [transformed.x, transformed.y];
+          exactWorld = [(transformed.x - this.tx) / this.k, (transformed.y - this.ty) / this.k];
+          exactFile = hitTestFootprint(this.state.doc, this.footprintIndex,
+            exactWorld[0], exactWorld[1]);
+        }
         const trace = window.__TOLMAP_HIT_TEST_TRACE__ ?? [];
-        trace.push({ target: { tag: t?.tagName?.toLowerCase(), key: kk }, client: [clientX, clientY], svg: [sx, sy], world: [wx, wy], camera: [this.k, this.tx, this.ty], file: i });
+        trace.push({ target: { tag: t?.tagName?.toLowerCase(), key: kk }, client: [clientX, clientY], svg: [sx, sy], exactSvg, world: [wx, wy], exactWorld, camera: [this.k, this.tx, this.ty], file: i, exactFile, svgRect: [rect.left, rect.top, rect.width, rect.height], view: [this.VW, this.VH] });
         window.__TOLMAP_HIT_TEST_TRACE__ = trace;
       }
       if (i != null) return "f:" + i;
