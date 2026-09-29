@@ -3907,8 +3907,30 @@ pub(crate) fn run_remote(
     // Asked at most once per lease, whatever further `features` say.
     let mut reroute_to: Option<usize> = None;
     let mut saved = SavedSnapshot::of(&tx.borrow(), table);
+    // Set once a stopping master finds this lease with no channel (#199).
+    // What that channel delivered before it closed -- a `released`, above
+    // all -- is in `lease.events` already: `serve_agent` handles a
+    // channel's frames in order and detaches its lease only after the
+    // last, under the hub's lock `detached` reads. So it is read now, with
+    // no further wait, before the lease is let go. Without this a poll
+    // that timed out a moment before the `released` arrived found the lease
+    // detached and let it go unread.
+    let mut last_look = false;
     loop {
-        match lease.events.recv_timeout(POLL) {
+        let received = if last_look {
+            match lease.events.try_recv() {
+                Ok(event) => Ok(event),
+                Err(std_mpsc::TryRecvError::Empty) => {
+                    return let_go_stopping(&state, hub, &tx, job_id, epoch, cancel_sent, false);
+                }
+                Err(std_mpsc::TryRecvError::Disconnected) => {
+                    Err(std_mpsc::RecvTimeoutError::Disconnected)
+                }
+            }
+        } else {
+            lease.events.recv_timeout(POLL)
+        };
+        match received {
             Ok(LeaseEvent::Event {
                 event,
                 peak_rss_bytes,
@@ -4136,16 +4158,23 @@ pub(crate) fn run_remote(
             hub.cancel(job_id, CancelReason::Cancelled);
             cancel_sent = true;
         }
-        // A graceful stop whose agent went without releasing the job (it
-        // was reaped): the row stays `leased`/`running`, and the next
-        // process re-queues it without counting (`jobs::restore`). Waiting
-        // for the lease to run out would only hold the process's exit.
+        // A graceful stop whose agent's channel is gone: once what it sent
+        // is read (`last_look`), the lease is let go (`let_go_stopping`).
+        // Waiting for the lease to run out would only hold the process's
+        // exit.
         if registry.is_stopping() && hub.detached(job_id) {
-            return hub.end_lease(job_id, false);
+            last_look = true;
+            continue;
         }
         if hub.expired(job_id) {
-            if cancel_sent || registry.is_stopping() {
+            if cancel_sent {
                 return hub.end_lease(job_id, true);
+            }
+            // #199: a loopback agent sends no heartbeat while it stops its
+            // job for `shutdown now` (`agent::Agent::stop_now`), so its lease
+            // may run out before its `released` arrives.
+            if registry.is_stopping() {
+                return let_go_stopping(&state, hub, &tx, job_id, epoch, false, true);
             }
             let (counted, why) = if adopted {
                 (false, jobs::RESTARTED)
@@ -4178,6 +4207,48 @@ pub(crate) fn run_remote(
             );
         }
     }
+}
+
+/// A stopping master's runner lets its lease go with no `released` read
+/// for it: the lease's channel closed, or the lease ran out meanwhile.
+///
+/// Loopback mode (#199): the job goes back to `queued`, uncounted, as a
+/// `released` for the stop puts it (§6 "master graceful stop", docs/API.md
+/// "Graceful shutdown"). This process's agents stop with it, and the next
+/// process's cannot resume anything of this one's (`resume`: an adopted
+/// loopback lease has no holder), so a row left `leased`/`running` would
+/// only make the next process adopt a lease nobody holds and wait a whole
+/// lease TTL before running the job again -- and whether the row said
+/// `queued` or `running` after a stop depended on which of the `released`,
+/// the channel's close and the runner's poll came first.
+///
+/// Remote mode: the row stays as it is. The agent keeps running the job
+/// and resumes it with the next process, which adopts the lease for it.
+///
+/// A job the user cancelled is terminal already; only its lease ends.
+fn let_go_stopping(
+    state: &AppState,
+    hub: &WorkerHub,
+    tx: &watch::Sender<JobSnapshot>,
+    job_id: Uuid,
+    epoch: u64,
+    cancelled: bool,
+    close_channel: bool,
+) {
+    if cancelled || hub.remote() {
+        return hub.end_lease(job_id, close_channel);
+    }
+    requeue(
+        state,
+        hub,
+        tx,
+        job_id,
+        epoch,
+        false,
+        STOPPED,
+        close_channel,
+        None,
+    );
 }
 
 /// Where a restored snapshot has the executor's clone: the state `run_remote`
@@ -4766,11 +4837,25 @@ impl Loopback {
     /// release puts each running job back to `queued` in the store without
     /// counting an attempt (`run_remote`), then reap them. Queued jobs stay
     /// queued for the next process.
+    ///
+    /// Then it waits for the runners to let their leases go (#199), as
+    /// `Remote::shutdown` does. An agent's exit is not the master having
+    /// read what it sent: its `released` may still be on the socket, and
+    /// once this returns the process winds down its runtime, which drops
+    /// the channel's task with it unread and leaves the runner to wait out
+    /// the lease. A runner writes its row before its thread ends -- `queued`
+    /// for a job the stop interrupted, released or not (`let_go_stopping`)
+    /// -- and the runtime waits for that thread before the process exits.
     pub async fn shutdown(self) {
         self.supervisor.stop();
         self.hub.shutdown_now();
         let supervisor = self.supervisor.clone();
-        let _ = tokio::task::spawn_blocking(move || supervisor.reap(REAP_GRACE)).await;
+        let hub = self.hub.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            supervisor.reap(REAP_GRACE);
+            hub.wait_for_no_leases(REAP_GRACE);
+        })
+        .await;
     }
 }
 
