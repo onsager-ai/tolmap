@@ -2485,12 +2485,19 @@ export class MapRenderer {
           // quarter points would drop it, but its middle never leaves home.
           return at(cx) && (at(cx - nameWidth / 4) || at(cx + nameWidth / 4));
         };
-        const candidate = PHONE_DISTRICT_LABEL_OFFSETS.map(([dx, dy]) => [x + dx, labelY + dy] as [number, number]).find(([candidateX, candidateY], i) => {
+        let candidate: [number, number] | undefined = PHONE_DISTRICT_LABEL_OFFSETS.map(([dx, dy]) => [x + dx, labelY + dy] as [number, number]).find(([candidateX, candidateY], i) => {
           const box: [number, number, number, number] = [candidateX - nameWidth / 2, candidateY - nameHeight, nameWidth, nameHeight];
           if (box[0] < 0 || box[0] + box[2] > this.VW || box[1] < 0 || candidateY > this.VH) return false;
           if (hits(...box)) return false;
           return i === 0 || inOwnDistrict(candidateX, candidateY);
         });
+        // The selected district's own name is what the sheet is about: when
+        // no nearby anchor fits, it gets desktop's wider search (grids over
+        // the district, then over its visible part, then unconstrained by
+        // the outline), still through the same reserved boxes.
+        if (!candidate && isSelected && geo !== "t") {
+          candidate = this.desktopDistrictLabelSpot(+d, doc.names[d], labelSize, isIsland, true, hits, true)?.at;
+        }
         if (candidate) {
           [x, labelY] = candidate;
           labelPlaced = put(x, labelY, doc.names[d], labelSize, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
@@ -3978,12 +3985,13 @@ export class MapRenderer {
           const atY = y + dy;
           const box: [number, number, number, number] = [atX - width / 2, atY - h, width, h];
           const withinView = !reserveMarkers || (atX >= width / 2 && atX <= this.VW - width / 2 && atY >= h && atY <= this.VH);
-          // A shifted label must still sit on its own district: slid across
-          // a border it names a neighbour's folder (django's db/models/ read
-          // as part of gis & contrib). The unshifted median is the folder's
-          // own computed anchor and is not second-guessed here.
-          const shifted = dx !== 0 || dy !== 0;
-          const onOwnDistrict = !shifted || geo === "t" || this.districtContains(+label.district, (atX - this.tx) / this.k, (atY - h / 2 - this.ty) / this.k);
+          // A phone folder label must sit on its own district. A shifted one
+          // slid across a border names a neighbour's folder (django's
+          // db/models/ read as part of gis & contrib), and a folder that
+          // spans districts can have a median over none of them
+          // (django/contrib/ floated above its district). Desktop keeps its
+          // single unshifted median as before.
+          const onOwnDistrict = desktopLabels || geo === "t" || this.districtContains(+label.district, (atX - this.tx) / this.k, (atY - h / 2 - this.ty) / this.k);
           if (withinView && onOwnDistrict && !hits(box[0], box[1], box[2], box[3])) {
             placement = { text: candidate, x: atX, y: atY, width, box };
             break;

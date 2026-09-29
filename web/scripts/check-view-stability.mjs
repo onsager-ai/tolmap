@@ -4184,17 +4184,24 @@ async function checkPhoneLabelRules(browser, base) {
       // Round 3: the selected district's own name is placed first, so it is on
       // the map whatever else competes for the room (docs/UX.md 7d).
       const biggest = mainlandIds.reduce((best, id) => (doc.districts[id].size > doc.districts[best].size ? id : best), mainlandIds[0]);
-      await page.goto(`${base}/${slug}?d=${biggest}`, { waitUntil: "domcontentloaded" });
-      await page.locator('button[aria-label="Zoom to district"]').waitFor({ timeout: 30_000 });
-      await settleCamera(page);
-      await page.waitForTimeout(700);
-      const selected = await labelsState();
-      report(!!selected && selected.namedIds.includes(biggest),
-        `${label}: the selected district's own name is drawn (d=${biggest}, ${doc.names[biggest]})`,
-        JSON.stringify(selected && { named: selected.namedIds.length, selected: biggest }));
-      report(!!selected && selected.markerOverlapCount === 0 && selected.chromeOverlapCount === 0 && selected.clippedCount === 0,
-        `${label}: with a district selected, labels avoid pins, hub rings and the settled sheet, and none is clipped`,
-        JSON.stringify(selected && { marker: selected.markerOverlaps, chrome: selected.chromeOverlaps, clipped: selected.clipped }));
+      // dify's workflow district is the hard case: a 900-file district whose
+      // name is far wider than its outline at fit, beside hub rings and pins.
+      const workflowFile = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
+      const targets = [{ id: biggest, why: "largest" }];
+      if (workflowFile >= 0 && String(doc.N[workflowFile][0]) !== biggest) targets.push({ id: String(doc.N[workflowFile][0]), why: "workflow" });
+      for (const { id, why } of targets) {
+        await page.goto(`${base}/${slug}?d=${id}`, { waitUntil: "domcontentloaded" });
+        await page.locator('button[aria-label="Zoom to district"]').waitFor({ timeout: 30_000 });
+        await settleCamera(page);
+        await page.waitForTimeout(700);
+        const selected = await labelsState();
+        report(!!selected && selected.namedIds.includes(id),
+          `${label}: the selected district's own name is drawn (${why}, d=${id}, ${doc.names[id]})`,
+          JSON.stringify(selected && { named: selected.namedIds.length, selected: id }));
+        report(!!selected && selected.markerOverlapCount === 0 && selected.chromeOverlapCount === 0 && selected.clippedCount === 0,
+          `${label}: with the ${why} district selected, labels avoid pins, hub rings and the settled sheet, and none is clipped`,
+          JSON.stringify(selected && { marker: selected.markerOverlaps, chrome: selected.chromeOverlaps, clipped: selected.clipped }));
+      }
       await context.close();
     }
   }
