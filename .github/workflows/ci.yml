@@ -148,6 +148,17 @@ jobs:
       - name: cargo test
         run: cargo test --locked --release
 
+      # TEMPORARY (#199): stress the restart tests and the graceful-stop unit
+      # tests; reverted before the PR is ready.
+      - name: "TEMPORARY #199 stress: service_restart and graceful-stop tests x40"
+        run: |
+          for i in $(seq 1 40); do
+            echo "::group::iteration $i"
+            cargo test --locked --release --test service_restart || { echo "service_restart failed on iteration $i"; exit 1; }
+            cargo test --locked --release --lib -- service::workers::tests::a_lease_that_runs_out_during_a_graceful_stop service::workers::tests::a_graceful_loopback_stop_waits service::workers::tests::a_channel_that_closes_during_a_graceful_stop || { echo "graceful-stop unit tests failed on iteration $i"; exit 1; }
+            echo "::endgroup::"
+          done
+
       - name: Generated TypeScript bindings
         run: cargo run --release --bin generate-types -- --check
 
