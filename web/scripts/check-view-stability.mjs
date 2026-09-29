@@ -41,7 +41,7 @@ import { chromium } from "playwright";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { runJobPageChecks } from "./check-view-jobs.mjs";
-import { cameraBoxes, zoomInSettled } from "./camera-settle.mjs";
+import { cameraBoxes, settleCamera, zoomInSettled } from "./camera-settle.mjs";
 
 // Required generated files, relative to web/. The dify fixture is the #79
 // rebuilt main map (not the older terrain-off map). public/maps is gitignored;
@@ -2183,8 +2183,8 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   await page.waitForSelector('button[aria-label="Zoom to district"]');
   await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
   await page.waitForTimeout(850);
-  // A pin occupies the workflow median in #79's phone map at the district
-  // jump. The label correctly yields there and appears one zoom step later.
+  // Several hub rings occupy the workflow median at the district jump. If no
+  // nearby phone placement fits there, one zoom step gives the label more room.
   if (!(await page.locator('[data-folder-label="web/app/components/workflow"]').count())) {
     await page.locator('button[aria-label="Zoom in"]').click();
     await page.waitForTimeout(850);
@@ -3242,9 +3242,11 @@ async function checkFootprintModeDrawsPolygons(browser, base, profile) {
 // specific drawn on top" case pickDistrictPoint already knows how to find --
 // a batched fill (or a gutter) is pointer-events:none, so a point that
 // resolves no more specifically than the district itself is precisely where
-// MapRenderer's resolveKey() now reaches for the JS hit-test instead of
-// settling for the district (see its own doc comment). If that point selects
-// a FILE, nothing but the hit-test could have produced that outcome.
+// MapRenderer's resolveKey() reaches for the JS hit-test instead of settling
+// for the district (see its own doc comment). The hit-test allows only the
+// subpixel allowance needed for the batched path's rounded vertices. If that
+// point selects a FILE, nothing but the hit-test could have produced that
+// outcome.
 async function checkFootprintCoordinateHitTest(browser, base, profile) {
   const label = `tapping a footprint by coordinate selects it (dify) / ${profile.name}`;
   console.log(`\n${label}`);
@@ -4032,6 +4034,183 @@ async function checkDesktopLabelRules(browser, base) {
       }
     }
     await context.close();
+  }
+}
+
+// Named mainland districts at fit, per map and profile: the counts CI measured
+// on this fixture set once phone names could take a nearby anchor (run
+// 36559780329; main named 8 and 11 of dify's 19, several drawn over hub rings
+// and each other). Renders are deterministic, so a drop is a regression,
+// not noise. Widening a district-name search raises these; lowering one needs
+// a reason.
+const PHONE_NAMED_MAINLAND_FLOOR = {
+  "django/django": { phone: 6, landscape: 9 },
+  "langgenius/dify": { phone: 5, landscape: 9 },
+};
+
+/** Issue #212: the phone shells use the same chrome/pin/hub priority and
+ * clipped-label rule as desktop, while keeping their compact label styling. */
+async function checkPhoneLabelRules(browser, base) {
+  const profiles = [
+    { name: "phone", viewport: { width: 390, height: 844 } },
+    { name: "landscape", viewport: { width: 844, height: 390 } },
+  ];
+  const chromeSelector = "[data-search-pill], [data-control-column], [data-phone-sheet], [data-side-sheet]";
+  for (const profile of profiles) {
+    for (const slug of MAPS) {
+      const label = `phone label rules (${slug}) / ${profile.name} ${profile.viewport.width}x${profile.viewport.height}`;
+      console.log(`\n${label}`);
+      const context = await browser.newContext({
+        viewport: profile.viewport,
+        isMobile: true,
+        hasTouch: true,
+        deviceScaleFactor: 2,
+        colorScheme: "light",
+      });
+      const page = await context.newPage();
+      const doc = await (await context.request.get(`${base}/maps/${slug}.json`)).json();
+
+      const isMainland = (id) => doc.districts[id].class !== "island" && doc.districts[id].class !== "unconnected";
+      const mainlandIds = Object.keys(doc.districts).filter(isMainland);
+      const labelsState = () => page.evaluate(({ names, chromeSelector, mainlandIds }) => {
+        const svg = document.querySelector("svg.map-svg");
+        if (!svg) return null;
+        const map = svg.getBoundingClientRect();
+        const EPS = 0.5;
+        const toScreen = (x, y, width, height) => {
+          const matrix = svg.getScreenCTM();
+          if (!matrix) return null;
+          const point = svg.createSVGPoint();
+          point.x = x; point.y = y;
+          const a = point.matrixTransform(matrix);
+          point.x = x + width; point.y = y + height;
+          const b = point.matrixTransform(matrix);
+          return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), right: Math.max(a.x, b.x), bottom: Math.max(a.y, b.y) };
+        };
+        const reservedBox = (text) => {
+          const width = Number(text.getAttribute("data-label-box"));
+          const height = Number(text.getAttribute("font-size")) * 1.25;
+          const anchor = text.getAttribute("text-anchor") ?? "start";
+          const textX = Number(text.getAttribute("x"));
+          if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+          const x = anchor === "middle" ? textX - width / 2 : anchor === "end" ? textX - width : textX;
+          return toScreen(x, Number(text.getAttribute("y")) - height, width, height);
+        };
+        const mapLabels = [...svg.querySelectorAll("text[data-label-box]:not([data-symbol-card-label])")]
+          .map((text) => ({ text: text.textContent ?? "", box: reservedBox(text) }))
+          .filter(({ box }) => !!box);
+        const tabs = [...svg.querySelectorAll("text[data-symbol-card-label]")].map((text) => {
+          const rect = text.previousElementSibling;
+          const r = (rect && rect.tagName.toLowerCase() === "rect" ? rect : text).getBoundingClientRect();
+          return { text: text.textContent ?? "", box: { x: r.left, y: r.top, right: r.right, bottom: r.bottom } };
+        });
+        const symbolLabels = [...svg.querySelectorAll("text[data-label-for]")].map((text) => {
+          const fs = Number(text.getAttribute("font-size"));
+          const width = (text.textContent ?? "").length * fs * 0.62;
+          return { text: text.textContent ?? "", box: toScreen(Number(text.getAttribute("x")) - width / 2 - 2, Number(text.getAttribute("y")) - fs * 0.85, width + 4, fs * 1.3) };
+        }).filter(({ box }) => !!box);
+        const allLabels = [...mapLabels, ...tabs, ...symbolLabels];
+        const overlaps = (a, b) => a.x < b.right - EPS && a.right > b.x + EPS && a.y < b.bottom - EPS && a.bottom > b.y + EPS;
+        const markers = [
+          ...[...svg.querySelectorAll("g[data-landmark-pin]")].map((el) => ({ kind: "pin", id: el.getAttribute("data-landmark-pin"), el })),
+          ...[...svg.querySelectorAll("circle[data-hub-ring]")].map((el) => ({ kind: "hub", id: el.getAttribute("data-hub-ring"), el })),
+        ].map(({ kind, id, el }) => {
+          const r = el.getBoundingClientRect();
+          return { kind, id, x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+        });
+        const markerOverlaps = [];
+        for (const labelBox of allLabels) for (const marker of markers) {
+          if (overlaps(labelBox.box, marker)) markerOverlaps.push(`${labelBox.text}@${marker.kind}:${marker.id}`);
+        }
+        const chrome = [...document.querySelectorAll(chromeSelector)]
+          .filter((el) => {
+            const style = getComputedStyle(el);
+            return style.display !== "none" && style.visibility !== "hidden" && el.getAttribute("aria-hidden") !== "true";
+          })
+          .map((el) => {
+            const r = el.getBoundingClientRect();
+            return { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+          });
+        const chromeOverlaps = [];
+        for (const labelBox of allLabels) for (const chromeBox of chrome) {
+          if (overlaps(labelBox.box, chromeBox)) chromeOverlaps.push(labelBox.text);
+        }
+        const clipped = allLabels.filter(({ box }) =>
+          box.x < map.left - EPS || box.right > map.right + EPS || box.y < map.top - EPS || box.bottom > map.bottom + EPS)
+          .map(({ text }) => text);
+        const districtNames = [...svg.querySelectorAll('text[data-k^="d:"]')].filter((text) => {
+          const id = text.getAttribute("data-k").slice(2);
+          return text.textContent === names[id];
+        });
+        const namedIds = new Set(districtNames.map((text) => text.getAttribute("data-k").slice(2)));
+        return {
+          namedMainland: mainlandIds.filter((id) => namedIds.has(id)).length,
+          namedIds: [...namedIds],
+          markerCount: markers.length,
+          markerOverlaps: markerOverlaps.slice(0, 8),
+          markerOverlapCount: markerOverlaps.length,
+          chromeCount: chrome.length,
+          chromeOverlaps: chromeOverlaps.slice(0, 8),
+          chromeOverlapCount: chromeOverlaps.length,
+          clipped: clipped.slice(0, 8),
+          clippedCount: clipped.length,
+          districtLabelCount: districtNames.length,
+          mapLabelCount: mapLabels.length,
+        };
+      }, { names: doc.names, chromeSelector, mainlandIds });
+
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(300);
+      const detent = await page.locator("[data-phone-sheet]").getAttribute("data-detent");
+      report(detent === "peek", `${label}: phone sheet starts at its default Peek detent`, String(detent));
+
+      await page.locator('button[aria-label="Fit map"]').click();
+      await settleCamera(page);
+      const fit = await labelsState();
+      // Round 3: "at least one" let the phone overview name 2 of 12 mainland
+      // districts and still pass.
+      const floor = PHONE_NAMED_MAINLAND_FLOOR[slug][profile.name];
+      report(!!fit && fit.namedMainland >= floor,
+        `${label}: ${fit?.namedMainland} of ${mainlandIds.length} mainland districts named at fit (floor ${floor})`,
+        JSON.stringify(fit && { namedMainland: fit.namedMainland, mainland: mainlandIds.length, floor }));
+
+      for (const level of [{ name: "fit", clicks: 0 }, { name: "zoom-in-2", clicks: 2 }]) {
+        if (level.clicks) await zoomInSettled(page, level.clicks);
+        const result = await labelsState();
+        report(!!result && result.markerOverlapCount === 0,
+          `${label}: district, hub and neighbourhood labels avoid pins and hub rings at ${level.name}`,
+          JSON.stringify(result && { markerCount: result.markerCount, overlaps: result.markerOverlaps, overlapCount: result.markerOverlapCount }));
+        report(!!result && result.chromeOverlapCount === 0,
+          `${label}: labels avoid phone chrome at ${level.name}`,
+          JSON.stringify(result && { chromeCount: result.chromeCount, overlaps: result.chromeOverlaps, overlapCount: result.chromeOverlapCount }));
+        report(!!result && result.clippedCount === 0,
+          `${label}: no map or symbol-card label is clipped by the map edge at ${level.name}`,
+          JSON.stringify(result && { clipped: result.clipped, clippedCount: result.clippedCount }));
+      }
+      // Round 3: the selected district's own name is placed first, so it is on
+      // the map whatever else competes for the room (docs/UX.md 7d).
+      const biggest = mainlandIds.reduce((best, id) => (doc.districts[id].size > doc.districts[best].size ? id : best), mainlandIds[0]);
+      // dify's workflow district is the hard case: a 900-file district whose
+      // name is far wider than its outline at fit, beside hub rings and pins.
+      const workflowFile = doc.F.findIndex((path) => path === "web/app/components/workflow/types.ts");
+      const targets = [{ id: biggest, why: "largest" }];
+      if (workflowFile >= 0 && String(doc.N[workflowFile][0]) !== biggest) targets.push({ id: String(doc.N[workflowFile][0]), why: "workflow" });
+      for (const { id, why } of targets) {
+        await page.goto(`${base}/${slug}?d=${id}`, { waitUntil: "domcontentloaded" });
+        await page.locator('button[aria-label="Zoom to district"]').waitFor({ timeout: 30_000 });
+        await settleCamera(page);
+        await page.waitForTimeout(700);
+        const selected = await labelsState();
+        report(!!selected && selected.namedIds.includes(id),
+          `${label}: the selected district's own name is drawn (${why}, d=${id}, ${doc.names[id]})`,
+          JSON.stringify(selected && { named: selected.namedIds.length, selected: id }));
+        report(!!selected && selected.markerOverlapCount === 0 && selected.chromeOverlapCount === 0 && selected.clippedCount === 0,
+          `${label}: with the ${why} district selected, labels avoid pins, hub rings and the settled sheet, and none is clipped`,
+          JSON.stringify(selected && { marker: selected.markerOverlaps, chrome: selected.chromeOverlaps, clipped: selected.clipped }));
+      }
+      await context.close();
+    }
   }
 }
 
@@ -7160,6 +7339,7 @@ async function main() {
     for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
     await checkDesktopLabelPlacement(browser, args.base);
     await checkDesktopLabelRules(browser, args.base);
+    await checkPhoneLabelRules(browser, args.base);
     await checkDesktopZoomCameraAgreement(browser, args.base);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.

@@ -108,7 +108,7 @@ Selection changes themselves `replace` the URL (deep links keep working, and the
 
 ### 4.1 Map overview (artboard "Map overview · peek")
 
-The first thing a phone shows after a map loads: pill, control column, the map fitted into the safe rectangle, the sheet at Peek with the repo summary. The overview follows the active layer: Peek shows that layer's headline, and Half/Full show its ranked index. The Districts / Folders tab remains available on the District layer only. No auto-selection (owner, 2026-09-22 decision for desktop, extended to phones by this design so both open clean; deep links keep their selection).
+The first thing a phone shows after a map loads: pill, control column, the map fitted into the safe rectangle, the sheet at Peek with the repo summary. The overview follows the active layer: Peek shows that layer's headline, and Half/Full show its ranked index. The Districts / Folders tab remains available on the District layer only. No auto-selection (owner, 2026-09-22 decision for desktop, extended to phones by this design so both open clean; deep links keep their selection). Labels reserve the phone chrome, then pins, then hub rings before placement, as on other profiles; names that overlap or clip are dropped (§5). Phone label sizes and density stay compact.
 
 ### 4.2 Map-quality row
 
@@ -175,7 +175,7 @@ The phone and the desktop now share one idea: **the map fills the window, and a 
 - **Controls**, bottom-right: zoom in, zoom out, fit, fullscreen, 40 px, in one floating group.
 - **Surfaces.** Floating chrome uses a translucent chrome token with a backdrop blur, a hairline border and a soft two-layer shadow; menus and dialogs use the solid chrome colour. No element has both a heavy border and a heavy shadow.
 - **Selection and camera.** The fit safe rectangle is the window minus the command bar row, the panel when it is open, and the controls. A selection outside it, or too small to read, eases into it. Clicking empty map clears the selection and returns the panel to the overview (§3.5).
-- **Map labels on desktop.** District labels are placed greedily, largest district first, with the selection and the hovered district first of all, and **no label overlaps another**. A label that would overlap is dropped, not shrunk. A big district's label sits in its upper part, clear of its file dots, with a "N files" subtitle when there is room. File dots and file labels appear only when their district has room on screen, or when the file is selected or linked to the selection. The symbol gates of D1 are unchanged.
+- **Map labels on every profile (owner, 2026-09-29).** Chrome, pins, then hub rings are reserved before labels on all profiles. A name that overlaps a reserved box or is clipped by the map edge is dropped, not shrunk. District labels still share a greedy no-overlap pass: desktop and tablet put the selected/hovered district first, then the largest; phones keep their compact order, sizes and density. Desktop styling—the label's position in its district, the “N files” subtitle and the room rule for file dots and labels—stays desktop and tablet only. D1 symbol gates are unchanged.
 
 ### 5.1 Search and commands (⌘K)
 
@@ -386,7 +386,7 @@ Each phase ships a coherent slice behind no flag, with the CI screenshot states 
    - **7a. Floating chrome and the panel.** Remove the top bar, rail, inspector and footer strip on desktop and tablet; the command bar with the repository menu; the actions (icon layer switch, search, theme, keyboard); the left panel with the view stack, breadcrumbs and hide/show; the legend and controls; the safe rectangle; the Map quality copy on both profiles. Screenshots: 1440 × 900 and 1024 × 768 in both themes, with the overview, a district, a file and the panel hidden; the repository menu open; 1100 × 800 with icon-only layers.
    - **7b. Search and keyboard.** §5.1 and §5.2, linked hover and the hover card. Screenshots: the palette with a query, with commands, and in path mode; the keyboard list; an index row highlighted by the keyboard with its district lit.
    - **7c. Layer-aware overview.** The District, Churn, Complexity and Package overviews of §5, computed from the loaded map document, on desktop and in the phone sheet. The phone's Peek headline and Half/Full ranked index follow the active layer; Districts / Folders remains on District only. Screenshots: each layer's overview at 1440 × 900 and at 390 × 844 (Half), in both themes.
-   - **7d. Desktop label placement.** The no-overlap label rule of §5 in the renderer, desktop and tablet profiles only. Screenshots: the dify and django overviews at fit and at two zoom steps, compared with today's.
+   - **7d. Cross-profile label placement.** The chrome/pin/hub reservation and drop-on-overlap/drop-on-edge rules of §5 apply on every profile; desktop styling stays desktop and tablet only. Screenshots and checks: the dify and django overviews at fit and zoom-in-2 across desktop, tablet, portrait phone and landscape phone.
 
 After phases 2 and 3 the owner checks on an iPhone on staging, because some behaviour cannot be settled in CI: focus zoom, the edge-swipe back gesture, real finger jitter against the 10 px slop, pointer capture after node removal in WebKit, the keyboard's effect on `visualViewport`, and safe-area insets in landscape.
 

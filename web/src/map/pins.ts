@@ -71,17 +71,13 @@ export function selectPins(
   _k: number,
   _zf: number,
   sel: number | null,
-  // A5 (district labels always on, issue #82): boxes already claimed by
-  // something with HIGHER placement priority than a pin. Desktop/tablet
-  // reserve fixed hub/chrome boxes before district labels; phone labels
-  // retain priority over pins. A pin candidate that would land on one of
-  // these is skipped, same as if another pin had already taken the spot;
-  // this is what "district names take priority over pins" actually means
-  // in code (previously pins were selected with no knowledge of where
-  // district names ended up, so the two could visually collide even though
-  // neither's OWN collision logic ever saw a conflict). Optional and
-  // defaulted so pin-counts.ts's reporting call (which doesn't model
-  // district-label placement) keeps working unchanged.
+  // 7d (#195/#203): chrome and already-drawn symbol-card boxes outrank pins
+  // on every profile. District and hub labels are then placed against the
+  // selected pins and hub rings in MapRenderer.paint(). A pin candidate
+  // landing on a preplaced box is skipped, same as if another pin had
+  // already taken the spot. Optional and defaulted so pin-counts.ts's
+  // reporting call (which doesn't model chrome or card placement) keeps
+  // working unchanged.
   preplaced: ReadonlyArray<[number, number, number, number]> = [],
 ): PinPlacement[] {
   const placed: [number, number, number, number][] = [...preplaced];

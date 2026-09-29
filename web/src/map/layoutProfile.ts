@@ -49,8 +49,8 @@ export function layoutProfile(width: number, height: number): LayoutProfile {
   return "desktop";
 }
 
-/** docs/UX.md §5: desktop label placement applies to the desktop shell and
- * tablet rail, while both phone shells keep the existing label behaviour. */
+/** docs/UX.md §5: desktop label styling applies to the desktop shell and
+ * tablet rail; the shared 7d placement rules apply to every profile. */
 export function hasDesktopMapLabels(profile: LayoutProfile): boolean {
   return profile === "tablet" || profile === "desktop";
 }

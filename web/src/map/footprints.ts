@@ -116,11 +116,30 @@ export function buildFootprintIndex(doc: MapDocument): FootprintIndex {
   return { cell, grid };
 }
 
+function withinBoundary(p: Pt, poly: readonly Pt[], tolerance: number): boolean {
+  const limit = tolerance * tolerance;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const length2 = dx * dx + dy * dy;
+    const t = length2 === 0 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2));
+    const x = a[0] + t * dx;
+    const y = a[1] + t * dy;
+    if ((p[0] - x) ** 2 + (p[1] - y) ** 2 <= limit) return true;
+  }
+  return false;
+}
+
 /** Which file's footprint (if any) contains world point `(wx, wy)` --
- * point-in-polygon (roads.ts's own `inRings`, one ring at a time) over just
- * the query cell's bucket, not the whole document. Ties (touching polygons
- * at a shared edge, vanishingly rare with a Voronoi-style diagram) resolve
- * to the lowest file index in the bucket, deterministically. Called from
+ * point-in-polygon (roads.ts's own `inRings`, one ring at a time) over the
+ * point's grid cell, not the whole document. A boundary tolerance adds
+ * neighboring cells. Ties (touching polygons at a shared edge, vanishingly
+ * rare with a Voronoi-style diagram) resolve to the lowest file index,
+ * deterministically. The tolerance is for batched paths only: their projected
+ * vertices are rounded to tenths of a viewBox pixel, so a tap on that tiny painted
+ * fringe can sit just outside the exact world polygon. Called from
  * MapRenderer's click/hover resolution, replacing the DOM hit-test a
  * batched (pointer-events:none) footprint has no element to receive.
  *
@@ -133,18 +152,41 @@ export function buildFootprintIndex(doc: MapDocument): FootprintIndex {
  * finding 29's rewrite at this sub-pixel scale). For those files, a tap
  * exactly on the reported centroid can resolve to a geometrically adjacent
  * file instead. This is a layout/backend precision question, not a viewer
- * bug -- `hitTestFootprint` faithfully tests the polygon it's given -- and
- * is out of scope for this (viewer-only) change; not observed to affect
- * anything larger than the smallest slivers in a district. */
-export function hitTestFootprint(doc: MapDocument, index: FootprintIndex, wx: number, wy: number): number | null {
+ * bug -- the exact test faithfully tests the polygon it's given -- and is
+ * out of scope for this (viewer-only) change; it has not been observed to
+ * affect anything larger than the smallest slivers in a district. The batch
+ * edge tolerance above covers only rounding in this renderer. */
+export function hitTestFootprint(doc: MapDocument, index: FootprintIndex, wx: number, wy: number, boundaryTolerance = 0): number | null {
   if (!doc.P) return null;
-  const key = `${Math.floor(wx / index.cell)},${Math.floor(wy / index.cell)}`;
-  const bucket = index.grid.get(key);
-  if (!bucket) return null;
   const p: Pt = [wx, wy];
-  for (const i of bucket) {
+  const cx = Math.floor(wx / index.cell);
+  const cy = Math.floor(wy / index.cell);
+  if (boundaryTolerance <= 0) {
+    const bucket = index.grid.get(`${cx},${cy}`);
+    if (!bucket) return null;
+    for (const i of bucket) {
+      const poly = doc.P[String(i)];
+      if (poly && inRings(p, [poly])) return i;
+    }
+    return null;
+  }
+  const radius = Math.ceil(boundaryTolerance / index.cell);
+  const candidates = new Set<number>();
+  for (let x = cx - radius; x <= cx + radius; x++) {
+    for (let y = cy - radius; y <= cy + radius; y++) {
+      for (const i of index.grid.get(`${x},${y}`) ?? []) candidates.add(i);
+    }
+  }
+  const ordered = [...candidates].sort((a, b) => a - b);
+  for (const i of ordered) {
     const poly = doc.P[String(i)];
     if (poly && inRings(p, [poly])) return i;
+  }
+  if (boundaryTolerance > 0) {
+    for (const i of ordered) {
+      const poly = doc.P[String(i)];
+      if (poly && withinBoundary(p, poly, boundaryTolerance)) return i;
+    }
   }
   return null;
 }
