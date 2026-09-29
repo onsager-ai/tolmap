@@ -7592,6 +7592,66 @@ mod tests {
         assert_eq!((row.epoch, row.attempt), (1, 1), "{row:?}");
     }
 
+    /// #199 review, nit 3: a channel whose `connect` passed the stopping
+    /// check a moment before `shutdown_now` reaches `add_conn` after it.
+    /// Its `hello.resume` must not take back a detached lease: the runner,
+    /// having seen the lease detached, is about to re-queue the job and end
+    /// that lease, and the channel, added after `shutdown now` went out,
+    /// would never hear it. The stopping flag and the channel set share the
+    /// hub's lock, so the channel is refused there.
+    #[test]
+    fn a_channel_added_after_the_stop_began_takes_back_no_lease() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("resumed-while-stopping"));
+        assert_eq!(agent.assigned(), id);
+        fixture.wait_for_row(id, "leased in the store", |row| row.status == "leased");
+        let (holder, epoch) = {
+            let inner = fixture.hub.lock();
+            let lease = &inner.leases[&id];
+            (
+                lease.agent.expect("a claimed lease has its agent"),
+                lease.epoch,
+            )
+        };
+        drop(agent);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !fixture.hub.detached(id) {
+            assert!(
+                Instant::now() < deadline,
+                "the closed channel never detached its lease"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The hub stops; the registry does not, so the runner keeps waiting
+        // on the lease rather than letting it go under the test.
+        fixture.hub.shutdown_now();
+        let (out, _outgoing) = tokio::sync::mpsc::unbounded_channel();
+        let _ = fixture.hub.add_conn(
+            holder,
+            "fake".to_owned(),
+            true,
+            Some(0),
+            true,
+            "http://127.0.0.1".to_owned(),
+            out,
+            vec![resume_entry(id, epoch, 0)],
+        );
+        assert!(
+            fixture.hub.detached(id),
+            "a channel added while stopping took the lease back"
+        );
+        assert!(
+            !fixture
+                .hub
+                .lock()
+                .conns
+                .values()
+                .any(|conn| conn.agent == holder),
+            "a stopping hub admitted a channel"
+        );
+    }
+
     #[test]
     fn a_repeated_drip_hits_the_whole_upload_deadline_and_cleans_up() {
         use std::io::{Read, Write};
