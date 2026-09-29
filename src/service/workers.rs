@@ -7403,6 +7403,88 @@ mod tests {
         takes_the_next_lease(&fixture, &mut agent);
     }
 
+    /// Reads `shutdown now`, as an agent on a stopping master does.
+    fn told_to_stop(agent: &mut FakeAgent) {
+        match agent.recv() {
+            MasterMessage::Shutdown {
+                mode: ShutdownMode::Now,
+                ..
+            } => {}
+            other => panic!("expected shutdown now, got {other:?}"),
+        }
+    }
+
+    /// #199: an agent told `shutdown now` sends no heartbeat while it waits
+    /// for its job thread to end (`agent::Agent::stop_now`, up to 10 s), so
+    /// its lease may run out before its `released` arrives. The job still
+    /// goes back to `queued`, uncounted, as the release would have put it:
+    /// left `leased` or `running`, the next process would adopt a lease no
+    /// loopback agent can resume and wait a whole TTL before running it.
+    #[test]
+    fn a_lease_that_runs_out_during_a_graceful_stop_leaves_the_job_queued_uncounted() {
+        let fixture = Fixture::new(Duration::from_secs(3), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("released-too-late"));
+        assert_eq!(agent.assigned(), id);
+        fixture.wait_for_row(id, "leased in the store", |row| row.status == "leased");
+        fixture.state.jobs.shutdown();
+        fixture.hub.shutdown_now();
+        told_to_stop(&mut agent);
+        // The agent says nothing more: its job is still dying. Nothing but
+        // the lease's deadline ends the lease.
+        fixture.wait_for_no_lease();
+        let row = fixture.wait_for_row(id, "the job queued again", |row| row.status == "queued");
+        assert_eq!((row.epoch, row.attempt), (1, 1), "{row:?}");
+        let snapshot = fixture.snapshot(id);
+        assert_eq!(snapshot.status, JobStatus::Queued, "{snapshot:?}");
+    }
+
+    /// #199: a loopback master's graceful stop returns -- and the process
+    /// exits -- only once every runner has let its lease go. Returning when
+    /// the agents had exited let the runtime drop the agent's channel task
+    /// with its `released` already read off the socket but not yet handled,
+    /// and the job stayed `running` in the store.
+    #[test]
+    fn a_graceful_loopback_stop_waits_for_its_runners_to_let_their_leases_go() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("released-slowly"));
+        assert_eq!(agent.assigned(), id);
+        fixture.wait_for_row(id, "leased in the store", |row| row.status == "leased");
+        fixture.state.jobs.shutdown();
+        // No agent processes: the test plays the one agent.
+        let loopback = Loopback {
+            hub: fixture.hub.clone(),
+            supervisor: Supervisor::start(0, Arc::new(|_: usize| Command::new("true"))),
+        };
+        let runtime = fixture.runtime.as_ref().unwrap();
+        let stopping = runtime.spawn(loopback.shutdown());
+        told_to_stop(&mut agent);
+        // The agent is slow to release its job. The stop must not be over
+        // meanwhile; one that is did not wait for the runner.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !stopping.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !stopping.is_finished(),
+            "the stop returned while a runner still held its lease"
+        );
+        agent.send(&WorkerMessage::Released {
+            job_id: id.to_string(),
+            epoch: agent.epoch,
+            reason: ReleasedReason::ServerStopping,
+            peak_rss_bytes: None,
+        });
+        runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(15), stopping).await })
+            .expect("the stop ends once the lease is let go")
+            .unwrap();
+        assert_eq!(fixture.leases(), 0, "the stop returned with a lease held");
+        let row = fixture.wait_for_row(id, "the job queued again", |row| row.status == "queued");
+        assert_eq!((row.epoch, row.attempt), (1, 1), "{row:?}");
+    }
+
     #[test]
     fn a_repeated_drip_hits_the_whole_upload_deadline_and_cleans_up() {
         use std::io::{Read, Write};
