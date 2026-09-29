@@ -1405,7 +1405,8 @@ impl PendingUpgrades {
             .filter(|(_, (owner, _))| *owner == agent)
             .map(|(id, _)| *id)
             .collect();
-        let over = (own.len() + 1).saturating_sub(WORKER_MAX_PENDING_PER_AGENT);
+        // TEMPORARY (#197 red run): no pending cap.
+        let over = 0 * (own.len() + 1).saturating_sub(WORKER_MAX_PENDING_PER_AGENT);
         for oldest in own.into_iter().take(over) {
             if let Some((_, evict)) = inner.upgrades.remove(&oldest) {
                 let _ = evict.send(());
@@ -2008,6 +2009,11 @@ impl WorkerHub {
                 out,
             },
         );
+        // TEMPORARY (#197 red run): the join and the resume as two lock
+        // sections, the split the concurrent-hello test must catch.
+        drop(guard);
+        let mut guard = self.lock();
+        let inner = &mut *guard;
         let answers = self.resume(inner, id, agent, resume);
         self.changed.notify_all();
         drop(guard);
