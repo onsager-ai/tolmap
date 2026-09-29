@@ -7560,24 +7560,30 @@ mod tests {
         assert_eq!(answers.len(), 1, "{answers:?}");
         assert_eq!(answers[0].action, ResumeAction::Continue, "{answers:?}");
 
-        {
+        // Read under the lock, asserted off it: a failed assertion must not
+        // poison the hub, or the fixture's `Drop` panics as well and aborts
+        // every test in the binary.
+        let (own, lease_on, lease_on_open) = {
             let inner = hub.lock();
-            let own = inner.conns.values().filter(|conn| conn.agent == 0).count();
-            assert!(
-                own <= WORKER_MAX_CHANNELS_PER_AGENT,
-                "agent 0 holds {own} channels: a hello joined between another's eviction and \
-                 its insert"
-            );
-            if let Some(conn) = inner.leases[&id].conn {
-                assert!(
-                    inner.conns.contains_key(&conn),
-                    "the lease names channel {conn}, closed before its resume (channel \
-                     {resuming}) ran: nothing renews it there, and the agent was told to \
-                     continue"
-                );
-            }
-        }
+            let lease_on = inner.leases[&id].conn;
+            (
+                inner.conns.values().filter(|conn| conn.agent == 0).count(),
+                lease_on,
+                lease_on.is_none_or(|conn| inner.conns.contains_key(&conn)),
+            )
+        };
         hub.end_lease(id, false);
+        assert!(
+            own <= WORKER_MAX_CHANNELS_PER_AGENT,
+            "agent 0 holds {own} channels: a hello joined between another's eviction and its \
+             insert"
+        );
+        assert!(
+            lease_on_open,
+            "the lease names channel {lease_on:?}, which the two hellos closed before its own \
+             resume (channel {resuming}) ran: nothing renews it there, and the agent was told \
+             to continue"
+        );
     }
 
     /// #197: an agent holds at most `WORKER_MAX_PENDING_PER_AGENT` upgraded
