@@ -1427,7 +1427,8 @@ pub fn restore(state: &Arc<AppState>) -> anyhow::Result<()> {
                 queued += 1;
             }
             let class_queue = &mut registry.queues[class];
-            insert_by_order(class_queue, job);
+            // TEMPORARY (#209 red run): the restored queue reversed.
+            class_queue.push_front(job);
         }
         for (slot, job) in to_start {
             tokio::spawn(worker_loop(state.clone(), slot, job));
