@@ -3317,6 +3317,13 @@ export class MapRenderer {
     // passes too, each with its own budget.
     const placed: Array<[number, number, number, number]> = [];
     const hits = (b: [number, number, number, number]) => placed.some((r) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3]));
+    // Desktop/tablet only (`desktopChrome` non-null): a label box clipped by
+    // the map's edge or overlapping a chrome rectangle is dropped, never
+    // shrunk or moved (docs/UX.md §5, #195; #201 for symbol names). The
+    // phone passes null, so this is always false there.
+    const desktopBlocked = (b: [number, number, number, number]) =>
+      !!desktopChrome && (b[0] < 0 || b[1] < 0 || b[0] + b[2] > this.VW || b[1] + b[3] > this.VH ||
+        desktopChrome.some((r) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3])));
 
     // Issue #82 follow-up (round 3): a card can lose its OWN label to
     // collision with a neighbour even when labelFitsBox says it would fit
@@ -3502,8 +3509,7 @@ export class MapRenderer {
       if (t.widthPx < minWidth) continue;
       const box: [number, number, number, number] = [t.cx - tw / 2 - 5, t.y0 - fs - 6, tw + 10, fs + 8];
       if (hits(box)) continue;
-      if (desktopChrome && (box[0] < 0 || box[1] < 0 || box[0] + box[2] > this.VW || box[1] + box[3] > this.VH ||
-        desktopChrome.some((r) => !(box[0] + box[2] < r[0] || box[0] > r[0] + r[2] || box[1] + box[3] < r[1] || box[1] > r[1] + r[3])))) continue;
+      if (desktopBlocked(box)) continue;
       placed.push(box);
       // CI review finding (issue #82 C2): an SVG <text> (and its backing
       // <rect> here) is hit-testable by default -- with no pointer-events
@@ -3531,6 +3537,12 @@ export class MapRenderer {
       const tw = c.text.length * fs * 0.62;
       const box: [number, number, number, number] = [c.x - tw / 2 - 2, c.y - fs * 0.85, tw + 4, fs * 1.3];
       if (hits(box)) continue;
+      // Issue #201: an in-card name clipped by the map's edge, or under the
+      // chrome, is dropped like a file tab is. `won` stays false, so the
+      // existing draw rule (a card needs a label or a drawn child, unless
+      // selected or hovered) still decides the card itself -- a bare card
+      // is the failure round 3 above fixed, and the D1 gates are untouched.
+      if (desktopBlocked(box)) continue;
       placed.push(box);
       c.node.won = true;
       const text = el("text", {
