@@ -3740,7 +3740,11 @@ async function checkDesktopLabelPlacement(browser, base) {
  *   sitting on a hub ring.
  * - No map label overlaps a symbol-card tab or symbol label, no map label or
  *   card tab is clipped by the map's edge, and no card tab sits under the
- *   floating chrome (fit and both zoom levels). */
+ *   floating chrome (fit and both zoom levels).
+ * - Issue #201: the same two rules hold for the symbol names drawn inside
+ *   cards (clipped by the map's edge, or under the chrome), and the rule
+ *   drops a name rather than all of them: django at zoom-in-4 still shows
+ *   some. */
 async function checkDesktopLabelRules(browser, base) {
   const profile = { viewport: { width: 1440, height: 900 }, hasTouch: false, colorScheme: "light" };
   const chromeSelector = "[data-command-bar], [data-desktop-actions], [data-desktop-panel], [data-panel-tab], [data-desktop-legend], [data-map-controls]";
@@ -3932,7 +3936,17 @@ async function checkDesktopLabelRules(browser, base) {
           return { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
         });
       const tabsUnderChrome = tabs.filter((tab) => chrome.some((c) => overlap(tab, c))).map((tab) => tab.text);
+      // Issue #201: an in-card symbol name gets the same two rules as a tab.
+      const symbolClipped = symbolLabels
+        .filter((box) => box.x < map.left - EPS || box.right > map.right + EPS || box.y < map.top - EPS || box.bottom > map.bottom + EPS)
+        .map((box) => box.text);
+      const symbolUnderChrome = symbolLabels.filter((box) => chrome.some((c) => overlap(box, c))).map((box) => box.text);
       return {
+        symbolLabelCount: symbolLabels.length,
+        symbolClipped: symbolClipped.slice(0, 6),
+        symbolClippedCount: symbolClipped.length,
+        symbolUnderChrome: symbolUnderChrome.slice(0, 6),
+        symbolUnderChromeCount: symbolUnderChrome.length,
         cards: tabs.length + symbolLabels.length,
         cardOverlaps: cardOverlaps.slice(0, 6),
         cardOverlapCount: cardOverlaps.length,
@@ -3977,6 +3991,18 @@ async function checkDesktopLabelRules(browser, base) {
       report(!!edges && edges.tabsUnderChromeCount === 0,
         `${label}: no symbol-card tab sits under the floating chrome at ${level.name}`,
         JSON.stringify(edges && { tabsUnderChrome: edges.tabsUnderChrome, tabsUnderChromeCount: edges.tabsUnderChromeCount }));
+      report(!!edges && edges.symbolClippedCount === 0,
+        `${label}: no symbol name inside a card is clipped by the map's edge at ${level.name}`,
+        JSON.stringify(edges && { symbolClipped: edges.symbolClipped, symbolClippedCount: edges.symbolClippedCount }));
+      report(!!edges && edges.symbolUnderChromeCount === 0,
+        `${label}: no symbol name inside a card sits under the floating chrome at ${level.name}`,
+        JSON.stringify(edges && { symbolUnderChrome: edges.symbolUnderChrome, symbolUnderChromeCount: edges.symbolUnderChromeCount }));
+      // The rule drops a name that does not fit; it must not drop every name.
+      if (slug === "django/django" && level.name === "zoom-in-4") {
+        report(!!edges && edges.symbolLabelCount > 0,
+          `${label}: symbol names that fit are still drawn at ${level.name}`,
+          JSON.stringify(edges && { symbolLabelCount: edges.symbolLabelCount }));
+      }
     }
     await context.close();
   }
