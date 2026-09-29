@@ -4037,6 +4037,9 @@ async function checkDesktopLabelRules(browser, base) {
   }
 }
 
+// Minimum share of a map's mainland districts named at fit, per profile.
+const PHONE_MAINLAND_NAME_SHARE = { phone: 0.5, landscape: 0.5 };
+
 /** Issue #212: the phone shells use the same chrome/pin/hub priority and
  * clipped-label rule as desktop, while keeping their compact label styling. */
 async function checkPhoneLabelRules(browser, base) {
@@ -4059,7 +4062,9 @@ async function checkPhoneLabelRules(browser, base) {
       const page = await context.newPage();
       const doc = await (await context.request.get(`${base}/maps/${slug}.json`)).json();
 
-      const labelsState = () => page.evaluate(({ names, chromeSelector }) => {
+      const isMainland = (id) => doc.districts[id].class !== "island" && doc.districts[id].class !== "unconnected";
+      const mainlandIds = Object.keys(doc.districts).filter(isMainland);
+      const labelsState = () => page.evaluate(({ names, chromeSelector, mainlandIds }) => {
         const svg = document.querySelector("svg.map-svg");
         if (!svg) return null;
         const map = svg.getBoundingClientRect();
@@ -4129,7 +4134,10 @@ async function checkPhoneLabelRules(browser, base) {
           const id = text.getAttribute("data-k").slice(2);
           return text.textContent === names[id];
         });
+        const namedIds = new Set(districtNames.map((text) => text.getAttribute("data-k").slice(2)));
         return {
+          namedMainland: mainlandIds.filter((id) => namedIds.has(id)).length,
+          namedIds: [...namedIds],
           markerCount: markers.length,
           markerOverlaps: markerOverlaps.slice(0, 8),
           markerOverlapCount: markerOverlaps.length,
@@ -4141,7 +4149,7 @@ async function checkPhoneLabelRules(browser, base) {
           districtLabelCount: districtNames.length,
           mapLabelCount: mapLabels.length,
         };
-      }, { names: doc.names, chromeSelector });
+      }, { names: doc.names, chromeSelector, mainlandIds });
 
       await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
       await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
@@ -4152,9 +4160,13 @@ async function checkPhoneLabelRules(browser, base) {
       await page.locator('button[aria-label="Fit map"]').click();
       await settleCamera(page);
       const fit = await labelsState();
-      report(!!fit && fit.districtLabelCount > 0,
-        `${label}: at least one district label is drawn at fit`,
-        JSON.stringify(fit && { districtLabelCount: fit.districtLabelCount }));
+      // Round 3: "at least one" let the phone overview name 2 of 12 mainland
+      // districts and still pass. The floor is a share of the mainland
+      // districts, so it scales with the map and is tuned per profile from CI.
+      const floor = Math.ceil(mainlandIds.length * PHONE_MAINLAND_NAME_SHARE[profile.name]);
+      report(!!fit && fit.namedMainland >= floor,
+        `${label}: at least ${floor} of ${mainlandIds.length} mainland districts are named at fit`,
+        JSON.stringify(fit && { namedMainland: fit.namedMainland, mainland: mainlandIds.length, floor }));
 
       for (const level of [{ name: "fit", clicks: 0 }, { name: "zoom-in-2", clicks: 2 }]) {
         if (level.clicks) await zoomInSettled(page, level.clicks);
@@ -4169,6 +4181,20 @@ async function checkPhoneLabelRules(browser, base) {
           `${label}: no map or symbol-card label is clipped by the map edge at ${level.name}`,
           JSON.stringify(result && { clipped: result.clipped, clippedCount: result.clippedCount }));
       }
+      // Round 3: the selected district's own name is placed first, so it is on
+      // the map whatever else competes for the room (docs/UX.md 7d).
+      const biggest = mainlandIds.reduce((best, id) => (doc.districts[id].size > doc.districts[best].size ? id : best), mainlandIds[0]);
+      await page.goto(`${base}/${slug}?d=${biggest}`, { waitUntil: "domcontentloaded" });
+      await page.locator('button[aria-label="Zoom to district"]').waitFor({ timeout: 30_000 });
+      await settleCamera(page);
+      await page.waitForTimeout(700);
+      const selected = await labelsState();
+      report(!!selected && selected.namedIds.includes(biggest),
+        `${label}: the selected district's own name is drawn (d=${biggest}, ${doc.names[biggest]})`,
+        JSON.stringify(selected && { named: selected.namedIds.length, selected: biggest }));
+      report(!!selected && selected.markerOverlapCount === 0 && selected.chromeOverlapCount === 0 && selected.clippedCount === 0,
+        `${label}: with a district selected, labels avoid pins, hub rings and the settled sheet, and none is clipped`,
+        JSON.stringify(selected && { marker: selected.markerOverlaps, chrome: selected.chromeOverlaps, clipped: selected.clipped }));
       await context.close();
     }
   }
