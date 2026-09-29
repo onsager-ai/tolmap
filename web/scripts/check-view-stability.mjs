@@ -4034,6 +4034,68 @@ async function checkDesktopLabelRules(browser, base) {
   }
 }
 
+/** Issue #205: the same map, driven by the same steps, must end in the same
+ * camera whatever the colour scheme -- the light and dark label-placement
+ * frames in screenshots.mjs are only comparable if it does. The camera is not
+ * in the DOM once glide() has painted (paint() bakes it into the geometry and
+ * drops the <g> transform), so the signature is what the camera puts on
+ * screen: every district polygon's box, to a tenth of a pixel (paint() itself
+ * rounds path coordinates to a tenth). Several fresh contexts per scheme, so
+ * an intermittent difference has more than one chance to show. */
+async function checkDesktopZoomCameraAgreement(browser, base) {
+  const REPEATS = 3;
+  for (const slug of MAPS) {
+    const label = `desktop zoom camera agrees across colour schemes (${slug}) / 1440x900`;
+    console.log(`\n${label}`);
+    const runs = [];
+    for (const colorScheme of ["light", "dark"]) {
+      for (let attempt = 0; attempt < REPEATS; attempt++) {
+        const context = await browser.newContext({
+          viewport: { width: 1440, height: 900 },
+          isMobile: false,
+          hasTouch: false,
+          deviceScaleFactor: 1,
+          colorScheme,
+        });
+        const page = await context.newPage();
+        await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+        await page.locator("[data-desktop-overview]").waitFor({ timeout: 15_000 });
+        await page.waitForTimeout(500);
+        let zoomClicks = 0;
+        for (const step of [2, 4]) {
+          while (zoomClicks < step) {
+            await page.locator('button[aria-label="Zoom in"]').click();
+            zoomClicks++;
+          }
+          await page.waitForTimeout(350);
+          const boxes = await page.evaluate(() => [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')].map((el) => {
+            const r = el.getBoundingClientRect();
+            return [el.getAttribute("data-k"), +r.left.toFixed(1), +r.top.toFixed(1), +r.width.toFixed(1), +r.height.toFixed(1)];
+          }));
+          runs.push({ colorScheme, attempt, step, boxes, signature: JSON.stringify(boxes) });
+        }
+        await context.close();
+      }
+    }
+    for (const step of [2, 4]) {
+      const at = runs.filter((run) => run.step === step);
+      const ref = at[0];
+      report(ref.boxes.length > 0, `${label}: district polygons are on screen at zoom-in-${step} (setup)`, String(ref.boxes.length));
+      const off = at.filter((run) => run.signature !== ref.signature).map((run) => {
+        const i = run.boxes.findIndex((b, j) => JSON.stringify(b) !== JSON.stringify(ref.boxes[j]));
+        const b = run.boxes[i];
+        const r = ref.boxes[i];
+        return `${run.colorScheme}#${run.attempt}: ${run.boxes.length} polygons vs ${ref.boxes.length}` +
+          (b && r ? `, first differs ${b[0]} dx=${(b[1] - r[1]).toFixed(1)} dy=${(b[2] - r[2]).toFixed(1)} dw=${(b[3] - r[3]).toFixed(1)}` : "");
+      });
+      report(off.length === 0,
+        `${label}: every light and dark run ends at the same camera at zoom-in-${step}`,
+        `${ref.colorScheme}#${ref.attempt} is the reference; ${off.join("; ")}`);
+    }
+  }
+}
+
 // 9(f): an old map with no `P` at all (any committed data/ fixture the
 // catalogue still serves) renders dots, unchanged -- footprint mode is opt-in
 // per document, never forced.
@@ -7102,6 +7164,7 @@ async function main() {
     for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
     await checkDesktopLabelPlacement(browser, args.base);
     await checkDesktopLabelRules(browser, args.base);
+    await checkDesktopZoomCameraAgreement(browser, args.base);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
     for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);
