@@ -4044,17 +4044,18 @@ async function checkDesktopLabelRules(browser, base) {
 // not noise. Widening a district-name search raises these; lowering one needs
 // a reason.
 const PHONE_NAMED_MAINLAND_FLOOR = {
-  "django/django": { phone: 9, landscape: 11 },
-  "langgenius/dify": { phone: 9, landscape: 13 },
+  "django/django": { phone: 6, landscape: 10 },
+  "langgenius/dify": { phone: 6, landscape: 10 },
 };
 
 // Issue #214 (owner, 2026-09-29): on compact map boxes at fit, hub rings are
 // capped per district by on-screen size, so the ring count at fit has a
-// ceiling. Before #214 the top 12 hubs were exempt from every cap, so a map
-// with 12 or more hubs on screen drew at least 12 rings.
+// ceiling. Before #214 the top 12 hubs were exempt from every cap and fit drew
+// 40 rings on dify and 16 on django; CI measured 17 and 8 after (run
+// 36575519400).
 const PHONE_HUB_RING_CEILING_AT_FIT = {
-  "django/django": { phone: 11, landscape: 11 },
-  "langgenius/dify": { phone: 20, landscape: 20 },
+  "django/django": { phone: 8, landscape: 8 },
+  "langgenius/dify": { phone: 17, landscape: 17 },
 };
 
 /** Issue #212: the phone shells use the same chrome/pin/hub priority and
