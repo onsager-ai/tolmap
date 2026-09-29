@@ -2575,9 +2575,19 @@ export class MapRenderer {
    * legibly hold -- chosen because it scales with the same "on-screen
    * footprint size" quantity every other density gate in this file already
    * keys off (districtFootprintsLarge, the #48 dot budget), not an
-   * independent constant. */
+   * independent constant.
+   *
+   * Compact map boxes (issue #214, owner 2026-09-29) are stricter: at fit on
+   * a phone ~40 rings took the room the district names needed (dify portrait
+   * named 5 of 19). There the cap is `max(1, floor(sqrt(area)/100))` per
+   * district, and the top-12 exemption covers neither the cap nor the overlap
+   * test. The area is the district's on-screen area, which scales with k², so
+   * rings return as you zoom in, the way symbols only appear when there is
+   * room. Desktop and tablet keep the rules above unchanged. Ring order is
+   * the candidates' fan-in rank, so the same input gives the same rings. */
   private declutterHubCandidates<T extends { hub: { i: number }; cx: number; cy: number; r: number }>(
     candidates: readonly T[],
+    compact: boolean,
   ): T[] {
     const { doc } = this.state!;
     const TOP_ALWAYS_ELIGIBLE = 12;
@@ -2588,14 +2598,15 @@ export class MapRenderer {
       let cap = districtCap.get(d);
       if (cap == null) {
         const areaPx = (this.districtArea.get(d) ?? 0) * this.k * this.k;
-        cap = Math.max(3, Math.floor(Math.sqrt(Math.max(areaPx, 0)) / 50));
+        const side = Math.sqrt(Math.max(areaPx, 0));
+        cap = compact ? Math.max(1, Math.floor(side / 100)) : Math.max(3, Math.floor(side / 50));
         districtCap.set(d, cap);
       }
       return cap;
     };
     for (let idx = 0; idx < candidates.length; idx++) {
       const c = candidates[idx];
-      const always = idx < TOP_ALWAYS_ELIGIBLE;
+      const always = !compact && idx < TOP_ALWAYS_ELIGIBLE;
       if (!always) {
         const overlapsLarger = kept.some((k) => Math.hypot(k.cx - c.cx, k.cy - c.cy) < k.r + c.r);
         if (overlapsLarger) continue;
@@ -2623,7 +2634,7 @@ export class MapRenderer {
       if (cx < -r - 20 || cx > this.VW + r + 20 || cy < -r - 20 || cy > this.VH + r + 20) continue;
       rawCandidates.push({ hub, cx, cy, r });
     }
-    return this.declutterHubCandidates(rawCandidates);
+    return this.declutterHubCandidates(rawCandidates, compact);
   }
 
   private drawHubRings(g: SVGGElement, candidates: HubRingCandidate[] = this.hubCandidates()): HubRingCandidate[] {
