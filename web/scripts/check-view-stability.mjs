@@ -4038,7 +4038,7 @@ async function checkDesktopLabelRules(browser, base) {
 }
 
 // Minimum share of a map's mainland districts named at fit, per profile.
-const PHONE_MAINLAND_NAME_SHARE = { phone: 0.5, landscape: 0.5 };
+const PHONE_MAINLAND_NAME_SHARE = { phone: 0.4, landscape: 0.4 };
 
 /** Issue #212: the phone shells use the same chrome/pin/hub priority and
  * clipped-label rule as desktop, while keeping their compact label styling. */

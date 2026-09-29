@@ -135,6 +135,15 @@ const MIN_DESKTOP_DISTRICT_ROOM_PX_PER_FILE = 120;
 // MIN_LABEL_PX line (box height 1.25 x 12 = 15 px) plus 1 px, so its
 // collision box never overlaps the name's.
 const SUBTITLE_OFFSET_PX = 16;
+// Phone district-name anchors, relative to the name's usual centre anchor,
+// tried in this fixed order (the first fitting one wins). Centre first, then
+// the desktop rings, then the diagonals and the wider steps.
+const PHONE_DISTRICT_LABEL_OFFSETS: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], [-24, 0], [24, 0], [0, -18], [0, 18],
+  [-24, -18], [24, -18], [-24, 18], [24, 18],
+  [-48, 0], [48, 0], [0, -36], [0, 36],
+  [-48, -18], [48, -18], [-48, 18], [48, 18],
+];
 // The mono data labels (hub, folder, file and file-tab labels), which reserve
 // `length * size * 0.62` per label. 12 px meets §8.1's floor, and it is also
 // the size where that estimate holds on a hinted rasteriser: Chromium on
@@ -1253,10 +1262,17 @@ export class MapRenderer {
       return [transformed.x, transformed.y];
     };
     const boxes: Array<[number, number, number, number]> = [];
+    const moving: Animation[] = [];
     this.svg.ownerDocument.querySelectorAll<HTMLElement>(selectors).forEach((chrome) => {
       const style = window.getComputedStyle(chrome);
       if (style.display === "none" || style.visibility === "hidden" || chrome.getAttribute("aria-hidden") === "true") return;
       const r = chrome.getBoundingClientRect();
+      // A phone sheet moves by a 300 ms `transform` transition, and its
+      // rect reads as the position the transition STARTS from. That is not
+      // where the sheet will sit, so a repaint is owed once it has settled.
+      if (typeof chrome.getAnimations === "function") {
+        for (const a of chrome.getAnimations()) if ("transitionProperty" in a && a.playState !== "finished") moving.push(a);
+      }
       if (r.width <= 0 || r.height <= 0 || r.right <= map.left || r.left >= map.right || r.bottom <= map.top || r.top >= map.bottom) return;
       const corners = [
         toLocal(r.left, r.top),
@@ -1270,7 +1286,20 @@ export class MapRenderer {
       const y = Math.min(...ys);
       boxes.push([x, y, Math.max(...xs) - x, Math.max(...ys) - y]);
     });
+    if (moving.length) this.repaintWhenChromeSettles(moving);
     return boxes;
+  }
+  private chromeSettlePending = false;
+  /** Repaint once, when the chrome transitions read by `chromeBoxes` have
+   * ended, so labels are placed against the sheet's resting box. The repaint
+   * reads settled chrome (nothing left to wait for), so this cannot loop. */
+  private repaintWhenChromeSettles(animations: Animation[]) {
+    if (this.chromeSettlePending) return;
+    this.chromeSettlePending = true;
+    void Promise.allSettled(animations.map((a) => a.finished)).then(() => {
+      this.chromeSettlePending = false;
+      if (this.state && this.svg.isConnected && !this.gestures.active) this.draw();
+    });
   }
   /** docs/UX.md §3.3: the chrome's real extent, from MapCanvas. A new
    * `frame` (a resize, a safe-area change) moves the level-of-detail
@@ -1380,7 +1409,8 @@ export class MapRenderer {
     const profile = layoutProfile(this.mapBoxW, this.mapBoxH);
     const desktopLabels = hasDesktopMapLabels(profile);
     // 7d's placement rules apply to every shell; only desktop styling stays
-    // profile-gated.
+    // profile-gated. Always true; kept as a named constant only because the
+    // placement helpers take it as a parameter (dropping it is a wide cleanup).
     const reserveMarkers = true;
     const reservedChromeBoxes = reserveMarkers ? this.chromeBoxes() : [];
     const g = el("g", {});
@@ -2360,6 +2390,17 @@ export class MapRenderer {
         }
       }
       for (const d of this.desktopLabelDistrictIds) if (!seen.has(d)) districtOrder.push(d);
+    } else {
+      // Phones keep the mainland-first order, but the selected and hovered
+      // districts are placed before it: a selected district's own name is
+      // what the reader looks for first, and a greedy pass that reaches it
+      // last can find its room taken by neighbours.
+      const allowed = new Set(this.labelDistrictIds);
+      const first: string[] = [];
+      for (const d of [selectedDistrict, hoveredDistrict]) {
+        if (d != null && allowed.has(String(d)) && !first.includes(String(d))) first.push(String(d));
+      }
+      if (first.length) districtOrder = [...first, ...this.labelDistrictIds.filter((id) => !first.includes(id))];
     }
     // Phone's A5 order still gives mainlands priority over islands; desktop
     // follows its selected/hovered/size order. An island's `put()` only
@@ -2395,7 +2436,7 @@ export class MapRenderer {
       // Desktop uses the upper polygon band above; file marks keep their own
       // anchors in the denser lower part.
       const labelSize = isIsland ? Math.max(MIN_LABEL_PX, size * 0.75) : size;
-      const isSelected = desktopLabels && selectedDistrict === +d;
+      const isSelected = selectedDistrict === +d;
       let labelY = desktopLabels ? y : !isIsland && zf > 1 ? y - 32 : y;
       // Islands stay "minor" by weight and opacity; their old 0.75x size put
       // them under 12 px, so it is floored like every other label.
@@ -2424,7 +2465,32 @@ export class MapRenderer {
         }
         desktopSubtitleAllowed = labelPlaced;
       } else {
-        labelPlaced = put(x, labelY, doc.names[d], labelSize, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
+        // Phone: pins, hub rings and chrome are reserved before any name, so
+        // the centre anchor alone left most overview names without room
+        // (dify at fit: 8 -> 2). Nearby anchors are tried in a fixed order,
+        // and an off-centre one only counts while the name's middle and both
+        // quarter points stay inside this district's own outline -- a name
+        // that slid into a neighbour would label the wrong place. The
+        // tilemap has no such outline (its centres are the tile centres), so
+        // there only the box-fit rule applies.
+        const nameWidth = archivoLabelWidth(doc.names[d], labelSize, isIsland ? 500 : 600);
+        const nameHeight = labelSize * 1.25;
+        const inOwnDistrict = (cx: number, cy: number) => {
+          if (geo === "t") return true;
+          const midY = cy - nameHeight / 2;
+          const at = (sx: number) => this.districtContains(+d, (sx - this.tx) / this.k, (midY - this.ty) / this.k);
+          return at(cx) && at(cx - nameWidth / 4) && at(cx + nameWidth / 4);
+        };
+        const candidate = PHONE_DISTRICT_LABEL_OFFSETS.map(([dx, dy]) => [x + dx, labelY + dy] as [number, number]).find(([candidateX, candidateY], i) => {
+          const box: [number, number, number, number] = [candidateX - nameWidth / 2, candidateY - nameHeight, nameWidth, nameHeight];
+          if (box[0] < 0 || box[0] + box[2] > this.VW || box[1] < 0 || candidateY > this.VH) return false;
+          if (hits(...box)) return false;
+          return i === 0 || inOwnDistrict(candidateX, candidateY);
+        });
+        if (candidate) {
+          [x, labelY] = candidate;
+          labelPlaced = put(x, labelY, doc.names[d], labelSize, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
+        }
       }
       // Issue's scope item 2: a "+N files" badge once #49's budget is
       // actually hiding members of this district AND the name label itself
@@ -3908,7 +3974,13 @@ export class MapRenderer {
           const atY = y + dy;
           const box: [number, number, number, number] = [atX - width / 2, atY - h, width, h];
           const withinView = !reserveMarkers || (atX >= width / 2 && atX <= this.VW - width / 2 && atY >= h && atY <= this.VH);
-          if (withinView && !hits(box[0], box[1], box[2], box[3])) {
+          // A shifted label must still sit on its own district: slid across
+          // a border it names a neighbour's folder (django's db/models/ read
+          // as part of gis & contrib). The unshifted median is the folder's
+          // own computed anchor and is not second-guessed here.
+          const shifted = dx !== 0 || dy !== 0;
+          const onOwnDistrict = !shifted || geo === "t" || this.districtContains(+label.district, (atX - this.tx) / this.k, (atY - h / 2 - this.ty) / this.k);
+          if (withinView && onOwnDistrict && !hits(box[0], box[1], box[2], box[3])) {
             placement = { text: candidate, x: atX, y: atY, width, box };
             break;
           }
