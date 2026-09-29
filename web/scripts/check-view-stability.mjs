@@ -4044,8 +4044,18 @@ async function checkDesktopLabelRules(browser, base) {
 // not noise. Widening a district-name search raises these; lowering one needs
 // a reason.
 const PHONE_NAMED_MAINLAND_FLOOR = {
-  "django/django": { phone: 6, landscape: 9 },
-  "langgenius/dify": { phone: 5, landscape: 9 },
+  "django/django": { phone: 6, landscape: 10 },
+  "langgenius/dify": { phone: 6, landscape: 10 },
+};
+
+// Issue #214 (owner, 2026-09-29): on compact map boxes at fit, hub rings are
+// capped per district by on-screen size, so the ring count at fit has a
+// ceiling. Before #214 the top 12 hubs were exempt from every cap and fit drew
+// 40 rings on dify and 16 on django; CI measured 17 and 8 after (run
+// 36575519400).
+const PHONE_HUB_RING_CEILING_AT_FIT = {
+  "django/django": { phone: 8, landscape: 8 },
+  "langgenius/dify": { phone: 17, landscape: 17 },
 };
 
 /** Issue #212: the phone shells use the same chrome/pin/hub priority and
@@ -4147,6 +4157,7 @@ async function checkPhoneLabelRules(browser, base) {
           namedMainland: mainlandIds.filter((id) => namedIds.has(id)).length,
           namedIds: [...namedIds],
           markerCount: markers.length,
+          hubRingCount: svg.querySelectorAll("circle[data-hub-ring]").length,
           markerOverlaps: markerOverlaps.slice(0, 8),
           markerOverlapCount: markerOverlaps.length,
           chromeCount: chrome.length,
@@ -4173,11 +4184,16 @@ async function checkPhoneLabelRules(browser, base) {
       const floor = PHONE_NAMED_MAINLAND_FLOOR[slug][profile.name];
       report(!!fit && fit.namedMainland >= floor,
         `${label}: ${fit?.namedMainland} of ${mainlandIds.length} mainland districts named at fit (floor ${floor})`,
-        JSON.stringify(fit && { namedMainland: fit.namedMainland, mainland: mainlandIds.length, floor }));
+        JSON.stringify(fit && { namedMainland: fit.namedMainland, mainland: mainlandIds.length, floor, hubRings: fit.hubRingCount }));
+      const ringCeiling = PHONE_HUB_RING_CEILING_AT_FIT[slug][profile.name];
+      report(!!fit && fit.hubRingCount >= 1 && fit.hubRingCount <= ringCeiling,
+        `${label}: hub rings at fit are capped per district (at most ${ringCeiling}, at least 1)`,
+        JSON.stringify(fit && { hubRings: fit.hubRingCount, ceiling: ringCeiling }));
 
       for (const level of [{ name: "fit", clicks: 0 }, { name: "zoom-in-2", clicks: 2 }]) {
         if (level.clicks) await zoomInSettled(page, level.clicks);
         const result = await labelsState();
+        console.log(`  (info) ${level.name}: ${result?.hubRingCount} hub rings, ${result?.namedMainland} of ${mainlandIds.length} mainland districts named`);
         report(!!result && result.markerOverlapCount === 0,
           `${label}: district, hub and neighbourhood labels avoid pins and hub rings at ${level.name}`,
           JSON.stringify(result && { markerCount: result.markerCount, overlaps: result.markerOverlaps, overlapCount: result.markerOverlapCount }));
