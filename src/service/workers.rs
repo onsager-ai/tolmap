@@ -1406,7 +1406,7 @@ impl PendingUpgrades {
             .map(|(id, _)| *id)
             .collect();
         // TEMPORARY (#197 red run): no pending cap.
-        let over = 0 * (own.len() + 1).saturating_sub(WORKER_MAX_PENDING_PER_AGENT);
+        let over: usize = 0;
         for oldest in own.into_iter().take(over) {
             if let Some((_, evict)) = inner.upgrades.remove(&oldest) {
                 let _ = evict.send(());
