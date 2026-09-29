@@ -143,6 +143,7 @@ const PHONE_DISTRICT_LABEL_OFFSETS: ReadonlyArray<readonly [number, number]> = [
   [-24, -18], [24, -18], [-24, 18], [24, 18],
   [-48, 0], [48, 0], [0, -36], [0, 36],
   [-48, -18], [48, -18], [-48, 18], [48, 18],
+  [-72, 0], [72, 0], [0, -54], [0, 54],
 ];
 // The mono data labels (hub, folder, file and file-tab labels), which reserve
 // `length * size * 0.62` per label. 12 px meets §8.1's floor, and it is also
@@ -2468,8 +2469,8 @@ export class MapRenderer {
         // Phone: pins, hub rings and chrome are reserved before any name, so
         // the centre anchor alone left most overview names without room
         // (dify at fit: 8 -> 2). Nearby anchors are tried in a fixed order,
-        // and an off-centre one only counts while the name's middle and both
-        // quarter points stay inside this district's own outline -- a name
+        // and an off-centre one only counts while the name's middle and one
+        // quarter point stay inside this district's own outline -- a name
         // that slid into a neighbour would label the wrong place. The
         // tilemap has no such outline (its centres are the tile centres), so
         // there only the box-fit rule applies.
@@ -2479,7 +2480,10 @@ export class MapRenderer {
           if (geo === "t") return true;
           const midY = cy - nameHeight / 2;
           const at = (sx: number) => this.districtContains(+d, (sx - this.tx) / this.k, (midY - this.ty) / this.k);
-          return at(cx) && at(cx - nameWidth / 4) && at(cx + nameWidth / 4);
+          // Centre plus at least one quarter point, desktop's tier-3 rule: at
+          // fit a long name is wider than its district, so demanding both
+          // quarter points would drop it, but its middle never leaves home.
+          return at(cx) && (at(cx - nameWidth / 4) || at(cx + nameWidth / 4));
         };
         const candidate = PHONE_DISTRICT_LABEL_OFFSETS.map(([dx, dy]) => [x + dx, labelY + dy] as [number, number]).find(([candidateX, candidateY], i) => {
           const box: [number, number, number, number] = [candidateX - nameWidth / 2, candidateY - nameHeight, nameWidth, nameHeight];
