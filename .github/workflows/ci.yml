@@ -148,24 +148,6 @@ jobs:
       - name: cargo test
         run: cargo test --locked --release
 
-      # TEMPORARY (#199): stress the restart tests and the graceful-stop unit
-      # tests; reverted before the PR is ready. The test binaries are built
-      # once and run directly: alternating `cargo test` target selections
-      # rebuilt the crate on every call (~3 min each).
-      - name: "TEMPORARY #199 stress: service_restart and graceful-stop tests x50"
-        run: |
-          built=$(cargo test --locked --release --lib --test service_restart --no-run --message-format=json)
-          lib=$(echo "$built" | jq -r 'select(.reason=="compiler-artifact" and .profile.test==true and .target.kind==["lib"]) | .executable')
-          restart=$(echo "$built" | jq -r 'select(.reason=="compiler-artifact" and .profile.test==true and .target.name=="service_restart") | .executable')
-          echo "lib tests: $lib"; echo "restart tests: $restart"
-          test -x "$lib" && test -x "$restart"
-          for i in $(seq 1 50); do
-            echo "::group::iteration $i"
-            "$restart" || { echo "service_restart failed on iteration $i"; exit 1; }
-            "$lib" service::workers::tests::a_lease_that_runs_out_during_a_graceful_stop service::workers::tests::a_graceful_loopback_stop_waits service::workers::tests::a_channel_that_closes_during_a_graceful_stop || { echo "graceful-stop unit tests failed on iteration $i"; exit 1; }
-            echo "::endgroup::"
-          done
-
       - name: Generated TypeScript bindings
         run: cargo run --release --bin generate-types -- --check
 
