@@ -1781,6 +1781,37 @@ export class MapRenderer {
       g.appendChild(node);
     }
 
+    const pinScreenOf = (i: number): [number, number] | null => {
+      if (this.unconnectedFile[i]) return null;
+      const dIsland = this.islandFadeForDistrict(D_(doc, i), zf0, islandFadeFloorZf, islandExceptionDistricts);
+      if (!this.islandFadeVisible(dIsland)) return null;
+      const p = this.anchor(i);
+      const cx = this.X(p[0]);
+      const cy = this.Y(p[1]);
+      if (cx < -30 || cx > this.VW + 30 || cy < -30 || cy > this.VH + 30) return null;
+      return [cx, cy];
+    };
+    const desktopHubCandidates = desktopLabels ? this.hubCandidates() : null;
+    // Desktop/tablet: the pin selection has to run BEFORE the label passes so
+    // the symbol-card pass can keep tabs and names off the markers (#203),
+    // but selectPins skips carded files, and those boxes only exist once that
+    // pass has collected its files. So the pass calls this once its file loop
+    // is done; the label block below reuses the same result rather than
+    // selecting again, so the reserved boxes and the drawn pins cannot drift.
+    let desktopPins: ReturnType<typeof selectPins> | null = null;
+    const selectDesktopPins = () => {
+      if (!desktopPins) {
+        const carded: Array<[number, number, number, number]> = [];
+        for (const [x0, y0, x1, y1] of this.cardedFileBBox.values()) carded.push([x0, y0, x1 - x0, y1 - y0]);
+        desktopPins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel, [...this.desktopChromeBoxes(), ...carded]);
+      }
+      return desktopPins;
+    };
+    const selectDesktopMarkers = (): Array<[number, number, number, number]> => [
+      ...selectDesktopPins().map(({ cx, cy }): [number, number, number, number] => [cx - 10, cy - 32, 20, 32]),
+      ...desktopHubCandidates!.map(({ cx, cy, r }): [number, number, number, number] => [cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]),
+    ];
+
     // B4 (nested footprints, issue #82 scope item 2; perf follow-up): flush
     // the batched footprint fills, THEN draw neighbourhood gutters -- both
     // AFTER the per-file loop (so a gutter's surface-coloured stroke paints
@@ -1803,7 +1834,7 @@ export class MapRenderer {
       // the reference-line pass at the very end of paint() (below) and for a
       // later hover-only redraw (renderSymbolRefs, called without a full
       // repaint -- see setHover's "hs:" branch).
-      this.drawSymbolCardsPass(g, filesNeedingCards, state.selHSym, desktopLabels ? this.desktopChromeBoxes() : null);
+      this.drawSymbolCardsPass(g, filesNeedingCards, state.selHSym, desktopLabels ? this.desktopChromeBoxes() : null, desktopLabels ? selectDesktopMarkers : null);
     } else {
       this.cardLabelBoxes = [];
       this.symVisible = new Set();
@@ -1931,17 +1962,6 @@ export class MapRenderer {
     // district-first label/pin priority. Hub, folder, neighbourhood and file
     // labels continue to share the same list.
     const placed: Array<[number, number, number, number]> = [];
-    const pinScreenOf = (i: number): [number, number] | null => {
-      if (this.unconnectedFile[i]) return null;
-      const dIsland = this.islandFadeForDistrict(D_(doc, i), zf0, islandFadeFloorZf, islandExceptionDistricts);
-      if (!this.islandFadeVisible(dIsland)) return null;
-      const p = this.anchor(i);
-      const cx = this.X(p[0]);
-      const cy = this.Y(p[1]);
-      if (cx < -30 || cx > this.VW + 30 || cy < -30 || cy > this.VH + 30) return null;
-      return [cx, cy];
-    };
-    const desktopHubCandidates = desktopLabels ? this.hubCandidates() : null;
     let pins: ReturnType<typeof selectPins> = [];
     if (desktopLabels) {
       placed.push(...this.desktopChromeBoxes());
@@ -1952,9 +1972,7 @@ export class MapRenderer {
       // pins 3 and 4). Pins still skip the chrome, as pins.ts skips any
       // preplaced box, and carded files, as they always have on the phone
       // (there the carded boxes are seeded before selectPins, below).
-      const carded: Array<[number, number, number, number]> = [];
-      for (const [x0, y0, x1, y1] of this.cardedFileBBox.values()) carded.push([x0, y0, x1 - x0, y1 - y0]);
-      pins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel, [...placed, ...carded]);
+      pins = selectDesktopPins();
       for (const { cx, cy } of pins) placed.push([cx - 10, cy - 32, 20, 32]);
       for (const { cx, cy, r } of desktopHubCandidates!) placed.push([cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]);
       placed.push(...this.cardLabelBoxes);
@@ -3275,7 +3293,7 @@ export class MapRenderer {
    * chrome's boxes. A file tab under the chrome or past the map's edge is
    * not drawn there (docs/UX.md §5, review follow-up 2); the phone passes
    * null and keeps every tab exactly as before. */
-  private drawSymbolCardsPass(g: SVGGElement, filesNeedingCards: readonly number[], selHSym: number | null, desktopChrome: ReadonlyArray<[number, number, number, number]> | null = null): void {
+  private drawSymbolCardsPass(g: SVGGElement, filesNeedingCards: readonly number[], selHSym: number | null, desktopChrome: ReadonlyArray<[number, number, number, number]> | null = null, desktopMarkers: (() => ReadonlyArray<[number, number, number, number]>) | null = null): void {
     const { doc } = this.state!;
     const needed = new Set(filesNeedingCards.map((i) => D_(doc, i)));
     this.refreshDecodedSymbols(this.state!.districtSymbols, needed);
@@ -3321,9 +3339,21 @@ export class MapRenderer {
     // the map's edge or overlapping a chrome rectangle is dropped, never
     // shrunk or moved (docs/UX.md §5, #195; #201 for symbol names). The
     // phone passes null, so this is always false there.
-    const desktopBlocked = (b: [number, number, number, number]) =>
-      !!desktopChrome && (b[0] < 0 || b[1] < 0 || b[0] + b[2] > this.VW || b[1] + b[3] > this.VH ||
-        desktopChrome.some((r) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3])));
+    //
+    // Issue #203: landmark pins and hub rings are fixed markers that outrank
+    // a tab or in-card name, the same order district and hub labels already
+    // use (7d, #195), so a box on one is dropped too. The boxes come from
+    // paint()'s own pin selection, evaluated lazily: it needs every carded
+    // file's bbox, which only exists once the file loop below has run, and
+    // desktopBlocked is first called after that loop.
+    let markerBoxes: ReadonlyArray<[number, number, number, number]> | null = null;
+    const desktopBlocked = (b: [number, number, number, number]) => {
+      if (!desktopChrome) return false;
+      const overlaps = (r: readonly number[]) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3]);
+      if (b[0] < 0 || b[1] < 0 || b[0] + b[2] > this.VW || b[1] + b[3] > this.VH || desktopChrome.some(overlaps)) return true;
+      if (!markerBoxes) markerBoxes = desktopMarkers ? desktopMarkers() : [];
+      return markerBoxes.some(overlaps);
+    };
 
     // Issue #82 follow-up (round 3): a card can lose its OWN label to
     // collision with a neighbour even when labelFitsBox says it would fit

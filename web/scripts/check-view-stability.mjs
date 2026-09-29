@@ -3941,7 +3941,27 @@ async function checkDesktopLabelRules(browser, base) {
         .filter((box) => box.x < map.left - EPS || box.right > map.right + EPS || box.y < map.top - EPS || box.bottom > map.bottom + EPS)
         .map((box) => box.text);
       const symbolUnderChrome = symbolLabels.filter((box) => chrome.some((c) => overlap(box, c))).map((box) => box.text);
+      // Issue #203: a pin marker is either a landmark pin (g[data-landmark-pin],
+      // the teardrop) or a hub ring (circle[data-hub-ring]); both are fixed
+      // markers a card tab or symbol name must not sit on. Read from the DOM
+      // as drawn, not from the renderer's own reserve boxes, so the check
+      // still fails if the reserve and the drawing drift apart.
+      const markers = [
+        ...[...svg.querySelectorAll("g[data-landmark-pin]")].map((el) => ({ kind: "pin", id: el.getAttribute("data-landmark-pin"), el })),
+        ...[...svg.querySelectorAll("circle[data-hub-ring]")].map((el) => ({ kind: "hub", id: el.getAttribute("data-hub-ring"), el })),
+      ].map(({ kind, id, el }) => {
+        const r = el.getBoundingClientRect();
+        return { kind, id, x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+      });
+      const onMarker = (box) => markers.find((m) => overlap(box, m));
+      const tabsOnPin = tabs.filter((tab) => onMarker(tab)).map((tab) => `${tab.text}@${onMarker(tab).kind}:${onMarker(tab).id}`);
+      const symbolOnPin = symbolLabels.filter((box) => onMarker(box)).map((box) => `${box.text}@${onMarker(box).kind}:${onMarker(box).id}`);
       return {
+        markerCount: markers.length,
+        tabsOnPin: tabsOnPin.slice(0, 6),
+        tabsOnPinCount: tabsOnPin.length,
+        symbolOnPin: symbolOnPin.slice(0, 6),
+        symbolOnPinCount: symbolOnPin.length,
         symbolLabelCount: symbolLabels.length,
         symbolClipped: symbolClipped.slice(0, 6),
         symbolClippedCount: symbolClipped.length,
@@ -3997,6 +4017,12 @@ async function checkDesktopLabelRules(browser, base) {
       report(!!edges && edges.symbolUnderChromeCount === 0,
         `${label}: no symbol name inside a card sits under the floating chrome at ${level.name}`,
         JSON.stringify(edges && { symbolUnderChrome: edges.symbolUnderChrome, symbolUnderChromeCount: edges.symbolUnderChromeCount }));
+      report(!!edges && edges.tabsOnPinCount === 0,
+        `${label}: no symbol-card tab overlaps a pin marker at ${level.name}`,
+        JSON.stringify(edges && { markerCount: edges.markerCount, tabsOnPin: edges.tabsOnPin, tabsOnPinCount: edges.tabsOnPinCount }));
+      report(!!edges && edges.symbolOnPinCount === 0,
+        `${label}: no symbol name inside a card overlaps a pin marker at ${level.name}`,
+        JSON.stringify(edges && { markerCount: edges.markerCount, symbolOnPin: edges.symbolOnPin, symbolOnPinCount: edges.symbolOnPinCount }));
       // The rule drops a name that does not fit; it must not drop every name.
       if (slug === "django/django" && level.name === "zoom-in-4") {
         report(!!edges && edges.symbolLabelCount > 0,
