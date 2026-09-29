@@ -132,7 +132,7 @@ use axum::routing::get;
 use axum::{Json, RequestExt, Router};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{oneshot, watch, Semaphore};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
@@ -200,6 +200,22 @@ const WORKER_AGENT_MAX_UPLOAD_WRITERS: usize = 8;
 /// one, so an agent redialling a master that missed several drops always
 /// gets in. Leases are bounded separately, at one per agent (`pick_agent`).
 const WORKER_MAX_CHANNELS_PER_AGENT: usize = 2;
+
+/// Upgraded channels one agent may hold waiting for their `hello` (#197).
+/// Each waits up to `HELLO_TIMEOUT`, and nothing else bounds how many one
+/// valid token holds. An agent dials one channel at a time and sends its
+/// `hello` the moment the upgrade answers (`agent::dial`), so it has at
+/// most one here, plus one it gave up on that the master has not yet seen
+/// die. A dial past it closes the agent's oldest, never the new one, as
+/// `WORKER_MAX_CHANNELS_PER_AGENT` does: refusing the new one would let a
+/// few stale dials, or a loop on the same token, keep the agent's real
+/// redial out until they timed out (`PendingUpgrades::begin`).
+const WORKER_MAX_PENDING_PER_AGENT: usize = 2;
+
+/// Each agent's eviction lines are logged at most once in this long
+/// (#197): a dial loop on one token evicts on every dial, and each line
+/// would be written for it (`LogThrottle`).
+const EVICTION_LOG_EVERY: Duration = Duration::from_secs(60);
 
 const fn max_upload_bytes(left: u64, right: u64) -> u64 {
     if left > right {
@@ -1300,6 +1316,136 @@ impl Drop for AgentUploadWriter {
     }
 }
 
+/// Holds back an agent's repeats of one log line (#197). A dial loop on one
+/// valid token evicts a channel on every dial, and a line per eviction lets
+/// that loop write to the log as fast as it dials. The first line in each
+/// `EVICTION_LOG_EVERY` is logged with the count held back before it, so
+/// an operator still sees that it happens and roughly how often.
+#[derive(Default)]
+struct LogThrottle {
+    /// By agent: when its line was last logged, and the lines held back
+    /// since. Keyed by `Conn::agent`, a token's index or a worker id's
+    /// number, so it is bounded by the tokens there are.
+    agents: BTreeMap<usize, (Instant, u64)>,
+}
+
+impl LogThrottle {
+    /// `Some(held back)` when `agent`'s line is to be logged at `now`,
+    /// `None` when it is held back.
+    fn allow(&mut self, agent: usize, now: Instant) -> Option<u64> {
+        match self.agents.get_mut(&agent) {
+            Some((last, held)) if now.saturating_duration_since(*last) < EVICTION_LOG_EVERY => {
+                *held += 1;
+                None
+            }
+            Some((last, held)) => {
+                *last = now;
+                Some(std::mem::take(held))
+            }
+            None => {
+                self.agents.insert(agent, (now, 0));
+                Some(0)
+            }
+        }
+    }
+}
+
+/// `" (N more since the last)"` for a line `LogThrottle` held back `held`
+/// repeats of, or nothing.
+fn held_back(held: u64) -> String {
+    if held == 0 {
+        String::new()
+    } else {
+        format!(" ({held} more since the last such line)")
+    }
+}
+
+/// Channels upgraded and waiting for their `hello`, per agent (#197): at
+/// most `WORKER_MAX_PENDING_PER_AGENT` each, the oldest closed past it.
+///
+/// Its own lock, never taken under the hub's and never taking it: a
+/// pending channel has no `Conn` yet, and a dial loop churning this must
+/// not contend with the leases and channels behind the hub's lock.
+#[derive(Default)]
+struct PendingUpgrades {
+    inner: Mutex<PendingInner>,
+}
+
+#[derive(Default)]
+struct PendingInner {
+    /// By arrival number, which only grows, so the first found for an
+    /// agent are its oldest: its agent, and the sender that closes it.
+    upgrades: BTreeMap<u64, (usize, oneshot::Sender<()>)>,
+    next: u64,
+    log: LogThrottle,
+}
+
+impl PendingUpgrades {
+    fn lock(&self) -> MutexGuard<'_, PendingInner> {
+        // A map of senders stays consistent whatever panicked while holding
+        // it, and `PendingUpgrade`'s `Drop` must not panic.
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Registers a channel `agent` just upgraded, closing its oldest past
+    /// the cap; the guard that unregisters it, and what resolves if a later
+    /// dial closes it first. `worker_id` only labels the log line.
+    fn begin(
+        &self,
+        agent: usize,
+        worker_id: Option<&str>,
+    ) -> (PendingUpgrade<'_>, oneshot::Receiver<()>) {
+        let (close, closed) = oneshot::channel();
+        let mut inner = self.lock();
+        let own: Vec<u64> = inner
+            .upgrades
+            .iter()
+            .filter(|(_, (owner, _))| *owner == agent)
+            .map(|(id, _)| *id)
+            .collect();
+        let over = (own.len() + 1).saturating_sub(WORKER_MAX_PENDING_PER_AGENT);
+        for oldest in own.into_iter().take(over) {
+            if let Some((_, evict)) = inner.upgrades.remove(&oldest) {
+                let _ = evict.send(());
+            }
+        }
+        let id = inner.next;
+        inner.next += 1;
+        inner.upgrades.insert(id, (agent, close));
+        let log = if over > 0 {
+            inner.log.allow(agent, Instant::now())
+        } else {
+            None
+        };
+        drop(inner);
+        // Written off the lock: a dial loop is exactly when this is hot.
+        if let Some(held) = log {
+            let label = worker_id.map_or(String::new(), |id| format!(" ({id})"));
+            eprintln!(
+                "worker agent {agent}{label} has more than {WORKER_MAX_PENDING_PER_AGENT} \
+                 channels waiting for their hello; closing its oldest{}",
+                held_back(held)
+            );
+        }
+        (PendingUpgrade { upgrades: self, id }, closed)
+    }
+}
+
+/// One channel's place in `PendingUpgrades`, given up when dropped: when
+/// its `hello` (or anything else) has arrived, it timed out, or it closed.
+struct PendingUpgrade<'a> {
+    upgrades: &'a PendingUpgrades,
+    id: u64,
+}
+
+impl Drop for PendingUpgrade<'_> {
+    fn drop(&mut self) {
+        self.upgrades.lock().upgrades.remove(&self.id);
+    }
+}
+
 /// The unique bytes already represented by this lease's upload names and
 /// any old blobs awaiting unlink. Returns `None` only for inconsistent
 /// metadata or arithmetic overflow, both treated as over the lease limit.
@@ -1479,6 +1625,8 @@ struct HubInner {
     next_settled: u64,
     next_conn: u64,
     stopping: bool,
+    /// `add_conn`'s eviction line, per agent (#197).
+    eviction_log: LogThrottle,
 }
 
 impl HubInner {
@@ -1535,6 +1683,8 @@ pub struct WorkerHub {
     upload_writers: Arc<Semaphore>,
     /// Each agent's share of `upload_writers` (#191).
     agent_upload_writers: Arc<AgentUploadWriters>,
+    /// Channels upgraded and not yet past their `hello` (#197).
+    pending: PendingUpgrades,
     /// Lost-worker retries before a job fails (§10.6).
     retries: u32,
     staging: PathBuf,
@@ -1577,6 +1727,7 @@ impl WorkerHub {
             artifact_body_total_timeout: WORKER_ARTIFACT_UPLOAD_DEADLINE,
             upload_writers: Arc::new(Semaphore::new(WORKER_MAX_UPLOAD_WRITERS)),
             agent_upload_writers: AgentUploadWriters::new(WORKER_AGENT_MAX_UPLOAD_WRITERS),
+            pending: PendingUpgrades::default(),
             retries,
             staging,
             base_url,
@@ -1692,6 +1843,8 @@ impl WorkerHub {
     }
 
     fn lock(&self) -> MutexGuard<'_, HubInner> {
+        #[cfg(test)]
+        before_hub_lock();
         self.inner.lock().expect("worker hub mutex poisoned")
     }
 
@@ -1818,17 +1971,28 @@ impl WorkerHub {
             .map(|(conn_id, _)| *conn_id)
             .collect();
         let over = (own.len() + 1).saturating_sub(WORKER_MAX_CHANNELS_PER_AGENT);
+        let mut evicted = Vec::with_capacity(over);
         for oldest in own.into_iter().take(over) {
             if let Some(conn) = inner.conns.remove(&oldest) {
-                eprintln!(
-                    "worker agent {agent} ({worker_id}) opened more than \
-                     {WORKER_MAX_CHANNELS_PER_AGENT} channels; closing its oldest, channel \
-                     {oldest}"
-                );
                 let _ = conn.out.send(Outgoing::Close);
+                evicted.push(oldest);
             }
             self.detach_leases(inner, oldest);
         }
+        // #197: a dial loop on one token evicts on every dial, so the line
+        // is throttled per agent, and written once the lock is let go.
+        let log = if evicted.is_empty() {
+            None
+        } else {
+            inner.eviction_log.allow(agent, Instant::now()).map(|held| {
+                format!(
+                    "worker agent {agent} ({worker_id}) opened more than \
+                     {WORKER_MAX_CHANNELS_PER_AGENT} channels; closing its oldest (channels \
+                     {evicted:?}){}",
+                    held_back(held)
+                )
+            })
+        };
         inner.conns.insert(
             id,
             Conn {
@@ -1846,6 +2010,10 @@ impl WorkerHub {
         );
         let answers = self.resume(inner, id, agent, resume);
         self.changed.notify_all();
+        drop(guard);
+        if let Some(line) = log {
+            eprintln!("{line}");
+        }
         Some((id, answers))
     }
 
@@ -3075,7 +3243,23 @@ async fn serve_agent(
     mut socket: WebSocket,
 ) {
     let agent = identity.agent;
-    let first = match tokio::time::timeout(HELLO_TIMEOUT, socket.recv()).await {
+    // #197: this channel counts against its agent's pending cap until its
+    // first frame arrives, and a later dial past the cap closes it first.
+    let (pending, evicted) = hub.pending.begin(agent, identity.worker_id.as_deref());
+    let first = tokio::select! {
+        first = tokio::time::timeout(HELLO_TIMEOUT, socket.recv()) => first,
+        _ = evicted => {
+            // A close and no `error` frame: the agent reads an `error`
+            // before `welcome` as a refusal and stops dialling
+            // (`Dial::Fatal`), but a close as a lost dial it retries after
+            // its backoff. This channel is the one it most likely gave up
+            // on already.
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        }
+    };
+    drop(pending);
+    let first = match first {
         Ok(Some(Ok(Message::Text(text)))) => text,
         Ok(Some(Ok(_))) => {
             close_with_error(
@@ -3774,6 +3958,37 @@ thread_local! {
 // own.
 #[cfg(test)]
 static PANIC_BEFORE_RECORDING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+// Test only (#197): a closure this thread runs, with no lock held, just
+// before it takes the hub's lock once more than `skip` times from now.
+// Two `hello`s landing between a channel's join and its resume can only be
+// staged if `add_conn` lets go of the lock in between, which is the bug the
+// test looks for: `add_conn` takes the lock once, so there it never runs.
+#[cfg(test)]
+thread_local! {
+    static BEFORE_HUB_LOCK: std::cell::RefCell<Option<(usize, Box<dyn FnOnce()>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn before_hub_lock() {
+    // `try_with`: a hub dropped while this thread's locals are being torn
+    // down must not panic here.
+    let due = BEFORE_HUB_LOCK
+        .try_with(|hook| {
+            let mut hook = hook.borrow_mut();
+            if let Some((skip @ 1.., _)) = hook.as_mut() {
+                *skip -= 1;
+                return None;
+            }
+            hook.take().map(|(_, run)| run)
+        })
+        .ok()
+        .flatten();
+    if let Some(run) = due {
+        run();
+    }
+}
 
 #[cfg(test)]
 fn panic_before_recording(slug: &str, job_id: Uuid) {
@@ -5732,6 +5947,34 @@ mod tests {
             }
         }
 
+        /// Whether the master closed the channel within a few seconds with
+        /// no frame before the close: what an agent reads as a lost dial to
+        /// retry, where an `error` would be a refusal (`agent::dial`).
+        fn closed_without_error(&mut self) -> bool {
+            self.socket
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            loop {
+                match self.socket.read() {
+                    Ok(tungstenite::Message::Text(text)) => {
+                        panic!("expected a close with nothing before it, got {text}")
+                    }
+                    Ok(tungstenite::Message::Close(_)) => return true,
+                    Ok(_) => {}
+                    Err(tungstenite::Error::Io(error))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        return false
+                    }
+                    Err(_) => return true,
+                }
+            }
+        }
+
         fn expect_error(&mut self, code: &str) {
             match self.recv() {
                 MasterMessage::Error { code: got, message } => {
@@ -7230,6 +7473,193 @@ mod tests {
             other => panic!("expected lease_renewed, got {other:?}"),
         }
         fixture.hub.end_lease(id, false);
+    }
+
+    /// A channel for agent 0 added straight through `add_conn`, as
+    /// `serve_agent` adds one on its `hello`, with no socket or task behind
+    /// it: nothing but the hub's own bookkeeping ever changes it, so no
+    /// channel task's `remove_conn` can tidy up after the hub. What the hub
+    /// sends it waits in the receiver.
+    fn joined(
+        hub: &WorkerHub,
+        resume: Vec<ResumeEntry>,
+    ) -> (
+        u64,
+        Vec<WelcomeResume>,
+        tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
+    ) {
+        let (out, outgoing) = tokio::sync::mpsc::unbounded_channel();
+        let (id, answers) = hub
+            .add_conn(
+                0,
+                "fake".to_owned(),
+                true,
+                Some(0),
+                true,
+                "http://127.0.0.1".to_owned(),
+                out,
+                resume,
+            )
+            .expect("a running hub admits the channel");
+        (id, answers, outgoing)
+    }
+
+    /// #197, the race behind #194's single lock: agent 0 holds a lease on
+    /// one channel and dials again with `hello.resume`, and two more of its
+    /// `hello`s land between that channel joining and its resume. With the
+    /// cap at two, those two evict the lease's old channel and then the
+    /// resuming one itself. Were the join and the resume two lock sections,
+    /// the resume would then move the lease onto a channel already closed
+    /// and answer `continue`: the lease would name a channel nothing ever
+    /// renews it on. `BEFORE_HUB_LOCK` stages the two `hello`s in any gap
+    /// `add_conn` leaves by taking the lock again; with its one lock there
+    /// is none, and they arrive after the resume instead, which is safe.
+    /// `a_resume_on_a_third_channel_still_takes_its_lease_over` passes
+    /// either way: it never puts a `hello` inside the gap.
+    #[test]
+    fn two_hellos_between_a_join_and_its_resume_cannot_strand_the_lease() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let hub = fixture.hub.clone();
+        let (holding, _, mut holding_out) = joined(&hub, Vec::new());
+        hub.handle(holding, WorkerMessage::Ready { slots_free: 1 })
+            .unwrap();
+        let id = Uuid::new_v4();
+        drop(claim_without_runner(&fixture, id, 1));
+        assert!(
+            matches!(
+                holding_out.try_recv(),
+                Ok(Outgoing::Message(MasterMessage::Assign { .. }))
+            ),
+            "the first channel holds the lease"
+        );
+
+        let later = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let two_hellos: Box<dyn FnOnce()> = {
+            let (hub, later) = (hub.clone(), later.clone());
+            Box::new(move || {
+                for _ in 0..2 {
+                    later.borrow_mut().push(joined(&hub, Vec::new()));
+                }
+            })
+        };
+        // Skip the lock `add_conn` takes first; run before any it takes
+        // after that.
+        BEFORE_HUB_LOCK.with(|hook| *hook.borrow_mut() = Some((1, two_hellos)));
+        let (resuming, answers, _resuming_out) = joined(&hub, vec![resume_entry(id, 1, 0)]);
+        let unfired = BEFORE_HUB_LOCK.with(|hook| hook.borrow_mut().take());
+        if let Some((_, two_hellos)) = unfired {
+            two_hellos();
+        }
+        assert_eq!(later.borrow().len(), 2, "both hellos joined");
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].action, ResumeAction::Continue, "{answers:?}");
+
+        {
+            let inner = hub.lock();
+            let own = inner.conns.values().filter(|conn| conn.agent == 0).count();
+            assert!(
+                own <= WORKER_MAX_CHANNELS_PER_AGENT,
+                "agent 0 holds {own} channels: a hello joined between another's eviction and \
+                 its insert"
+            );
+            if let Some(conn) = inner.leases[&id].conn {
+                assert!(
+                    inner.conns.contains_key(&conn),
+                    "the lease names channel {conn}, closed before its resume (channel \
+                     {resuming}) ran: nothing renews it there, and the agent was told to \
+                     continue"
+                );
+            }
+        }
+        hub.end_lease(id, false);
+    }
+
+    /// #197: an agent holds at most `WORKER_MAX_PENDING_PER_AGENT` upgraded
+    /// channels waiting for their `hello`. One more closes its oldest, with
+    /// no `error` frame, so the agent that dialled it would retry rather
+    /// than stop; the newest -- the dial an agent is really on -- and every
+    /// other agent's waiting channel still get in.
+    #[test]
+    fn a_dial_past_the_pending_cap_closes_the_oldest_waiting_channel_without_an_error() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut waiting = Vec::new();
+        for count in 1..=WORKER_MAX_PENDING_PER_AGENT {
+            waiting.push(FakeAgent::raw(fixture.port, TOKENS[0]));
+            // Registered in dial order, so "oldest" is the first dialled.
+            wait_for_pending(&fixture, 0, count);
+        }
+        let mut bystander = FakeAgent::raw(fixture.port, TOKENS[1]);
+        wait_for_pending(&fixture, 1, 1);
+        let newest = FakeAgent::raw(fixture.port, TOKENS[0]);
+        let mut oldest = waiting.remove(0);
+        assert!(
+            oldest.closed_without_error(),
+            "a dial past the cap must close agent 0's oldest waiting channel"
+        );
+        assert_eq!(pending_of(&fixture, 0), WORKER_MAX_PENDING_PER_AGENT);
+        assert_eq!(
+            pending_of(&fixture, 1),
+            1,
+            "another agent's waiting channel is not agent 0's to close"
+        );
+        waiting.push(newest);
+        for agent in waiting.iter_mut().chain([&mut bystander]) {
+            agent.send(&hello(test_build(), (PROTO, PROTO)));
+            match agent.recv() {
+                MasterMessage::Welcome { .. } => {}
+                other => panic!("expected welcome, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            (pending_of(&fixture, 0), pending_of(&fixture, 1)),
+            (0, 0),
+            "a channel past its hello no longer counts as waiting"
+        );
+    }
+
+    /// The channels `agent` has waiting for their `hello`.
+    fn pending_of(fixture: &Fixture, agent: usize) -> usize {
+        fixture
+            .hub
+            .pending
+            .lock()
+            .upgrades
+            .values()
+            .filter(|(owner, _)| *owner == agent)
+            .count()
+    }
+
+    fn wait_for_pending(fixture: &Fixture, agent: usize, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pending_of(fixture, agent) != count {
+            assert!(
+                Instant::now() < deadline,
+                "agent {agent} never had {count} channels waiting for their hello"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// #197: a dial loop evicts on every dial, and its eviction line is
+    /// logged once per `EVICTION_LOG_EVERY` per agent, with the count held
+    /// back since.
+    #[test]
+    fn an_eviction_line_is_held_back_within_its_interval_and_counted() {
+        let mut log = LogThrottle::default();
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+        assert_eq!(log.allow(0, start), Some(0));
+        assert_eq!(log.allow(0, start + second), None);
+        assert_eq!(log.allow(0, start + 2 * second), None);
+        assert_eq!(
+            log.allow(1, start + 2 * second),
+            Some(0),
+            "another agent's line is throttled on its own"
+        );
+        assert_eq!(log.allow(0, start + EVICTION_LOG_EVERY), Some(2));
+        assert_eq!(log.allow(0, start + EVICTION_LOG_EVERY + second), None);
+        assert_eq!(held_back(0), "");
+        assert_eq!(held_back(2), " (2 more since the last such line)");
     }
 
     /// #193: an agent holds one lease at a time -- its one slot -- whatever
