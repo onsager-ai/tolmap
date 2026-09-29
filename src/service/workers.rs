@@ -7439,6 +7439,28 @@ mod tests {
         assert_eq!(snapshot.status, JobStatus::Queued, "{snapshot:?}");
     }
 
+    /// #199: an agent whose channel closes during a graceful stop with no
+    /// `released` read for its job -- reaped before it released it, or its
+    /// `released` still unread when the close was seen -- leaves the job
+    /// `queued`, uncounted, as the release would have: the next process's
+    /// loopback agents cannot resume this one's lease, so a `leased` row
+    /// would only hold the job for a lease TTL after the restart.
+    #[test]
+    fn a_channel_that_closes_during_a_graceful_stop_leaves_the_job_queued_uncounted() {
+        let fixture = Fixture::new(Duration::from_secs(60), test_build());
+        let mut agent = fixture.agent(0);
+        let id = fixture.spawn(remote_repo("reaped-unreleased"));
+        assert_eq!(agent.assigned(), id);
+        fixture.wait_for_row(id, "leased in the store", |row| row.status == "leased");
+        fixture.state.jobs.shutdown();
+        fixture.hub.shutdown_now();
+        told_to_stop(&mut agent);
+        drop(agent);
+        fixture.wait_for_no_lease();
+        let row = fixture.wait_for_row(id, "the job queued again", |row| row.status == "queued");
+        assert_eq!((row.epoch, row.attempt), (1, 1), "{row:?}");
+    }
+
     /// #199: a loopback master's graceful stop returns -- and the process
     /// exits -- only once every runner has let its lease go. Returning when
     /// the agents had exited let the runtime drop the agent's channel task
