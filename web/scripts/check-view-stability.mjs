@@ -41,6 +41,7 @@ import { chromium } from "playwright";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { runJobPageChecks } from "./check-view-jobs.mjs";
+import { cameraBoxes, zoomInSettled } from "./camera-settle.mjs";
 
 // Required generated files, relative to web/. The dify fixture is the #79
 // rebuilt main map (not the older terrain-off map). public/maps is gitignored;
@@ -3672,11 +3673,11 @@ async function checkDesktopLabelPlacement(browser, base) {
       JSON.stringify(colors));
     let zoomClicks = 0;
     for (const level of levels) {
-      while (zoomClicks < level.clicks) {
-        await page.locator('button[aria-label="Zoom in"]').click();
-        zoomClicks++;
-      }
-      await page.waitForTimeout(350);
+      // Settled per click (#205): a click mid-glide compounds from an
+      // intermediate camera, so back-to-back clicks frame the map differently
+      // from run to run.
+      await zoomInSettled(page, level.clicks - zoomClicks);
+      zoomClicks = level.clicks;
       const result = await labelsState();
       report(result.markerOverlapCount === 0 && result.chromeOverlapCount === 0,
         label + ": labels avoid landmark/hub markers and desktop chrome at " + level.name,
@@ -3992,11 +3993,11 @@ async function checkDesktopLabelRules(browser, base) {
 
     let zoomClicks = 0;
     for (const level of [{ name: "fit", clicks: 0 }, { name: "zoom-in-2", clicks: 2 }, { name: "zoom-in-4", clicks: 4 }]) {
-      while (zoomClicks < level.clicks) {
-        await page.locator('button[aria-label="Zoom in"]').click();
-        zoomClicks++;
-      }
-      await page.waitForTimeout(350);
+      // Settled per click (#205): a click mid-glide compounds from an
+      // intermediate camera, so back-to-back clicks frame the map differently
+      // from run to run.
+      await zoomInSettled(page, level.clicks - zoomClicks);
+      zoomClicks = level.clicks;
       const subtitles = await orphanSubtitles();
       report(!!subtitles && subtitles.orphans.length === 0,
         `${label}: no "N files" subtitle is drawn without its district name at ${level.name}`,
@@ -4031,6 +4032,63 @@ async function checkDesktopLabelRules(browser, base) {
       }
     }
     await context.close();
+  }
+}
+
+/** Issue #205: the same map, driven by the same steps, must end in the same
+ * camera whatever the colour scheme -- the light and dark label-placement
+ * frames in screenshots.mjs are only comparable if it does. The camera is not
+ * in the DOM once glide() has painted (paint() bakes it into the geometry and
+ * drops the <g> transform), so the signature is what the camera puts on
+ * screen: every district polygon's box (camera-settle.mjs's cameraBoxes).
+ * Several fresh contexts per scheme, so an intermittent difference has more
+ * than one chance to show. Each zoom step settles first (zoomInSettled): the
+ * unsettled version of this check failed on CI, see #205. */
+async function checkDesktopZoomCameraAgreement(browser, base) {
+  const REPEATS = 3;
+  for (const slug of MAPS) {
+    const label = `desktop zoom camera agrees across colour schemes (${slug}) / 1440x900`;
+    console.log(`\n${label}`);
+    const runs = [];
+    for (const colorScheme of ["light", "dark"]) {
+      for (let attempt = 0; attempt < REPEATS; attempt++) {
+        const context = await browser.newContext({
+          viewport: { width: 1440, height: 900 },
+          isMobile: false,
+          hasTouch: false,
+          deviceScaleFactor: 1,
+          colorScheme,
+        });
+        const page = await context.newPage();
+        await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+        await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+        await page.locator("[data-desktop-overview]").waitFor({ timeout: 15_000 });
+        await page.waitForTimeout(500);
+        let zoomClicks = 0;
+        for (const step of [2, 4]) {
+          await zoomInSettled(page, step - zoomClicks);
+          zoomClicks = step;
+          const boxes = await cameraBoxes(page);
+          runs.push({ colorScheme, attempt, step, boxes, signature: JSON.stringify(boxes) });
+        }
+        await context.close();
+      }
+    }
+    for (const step of [2, 4]) {
+      const at = runs.filter((run) => run.step === step);
+      const ref = at[0];
+      report(ref.boxes.length > 0, `${label}: district polygons are on screen at zoom-in-${step} (setup)`, String(ref.boxes.length));
+      const off = at.filter((run) => run.signature !== ref.signature).map((run) => {
+        const i = run.boxes.findIndex((b, j) => JSON.stringify(b) !== JSON.stringify(ref.boxes[j]));
+        const b = run.boxes[i];
+        const r = ref.boxes[i];
+        return `${run.colorScheme}#${run.attempt}: ${run.boxes.length} polygons vs ${ref.boxes.length}` +
+          (b && r ? `, first differs ${b[0]} dx=${(b[1] - r[1]).toFixed(1)} dy=${(b[2] - r[2]).toFixed(1)} dw=${(b[3] - r[3]).toFixed(1)}` : "");
+      });
+      report(off.length === 0,
+        `${label}: every light and dark run ends at the same camera at zoom-in-${step}`,
+        `${ref.colorScheme}#${ref.attempt} is the reference; ${off.join("; ")}`);
+    }
   }
 }
 
@@ -7102,6 +7160,7 @@ async function main() {
     for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
     await checkDesktopLabelPlacement(browser, args.base);
     await checkDesktopLabelRules(browser, args.base);
+    await checkDesktopZoomCameraAgreement(browser, args.base);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
     for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);

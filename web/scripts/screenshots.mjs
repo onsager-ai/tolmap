@@ -8,6 +8,7 @@
 //        [--slugs django/django,langgenius/dify]
 import { chromium } from "playwright";
 import { mkdir } from "node:fs/promises";
+import { zoomInSettled } from "./camera-settle.mjs";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -1244,11 +1245,10 @@ try {
       await page.waitForTimeout(500);
       let zoomClicks = 0;
       for (const step of [0, 2, 4]) {
-        while (zoomClicks < step) {
-          await page.locator('button[aria-label="Zoom in"]').click();
-          zoomClicks++;
-        }
-        await page.waitForTimeout(350);
+        // Settled per click (#205): a click mid-glide compounds from an
+        // intermediate camera, which framed light and dark differently.
+        await zoomInSettled(page, step - zoomClicks);
+        zoomClicks = step;
         const file = `${stem}-zoom${step}-${colorScheme}.png`;
         await page.screenshot({ path: file });
         console.log(file);
