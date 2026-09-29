@@ -392,6 +392,55 @@ fn an_agent_killed_mid_job_loses_its_lease_and_the_job_reruns_byte_identically()
     );
 }
 
+/// After a restart with one agent, the queue the new master restored:
+/// `head` (the job that was running), then `a`, then `b`, in admission
+/// order. The three snapshots were read in the order `b`, `a`, `head`.
+///
+/// Nothing holds `head` once the new master is up: after a graceful stop
+/// it starts again at once and takes about 0.7 s in CI (#199), so a test
+/// thread that stalls may read the queue after it has moved on. Every job
+/// only moves forward, and with one slot `a` cannot start before `head`
+/// ends nor `b` before `a` ends, so the reads, taken in that order, pin
+/// down what each may show:
+///
+/// - `head` not finished when read last: it held the slot at both earlier
+///   reads, so `a` and `b` are exactly first and second in the queue, as
+///   before the restart;
+/// - otherwise each observation must be one a first-in-first-out queue
+///   passes through: `b` second while `a` is first or has started, `b`
+///   first only once `a` has started, `b` started only once `a` is done.
+///
+/// So any order other than admission order fails, whenever it is read.
+fn assert_restored_queue(head: &serde_json::Value, a: &serde_json::Value, b: &serde_json::Value) {
+    let position = |job: &serde_json::Value| job["queue_position"].as_u64();
+    let status = |job: &serde_json::Value| job["status"].as_str().unwrap_or("").to_owned();
+    let finished = |job: &serde_json::Value| matches!(status(job).as_str(), "done" | "failed");
+    assert_ne!(status(head), "failed", "{head}");
+    if !finished(head) {
+        assert_eq!(position(a), Some(1), "{a}");
+        assert_eq!(position(b), Some(2), "{b}");
+        assert!(
+            a["eta_start_s"].as_f64().unwrap() <= b["eta_start_s"].as_f64().unwrap(),
+            "{a} then {b}"
+        );
+        return;
+    }
+    match (position(b), position(a)) {
+        // `b` was second: `head` held the slot then, and `a` is first or
+        // has started since.
+        (Some(2), Some(1)) => assert!(
+            a["eta_start_s"].as_f64().unwrap() <= b["eta_start_s"].as_f64().unwrap(),
+            "{a} then {b}"
+        ),
+        (Some(2), None) => {}
+        // `b` was first: `a` held the slot, and still does or is done.
+        (Some(1), None) => {}
+        // `b` had started: `a` had finished before it did.
+        (None, _) => assert_eq!(status(a), "done", "{a} before {b}"),
+        other => panic!("not a first-in-first-out queue: {other:?}\n{a}\n{b}"),
+    }
+}
+
 /// §6 "master restarts mid-job" and "master graceful stop": with one agent,
 /// a finished job, a job frozen mid-run and two queued behind it, the
 /// master is SIGKILLed (`graceful == false`) or SIGTERMed and a new one
@@ -465,13 +514,9 @@ fn a_master_restarted_mid_job_finishes_every_job(graceful: bool) {
     let after = master.get(&running);
     assert_ne!(after["status"], "failed", "{after}");
     // The queued jobs keep their order and their positions.
-    let (a, b) = (master.get(&first), master.get(&second));
-    assert_eq!(a["queue_position"], 1, "{a}");
-    assert_eq!(b["queue_position"], 2, "{b}");
-    assert!(
-        a["eta_start_s"].as_f64().unwrap() <= b["eta_start_s"].as_f64().unwrap(),
-        "{a} then {b}"
-    );
+    let (b, a) = (master.get(&second), master.get(&first));
+    let head = master.get(&running);
+    assert_restored_queue(&head, &a, &b);
     for id in [&running, &first, &second] {
         master.wait_done(id);
     }
