@@ -361,7 +361,7 @@ export class MapRenderer {
   private cardedFileBBox = new Map<number, [number, number, number, number]>();
   // docs/UX.md §5, review follow-up 2: every symbol-card tab and symbol
   // label box drawSymbolCardsPass drew this paint (its own local collision
-  // list). Desktop/tablet reserve these before district labels, so a
+  // list). Every profile reserves these before district labels, so a
   // district name never lands on a card's name when zoomed in.
   private cardLabelBoxes: Array<[number, number, number, number]> = [];
   private symDecodedByDistrict = new Map<number, DecodedDistrictSymbols>();
@@ -1225,11 +1225,10 @@ export class MapRenderer {
     const sy = this.VH / (this.cssH || this.VH);
     return { left: i.left * sx, top: i.top * sy, right: i.right * sx, bottom: i.bottom * sy };
   }
-  /** The floating desktop/tablet chrome is laid out from layoutProfile.ts's
-   * same safe-rectangle constants. Read its live DOM boxes so variable-width
-   * controls and the responsive panel/legend reserve exactly their visible
-   * rectangles, in the SVG's current coordinate system. */
-  private desktopChromeBoxes(): Array<[number, number, number, number]> {
+  /** Read the live floating chrome boxes so variable-width controls,
+   * responsive panels and phone sheets reserve their visible rectangles in
+   * the SVG's current coordinate system. */
+  private chromeBoxes(): Array<[number, number, number, number]> {
     const matrix = this.svg.getScreenCTM();
     if (!matrix) return [];
     const inverse = matrix.inverse();
@@ -1241,6 +1240,10 @@ export class MapRenderer {
       "[data-panel-tab]",
       "[data-desktop-legend]",
       "[data-map-controls]",
+      "[data-search-pill]",
+      "[data-control-column]",
+      "[data-phone-sheet]",
+      "[data-side-sheet]",
     ].join(",");
     const point = this.svg.createSVGPoint();
     const toLocal = (x: number, y: number): [number, number] => {
@@ -1374,7 +1377,12 @@ export class MapRenderer {
     this.rootG = null;
     if (!state) return;
     const { doc, geo, layer, sel, selSym, selD, route, folderFiles, folderOnlyIslands } = state;
-    const desktopLabels = hasDesktopMapLabels(layoutProfile(this.mapBoxW, this.mapBoxH));
+    const profile = layoutProfile(this.mapBoxW, this.mapBoxH);
+    const desktopLabels = hasDesktopMapLabels(profile);
+    // 7d's placement rules apply to every shell; only desktop styling stays
+    // profile-gated.
+    const reserveMarkers = true;
+    const reservedChromeBoxes = reserveMarkers ? this.chromeBoxes() : [];
     const g = el("g", {});
     svg.appendChild(g);
     // Issue #51: remember exactly what this paint() drew at, so a later
@@ -1791,25 +1799,23 @@ export class MapRenderer {
       if (cx < -30 || cx > this.VW + 30 || cy < -30 || cy > this.VH + 30) return null;
       return [cx, cy];
     };
-    const desktopHubCandidates = desktopLabels ? this.hubCandidates() : null;
-    // Desktop/tablet: the pin selection has to run BEFORE the label passes so
-    // the symbol-card pass can keep tabs and names off the markers (#203),
-    // but selectPins skips carded files, and those boxes only exist once that
-    // pass has collected its files. So the pass calls this once its file loop
-    // is done; the label block below reuses the same result rather than
-    // selecting again, so the reserved boxes and the drawn pins cannot drift.
-    let desktopPins: ReturnType<typeof selectPins> | null = null;
-    const selectDesktopPins = () => {
-      if (!desktopPins) {
+    const reservedHubCandidates = reserveMarkers ? this.hubCandidates() : null;
+    // Every profile selects pins before the label passes so the symbol-card
+    // pass can keep tabs and names off markers (#203). selectPins skips
+    // carded files, whose boxes exist only after its file loop, so the pass
+    // calls this lazily and paint() reuses the same selection for drawing.
+    let reservedPins: ReturnType<typeof selectPins> | null = null;
+    const selectReservedPins = () => {
+      if (!reservedPins) {
         const carded: Array<[number, number, number, number]> = [];
         for (const [x0, y0, x1, y1] of this.cardedFileBBox.values()) carded.push([x0, y0, x1 - x0, y1 - y0]);
-        desktopPins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel, [...this.desktopChromeBoxes(), ...carded]);
+        reservedPins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel, [...reservedChromeBoxes, ...carded]);
       }
-      return desktopPins;
+      return reservedPins;
     };
-    const selectDesktopMarkers = (): Array<[number, number, number, number]> => [
-      ...selectDesktopPins().map(({ cx, cy }): [number, number, number, number] => [cx - 10, cy - 32, 20, 32]),
-      ...desktopHubCandidates!.map(({ cx, cy, r }): [number, number, number, number] => [cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]),
+    const selectReservedMarkers = (): Array<[number, number, number, number]> => [
+      ...selectReservedPins().map(({ cx, cy }): [number, number, number, number] => [cx - 10, cy - 32, 20, 32]),
+      ...(reservedHubCandidates ?? []).map(({ cx, cy, r }): [number, number, number, number] => [cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]),
     ];
 
     // B4 (nested footprints, issue #82 scope item 2; perf follow-up): flush
@@ -1834,7 +1840,14 @@ export class MapRenderer {
       // the reference-line pass at the very end of paint() (below) and for a
       // later hover-only redraw (renderSymbolRefs, called without a full
       // repaint -- see setHover's "hs:" branch).
-      this.drawSymbolCardsPass(g, filesNeedingCards, state.selHSym, desktopLabels ? this.desktopChromeBoxes() : null, desktopLabels ? selectDesktopMarkers : null);
+      this.drawSymbolCardsPass(
+        g,
+        filesNeedingCards,
+        state.selHSym,
+        reserveMarkers ? reservedChromeBoxes : null,
+        reserveMarkers ? selectReservedMarkers : null,
+        reserveMarkers,
+      );
     } else {
       this.cardLabelBoxes = [];
       this.symVisible = new Set();
@@ -1957,27 +1970,25 @@ export class MapRenderer {
       for (const { j, dir } of shown) this.ring(g, j, dir === "out" ? "var(--link-out)" : "var(--link-in)", fs);
     }
 
-    // Desktop/tablet reserve live chrome, landmark pins, hub rings and
-    // symbol-card labels before district labels. Phone keeps A5's
-    // district-first label/pin priority. Hub, folder, neighbourhood and file
-    // labels continue to share the same list.
+    // Every profile reserves live chrome, landmark pins, hub rings and
+    // symbol-card labels before district labels. Phone keeps A5's compact
+    // district ordering and label position. Hub, folder, neighbourhood and
+    // file labels continue to share the same list.
     const placed: Array<[number, number, number, number]> = [];
     let pins: ReturnType<typeof selectPins> = [];
-    if (desktopLabels) {
-      placed.push(...this.desktopChromeBoxes());
+    if (reserveMarkers) {
+      placed.push(...reservedChromeBoxes);
       // Pins and hub rings are both fixed markers, so neither evicts the
       // other. Review follow-up 2: hub rings used to be reserved BEFORE pin
       // selection, and a landmark is often a hub itself -- its pin tip sits
       // on its own ring -- so every such pin was dropped (dify at fit lost
-      // pins 3 and 4). Pins still skip the chrome, as pins.ts skips any
-      // preplaced box, and carded files, as they always have on the phone
-      // (there the carded boxes are seeded before selectPins, below).
-      pins = selectDesktopPins();
+      // pins 3 and 4). Pins still skip chrome and carded files.
+      pins = selectReservedPins();
       for (const { cx, cy } of pins) placed.push([cx - 10, cy - 32, 20, 32]);
-      for (const { cx, cy, r } of desktopHubCandidates!) placed.push([cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]);
+      for (const { cx, cy, r } of reservedHubCandidates ?? []) placed.push([cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]);
       placed.push(...this.cardLabelBoxes);
     }
-    this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed, desktopLabels);
+    this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed, desktopLabels, reserveMarkers);
     // CI review finding (issue #82 C2): seed the SAME shared list with every
     // carded file's own screen bbox (recorded by drawSymbolCardsPass, which
     // already ran above, before pins/hub labels/folder labels/file labels
@@ -1995,18 +2006,6 @@ export class MapRenderer {
     // "workflow", many neighbourhoods >=6 files) filled the collision budget
     // before the folder-label pass ever ran, so "workflow folder label
     // appears after zooming in" started failing.
-
-    // Ranked-pin selection (readable-overview PR, scope item 1; see pins.ts's
-    // top comment for issue #57, the msgraph-sdk-python case this fixes):
-    // global landmarks always draw, a capital only once its district is
-    // "established" on screen, and a deterministic rank-ordered collision
-    // pass keeps pins from stacking. zf0 (computed above, before the
-    // districts loop) is the same k/fitScale() ratio this needs -- no
-    // reason for a second identical computation.
-    if (!desktopLabels) {
-      pins = selectPins(doc, this.districtArea, pinScreenOf, this.k, zf0, sel, placed);
-      for (const { cx, cy } of pins) placed.push([cx - 10, cy - 32, 20, 32]);
-    }
 
     pins.forEach(({ row: [i, why, detail, rank], cx, cy }) => {
       const pFade = this.islandFadeForDistrict(D_(doc, i), zf0, islandFadeFloorZf, islandExceptionDistricts);
@@ -2051,12 +2050,12 @@ export class MapRenderer {
     // after folder labels -- folder labels existed before this PR and hubs
     // did not, so a folder label's established placement priority isn't
     // demoted by a brand-new label kind sharing the same collision budget.
-    const hubCandidates = this.drawHubRings(g, desktopHubCandidates ?? undefined);
+    const hubCandidates = this.drawHubRings(g, reservedHubCandidates ?? undefined);
 
     // A5: folder labels, then hub labels, then file labels -- the tail of
     // the old drawLabels(), now reusing the SAME `placed` list rather than a
     // fresh local one (see placeDistrictLabels's own call above for why).
-    this.placeContentLabels(g, placed, alwaysDrawn, zf0, hubCandidates, desktopLabels, desktopRoomDistricts, desktopRoomExceptions);
+    this.placeContentLabels(g, placed, alwaysDrawn, zf0, hubCandidates, desktopLabels, reserveMarkers, desktopRoomDistricts, desktopRoomExceptions);
 
     // Issue #82 C2 scope item 4: reference lines for the selected symbol (if
     // any), topmost so they read over labels/pins/hub rings -- a fresh,
@@ -2150,6 +2149,7 @@ export class MapRenderer {
     isIsland: boolean,
     isSelected: boolean,
     hits: (x: number, y: number, w: number, h: number) => boolean,
+    reserveMarkers: boolean,
   ): { at: [number, number]; subtitle: boolean } | null {
     const { doc } = this.state!;
     const bounds = this.districtWorldBounds.get(d);
@@ -2170,7 +2170,7 @@ export class MapRenderer {
     const nameFits = (cx: number, cy: number, fit: Fit) => {
       const bx = cx - nameWidth / 2;
       const by = cy - nameHeight;
-      if (!onScreen(bx, by, nameWidth, nameHeight) || hits(bx, by, nameWidth, nameHeight)) return false;
+      if ((reserveMarkers && !onScreen(bx, by, nameWidth, nameHeight)) || hits(bx, by, nameWidth, nameHeight)) return false;
       if (fit === 0) return true;
       if (isIsland) {
         if (!isSelected && (bx < this.X(wx0) || bx + nameWidth > this.X(wx1))) return false;
@@ -2186,7 +2186,7 @@ export class MapRenderer {
       if (!subtitle) return false;
       const bx = cx - subtitleWidth / 2;
       const by = cy + SUBTITLE_OFFSET_PX - subtitleHeight;
-      if (!onScreen(bx, by, subtitleWidth, subtitleHeight) || hits(bx, by, subtitleWidth, subtitleHeight)) return false;
+      if ((reserveMarkers && !onScreen(bx, by, subtitleWidth, subtitleHeight)) || hits(bx, by, subtitleWidth, subtitleHeight)) return false;
       return fit === 0 || inside(cx, by + subtitleHeight / 2);
     };
     const columns = [0.5, 0.35, 0.65, 0.2, 0.8, 0.08, 0.92];
@@ -2258,12 +2258,11 @@ export class MapRenderer {
     return null;
   }
 
-  /** A5 phone labels keep their mainland-first order and center anchors.
-   * Desktop/tablet reserve live chrome, pins, hub rings and symbol-card
-   * labels first (paint()), then place selected and hovered districts
-   * before the descending file-count/id remainder, each at the spot
-   * desktopDistrictLabelSpot picks or not at all. */
-  private placeDistrictLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, placed: Array<[number, number, number, number]>, desktopLabels: boolean) {
+  /** Phone labels keep their mainland-first order and center anchors. Every
+   * profile reserves live chrome, pins, hub rings and symbol-card labels
+   * first (paint()); desktop/tablet then place selected and hovered districts
+   * before the descending file-count/id remainder. */
+  private placeDistrictLabels(g: SVGGElement, alwaysDrawn: Set<number>, islandFadeFloorZf: number, islandExceptionDistricts: Set<number>, placed: Array<[number, number, number, number]>, desktopLabels: boolean, reserveMarkers: boolean) {
     const { doc, geo } = this.state!;
     const hits = (x: number, y: number, w: number, h: number) =>
       placed.some((r) => !(x + w < r[0] || x > r[0] + r[2] || y + h < r[1] || y > r[1] + r[3]));
@@ -2275,6 +2274,7 @@ export class MapRenderer {
     const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number, mono = false) => {
       const w = mono ? txt.length * size * 0.62 : archivoLabelWidth(txt, size, weight ?? 400);
       const h = size * 1.25;
+      if (reserveMarkers && (x - w / 2 < 0 || x + w / 2 > this.VW || y - h < 0 || y > this.VH)) return false;
       if (hits(x - w / 2, y - h, w, h)) return false;
       placed.push([x - w / 2, y - h, w, h]);
       const t = el("text", {
@@ -2397,7 +2397,7 @@ export class MapRenderer {
       let labelPlaced = false;
       let desktopSubtitleAllowed = false;
       if (desktopLabels && geo !== "t") {
-        const spot = this.desktopDistrictLabelSpot(+d, doc.names[d], labelSize, isIsland, isSelected, hits);
+        const spot = this.desktopDistrictLabelSpot(+d, doc.names[d], labelSize, isIsland, isSelected, hits, reserveMarkers);
         if (spot) {
           [x, labelY] = spot.at;
           labelPlaced = put(x, labelY, doc.names[d], labelSize, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
@@ -2411,7 +2411,7 @@ export class MapRenderer {
         const nameHeight = labelSize * 1.25;
         const candidate = offsets.map(([dx, dy]) => [x + dx, y + dy] as [number, number]).find(([candidateX, candidateY]) => {
           const box: [number, number, number, number] = [candidateX - nameWidth / 2, candidateY - nameHeight, nameWidth, nameHeight];
-          return box[0] >= 0 && box[0] + box[2] <= this.VW && box[1] >= 0 && candidateY <= this.VH && !hits(...box);
+          return (!reserveMarkers || (box[0] >= 0 && box[0] + box[2] <= this.VW && box[1] >= 0 && candidateY <= this.VH)) && !hits(...box);
         });
         if (candidate) {
           [x, labelY] = candidate;
@@ -2419,7 +2419,6 @@ export class MapRenderer {
         }
         desktopSubtitleAllowed = labelPlaced;
       } else {
-        if (x < 0 || x > this.VW || y < 0 || y > this.VH) continue;
         labelPlaced = put(x, labelY, doc.names[d], labelSize, (isIsland ? 0.5 : 0.82) * iFade, isIsland ? 500 : 600, +d);
       }
       // Issue's scope item 2: a "+N files" badge once #49's budget is
@@ -2596,7 +2595,7 @@ export class MapRenderer {
    * where hub labels sit in the shared placement priority -- paint() calls
    * this from inside placeContentLabels, after folder labels and before
    * file labels. */
-  private placeHubLabels(g: SVGGElement, zf0: number, candidates: HubRingCandidate[], placed: Array<[number, number, number, number]>, desktopLabels: boolean) {
+  private placeHubLabels(g: SVGGElement, zf0: number, candidates: HubRingCandidate[], placed: Array<[number, number, number, number]>, desktopLabels: boolean, reserveMarkers: boolean) {
     if (candidates.length === 0) return;
     const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const hits = (x: number, y: number, w: number, h: number) =>
@@ -2627,10 +2626,11 @@ export class MapRenderer {
           [cx - w / 2, cy + r + size + 5],
         ];
         const clear = positions.find(([x, y]) =>
-          x >= 4 && x + w <= this.VW - 4 && y - h >= 4 && y <= this.VH - 4 && !hits(x, y - h, w, h));
+          (!reserveMarkers || (x >= 4 && x + w <= this.VW - 4 && y - h >= 4 && y <= this.VH - 4)) && !hits(x, y - h, w, h));
         if (!clear) continue;
         [lx, ly] = clear;
-      } else if (lx + w > this.VW - 4 || ly > this.VH - 4 || hits(lx, ly - h, w, h)) continue;
+      } else if (hits(lx, ly - h, w, h)) continue;
+      if (reserveMarkers && (lx < 0 || lx + w > this.VW || ly - h < 0 || ly > this.VH)) continue;
       placed.push([lx, ly - h, w, h]);
       const t = el("text", {
         x: lx.toFixed(1),
@@ -3181,7 +3181,7 @@ export class MapRenderer {
    * gate -- being focused already means zoomed in enough to read them.
    * Shares `placed` with every other label kind (called right after district
    * names in paint()). */
-  private placeNeighbourhoodLabels(g: SVGGElement, placed: Array<[number, number, number, number]>, selD: number | null, desktopLabels = false) {
+  private placeNeighbourhoodLabels(g: SVGGElement, placed: Array<[number, number, number, number]>, selD: number | null, reserveMarkers: boolean) {
     const { doc } = this.state!;
     if (!doc.neighbourhoods) return;
     const hits = (x: number, y: number, w: number, h: number) =>
@@ -3190,9 +3190,9 @@ export class MapRenderer {
     const put = (x: number, y: number, txt: string, size: number, dk: string) => {
       const w = archivoLabelWidth(txt, size, 400);
       const h = size * 1.25;
-      // Desktop/tablet (review follow-up 2): a centre on the map is not
-      // enough -- drop a name that would be clipped at the map's edge.
-      if (desktopLabels && (x - w / 2 < 0 || x + w / 2 > this.VW || y - h < 0 || y > this.VH)) return;
+      // A centre on the map is not enough -- drop a name that would be
+      // clipped at the map's edge on every profile.
+      if (reserveMarkers && (x - w / 2 < 0 || x + w / 2 > this.VW || y - h < 0 || y > this.VH)) return;
       if (hits(x - w / 2, y - h, w, h)) return;
       placed.push([x - w / 2, y - h, w, h]);
       const t = el("text", {
@@ -3289,11 +3289,10 @@ export class MapRenderer {
    * drawn later, by renderSymbolRefs, once every card's screen anchor is
    * known.
    *
-   * `desktopChrome` (desktop/tablet only, else null): the floating
-   * chrome's boxes. A file tab under the chrome or past the map's edge is
-   * not drawn there (docs/UX.md §5, review follow-up 2); the phone passes
-   * null and keeps every tab exactly as before. */
-  private drawSymbolCardsPass(g: SVGGElement, filesNeedingCards: readonly number[], selHSym: number | null, desktopChrome: ReadonlyArray<[number, number, number, number]> | null = null, desktopMarkers: (() => ReadonlyArray<[number, number, number, number]>) | null = null): void {
+   * `reservedChrome` and `reservedMarkers` supply the shared placement
+   * boxes; when `reserveMarkers` is true, a tab or name under chrome, on a
+   * marker or past the map's edge is dropped (docs/UX.md §5, #195/#201/#203). */
+  private drawSymbolCardsPass(g: SVGGElement, filesNeedingCards: readonly number[], selHSym: number | null, reservedChrome: ReadonlyArray<[number, number, number, number]> | null = null, reservedMarkers: (() => ReadonlyArray<[number, number, number, number]>) | null = null, reserveMarkers = false): void {
     const { doc } = this.state!;
     const needed = new Set(filesNeedingCards.map((i) => D_(doc, i)));
     this.refreshDecodedSymbols(this.state!.districtSymbols, needed);
@@ -3335,23 +3334,16 @@ export class MapRenderer {
     // passes too, each with its own budget.
     const placed: Array<[number, number, number, number]> = [];
     const hits = (b: [number, number, number, number]) => placed.some((r) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3]));
-    // Desktop/tablet only (`desktopChrome` non-null): a label box clipped by
-    // the map's edge or overlapping a chrome rectangle is dropped, never
-    // shrunk or moved (docs/UX.md §5, #195; #201 for symbol names). The
-    // phone passes null, so this is always false there.
-    //
-    // Issue #203: landmark pins and hub rings are fixed markers that outrank
-    // a tab or in-card name, the same order district and hub labels already
-    // use (7d, #195), so a box on one is dropped too. The boxes come from
-    // paint()'s own pin selection, evaluated lazily: it needs every carded
-    // file's bbox, which only exists once the file loop below has run, and
-    // desktopBlocked is first called after that loop.
+    // Chrome, the map edge, landmark pins and hub rings outrank a tab or
+    // in-card name on every profile. The marker boxes come from paint()'s
+    // own pin selection, evaluated lazily after the file loop has collected
+    // every carded-file bbox.
     let markerBoxes: ReadonlyArray<[number, number, number, number]> | null = null;
-    const desktopBlocked = (b: [number, number, number, number]) => {
-      if (!desktopChrome) return false;
+    const placementBlocked = (b: [number, number, number, number]) => {
+      if (!reserveMarkers) return false;
       const overlaps = (r: readonly number[]) => !(b[0] + b[2] < r[0] || b[0] > r[0] + r[2] || b[1] + b[3] < r[1] || b[1] > r[1] + r[3]);
-      if (b[0] < 0 || b[1] < 0 || b[0] + b[2] > this.VW || b[1] + b[3] > this.VH || desktopChrome.some(overlaps)) return true;
-      if (!markerBoxes) markerBoxes = desktopMarkers ? desktopMarkers() : [];
+      if (b[0] < 0 || b[1] < 0 || b[0] + b[2] > this.VW || b[1] + b[3] > this.VH || reservedChrome?.some(overlaps)) return true;
+      if (!markerBoxes) markerBoxes = reservedMarkers ? reservedMarkers() : [];
       return markerBoxes.some(overlaps);
     };
 
@@ -3539,7 +3531,7 @@ export class MapRenderer {
       if (t.widthPx < minWidth) continue;
       const box: [number, number, number, number] = [t.cx - tw / 2 - 5, t.y0 - fs - 6, tw + 10, fs + 8];
       if (hits(box)) continue;
-      if (desktopBlocked(box)) continue;
+      if (placementBlocked(box)) continue;
       placed.push(box);
       // CI review finding (issue #82 C2): an SVG <text> (and its backing
       // <rect> here) is hit-testable by default -- with no pointer-events
@@ -3572,7 +3564,7 @@ export class MapRenderer {
       // existing draw rule (a card needs a label or a drawn child, unless
       // selected or hovered) still decides the card itself -- a bare card
       // is the failure round 3 above fixed, and the D1 gates are untouched.
-      if (desktopBlocked(box)) continue;
+      if (placementBlocked(box)) continue;
       placed.push(box);
       c.node.won = true;
       const text = el("text", {
@@ -3606,7 +3598,7 @@ export class MapRenderer {
       gLabels.appendChild(text);
     }
 
-    // Every tab and symbol label drawn above, for paint()'s desktop label
+    // Every tab and symbol label drawn above, for paint()'s shared label
     // pass (see cardLabelBoxes).
     this.cardLabelBoxes = placed;
 
@@ -3830,6 +3822,7 @@ export class MapRenderer {
     zf0: number,
     hubCandidates: Array<{ hub: { i: number; fi: number; name: string }; cx: number; cy: number; r: number }>,
     desktopLabels: boolean,
+    reserveMarkers: boolean,
     desktopRoomDistricts: Set<number>,
     desktopRoomExceptions: Set<number>,
   ) {
@@ -3839,6 +3832,7 @@ export class MapRenderer {
     const put = (x: number, y: number, txt: string, size: number, op: number, weight?: number, dk?: number, fi?: number) => {
       const w = txt.length * size * 0.62;
       const h = size * 1.25;
+      if (reserveMarkers && (x - w / 2 < 0 || x + w / 2 > this.VW || y - h < 0 || y > this.VH)) return false;
       if (hits(x - w / 2, y - h, w, h)) return false;
       placed.push([x - w / 2, y - h, w, h]);
       const t = el("text", {
@@ -3896,7 +3890,7 @@ export class MapRenderer {
       const tail = [label.longText, label.shortText]
         .find((candidate) => {
           const width = candidate.length * size * 0.62;
-          return x >= width / 2 && x <= this.VW - width / 2 && y >= h && y <= this.VH && !hits(x - width / 2, y - h, width, h);
+          return (!reserveMarkers || (x >= width / 2 && x <= this.VW - width / 2 && y >= h && y <= this.VH)) && !hits(x - width / 2, y - h, width, h);
         });
       if (!tail) continue;
       const w = tail.length * size * 0.62;
@@ -3914,12 +3908,12 @@ export class MapRenderer {
     // paint()'s own comment) and before file labels, sharing the same
     // `placed` list so neither collides with a district name, a pin, or a
     // folder label above it.
-    this.placeHubLabels(g, zf0, hubCandidates, placed, desktopLabels);
+    this.placeHubLabels(g, zf0, hubCandidates, placed, desktopLabels, reserveMarkers);
     // B4 scope item 5: neighbourhood labels come after hub labels (see this
     // method's own doc comment and paint()'s call site for why -- folder and
     // hub labels both predate this PR and keep the priority they already
     // had) and before file labels.
-    if (this.hasFootprints) this.placeNeighbourhoodLabels(g, placed, this.state!.selD, desktopLabels);
+    if (this.hasFootprints) this.placeNeighbourhoodLabels(g, placed, this.state!.selD, reserveMarkers);
     // file labels appear as you zoom in — the budget grows with scale
     if (geo === "p" && zf > BUILD_ZOOM) return; // plots label themselves
     const budget = Math.round(Math.min(compact ? 18 : 60, Math.max(0, (zf - 1.5) * (compact ? 10 : 26))));
@@ -3948,10 +3942,10 @@ export class MapRenderer {
         const p = this.anchor(i);
         const x = this.X(p[0]);
         const y = this.Y(p[1]);
-        if (x < 10 || x > this.VW - 10 || y < 14 || y > this.VH - 6) continue;
-        // Desktop/tablet (review follow-up 2): the anchor test above lets a
-        // long name run off the map's edge; drop it rather than clip it.
-        if (desktopLabels) {
+        if (reserveMarkers && (x < 10 || x > this.VW - 10 || y < 14 || y > this.VH - 6)) continue;
+        // The anchor test above lets a long name run off the map's edge;
+        // drop it rather than clip it on every profile.
+        if (reserveMarkers) {
           const halfWidth = (basename.length * MONO_LABEL_PX * 0.62) / 2;
           if (x - halfWidth < 0 || x + halfWidth > this.VW || y - 9 - MONO_LABEL_PX * 1.25 < 0) continue;
         }
