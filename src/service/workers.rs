@@ -1787,9 +1787,21 @@ impl WorkerHub {
         base_url: String,
         out: tokio::sync::mpsc::UnboundedSender<Outgoing>,
         resume: Vec<ResumeEntry>,
-    ) -> (u64, Vec<WelcomeResume>) {
+    ) -> Option<(u64, Vec<WelcomeResume>)> {
         let mut guard = self.lock();
         let inner = &mut *guard;
+        // A stopping master takes no new channel, checked here and not only
+        // in `connect` (#199 review, nit 3): a dial that passed `connect`'s
+        // check a moment before `shutdown_now` or `detach_all` arrives here
+        // after it. Its `hello.resume` would take back a lease whose runner
+        // has seen it detached and is letting it go, on a channel that never
+        // heard `shutdown now`. `stopping` is set under this lock, so every
+        // channel is either in `conns` when the stop sends to them or turned
+        // away here. The caller closes the channel with no `error`, and the
+        // agent redials as after any lost channel.
+        if inner.stopping {
+            return None;
+        }
         let id = inner.next_conn;
         inner.next_conn += 1;
         // #193: at most `WORKER_MAX_CHANNELS_PER_AGENT` per agent, this one
@@ -1834,7 +1846,7 @@ impl WorkerHub {
         );
         let answers = self.resume(inner, id, agent, resume);
         self.changed.notify_all();
-        (id, answers)
+        Some((id, answers))
     }
 
     /// A channel is gone: each lease it held stays, with no channel, until
@@ -2896,7 +2908,8 @@ async fn connect(
     // A stopping master takes no new channel (`detach_all`): an agent that
     // resumed a lease here would lose it when this process lets it go. A
     // remote agent reads the 503 as a failed dial and tries again, which
-    // finds the next process.
+    // finds the next process. A dial that passes this just before the stop
+    // is turned away by `add_conn`, under the lock the stop takes.
     if hub.is_stopping() {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3176,7 +3189,7 @@ async fn serve_agent(
     // Answered before `welcome` goes out; a verdict `resume` sends again
     // waits in `outgoing`, which the loop below drains only after
     // `welcome`, so the agent reads its answers first.
-    let (conn, answers) = hub.add_conn(
+    let Some((conn, answers)) = hub.add_conn(
         agent,
         worker_id.clone(),
         eligible,
@@ -3185,7 +3198,13 @@ async fn serve_agent(
         origin,
         out,
         resume,
-    );
+    ) else {
+        eprintln!(
+            "worker agent {agent} ({worker_id}): the master is stopping; closing its channel"
+        );
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    };
     eprintln!(
         "worker agent {agent} ({worker_id}) connected: {} MiB usable (worker class {}), {} CPUs, \
          proto {proto}",
