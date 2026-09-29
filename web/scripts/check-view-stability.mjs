@@ -41,6 +41,7 @@ import { chromium } from "playwright";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { runJobPageChecks } from "./check-view-jobs.mjs";
+import { cameraBoxes, zoomInSettled } from "./camera-settle.mjs";
 
 // Required generated files, relative to web/. The dify fixture is the #79
 // rebuilt main map (not the older terrain-off map). public/maps is gitignored;
@@ -3672,11 +3673,11 @@ async function checkDesktopLabelPlacement(browser, base) {
       JSON.stringify(colors));
     let zoomClicks = 0;
     for (const level of levels) {
-      while (zoomClicks < level.clicks) {
-        await page.locator('button[aria-label="Zoom in"]').click();
-        zoomClicks++;
-      }
-      await page.waitForTimeout(350);
+      // Settled per click (#205): a click mid-glide compounds from an
+      // intermediate camera, so back-to-back clicks frame the map differently
+      // from run to run.
+      await zoomInSettled(page, level.clicks - zoomClicks);
+      zoomClicks = level.clicks;
       const result = await labelsState();
       report(result.markerOverlapCount === 0 && result.chromeOverlapCount === 0,
         label + ": labels avoid landmark/hub markers and desktop chrome at " + level.name,
@@ -3992,11 +3993,11 @@ async function checkDesktopLabelRules(browser, base) {
 
     let zoomClicks = 0;
     for (const level of [{ name: "fit", clicks: 0 }, { name: "zoom-in-2", clicks: 2 }, { name: "zoom-in-4", clicks: 4 }]) {
-      while (zoomClicks < level.clicks) {
-        await page.locator('button[aria-label="Zoom in"]').click();
-        zoomClicks++;
-      }
-      await page.waitForTimeout(350);
+      // Settled per click (#205): a click mid-glide compounds from an
+      // intermediate camera, so back-to-back clicks frame the map differently
+      // from run to run.
+      await zoomInSettled(page, level.clicks - zoomClicks);
+      zoomClicks = level.clicks;
       const subtitles = await orphanSubtitles();
       report(!!subtitles && subtitles.orphans.length === 0,
         `${label}: no "N files" subtitle is drawn without its district name at ${level.name}`,
@@ -4039,9 +4040,10 @@ async function checkDesktopLabelRules(browser, base) {
  * frames in screenshots.mjs are only comparable if it does. The camera is not
  * in the DOM once glide() has painted (paint() bakes it into the geometry and
  * drops the <g> transform), so the signature is what the camera puts on
- * screen: every district polygon's box, to a tenth of a pixel (paint() itself
- * rounds path coordinates to a tenth). Several fresh contexts per scheme, so
- * an intermittent difference has more than one chance to show. */
+ * screen: every district polygon's box (camera-settle.mjs's cameraBoxes).
+ * Several fresh contexts per scheme, so an intermittent difference has more
+ * than one chance to show. Each zoom step settles first (zoomInSettled): the
+ * unsettled version of this check failed on CI, see #205. */
 async function checkDesktopZoomCameraAgreement(browser, base) {
   const REPEATS = 3;
   for (const slug of MAPS) {
@@ -4064,15 +4066,9 @@ async function checkDesktopZoomCameraAgreement(browser, base) {
         await page.waitForTimeout(500);
         let zoomClicks = 0;
         for (const step of [2, 4]) {
-          while (zoomClicks < step) {
-            await page.locator('button[aria-label="Zoom in"]').click();
-            zoomClicks++;
-          }
-          await page.waitForTimeout(350);
-          const boxes = await page.evaluate(() => [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')].map((el) => {
-            const r = el.getBoundingClientRect();
-            return [el.getAttribute("data-k"), +r.left.toFixed(1), +r.top.toFixed(1), +r.width.toFixed(1), +r.height.toFixed(1)];
-          }));
+          await zoomInSettled(page, step - zoomClicks);
+          zoomClicks = step;
+          const boxes = await cameraBoxes(page);
           runs.push({ colorScheme, attempt, step, boxes, signature: JSON.stringify(boxes) });
         }
         await context.close();
