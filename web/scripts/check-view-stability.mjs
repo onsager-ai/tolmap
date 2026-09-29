@@ -41,7 +41,7 @@ import { chromium } from "playwright";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { runJobPageChecks } from "./check-view-jobs.mjs";
-import { cameraBoxes, zoomInSettled } from "./camera-settle.mjs";
+import { cameraBoxes, settleCamera, zoomInSettled } from "./camera-settle.mjs";
 
 // Required generated files, relative to web/. The dify fixture is the #79
 // rebuilt main map (not the older terrain-off map). public/maps is gitignored;
@@ -4035,6 +4035,143 @@ async function checkDesktopLabelRules(browser, base) {
   }
 }
 
+/** Issue #212: the phone shells use the same chrome/pin/hub priority and
+ * clipped-label rule as desktop, while keeping their compact label styling. */
+async function checkPhoneLabelRules(browser, base) {
+  const profiles = [
+    { name: "phone", viewport: { width: 390, height: 844 } },
+    { name: "landscape", viewport: { width: 844, height: 390 } },
+  ];
+  const chromeSelector = "[data-search-pill], [data-control-column], [data-phone-sheet], [data-side-sheet]";
+  for (const profile of profiles) {
+    for (const slug of MAPS) {
+      const label = `phone label rules (${slug}) / ${profile.name} ${profile.viewport.width}x${profile.viewport.height}`;
+      console.log(`\n${label}`);
+      const context = await browser.newContext({
+        viewport: profile.viewport,
+        isMobile: true,
+        hasTouch: true,
+        deviceScaleFactor: 2,
+        colorScheme: "light",
+      });
+      const page = await context.newPage();
+      const doc = await (await context.request.get(`${base}/maps/${slug}.json`)).json();
+
+      const labelsState = () => page.evaluate(({ names, chromeSelector }) => {
+        const svg = document.querySelector("svg.map-svg");
+        if (!svg) return null;
+        const map = svg.getBoundingClientRect();
+        const EPS = 0.5;
+        const toScreen = (x, y, width, height) => {
+          const matrix = svg.getScreenCTM();
+          if (!matrix) return null;
+          const point = svg.createSVGPoint();
+          point.x = x; point.y = y;
+          const a = point.matrixTransform(matrix);
+          point.x = x + width; point.y = y + height;
+          const b = point.matrixTransform(matrix);
+          return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), right: Math.max(a.x, b.x), bottom: Math.max(a.y, b.y) };
+        };
+        const reservedBox = (text) => {
+          const width = Number(text.getAttribute("data-label-box"));
+          const height = Number(text.getAttribute("font-size")) * 1.25;
+          const anchor = text.getAttribute("text-anchor") ?? "start";
+          const textX = Number(text.getAttribute("x"));
+          if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+          const x = anchor === "middle" ? textX - width / 2 : anchor === "end" ? textX - width : textX;
+          return toScreen(x, Number(text.getAttribute("y")) - height, width, height);
+        };
+        const mapLabels = [...svg.querySelectorAll("text[data-label-box]:not([data-symbol-card-label])")]
+          .map((text) => ({ text: text.textContent ?? "", box: reservedBox(text) }))
+          .filter(({ box }) => !!box);
+        const tabs = [...svg.querySelectorAll("text[data-symbol-card-label]")].map((text) => {
+          const rect = text.previousElementSibling;
+          const r = (rect && rect.tagName.toLowerCase() === "rect" ? rect : text).getBoundingClientRect();
+          return { text: text.textContent ?? "", box: { x: r.left, y: r.top, right: r.right, bottom: r.bottom } };
+        });
+        const symbolLabels = [...svg.querySelectorAll("text[data-label-for]")].map((text) => {
+          const fs = Number(text.getAttribute("font-size"));
+          const width = (text.textContent ?? "").length * fs * 0.62;
+          return { text: text.textContent ?? "", box: toScreen(Number(text.getAttribute("x")) - width / 2 - 2, Number(text.getAttribute("y")) - fs * 0.85, width + 4, fs * 1.3) };
+        }).filter(({ box }) => !!box);
+        const allLabels = [...mapLabels, ...tabs, ...symbolLabels];
+        const overlaps = (a, b) => a.x < b.right - EPS && a.right > b.x + EPS && a.y < b.bottom - EPS && a.bottom > b.y + EPS;
+        const markers = [
+          ...[...svg.querySelectorAll("g[data-landmark-pin]")].map((el) => ({ kind: "pin", id: el.getAttribute("data-landmark-pin"), el })),
+          ...[...svg.querySelectorAll("circle[data-hub-ring]")].map((el) => ({ kind: "hub", id: el.getAttribute("data-hub-ring"), el })),
+        ].map(({ kind, id, el }) => {
+          const r = el.getBoundingClientRect();
+          return { kind, id, x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+        });
+        const markerOverlaps = [];
+        for (const labelBox of allLabels) for (const marker of markers) {
+          if (overlaps(labelBox.box, marker)) markerOverlaps.push(`${labelBox.text}@${marker.kind}:${marker.id}`);
+        }
+        const chrome = [...document.querySelectorAll(chromeSelector)]
+          .filter((el) => {
+            const style = getComputedStyle(el);
+            return style.display !== "none" && style.visibility !== "hidden" && el.getAttribute("aria-hidden") !== "true";
+          })
+          .map((el) => {
+            const r = el.getBoundingClientRect();
+            return { x: r.left, y: r.top, right: r.right, bottom: r.bottom };
+          });
+        const chromeOverlaps = [];
+        for (const labelBox of allLabels) for (const chromeBox of chrome) {
+          if (overlaps(labelBox.box, chromeBox)) chromeOverlaps.push(labelBox.text);
+        }
+        const clipped = allLabels.filter(({ box }) =>
+          box.x < map.left - EPS || box.right > map.right + EPS || box.y < map.top - EPS || box.bottom > map.bottom + EPS)
+          .map(({ text }) => text);
+        const districtNames = [...svg.querySelectorAll('text[data-k^="d:"]')].filter((text) => {
+          const id = text.getAttribute("data-k").slice(2);
+          return text.textContent === names[id];
+        });
+        return {
+          markerCount: markers.length,
+          markerOverlaps: markerOverlaps.slice(0, 8),
+          markerOverlapCount: markerOverlaps.length,
+          chromeCount: chrome.length,
+          chromeOverlaps: chromeOverlaps.slice(0, 8),
+          chromeOverlapCount: chromeOverlaps.length,
+          clipped: clipped.slice(0, 8),
+          clippedCount: clipped.length,
+          districtLabelCount: districtNames.length,
+          mapLabelCount: mapLabels.length,
+        };
+      }, { names: doc.names, chromeSelector });
+
+      await page.goto(`${base}/${slug}`, { waitUntil: "domcontentloaded" });
+      await page.locator("svg.map-svg text[data-label-box]").first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(300);
+      const detent = await page.locator("[data-phone-sheet]").getAttribute("data-detent");
+      report(detent === "peek", `${label}: phone sheet starts at its default Peek detent`, String(detent));
+
+      await page.locator('button[aria-label="Fit map"]').click();
+      await settleCamera(page);
+      const fit = await labelsState();
+      report(!!fit && fit.districtLabelCount > 0,
+        `${label}: at least one district label is drawn at fit`,
+        JSON.stringify(fit && { districtLabelCount: fit.districtLabelCount }));
+
+      for (const level of [{ name: "fit", clicks: 0 }, { name: "zoom-in-2", clicks: 2 }]) {
+        if (level.clicks) await zoomInSettled(page, level.clicks);
+        const result = await labelsState();
+        report(!!result && result.markerOverlapCount === 0,
+          `${label}: district, hub and neighbourhood labels avoid pins and hub rings at ${level.name}`,
+          JSON.stringify(result && { markerCount: result.markerCount, overlaps: result.markerOverlaps, overlapCount: result.markerOverlapCount }));
+        report(!!result && result.chromeOverlapCount === 0,
+          `${label}: labels avoid phone chrome at ${level.name}`,
+          JSON.stringify(result && { chromeCount: result.chromeCount, overlaps: result.chromeOverlaps, overlapCount: result.chromeOverlapCount }));
+        report(!!result && result.clippedCount === 0,
+          `${label}: no map or symbol-card label is clipped by the map edge at ${level.name}`,
+          JSON.stringify(result && { clipped: result.clipped, clippedCount: result.clippedCount }));
+      }
+      await context.close();
+    }
+  }
+}
+
 /** Issue #205: the same map, driven by the same steps, must end in the same
  * camera whatever the colour scheme -- the light and dark label-placement
  * frames in screenshots.mjs are only comparable if it does. The camera is not
@@ -7160,6 +7297,7 @@ async function main() {
     for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
     await checkDesktopLabelPlacement(browser, args.base);
     await checkDesktopLabelRules(browser, args.base);
+    await checkPhoneLabelRules(browser, args.base);
     await checkDesktopZoomCameraAgreement(browser, args.base);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
