@@ -150,6 +150,22 @@ fn insert_by_order(queue: &mut VecDeque<PendingJob>, job: PendingJob) {
     queue.insert(position, job);
 }
 
+/// Takes the head of `class`'s queue for a slot (#209). Its queue position
+/// and start estimate are cleared here, in the locked section that pops it
+/// and renumbers the jobs behind it (`simulate_queue_etas`), not when its
+/// `worker_loop` next runs: until then it still showed position 1 beside
+/// the new head, also at 1, and two reads in between saw both.
+fn take_head(registry: &mut RegistryInner, class: usize) -> PendingJob {
+    let job = registry.queues[class]
+        .pop_front()
+        .expect("next_for names a non-empty queue");
+    job.tx.send_modify(|snapshot| {
+        snapshot.queue_position = None;
+        snapshot.eta_start_s = None;
+    });
+    job
+}
+
 /// One worker slot: a `worker_loop` task while it holds a job, idle
 /// otherwise. Its index in `RegistryInner::slots` is its stable worker id.
 struct Slot {
@@ -1273,9 +1289,7 @@ fn dispatch_idle(state: &Arc<AppState>, registry: &mut RegistryInner) {
         let Some(next_class) = registry.next_queue_for(slot, live.as_deref()) else {
             continue;
         };
-        let job = registry.queues[next_class]
-            .pop_front()
-            .expect("next_for names a non-empty queue");
+        let job = take_head(registry, next_class);
         registry.slots[slot].running = Some((job.id, job.tx.clone()));
         tokio::spawn(worker_loop(state.clone(), slot, job));
     }
@@ -1493,6 +1507,9 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
             class: job_class,
             persisted,
         } = job;
+        // A job taken off a queue has no position already (`take_head`);
+        // one an admission started on an idle slot never queued has its
+        // `eta_start_s` of 0 cleared here.
         tx.send_modify(|snapshot| {
             snapshot.queue_position = None;
             snapshot.eta_start_s = None;
@@ -1650,9 +1667,7 @@ async fn worker_loop(state: Arc<AppState>, slot: usize, first: PendingJob) {
         registry.slots[slot].running = None;
         let live = registry.live_by_class();
         if let Some(next_class) = registry.next_queue_for(slot, live.as_deref()) {
-            let next = registry.queues[next_class]
-                .pop_front()
-                .expect("next_for names a non-empty queue");
+            let next = take_head(&mut registry, next_class);
             registry.slots[slot].running = Some((next.id, next.tx.clone()));
             simulate_queue_etas(&registry);
             job = next;
