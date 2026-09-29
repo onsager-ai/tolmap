@@ -101,6 +101,7 @@ declare global {
     /** Temporary check:view-only snapshot for issue #213 review diagnosis. */
     __TOLMAP_LABEL_RESERVATION_DEBUG__?: boolean;
     __TOLMAP_LABEL_RESERVATION_SNAPSHOT__?: unknown;
+    __TOLMAP_HIT_TEST_TRACE__?: unknown[];
   }
 }
 
@@ -2001,6 +2002,7 @@ export class MapRenderer {
         hubs: (reservedHubCandidates ?? []).map(({ cx, cy, r }) => [cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]),
         symbolCardLabels: this.cardLabelBoxes,
         cardedFiles: [...this.cardedFileBBox.entries()].map(([i, [x0, y0, x1, y1]]) => ({ i, box: [x0, y0, x1 - x0, y1 - y0] })),
+        folderCandidates: [],
       };
     }
     this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed, desktopLabels, reserveMarkers);
@@ -3890,6 +3892,25 @@ export class MapRenderer {
     };
     const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const zf = this.k / this.fitScale();
+    type ReservationBox = [number, number, number, number];
+    type ReservationDebug = {
+      chrome?: ReservationBox[];
+      pins?: ReservationBox[];
+      hubs?: ReservationBox[];
+      symbolCardLabels?: ReservationBox[];
+      cardedFiles?: Array<{ box: ReservationBox }>;
+      folderCandidates?: unknown[];
+    };
+    const debug = window.__TOLMAP_LABEL_RESERVATION_DEBUG__
+      ? window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ as ReservationDebug | undefined
+      : undefined;
+    const cardedFileBoxes = debug?.cardedFiles?.map(({ box }) => box) ?? [];
+    const prefixCount = (debug?.chrome?.length ?? 0) + (debug?.pins?.length ?? 0) +
+      (debug?.hubs?.length ?? 0) + (debug?.symbolCardLabels?.length ?? 0);
+    const districtLabelCount = Math.max(0, placed.length - prefixCount - cardedFileBoxes.length);
+    const districtLabelBoxes = placed.slice(prefixCount, prefixCount + districtLabelCount);
+    const cardedFileEnd = prefixCount + districtLabelCount + cardedFileBoxes.length;
+    if (debug) debug.folderCandidates = [];
     // A folder earns a label only after its district spans one quarter of
     // the viewport's shorter side. World side, text and medians were all
     // computed once for the document; this pass only projects candidates.
@@ -3900,13 +3921,47 @@ export class MapRenderer {
       const x = this.X(label.x), y = this.Y(label.y);
       const size = MONO_LABEL_PX; // was 11 on phones (see MONO_LABEL_PX)
       const h = size * 1.25;
+      const variants: Array<{
+        text: string;
+        box: ReservationBox;
+        withinView: boolean;
+        blockerCount: number;
+        blockerCounts: Record<string, number>;
+        blockers: Array<{ source: string; index: number; box: ReservationBox }>;
+      }> = [];
       // Try two path segments for context, then the final segment when a
       // nearby district name leaves too little horizontal room.
       const tail = [label.longText, label.shortText]
         .find((candidate) => {
           const width = candidate.length * size * 0.62;
-          return (!reserveMarkers || (x >= width / 2 && x <= this.VW - width / 2 && y >= h && y <= this.VH)) && !hits(x - width / 2, y - h, width, h);
+          const box: ReservationBox = [x - width / 2, y - h, width, h];
+          const withinView = !reserveMarkers || (x >= width / 2 && x <= this.VW - width / 2 && y >= h && y <= this.VH);
+          const overlaps = (other: ReservationBox) => !(box[0] + box[2] < other[0] || box[0] > other[0] + other[2] ||
+            box[1] + box[3] < other[1] || box[1] > other[1] + other[3]);
+          if (debug) {
+            const groups = [
+              { source: "chrome", boxes: debug.chrome ?? [] },
+              { source: "pin", boxes: debug.pins ?? [] },
+              { source: "hub-ring", boxes: debug.hubs ?? [] },
+              { source: "symbol-card-label", boxes: debug.symbolCardLabels ?? [] },
+              { source: "district-label", boxes: districtLabelBoxes },
+              { source: "carded-file", boxes: cardedFileBoxes },
+              { source: "earlier-folder-label", boxes: placed.slice(cardedFileEnd) },
+            ];
+            const blockers = groups.flatMap(({ source, boxes }) => boxes.flatMap((other, index) =>
+              overlaps(other) ? [{ source, index, box: other }] : []));
+            variants.push({
+              text: candidate,
+              box,
+              withinView,
+              blockerCount: blockers.length,
+              blockerCounts: Object.fromEntries(groups.map(({ source, boxes }) => [source, boxes.filter(overlaps).length])),
+              blockers: blockers.slice(0, 5),
+            });
+          }
+          return withinView && !hits(box[0], box[1], box[2], box[3]);
         });
+      if (debug) debug.folderCandidates?.push({ path: label.path, district: label.district, anchor: [x, y], variants });
       if (!tail) continue;
       const w = tail.length * size * 0.62;
       placed.push([x - w / 2, y - h, w, h]);
@@ -5047,6 +5102,11 @@ export class MapRenderer {
       const wx = (sx - this.tx) / this.k;
       const wy = (sy - this.ty) / this.k;
       const i = hitTestFootprint(this.state.doc, this.footprintIndex, wx, wy);
+      if (window.__TOLMAP_LABEL_RESERVATION_DEBUG__) {
+        const trace = window.__TOLMAP_HIT_TEST_TRACE__ ?? [];
+        trace.push({ target: { tag: t?.tagName?.toLowerCase(), key: kk }, client: [clientX, clientY], svg: [sx, sy], world: [wx, wy], camera: [this.k, this.tx, this.ty], file: i });
+        window.__TOLMAP_HIT_TEST_TRACE__ = trace;
+      }
       if (i != null) return "f:" + i;
     }
     return kk;

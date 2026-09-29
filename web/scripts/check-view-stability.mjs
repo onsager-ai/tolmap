@@ -3429,6 +3429,10 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
   if (second.coveredBy) console.log(`  info  ${label}: after focusing, the first point is covered by ${second.coveredBy}; second tap at (${second.x.toFixed(1)}, ${second.y.toFixed(1)})`);
   await tap(page, profile, second.x, second.y);
   const selectedFile = new URL(page.url()).searchParams.get("file");
+  if (profile.isMobile) {
+    const resolutionTrace = await page.evaluate(() => window.__TOLMAP_HIT_TEST_TRACE__ ?? []);
+    console.log(`  info  ${label}: TEMP phone resolver trace ${JSON.stringify({ selectedFile, url: page.url(), resolutionTrace })}`);
+  }
   report(
     !!selectedFile,
     `${label}: a second tap, now inside its own district, selects a file via JS hit-testing`,
@@ -5849,9 +5853,19 @@ async function checkPhoneTapSelection(browser, base, profile) {
     };
     return {
       url: location.href,
-      districtLabels: [...(svg?.querySelectorAll('text[data-k^="d:"]') ?? [])].map((el) => ({
-        key: el.getAttribute("data-k"), text: el.textContent, rect: rect(el),
-      })),
+      districtLabels: [...(svg?.querySelectorAll('text[data-k^="d:"]') ?? [])].map((el) => {
+        const r = el.getBoundingClientRect();
+        const target = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        const hit = target?.closest?.("[data-k]");
+        return {
+          key: el.getAttribute("data-k"),
+          text: el.textContent,
+          class: el.getAttribute("class"),
+          pointerEvents: getComputedStyle(el).pointerEvents,
+          rect: rect(el),
+          centerTarget: target && { tag: target.tagName.toLowerCase(), key: hit?.getAttribute("data-k"), text: target.textContent?.trim().slice(0, 80) ?? "" },
+        };
+      }),
       mapRect: rect(svg),
       sheetRect: rect(sheet),
       reservations: window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ ?? null,
