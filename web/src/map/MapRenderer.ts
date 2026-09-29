@@ -98,6 +98,9 @@ declare global {
      * before the app boots. Gates the performance.mark/measure pair in
      * draw() below -- see its comment for why that can't be unconditional. */
     __TOLMAP_PERF__?: boolean;
+    /** Temporary check:view-only snapshot for issue #213 review diagnosis. */
+    __TOLMAP_LABEL_RESERVATION_DEBUG__?: boolean;
+    __TOLMAP_LABEL_RESERVATION_SNAPSHOT__?: unknown;
   }
 }
 
@@ -1987,6 +1990,18 @@ export class MapRenderer {
       for (const { cx, cy } of pins) placed.push([cx - 10, cy - 32, 20, 32]);
       for (const { cx, cy, r } of reservedHubCandidates ?? []) placed.push([cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]);
       placed.push(...this.cardLabelBoxes);
+    }
+    if (window.__TOLMAP_LABEL_RESERVATION_DEBUG__) {
+      window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ = {
+        profile,
+        camera: [this.k, this.tx, this.ty],
+        view: [this.VW, this.VH],
+        chrome: reservedChromeBoxes,
+        pins: pins.map(({ cx, cy }) => [cx - 10, cy - 32, 20, 32]),
+        hubs: (reservedHubCandidates ?? []).map(({ cx, cy, r }) => [cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]),
+        symbolCardLabels: this.cardLabelBoxes,
+        cardedFiles: [...this.cardedFileBBox.entries()].map(([i, [x0, y0, x1, y1]]) => ({ i, box: [x0, y0, x1 - x0, y1 - y0] })),
+      };
     }
     this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed, desktopLabels, reserveMarkers);
     // CI review finding (issue #82 C2): seed the SAME shared list with every

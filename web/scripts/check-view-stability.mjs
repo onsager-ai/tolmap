@@ -2089,6 +2089,9 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
     deviceScaleFactor: profile.deviceScaleFactor ?? 1 };
   const context = await browser.newContext(options);
   const page = await context.newPage();
+  if (profile.isMobile) {
+    await context.addInitScript(() => { window.__TOLMAP_LABEL_RESERVATION_DEBUG__ = true; });
+  }
   const slug = "langgenius/dify";
   await page.goto(`${base}/${slug}`);
   await page.waitForSelector("svg.map-svg path.hit");
@@ -2231,7 +2234,8 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
       });
       return { mapScreenRect: [map.left, map.top, map.right, map.bottom], viewBox: svg.getAttribute("viewBox"), boxes };
     });
-    console.log(`  info  ${label}: TEMP phone chrome reservations ${JSON.stringify(reservations)}`);
+    const rendererReservations = await page.evaluate(() => window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ ?? null);
+    console.log(`  info  ${label}: TEMP phone reservations ${JSON.stringify({ chrome: reservations, renderer: rendererReservations })}`);
   }
   // A pin occupies the workflow median in #79's phone map at the district
   // jump. The label correctly yields there and appears one zoom step later.
@@ -3304,6 +3308,9 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     hasTouch: profile.hasTouch,
     deviceScaleFactor: profile.deviceScaleFactor ?? 1,
   });
+  if (profile.isMobile) {
+    await context.addInitScript(() => { window.__TOLMAP_LABEL_RESERVATION_DEBUG__ = true; });
+  }
   const page = await context.newPage();
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
@@ -3385,6 +3392,40 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     }
     return { x, y, coveredBy: here.key, noBarePoint: true };
   }, point);
+  if (profile.isMobile) {
+    const domEvidence = await page.evaluate(({ x, y, district }) => {
+      const svg = document.querySelector("svg.map-svg");
+      const describe = (el) => el && ({
+        tag: el.tagName.toLowerCase(),
+        class: el.getAttribute("class"),
+        dataK: el.getAttribute("data-k"),
+        folderLabel: el.getAttribute("data-folder-label"),
+        fileLabel: el.getAttribute("data-file-label"),
+        neighbourhood: el.getAttribute("data-neighbourhood-label"),
+        text: el.textContent?.trim().slice(0, 80) ?? "",
+        pointerEvents: getComputedStyle(el).pointerEvents,
+      });
+      const fileFills = [];
+      if (svg) for (const batch of svg.querySelectorAll("path[data-footprint-batch]")) {
+        const matrix = batch.getScreenCTM()?.inverse();
+        if (!matrix) continue;
+        const p = svg.createSVGPoint();
+        p.x = x; p.y = y;
+        if (batch.isPointInFill(p.matrixTransform(matrix))) fileFills.push({
+          batch: batch.getAttribute("data-footprint-batch"),
+          district: batch.getAttribute("data-footprint-district"),
+        });
+      }
+      return {
+        tapped: { x, y, district },
+        target: describe(document.elementFromPoint(x, y)),
+        stack: document.elementsFromPoint(x, y).slice(0, 8).map(describe),
+        fileFills,
+      };
+    }, { x: second.x, y: second.y, district: point.district });
+    const rendererReservations = await page.evaluate(() => window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ ?? null);
+    console.log(`  info  ${label}: TEMP phone second-tap DOM ${JSON.stringify({ domEvidence, rendererReservations })}`);
+  }
   if (second.coveredBy) console.log(`  info  ${label}: after focusing, the first point is covered by ${second.coveredBy}; second tap at (${second.x.toFixed(1)}, ${second.y.toFixed(1)})`);
   await tap(page, profile, second.x, second.y);
   const selectedFile = new URL(page.url()).searchParams.get("file");
@@ -5710,6 +5751,7 @@ async function checkPhoneTapSelection(browser, base, profile) {
   const label = `phone map-tap selection above the sheet (dify) / ${profile.name}`;
   console.log(`\n${label}`);
   const { context, page } = await phonePage(browser, profile);
+  await context.addInitScript(() => { window.__TOLMAP_LABEL_RESERVATION_DEBUG__ = true; });
   const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
@@ -5798,6 +5840,24 @@ async function checkPhoneTapSelection(browser, base, profile) {
   // zoomed out to find water, so the district is picked again.)
   const again = await pickDistrictPoint(page, true);
   if (again) await tap(page, profile, again.x, again.y);
+  const closeState = await page.evaluate(() => {
+    const svg = document.querySelector("svg.map-svg");
+    const sheet = document.querySelector("[data-phone-sheet]");
+    const rect = (el) => {
+      const r = el?.getBoundingClientRect();
+      return r && [r.left, r.top, r.right, r.bottom];
+    };
+    return {
+      url: location.href,
+      districtLabels: [...(svg?.querySelectorAll('text[data-k^="d:"]') ?? [])].map((el) => ({
+        key: el.getAttribute("data-k"), text: el.textContent, rect: rect(el),
+      })),
+      mapRect: rect(svg),
+      sheetRect: rect(sheet),
+      reservations: window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ ?? null,
+    };
+  });
+  console.log(`  info  ${label}: TEMP close-button selection state ${JSON.stringify({ again, closeState })}`);
   const close = page.locator('[data-phone-sheet] button[aria-label="Clear selection"]');
   if (await close.count()) {
     const box = await close.boundingBox();
