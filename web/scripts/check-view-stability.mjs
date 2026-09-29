@@ -4037,8 +4037,16 @@ async function checkDesktopLabelRules(browser, base) {
   }
 }
 
-// Minimum share of a map's mainland districts named at fit, per profile.
-const PHONE_MAINLAND_NAME_SHARE = { phone: 0.25, landscape: 0.35 };
+// Named mainland districts at fit, per map and profile: the counts CI measured
+// on this fixture set once phone names could take a nearby anchor (run
+// 36559780329; main named 8 and 11 of dify's 19, several drawn over hub rings
+// and each other). Renders are deterministic, so a drop is a regression,
+// not noise. Widening a district-name search raises these; lowering one needs
+// a reason.
+const PHONE_NAMED_MAINLAND_FLOOR = {
+  "django/django": { phone: 6, landscape: 9 },
+  "langgenius/dify": { phone: 5, landscape: 9 },
+};
 
 /** Issue #212: the phone shells use the same chrome/pin/hub priority and
  * clipped-label rule as desktop, while keeping their compact label styling. */
@@ -4161,9 +4169,8 @@ async function checkPhoneLabelRules(browser, base) {
       await settleCamera(page);
       const fit = await labelsState();
       // Round 3: "at least one" let the phone overview name 2 of 12 mainland
-      // districts and still pass. The floor is a share of the mainland
-      // districts, so it scales with the map and is tuned per profile from CI.
-      const floor = Math.ceil(mainlandIds.length * PHONE_MAINLAND_NAME_SHARE[profile.name]);
+      // districts and still pass.
+      const floor = PHONE_NAMED_MAINLAND_FLOOR[slug][profile.name];
       report(!!fit && fit.namedMainland >= floor,
         `${label}: ${fit?.namedMainland} of ${mainlandIds.length} mainland districts named at fit (floor ${floor})`,
         JSON.stringify(fit && { namedMainland: fit.namedMainland, mainland: mainlandIds.length, floor }));
