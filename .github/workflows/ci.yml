@@ -146,7 +146,7 @@ jobs:
         run: cargo build --locked --release --bin tolmap
 
       - name: cargo test
-        run: cargo test --locked --release --no-fail-fast  # TEMPORARY (#199)
+        run: cargo test --locked --release
 
       - name: Generated TypeScript bindings
         run: cargo run --release --bin generate-types -- --check

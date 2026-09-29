@@ -505,9 +505,6 @@ fn a_master_restarted_mid_job_finishes_every_job(graceful: bool) {
     kill_if_frozen(child);
 
     let master = Master::start(root, "loopback:1");
-    // TEMPORARY (#199): a stalled test thread, long enough for the
-    // restored head of the queue to finish before the positions are read.
-    std::thread::sleep(Duration::from_secs(3));
     // A job that ended before the restart answers from the store.
     assert_eq!(master.get(&finished)["status"], "done");
     // The frozen job's persisted snapshot is served, not a 404.
