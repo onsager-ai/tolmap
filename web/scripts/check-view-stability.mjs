@@ -2183,16 +2183,20 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   await page.waitForSelector('button[aria-label="Zoom to district"]');
   await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
   await page.waitForTimeout(850);
-  // A pin occupies the workflow median in #79's phone map at the district
-  // jump. The label correctly yields there and appears one zoom step later.
+  // A pin occupies the workflow median in #79's phone map. Desktop can place
+  // another label spot, but the compact phone label keeps its median and now
+  // yields if that spot remains under a marker or phone chrome after zooming.
   if (!(await page.locator('[data-folder-label="web/app/components/workflow"]').count())) {
     await page.locator('button[aria-label="Zoom in"]').click();
     await page.waitForTimeout(850);
   }
   const labels = await page.locator("[data-folder-label]").evaluateAll((els) =>
     els.map((el) => [el.getAttribute("data-folder-district"), el.getAttribute("data-folder-label")]));
-  report(labels.some(([district, path]) => district === String(workflowDistrict) && path === "web/app/components/workflow"),
-    `${label}: workflow folder label appears after zooming in`, JSON.stringify(labels));
+  const hasWorkflowLabel = labels.some(([district, path]) => district === String(workflowDistrict) && path === "web/app/components/workflow");
+  report(profile.isMobile ? !hasWorkflowLabel : hasWorkflowLabel,
+    profile.isMobile
+      ? `${label}: workflow folder label yields to the phone marker/chrome reservation when its median remains blocked`
+      : `${label}: workflow folder label appears after zooming in`, JSON.stringify(labels));
   const counts = new Map();
   for (const [district] of labels) counts.set(district, (counts.get(district) ?? 0) + 1);
   report([...counts.values()].every((count) => count <= 4), `${label}: at most four labels per district`);
@@ -2215,8 +2219,11 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
 
   for (const layer of ["c", "x", "p"]) {
     await setLayer(page, profile, layer);
-    report((await page.locator('[data-folder-label="web/app/components/workflow"]').count()) > 0,
-      `${label}: workflow folder label remains on ${layer} layer`);
+    const layerLabelCount = await page.locator('[data-folder-label="web/app/components/workflow"]').count();
+    report(profile.isMobile ? layerLabelCount === 0 : layerLabelCount > 0,
+      profile.isMobile
+        ? `${label}: blocked workflow folder label stays dropped on ${layer} layer`
+        : `${label}: workflow folder label remains on ${layer} layer`);
     if (layer === "p" && !profile.isMobile) {
       const legend = await page.locator("[data-package-legend]").boundingBox();
       report(!!legend && Math.abs(legend.x - 392) <= 1 && Math.abs(legend.y + legend.height - (profile.viewport.height - 64)) <= 1,
@@ -3274,15 +3281,23 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
   }
 
   const point = await page.evaluate(() => {
-    const paths = [...document.querySelectorAll('svg.map-svg path.hit[data-k^="d:"]')];
-    for (const path of paths) {
-      const rect = path.getBoundingClientRect();
-      for (let yi = 1; yi < 10; yi++) {
-        for (let xi = 1; xi < 10; xi++) {
-          const x = rect.left + (rect.width * xi) / 10;
-          const y = rect.top + (rect.height * yi) / 10;
-          const key = document.elementFromPoint(x, y)?.closest?.("[data-k]")?.getAttribute("data-k");
-          if (key === path.getAttribute("data-k")) return { x, y, district: path.getAttribute("data-k").slice(2) };
+    const svg = document.querySelector("svg.map-svg");
+    for (const batch of svg.querySelectorAll("path[data-footprint-batch]")) {
+      const rect = batch.getBoundingClientRect();
+      const matrix = batch.getScreenCTM();
+      if (!matrix || rect.width <= 0 || rect.height <= 0) continue;
+      const inverse = matrix.inverse();
+      for (let yi = 1; yi < 16; yi++) for (let xi = 1; xi < 16; xi++) {
+        const x = rect.left + (rect.width * xi) / 16;
+        const y = rect.top + (rect.height * yi) / 16;
+        const screenPoint = svg.createSVGPoint();
+        screenPoint.x = x;
+        screenPoint.y = y;
+        if (!batch.isPointInFill(screenPoint.matrixTransform(inverse))) continue;
+        const hit = document.elementFromPoint(x, y)?.closest?.("[data-k]");
+        const key = hit?.getAttribute("data-k");
+        if (hit?.tagName.toLowerCase() === "path" && key?.startsWith("d:")) {
+          return { x, y, district: key.slice(2) };
         }
       }
     }
@@ -3308,34 +3323,36 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     `${label}: the first tap resolves via JS hit-testing and selects that district (two-step tap, #82 C2)`,
     `expected d=${point.district} url=${page.url()}`,
   );
-  // Focusing the district draws things over its own footprints that the fit
-  // view didn't have -- its neighbourhood labels and streets (both tappable,
-  // both deliberately NOT selections). If one now covers the original point,
-  // the second tap would be a label/street tap, not the bare-footprint tap
-  // this check is about; re-pick a point that still resolves to the bare
-  // district polygon, and say what covered the first one.
-  const second = await page.evaluate(({ x, y, district }) => {
+  // Focusing the district can draw labels, streets and individual shapes over
+  // the original point. Re-pick inside a visible batched file fill where the
+  // browser still resolves to the bare district path, so this exercises the
+  // JS footprint fallback with a point that is known to lie inside a file.
+  const second = await page.evaluate(({ district }) => {
+    const svg = document.querySelector("svg.map-svg");
     const key = `d:${district}`;
-    const at = (px, py) => {
-      const hit = document.elementFromPoint(px, py)?.closest?.("[data-k]");
-      return { key: hit?.getAttribute("data-k") ?? null, tag: hit?.tagName?.toLowerCase() ?? null };
-    };
-    const here = at(x, y);
-    if (here.key === key && here.tag === "path") return { x, y, coveredBy: null };
-    for (const path of document.querySelectorAll(`svg.map-svg path.hit[data-k="${key}"]`)) {
-      const rect = path.getBoundingClientRect();
-      for (let yi = 1; yi < 10; yi++) {
-        for (let xi = 1; xi < 10; xi++) {
-          const px = rect.left + (rect.width * xi) / 10;
-          const py = rect.top + (rect.height * yi) / 10;
-          const hit = at(px, py);
-          if (hit.key === key && hit.tag === "path") return { x: px, y: py, coveredBy: here.key };
-        }
+    for (const batch of svg.querySelectorAll(`path[data-footprint-batch][data-footprint-district="${district}"]`)) {
+      const rect = batch.getBoundingClientRect();
+      const matrix = batch.getScreenCTM();
+      if (!matrix || rect.width <= 0 || rect.height <= 0) continue;
+      const inverse = matrix.inverse();
+      for (let yi = 1; yi < 16; yi++) for (let xi = 1; xi < 16; xi++) {
+        const px = rect.left + (rect.width * xi) / 16;
+        const py = rect.top + (rect.height * yi) / 16;
+        const screenPoint = svg.createSVGPoint();
+        screenPoint.x = px;
+        screenPoint.y = py;
+        if (!batch.isPointInFill(screenPoint.matrixTransform(inverse))) continue;
+        const hit = document.elementFromPoint(px, py)?.closest?.("[data-k]");
+        if (hit?.tagName.toLowerCase() === "path" && hit.getAttribute("data-k") === key) return { x: px, y: py };
       }
     }
-    return { x, y, coveredBy: here.key, noBarePoint: true };
+    return null;
   }, point);
-  if (second.coveredBy) console.log(`  info  ${label}: after focusing, the first point is covered by ${second.coveredBy}; second tap at (${second.x.toFixed(1)}, ${second.y.toFixed(1)})`);
+  if (!second) {
+    report(false, `${label}: selected district still has a bare batched-footprint point`, `district=${point.district}`);
+    await context.close();
+    return;
+  }
   await tap(page, profile, second.x, second.y);
   const selectedFile = new URL(page.url()).searchParams.get("file");
   report(
@@ -5745,7 +5762,10 @@ async function checkPhoneTapSelection(browser, base, profile) {
   }
 
   // The close button clears too (§3.5). (The empty-tap step may have
-  // zoomed out to find water, so the district is picked again.)
+  // zoomed out to find water; return to fit so the phone's 7d reservation
+  // rule still leaves the default district label available to tap.)
+  await page.locator('button[aria-label="Fit map"]').click();
+  await settleCamera(page);
   const again = await pickDistrictPoint(page, true);
   if (again) await tap(page, profile, again.x, again.y);
   const close = page.locator('[data-phone-sheet] button[aria-label="Clear selection"]');
