@@ -410,7 +410,11 @@ fn an_agent_killed_mid_job_loses_its_lease_and_the_job_reruns_byte_identically()
 ///   passes through: `b` second while `a` is first or has started, `b`
 ///   first only once `a` has started, `b` started only once `a` is done.
 ///
-/// So any order other than admission order fails, whenever it is read.
+/// So these reads fail a queue restored out of admission order unless the
+/// reading thread stalls: a stall longer than `head`'s remaining time plus
+/// one job's run can land every read in a state a first-in-first-out queue
+/// also passes through (#209). `assert_ran_in_order` checks the order the
+/// jobs really ran in once both are done, which no stall can hide.
 fn assert_restored_queue(head: &serde_json::Value, a: &serde_json::Value, b: &serde_json::Value) {
     let position = |job: &serde_json::Value| job["queue_position"].as_u64();
     let status = |job: &serde_json::Value| job["status"].as_str().unwrap_or("").to_owned();
@@ -439,6 +443,30 @@ fn assert_restored_queue(head: &serde_json::Value, a: &serde_json::Value, b: &se
         (None, _) => assert_eq!(status(a), "done", "{a} before {b}"),
         other => panic!("not a first-in-first-out queue: {other:?}\n{a}\n{b}"),
     }
+}
+
+/// `a` ran before `b`, from their snapshots once both are done: with one
+/// slot, `b` starts only after `a` has finished. Read after the fact, so no
+/// stall between reads can pass a swapped queue, as one can in
+/// `assert_restored_queue` (#209). The timestamps are whole seconds
+/// (`time::now_rfc3339`), so each comparison admits equality, and a swap
+/// whose two runs both fall within one second still passes.
+fn assert_ran_in_order(a: &serde_json::Value, b: &serde_json::Value) {
+    // One fixed-width UTC format, so the strings order as the times do.
+    let at = |job: &serde_json::Value, key: &str| {
+        job[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("no {key}: {job}"))
+            .to_owned()
+    };
+    assert!(
+        at(a, "started_at") <= at(b, "started_at"),
+        "{b} started before {a}"
+    );
+    assert!(
+        at(a, "finished_at") <= at(b, "started_at"),
+        "{b} started before {a} finished"
+    );
 }
 
 /// §6 "master restarts mid-job" and "master graceful stop": with one agent,
@@ -514,9 +542,8 @@ fn a_master_restarted_mid_job_finishes_every_job(graceful: bool) {
     let (b, a) = (master.get(&second), master.get(&first));
     let head = master.get(&running);
     assert_restored_queue(&head, &a, &b);
-    for id in [&running, &first, &second] {
-        master.wait_done(id);
-    }
+    let [_, a_done, b_done] = [&running, &first, &second].map(|id| master.wait_done(id));
+    assert_ran_in_order(&a_done, &b_done);
     let rerun = row(root, &running);
     assert_eq!(
         (rerun.status.as_str(), rerun.attempt),

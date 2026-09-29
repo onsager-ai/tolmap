@@ -7646,7 +7646,7 @@ mod tests {
         // on the lease rather than letting it go under the test.
         fixture.hub.shutdown_now();
         let (out, _outgoing) = tokio::sync::mpsc::unbounded_channel();
-        let _ = fixture.hub.add_conn(
+        let added = fixture.hub.add_conn(
             holder,
             "fake".to_owned(),
             true,
@@ -7655,6 +7655,10 @@ mod tests {
             "http://127.0.0.1".to_owned(),
             out,
             vec![resume_entry(id, epoch, 0)],
+        );
+        assert!(
+            added.is_none(),
+            "a stopping hub must refuse the channel, not answer its resume"
         );
         assert!(
             fixture.hub.detached(id),
@@ -7668,6 +7672,53 @@ mod tests {
                 .values()
                 .any(|conn| conn.agent == holder),
             "a stopping hub admitted a channel"
+        );
+    }
+
+    /// #209 nit 2: a job a slot takes off its queue gives up its queue
+    /// position in the locked section that took it, the one that renumbers
+    /// the jobs behind it. It used to keep position 1 until its
+    /// `worker_loop` next ran, while the new head was already 1: two GETs
+    /// in between saw two jobs at position 1. Here its `worker_loop` never
+    /// runs -- `dispatch_idle` spawns it on a runtime nothing drives -- so
+    /// the snapshot shows exactly what the pop left, where on a live
+    /// runtime the window is only as wide as that task's first poll.
+    #[test]
+    fn a_job_taken_off_its_queue_shows_no_queue_position() {
+        let fixture = Fixture::with(
+            tempfile::tempdir().unwrap(),
+            Duration::from_secs(60),
+            test_build(),
+            1,
+        );
+        let undriven = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let entered = undriven.enter();
+        // Its admission lets the one idle slot take it (`admitted`,
+        // `dispatch_idle`); the next waits behind it at position 1.
+        let taken = jobs::spawn_job(
+            fixture.state.clone(),
+            remote_repo("taken"),
+            COMMIT.to_owned(),
+        )
+        .unwrap();
+        let behind = jobs::spawn_job(
+            fixture.state.clone(),
+            remote_repo("behind"),
+            COMMIT.to_owned(),
+        )
+        .unwrap();
+        let (taken, behind) = (fixture.snapshot(taken), fixture.snapshot(behind));
+        drop(entered);
+        drop(undriven);
+        assert_eq!(behind.queue_position, Some(1), "{behind:?}");
+        assert_eq!(
+            (taken.queue_position, taken.eta_start_s),
+            (None, None),
+            "a job its slot has taken still shows a place in the queue beside the new head: \
+             {taken:?}"
         );
     }
 
