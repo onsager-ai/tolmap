@@ -2089,9 +2089,6 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
     deviceScaleFactor: profile.deviceScaleFactor ?? 1 };
   const context = await browser.newContext(options);
   const page = await context.newPage();
-  if (profile.isMobile) {
-    await context.addInitScript(() => { window.__TOLMAP_LABEL_RESERVATION_DEBUG__ = true; });
-  }
   const slug = "langgenius/dify";
   await page.goto(`${base}/${slug}`);
   await page.waitForSelector("svg.map-svg path.hit");
@@ -2186,59 +2183,8 @@ async function checkFolderLabelsAndUnconnected(browser, base, beforeBase, profil
   await page.waitForSelector('button[aria-label="Zoom to district"]');
   await page.locator('button[aria-label="Zoom to district"]').click({ force: true });
   await page.waitForTimeout(850);
-  if (profile.isMobile) {
-    const reservations = await page.evaluate(() => {
-      const svg = document.querySelector("svg.map-svg");
-      const matrix = svg?.getScreenCTM();
-      if (!svg || !matrix) return null;
-      const map = svg.getBoundingClientRect();
-      const inverse = matrix.inverse();
-      const selectors = [
-        "[data-command-bar]", "[data-desktop-actions]", "[data-desktop-panel]", "[data-panel-tab]",
-        "[data-desktop-legend]", "[data-map-controls]", "[data-search-pill]", "[data-control-column]",
-        "[data-phone-sheet]", "[data-side-sheet]",
-      ];
-      const point = svg.createSVGPoint();
-      const toLocal = (x, y) => {
-        point.x = x;
-        point.y = y;
-        const local = point.matrixTransform(inverse);
-        return [local.x, local.y];
-      };
-      const boxes = [...document.querySelectorAll(selectors.join(","))].map((el) => {
-        const style = getComputedStyle(el);
-        const rect = el.getBoundingClientRect();
-        const visible = style.display !== "none" && style.visibility !== "hidden" && el.getAttribute("aria-hidden") !== "true";
-        const intersects = rect.width > 0 && rect.height > 0 && rect.right > map.left && rect.left < map.right &&
-          rect.bottom > map.top && rect.top < map.bottom;
-        let reservedBox = null;
-        if (visible && intersects) {
-          const corners = [toLocal(rect.left, rect.top), toLocal(rect.right, rect.top),
-            toLocal(rect.left, rect.bottom), toLocal(rect.right, rect.bottom)];
-          const xs = corners.map(([x]) => x);
-          const ys = corners.map(([, y]) => y);
-          const x = Math.min(...xs);
-          const y = Math.min(...ys);
-          reservedBox = [x, y, Math.max(...xs) - x, Math.max(...ys) - y];
-        }
-        return {
-          selectors: selectors.filter((selector) => el.matches(selector)),
-          screenRect: [rect.left, rect.top, rect.right, rect.bottom],
-          reservedBox,
-          display: style.display,
-          visibility: style.visibility,
-          opacity: style.opacity,
-          transform: style.transform,
-          ariaHidden: el.getAttribute("aria-hidden"),
-        };
-      });
-      return { mapScreenRect: [map.left, map.top, map.right, map.bottom], viewBox: svg.getAttribute("viewBox"), boxes };
-    });
-    const rendererReservations = await page.evaluate(() => window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ ?? null);
-    console.log(`  info  ${label}: TEMP phone reservations ${JSON.stringify({ chrome: reservations, renderer: rendererReservations })}`);
-  }
-  // A pin occupies the workflow median in #79's phone map at the district
-  // jump. The label correctly yields there and appears one zoom step later.
+  // Several hub rings occupy the workflow median at the district jump. If no
+  // nearby phone placement fits there, one zoom step gives the label more room.
   if (!(await page.locator('[data-folder-label="web/app/components/workflow"]').count())) {
     await page.locator('button[aria-label="Zoom in"]').click();
     await page.waitForTimeout(850);
@@ -3296,9 +3242,11 @@ async function checkFootprintModeDrawsPolygons(browser, base, profile) {
 // specific drawn on top" case pickDistrictPoint already knows how to find --
 // a batched fill (or a gutter) is pointer-events:none, so a point that
 // resolves no more specifically than the district itself is precisely where
-// MapRenderer's resolveKey() now reaches for the JS hit-test instead of
-// settling for the district (see its own doc comment). If that point selects
-// a FILE, nothing but the hit-test could have produced that outcome.
+// MapRenderer's resolveKey() reaches for the JS hit-test instead of settling
+// for the district (see its own doc comment). The hit-test allows only the
+// subpixel allowance needed for the batched path's rounded vertices. If that
+// point selects a FILE, nothing but the hit-test could have produced that
+// outcome.
 async function checkFootprintCoordinateHitTest(browser, base, profile) {
   const label = `tapping a footprint by coordinate selects it (dify) / ${profile.name}`;
   console.log(`\n${label}`);
@@ -3308,9 +3256,6 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     hasTouch: profile.hasTouch,
     deviceScaleFactor: profile.deviceScaleFactor ?? 1,
   });
-  if (profile.isMobile) {
-    await context.addInitScript(() => { window.__TOLMAP_LABEL_RESERVATION_DEBUG__ = true; });
-  }
   const page = await context.newPage();
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
@@ -3392,47 +3337,9 @@ async function checkFootprintCoordinateHitTest(browser, base, profile) {
     }
     return { x, y, coveredBy: here.key, noBarePoint: true };
   }, point);
-  if (profile.isMobile) {
-    const domEvidence = await page.evaluate(({ x, y, district }) => {
-      const svg = document.querySelector("svg.map-svg");
-      const describe = (el) => el && ({
-        tag: el.tagName.toLowerCase(),
-        class: el.getAttribute("class"),
-        dataK: el.getAttribute("data-k"),
-        folderLabel: el.getAttribute("data-folder-label"),
-        fileLabel: el.getAttribute("data-file-label"),
-        neighbourhood: el.getAttribute("data-neighbourhood-label"),
-        text: el.textContent?.trim().slice(0, 80) ?? "",
-        pointerEvents: getComputedStyle(el).pointerEvents,
-      });
-      const fileFills = [];
-      if (svg) for (const batch of svg.querySelectorAll("path[data-footprint-batch]")) {
-        const matrix = batch.getScreenCTM()?.inverse();
-        if (!matrix) continue;
-        const p = svg.createSVGPoint();
-        p.x = x; p.y = y;
-        if (batch.isPointInFill(p.matrixTransform(matrix))) fileFills.push({
-          batch: batch.getAttribute("data-footprint-batch"),
-          district: batch.getAttribute("data-footprint-district"),
-        });
-      }
-      return {
-        tapped: { x, y, district },
-        target: describe(document.elementFromPoint(x, y)),
-        stack: document.elementsFromPoint(x, y).slice(0, 8).map(describe),
-        fileFills,
-      };
-    }, { x: second.x, y: second.y, district: point.district });
-    const rendererReservations = await page.evaluate(() => window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ ?? null);
-    console.log(`  info  ${label}: TEMP phone second-tap DOM ${JSON.stringify({ domEvidence, rendererReservations })}`);
-  }
   if (second.coveredBy) console.log(`  info  ${label}: after focusing, the first point is covered by ${second.coveredBy}; second tap at (${second.x.toFixed(1)}, ${second.y.toFixed(1)})`);
   await tap(page, profile, second.x, second.y);
   const selectedFile = new URL(page.url()).searchParams.get("file");
-  if (profile.isMobile) {
-    const resolutionTrace = await page.evaluate(() => window.__TOLMAP_HIT_TEST_TRACE__ ?? []);
-    console.log(`  info  ${label}: TEMP phone resolver trace ${JSON.stringify({ selectedFile, url: page.url(), resolutionTrace })}`);
-  }
   report(
     !!selectedFile,
     `${label}: a second tap, now inside its own district, selects a file via JS hit-testing`,
@@ -5755,7 +5662,6 @@ async function checkPhoneTapSelection(browser, base, profile) {
   const label = `phone map-tap selection above the sheet (dify) / ${profile.name}`;
   console.log(`\n${label}`);
   const { context, page } = await phonePage(browser, profile);
-  await context.addInitScript(() => { window.__TOLMAP_LABEL_RESERVATION_DEBUG__ = true; });
   const doc = await (await context.request.get(`${base}/maps/langgenius/dify.json`)).json();
   await page.goto(`${base}/langgenius/dify`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
@@ -5844,34 +5750,6 @@ async function checkPhoneTapSelection(browser, base, profile) {
   // zoomed out to find water, so the district is picked again.)
   const again = await pickDistrictPoint(page, true);
   if (again) await tap(page, profile, again.x, again.y);
-  const closeState = await page.evaluate(() => {
-    const svg = document.querySelector("svg.map-svg");
-    const sheet = document.querySelector("[data-phone-sheet]");
-    const rect = (el) => {
-      const r = el?.getBoundingClientRect();
-      return r && [r.left, r.top, r.right, r.bottom];
-    };
-    return {
-      url: location.href,
-      districtLabels: [...(svg?.querySelectorAll('text[data-k^="d:"]') ?? [])].map((el) => {
-        const r = el.getBoundingClientRect();
-        const target = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-        const hit = target?.closest?.("[data-k]");
-        return {
-          key: el.getAttribute("data-k"),
-          text: el.textContent,
-          class: el.getAttribute("class"),
-          pointerEvents: getComputedStyle(el).pointerEvents,
-          rect: rect(el),
-          centerTarget: target && { tag: target.tagName.toLowerCase(), key: hit?.getAttribute("data-k"), text: target.textContent?.trim().slice(0, 80) ?? "" },
-        };
-      }),
-      mapRect: rect(svg),
-      sheetRect: rect(sheet),
-      reservations: window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ ?? null,
-    };
-  });
-  console.log(`  info  ${label}: TEMP close-button selection state ${JSON.stringify({ again, closeState })}`);
   const close = page.locator('[data-phone-sheet] button[aria-label="Clear selection"]');
   if (await close.count()) {
     const box = await close.boundingBox();

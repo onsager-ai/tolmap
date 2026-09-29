@@ -98,10 +98,6 @@ declare global {
      * before the app boots. Gates the performance.mark/measure pair in
      * draw() below -- see its comment for why that can't be unconditional. */
     __TOLMAP_PERF__?: boolean;
-    /** Temporary check:view-only snapshot for issue #213 review diagnosis. */
-    __TOLMAP_LABEL_RESERVATION_DEBUG__?: boolean;
-    __TOLMAP_LABEL_RESERVATION_SNAPSHOT__?: unknown;
-    __TOLMAP_HIT_TEST_TRACE__?: unknown[];
   }
 }
 
@@ -1992,20 +1988,8 @@ export class MapRenderer {
       for (const { cx, cy, r } of reservedHubCandidates ?? []) placed.push([cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]);
       placed.push(...this.cardLabelBoxes);
     }
-    if (window.__TOLMAP_LABEL_RESERVATION_DEBUG__) {
-      window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ = {
-        profile,
-        camera: [this.k, this.tx, this.ty],
-        view: [this.VW, this.VH],
-        chrome: reservedChromeBoxes,
-        pins: pins.map(({ cx, cy }) => [cx - 10, cy - 32, 20, 32]),
-        hubs: (reservedHubCandidates ?? []).map(({ cx, cy, r }) => [cx - r - 1, cy - r - 1, 2 * (r + 1), 2 * (r + 1)]),
-        symbolCardLabels: this.cardLabelBoxes,
-        cardedFiles: [...this.cardedFileBBox.entries()].map(([i, [x0, y0, x1, y1]]) => ({ i, box: [x0, y0, x1 - x0, y1 - y0] })),
-        folderCandidates: [],
-      };
-    }
-    this.placeDistrictLabels(g, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed, desktopLabels, reserveMarkers);
+    const districtLabelLayer = el("g", {});
+    this.placeDistrictLabels(districtLabelLayer, alwaysDrawn, islandFadeFloorZf, islandExceptionDistricts, placed, desktopLabels, reserveMarkers);
     // CI review finding (issue #82 C2): seed the SAME shared list with every
     // carded file's own screen bbox (recorded by drawSymbolCardsPass, which
     // already ran above, before pins/hub labels/folder labels/file labels
@@ -2068,6 +2052,10 @@ export class MapRenderer {
     // did not, so a folder label's established placement priority isn't
     // demoted by a brand-new label kind sharing the same collision budget.
     const hubCandidates = this.drawHubRings(g, reservedHubCandidates ?? undefined);
+    // District labels reserve visible ring boxes but may still sit inside the
+    // larger transparent touch target. Keep their explicit district hit target
+    // above that target so the name remains tappable.
+    g.appendChild(districtLabelLayer);
 
     // A5: folder labels, then hub labels, then file labels -- the tail of
     // the old drawLabels(), now reusing the SAME `placed` list rather than a
@@ -3892,25 +3880,6 @@ export class MapRenderer {
     };
     const compact = compactMap(this.mapBoxW, this.mapBoxH);
     const zf = this.k / this.fitScale();
-    type ReservationBox = [number, number, number, number];
-    type ReservationDebug = {
-      chrome?: ReservationBox[];
-      pins?: ReservationBox[];
-      hubs?: ReservationBox[];
-      symbolCardLabels?: ReservationBox[];
-      cardedFiles?: Array<{ box: ReservationBox }>;
-      folderCandidates?: unknown[];
-    };
-    const debug = window.__TOLMAP_LABEL_RESERVATION_DEBUG__
-      ? window.__TOLMAP_LABEL_RESERVATION_SNAPSHOT__ as ReservationDebug | undefined
-      : undefined;
-    const cardedFileBoxes = debug?.cardedFiles?.map(({ box }) => box) ?? [];
-    const prefixCount = (debug?.chrome?.length ?? 0) + (debug?.pins?.length ?? 0) +
-      (debug?.hubs?.length ?? 0) + (debug?.symbolCardLabels?.length ?? 0);
-    const districtLabelCount = Math.max(0, placed.length - prefixCount - cardedFileBoxes.length);
-    const districtLabelBoxes = placed.slice(prefixCount, prefixCount + districtLabelCount);
-    const cardedFileEnd = prefixCount + districtLabelCount + cardedFileBoxes.length;
-    if (debug) debug.folderCandidates = [];
     // A folder earns a label only after its district spans one quarter of
     // the viewport's shorter side. World side, text and medians were all
     // computed once for the document; this pass only projects candidates.
@@ -3921,57 +3890,40 @@ export class MapRenderer {
       const x = this.X(label.x), y = this.Y(label.y);
       const size = MONO_LABEL_PX; // was 11 on phones (see MONO_LABEL_PX)
       const h = size * 1.25;
-      const variants: Array<{
-        text: string;
-        box: ReservationBox;
-        withinView: boolean;
-        blockerCount: number;
-        blockerCounts: Record<string, number>;
-        blockers: Array<{ source: string; index: number; box: ReservationBox }>;
-      }> = [];
+      const offsets: Array<[number, number]> = desktopLabels ? [[0, 0]] : [
+        [0, 0], [0, -16], [0, 16], [-20, 0], [20, 0],
+        [0, -32], [0, 32], [-40, 0], [40, 0],
+        [-20, -16], [20, -16], [-20, 16], [20, 16],
+        [0, -48], [0, 48], [-60, 0], [60, 0],
+      ];
       // Try two path segments for context, then the final segment when a
-      // nearby district name leaves too little horizontal room.
-      const tail = [label.longText, label.shortText]
-        .find((candidate) => {
-          const width = candidate.length * size * 0.62;
-          const box: ReservationBox = [x - width / 2, y - h, width, h];
-          const withinView = !reserveMarkers || (x >= width / 2 && x <= this.VW - width / 2 && y >= h && y <= this.VH);
-          const overlaps = (other: ReservationBox) => !(box[0] + box[2] < other[0] || box[0] > other[0] + other[2] ||
-            box[1] + box[3] < other[1] || box[1] > other[1] + other[3]);
-          if (debug) {
-            const groups = [
-              { source: "chrome", boxes: debug.chrome ?? [] },
-              { source: "pin", boxes: debug.pins ?? [] },
-              { source: "hub-ring", boxes: debug.hubs ?? [] },
-              { source: "symbol-card-label", boxes: debug.symbolCardLabels ?? [] },
-              { source: "district-label", boxes: districtLabelBoxes },
-              { source: "carded-file", boxes: cardedFileBoxes },
-              { source: "earlier-folder-label", boxes: placed.slice(cardedFileEnd) },
-            ];
-            const blockers = groups.flatMap(({ source, boxes }) => boxes.flatMap((other, index) =>
-              overlaps(other) ? [{ source, index, box: other }] : []));
-            variants.push({
-              text: candidate,
-              box,
-              withinView,
-              blockerCount: blockers.length,
-              blockerCounts: Object.fromEntries(groups.map(({ source, boxes }) => [source, boxes.filter(overlaps).length])),
-              blockers: blockers.slice(0, 5),
-            });
+      // nearby district name leaves too little horizontal room. Phones first
+      // try the existing median, then nearby points when a reserved marker
+      // occupies it; the small offsets keep the label attached to its folder.
+      let placement: { text: string; x: number; y: number; width: number; box: [number, number, number, number] } | null = null;
+      for (const candidate of [label.longText, label.shortText]) {
+        const width = candidate.length * size * 0.62;
+        for (const [dx, dy] of offsets) {
+          const atX = x + dx;
+          const atY = y + dy;
+          const box: [number, number, number, number] = [atX - width / 2, atY - h, width, h];
+          const withinView = !reserveMarkers || (atX >= width / 2 && atX <= this.VW - width / 2 && atY >= h && atY <= this.VH);
+          if (withinView && !hits(box[0], box[1], box[2], box[3])) {
+            placement = { text: candidate, x: atX, y: atY, width, box };
+            break;
           }
-          return withinView && !hits(box[0], box[1], box[2], box[3]);
-        });
-      if (debug) debug.folderCandidates?.push({ path: label.path, district: label.district, anchor: [x, y], variants });
-      if (!tail) continue;
-      const w = tail.length * size * 0.62;
-      placed.push([x - w / 2, y - h, w, h]);
-      const t = el("text", { x: x.toFixed(1), y: y.toFixed(1), "font-size": size,
+        }
+        if (placement) break;
+      }
+      if (!placement) continue;
+      placed.push(placement.box);
+      const t = el("text", { x: placement.x.toFixed(1), y: placement.y.toFixed(1), "font-size": size,
         "text-anchor": "middle", fill: "var(--ink)", "fill-opacity": 0.95,
         "font-weight": 500,
         "font-family": "IBM Plex Mono, monospace", "pointer-events": "all",
         "data-k": `dir:${label.path}`, "data-folder-label": label.path,
-        "data-folder-district": label.district, "data-label-box": w.toFixed(1) });
-      t.textContent = tail;
+        "data-folder-district": label.district, "data-label-box": placement.width.toFixed(1) });
+      t.textContent = placement.text;
       g.appendChild(t);
     }
     // A4: hub labels come after folder labels (which predate this PR -- see
@@ -5092,7 +5044,7 @@ export class MapRenderer {
    * of the `alwaysDrawn` set) never reaches this branch at all, so this
    * changes nothing for maps without footprints or for large-on-screen
    * files. */
-  private resolveKey(target: Element, clientX: number, clientY: number): string | null {
+  private resolveKey(target: Element, clientX: number, clientY: number, allowBatchBoundary = false): string | null {
     let t: Element | null = target;
     while (t && t !== this.svg && !t.getAttribute?.("data-k")) t = t.parentNode as Element | null;
     const kk = t && t !== this.svg ? t.getAttribute?.("data-k") : null;
@@ -5101,27 +5053,10 @@ export class MapRenderer {
       const [sx, sy] = this.toSvg({ clientX, clientY });
       const wx = (sx - this.tx) / this.k;
       const wy = (sy - this.ty) / this.k;
-      const i = hitTestFootprint(this.state.doc, this.footprintIndex, wx, wy);
-      if (window.__TOLMAP_LABEL_RESERVATION_DEBUG__) {
-        const rect = this.svg.getBoundingClientRect();
-        const matrix = this.svg.getScreenCTM();
-        let exactSvg: [number, number] | null = null;
-        let exactWorld: [number, number] | null = null;
-        let exactFile: number | null = null;
-        if (matrix) {
-          const point = this.svg.createSVGPoint();
-          point.x = clientX;
-          point.y = clientY;
-          const transformed = point.matrixTransform(matrix.inverse());
-          exactSvg = [transformed.x, transformed.y];
-          exactWorld = [(transformed.x - this.tx) / this.k, (transformed.y - this.ty) / this.k];
-          exactFile = hitTestFootprint(this.state.doc, this.footprintIndex,
-            exactWorld[0], exactWorld[1]);
-        }
-        const trace = window.__TOLMAP_HIT_TEST_TRACE__ ?? [];
-        trace.push({ target: { tag: t?.tagName?.toLowerCase(), key: kk }, client: [clientX, clientY], svg: [sx, sy], exactSvg, world: [wx, wy], exactWorld, camera: [this.k, this.tx, this.ty], file: i, exactFile, svgRect: [rect.left, rect.top, rect.width, rect.height], view: [this.VW, this.VH] });
-        window.__TOLMAP_HIT_TEST_TRACE__ = trace;
-      }
+      // batchFootprint rounds projected vertices to 0.1 viewBox px, so the
+      // painted edge can move at most 0.071 px from the indexed world edge.
+      const boundaryTolerance = allowBatchBoundary ? 0.08 / this.k : 0;
+      const i = hitTestFootprint(this.state.doc, this.footprintIndex, wx, wy, boundaryTolerance);
       if (i != null) return "f:" + i;
     }
     return kk;
@@ -5142,7 +5077,7 @@ export class MapRenderer {
   }
 
   private handleTap(e: MouseEvent) {
-    const kk = this.resolveKey(e.target as Element, e.clientX, e.clientY);
+    const kk = this.resolveKey(e.target as Element, e.clientX, e.clientY, true);
     if (!kk) {
       // Issue #82 A1 scope item 2: an empty tap no longer clears the whole
       // selection in one step. The renderer has no notion of "levels" --
