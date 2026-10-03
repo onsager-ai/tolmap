@@ -53,6 +53,9 @@ Viewer work loads docs/UX.md and relevant renderer findings. SCIP work loads
 its sandbox/worker documentation. Product check semantics live in docs/CHECK.md;
 that command is not a substitute for the development test gates.
 
+For native capability mapping, use harness-operations; Codex-specific reference
+routing is in .agents/adapters/codex.md. These adapters grant no extra scope.
+
 <!-- agent-config:begin -->
 ## Shared agent conventions (generated)
 

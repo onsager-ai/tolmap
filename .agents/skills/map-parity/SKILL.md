@@ -1,21 +1,39 @@
 ---
 name: map-parity
-description: Verify Tolmap extraction, blending, clustering or layout changes against provenance-backed map fixtures and declared parity criteria.
+description: Verify Tolmap extraction, blending, clustering or layout against provenance-backed map fixtures, deterministic output and repository-owned district/modularity acceptance gates.
 ---
 
-# Map parity
+# Tolmap map parity
 
-1. Read data/fixtures.toml and the relevant ci.yml fixture lane. Record each source
-   commit, generator, naming cache and affected language/resolver path.
-2. Reproduce the existing baseline with that generator and configuration. The frozen
-   Python reference remains useful but is not the universal current oracle.
-3. Re-derive an affected fixture only for a justified correctness/model change,
-   recording why the prior graph is wrong; never update solely to erase failure.
-4. Run applicable parity checks: at least 95% district placement and modularity
-   within 0.02. Preserve naming continuity and deterministic ordering.
-5. Run the owning Rust/SCIP lanes and report the scope tested, known measured gaps
-   and unexpected failures separately. Do not call a known red lane green.
+## Scope
 
-Use the actual workflow's native-library setup and flags. Some lanes need full
-repository history and pinned external clones; offline inability is a blocked
-check, not evidence of parity.
+Owns fixture provenance and parity procedure. AGENTS.md owns acceptance thresholds,
+determinism and naming continuity. data/fixtures.toml and the corresponding lane
+in .github/workflows/ci.yml own generator pins, flags and native-library setup.
+
+## Prerequisites
+
+Identify affected languages/resolvers and the fixture's source commit, generator,
+seed, naming cache and history requirements. The frozen Python reference is not
+the universal current fixture generator. Preserve frozen reference ownership.
+
+## Procedure
+
+1. Reproduce the unchanged baseline with the recorded generator/configuration.
+   Keep each external clone and source commit explicit; blocked history/network
+   setup is not evidence of parity.
+2. Re-derive an affected fixture only for a demonstrated correctness/model change.
+   Record why the prior graph is wrong; never refresh merely to hide a failure.
+3. Run the owning parity lanes against the justified baseline, using AGENTS.md's
+   placement/modularity thresholds. Check naming continuity and deterministic
+   ordering/output under the same inputs.
+4. Run affected Rust/SCIP lanes with their native setup and exact workflow flags.
+   Separate expected measured gaps from newly unexpected failures. For blend,
+   clustering or layout changes, hand measurements to benchmark and update the
+   findings in the same change as required by the contract.
+
+## Completion
+
+Report input/generator pins, baseline rationale, observed parity and determinism,
+actual lane results, known gaps and blocked prerequisites. Do not report a known
+red lane as green or substitute a product check command for development gates.
