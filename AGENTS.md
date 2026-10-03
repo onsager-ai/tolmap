@@ -42,14 +42,22 @@ updated with measurements in the same change.
 
 Viewer changes require named districts, listed landmarks and cards from district,
 file and symbol taps on both phone and desktop. Use viewer-verification and the
-existing browser workflow. Report actual gates, blocked prerequisites and results.
+existing browser workflow.
 
 ## Conditional reading
 
-Locate applicable module instructions before editing. For architecture-changing
-work, read relevant HANDOFF and docs/ARCHITECTURE.md sections. Pipeline changes load
+For architecture-changing work, read relevant HANDOFF and docs/ARCHITECTURE.md sections. Pipeline changes load
 relevant docs/PIPELINE.md and findings; use the map-parity/benchmark skills. Search
 relevant headings in docs/FINDINGS.md instead of loading its entire history.
 Viewer work loads docs/UX.md and relevant renderer findings. SCIP work loads
 its sandbox/worker documentation. Product check semantics live in docs/CHECK.md;
 that command is not a substitute for the development test gates.
+
+<!-- agent-config:begin -->
+## Shared agent conventions (generated)
+
+- **authority:** Opening, updating or merging a pull request requires authority from the task or declared repository policy. Shared procedures grant no authority themselves; opening or updating authority does not authorize merging.
+- **checks:** Run checks appropriate to the affected behavior. Report commands, actual results, blocked prerequisites and remaining scope. A quick check does not replace a declared merge gate.
+- **discovery:** Before editing a module, locate applicable ancestor/module instruction files and load only relevant references. Shared workflows and their dependencies are checked in under .agents/skills; Claude discovery copies are generated under .claude/skills.
+- **ownership:** Edit repo-owned contracts and local skills at their canonical paths. Shared skills, Claude projections, this managed section and synchronization tooling are generated: change the upstream source or manifest selection and regenerate; do not hand-edit generated copies.
+<!-- agent-config:end -->
