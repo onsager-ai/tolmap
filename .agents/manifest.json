@@ -2,7 +2,7 @@
   "schema": 1,
   "source": {
     "repository": "onsager-ai/dev-skills",
-    "revision": "2ab4bb0e2f640c1d23849f914bbd1b8943087d6d"
+    "revision": "af655ea78c437676a6211e3c973361df8dee4f0c"
   },
   "skills": [
     "issue-spec",
@@ -16,7 +16,8 @@
     "checks",
     "discovery",
     "ownership",
-    "workflow-policy"
+    "workflow-policy",
+    "human-decisions"
   ],
   "local_skills": [
     "benchmark",
