@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "manifest_sha256": "7727c8fde990e610cd4fa7a8fa9b06a77d820fd971dbf878c3c614f1d509df8f",
-  "block_sha256": "f5d4ee9afe6273a981c6cd966cc29c2d3ed9893e348ecd90d9067f17e951c284",
+  "manifest_sha256": "73ed8134857663990892dff89fafdc20e6daac45f5d6fa69449b3a9699067c29",
+  "block_sha256": "b759967ebb4046ebcf6ab7f53f8858120698a6a551ff973356bf46e00923b206",
   "resolved_skills": [
     "ci-triage",
     "docs-drift-guard",
@@ -32,7 +32,7 @@
       "mode": "100644"
     },
     ".agents/skills/harness-operations/references/codex.md": {
-      "sha256": "6f6d23f767fcd75c6c52b2fc136b4ace5be72d88028f9b7e6d88d2c08ac65041",
+      "sha256": "cba947b5fafd6b7a82422fbfb45f1073db7bc1f2b68c4dba3b98b864ff8c0a31",
       "owner": "shared",
       "mode": "100644"
     },
@@ -102,7 +102,7 @@
       "mode": "100644"
     },
     ".claude/skills/harness-operations/references/codex.md": {
-      "sha256": "6f6d23f767fcd75c6c52b2fc136b4ace5be72d88028f9b7e6d88d2c08ac65041",
+      "sha256": "cba947b5fafd6b7a82422fbfb45f1073db7bc1f2b68c4dba3b98b864ff8c0a31",
       "owner": "shared",
       "mode": "100644"
     },
