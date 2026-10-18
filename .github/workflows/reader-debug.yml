@@ -35,6 +35,7 @@ jobs:
       - run: python3 scripts/local-reader-fixture.py
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/.native/lib
+          TOLMAP_BINARY: bin/tolmap
       - run: cd web && node scripts/check-source-reader.mjs
       - uses: actions/upload-artifact@v4
         if: always()
