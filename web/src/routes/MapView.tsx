@@ -620,6 +620,9 @@ export function MapView() {
     }
   };
   const phoneHasSelection = sel != null || selD != null || !!search.dir || !!structure || !!pathPick;
+  // Source can finish loading before the map. Establish deep-link history
+  // from its URL immediately, including files absent from the map document.
+  const phoneHistorySelection = phoneHasSelection || (!!search.file && (!doc || !!search.read));
   const phoneHasSelectionRef = useRef(phoneHasSelection);
   phoneHasSelectionRef.current = phoneHasSelection;
   // Mount, and every repository switch (a new map is a new stack): adopt the
@@ -634,16 +637,16 @@ export function MapView() {
   // A selection (a deep link included) is one entry: back clears it before
   // it leaves the map.
   useEffect(() => {
-    if (!narrow || !doc || skippingRef.current) return;
-    if (phoneHasSelection) pushOverlay("sel");
+    if (!narrow || skippingRef.current) return;
+    if (phoneHistorySelection) pushOverlay("sel");
     else dropOverlay("sel");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phoneHasSelection, narrow, !!doc]);
+  }, [phoneHistorySelection, narrow]);
   // Establish the selected map entry before reading, including slow deep links.
   useEffect(() => {
-    if (narrow && doc && search.read && !skippingRef.current) pushOverlay("reader");
+    if (narrow && search.read && !skippingRef.current) pushOverlay("reader");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [narrow, search.read, !!doc, phoneHasSelection]);
+  }, [narrow, search.read, phoneHistorySelection]);
 
   useEffect(() => {
     if (!narrow) return;
