@@ -1,3 +1,4 @@
+import { SourceReader } from "@/reader/SourceReader";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
 import { useCatalogue, useMapDocument, useDistrictSymbolsMap } from "@/data/queries";
@@ -50,7 +51,7 @@ export function MapView() {
   // the job is done.
   const early = useEarlyMapJob(search.job);
   const { data: doc, isLoading, isError, error, source } = useMapDocument(owner, repo, {
-    commit: early.commit,
+    commit: search.commit ?? early.commit,
     wait: early.waiting,
   });
 
@@ -97,12 +98,12 @@ export function MapView() {
     repo,
     source,
     [...wantedDistricts],
-    { commit: early.commit, ready: !early.waiting && !early.detailPending },
+    { commit: search.commit ?? early.commit, ready: !early.waiting && !early.detailPending },
   );
   // The job ended: the map's URL is the plain one again (a shared link
   // should not watch a finished job), while the commit stays pinned.
   useEffect(() => {
-    if (search.job && early.settled) updateSearch({ job: undefined });
+    if (search.job && early.settled) updateSearch({ job: undefined, commit: early.commit });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search.job, early.settled]);
 
@@ -271,6 +272,20 @@ export function MapView() {
   // clears `sym` (selectHierSymbol below), so the two never compete for
   // what the breadcrumb/sidebar actually show.
   const selHSym = sel != null && search.hsym != null ? search.hsym : null;
+  function openSource() {
+    if (sel == null || !doc) return;
+    const h = selHSym == null ? undefined : districtSymbolsMap.get(D_(doc, sel));
+    const row = h && selHSym != null ? h.symbols[h.symbol_indices.indexOf(selHSym)] : undefined;
+    const flat = selSym == null ? undefined : doc.S[String(sel)]?.[selSym];
+    const line = row?.[3] ?? flat?.[2] ?? 1;
+    const end = row?.[4] ?? flat?.[3] ?? line;
+    if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end }); }
+    else navigate({ to: ".", search: (prev: MapSearch) => ({ ...prev, read: true, line, end }), state: true });
+  }
+  function closeSource() {
+    if (narrow) { dropOverlay("reader"); updateSearch({ read: undefined }); }
+    else updateSearch({ read: undefined });
+  }
   const selD = sel == null && search.d != null ? search.d : null;
   const previousDesktopPanelOpen = useRef(desktopPanelOpen);
   useEffect(() => {
@@ -587,6 +602,7 @@ export function MapView() {
     if (kind === "repos") setReposOpen(false);
     else if (kind === "search") setSearchOpen(false);
     else if (kind === "layers") setLayersOpen(false);
+    else if (kind === "reader") updateSearch({ read: undefined });
     else if (kind === "sheet") setDetentState("peek");
     else {
       // The URL half of clearing the selection is the reconcile below.
@@ -603,9 +619,13 @@ export function MapView() {
     if (!narrow) return;
     skippingRef.current = false;
     const st = router.history.location.state as unknown as Record<string, unknown>;
-    backRef.current = initBack(historyIndex(), st[OVERLAY_MARKER], phoneHasSelectionRef.current);
+    backRef.current = initBack(historyIndex(), st[OVERLAY_MARKER], phoneHasSelectionRef.current, !!liveSearchRef.current.read);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrow, owner, repo]);
+  useEffect(() => {
+    if (narrow && search.read && !skippingRef.current) pushOverlay("reader");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [narrow, search.read]);
   // A selection (a deep link included) is one entry: back clears it before
   // it leaves the map.
   useEffect(() => {
@@ -628,7 +648,7 @@ export function MapView() {
       const res = popTo(cur, idx, st[OVERLAY_MARKER], phoneHasSelectionRef.current);
       backRef.current = res.state;
       for (const kind of res.undo) undoRef.current(kind);
-      const live = liveSearchRef.current;
+      const live = res.undo.includes("reader") ? { ...liveSearchRef.current, read: undefined } : liveSearchRef.current;
       const desired = res.undo.includes("sel")
         ? { ...live, file: undefined, sym: undefined, hsym: undefined, d: undefined, dir: undefined }
         : live;
@@ -764,6 +784,7 @@ export function MapView() {
   useEffect(() => {
     if (narrow) return;
     function onKey(e: KeyboardEvent) {
+      if (search.read) return;
       if (e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
       const focus: DesktopFocusScope = t?.closest("[data-desktop-search], [data-search-palette]")
@@ -868,6 +889,7 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
+  const sourceReader = search.read && search.file ? <SourceReader owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button className="source-action" onClick={openSource}>Read selected source</button> : null;
   const mapCanvas = (
     <MapCanvas
       doc={doc}
@@ -899,6 +921,7 @@ export function MapView() {
         <div ref={mapAreaRef} className="absolute inset-0">
           {mapCanvas}
         </div>
+        {sourceReader}
         <DetailStatusNote
           pending={early.detailPending}
           failed={early.detailFailed}
@@ -1058,6 +1081,7 @@ export function MapView() {
       className={`relative h-full overflow-hidden bg-[var(--canvas)]${isFullscreen ? " fixed inset-0 z-50" : ""}`}
     >
       {mapCanvas}
+      {sourceReader}
       <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
       <DesktopChrome
         catalogue={catalogue}
