@@ -494,7 +494,12 @@ export function MapView() {
     const cur = backRef.current ?? initBack(historyIndex(), null, false);
     const { state, push } = openOverlay(cur, kind, historyIndex());
     backRef.current = state;
-    if (push) router.history.push(router.history.location.href, { [OVERLAY_MARKER]: kind } as never);
+    if (push) {
+      router.history.push(router.history.location.href, { [OVERLAY_MARKER]: kind } as never);
+      // TanStack batches same-task pushes into one native history entry.
+      // Selection + reader deep links require two real entries, also on reload.
+      router.history.flush();
+    }
   }
   function dropOverlay(kind: OverlayKind) {
     if (backRef.current) backRef.current = closeOverlay(backRef.current, kind);
