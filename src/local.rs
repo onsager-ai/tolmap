@@ -246,7 +246,15 @@ fn run(
         worker_gid: 10001,
         allow_openrouter_key: false,
     };
-    let result=executor::execute(&env,id,&spec,&inputs,&mut Sink(s.clone()),cancel.as_ref()).map_err(|_| anyhow::anyhow!("Index failed or cancelled. The selected source is retained; retry from the local page."))?;
+    let result = executor::execute(
+        &env,
+        id,
+        &spec,
+        &inputs,
+        &mut Sink(s.clone()),
+        cancel.as_ref(),
+    )
+    .map_err(|e| anyhow::anyhow!("local executor stopped: {}", e.error))?;
     let work = result.job_dir.clone();
     let publish = (|| -> Result<()> {
         ensure!(
@@ -256,6 +264,7 @@ fn run(
             "cancelled or commit mismatch"
         );
         let dir = s.data.join("snapshots").join(id.to_string());
+        private(&dir)?;
         let o = &result.output;
         let adopted = worker_result::adopt(
             &result.output_dir,
@@ -271,7 +280,7 @@ fn run(
             },
             None,
         )
-        .map_err(|_| anyhow::anyhow!("invalid worker artifacts"))?;
+        .map_err(|e| anyhow::anyhow!("invalid worker artifacts: {e}"))?;
         crate::naming::save_cache(&dir.join("names.json"), &adopted.names)?;
         // Metadata is the visibility boundary. Cancellation serializes with it.
         let job = s.job.lock().unwrap();
@@ -299,7 +308,13 @@ fn escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 fn html(s: &Local, notice: &str) -> Result<Response> {
-    let mut content=format!("<!doctype html><html lang=en><meta name=viewport content='width=device-width,initial-scale=1'><title>Tolmap local</title><link rel=stylesheet href=/local.css><main><h1>Your local repository</h1><p>Processing and storage stay on this computer. No account, subscription, provider login or upload is required.</p><p>Storage: <code>{}</code></p><p>Only committed HEAD is analyzed. Uncommitted and untracked files are excluded. Commit your changes before refreshing.</p><p role=status>{}</p>",escape(&s.data.display().to_string()),escape(if notice.is_empty() { &s.notice.lock().unwrap() } else { notice }));
+    let saved_notice = s.notice.lock().unwrap().clone();
+    let notice = if notice.is_empty() {
+        saved_notice.as_str()
+    } else {
+        notice
+    };
+    let mut content=format!("<!doctype html><html lang=en><meta name=viewport content='width=device-width,initial-scale=1'><title>Tolmap local</title><link rel=stylesheet href=/local.css><main><h1>Your local repository</h1><p>Processing and storage stay on this computer. No account, subscription, provider login or upload is required.</p><p>Storage: <code>{}</code></p><p>Only committed HEAD is analyzed. Uncommitted and untracked files are excluded. Commit your changes before refreshing.</p><p role=status>{}</p>",escape(&s.data.display().to_string()),escape(notice));
     if let Some(j) = s.job.lock().unwrap().as_ref() {
         content.push_str(&format!("<meta http-equiv=refresh content=2><h2>Indexing</h2><p>{}</p><form method=post action=/local/cancel?id={}><button>Cancel indexing</button></form>",escape(&j.stage),j.id));
     } else if let Some(p) = s.prepared.lock().unwrap().as_ref() {

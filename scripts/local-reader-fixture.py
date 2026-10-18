@@ -38,7 +38,7 @@ def index():
         time.sleep(.1)
     else:raise AssertionError('index timeout')
     paths=re.findall(rb'href=/snapshot/([a-f0-9-]+)',text)
-    assert paths,'no snapshot published'
+    assert paths,('no snapshot published', (root/'service.log').read_text()[-3000:],text[-1500:])
     return {x.decode() for x in paths}
 first=index();assert len(first)==1;sid=next(iter(first));base='/api/maps/snapshot/'+sid
 provenance=get(base+'/provenance');assert provenance['commit']==a
