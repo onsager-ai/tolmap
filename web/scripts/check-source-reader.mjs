@@ -69,7 +69,7 @@ for(const width of [390,1280])for(const colorScheme of ['light','dark']){
   // selection must replace the source/range/query atomically, and closing
   // reading must preserve that live map selection rather than the old one.
   await page.goto(base);await page.getByRole('button',{name:'Read selected source'}).click();await page.locator('.cm-content').waitFor();
-  await page.getByRole('button',{name:'Find in file'}).click();await page.locator('.cm-search input[name=search]').fill('missing_before_navigation_739');await page.getByText('No results',{exact:true}).waitFor();await page.keyboard.press('Escape');
+  await page.getByRole('button',{name:'Find in file'}).click();await page.locator('.cm-search input[name=search]').fill('missing_before_navigation_739');await page.locator('.cm-search button[name=next]').click();await page.getByText('No results',{exact:true}).waitFor();await page.keyboard.press('Escape');
   const map=await(await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}`)).json();
   const symbol=page.locator('[data-desktop-panel] button[data-outline-row]').first();await symbol.waitFor();const global=Number(await symbol.getAttribute('data-outline-row'));
   const district=map.N[map.F.indexOf(fixture.file)][0];
