@@ -65,6 +65,10 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
       // paste/drop paths. Selection/search transactions remain available.
       EditorState.changeFilter.of(() => false),
       EditorView.contentAttributes.of({ tabindex: "0", "aria-label": "Read-only source", role: "textbox", "aria-readonly": "true" }),
+      // A read-only content DOM can receive native focus without synchronizing
+      // its selection first. Make the committed line range available to copy
+      // immediately, including keyboard focus after a deep-link reload.
+      EditorView.domEventHandlers({ focus: (_event, focused) => { focused.focus(); return false; } }),
       lineNumbers(), highlightSpecialChars(), drawSelection(), search({ top: true }), keymap.of([...searchKeymap, { key: "Mod-a", run: v => { v.dispatch({ selection: { anchor: 0, head: v.state.doc.length } }); return true; } }]),
       EditorView.updateListener.of(update => {
         if (update.transactions.some(t => t.effects.some(e => e.is(setSearchQuery)))) {
