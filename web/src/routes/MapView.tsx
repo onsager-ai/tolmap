@@ -45,6 +45,13 @@ export function MapView() {
   const { owner, repo } = useParams({ strict: false }) as { owner: string; repo: string };
   const search = useSearch({ strict: false }) as MapSearch;
   const navigate = useNavigate();
+  const sourceActionRef = useRef<HTMLButtonElement>(null);
+  const sourceWasOpen = useRef(!!search.read);
+  useEffect(() => {
+    if (sourceWasOpen.current && !search.read) sourceActionRef.current?.focus({ preventScroll: true });
+    sourceWasOpen.current = !!search.read;
+  }, [search.read]);
+
   const { data: catalogue } = useCatalogue();
   // docs/UX.md §12: a map opened before its job's Detail phase finished
   // (`?job=`) is pinned to that job's commit, and asks for symbols only once
@@ -893,7 +900,7 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
-  const sourceReader = search.read && search.file ? <SourceReader modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button className="source-action" onClick={openSource}>Read selected source</button> : null;
+  const sourceReader = search.read && search.file ? <SourceReader modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
   const mapCanvas = (
     <MapCanvas
       doc={doc}
