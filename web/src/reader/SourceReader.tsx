@@ -56,6 +56,7 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
   }, [owner, repo, path, commit, retry]);
   useEffect(() => {
     if (!host.current || source?.status !== "ready" || source.text == null) return;
+    setSearchStatus("Search this file");
     let disposed = false;
     const language = new Compartment();
     const view = new EditorView({ parent: host.current, state: EditorState.create({ doc: source.text, extensions: [
@@ -93,7 +94,7 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
     }
  if (e.key === "Escape" && !host.current?.querySelector(".cm-search")) { e.preventDefault(); onClose(); } }}>
-    <header><button ref={close} onClick={onClose}>Return to map</button><strong>{path}</strong><button onClick={() => { if (editor.current) openSearchPanel(editor.current); }} disabled={!editor.current && source?.status !== "ready"}>Find in file</button></header>
+    <header><button ref={close} onClick={onClose}>Return to map</button><strong>{path}</strong><button onClick={() => { if (editor.current) openSearchPanel(editor.current); }} disabled={source?.status !== "ready"}>Find in file</button></header>
     <p className="source-provenance">{source ? `${source.repository} · ${source.commit}` : "Snapshot source"} · Read only</p>
     {!source && !failure && <p role="status">Loading committed source…</p>}
     {failure && <div role="alert"><p>Source unavailable. Check access or restore this snapshot. No current-branch fallback was used.</p><button onClick={() => setRetry(n => n + 1)}>Retry source</button></div>}

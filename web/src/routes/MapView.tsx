@@ -280,13 +280,17 @@ export function MapView() {
   // what the breadcrumb/sidebar actually show.
   const selHSym = sel != null && search.hsym != null ? search.hsym : null;
   const desktopReaderEntry = useRef(false);
-  function openSource() {
-    if (sel == null || !doc) return;
-    const h = selHSym == null ? undefined : districtSymbolsMap.get(D_(doc, sel));
-    const row = h && selHSym != null ? h.symbols[h.symbol_indices.indexOf(selHSym)] : undefined;
-    const flat = selSym == null ? undefined : doc.S[String(sel)]?.[selSym];
+  function sourceRange(file: number, symbol?: number | null, hierarchical?: number | null) {
+    const h = doc && hierarchical != null ? districtSymbolsMap.get(D_(doc, file)) : undefined;
+    const row = h && hierarchical != null ? h.symbols[h.symbol_indices.indexOf(hierarchical)] : undefined;
+    const flat = symbol == null ? undefined : doc?.S[String(file)]?.[symbol];
     const line = row?.[3] ?? flat?.[2] ?? 1;
     const end = row?.[4] ?? flat?.[3] ?? line;
+    return { line, end };
+  }
+  function openSource() {
+    if (sel == null || !doc) return;
+    const { line, end } = sourceRange(sel, selSym, selHSym);
     if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end }); }
     else { desktopReaderEntry.current = true; navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end }), state: true }); }
   }
@@ -370,7 +374,7 @@ export function MapView() {
     // Scope item 3: "setting all levels" -- file, symbol, and dropping
     // whatever else (a bare district, a directory highlight, the old `sym`)
     // was selected, in one URL update.
-    updateSearch({ file: doc.F[fileIdx], sym: undefined, hsym: global, d: undefined, dir: undefined });
+    updateSearch({ file: doc.F[fileIdx], sym: undefined, hsym: global, d: undefined, dir: undefined, ...(search.read ? sourceRange(fileIdx, null, global) : { line: undefined, end: undefined }) });
     framePeekNow();
     if (districtClass(doc.districts[String(D_(doc, fileIdx))]) !== "unconnected") canvasRef.current?.panTo(fileIdx);
   }
@@ -408,7 +412,7 @@ export function MapView() {
         dispatchDesktopView({ type: "map-file", district, file: i });
       }
     }
-    updateSearch({ file: doc.F[i], sym: opts.symbol, hsym: undefined, d: undefined, dir: undefined });
+    updateSearch({ file: doc.F[i], sym: opts.symbol, hsym: undefined, d: undefined, dir: undefined, ...(search.read ? sourceRange(i, opts.symbol) : { line: undefined, end: undefined }) });
     framePeekNow();
     if (districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.panTo(i);
   }
@@ -682,6 +686,22 @@ export function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrow]);
 
+  // A desktop reader may follow new map selections while it stays open.
+  // Back closes reading at the live selection, rather than restoring the
+  // file that happened to be selected when its history entry was pushed.
+  useEffect(() => {
+    if (narrow) return;
+    return router.history.subscribe(({ location, action }) => {
+      if (action.type !== "BACK" && action.type !== "GO") return;
+      if (location.pathname !== mapPathRef.current || !liveSearchRef.current.read) return;
+      desktopReaderEntry.current = false;
+      const desired = { ...liveSearchRef.current, read: undefined };
+      liveSearchRef.current = desired;
+      navigate({ to: ".", search: desired, replace: true, state: true });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [narrow]);
+
   // docs/UX.md §3.2: every phone selection opens the sheet at Peek, never
   // higher, and replaces whatever card (a road, map quality) was showing.
   // Landscape also opens its collapsed side sheet (§9). Desktop selections
@@ -908,7 +928,7 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
-  const sourceReader = search.read && search.file ? <SourceReader modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
+  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
   const mapCanvas = (
     <MapCanvas
       doc={doc}
