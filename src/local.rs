@@ -245,7 +245,7 @@ fn run(
         worker_gid: 10001,
         allow_openrouter_key: false,
     };
-    let result=executor::execute(&env,id,&spec,&inputs,&mut Sink(s.clone()),&Probe(cancel.clone())).map_err(|_| anyhow::anyhow!("Index failed or cancelled. The selected source is retained; retry from the local page."))?;
+    let result=executor::execute(&env,id,&spec,&inputs,&mut Sink(s.clone()),cancel.as_ref()).map_err(|_| anyhow::anyhow!("Index failed or cancelled. The selected source is retained; retry from the local page."))?;
     let work = result.job_dir.clone();
     let publish = (|| -> Result<()> {
         ensure!(
