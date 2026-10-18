@@ -18,10 +18,12 @@ for(const width of [390,1280])for(const colorScheme of ['light','dark']){
  await page.locator('.cm-content').waitFor();
  assert.equal(await page.locator('.cm-content').getAttribute('contenteditable'),'false');
  const original=await page.locator('.cm-content').innerText();
+ await page.waitForFunction(()=>document.querySelector('.cm-content .cm-line span[class]'));
  await page.locator('.cm-content').focus();await page.keyboard.type('cannot edit');
  assert.equal(await page.locator('.cm-content').innerText(),original);
  await page.keyboard.press('Control+a');await page.keyboard.press('Control+c');
  assert((await page.evaluate(()=>navigator.clipboard.readText())).includes('def '));
+ await page.locator('.cm-content').evaluate(el=>{const data=new DataTransfer();data.setData('text/plain','mutated paste');el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});assert.equal(await page.locator('.cm-content').innerText(),original);
  await page.getByRole('button',{name:'Find in file'}).click();
  const search=page.locator('.cm-search input[name=search]');await search.fill('def');await page.locator('.cm-search button[name=next]').click();
  assert(await page.locator('.cm-search').isVisible());
@@ -39,11 +41,17 @@ for(const width of [390,1280])for(const colorScheme of ['light','dark']){
  await page.goto(base+'&read=true&line=2.5&end=4.5');await page.locator('.cm-content').waitFor();await page.reload();await page.locator('.cm-content').waitFor();
  assert((await page.locator('.source-provenance').first().innerText()).includes(fixture.a));
  await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));assert.equal(new URL(page.url()).searchParams.get('file'),fixture.file);
- await page.goto(base.replace(fixture.file,'inert.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert.equal(await page.evaluate(()=>window.sourceInjected),undefined);
+ await page.goto(base.replace(fixture.file,'inert.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert.equal(await page.evaluate(()=>window.sourceInjected),undefined);assert.equal(await page.locator('.cm-content script').count(),0);
  await page.goto(base.replace(fixture.file,'long.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert(await page.getByText('Plain text · long line protection',{exact:false}).isVisible());
  for(const [file,message] of [['binary.dat','Binary or non-UTF-8'],['large.txt','exceeds the 1 MiB'],['absent','missing from this snapshot']]){
   await page.goto(base.replace(fixture.file,file)+'&read=true');await page.getByText(message,{exact:false}).waitFor();
  }
+ // Deliberate browser network failure exercises loading/error/retry on the
+ // production reader. It is distinct from the real API/process evidence.
+ await page.route('**/api/maps/snapshot/*/source?*',route=>route.abort());
+ await page.goto(base+'&read=true');await page.getByRole('button',{name:'Retry source'}).waitFor();
+ await page.unroute('**/api/maps/snapshot/*/source?*');await page.getByRole('button',{name:'Retry source'}).click();await page.locator('.cm-content').waitFor();
+ await page.getByRole('button',{name:'Return to map'}).click();assert.equal(await page.locator('.cm-editor').count(),0);
  assert.deepEqual(errors,[]);results.push({width,colorScheme,passed:true,images:'unreviewed candidates',device:'Chromium emulation',browser:browser.version()});await context.close();
 }
 fs.writeFileSync('../reader-evidence/browser.json',JSON.stringify({fixture,results,visualReview:'pending; host image inspection prohibited',physicalDevice:'not run'},null,2));
