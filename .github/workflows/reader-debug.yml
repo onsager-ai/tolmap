@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      LEIDEN_PREFIX: ${{ github.workspace }}/.native
+      LEIDEN_PREFIX: ${{ github.workspace }}/.native/leiden
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,7 +28,7 @@ jobs:
           name: ci-leiden-lib
           run-id: 39149998237
           github-token: ${{ github.token }}
-          path: .native/lib
+          path: .native/leiden/lib
       - run: chmod +x bin/tolmap
       - run: corepack enable && corepack prepare pnpm@9.15.9 --activate
       - run: pnpm --dir web install --frozen-lockfile
@@ -36,7 +36,7 @@ jobs:
       - run: pnpm --dir web exec playwright install --with-deps chromium
       - run: python3 scripts/local-reader-fixture.py
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/.native/lib
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.native/leiden/lib
           TOLMAP_BINARY: bin/tolmap
       - run: cd web && node scripts/check-source-reader.mjs
       - uses: actions/upload-artifact@v4
