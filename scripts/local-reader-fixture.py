@@ -1,7 +1,7 @@
 """CI only: real binary/process, local Git objects, production exported JSON.
 Leaves the isolated loopback process running for the production browser checks.
 """
-import json, os, pathlib, re, shutil, subprocess, time, urllib.request, urllib.error
+import json, os, pathlib, re, shutil, signal, subprocess, time, urllib.request, urllib.error
 root=pathlib.Path('.local-reader').resolve();root.mkdir(exist_ok=True)
 repo=root/'checkout';shutil.copytree('tests/fixtures/service_identity',repo)
 def git(*args):return subprocess.check_output(['git','-C',str(repo),*args],stderr=subprocess.DEVNULL).decode().strip()
@@ -55,6 +55,39 @@ export=get(base+'/artifact');assert export['F'] and 'text' not in export and ori
 (repo/'shop/cart.py').write_text((repo/'shop/cart.py').read_text()+'\n# committed B\n');git('commit','-am','B');b=git('rev-parse','HEAD')
 second=index();bid=next(iter(second-first));assert get('/api/maps/snapshot/'+bid+'/provenance')['commit']==b
 assert get(base+'/source?path=shop/cart.py')['text']==original['text']
+# Pause the actual engine child, then require cancellation to kill/reap it
+# rather than waiting for stdout to reach EOF. Retry only if observation missed
+# the tiny fixture; a missed worker is never a cancellation pass.
+for attempt in range(5):
+    body=req('/')[1];prepared=re.search(rb'action=/local/index\?id=([a-f0-9-]+)',body).group(1).decode()
+    req('/local/index?id='+prepared,True)
+    deadline=time.monotonic()+5;worker=None
+    while time.monotonic()<deadline and worker is None:
+        for children in pathlib.Path(f'/proc/{p.pid}/task').glob('*/children'):
+            for pid in children.read_text().split():
+                try:
+                    argv=pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+                    if len(argv)>1 and argv[1]==b'worker':
+                        worker=int(pid);os.killpg(worker,signal.SIGSTOP);break
+                except (FileNotFoundError,ProcessLookupError):pass
+        time.sleep(.005)
+    if worker is not None:break
+else:raise AssertionError('actual local worker was never observed')
+before_cancel=len(list((root/'store/snapshots').glob('*/snapshot.json')))
+body=req('/')[1];job=re.search(rb'action=/local/cancel\?id=([a-f0-9-]+)',body).group(1).decode()
+req('/local/cancel?id='+job,True)
+for _ in range(100):
+    if not pathlib.Path(f'/proc/{worker}').exists():break
+    time.sleep(.05)
+else:raise AssertionError('cancelled local worker was not killed/reaped')
+for _ in range(100):
+    if b'Cancel indexing' not in req('/')[1]:break
+    time.sleep(.05)
+assert len(list((root/'store/snapshots').glob('*/snapshot.json')))==before_cancel
+# A third completed snapshot must use monotonically persisted history order.
+index()
+ordered=[json.loads(x.read_text())['sequence'] for x in (root/'store/snapshots').glob('*/snapshot.json')]
+assert sorted(ordered)==list(range(1,len(ordered)+1))
 # Even removal of the original checkout cannot replace/expire stored A.
 shutil.move(repo,root/'moved-checkout')
 assert get(base+'/source?path=shop/cart.py')['text']==original['text']

@@ -59,6 +59,7 @@ struct Local {
     repository: String,
     prepared: Mutex<Option<Prepared>>,
     job: Mutex<Option<Job>>,
+    notice: Mutex<String>,
 }
 struct Probe {
     stopped: AtomicBool,
@@ -298,7 +299,7 @@ fn escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 fn html(s: &Local, notice: &str) -> Result<Response> {
-    let mut content=format!("<!doctype html><html lang=en><meta name=viewport content='width=device-width,initial-scale=1'><title>Tolmap local</title><link rel=stylesheet href=/local.css><main><h1>Your local repository</h1><p>Processing and storage stay on this computer. No account, subscription, provider login or upload is required.</p><p>Storage: <code>{}</code></p><p>Only committed HEAD is analyzed. Uncommitted and untracked files are excluded. Commit your changes before refreshing.</p><p role=status>{}</p>",escape(&s.data.display().to_string()),escape(notice));
+    let mut content=format!("<!doctype html><html lang=en><meta name=viewport content='width=device-width,initial-scale=1'><title>Tolmap local</title><link rel=stylesheet href=/local.css><main><h1>Your local repository</h1><p>Processing and storage stay on this computer. No account, subscription, provider login or upload is required.</p><p>Storage: <code>{}</code></p><p>Only committed HEAD is analyzed. Uncommitted and untracked files are excluded. Commit your changes before refreshing.</p><p role=status>{}</p>",escape(&s.data.display().to_string()),escape(if notice.is_empty() { &s.notice.lock().unwrap() } else { notice }));
     if let Some(j) = s.job.lock().unwrap().as_ref() {
         content.push_str(&format!("<meta http-equiv=refresh content=2><h2>Indexing</h2><p>{}</p><form method=post action=/local/cancel?id={}><button>Cancel indexing</button></form>",escape(&j.stage),j.id));
     } else if let Some(p) = s.prepared.lock().unwrap().as_ref() {
@@ -392,9 +393,11 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                 std::thread::spawn(move || {
                     let result = run(state.clone(), prepared, commit, all, id, cancel);
                     *state.job.lock().unwrap() = None;
-                    if result.is_err() {
-                        eprintln!("local indexing failed or cancelled; source retained for retry");
-                    }
+                    *state.notice.lock().unwrap() = if result.is_err() {
+                        "Indexing failed or was cancelled. The committed source selection is retained; retry indexing or refresh from HEAD.".into()
+                    } else {
+                        "Snapshot saved. Open it from history below.".into()
+                    };
                 });
                 return Ok((StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response());
             }
@@ -519,6 +522,7 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
         repository: repo,
         prepared: Mutex::new(None),
         job: Mutex::new(None),
+        notice: Mutex::new(String::new()),
     });
     eprintln!("Tolmap local: {origin} — committed source only; no upload");
     axum::serve(listener, axum::Router::new().fallback(handle).with_state(s)).await?;

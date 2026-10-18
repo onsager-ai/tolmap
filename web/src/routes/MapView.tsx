@@ -627,11 +627,11 @@ export function MapView() {
   // A selection (a deep link included) is one entry: back clears it before
   // it leaves the map.
   useEffect(() => {
-    if (!narrow || skippingRef.current) return;
+    if (!narrow || !doc || skippingRef.current) return;
     if (phoneHasSelection) pushOverlay("sel");
     else dropOverlay("sel");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phoneHasSelection, narrow]);
+  }, [phoneHasSelection, narrow, !!doc]);
   // Establish the selected map entry before reading, including slow deep links.
   useEffect(() => {
     if (narrow && doc && search.read && !skippingRef.current) pushOverlay("reader");
