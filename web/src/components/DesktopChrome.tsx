@@ -19,6 +19,7 @@ import {
   desktopControlSize,
 } from "@/map/layoutProfile";
 import { FolderBody } from "@/components/SelectionPanel";
+import { TolmapLogo } from "@/components/TolmapLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PackageLegend } from "@/components/PackageLegend";
 import { SearchBox } from "@/components/SearchBox";
@@ -110,10 +111,6 @@ function MonoIcon({ children, size = 16 }: { children: ReactNode; size?: number 
       {children}
     </svg>
   );
-}
-
-function HomeMark() {
-  return <span aria-hidden="true" className="h-[18px] w-[18px] shrink-0 rounded-[6px] bg-[conic-gradient(from_200deg,var(--link-in),var(--accent),var(--link-out),var(--link-in))]" />;
 }
 
 function InfoIcon() {
@@ -349,8 +346,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
         }}
       >
         <Link to="/" data-wordmark aria-label="tolmap home" className={`flex items-center gap-2 rounded-[10px] pl-2 pr-2.5 font-bold text-[16px] tracking-[-.01em] hover:bg-[var(--chrome-hover)] ${p.touch ? "h-11" : "h-9"}`}>
-          <HomeMark />
-          tolmap
+          <TolmapLogo className="h-7 w-auto shrink-0" />
         </Link>
         <span aria-hidden="true" className="mx-1 h-5 w-px bg-[var(--rule)]" />
         <button

@@ -5,6 +5,7 @@ import { postIndexJob, cancelJob, ApiRequestError } from "@/api/client";
 import type { JobSnapshot } from "@/types";
 import type { ProgressValue } from "@bindings/ProgressValue";
 import type { StageId } from "@bindings/StageId";
+import { TolmapLogo } from "@/components/TolmapLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useLayoutProfile } from "@/hooks/useLayoutProfile";
 import { isPhoneShell } from "@/map/layoutProfile";
@@ -156,13 +157,13 @@ function PageFrame({ narrow, children }: { narrow: boolean; children: ReactNode 
         <div className="px-3 pt-[max(env(safe-area-inset-top),12px)]">
           <Link to="/" className="inline-flex h-11 items-center gap-1.5 rounded-[12px] pl-1 pr-3 text-row text-[var(--on)]" aria-label="tolmap home">
             <ChevronLeft />
-            tolmap
+            <TolmapLogo className="h-7 w-auto shrink-0" />
           </Link>
         </div>
       ) : (
         <header className="flex h-14 items-center justify-between border-b border-[var(--rule)] px-5">
-          <Link to="/" className="text-row text-[var(--on)]">
-            tolmap
+          <Link to="/" className="text-row text-[var(--on)]" aria-label="tolmap home">
+            <TolmapLogo className="h-7 w-auto shrink-0" />
           </Link>
           <ThemeToggle />
         </header>
