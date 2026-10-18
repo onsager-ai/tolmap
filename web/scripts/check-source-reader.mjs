@@ -15,7 +15,8 @@ for(const width of [390,1280])for(const colorScheme of ['light','dark']){
  const base=`http://127.0.0.1:8988/snapshot/${fixture.snapshotA}?file=${fixture.file}`;
  await page.goto(base);await page.locator('.map-svg').waitFor();await page.getByRole('button',{name:'Read selected source'}).waitFor();await settleCamera(page);
  const before=await cameraBoxes(page);
- await page.getByRole('button',{name:'Read selected source'}).click();
+ const sourceAction=page.getByRole('button',{name:'Read selected source'});
+ if(width===390)await sourceAction.tap();else await sourceAction.click();
  await page.locator('.cm-content').waitFor();
  assert.equal(await page.locator('.cm-content').getAttribute('contenteditable'),'false');
  const original=await page.locator('.cm-content').innerText();
@@ -43,6 +44,9 @@ for(const width of [390,1280])for(const colorScheme of ['light','dark']){
  if(width===390)assert.equal(await page.evaluate(()=>history.length-window.readerInitialHistoryLength),2,'selection and reader must create distinct native history entries');
  await page.reload();await page.locator('.cm-content').waitFor();
  assert((await page.locator('.source-provenance').first().innerText()).includes(fixture.a));
+ const committed=await(await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}/source?commit=${fixture.a}&path=${encodeURIComponent(fixture.file)}`)).json();
+ await page.locator('.cm-content').focus();await page.keyboard.press('Control+c');
+ assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),committed.text.split('\n').slice(1,4).join('\n'),'deep link selects the exact committed line range');
  await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));assert.equal(new URL(page.url()).searchParams.get('file'),fixture.file,JSON.stringify(await page.evaluate(()=>window.readerHistory)));
  await page.goto(base.replace(fixture.file,'inert.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert.equal(await page.evaluate(()=>window.sourceInjected),undefined);assert.equal(await page.locator('.cm-content script').count(),0);
  await page.goto(base.replace(fixture.file,'long.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert(await page.getByText('Plain text · long line protection',{exact:false}).isVisible());
