@@ -15,7 +15,7 @@ pub mod ratelimit;
 pub mod schedule;
 pub mod store;
 mod time;
-mod worker_result;
+pub mod worker_result;
 pub mod workers;
 
 use std::sync::Arc;
