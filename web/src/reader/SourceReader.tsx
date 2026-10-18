@@ -85,6 +85,7 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
   }, [source, path, start, end, theme]);
   return <section ref={region} className="source-reader" data-source-reader role={modal ? "dialog" : "region"} aria-modal={modal || undefined} aria-label="Source reader" onKeyDown={e => {
     e.stopPropagation();
+    if (e.defaultPrevented) return;
     if (modal && e.key === "Tab") {
       const controls = Array.from(region.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, select, [tabindex="0"]') ?? []).filter(el => el.getClientRects().length);
       const first = controls[0], last = controls.at(-1);
