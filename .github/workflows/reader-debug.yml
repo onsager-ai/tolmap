@@ -1,6 +1,8 @@
 name: Reader diagnostic
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/snapshot-reader]
 permissions:
   contents: read
   actions: read
