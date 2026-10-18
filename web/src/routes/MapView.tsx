@@ -280,7 +280,7 @@ export function MapView() {
     const line = row?.[3] ?? flat?.[2] ?? 1;
     const end = row?.[4] ?? flat?.[3] ?? line;
     if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end }); }
-    else navigate({ to: ".", search: (prev: MapSearch) => ({ ...prev, read: true, line, end }), state: true });
+    else navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end }), state: true });
   }
   function closeSource() {
     if (narrow) { dropOverlay("reader"); updateSearch({ read: undefined }); }
