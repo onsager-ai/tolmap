@@ -3,7 +3,7 @@ import { EditorState, Compartment } from "@codemirror/state";
 import { EditorView, lineNumbers, keymap, highlightSpecialChars, drawSelection } from "@codemirror/view";
 import { defaultHighlightStyle, syntaxHighlighting, LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
-import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
+import { search, searchKeymap, openSearchPanel, getSearchQuery, setSearchQuery } from "@codemirror/search";
 import { useEffectiveTheme } from "@/lib/theme";
 import { API_BASE } from "@/api/client";
 import "./reader.css";
@@ -18,9 +18,11 @@ const messages: Record<string, string> = {
 
 /** One production CM6 reader, consumed unchanged by OSS and hosted adapters.
  * Search/highlighting state stays here, outside MapView and its renderer. */
-export function SourceReader({ owner, repo, path, commit, start = 1, end = start, onClose }: {
-  owner: string; repo: string; path: string; commit?: string; start?: number; end?: number; onClose(): void;
+export function SourceReader({ owner, repo, path, commit, start = 1, end = start, modal = false, onClose }: {
+  owner: string; repo: string; path: string; commit?: string; start?: number; end?: number; modal?: boolean; onClose(): void;
 }) {
+  const region = useRef<HTMLElement>(null);
+  const [searchStatus, setSearchStatus] = useState("Search this file");
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView | null>(null);
   const close = useRef<HTMLButtonElement>(null);
@@ -62,7 +64,13 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
       // paste/drop paths. Selection/search transactions remain available.
       EditorState.changeFilter.of(() => false),
       EditorView.contentAttributes.of({ tabindex: "0", "aria-label": "Read-only source", role: "textbox", "aria-readonly": "true" }),
-      lineNumbers(), highlightSpecialChars(), drawSelection(), search({ top: true }), keymap.of(searchKeymap),
+      lineNumbers(), highlightSpecialChars(), drawSelection(), search({ top: true }), keymap.of([...searchKeymap, { key: "Mod-a", run: v => { v.dispatch({ selection: { anchor: 0, head: v.state.doc.length } }); return true; } }]),
+      EditorView.updateListener.of(update => {
+        if (update.transactions.some(t => t.effects.some(e => e.is(setSearchQuery)))) {
+          const q = getSearchQuery(update.state);
+          setSearchStatus(!q.valid ? "Enter text to search" : q.getCursor(update.state).next().done ? "No results" : "Matches found");
+        }
+      }),
       syntaxHighlighting(defaultHighlightStyle), language.of([]),
       EditorView.theme({ "&": { height: "100%", color: "var(--on)", backgroundColor: "var(--chrome2)" }, ".cm-scroller": { overflow: "auto", fontFamily: '"IBM Plex Mono", monospace', overscrollBehavior: "contain" }, ".cm-gutters": { backgroundColor: "var(--chrome)", color: "var(--dim)", borderColor: "var(--rule)" }, ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--on)" }, "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "var(--chrome-key)" } }, { dark: theme === "dark" }),
     ] }) });
@@ -75,13 +83,22 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
     if (description && !source.long_line) void description.load().then(support => { if (!disposed) view.dispatch({ effects: language.reconfigure(support) }); }).catch(() => { if (!disposed) setGrammar("Plain text · highlighting unavailable"); });
     return () => { disposed = true; editor.current = null; view.destroy(); };
   }, [source, path, start, end, theme]);
-  return <section className="source-reader" data-source-reader aria-label="Source reader" onKeyDown={e => { e.stopPropagation(); if (e.key === "Escape" && !host.current?.querySelector(".cm-search")) { e.preventDefault(); onClose(); } }}>
+  return <section ref={region} className="source-reader" data-source-reader role={modal ? "dialog" : "region"} aria-modal={modal || undefined} aria-label="Source reader" onKeyDown={e => {
+    e.stopPropagation();
+    if (modal && e.key === "Tab") {
+      const controls = Array.from(region.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, select, [tabindex="0"]') ?? []).filter(el => el.getClientRects().length);
+      const first = controls[0], last = controls.at(-1);
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    }
+ if (e.key === "Escape" && !host.current?.querySelector(".cm-search")) { e.preventDefault(); onClose(); } }}>
     <header><button ref={close} onClick={onClose}>Return to map</button><strong>{path}</strong><button onClick={() => { if (editor.current) openSearchPanel(editor.current); }} disabled={!editor.current && source?.status !== "ready"}>Find in file</button></header>
     <p className="source-provenance">{source ? `${source.repository} · ${source.commit}` : "Snapshot source"} · Read only</p>
     {!source && !failure && <p role="status">Loading committed source…</p>}
     {failure && <div role="alert"><p>Source unavailable. Check access or restore this snapshot. No current-branch fallback was used.</p><button onClick={() => setRetry(n => n + 1)}>Retry source</button></div>}
     {source && source.status !== "ready" && <p role="status">{messages[source.status] ?? "Source unavailable."}</p>}
     {source?.status === "ready" && <p className="source-provenance">{grammar} · {source.bytes.toLocaleString()} bytes · Lines {start}–{end}</p>}
+    {source?.status === "ready" && <p className="source-provenance" role="status" data-source-search-status>{searchStatus}</p>}
     <div className="source-editor" ref={host} />
   </section>;
 }

@@ -889,7 +889,7 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
-  const sourceReader = search.read && search.file ? <SourceReader owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button className="source-action" onClick={openSource}>Read selected source</button> : null;
+  const sourceReader = search.read && search.file ? <SourceReader modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button className="source-action" onClick={openSource}>Read selected source</button> : null;
   const mapCanvas = (
     <MapCanvas
       doc={doc}

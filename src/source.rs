@@ -24,6 +24,10 @@ pub struct Source {
     pub long_line: bool,
 }
 
+pub fn valid_commit(commit: &str) -> bool {
+    crate::service::worker_result::is_object_id(commit)
+}
+
 pub fn valid_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 4096
@@ -50,10 +54,7 @@ pub fn git(repo: &Path) -> Command {
 /// No working-tree, branch, default-branch, network or LFS fallback exists.
 pub fn read(repo: &Path, repository: &str, commit: &str, path: &str) -> Result<Source> {
     ensure!(valid_path(path), "invalid relative source path");
-    ensure!(
-        crate::service::worker_result::is_object_id(commit),
-        "immutable commit required"
-    );
+    ensure!(valid_commit(commit), "immutable commit required");
     let mut result = Source {
         version: VERSION,
         repository: repository.into(),

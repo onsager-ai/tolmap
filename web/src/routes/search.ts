@@ -64,8 +64,8 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const job = typeof search.job === "string" && search.job.length > 0 ? search.job : undefined;
   const commit = typeof search.commit === "string" && /^[a-f0-9]{40,64}$/.test(search.commit) ? search.commit : undefined;
   const read = !!file && (search.read === true || search.read === "true");
-  const line = Math.max(1, Math.min(10_000_000, Number(search.line) || 1));
-  const end = Math.max(line, Math.min(10_000_000, Number(search.end) || line));
+  const line = Math.floor(Math.max(1, Math.min(10_000_000, Number(search.line) || 1)));
+  const end = Math.floor(Math.max(line, Math.min(10_000_000, Number(search.end) || line)));
   return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, read, line, end };
 }
 

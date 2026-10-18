@@ -23,7 +23,7 @@ for(const width of [390,1280])for(const colorScheme of ['light','dark']){
  const search=page.locator('.cm-search input[name=search]');await search.fill('def');await page.locator('.cm-search button[name=next]').click();
  assert(await page.locator('.cm-search').isVisible());
  await search.fill('no_such_fixture_739');await page.locator('.cm-search button[name=next]').click();
- assert(await search.getAttribute('class').then(s=>s.includes('cm-searchField')) || await search.isVisible());
+ await page.getByText('No results',{exact:true}).waitFor();
  const afterTyping=await cameraBoxes(page);assert.deepEqual(afterTyping,before,'source typing changed map geometry');
  await page.keyboard.press('Escape');
  await page.screenshot({path:`../reader-evidence/reader-${width}-${colorScheme}.png`,animations:'disabled'});
@@ -32,7 +32,7 @@ for(const width of [390,1280])for(const colorScheme of ['light','dark']){
  await page.getByRole('button',{name:'Read selected source'}).click();await page.locator('.cm-content').waitFor();
  await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));
  assert(new URL(page.url()).searchParams.get('file')===fixture.file);await settleCamera(page);assert.deepEqual(await cameraBoxes(page),before);
- await page.goto(base+'&read=true&line=2&end=4');await page.locator('.cm-content').waitFor();await page.reload();await page.locator('.cm-content').waitFor();
+ await page.goto(base+'&read=true&line=2.5&end=4.5');await page.locator('.cm-content').waitFor();await page.reload();await page.locator('.cm-content').waitFor();
  assert((await page.locator('.source-provenance').first().innerText()).includes(fixture.a));
  await page.goto(base.replace(fixture.file,'inert.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert.equal(await page.evaluate(()=>window.sourceInjected),undefined);
  await page.goto(base.replace(fixture.file,'long.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert(await page.getByText('Plain text · long line protection',{exact:false}).isVisible());
