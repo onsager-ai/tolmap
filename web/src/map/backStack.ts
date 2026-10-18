@@ -55,6 +55,7 @@ export function isOverlayKind(value: unknown): value is OverlayKind {
  * is dead, because its overlay did not survive the reload. */
 export function initBack(index: number, marker: unknown, hasSelection: boolean, hasReader = false): BackState {
   if (!isOverlayKind(marker)) return { index, entries: [] };
+  if (marker === "reader" && hasReader && hasSelection) return { index, entries: [{ kind: "sel", index: index - 1, live: true }, { kind: "reader", index, live: true }] };
   return { index, entries: [{ kind: marker, index, live: (marker === "sel" && hasSelection) || (marker === "reader" && hasReader) }] };
 }
 

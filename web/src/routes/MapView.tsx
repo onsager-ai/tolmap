@@ -272,6 +272,7 @@ export function MapView() {
   // clears `sym` (selectHierSymbol below), so the two never compete for
   // what the breadcrumb/sidebar actually show.
   const selHSym = sel != null && search.hsym != null ? search.hsym : null;
+  const desktopReaderEntry = useRef(false);
   function openSource() {
     if (sel == null || !doc) return;
     const h = selHSym == null ? undefined : districtSymbolsMap.get(D_(doc, sel));
@@ -280,10 +281,11 @@ export function MapView() {
     const line = row?.[3] ?? flat?.[2] ?? 1;
     const end = row?.[4] ?? flat?.[3] ?? line;
     if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end }); }
-    else navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end }), state: true });
+    else { desktopReaderEntry.current = true; navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end }), state: true }); }
   }
   function closeSource() {
     if (narrow) { dropOverlay("reader"); updateSearch({ read: undefined }); }
+    else if (desktopReaderEntry.current) { desktopReaderEntry.current = false; router.history.back(); }
     else updateSearch({ read: undefined });
   }
   const selD = sel == null && search.d != null ? search.d : null;
@@ -619,13 +621,9 @@ export function MapView() {
     if (!narrow) return;
     skippingRef.current = false;
     const st = router.history.location.state as unknown as Record<string, unknown>;
-    backRef.current = initBack(historyIndex(), st[OVERLAY_MARKER], phoneHasSelectionRef.current, !!liveSearchRef.current.read);
+    backRef.current = initBack(historyIndex(), st[OVERLAY_MARKER], phoneHasSelectionRef.current || !!liveSearchRef.current.file, !!liveSearchRef.current.read);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrow, owner, repo]);
-  useEffect(() => {
-    if (narrow && search.read && !skippingRef.current) pushOverlay("reader");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [narrow, search.read]);
   // A selection (a deep link included) is one entry: back clears it before
   // it leaves the map.
   useEffect(() => {
@@ -634,6 +632,12 @@ export function MapView() {
     else dropOverlay("sel");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phoneHasSelection, narrow]);
+  // Establish the selected map entry before reading, including slow deep links.
+  useEffect(() => {
+    if (narrow && doc && search.read && !skippingRef.current) pushOverlay("reader");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [narrow, search.read, !!doc, phoneHasSelection]);
+
   useEffect(() => {
     if (!narrow) return;
     return router.history.subscribe(({ location, action }) => {

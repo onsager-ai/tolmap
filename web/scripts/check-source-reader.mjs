@@ -34,6 +34,7 @@ for(const width of [390,1280])for(const colorScheme of ['light','dark']){
  assert(new URL(page.url()).searchParams.get('file')===fixture.file);await settleCamera(page);assert.deepEqual(await cameraBoxes(page),before);
  await page.goto(base+'&read=true&line=2.5&end=4.5');await page.locator('.cm-content').waitFor();await page.reload();await page.locator('.cm-content').waitFor();
  assert((await page.locator('.source-provenance').first().innerText()).includes(fixture.a));
+ await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));assert.equal(new URL(page.url()).searchParams.get('file'),fixture.file);
  await page.goto(base.replace(fixture.file,'inert.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert.equal(await page.evaluate(()=>window.sourceInjected),undefined);
  await page.goto(base.replace(fixture.file,'long.txt')+'&read=true');await page.locator('.cm-content').waitFor();assert(await page.getByText('Plain text · long line protection',{exact:false}).isVisible());
  for(const [file,message] of [['binary.dat','Binary or non-UTF-8'],['large.txt','exceeds the 1 MiB'],['absent','missing from this snapshot']]){

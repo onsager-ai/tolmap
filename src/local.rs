@@ -21,7 +21,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
     },
 };
@@ -38,6 +38,7 @@ struct Snapshot {
     repository: String,
     commit: String,
     prepared: Uuid,
+    sequence: u64,
 }
 struct Prepared {
     id: Uuid,
@@ -48,7 +49,7 @@ struct Prepared {
 struct Job {
     id: Uuid,
     stage: String,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<Probe>,
 }
 struct Local {
     checkout: PathBuf,
@@ -59,12 +60,33 @@ struct Local {
     prepared: Mutex<Option<Prepared>>,
     job: Mutex<Option<Job>>,
 }
-struct Probe(Arc<AtomicBool>);
+struct Probe {
+    stopped: AtomicBool,
+    pid: AtomicU32,
+}
+impl Probe {
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        let pid = self.pid.load(Ordering::SeqCst);
+        if pid > 0 {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
+}
 impl CancelProbe for Probe {
-    fn child_started(&self, _: u32) {}
-    fn child_finished(&self) {}
     fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.stopped.load(Ordering::SeqCst)
+    }
+    fn child_started(&self, pid: u32) {
+        self.pid.store(pid, Ordering::SeqCst);
+        if self.is_cancelled() {
+            self.stop();
+        }
+    }
+    fn child_finished(&self) {
+        self.pid.store(0, Ordering::SeqCst);
     }
 }
 struct Sink(Arc<Local>);
@@ -168,7 +190,7 @@ fn snapshots(s: &Local) -> Result<Vec<Snapshot>> {
             result.push(serde_json::from_slice::<Snapshot>(&std::fs::read(p)?)?);
         }
     }
-    result.sort_by_key(|x| x.id);
+    result.sort_by_key(|x| (x.sequence, x.id));
     Ok(result)
 }
 fn run(
@@ -177,7 +199,7 @@ fn run(
     commit: String,
     all: bool,
     id: Uuid,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<Probe>,
 ) -> Result<()> {
     let source = s
         .data
@@ -189,6 +211,7 @@ fn run(
         names: Default::default(),
         previous_maps: vec![],
     };
+    let sequence = previous.as_ref().map(|p| p.sequence + 1).unwrap_or(1);
     if let Some(p) = previous {
         let dir = s.data.join("snapshots").join(p.id.to_string());
         inputs.names = crate::naming::load_cache(&dir.join("names.json"));
@@ -226,7 +249,7 @@ fn run(
     let work = result.job_dir.clone();
     let publish = (|| -> Result<()> {
         ensure!(
-            !cancel.load(Ordering::SeqCst)
+            !cancel.is_cancelled()
                 && result.checkout.commit == commit
                 && result.output.commit == commit,
             "cancelled or commit mismatch"
@@ -251,12 +274,13 @@ fn run(
         crate::naming::save_cache(&dir.join("names.json"), &adopted.names)?;
         // Metadata is the visibility boundary. Cancellation serializes with it.
         let job = s.job.lock().unwrap();
-        ensure!(!cancel.load(Ordering::SeqCst), "cancelled");
+        ensure!(!cancel.is_cancelled(), "cancelled");
         let snap = Snapshot {
             id,
             repository: s.repository.clone(),
             commit,
             prepared,
+            sequence,
         };
         std::fs::write(dir.join("snapshot.json.tmp"), serde_json::to_vec(&snap)?)?;
         std::fs::rename(dir.join("snapshot.json.tmp"), dir.join("snapshot.json"))?;
@@ -334,7 +358,7 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             "/local/cancel" => {
                 if let Some(j) = s.job.lock().unwrap().as_ref() {
                     ensure!(params.get("id") == Some(&j.id.to_string()), "job mismatch");
-                    j.cancel.store(true, Ordering::SeqCst);
+                    j.cancel.stop();
                 }
                 return html(s, "Cancellation requested; waiting for the worker to stop.");
             }
@@ -354,7 +378,10 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                 );
                 ensure!(!all || !p.all.is_empty(), "no selected sources");
                 let id = Uuid::new_v4();
-                let cancel = Arc::new(AtomicBool::new(false));
+                let cancel = Arc::new(Probe {
+                    stopped: AtomicBool::new(false),
+                    pid: AtomicU32::new(0),
+                });
                 *job = Some(Job {
                     id,
                     stage: "Queued".into(),
