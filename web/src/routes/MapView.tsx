@@ -827,7 +827,7 @@ export function MapView() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [narrow, desktopPanelOpen, desktopViews, desktopSearchOpen, keyboardOpen, isFullscreen, selD, sel, doc, themeChoice]);
+  }, [narrow, desktopPanelOpen, desktopViews, desktopSearchOpen, keyboardOpen, isFullscreen, selD, sel, doc, themeChoice, search.read]);
 
   const rendererCallbacks: MapRendererCallbacks = {
     onSelectFile: (i) => (pathPick && !pathEnds ? completePath(i) : selectFile(i)),

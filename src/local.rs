@@ -61,6 +61,8 @@ struct Local {
 }
 struct Probe(Arc<AtomicBool>);
 impl CancelProbe for Probe {
+    fn child_started(&self, _: u32) {}
+    fn child_finished(&self) {}
     fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
@@ -244,7 +246,8 @@ fn run(
                 districts: o.districts,
             },
             None,
-        )?;
+        )
+        .map_err(|_| anyhow::anyhow!("invalid worker artifacts"))?;
         crate::naming::save_cache(&dir.join("names.json"), &adopted.names)?;
         // Metadata is the visibility boundary. Cancellation serializes with it.
         let job = s.job.lock().unwrap();
