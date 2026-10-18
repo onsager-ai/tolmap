@@ -10,6 +10,7 @@ try{
 for(const width of [390,1280])for(const colorScheme of ['light','dark']){
  const context=await browser.newContext({viewport:{width,height:900},colorScheme,hasTouch:width===390,reducedMotion:'reduce',permissions:['clipboard-read','clipboard-write']});
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('http://127.0.0.1:8988/');await page.getByRole('heading',{name:'Your local repository'}).waitFor();await page.screenshot({path:`../reader-evidence/local-${width}-${colorScheme}.png`,animations:'disabled'});
  const base=`http://127.0.0.1:8988/snapshot/${fixture.snapshotA}?file=${fixture.file}`;
  await page.goto(base);await page.locator('.map-svg').waitFor();await page.getByRole('button',{name:'Read selected source'}).waitFor();await settleCamera(page);
  const before=await cameraBoxes(page);

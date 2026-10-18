@@ -308,13 +308,18 @@ fn escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 fn html(s: &Local, notice: &str) -> Result<Response> {
+    let index = std::fs::read_to_string(s.assets.join("index.html"))?;
+    let stylesheet = index
+        .split('"')
+        .find(|value| value.starts_with("/assets/") && value.ends_with(".css"))
+        .context("production viewer stylesheet missing")?;
     let saved_notice = s.notice.lock().unwrap().clone();
     let notice = if notice.is_empty() {
         saved_notice.as_str()
     } else {
         notice
     };
-    let mut content=format!("<!doctype html><html lang=en><meta name=viewport content='width=device-width,initial-scale=1'><title>Tolmap local</title><link rel=stylesheet href=/local.css><main><h1>Your local repository</h1><p>Processing and storage stay on this computer. No account, subscription, provider login or upload is required.</p><p>Storage: <code>{}</code></p><p>Only committed HEAD is analyzed. Uncommitted and untracked files are excluded. Commit your changes before refreshing.</p><p role=status>{}</p>",escape(&s.data.display().to_string()),escape(notice));
+    let mut content=format!("<!doctype html><html lang=en><meta name=viewport content='width=device-width,initial-scale=1'><title>Tolmap local</title><link rel=stylesheet href='{stylesheet}'><link rel=stylesheet href=/local.css><main data-local-page><h1>Your local repository</h1><p>Processing and storage stay on this computer. No account, subscription, provider login or upload is required.</p><p>Storage: <code>{}</code></p><p>Only committed HEAD is analyzed. Uncommitted and untracked files are excluded. Commit your changes before refreshing.</p><p role=status>{}</p>",escape(&s.data.display().to_string()),escape(notice));
     if let Some(j) = s.job.lock().unwrap().as_ref() {
         content.push_str(&format!("<meta http-equiv=refresh content=2><h2>Indexing</h2><p>{}</p><form method=post action=/local/cancel?id={}><button>Cancel indexing</button></form>",escape(&j.stage),j.id));
     } else if let Some(p) = s.prepared.lock().unwrap().as_ref() {
@@ -424,7 +429,7 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
         return html(s, "");
     }
     if path == "/local.css" {
-        return Ok(([(header::CONTENT_TYPE,"text/css")],"body{margin:0;background:#eef1ee;color:#131a1e;font:16px system-ui}main{max-width:760px;margin:40px auto;padding:20px}button,a{min-height:44px}button{padding:12px;margin:6px 0}code{overflow-wrap:anywhere}@media(prefers-color-scheme:dark){body{background:#151c21;color:#d9e1e3}a{color:#6fb39f}}" ).into_response());
+        return Ok(([(header::CONTENT_TYPE,"text/css")],"html:has([data-local-page]),body:has([data-local-page]){height:auto;min-height:100%;overflow:auto}body{margin:0;background:var(--chrome);color:var(--on)}main{max-width:760px;margin:40px auto;padding:20px}button,a{min-height:44px}button{padding:12px;margin:6px 0;background:var(--chrome2);color:var(--on);border:1px solid var(--rule);border-radius:8px}code{overflow-wrap:anywhere}a{color:var(--accent)}" ).into_response());
     }
     if path == "/api/healthz" {
         return Ok(axum::Json(json!({"status":"ok","mode":"local"})).into_response());
