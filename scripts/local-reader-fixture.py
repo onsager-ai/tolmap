@@ -94,5 +94,6 @@ assert get(base+'/source?path=shop/cart.py')['text']==original['text']
 metadata={'a':a,'b':b,'snapshotA':sid,'snapshotB':bid,'file':'shop/cart.py','pid':p.pid,'repository':provenance['repository']}
 (root/'fixture.json').write_text(json.dumps(metadata))
 pathlib.Path('reader-evidence').mkdir(exist_ok=True)
+pathlib.Path('reader-evidence/export-map.json').write_text(json.dumps(export,indent=2))
 pathlib.Path('reader-evidence/process.json').write_text(json.dumps({'result':'passed','scope':'real local binary, worker process, Git A/B, private storage, exports, host/origin/path boundaries','fixture':metadata},indent=2))
 print('PASS real local index A/B, independent source objects and exports')

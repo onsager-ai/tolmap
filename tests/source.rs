@@ -23,6 +23,9 @@ fn objects_preserve_a_after_b_and_refuse_boundaries() {
     )
     .unwrap();
     fs::write(p.join("binary"), [0, 1, 2]).unwrap();
+    for name in ["quote\".txt", "tab\tname.txt", "源码.txt"] {
+        fs::write(p.join(name), "inert text").unwrap();
+    }
     fs::write(p.join("large"), vec![b'a'; source::MAX_BYTES as usize + 1]).unwrap();
     fs::write(p.join("long"), "a".repeat(source::LONG_LINE + 1)).unwrap();
     #[cfg(unix)]
@@ -45,6 +48,12 @@ fn objects_preserve_a_after_b_and_refuse_boundaries() {
             .unwrap(),
         "B\n"
     );
+    for name in ["quote\".txt", "tab\tname.txt", "源码.txt"] {
+        assert_eq!(
+            source::read(p, "repo", &a, name).unwrap().text.unwrap(),
+            "inert text"
+        );
+    }
     assert_eq!(
         source::read(p, "repo", &a, "binary").unwrap().status,
         "binary"
