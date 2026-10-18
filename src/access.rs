@@ -69,17 +69,37 @@ mod tests {
     #[test]
     fn every_delivery_and_cache_hit_requires_current_authority() {
         let policy = Fixture(Cell::new(true));
-        for operation in [Operation::Read, Operation::Source, Operation::Admit,
-            Operation::Cancel, Operation::Events, Operation::Artifact, Operation::Publish] {
-            let mut request = Request { principal: "reader", operation,
-                resource: Resource { access_domain: "a", repository: "same", revision: Some("commit") } };
+        for operation in [
+            Operation::Read,
+            Operation::Source,
+            Operation::Admit,
+            Operation::Cancel,
+            Operation::Events,
+            Operation::Artifact,
+            Operation::Publish,
+        ] {
+            let mut request = Request {
+                principal: "reader",
+                operation,
+                resource: Resource {
+                    access_domain: "a",
+                    repository: "same",
+                    revision: Some("commit"),
+                },
+            };
             policy.0.set(true);
             assert_eq!(enforce(&policy, request, || 7), Ok(7));
             request.resource.access_domain = "b";
-            assert_eq!(enforce(&policy, request, || panic!("foreign cache delivered")), Err(Denied));
+            assert_eq!(
+                enforce(&policy, request, || panic!("foreign cache delivered")),
+                Err(Denied)
+            );
             request.resource.access_domain = "a";
             policy.0.set(false);
-            assert_eq!(enforce(&policy, request, || panic!("revoked delivery")), Err(Denied));
+            assert_eq!(
+                enforce(&policy, request, || panic!("revoked delivery")),
+                Err(Denied)
+            );
         }
     }
 }
