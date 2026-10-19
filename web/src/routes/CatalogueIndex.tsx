@@ -4,6 +4,8 @@ import { SubmitRepoForm } from "@/components/SubmitRepoForm";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ChevronIcon } from "@/components/phone/icons";
 import type { CatalogueEntry } from "@/types";
+import { HostActions } from "@/components/HostActions";
+import { hostProfile } from "@/host";
 
 /** docs/UX.md §4.9's "Mapped repositories" row: 64px, name then files ·
  * districts · language, from whatever the catalogue actually returns --
@@ -22,7 +24,7 @@ function RepoRow({ m }: { m: CatalogueEntry }) {
       className="flex min-h-[64px] w-full items-center gap-3 border-b border-[var(--rule)] px-4 py-2.5 text-left last:border-b-0 hover:bg-[var(--chrome)]"
     >
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate font-mono text-row">{m.slug}</span>
+        <span className="truncate font-mono text-row">{m.label ?? m.slug}</span>
         <span className="truncate text-meta text-[var(--dim)]">
           <span className="font-mono">{m.files.toLocaleString()}</span> files ·{" "}
           <span className="font-mono">{m.districts.toLocaleString()}</span> district{m.districts === 1 ? "" : "s"} ·{" "}
@@ -52,9 +54,11 @@ export function CatalogueIndex() {
         style={{ paddingTop: "calc(28px + env(safe-area-inset-top, 0px))" }}
       >
         <div className="flex items-center justify-between">
-          <span className="text-title">tolmap</span>
+          <span className="text-title">tolmap{hostProfile ? " Hub" : ""}</span>
           <ThemeToggle className="h-11 w-11 rounded-full" />
         </div>
+
+        <HostActions />
 
         <div className="flex flex-col gap-3">
           <h1 className="text-title">Map a codebase</h1>

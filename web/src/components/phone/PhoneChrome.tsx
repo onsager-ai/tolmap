@@ -229,7 +229,7 @@ export function PhoneChrome(p: PhoneChromeProps) {
           onClick={p.onOpenRepos}
           className="flex h-11 min-w-0 max-w-[68%] shrink items-center gap-1.5 rounded-[22px] border border-[var(--rule)] bg-[var(--chrome)] pl-3.5 pr-2.5 text-[var(--on)]"
         >
-          <span className="min-w-0 truncate font-mono text-[15px]">{slug}</span>
+          <span className="min-w-0 truncate font-mono text-[15px]">{p.catalogue?.find((m) => m.slug === slug)?.label ?? slug}</span>
           <span className="shrink-0 text-[var(--dim)]">
             <ChevronDownIcon size={16} />
           </span>
@@ -450,7 +450,7 @@ function RepoSheetBody({ doc, slug, catalogue, onLeave }: { doc: MapDocument; sl
     <>
       <div data-repo-current className="mt-1.5 rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)] px-3.5 py-2.5">
         <div className="text-meta text-[var(--dim)]">On screen</div>
-        <div className="truncate font-mono text-row">{slug}</div>
+        <div className="truncate font-mono text-row">{catalogue?.find((m) => m.slug === slug)?.label ?? slug}</div>
         <div className="text-meta text-[var(--dim)]">
           <span className="font-mono">{doc.F.length.toLocaleString("en-US")}</span> files · <span className="font-mono">{mainland}</span> districts
         </div>
@@ -475,7 +475,7 @@ function RepoSheetBody({ doc, slug, catalogue, onLeave }: { doc: MapDocument; sl
           {others.map((m) => (
             <Link key={m.slug} to="/$owner/$repo" params={{ owner: m.owner, repo: m.repo }} search={{ geo: "r", layer: "d" }} replace onClick={onLeave} data-repo-row={m.slug} className={row}>
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate font-mono text-row">{m.slug}</span>
+                <span className="truncate font-mono text-row">{m.label ?? m.slug}</span>
                 <span className="truncate text-meta text-[var(--dim)]">
                   <span className="font-mono">{m.files.toLocaleString("en-US")}</span> files · {m.lang}
                 </span>

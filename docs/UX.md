@@ -148,6 +148,14 @@ Opened from the control column. A radio list (District, Churn, Complexity, Packa
 
 A plain one-screen page: wordmark and theme button; "Map a codebase" with one sentence of what tolmap does; the repository field (16 px, mono) and a full-width "Map it" button; then "Mapped repositories" as 64 px rows with files, districts and language. On desktop the same content sits in a 640 px column.
 
+An authenticated host can compose this same page using the versioned
+[host profile](HOST_PROFILE.md): workspace/actions below the wordmark, an
+authorized-repository select in the existing field slot, and snapshot labels in
+the same catalogue rows. Progress, map and source reading remain the production
+OSS components. Private profiles do not fall back to a public catalogue or offer
+public issue links containing repository context. Existing OSS references remain
+unchanged; hosted identity/select states need separate human-reviewed candidates.
+
 ## 5. Desktop layout: map-first, floating (prototype "tolmap desktop prototype")
 
 This section was redesigned on 2026-09-28 after phase 5 shipped the first desktop layout (#179). The owner asked for the desktop to be "as modern and elegant as mobile". The #179 layout matched its artboard, but it read as a dashboard: a full-width top bar, a dense 320 px rail and a boxed inspector. The owner chose "Map-first, floating" and approved the clickable prototype after six rounds of changes (§12). The prototype is the reference for spacing, copy and behaviour. Where this text and the prototype disagree, this text wins.

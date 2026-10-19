@@ -9,6 +9,7 @@ import {
   type ServiceCatalogueEntry,
 } from "@/api/client";
 import { fetchJsonTracked } from "@/api/streaming";
+import { hostProfile } from "@/host";
 
 // The catalogue index is small (one row per repo) -- no streaming/worker
 // parse needed. The map document and district symbols below are the two
@@ -18,6 +19,7 @@ import { fetchJsonTracked } from "@/api/streaming";
 // the reader doesn't know or care which source produced the bytes it's
 // waiting on.
 function fetchStaticCatalogue(): Promise<CatalogueEntry[]> {
+  if (hostProfile?.private) return Promise.resolve([]);
   return fetch("/maps/index.json").then((res) => {
     if (res.status === 404) return [];
     if (!res.ok) throw new Error(`/maps/index.json: ${res.status} ${res.statusText}`);
@@ -47,6 +49,7 @@ function fetchStaticDistrictSymbols(owner: string, repo: string, district: numbe
 function toCatalogueEntry(m: ServiceCatalogueEntry): CatalogueEntry {
   return {
     slug: m.slug,
+    label: m.label,
     owner: m.owner,
     repo: m.repo,
     file: "",
@@ -113,7 +116,9 @@ export function useCatalogue() {
   // absent service must never block the bundled catalogue from rendering.
   const isLoading = !haveAnyData && (checkingService || staticQuery.isLoading || (available === true && serviceQuery.isFetching));
   // Error only when every source that could have answered has failed.
-  const isError = !haveAnyData && staticQuery.isError && (available === false || serviceQuery.isError);
+  const isError = hostProfile?.private
+    ? available === false || serviceQuery.isError
+    : !haveAnyData && staticQuery.isError && (available === false || serviceQuery.isError);
 
   // Home's "service unavailable" retry (docs/UX.md §4.9): re-probes
   // reachability and both catalogue sources, since a real outage is
@@ -165,7 +170,7 @@ export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin 
   const staticQuery = useQuery({
     queryKey: ["map", "static", owner, repo],
     queryFn: () => fetchStaticMap(owner, repo),
-    enabled: serviceMiss && !!owner && !!repo,
+    enabled: !hostProfile?.private && serviceMiss && !!owner && !!repo,
     staleTime: Infinity,
     retry: false,
   });
@@ -174,7 +179,7 @@ export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin 
   const isLoading =
     !doc &&
     (checkingService || !!pin.wait || (available === true && serviceQuery.isFetching) || (serviceMiss && staticQuery.isFetching));
-  const isError = !doc && serviceMiss && staticQuery.isError;
+  const isError = !doc && serviceMiss && (hostProfile?.private || staticQuery.isError);
 
   return {
     data: doc,

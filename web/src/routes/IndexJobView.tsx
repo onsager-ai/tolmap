@@ -21,6 +21,7 @@ import {
   type PhaseView,
 } from "@/lib/indexPhases";
 import { classifyFailure, reportIssueUrl, type FailureAction, type FailureView } from "@/lib/jobFailure";
+import { hostProfile } from "@/host";
 
 // docs/UX.md §6: the indexing, queue and failure pages. The owner called the
 // page this replaces "quite poorly designed" (2026-09-27): 22 stage rows in
@@ -569,6 +570,7 @@ function FailurePage({ job, slug, narrow }: { job: JobSnapshot; slug: string | u
           </button>
         );
       case "report":
+        if (hostProfile?.private) return null;
         return (
           <a key={kind} data-failure-action={kind} className={className} href={reportIssueUrl(job)} target="_blank" rel="noopener noreferrer">
             Report this repository
