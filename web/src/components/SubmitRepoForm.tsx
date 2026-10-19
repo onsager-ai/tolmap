@@ -29,8 +29,9 @@ export function SubmitRepoForm() {
   // and one more tap raises the keyboard.)
   const hash = useLocation({ select: (l) => l.hash });
   const fieldRef = useRef<HTMLInputElement>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
   useEffect(() => {
-    if (hash === "repo-field") fieldRef.current?.focus();
+    if (hash === "repo-field") (hostProfile ? selectRef.current : fieldRef.current)?.focus();
   }, [hash]);
 
   async function onSubmit(e: FormEvent) {
@@ -76,7 +77,7 @@ export function SubmitRepoForm() {
         {hostProfile ? "Authorized repository" : "GitHub repository"}
       </label>
       {hostProfile ? (
-        <select id="repo-field" data-repo-field value={value} onChange={(e) => setValue(e.target.value)} disabled={disabled || submitting}
+        <select ref={selectRef} id="repo-field" data-repo-field value={value} onChange={(e) => setValue(e.target.value)} disabled={disabled || submitting}
           className="h-[52px] rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)] px-4 font-mono text-body text-[var(--on)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]">
           <option value="">{hostProfile.repositories.length ? "Select a repository" : "Connect a repository to begin"}</option>
           {hostProfile.repositories.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
