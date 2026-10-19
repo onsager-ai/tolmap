@@ -12,8 +12,14 @@ fn main() -> std::io::Result<()> {
         chosen: "src · Rust · 120 files · confidence 0.96 (synthetic fixture)".into(),
         all: vec!["src · Rust".into(), "web/src · TypeScript".into()],
     };
-    let job = pages::Job { id: prepared.id.clone(), stage: "Parsing committed source".into() };
-    let snapshots = vec![pages::Snapshot { id: prepared.id.clone(), commit: prepared.commit.clone() }];
+    let job = pages::Job {
+        id: prepared.id.clone(),
+        stage: "Parsing committed source".into(),
+    };
+    let snapshots = vec![pages::Snapshot {
+        id: prepared.id.clone(),
+        commit: prepared.commit.clone(),
+    }];
     for (name, notice, running, selected, history) in [
         ("start", "", None, None, &[][..]),
         ("confirm", "", None, Some(&prepared), &[][..]),

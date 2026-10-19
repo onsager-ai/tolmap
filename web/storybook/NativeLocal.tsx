@@ -15,7 +15,7 @@ export function NativeLocal({ name, theme }: { name: string; theme: ThemeChoice 
       .replace('<meta http-equiv=refresh content=2>', '')
       .replace("<link rel=stylesheet href='/local-foundation.css'>", `<style>${foundation}</style>`)
       .replace('<link rel=stylesheet href=/local.css>', `<style>${localStyle}</style>`)
-    ));
+    )).catch(error => { if (!controller.signal.aborted) throw error; });
     return () => controller.abort();
   }, [name]);
   applyThemeAttribute(theme);

@@ -63,7 +63,7 @@ export async function installFixture(state: string) {
     }
     if (path.endsWith("/source")) {
       const status = state.replace("source-", "");
-      const text = "// Synthetic source fixture; not the repository's contents.\nexport function navigateMap() {\n  return 'districts';\n}\n";
+      const text = status === 'long-line' ? `// Synthetic long-line fixture\n${'x'.repeat(20_001)}` : "// Synthetic source fixture; not the repository's contents.\nexport function navigateMap() {\n  return 'districts';\n}\n";
       return json({ version: 1, repository: slug, commit, path: url.searchParams.get("path"), status: ["ready", "long-line", "search", "search-empty"].includes(status) ? "ready" : status, text, bytes: new TextEncoder().encode(text).length, long_line: status === "long-line" });
     }
     if (path.endsWith("/symbols")) {
