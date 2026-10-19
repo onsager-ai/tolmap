@@ -76,6 +76,7 @@ const DESKTOP_HEADLINE = "mt-1 text-balance text-[20px] font-semibold leading-[1
 
 interface RepoRow {
   slug: string;
+  label?: string;
   files?: number;
   districts?: number;
   lang?: string;
@@ -86,6 +87,7 @@ function repoRows(catalogue: CatalogueEntry[] | undefined, doc: MapDocument, own
   const slug = `${owner}/${repo}`;
   const rows: RepoRow[] = (catalogue ?? []).map((entry) => ({
     slug: entry.slug,
+    label: entry.label,
     files: typeof entry.files === "number" ? entry.files : undefined,
     districts: typeof entry.districts === "number" ? entry.districts : undefined,
     lang: typeof entry.lang === "string" && entry.lang.length > 0 ? entry.lang : undefined,
@@ -363,7 +365,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
           onClick={() => setMenuOpen((open) => !open)}
           className={`flex max-w-[min(260px,calc(100vw-488px))] items-center gap-1.5 rounded-[10px] pl-2.5 pr-2 font-mono text-small hover:bg-[var(--chrome-hover)] ${p.touch ? "h-11" : "h-9"}`}
         >
-          <span className="truncate">{p.owner}/{p.repo}</span>
+          <span className="truncate">{menuRows.find((row) => row.current)?.label ?? `${p.owner}/${p.repo}`}</span>
           <ChevronDownIcon />
         </button>
         {menuOpen && (
@@ -388,7 +390,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
                   className="flex min-h-[48px] w-full items-center gap-2.5 rounded-[9px] px-2.5 py-1 text-left hover:bg-[var(--chrome-hover)] focus-visible:bg-[var(--chrome-hover)]"
                 >
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate font-mono text-small">{row.slug}</span>
+                    <span className="truncate font-mono text-small">{row.label ?? row.slug}</span>
                     {countLabel(row) && <span className="truncate text-meta text-[var(--dim)]">{countLabel(row)}</span>}
                   </span>
                   {row.current && <MonoIcon><path d="M5 12l5 5 9-10" /></MonoIcon>}

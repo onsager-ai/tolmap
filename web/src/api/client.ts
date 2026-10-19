@@ -33,6 +33,7 @@ export interface ApiError {
 
 export interface ServiceCatalogueEntry {
   slug: string;
+  label?: string;
   owner: string;
   repo: string;
   lang: string;
