@@ -26,7 +26,7 @@
 // it LANDS on a dead entry; popping a dead entry onto a live one then did
 // nothing visible. Here that press carries on to the live one.)
 
-export type OverlayKind = "repos" | "search" | "layers" | "sheet" | "sel";
+export type OverlayKind = "repos" | "search" | "layers" | "sheet" | "sel" | "reader";
 
 /** Key in history.state that marks an entry this module pushed. */
 export const OVERLAY_MARKER = "tolmapOverlay";
@@ -46,16 +46,17 @@ export interface BackState {
 }
 
 export function isOverlayKind(value: unknown): value is OverlayKind {
-  return value === "repos" || value === "search" || value === "layers" || value === "sheet" || value === "sel";
+  return value === "reader" || value === "repos" || value === "search" || value === "layers" || value === "sheet" || value === "sel";
 }
 
 /** The page just loaded at `index`. `marker` is that entry's OVERLAY_MARKER,
  * if any: a reload inside the stack. A `sel` entry with a selection still in
  * the URL is adopted as live (back will clear it); any other marked entry
  * is dead, because its overlay did not survive the reload. */
-export function initBack(index: number, marker: unknown, hasSelection: boolean): BackState {
+export function initBack(index: number, marker: unknown, hasSelection: boolean, hasReader = false): BackState {
   if (!isOverlayKind(marker)) return { index, entries: [] };
-  return { index, entries: [{ kind: marker, index, live: marker === "sel" && hasSelection }] };
+  if (marker === "reader" && hasReader && hasSelection) return { index, entries: [{ kind: "sel", index: index - 1, live: true }, { kind: "reader", index, live: true }] };
+  return { index, entries: [{ kind: marker, index, live: (marker === "sel" && hasSelection) || (marker === "reader" && hasReader) }] };
 }
 
 /** An overlay opened at history index `index`. Returns `push: true` when the

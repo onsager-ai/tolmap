@@ -332,6 +332,40 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  reader:
+    name: local snapshot + production CM6 journey
+    needs: [gate, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - run: chmod +x bin/tolmap
+      - run: corepack enable && corepack prepare pnpm@9.15.9 --activate
+      - run: pnpm --dir web install --frozen-lockfile
+      - run: pnpm --dir web exec vite build
+      - run: pnpm --dir web exec playwright install --with-deps chromium
+      - name: Real local API, process and private export
+        run: TOLMAP_BINARY=bin/tolmap python3 scripts/local-reader-fixture.py
+      - name: Production reader behavior and candidate captures
+        run: cd web && node scripts/check-source-reader.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reader-evidence
+          path: reader-evidence/
+          if-no-files-found: warn
+
   # Issue #110 P1a: `tolmap build --refs scip` must be as deterministic as
   # the hand-written path -- three builds, byte-identical map and symbols
   # document (CLAUDE.md, finding 9) -- with the real indexers doing real

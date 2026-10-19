@@ -1,3 +1,4 @@
+import { SourceReader } from "@/reader/SourceReader";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
 import { useCatalogue, useMapDocument, useDistrictSymbolsMap } from "@/data/queries";
@@ -44,13 +45,20 @@ export function MapView() {
   const { owner, repo } = useParams({ strict: false }) as { owner: string; repo: string };
   const search = useSearch({ strict: false }) as MapSearch;
   const navigate = useNavigate();
+  const sourceActionRef = useRef<HTMLButtonElement>(null);
+  const sourceWasOpen = useRef(!!search.read);
+  useEffect(() => {
+    if (sourceWasOpen.current && !search.read) sourceActionRef.current?.focus({ preventScroll: true });
+    sourceWasOpen.current = !!search.read;
+  }, [search.read]);
+
   const { data: catalogue } = useCatalogue();
   // docs/UX.md §12: a map opened before its job's Detail phase finished
   // (`?job=`) is pinned to that job's commit, and asks for symbols only once
   // the job is done.
   const early = useEarlyMapJob(search.job);
   const { data: doc, isLoading, isError, error, source } = useMapDocument(owner, repo, {
-    commit: early.commit,
+    commit: search.commit ?? early.commit,
     wait: early.waiting,
   });
 
@@ -97,12 +105,12 @@ export function MapView() {
     repo,
     source,
     [...wantedDistricts],
-    { commit: early.commit, ready: !early.waiting && !early.detailPending },
+    { commit: search.commit ?? early.commit, ready: !early.waiting && !early.detailPending },
   );
   // The job ended: the map's URL is the plain one again (a shared link
   // should not watch a finished job), while the commit stays pinned.
   useEffect(() => {
-    if (search.job && early.settled) updateSearch({ job: undefined });
+    if (search.job && early.settled) updateSearch({ job: undefined, commit: early.commit });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search.job, early.settled]);
 
@@ -271,6 +279,26 @@ export function MapView() {
   // clears `sym` (selectHierSymbol below), so the two never compete for
   // what the breadcrumb/sidebar actually show.
   const selHSym = sel != null && search.hsym != null ? search.hsym : null;
+  const desktopReaderEntry = useRef(false);
+  function sourceRange(file: number, symbol?: number | null, hierarchical?: number | null) {
+    const h = doc && hierarchical != null ? districtSymbolsMap.get(D_(doc, file)) : undefined;
+    const row = h && hierarchical != null ? h.symbols[h.symbol_indices.indexOf(hierarchical)] : undefined;
+    const flat = symbol == null ? undefined : doc?.S[String(file)]?.[symbol];
+    const line = row?.[3] ?? flat?.[2] ?? 1;
+    const end = row?.[4] ?? flat?.[3] ?? line;
+    return { line, end };
+  }
+  function openSource() {
+    if (sel == null || !doc) return;
+    const { line, end } = sourceRange(sel, selSym, selHSym);
+    if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end }); }
+    else { desktopReaderEntry.current = true; navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end }), state: true }); }
+  }
+  function closeSource() {
+    if (narrow) { dropOverlay("reader"); updateSearch({ read: undefined }); }
+    else if (desktopReaderEntry.current) { desktopReaderEntry.current = false; router.history.back(); }
+    else updateSearch({ read: undefined });
+  }
   const selD = sel == null && search.d != null ? search.d : null;
   const previousDesktopPanelOpen = useRef(desktopPanelOpen);
   useEffect(() => {
@@ -346,7 +374,7 @@ export function MapView() {
     // Scope item 3: "setting all levels" -- file, symbol, and dropping
     // whatever else (a bare district, a directory highlight, the old `sym`)
     // was selected, in one URL update.
-    updateSearch({ file: doc.F[fileIdx], sym: undefined, hsym: global, d: undefined, dir: undefined });
+    updateSearch({ file: doc.F[fileIdx], sym: undefined, hsym: global, d: undefined, dir: undefined, ...(search.read ? sourceRange(fileIdx, null, global) : { line: undefined, end: undefined }) });
     framePeekNow();
     if (districtClass(doc.districts[String(D_(doc, fileIdx))]) !== "unconnected") canvasRef.current?.panTo(fileIdx);
   }
@@ -384,7 +412,7 @@ export function MapView() {
         dispatchDesktopView({ type: "map-file", district, file: i });
       }
     }
-    updateSearch({ file: doc.F[i], sym: opts.symbol, hsym: undefined, d: undefined, dir: undefined });
+    updateSearch({ file: doc.F[i], sym: opts.symbol, hsym: undefined, d: undefined, dir: undefined, ...(search.read ? sourceRange(i, opts.symbol) : { line: undefined, end: undefined }) });
     framePeekNow();
     if (districtClass(doc.districts[String(doc.N[i][0])]) !== "unconnected") canvasRef.current?.panTo(i);
   }
@@ -470,7 +498,12 @@ export function MapView() {
     const cur = backRef.current ?? initBack(historyIndex(), null, false);
     const { state, push } = openOverlay(cur, kind, historyIndex());
     backRef.current = state;
-    if (push) router.history.push(router.history.location.href, { [OVERLAY_MARKER]: kind } as never);
+    if (push) {
+      router.history.push(router.history.location.href, { [OVERLAY_MARKER]: kind } as never);
+      // TanStack batches same-task pushes into one native history entry.
+      // Selection + reader deep links require two real entries, also on reload.
+      router.history.flush();
+    }
   }
   function dropOverlay(kind: OverlayKind) {
     if (backRef.current) backRef.current = closeOverlay(backRef.current, kind);
@@ -587,6 +620,7 @@ export function MapView() {
     if (kind === "repos") setReposOpen(false);
     else if (kind === "search") setSearchOpen(false);
     else if (kind === "layers") setLayersOpen(false);
+    else if (kind === "reader") updateSearch({ read: undefined });
     else if (kind === "sheet") setDetentState("peek");
     else {
       // The URL half of clearing the selection is the reconcile below.
@@ -595,6 +629,9 @@ export function MapView() {
     }
   };
   const phoneHasSelection = sel != null || selD != null || !!search.dir || !!structure || !!pathPick;
+  // Source can finish loading before the map. Establish deep-link history
+  // from its URL immediately, including files absent from the map document.
+  const phoneHistorySelection = phoneHasSelection || (!!search.file && (!doc || !!search.read));
   const phoneHasSelectionRef = useRef(phoneHasSelection);
   phoneHasSelectionRef.current = phoneHasSelection;
   // Mount, and every repository switch (a new map is a new stack): adopt the
@@ -603,17 +640,23 @@ export function MapView() {
     if (!narrow) return;
     skippingRef.current = false;
     const st = router.history.location.state as unknown as Record<string, unknown>;
-    backRef.current = initBack(historyIndex(), st[OVERLAY_MARKER], phoneHasSelectionRef.current);
+    backRef.current = initBack(historyIndex(), st[OVERLAY_MARKER], phoneHasSelectionRef.current || !!liveSearchRef.current.file, !!liveSearchRef.current.read);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrow, owner, repo]);
   // A selection (a deep link included) is one entry: back clears it before
   // it leaves the map.
   useEffect(() => {
     if (!narrow || skippingRef.current) return;
-    if (phoneHasSelection) pushOverlay("sel");
+    if (phoneHistorySelection) pushOverlay("sel");
     else dropOverlay("sel");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phoneHasSelection, narrow]);
+  }, [phoneHistorySelection, narrow]);
+  // Establish the selected map entry before reading, including slow deep links.
+  useEffect(() => {
+    if (narrow && search.read && !skippingRef.current) pushOverlay("reader");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [narrow, search.read, phoneHistorySelection]);
+
   useEffect(() => {
     if (!narrow) return;
     return router.history.subscribe(({ location, action }) => {
@@ -628,7 +671,7 @@ export function MapView() {
       const res = popTo(cur, idx, st[OVERLAY_MARKER], phoneHasSelectionRef.current);
       backRef.current = res.state;
       for (const kind of res.undo) undoRef.current(kind);
-      const live = liveSearchRef.current;
+      const live = res.undo.includes("reader") ? { ...liveSearchRef.current, read: undefined } : liveSearchRef.current;
       const desired = res.undo.includes("sel")
         ? { ...live, file: undefined, sym: undefined, hsym: undefined, d: undefined, dir: undefined }
         : live;
@@ -639,6 +682,22 @@ export function MapView() {
       skippingRef.current = res.skipBack;
       if (res.skipBack) router.history.back();
       else navigate({ to: ".", search: desired, replace: true, state: true });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [narrow]);
+
+  // A desktop reader may follow new map selections while it stays open.
+  // Back closes reading at the live selection, rather than restoring the
+  // file that happened to be selected when its history entry was pushed.
+  useEffect(() => {
+    if (narrow) return;
+    return router.history.subscribe(({ location, action }) => {
+      if (action.type !== "BACK" && action.type !== "GO") return;
+      if (location.pathname !== mapPathRef.current || !liveSearchRef.current.read) return;
+      desktopReaderEntry.current = false;
+      const desired = { ...liveSearchRef.current, read: undefined };
+      liveSearchRef.current = desired;
+      navigate({ to: ".", search: desired, replace: true, state: true });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrow]);
@@ -764,6 +823,7 @@ export function MapView() {
   useEffect(() => {
     if (narrow) return;
     function onKey(e: KeyboardEvent) {
+      if (search.read) return;
       if (e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
       const focus: DesktopFocusScope = t?.closest("[data-desktop-search], [data-search-palette]")
@@ -806,7 +866,7 @@ export function MapView() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [narrow, desktopPanelOpen, desktopViews, desktopSearchOpen, keyboardOpen, isFullscreen, selD, sel, doc, themeChoice]);
+  }, [narrow, desktopPanelOpen, desktopViews, desktopSearchOpen, keyboardOpen, isFullscreen, selD, sel, doc, themeChoice, search.read]);
 
   const rendererCallbacks: MapRendererCallbacks = {
     onSelectFile: (i) => (pathPick && !pathEnds ? completePath(i) : selectFile(i)),
@@ -868,6 +928,7 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
+  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
   const mapCanvas = (
     <MapCanvas
       doc={doc}
@@ -899,6 +960,7 @@ export function MapView() {
         <div ref={mapAreaRef} className="absolute inset-0">
           {mapCanvas}
         </div>
+        {sourceReader}
         <DetailStatusNote
           pending={early.detailPending}
           failed={early.detailFailed}
@@ -1058,6 +1120,7 @@ export function MapView() {
       className={`relative h-full overflow-hidden bg-[var(--canvas)]${isFullscreen ? " fixed inset-0 z-50" : ""}`}
     >
       {mapCanvas}
+      {sourceReader}
       <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
       <DesktopChrome
         catalogue={catalogue}

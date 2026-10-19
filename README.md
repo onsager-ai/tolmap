@@ -72,3 +72,5 @@ The maintainers' own production/staging hosting config (Fly, Railway, pricing an
 ## State
 
 Working prototype, measured. Not yet a product: see `HANDOFF.md` for what is missing and in what order it should be built.
+
+Private checkout → map → same-commit source: see [local reading](docs/LOCAL.md).

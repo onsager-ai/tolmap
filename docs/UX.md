@@ -405,3 +405,26 @@ Settled by the owner on 2026-09-28 (session `16030105-19f0-4a84-933b-c5953f23c6b
 Settled by the owner on 2026-09-28 (same session):
 
 - **7c includes the phone sheet.** "Phone too (Recommended)" (AskUserQuestion, transcript line 14253, 07:25:54Z) extended the layer-aware overview from the desktop panel to the phone.
+
+## 13. Snapshot source reading and local checkouts
+
+The `tolmap local` journey is described in [LOCAL.md](LOCAL.md). The native local
+page confirms detected scope before using the real process executor. It retains
+commit history, stages/cancel, storage/export disclosure and recovery. It never
+asks for an account, subscription, upload or provider OAuth.
+
+A selected file or symbol exposes **Read selected source**. The one production
+CodeMirror 6 reader is read only, with selectable/copyable text, line numbers,
+Find in file (including no results), recorded symbol ranges and lazy language
+highlighting/plain-text fallback. Loading/access errors and missing/expired,
+binary, symlink/submodule and large-file refusals are explicit. Long lines skip
+language parsing. Source text is inert; no repository HTML is injected.
+
+Desktop keeps the mounted map beside the reader overlay. Phone uses a full
+reading state with its own text scroller and a Return to map control. Source
+state is URL-addressable (`read=true`, `file`, `line`, `end`, optional immutable
+`commit`); a snapshot route itself is immutable. Browser Back closes reading
+before the selected map. Closing restores focus; reading does not unmount the
+map or move its camera. Search/highlighting remain within the reader component,
+so typing cannot rebuild the map. Existing geometry and 40/110 px gates retain
+their original verification. Physical iPhone gestures remain #177 acceptance.
