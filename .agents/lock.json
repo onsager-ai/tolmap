@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "manifest_sha256": "73ed8134857663990892dff89fafdc20e6daac45f5d6fa69449b3a9699067c29",
-  "block_sha256": "b759967ebb4046ebcf6ab7f53f8858120698a6a551ff973356bf46e00923b206",
+  "manifest_sha256": "cb68e8b1c111f48a7973442da528014a09447002ca2fba4149f4828df5af7c04",
+  "block_sha256": "21b24d84a4636c657f08116aac12fb3d4a0ea717b66c92f4cfe1dff433f8d9a4",
   "resolved_skills": [
     "ci-triage",
     "docs-drift-guard",
@@ -26,6 +26,11 @@
       "owner": "shared",
       "mode": "100644"
     },
+    ".agents/skills/harness-operations/references/chatgpt-work.md": {
+      "sha256": "c6130e726c55d009b6c6938c6eeab85afe4372c3d86d2f0018e7dec970e8b17b",
+      "owner": "shared",
+      "mode": "100644"
+    },
     ".agents/skills/harness-operations/references/claude-code.md": {
       "sha256": "0917258bb67a0a121120cb419e6a272dc047ea881205033f7e3dbb12b3844632",
       "owner": "shared",
@@ -37,7 +42,7 @@
       "mode": "100644"
     },
     ".agents/skills/harness-operations/SKILL.md": {
-      "sha256": "06f67b31513b4550cea60dff6f1f6946bbfac9653a30a1e136f410f55120be54",
+      "sha256": "ae7dc9b93a64b46d5926b5772aeb61eacde09c764051785b2fe32aa3d13c7d46",
       "owner": "shared",
       "mode": "100644"
     },
@@ -67,12 +72,12 @@
       "mode": "100644"
     },
     ".agents/skills/pr-lifecycle/SKILL.md": {
-      "sha256": "7b197389d51bd615f27da7f781df569ad590c16a07ec2b005c142d3737502c8f",
+      "sha256": "bd4bd6fbd8aab970057c4e2cb252d1a2115d3649d59602ffc82d31d2361d9d31",
       "owner": "shared",
       "mode": "100644"
     },
     ".agents/skills/pre-push/SKILL.md": {
-      "sha256": "fb5831be5f4c147000db88612944288a4063d0346d944ce3db3eeb1266b75e0c",
+      "sha256": "f2371605bc3ca58df3596af0362f633462a5da6fb8a0c3410d43d00167c77aae",
       "owner": "shared",
       "mode": "100644"
     },
@@ -96,6 +101,11 @@
       "owner": "shared",
       "mode": "100644"
     },
+    ".claude/skills/harness-operations/references/chatgpt-work.md": {
+      "sha256": "c6130e726c55d009b6c6938c6eeab85afe4372c3d86d2f0018e7dec970e8b17b",
+      "owner": "shared",
+      "mode": "100644"
+    },
     ".claude/skills/harness-operations/references/claude-code.md": {
       "sha256": "0917258bb67a0a121120cb419e6a272dc047ea881205033f7e3dbb12b3844632",
       "owner": "shared",
@@ -107,7 +117,7 @@
       "mode": "100644"
     },
     ".claude/skills/harness-operations/SKILL.md": {
-      "sha256": "06f67b31513b4550cea60dff6f1f6946bbfac9653a30a1e136f410f55120be54",
+      "sha256": "ae7dc9b93a64b46d5926b5772aeb61eacde09c764051785b2fe32aa3d13c7d46",
       "owner": "shared",
       "mode": "100644"
     },
@@ -142,12 +152,12 @@
       "mode": "100644"
     },
     ".claude/skills/pr-lifecycle/SKILL.md": {
-      "sha256": "7b197389d51bd615f27da7f781df569ad590c16a07ec2b005c142d3737502c8f",
+      "sha256": "bd4bd6fbd8aab970057c4e2cb252d1a2115d3649d59602ffc82d31d2361d9d31",
       "owner": "shared",
       "mode": "100644"
     },
     ".claude/skills/pre-push/SKILL.md": {
-      "sha256": "fb5831be5f4c147000db88612944288a4063d0346d944ce3db3eeb1266b75e0c",
+      "sha256": "f2371605bc3ca58df3596af0362f633462a5da6fb8a0c3410d43d00167c77aae",
       "owner": "shared",
       "mode": "100644"
     },
