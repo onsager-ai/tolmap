@@ -26,6 +26,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc -p tsconfig.storybook.json
       - run: pnpm build-storybook
+        env:
+          # The preview must ignore a developer's production API override.
+          VITE_API_BASE: https://storybook-api.invalid
       - run: pnpm exec playwright install --with-deps chromium
       - name: Start static workbench
         run: |

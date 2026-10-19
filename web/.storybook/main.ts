@@ -9,6 +9,7 @@ const config: StorybookConfig = {
   async viteFinal(config) {
     // Storybook never proxies API calls to an operator's local service.
     config.server = { ...config.server, proxy: {} };
+    config.define = { ...config.define, "import.meta.env.VITE_API_BASE": JSON.stringify("/api") };
     config.resolve ??= {};
     config.resolve.alias = [
       { find: "@/host", replacement: fileURLToPath(new URL("../storybook/host.ts", import.meta.url)) },

@@ -15,7 +15,7 @@ export function Page({ route }: { route: string }) {
     <div data-product-page style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }} onSubmit={event => event.preventDefault()} onClickCapture={event => {
       const anchor = (event.target as Element).closest("a");
       // Router Links remain interactive. Native host/provider links stay here.
-      if (anchor && ["/workspace", "/logout"].includes(anchor.getAttribute("href") ?? "")) event.preventDefault();
+      if (anchor && (new URL(anchor.href).origin !== location.origin || ["/workspace", "/logout"].includes(anchor.getAttribute("href") ?? ""))) event.preventDefault();
     }}>
       <QueryClientProvider client={state.query}><RouterProvider router={state.router} /></QueryClientProvider>
     </div>
