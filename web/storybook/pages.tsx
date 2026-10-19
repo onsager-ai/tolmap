@@ -36,7 +36,9 @@ export function page(id: string): StoryObj<Args> {
         return element!;
       };
       const click = async (selector: string) => userEvent.click(await waitElement(selector));
-      if (id.startsWith('local-')) {
+      if (id === 'job-missing') {
+        await waitFor(() => expect(canvas.getByText('No mapping job to show.')).toBeVisible());
+      } else if (id.startsWith('local-')) {
         const frame = await waitElement('iframe') as HTMLIFrameElement;
         await waitFor(() => expect(frame.contentDocument?.documentElement.dataset.fixtureReady).toBe(id.slice(6)));
         await frame.contentDocument!.fonts.ready;
@@ -79,7 +81,11 @@ export function page(id: string): StoryObj<Args> {
           await waitElement(".cm-content");
           if (id === "source-search" || id === "source-search-empty") {
             await userEvent.click(canvas.getByRole("button", { name: "Find in file" }));
-            await userEvent.type(await waitElement('.cm-search input[name="search"]'), id === "source-search" ? "return" : "absent-needle");
+            const input = await waitElement('.cm-search input[name="search"]');
+            // CodeMirror seeds Find with the selected committed source range.
+            await userEvent.clear(input);
+            await userEvent.type(input, id === "source-search" ? "return" : "absent-needle");
+            await userEvent.click(await waitElement('.cm-search button[name="next"]'));
             await waitFor(() => expect(root.querySelector("[data-source-search-status]")?.textContent).toBe(id === "source-search" ? "Matches found" : "No results"));
           }
         } else if (id === "source-unavailable") await waitElement('[data-source-reader] [role="alert"]');
