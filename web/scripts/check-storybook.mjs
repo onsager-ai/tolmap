@@ -39,6 +39,7 @@ try {
       }
       results.push(row);
       console.log(`${row.result}: ${host}/${item.id}/${viewport.name}/${theme}`);
+      if (row.result === 'failed') throw new Error(`Capture stopped at ${row.id}; inspect manifest.json before continuing the required matrix`);
     }
     assert.deepEqual(errors, [], 'browser errors');
     assert.deepEqual(external, [], 'external network requests');

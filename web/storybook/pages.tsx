@@ -44,6 +44,11 @@ export function page(id: string): StoryObj<Args> {
         if (!["map-loading", "map-unavailable"].includes(id)) await waitElement(".map-svg path");
         else await waitFor(() => expect(root.querySelector("[data-product-page]")?.textContent?.trim()).toBeTruthy());
       } else await waitFor(() => expect(canvas.getAllByRole("heading").length).toBeGreaterThan(0));
+      if (id === 'home') await waitElement('[data-catalogue-row]');
+      if (id === 'home-empty') await waitElement('[data-catalogue-empty]');
+      if (id === 'home-unavailable') await waitElement('[data-catalogue-error]');
+      if (id.startsWith('job-') && id !== 'job-missing') await waitElement('[data-job-state]');
+      if (id.startsWith('failed-')) await waitElement('[data-job-failure]');
       const action = item.action;
       if (action?.startsWith("search")) {
         await click("[data-open-desktop-search], [data-open-search]");

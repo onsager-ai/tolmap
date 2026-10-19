@@ -312,16 +312,41 @@ fn html(s: &Local, notice: &str) -> Result<Response> {
     } else {
         notice
     };
-    let job = s.job.lock().unwrap().as_ref().map(|job| crate::local_pages::Job {
-        id: job.id.to_string(), stage: job.stage.clone(),
-    });
-    let prepared = s.prepared.lock().unwrap().as_ref().map(|prepared| crate::local_pages::Prepared {
-        id: prepared.id.to_string(), commit: prepared.commit.clone(), chosen: prepared.chosen.clone(), all: prepared.all.clone(),
-    });
-    let snapshots = snapshots(s)?.into_iter().map(|snapshot| crate::local_pages::Snapshot {
-        id: snapshot.id.to_string(), commit: snapshot.commit,
-    }).collect::<Vec<_>>();
-    let content = crate::local_pages::render(stylesheet, &s.data.display().to_string(), notice, job.as_ref(), prepared.as_ref(), &snapshots);
+    let job = s
+        .job
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|job| crate::local_pages::Job {
+            id: job.id.to_string(),
+            stage: job.stage.clone(),
+        });
+    let prepared =
+        s.prepared
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|prepared| crate::local_pages::Prepared {
+                id: prepared.id.to_string(),
+                commit: prepared.commit.clone(),
+                chosen: prepared.chosen.clone(),
+                all: prepared.all.clone(),
+            });
+    let snapshots = snapshots(s)?
+        .into_iter()
+        .map(|snapshot| crate::local_pages::Snapshot {
+            id: snapshot.id.to_string(),
+            commit: snapshot.commit,
+        })
+        .collect::<Vec<_>>();
+    let content = crate::local_pages::render(
+        stylesheet,
+        &s.data.display().to_string(),
+        notice,
+        job.as_ref(),
+        prepared.as_ref(),
+        &snapshots,
+    );
     Ok((
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         content,
@@ -415,7 +440,11 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
         return html(s, "");
     }
     if path == "/local.css" {
-        return Ok(([(header::CONTENT_TYPE,"text/css")],crate::local_pages::CSS ).into_response());
+        return Ok((
+            [(header::CONTENT_TYPE, "text/css")],
+            crate::local_pages::CSS,
+        )
+            .into_response());
     }
     if path == "/api/healthz" {
         return Ok(axum::Json(json!({"status":"ok","mode":"local"})).into_response());
