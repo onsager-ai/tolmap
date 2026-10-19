@@ -14,6 +14,11 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Native template formatting
+        run: rustfmt --edition 2021 --check ../src/local_pages.rs scripts/export-local-storybook.rs
       - uses: actions/setup-node@v4
         with:
           node-version: '24.21.0'

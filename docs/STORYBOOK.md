@@ -25,13 +25,17 @@ Only use this on a host whose local policy permits browser/rendering work.
 | Family | States | Governing reference |
 | --- | --- | --- |
 | Home | Catalogue, empty, loading, unavailable | UX §4.9; preserve |
+| Local checkout | Detect, scope/all-source confirmation, indexing/cancel, detection/index failure, saved history/export | LOCAL.md and production native template; preserve |
 | Indexing | No job, queue, Fetch/Read/Map/Detail, every failure class | UX §6; preserve |
 | Map | Overview, district/file/symbol/folder, four layers, early detail, loading/error | UX §§3–5, 7, 9; preserve |
 | Overlays | Search/results/empty, layers, repository menu, quality, keyboard, path picking | UX §§4–5; preserve |
 | Source | Read-only, loading, access error, missing/expired/binary/large/unsupported, long-line fallback, find/miss | UX §13; preserve |
 | Reserved routes | Every reserved route except the separately covered `/new` | Existing placeholder implementation; preserve |
 
-The source fixture explicitly identifies synthetic contents. The map/symbol
+The local native template is compiled by a tiny std-only Rust exporter, without
+building the engine, reading a checkout or starting a service. Its production
+forms are retained; preview submissions and auto-refresh are contained. The
+source fixture explicitly identifies synthetic contents. The map/symbol
 geometry comes from the committed Rust acceptance fixture, not synthetic layout.
 MSW handles only preview API/data requests, including SSE, and never contacts a
 provider. Each story owns a new router/query cache. The private preview uses only

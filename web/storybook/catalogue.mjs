@@ -4,6 +4,7 @@ export const cases = [
   ['home-empty', 'Home empty', '/', 'empty'],
   ['home-loading', 'Home loading', '/', 'loading'],
   ['home-unavailable', 'Home unavailable', '/', 'unavailable'],
+  ...['start', 'confirm', 'running', 'cancelling', 'detection-failed', 'index-failed', 'saved'].map(state => [`local-${state}`, `Local checkout · ${state}`, `local:${state}`, 'native-local']),
   ['job-missing', 'No job selected', '/new', 'home'],
   ...['queued', 'fetch', 'read', 'map', 'detail'].map(state => [`job-${state}`, `Indexing ${state}`, '/new?job=fixture&slug=onsager-ai/tolmap', state]),
   ...['detection_uncertain', 'detection_failed', 'cancelled', 'clone_failed', 'worker_crashed', 'busy', 'server_stopping', 'rate_limited', 'index_failed', 'internal_error', 'unknown'].map(code => [`failed-${code.replaceAll('_', '-')}`, `Failure · ${code}`, '/new?job=fixture&slug=onsager-ai/tolmap', code]),

@@ -20,7 +20,7 @@ try {
     page.on('pageerror', error => errors.push(error.message));
     page.on('request', request => { if (new URL(request.url()).origin !== new URL(base).origin && /^https?:/.test(request.url())) external.push(request.url()); });
     await page.clock.setFixedTime(new Date('2026-10-19T08:00:00Z'));
-    for (const item of cases.filter(item => host !== 'hub' || !item.id.startsWith('reserved-'))) {
+    for (const item of cases.filter(item => host !== 'hub' || (!item.id.startsWith('reserved-') && !item.id.startsWith('local-')))) {
       const row = { id: item.id, host, viewport: viewport.name, theme, status: 'candidate', file: `${host}-${item.id}-${viewport.name}-${theme}.png` };
       try {
         await page.goto(`${base}/iframe.html?id=tolmap-pages--${item.id}&viewMode=story&globals=theme:${theme};host:${host}`);
