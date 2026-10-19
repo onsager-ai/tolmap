@@ -11,6 +11,9 @@ const output = process.env.STORYBOOK_EVIDENCE ?? 'storybook-evidence';
 fs.mkdirSync(output, { recursive: true });
 const browser = await chromium.launch();
 const results = [];
+const applicable = (item, viewport) => (host !== 'hub' || (!item.id.startsWith('reserved-') && !item.id.startsWith('local-')))
+  && !(item.id === 'map-keyboard' && ['phone', 'landscape'].includes(viewport.name));
+const expectedCaptures = viewports.reduce((sum, viewport) => sum + cases.filter(item => applicable(item, viewport)).length * 2, 0);
 try {
   // Fresh browser contexts isolate selection, theme, service worker and cache.
   for (const viewport of viewports) for (const theme of ['light', 'dark']) {
@@ -20,9 +23,7 @@ try {
     page.on('pageerror', error => errors.push(error.message));
     page.on('request', request => { if (new URL(request.url()).origin !== new URL(base).origin && /^https?:/.test(request.url())) external.push(request.url()); });
     await page.clock.setFixedTime(new Date('2026-10-19T08:00:00Z'));
-    for (const item of cases.filter(item => host !== 'hub' || (!item.id.startsWith('reserved-') && !item.id.startsWith('local-')))) {
-      // Keyboard shortcuts are desktop/tablet UI; phone has no such control.
-      if (item.id === 'map-keyboard' && ['phone', 'landscape'].includes(viewport.name)) continue;
+    for (const item of cases.filter(item => applicable(item, viewport))) {
       const row = { id: item.id, host, viewport: viewport.name, theme, status: 'candidate', file: `${host}-${item.id}-${viewport.name}-${theme}.png` };
       try {
         await page.goto(`${base}/iframe.html?id=tolmap-pages--${item.id}&viewMode=story&globals=theme:${theme};host:${host}`);
@@ -39,6 +40,7 @@ try {
       }
       results.push(row);
       console.log(`${row.result}: ${host}/${item.id}/${viewport.name}/${theme}`);
+      if (row.error) console.error(row.error);
       if (row.result === 'failed') throw new Error(`Capture stopped at ${row.id}; inspect manifest.json before continuing the required matrix`);
     }
     assert.deepEqual(errors, [], 'browser errors');
@@ -47,7 +49,7 @@ try {
   }
 } finally {
   await browser.close();
-  const evidence = { status: 'candidate-unapproved', sha: process.env.GITHUB_SHA ?? null, browser: 'Chromium', locale: 'en-US', timezone: 'UTC', scale: 1, fixture: 'web/check-fixtures/onsager-ai__tolmap.json.gz', results };
+  const evidence = { status: 'candidate-unapproved', sha: process.env.GITHUB_SHA ?? null, browser: 'Chromium', locale: 'en-US', timezone: 'UTC', scale: 1, fixture: 'web/check-fixtures/onsager-ai__tolmap.json.gz', expectedCaptures, completedCaptures: results.length, captureComplete: results.length === expectedCaptures && results.every(row => row.result === 'passed'), results };
   fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify(evidence, null, 2));
   const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
   fs.writeFileSync(path.join(output, 'index.html'), `<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1"><title>Tolmap visual candidates</title><style>body{font:15px/1.5 system-ui;margin:32px;background:#f4f5f3;color:#202622}main{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px}figure{margin:0;background:white;padding:12px;border-radius:12px}img{width:100%;height:240px;object-fit:contain;background:#eee}a{color:inherit}input{padding:12px;width:min(80%,500px);margin-bottom:24px}</style><h1>Tolmap · visual candidates</h1><p>Unapproved reference candidates · ${escape(evidence.sha)} · ${host} · <a href=manifest.json>manifest</a></p><input placeholder="Filter page, viewport or theme" aria-label="Filter candidates" oninput="document.querySelectorAll('figure').forEach(f=>f.hidden=!f.textContent.includes(this.value))"><main>${results.map(row => `<figure><a href="${escape(row.file)}"><img loading=lazy src="${escape(row.file)}" alt="${escape(row.id)}"></a><figcaption>${escape(row.id)} · ${row.viewport} · ${row.theme} · ${row.result}</figcaption></figure>`).join('')}</main></html>`);
