@@ -47,7 +47,9 @@ candidate must have exactly one exported story, no unlisted story may appear,
 and a separate required-state list prevents the catalogue and exports from
 shrinking together. Production `RESERVED_NAMES` must match the reserved-route
 stories; the route-tree contract is checked and each reserved story waits for
-the production reserved-page copy naming its own path. OSS captures include
+the preview router's actual path plus the production generic reserved
+placeholder copy and back link. The production placeholder does not print the
+reserved name; the preview assertion does not invent route-specific UI. OSS captures include
 local checkout and reserved routes. The synthetic Hub host explicitly omits
 those host-owned routes, and phone/landscape keyboard-dialog captures are
 excluded by the shared `captureApplies` matrix function.

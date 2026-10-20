@@ -117,8 +117,11 @@ export function page(id: string): StoryObj<Args> {
       }
       if (id.startsWith('reserved-')) await waitFor(() => {
         const name = id.slice('reserved-'.length);
-        expect(root.querySelector('h1')?.textContent).toBe(`/${name}`);
-        expect(root.body.textContent).toContain(`will never route to a GitHub owner called "${name}".`);
+        const product = root.querySelector('[data-product-page]');
+        expect(product?.getAttribute('data-preview-route')).toBe(`/${name}`);
+        expect(product?.querySelector('h1')?.textContent).toBe('/');
+        expect(product?.textContent).toContain('This name is reserved for tolmap itself and will never route to a GitHub owner called "".');
+        expect(product?.querySelector('a[href="/"]')?.textContent).toContain('back to the map index');
       });
       if (['map-district', 'map-file', 'map-symbol'].includes(id) && root.querySelector('[data-panel-tab]')) await click('[data-panel-tab]');
       if (id === 'map-district') await waitFor(() => expect(root.querySelector('[data-sheet-card="district"]')).not.toBeNull());
