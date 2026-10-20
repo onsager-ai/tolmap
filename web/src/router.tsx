@@ -57,7 +57,7 @@ const ownerRepoRoute = createRoute({
   component: MapView,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, newRoute, ...reservedRoutes, ownerRepoRoute]);
+export const routeTree = rootRoute.addChildren([indexRoute, newRoute, ...reservedRoutes, ownerRepoRoute]);
 
 export const router = createRouter({ routeTree });
 

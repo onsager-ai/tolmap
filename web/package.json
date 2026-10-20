@@ -11,7 +11,11 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "bench": "node scripts/perf-bench.mjs",
-    "check:view": "node scripts/check-view-stability.mjs"
+    "check:view": "node scripts/check-view-stability.mjs",
+    "storybook": "node scripts/prepare-storybook.mjs && storybook dev --host 127.0.0.1 -p 6007 --no-open",
+    "build-storybook": "node scripts/prepare-storybook.mjs && storybook build",
+    "test:storybook-coverage": "node --test scripts/storybook-coverage.test.mjs",
+    "check:storybook": "node scripts/check-storybook.mjs"
   },
   "dependencies": {
     "@radix-ui/react-scroll-area": "^1.2.2",
@@ -33,6 +37,9 @@
     "@codemirror/search": "^6.5.11"
   },
   "devDependencies": {
+    "@storybook/react-vite": "10.6.2",
+    "storybook": "10.6.2",
+    "msw": "2.12.7",
     "@types/node": "^24.13.3",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
