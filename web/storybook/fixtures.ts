@@ -87,6 +87,7 @@ export async function installFixture(state: string) {
 export function resolveRoute(route: string, doc: MapDocument): string {
   const district = Object.keys(doc.districts).sort((a, b) => Number(a) - Number(b))[0];
   const symbolFile = Object.keys(doc.S).sort((a, b) => Number(a) - Number(b)).find(key => doc.S[key]?.length);
+  if (route === "symbol" && symbolFile == null) throw new Error("The committed Storybook map fixture has no symbol-backed file for the symbol-selection story");
   const file = route === "symbol" && symbolFile != null ? doc.F[Number(symbolFile)] : doc.F.find(path => path.endsWith(".rs") && path.includes("/")) ?? doc.F[0];
   const params = new URLSearchParams({ geo: "r", layer: "d" });
   if (route === "district") params.set("d", district);

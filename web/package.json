@@ -14,6 +14,7 @@
     "check:view": "node scripts/check-view-stability.mjs",
     "storybook": "node scripts/prepare-storybook.mjs && storybook dev --host 127.0.0.1 -p 6007 --no-open",
     "build-storybook": "node scripts/prepare-storybook.mjs && storybook build",
+    "test:storybook-coverage": "node --test scripts/storybook-coverage.test.mjs",
     "check:storybook": "node scripts/check-storybook.mjs"
   },
   "dependencies": {
