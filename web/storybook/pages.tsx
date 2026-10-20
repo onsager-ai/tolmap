@@ -92,7 +92,7 @@ export function page(id: string): StoryObj<Args> {
         await waitElement("[data-source-reader]");
         if (["source-ready", "source-long-line", "source-search", "source-search-empty"].includes(id)) {
           await waitFor(() => expect(root.querySelector('.cm-content')?.getAttribute('aria-readonly')).toBe('true'));
-          if (id === 'source-long-line') await waitFor(() => expect([...root.querySelectorAll('.source-provenance')].some(node => node.textContent?.includes('long line protection'))).toBe(true));
+          if (id === 'source-long-line') await waitFor(() => expect(Array.from(root.querySelectorAll('.source-provenance')).some(node => node.textContent?.includes('long line protection'))).toBe(true));
           if (id === "source-search" || id === "source-search-empty") {
             await userEvent.click(canvas.getByRole("button", { name: "Find in file" }));
             const input = await waitElement('.cm-search input[name="search"]');

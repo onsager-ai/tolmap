@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { verifyVisualBaselines } from './visual-baselines.mjs';
 import { assertStorybookCoverage, assertRouteTreeContract, captureApplies, parseReservedNames } from './storybook-coverage.mjs';
 import { cases, viewports } from '../storybook/catalogue.mjs';
@@ -13,6 +15,9 @@ const base = process.env.STORYBOOK_URL ?? 'http://127.0.0.1:6007';
 const host = process.env.STORYBOOK_HOST ?? 'oss';
 const output = process.env.STORYBOOK_EVIDENCE ?? 'storybook-evidence';
 const baselineDir = process.env.STORYBOOK_BASELINES ?? 'storybook/baselines';
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+const viewerRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+const testedRevision = process.env.GITHUB_SHA ?? null;
 fs.mkdirSync(output, { recursive: true });
 const indexResponse = await fetch(`${base}/index.json`);
 if (!indexResponse.ok) throw new Error(`Storybook index.json returned ${indexResponse.status}`);
@@ -70,14 +75,21 @@ try {
   try {
     const fixture = '../web/check-fixtures/onsager-ai__tolmap.json.gz';
     const fixtureSha256 = await hashFile(path.resolve(fixture));
-    const provenance = { browser: { name: 'Chromium', version: browserVersion }, environment: { locale: 'en-US', timezone: 'UTC', scale: 1, reducedMotion: 'reduce' }, fixture: { path: 'web/check-fixtures/onsager-ai__tolmap.json.gz', sha256: fixtureSha256 } };
-    await verifyVisualBaselines({ browser, captures: results, evidenceDir: output, baselineDir, provenance, sourceRevision: process.env.GITHUB_SHA ?? null });
+    const provenance = {
+      browser: { name: 'Chromium', version: browserVersion },
+      environment: {
+        locale: 'en-US', timezone: 'UTC', scale: 1, reducedMotion: 'reduce', fixedClock: '2026-10-19T08:00:00Z',
+        viewports: viewports.map(({ name, width, height, touch }) => ({ name, width, height, hasTouch: touch })),
+      },
+      fixture: { path: 'web/check-fixtures/onsager-ai__tolmap.json.gz', sha256: fixtureSha256 },
+    };
+    await verifyVisualBaselines({ browser, captures: results, evidenceDir: output, baselineDir, provenance, sourceRevision: viewerRevision });
   } catch (error) { baselineError = error; }
   await browser.close();
-  const evidence = { status: 'candidate-unapproved', sha: process.env.GITHUB_SHA ?? null, browser: { name: 'Chromium', version: browserVersion }, locale: 'en-US', timezone: 'UTC', scale: 1, fixture: 'web/check-fixtures/onsager-ai__tolmap.json.gz', expectedCaptures, completedCaptures: results.filter(row => row.status === 'passed').length, captureComplete: results.length === expectedCaptures && results.every(row => row.status === 'passed'), results };
+  const evidence = { status: 'candidate-unapproved', viewerRevision, testedRevision, browser: { name: 'Chromium', version: browserVersion }, locale: 'en-US', timezone: 'UTC', scale: 1, fixedClock: '2026-10-19T08:00:00Z', viewports: viewports.map(({ name, width, height, touch }) => ({ name, width, height, hasTouch: touch })), fixture: 'web/check-fixtures/onsager-ai__tolmap.json.gz', expectedCaptures, completedCaptures: results.filter(row => row.status === 'passed').length, captureComplete: results.length === expectedCaptures && results.every(row => row.status === 'passed'), results };
   fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify(evidence, null, 2));
   const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
-  fs.writeFileSync(path.join(output, 'index.html'), `<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1"><title>Tolmap visual candidates</title><style>body{font:15px/1.5 system-ui;margin:32px;background:#f4f5f3;color:#202622}main{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px}figure{margin:0;background:white;padding:12px;border-radius:12px}img{width:100%;height:240px;object-fit:contain;background:#eee}a{color:inherit}input{padding:12px;width:min(80%,500px);margin-bottom:24px}</style><h1>Tolmap · visual candidates</h1><p>Unapproved reference candidates · ${escape(evidence.sha)} · ${host} · <a href=manifest.json>manifest</a></p><input placeholder="Filter page, viewport or theme" aria-label="Filter candidates" oninput="document.querySelectorAll('figure').forEach(f=>f.hidden=!f.textContent.includes(this.value))"><main>${results.map(row => `<figure><a href="${escape(row.file)}"><img loading=lazy src="${escape(row.file)}" alt="${escape(row.id)}"></a><figcaption>${escape(row.id)} · ${row.viewport} · ${row.theme} · ${row.result ?? row.status}</figcaption></figure>`).join('')}</main></html>`);
+  fs.writeFileSync(path.join(output, 'index.html'), `<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1"><title>Tolmap visual candidates</title><style>body{font:15px/1.5 system-ui;margin:32px;background:#f4f5f3;color:#202622}main{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px}figure{margin:0;background:white;padding:12px;border-radius:12px}img{width:100%;height:240px;object-fit:contain;background:#eee}a{color:inherit}input{padding:12px;width:min(80%,500px);margin-bottom:24px}</style><h1>Tolmap · visual candidates</h1><p>Unapproved reference candidates · viewer ${escape(evidence.viewerRevision)} · tested ${escape(evidence.testedRevision)} · ${host} · <a href=manifest.json>manifest</a></p><input placeholder="Filter page, viewport or theme" aria-label="Filter candidates" oninput="document.querySelectorAll('figure').forEach(f=>f.hidden=!f.textContent.includes(this.value))"><main>${results.map(row => `<figure><a href="${escape(row.file)}"><img loading=lazy src="${escape(row.file)}" alt="${escape(row.id)}"></a><figcaption>${escape(row.id)} · ${row.viewport} · ${row.theme} · ${row.result ?? row.status}</figcaption></figure>`).join('')}</main></html>`);
 }
 if (baselineError) throw baselineError;
 assert.equal(results.filter(row => row.result === 'failed').length, 0, 'Storybook candidates contain failures; inspect manifest.json');

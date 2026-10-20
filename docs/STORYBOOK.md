@@ -78,7 +78,10 @@ Capture every listed state in light/dark at 390×844, 844×390, 820×1180 and
 The Storybook fixture label is outside the product frame and remains visible.
 Each story waits for fonts and its actual state/interaction before capture.
 CI uploads `tolmap-storybook` and `tolmap-visual-candidates`; the latter contains
-a filterable `index.html`, individual PNGs and a revision-stamped `manifest.json`.
+a filterable `index.html`, individual PNGs and a `manifest.json` that records
+both the viewer checkout revision and the consuming CI revision. When Hub runs
+the viewer from its gitlink, the viewer revision identifies that immutable
+checkout while the tested revision identifies the Hub commit.
 The full page set is required; a failed story stays visible in the manifest.
 
 All captures are **unapproved candidates**. There is no approved image set in
@@ -96,10 +99,14 @@ from `web/scripts/visual-baselines.mjs`. A future owner review may replace the
 pending registry with `status: "approved"`, a reviewed `sourceRevision`, a
 non-null `review` record, the pinned browser/environment/fixture provenance,
 and one image record for every exact `{id, host, viewport, theme}` identity.
-Each image's `file` is relative to the baseline directory. CI then requires a
-complete passing capture matrix, exact provenance, valid PNGs and dimensions,
-and zero differing RGBA pixels. A mismatch writes actual, reference and diff
-PNGs plus a failed report. CI never accepts or rewrites a reference. Review
+Each image's `file` is relative to the baseline directory. Provenance pins the
+Chromium version, locale, timezone, scale, reduced motion, fixed clock, every
+viewport's dimensions and touch setting, and the fixture SHA256. The viewer
+revision is recorded separately, so an approved reference can be compared
+across code revisions without treating the consumer's commit as the viewer.
+CI then requires a complete passing capture matrix, exact provenance, valid
+PNGs and dimensions, and zero differing RGBA pixels. A mismatch writes actual,
+reference and diff PNGs plus a failed report. CI never accepts or rewrites a reference. Review
 must happen outside capture CI and must identify the source revision and
 families accepted before the registry is changed. A green candidate capture
 gate establishes rendering/behavior only, not visual acceptance or
