@@ -17,7 +17,7 @@ npx tolmap local /path/to/private-repository \
 
 `tolmap local` requires `--data` to name private storage outside the checkout. When `--static-dir` is omitted, the npm launcher uses its packaged production web assets. You can pass `--static-dir /path/to/web/dist` to use another built viewer. The local server binds only to `127.0.0.1`; it reads committed `HEAD`, keeps storage outside the checkout, serves same-commit source, and does not upload the repository.
 
-Install `git` on `PATH` for builds from repositories and for `tolmap local`. The package itself needs Node.js 22.14.0 or newer to run its launcher. It does not require Rust, Cargo, CMake, a C/C++ compiler, igraph or libleidenalg on the consumer machine. Browser use requires a current browser on the local machine.
+Install the system runtimes `libstdc++6` and `libgcc-s1` on minimal Ubuntu images. Install `git` on `PATH` for builds from repositories and for `tolmap local`. The package itself needs Node.js 22.14.0 or newer to run its launcher. It does not require Rust, Cargo, CMake, a C/C++ compiler, igraph or libleidenalg on the consumer machine. Browser use requires a current browser on the local machine.
 
 ## Supported platform
 
@@ -27,13 +27,13 @@ macOS, Windows, Linux arm64, and musl/Alpine are unsupported. The package metada
 
 ## Included licenses
 
-Tolmap's original CLI is MIT licensed (`LICENSE`). The bundled native components include igraph 1.0.0 (GPL-2.0-or-later) and libleidenalg 0.12.0 (GPL-3.0). The packaged production viewer includes its locked production web dependency tree. `THIRD_PARTY_NOTICES.md` records exact versions and source references; copied license texts are under `licenses/`.
+The original tolmap source is MIT licensed. The linked native binary in this distribution is conveyed under **GPL-3.0-or-later**, as required by libleidenalg 0.12.0 (GPL-3.0-or-later) and compatible with igraph 1.0.0 (GPL-2.0-or-later). The package's SPDX field reflects that distribution. The original MIT LICENSE is preserved. See `LICENSE-DISTRIBUTION.md` and the included dependency notices and license texts.
 
-The npm `license` field points to `THIRD_PARTY_NOTICES.md` because this package distributes components under multiple licenses. That field should receive maintainer/legal review before publication; it is not a claim that the complete package is MIT-only.
+Every npm tarball includes `source/corresponding-source.tar.gz` and its SHA256SUMS: exact tolmap source, native archives, vendored Rust dependencies, production web dependency packages, Ubuntu source packages for bundled runtime libraries, and reproduction instructions. CI uploads the same archive separately and prints its size. Ubuntu binary packages are mapped to their actual source package names and exact versions from dpkg metadata. No expiring CI artifact URL is used as a source offer.
 
 ## Build and release path
 
-`.github/workflows/npm-package.yml` runs for pushes, pull requests and manual dispatch, and lints the release workflows with pinned actionlint. It builds the Linux x64 tarball from an exact commit, checks the npm and Cargo versions match, verifies dynamic-library closure and relative RPATHs, then uploads an artifact named `tolmap-npm-<sha>`. The artifact contains the `.tgz`, `SHA256SUMS`, `PACK_LIST.txt` and `BUILD_INFO.md`. Its clean-consumer job checks install, help, a same-SHA repository build, offline parity, viewer assets, loopback binding, same-commit source, unsupported-platform errors and tarball contents. CI does not publish automatically.
+`.github/workflows/npm-package.yml` runs for pushes, pull requests and manual dispatch, and lints the release workflows with pinned actionlint. It builds the Linux x64 tarball from an exact commit, checks the npm and Cargo versions match, verifies dynamic-library closure and relative RPATHs, then uploads an artifact named `tolmap-npm-<sha>`. The artifact contains the `.tgz`, `SHA256SUMS`, `PACK_LIST.txt` and `BUILD_INFO.md`. Its clean-consumer matrix tests Node 22.14.0 and 24.21.0. A random host nonce, SHA and tarball hash must match a completion JSON containing every named check; an empty successful container fails. The uploaded `tolmap-consumer-<sha>-node-<version>` artifacts retain those records. The matrix checks install, help, a same-SHA repository build, offline parity, viewer assets, loopback binding, same-commit source, unsupported-platform errors and tarball contents. CI does not publish automatically.
 
 The first package must be bootstrapped by an authenticated maintainer after the npm account is available. Trusted publishing cannot be configured until the package exists. For that one-time bootstrap, download the artifact from the accepted CI run, verify `SHA256SUMS`, confirm `BUILD_INFO.md` names the accepted source SHA, and publish that exact tarball with the maintainer's npm login:
 

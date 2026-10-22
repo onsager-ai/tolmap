@@ -8,12 +8,27 @@ trap 'rm -rf -- "$work"' EXIT
 igraph_version=1.0.0
 leiden_version=0.12.0
 
+if [[ -n "${TOLMAP_NATIVE_SOURCE_DIR:-}" ]]; then
+  mkdir -p "$TOLMAP_NATIVE_SOURCE_DIR"
+fi
+if [[ -n "${TOLMAP_NATIVE_ARCHIVES:-}" ]]; then
+  cp "$TOLMAP_NATIVE_ARCHIVES/igraph.tar.gz" "$work/igraph.tar.gz"
+  cp "$TOLMAP_NATIVE_ARCHIVES/libleidenalg.tar.gz" "$work/libleidenalg.tar.gz"
+else
 curl -fsSL --retry 3 \
   "https://github.com/igraph/igraph/releases/download/${igraph_version}/igraph-${igraph_version}.tar.gz" \
   -o "$work/igraph.tar.gz"
 curl -fsSL --retry 3 \
   "https://github.com/vtraag/libleidenalg/archive/refs/tags/${leiden_version}.tar.gz" \
   -o "$work/libleidenalg.tar.gz"
+fi
+if [[ -n "${TOLMAP_NATIVE_SOURCE_DIR:-}" ]]; then
+  cp "$work/igraph.tar.gz" "$work/libleidenalg.tar.gz" "$TOLMAP_NATIVE_SOURCE_DIR/"
+  printf '%s\n' \
+    "igraph $igraph_version https://github.com/igraph/igraph/releases/download/${igraph_version}/igraph-${igraph_version}.tar.gz" \
+    "libleidenalg $leiden_version https://github.com/vtraag/libleidenalg/archive/refs/tags/${leiden_version}.tar.gz" \
+    > "$TOLMAP_NATIVE_SOURCE_DIR/UPSTREAM.txt"
+fi
 tar -xzf "$work/igraph.tar.gz" -C "$work"
 tar -xzf "$work/libleidenalg.tar.gz" -C "$work"
 
@@ -40,11 +55,13 @@ cmake --install "$work/build-leiden"
 if [[ -n "${TOLMAP_THIRD_PARTY_LICENSES_DIR:-}" ]]; then
   mkdir -p "$TOLMAP_THIRD_PARTY_LICENSES_DIR"
   copy_source_license() {
-    local project=$1 version=$2 source_dir=$3 license_file count=0
+    local project=$1 version=$2 source_dir=$3 license_file destination count=0
     while IFS= read -r -d '' license_file; do
-      cp "$license_file" "$TOLMAP_THIRD_PARTY_LICENSES_DIR/${project}-${version}-$(basename "$license_file")"
+      destination="$TOLMAP_THIRD_PARTY_LICENSES_DIR/${project}-${version}/${license_file#"$source_dir/"}"
+      mkdir -p "$(dirname "$destination")"
+      cp "$license_file" "$destination"
       count=$((count + 1))
-    done < <(find "$source_dir" -maxdepth 2 -type f \
+    done < <(find "$source_dir" -type f \
       \( -iname 'COPYING' -o -iname 'COPYING.*' -o -iname 'LICENSE' -o -iname 'LICENSE.*' \) \
       -print0)
     if [[ "$count" -eq 0 ]]; then

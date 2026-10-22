@@ -62,18 +62,27 @@ assert get(base+'/source?path=shop/cart.py')['text']==original['text']
 # Pause the actual engine child, then require cancellation to kill/reap it
 # rather than waiting for stdout to reach EOF. Retry only if observation missed
 # the tiny fixture; a missed worker is never a cancellation pass.
+def descendants(parent):
+    seen=set();pending=[parent]
+    while pending:
+        current=pending.pop()
+        for children in pathlib.Path(f'/proc/{current}/task').glob('*/children'):
+            try:ids=[int(x) for x in children.read_text().split()]
+            except FileNotFoundError:continue
+            for pid in ids:
+                if pid not in seen:seen.add(pid);pending.append(pid)
+    return seen
 for attempt in range(5):
     body=req('/')[1];prepared=re.search(rb'action=/local/index\?id=([a-f0-9-]+)',body).group(1).decode()
     req('/local/index?id='+prepared,True)
     deadline=time.monotonic()+5;worker=None
     while time.monotonic()<deadline and worker is None:
-        for children in pathlib.Path(f'/proc/{p.pid}/task').glob('*/children'):
-            for pid in children.read_text().split():
-                try:
-                    argv=pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-                    if len(argv)>1 and argv[1]==b'worker':
-                        worker=int(pid);os.killpg(worker,signal.SIGSTOP);break
-                except (FileNotFoundError,ProcessLookupError):pass
+        for pid in descendants(p.pid):
+            try:
+                argv=pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+                if len(argv)>1 and argv[1]==b'worker':
+                    worker=pid;os.killpg(worker,signal.SIGSTOP);break
+            except (FileNotFoundError,ProcessLookupError):pass
         time.sleep(.005)
     if worker is not None:break
 else:raise AssertionError('actual local worker was never observed')

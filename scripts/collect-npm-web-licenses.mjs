@@ -94,4 +94,5 @@ for (const record of records) {
   lines.push(`| \`${record.name}\` | \`${record.version}\` | ${record.license.replaceAll('|', '\\|')} | [npm source](${record.source}) | ${files} |`);
 }
 fs.writeFileSync(path.join(output, 'THIRD_PARTY_NOTICES.md'), `${lines.join('\n')}\n`);
+fs.writeFileSync(path.join(output, 'packages.json'), `${JSON.stringify(records, null, 2)}\n`);
 console.log(`collected license texts for ${records.length} production web dependencies`);

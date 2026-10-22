@@ -2,7 +2,7 @@
   "name": "tolmap",
   "version": "0.1.0",
   "description": "Build deterministic maps of source repositories",
-  "license": "SEE LICENSE IN THIRD_PARTY_NOTICES.md",
+  "license": "GPL-3.0-or-later",
   "repository": {
     "type": "git",
     "url": "https://github.com/onsager-ai/tolmap.git"
@@ -31,6 +31,8 @@
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "BUILD_INFO.md",
-    "README.md"
+    "README.md",
+    "LICENSE-DISTRIBUTION.md",
+    "source/"
   ]
 }

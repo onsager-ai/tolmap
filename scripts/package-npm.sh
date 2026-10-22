@@ -47,6 +47,7 @@ cp "$repo/npm/tolmap/package.json" "$stage/package.json"
 cp "$repo/npm/tolmap/bin/tolmap.js" "$stage/bin/tolmap.js"
 cp "$repo/npm/tolmap/README.md" "$stage/README.md"
 cp "$repo/LICENSE" "$stage/LICENSE"
+cp "$repo/npm/tolmap/LICENSE-DISTRIBUTION.md" "$stage/LICENSE-DISTRIBUTION.md"
 cp -a "$repo/web/dist" "$stage/web/dist"
 cp -a "$native_license_dir"/. "$stage/licenses/native/"
 cp "$repo/target/release/tolmap" "$stage/lib/tolmap"
@@ -71,8 +72,9 @@ is_base_library() {
 
 declare -A runtime_packages=()
 runtime_sources=()
+runtime_source_specs=()
 copy_runtime_license() {
-  local source_path=$1 owner_output owner package version copyright destination
+  local source_path=$1 owner_output owner package version copyright destination source_package source_version
   owner_output=$(dpkg-query -S "$source_path" 2>/dev/null | head -n 1 || true)
   if [[ -z "$owner_output" ]]; then
     source_path=$(readlink -f "$source_path")
@@ -86,6 +88,10 @@ copy_runtime_license() {
   package=${owner%%:*}
   if [[ -n "${runtime_packages[$package]:-}" ]]; then return; fi
   version=$(dpkg-query -W -f='${Version}' "$owner" 2>/dev/null || dpkg-query -W -f='${Version}' "$package")
+  source_package=$(dpkg-query -W -f='${source:Package}' "$owner")
+  source_version=$(dpkg-query -W -f='${source:Version}' "$owner")
+  [[ -n "$source_package" && -n "$source_version" ]]
+  runtime_source_specs+=("$source_package=$source_version")
   copyright="/usr/share/doc/$package/copyright"
   if [[ ! -f "$copyright" ]]; then
     echo "no Debian copyright text at $copyright for bundled runtime library $source_path" >&2
@@ -94,7 +100,7 @@ copy_runtime_license() {
   destination="licenses/runtime/${package}-${version}-copyright"
   cp "$copyright" "$stage/$destination"
   runtime_packages[$package]=1
-  runtime_sources+=("$package $version $destination https://launchpad.net/ubuntu/+source/$package/$version")
+  runtime_sources+=("$package $version $destination https://launchpad.net/ubuntu/+source/$source_package/$source_version $source_package $source_version")
 }
 
 collect_dependencies() {
@@ -186,17 +192,17 @@ EOF
   cat <<EOF
 # Third-party notices
 
-tolmap's Rust source and original CLI are licensed under MIT; see [LICENSE](LICENSE). The executable is dynamically linked with igraph and libleidenalg, and the production viewer bundles web dependencies. License texts are included under `licenses/`.
+tolmap's Rust source and original CLI are licensed under MIT; see [LICENSE](LICENSE). The executable is dynamically linked with igraph and libleidenalg, and the production viewer bundles web dependencies. License texts are included under licenses/. See [LICENSE-DISTRIBUTION.md](LICENSE-DISTRIBUTION.md) for GPL-3.0-or-later linked-distribution terms and accompanying corresponding source.
 
 | Component | Version | License/source | Included text |
 | --- | --- | --- | --- |
 | tolmap | $npm_version | MIT, https://github.com/onsager-ai/tolmap/tree/$sha | LICENSE |
 | igraph | 1.0.0 | GPL-2.0-or-later, https://github.com/igraph/igraph/releases/tag/1.0.0 | licenses/native/ |
-| libleidenalg | 0.12.0 | GPL-3.0, https://github.com/vtraag/libleidenalg/tree/0.12.0 | licenses/native/ |
+| libleidenalg | 0.12.0 | GPL-3.0-or-later, https://github.com/vtraag/libleidenalg/tree/0.12.0 | licenses/native/ |
 EOF
   for source in "${runtime_sources[@]}"; do
-    read -r package version file url <<< "$source"
-    printf '| %s | %s | Debian Ubuntu source package: [%s](%s) | %s |\n' "$package" "$version" "$version" "$url" "$file"
+    read -r package version file url source_package source_version <<< "$source"
+    printf '| %s | %s | Debian Ubuntu source package: [%s](%s) | %s |\n' "$package" "$version" "$source_package $source_version" "$url" "$file"
   done
   cat <<'EOF'
 
@@ -206,6 +212,10 @@ The exact installed versions, declared licenses, npm source tarballs and copied 
 EOF
 } > "$stage/THIRD_PARTY_NOTICES.md"
 
+bash "$repo/scripts/npm-corresponding-source.sh" "$sha" "$artifact_dir" "${runtime_source_specs[@]}"
+mkdir -p "$stage/source"
+cp "$artifact_dir/corresponding-source.tar.gz" "$artifact_dir/SOURCE_SHA256SUMS" "$stage/source/"
+cp -a /usr/share/common-licenses "$stage/licenses/runtime/common-licenses"
 cd "$stage"
 tarball=$(npm pack --ignore-scripts --pack-destination "$artifact_dir" | tail -n 1)
 [[ "$tarball" == "tolmap-$npm_version.tgz" ]] || {
@@ -214,5 +224,5 @@ tarball=$(npm pack --ignore-scripts --pack-destination "$artifact_dir" | tail -n
 }
 tar -tzf "$artifact_dir/$tarball" > "$artifact_dir/PACK_LIST.txt"
 cp "$stage/BUILD_INFO.md" "$artifact_dir/BUILD_INFO.md"
-(cd "$artifact_dir" && sha256sum "$tarball" > SHA256SUMS)
+(cd "$artifact_dir" && sha256sum "$tarball" corresponding-source.tar.gz > SHA256SUMS)
 echo "created $artifact_dir/$tarball for $sha"

@@ -4,6 +4,7 @@
 const { spawn } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
+const fs = require('node:fs');
 
 const supportedGlibc = { major: 2, minor: 35 };
 
@@ -49,9 +50,36 @@ if (args[0] === 'local' &&
 
 const child = spawn(binary, args, { stdio: 'inherit' });
 const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+// Local workers have their own process groups. Forward to the whole descendant
+// tree as well as the server, so terminating npx cannot leave an engine behind.
+function descendants(pid, seen = new Set()) {
+  try {
+    for (const task of fs.readdirSync(`/proc/${pid}/task`)) {
+      const children = fs.readFileSync(`/proc/${pid}/task/${task}/children`, 'utf8').trim();
+      for (const value of children.split(/\s+/).filter(Boolean)) {
+        const next = Number(value);
+        if (!seen.has(next)) { seen.add(next); descendants(next, seen); }
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'ESRCH') throw error;
+  }
+  return seen;
+}
+let stopping = false;
 for (const signal of signals) {
   process.on(signal, () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    if (stopping || child.exitCode !== null || child.signalCode !== null) return;
+    stopping = true;
+    for (const pid of [...descendants(child.pid)].reverse()) {
+      try {
+        process.kill(pid, signal);
+        process.kill(pid, 'SIGCONT');
+      } catch (error) {
+        if (error.code !== 'ESRCH') throw error;
+      }
+    }
+    child.kill(signal);
   });
 }
 
@@ -61,5 +89,11 @@ child.on('error', (error) => {
 });
 
 child.on('exit', (code, signal) => {
-  process.exitCode = signal ? 128 + (os.constants.signals[signal] || 1) : (code ?? 1);
+  if (signal) {
+    for (const forwarded of signals) process.removeAllListeners(forwarded);
+    process.kill(process.pid, signal);
+    process.exitCode = 128 + (os.constants.signals[signal] || 1);
+  } else {
+    process.exitCode = code ?? 1;
+  }
 });
