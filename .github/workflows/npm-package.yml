@@ -63,7 +63,7 @@ jobs:
       - name: Install native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential cmake curl patchelf pkg-config dpkg-dev
+          sudo apt-get install --yes --no-install-recommends build-essential cmake curl patchelf pkg-config dpkg-dev liblzma5
       - name: Build pinned Leiden/igraph and collect source licenses
         run: bash scripts/install-leiden.sh "$LEIDEN_PREFIX"
       - name: Build production web assets
