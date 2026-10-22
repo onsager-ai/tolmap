@@ -45,7 +45,9 @@ trap 'rm -rf -- "$stage"' EXIT
 mkdir -p "$stage/bin" "$stage/lib" "$stage/web" "$stage/licenses/native" "$stage/licenses/runtime"
 cp "$repo/npm/tolmap/package.json" "$stage/package.json"
 cp "$repo/npm/tolmap/bin/tolmap.js" "$stage/bin/tolmap.js"
-cp "$repo/npm/tolmap/README.md" "$stage/README.md"
+# Keep documentation links valid when publishing a reviewed branch before merge.
+sed "s|https://github.com/onsager-ai/tolmap/blob/main/docs/NPM.md|https://github.com/onsager-ai/tolmap/blob/$sha/docs/NPM.md|g" \
+  "$repo/npm/tolmap/README.md" > "$stage/README.md"
 cp "$repo/LICENSE" "$stage/LICENSE"
 cp "$repo/npm/tolmap/LICENSE-DISTRIBUTION.md" "$stage/LICENSE-DISTRIBUTION.md"
 cp -a "$repo/web/dist" "$stage/web/dist"
