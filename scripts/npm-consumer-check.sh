@@ -23,7 +23,15 @@ from pathlib import Path
 Path('/tmp/consumer-identity.json').write_text(json.dumps(dict(
     uid=os.geteuid(), gid=os.getegid(), description=subprocess.check_output(['id'], text=True).strip())))
 PY
-trap 'status=$?; if [[ $status -ne 0 ]]; then python3 /repo/scripts/npm-consumer-diagnostics.py "$status" || true; fi; exit "$status"' EXIT
+consumer_exit() {
+  local status=$?
+  trap - EXIT
+  if [[ $status -ne 0 ]]; then
+    python3 /repo/scripts/npm-consumer-diagnostics.py "$status" || true
+  fi
+  exit "$status"
+}
+trap consumer_exit EXIT
 node --version | grep -Fx "v${NODE_VERSION}"
 node -p 'process.report.getReport().header.glibcVersionRuntime' | grep -Fx 2.35
 printf '{}\n' > /tmp/consumer-checks.json
