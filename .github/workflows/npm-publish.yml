@@ -141,6 +141,6 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p "require('./npm/tolmap/package.json').version")
-          args=(publish "release-artifact/tolmap-$version.tgz" --access public --provenance)
+          args=(publish "./release-artifact/tolmap-$version.tgz" --access public --provenance)
           if [[ "$DRY_RUN" == true ]]; then args+=(--dry-run); fi
           npm "${args[@]}"

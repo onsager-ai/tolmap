@@ -135,7 +135,7 @@ jobs:
           fi
       - name: Dry run without a publishing credential
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
-        run: npm publish release-artifact/tolmap-0.1.0.tgz --access public --ignore-scripts --dry-run --registry=https://registry.npmjs.org
+        run: npm publish ./release-artifact/tolmap-0.1.0.tgz --access public --ignore-scripts --dry-run --registry=https://registry.npmjs.org
 
   publish:
     if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && inputs.confirm == 'publish tolmap@0.1.0'
@@ -172,7 +172,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$NODE_AUTH_TOKEN" ]] || { echo 'NPM_TOKEN is missing' >&2; exit 1; }
-          npm publish release-artifact/tolmap-0.1.0.tgz --access public --ignore-scripts --registry=https://registry.npmjs.org
+          npm publish ./release-artifact/tolmap-0.1.0.tgz --access public --ignore-scripts --registry=https://registry.npmjs.org
       - name: Verify registry integrity after publication
         run: |
           set -euo pipefail
