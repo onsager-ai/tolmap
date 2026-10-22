@@ -8,6 +8,7 @@ consumer_uid=$(id -u)
 [[ "$consumer_uid" -ne 0 ]]
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
 [[ "$(git -C "$repo" rev-parse HEAD)" == "$sha" ]]
+python3 "$repo/scripts/npm-source-metadata.py" "$artifact_dir" "$sha"
 out=$(mktemp -d)
 nonce=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 capture_diagnostics() {
@@ -25,4 +26,4 @@ docker run --rm --init \
 # Exit status alone cannot prove that the mounted check script ran.
 python3 "$repo/scripts/npm-consumer-result.py" verify "$out/consumer-result.json" "$nonce" "$sha" "$artifact_dir" "$node_version" "$consumer_uid"
 cp "$out/consumer-result.json" "$artifact_dir/consumer-result-$node_version.json"
-echo "PASS host verified consumer-result-$node_version.json nonce, SHA, tarball and all named checks"
+echo "PASS host verified consumer-result-$node_version.json nonce, SHA, tarball, source metadata and all named checks"

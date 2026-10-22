@@ -33,6 +33,7 @@
     "BUILD_INFO.md",
     "README.md",
     "LICENSE-DISTRIBUTION.md",
-    "source/"
+    "SOURCE.json",
+    "SOURCE-BUILD.md"
   ]
 }

@@ -59,10 +59,12 @@ grep -Fx -- "- Source commit: $EXPECTED_SHA" BUILD_INFO.md
 tar -xOf "$tarball" package/BUILD_INFO.md > /tmp/tarball-build-info.md
 cmp BUILD_INFO.md /tmp/tarball-build-info.md
 passed artifact-identity
+python3 /repo/scripts/npm-source-metadata.py /artifacts "$EXPECTED_SHA" > /tmp/source-metadata-result.json
+passed source-metadata
 while IFS= read -r member; do
   case "$member" in
-    package/package.json|package/README.md|package/LICENSE|package/LICENSE-DISTRIBUTION.md|package/THIRD_PARTY_NOTICES.md|package/BUILD_INFO.md) ;;
-    package/bin/*|package/lib/*|package/web/dist/*|package/licenses/*|package/source/*) ;;
+    package/package.json|package/README.md|package/LICENSE|package/LICENSE-DISTRIBUTION.md|package/THIRD_PARTY_NOTICES.md|package/BUILD_INFO.md|package/SOURCE.json|package/SOURCE-BUILD.md) ;;
+    package/bin/*|package/lib/*|package/web/dist/*|package/licenses/*) ;;
     *) echo "unexpected package path: $member" >&2; exit 1 ;;
   esac
 done < PACK_LIST.txt

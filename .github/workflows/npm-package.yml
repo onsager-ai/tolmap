@@ -31,6 +31,8 @@ jobs:
           shellcheck --version
           "$RUNNER_TEMP/actionlint" .github/workflows/npm-package.yml .github/workflows/npm-publish.yml
           shellcheck scripts/package-npm.sh scripts/verify-npm-artifact.sh scripts/npm-consumer-check.sh scripts/npm-corresponding-source.sh scripts/install-leiden.sh
+      - name: Verify source-offer refusal conditions with small fixtures
+        run: python3 scripts/npm-source-metadata-test.py
 
       - name: Prove an empty consumer cannot pass the host oracle
         run: |
@@ -42,7 +44,7 @@ jobs:
           echo 'PASS empty consumer rejected'
 
   package:
-    name: build reproducible npm tarball
+    name: build exact-commit npm tarball and separate source asset
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
@@ -89,7 +91,17 @@ jobs:
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: tolmap-npm-${{ github.sha }}
-          path: ${{ runner.temp }}/tolmap-npm-artifact/
+          # The source archive is a separate file, never nested in the npm tgz.
+          path: |
+            ${{ runner.temp }}/tolmap-npm-artifact/tolmap-*.tgz
+            ${{ runner.temp }}/tolmap-npm-artifact/tolmap-*-corresponding-source-*.tar.gz
+            ${{ runner.temp }}/tolmap-npm-artifact/SOURCE.json
+            ${{ runner.temp }}/tolmap-npm-artifact/SOURCE_SHA256SUMS
+            ${{ runner.temp }}/tolmap-npm-artifact/SHA256SUMS
+            ${{ runner.temp }}/tolmap-npm-artifact/PACKAGE_SIZES.json
+            ${{ runner.temp }}/tolmap-npm-artifact/PACK_INFO.json
+            ${{ runner.temp }}/tolmap-npm-artifact/PACK_LIST.txt
+            ${{ runner.temp }}/tolmap-npm-artifact/BUILD_INFO.md
           if-no-files-found: error
           retention-days: 14
 

@@ -22,13 +22,19 @@ Upstream grants at the actual source tags:
   bundle's `vendor/`. Production web dependency notices are in `licenses/web/`;
   their original sources accompany the bundle in `web-packages/`.
 
-## Corresponding source accompanies the binary
+## Corresponding source network location
 
-`source/corresponding-source.tar.gz` is included in this npm package, together
-with its SHA256SUMS. It contains the exact tolmap source commit, Cargo.lock,
+The complete corresponding source is offered at the designated durable GitHub
+release URL in the package's `SOURCE.json`. That file records the exact URL,
+SHA-256, byte size, source commit, and native and Ubuntu source components.
+The source is kept available alongside the package, per GPLv3 §6(d).
+`SOURCE-BUILD.md` explains downloading, verifying and rebuilding it.
+
+The separate source archive contains the exact tolmap source commit, Cargo.lock,
 build.rs, native bridge, web source/lockfile, build and installation scripts,
 vendored Rust dependencies, the exact native source archives used by the build,
 and source packages for every non-system runtime library bundled from Ubuntu.
 The internal `BUILD.md`, `BUILD-ENV.txt` and `SHA256SUMS` describe reproduction,
-tool versions, source URLs and checksums. Extract that archive to modify and
-rebuild; no source-hosting lifetime or future written offer is required.
+tool versions, source URLs and checksums. Download and verify the archive against
+`SOURCE.json` before extracting it to modify and rebuild. Actions artifacts are
+build outputs, not the public source offer.

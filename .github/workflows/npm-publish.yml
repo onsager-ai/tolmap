@@ -7,6 +7,10 @@ on:
         description: Accepted 40-character commit SHA (must be the selected ref's HEAD)
         required: true
         type: string
+      package_run_id:
+        description: Successful npm-package workflow run containing the exact accepted artifact
+        required: true
+        type: string
       confirm:
         description: Type exactly "publish tolmap@<version>"
         required: true
@@ -25,6 +29,7 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -54,6 +59,24 @@ jobs:
           [[ "$npm_version" == "$cargo_version" ]] || { echo "npm version $npm_version does not match Cargo.toml $cargo_version" >&2; exit 1; }
           expected="publish tolmap@$npm_version"
           [[ "$RELEASE_CONFIRM" == "$expected" ]] || { echo "confirmation must equal: $expected" >&2; exit 1; }
+      - name: Require the successful exact-SHA packaging run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PACKAGE_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'package_run_id must be numeric' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID" > "$RUNNER_TEMP/package-run.json"
+          python3 - "$RUNNER_TEMP/package-run.json" <<'PY'
+          import json, os, sys
+          with open(sys.argv[1]) as source:
+              run = json.load(source)
+          assert run['head_sha'] == os.environ['GITHUB_SHA'], 'packaging run SHA mismatch'
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          assert run['path'] == '.github/workflows/npm-package.yml', 'wrong packaging workflow'
+          assert run['event'] in ('push', 'workflow_dispatch'), 'require a branch packaging run'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success', 'packaging run must pass all checks'
+          PY
       - name: Reject a version already on the registry
         run: |
           set -euo pipefail
@@ -68,16 +91,9 @@ jobs:
             exit 1
           fi
 
-  rebuild_and_verify:
-    name: rebuild and clean-consumer verify accepted SHA
-    needs: guard
-    uses: ./.github/workflows/npm-package.yml
-    permissions:
-      contents: read
-
   publish:
     name: publish verified tarball with npm OIDC
-    needs: [guard, rebuild_and_verify]
+    needs: guard
     runs-on: ubuntu-22.04
     # Ordinary OIDC environment binding; no reviewer approval is required.
     environment:
@@ -85,6 +101,7 @@ jobs:
       url: https://www.npmjs.com/package/tolmap
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@v4.2.2
@@ -102,6 +119,8 @@ jobs:
         with:
           name: tolmap-npm-${{ github.sha }}
           path: release-artifact
+          run-id: ${{ inputs.package_run_id }}
+          github-token: ${{ github.token }}
       - name: Verify the artifact built and accepted for this SHA
         run: |
           set -euo pipefail
@@ -114,6 +133,8 @@ jobs:
           cmp BUILD_INFO.md /tmp/tolmap-build-info.md
           packaged_version=$(tar -xOf "$tarball" package/package.json | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version));')
           [[ "$packaged_version" == "$version" ]]
+      - name: Require the immutable public source asset before any publish or dry run
+        run: python3 scripts/npm-source-metadata.py release-artifact "$GITHUB_SHA" --release
       - name: Publish with provenance
         env:
           DRY_RUN: ${{ inputs.dry_run }}

@@ -50,6 +50,7 @@ sed "s|https://github.com/onsager-ai/tolmap/blob/main/docs/NPM.md|https://github
   "$repo/npm/tolmap/README.md" > "$stage/README.md"
 cp "$repo/LICENSE" "$stage/LICENSE"
 cp "$repo/npm/tolmap/LICENSE-DISTRIBUTION.md" "$stage/LICENSE-DISTRIBUTION.md"
+cp "$repo/npm/tolmap/SOURCE-BUILD.md" "$stage/SOURCE-BUILD.md"
 cp -a "$repo/web/dist" "$stage/web/dist"
 cp -a "$native_license_dir"/. "$stage/licenses/native/"
 cp "$repo/target/release/tolmap" "$stage/lib/tolmap"
@@ -215,9 +216,33 @@ The exact installed versions, declared licenses, npm source tarballs and copied 
 EOF
 } > "$stage/THIRD_PARTY_NOTICES.md"
 
-bash "$repo/scripts/npm-corresponding-source.sh" "$sha" "$artifact_dir" "${runtime_source_specs[@]}"
-mkdir -p "$stage/source"
-cp "$artifact_dir/corresponding-source.tar.gz" "$artifact_dir/SOURCE_SHA256SUMS" "$stage/source/"
+bash "$repo/scripts/npm-corresponding-source.sh" "$sha" "$artifact_dir" "$npm_version" "${runtime_source_specs[@]}"
+source_asset="tolmap-$npm_version-corresponding-source-$sha.tar.gz"
+python3 - "$artifact_dir" "$stage" "$sha" "$npm_version" "$source_asset" "${runtime_source_specs[@]}" <<'PY'
+import json, pathlib, sys
+root, stage = map(pathlib.Path, sys.argv[1:3])
+sha, version, asset = sys.argv[3:6]
+digest, filename = (root/'SOURCE_SHA256SUMS').read_text().split()
+assert filename == asset
+metadata = dict(source_commit=sha, package_version=version, source_asset=asset,
+                url=f'https://github.com/onsager-ai/tolmap/releases/download/v{version}/{asset}',
+                sha256=digest, size_bytes=(root/asset).stat().st_size,
+                components=dict(native=[dict(name='igraph', version='1.0.0'),
+                                        dict(name='libleidenalg', version='0.12.0')],
+                                ubuntu=[dict(zip(('name', 'version'), spec.split('=', 1)))
+                                        for spec in sorted(set(sys.argv[6:]))]))
+content = json.dumps(metadata, indent=2) + '\n'
+(root/'SOURCE.json').write_text(content)
+(stage/'SOURCE.json').write_text(content)
+# Generate the release-specific facts once; authored docs refer to SOURCE.json.
+offer = (f'\n## Corresponding source for this package\n\n'
+         f'- URL: {metadata["url"]}\n- SHA-256: `{metadata["sha256"]}`\n'
+         f'- Size: {metadata["size_bytes"]} bytes\n- Source commit: `{sha}`\n'
+         f'\nSee `SOURCE.json` and `SOURCE-BUILD.md` for verification and build instructions.\n')
+for name in ('README.md', 'LICENSE-DISTRIBUTION.md', 'SOURCE-BUILD.md', 'BUILD_INFO.md'):
+    with (stage/name).open('a') as doc:
+        doc.write(offer)
+PY
 cp -a /usr/share/common-licenses "$stage/licenses/runtime/common-licenses"
 cd "$stage"
 npm pack --json --ignore-scripts --pack-destination "$artifact_dir" > "$artifact_dir/PACK_INFO.json"
@@ -227,8 +252,10 @@ root = pathlib.Path(sys.argv[1])
 pack, = json.loads((root/'PACK_INFO.json').read_text())
 sizes = dict(tarball_bytes=(root/pack['filename']).stat().st_size,
              unpacked_package_bytes=pack['unpackedSize'],
-             source_bundle_bytes=(root/'corresponding-source.tar.gz').stat().st_size)
+             source_bundle_bytes=json.loads((root/'SOURCE.json').read_text())['size_bytes'])
 (root/'PACKAGE_SIZES.json').write_text(json.dumps(sizes, indent=2) + '\n')
+if sizes['tarball_bytes'] > 67_108_864:
+    raise SystemExit(f'npm tarball exceeds 64 MiB budget: {sizes["tarball_bytes"]} bytes')
 print(pack['filename'])
 PY
 )
@@ -238,7 +265,8 @@ PY
 }
 tar -tzf "$artifact_dir/$tarball" > "$artifact_dir/PACK_LIST.txt"
 cp "$stage/BUILD_INFO.md" "$artifact_dir/BUILD_INFO.md"
-(cd "$artifact_dir" && sha256sum "$tarball" corresponding-source.tar.gz > SHA256SUMS)
+(cd "$artifact_dir" && sha256sum "$tarball" "$source_asset" > SHA256SUMS)
+python3 "$repo/scripts/npm-source-metadata.py" "$artifact_dir" "$sha"
 cat "$artifact_dir/SHA256SUMS"
 stat --printf="npm tarball: %s bytes\n" "$artifact_dir/$tarball"
 cat "$artifact_dir/PACKAGE_SIZES.json"

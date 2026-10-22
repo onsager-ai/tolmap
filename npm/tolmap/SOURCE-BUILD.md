@@ -1,12 +1,40 @@
-# Rebuild the accompanying distribution
+# Obtain and rebuild the corresponding source
 
-This archive accompanies the npm binary under GPL-3.0-or-later. All copyright
+The npm package's `SOURCE.json` designates the durable public release asset and
+records its exact URL, SHA-256, byte size and source commit. The complete source
+is offered there and kept available alongside the package, per GPLv3 §6(d).
+It is a separate archive; installing or running tolmap does not download it.
+From the installed package directory (containing `SOURCE.json`), download and
+verify it before extraction:
+
+```sh
+python3 - <<'PY'
+import hashlib, json, pathlib, urllib.request
+source = json.loads(pathlib.Path('SOURCE.json').read_text())
+archive = pathlib.Path(source['source_asset'])
+urllib.request.urlretrieve(source['url'], archive)
+assert archive.stat().st_size == source['size_bytes'], 'source size mismatch'
+with archive.open('rb') as stream:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+        digest.update(chunk)
+assert digest.hexdigest() == source['sha256'], 'source hash mismatch'
+print('Verified source commit:', source['source_commit'])
+PY
+# Use the verified source_asset filename from SOURCE.json:
+tar -xzf "$(python3 -c 'import json; print(json.load(open("SOURCE.json"))["source_asset"])')"
+cd corresponding-source
+```
+
+This source archive accompanies the npm binary under GPL-3.0-or-later. All copyright
 and license files in vendor/, native archives, Ubuntu source packages and web
 packages are retained. The original tolmap LICENSE is MIT. SOURCE_SHA identifies
 the exact source; BUILD-ENV.txt records the build runner's tool/package versions.
 SHA256SUMS covers every source input. Verify it before rebuilding:
 
     sha256sum -c SHA256SUMS
+
+Check that `SOURCE_SHA` equals the `source_commit` in the package's `SOURCE.json`.
 
 Use Ubuntu 22.04 x86-64 with build-essential, cmake, pkg-config, patchelf, git,
 curl, Python 3.12, and the Rust toolchain version recorded in BUILD-ENV.txt.

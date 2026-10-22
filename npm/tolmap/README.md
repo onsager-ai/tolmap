@@ -33,5 +33,9 @@ local viewer usage, prerequisites, platform details and release procedure.
 
 The linked binary is distributed under GPL-3.0-or-later; the original tolmap
 source remains MIT licensed. See `LICENSE-DISTRIBUTION.md`, `LICENSE` and
-`THIRD_PARTY_NOTICES.md`. Corresponding source and rebuild instructions
-accompany the binary in `source/corresponding-source.tar.gz`.
+`THIRD_PARTY_NOTICES.md`. Complete corresponding source is offered at the
+designated network location in `SOURCE.json`, which pins its exact URL,
+SHA-256, byte size and source commit. It is kept available alongside the package,
+per GPLv3 §6(d). See the included `SOURCE-BUILD.md` for verification and build
+instructions. The npm tarball contains runtime files, notices and this metadata;
+the full source archive is downloaded separately when needed for rebuilding.

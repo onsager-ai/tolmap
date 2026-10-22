@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# CI only. Ship source with every binary instead of relying on expiring CI URLs.
+# CI only. Produce the complete source asset for the pinned public source offer.
 set -euo pipefail
 sha=${1:?source SHA}
 artifacts=${2:?artifact directory}
-shift 2
+version=${3:?package version}
+shift 3
+[[ "$sha" =~ ^[0-9a-f]{40}$ && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+asset="tolmap-$version-corresponding-source-$sha.tar.gz"
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
@@ -49,6 +52,6 @@ cp "$repo/npm/tolmap/SOURCE-BUILD.md" "$source_dir/BUILD.md"
 printf '%s\n' "$sha" > "$source_dir/SOURCE_SHA"
 (cd "$source_dir" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$work/SHA256SUMS"
 mv "$work/SHA256SUMS" "$source_dir/SHA256SUMS"
-tar -czf "$artifacts/corresponding-source.tar.gz" -C "$work" corresponding-source
-(cd "$artifacts" && sha256sum corresponding-source.tar.gz > SOURCE_SHA256SUMS)
-stat --printf='Corresponding source: %s bytes\n' "$artifacts/corresponding-source.tar.gz"
+tar -czf "$artifacts/$asset" -C "$work" corresponding-source
+(cd "$artifacts" && sha256sum "$asset" > SOURCE_SHA256SUMS)
+stat --printf='Corresponding source: %s bytes\n' "$artifacts/$asset"

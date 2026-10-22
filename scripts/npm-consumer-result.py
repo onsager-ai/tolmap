@@ -3,11 +3,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import sys
 
 CHECKS = ['clean-runtime', 'artifact-identity', 'package-contents', 'cli',
           'unsupported-platform', 'offline-parity', 'reader-cancellation',
-          'real-rs-build', 'viewer-assets-source-loopback', 'launcher-signals']
+          'real-rs-build', 'viewer-assets-source-loopback', 'launcher-signals',
+          'source-metadata']
 
 def tgz_hash(directory):
     files = list(Path(directory).glob('tolmap-*.tgz'))
@@ -29,6 +31,7 @@ if sys.argv[1] == 'write':
     result = dict(nonce=os.environ['CONSUMER_NONCE'], sha=os.environ['EXPECTED_SHA'],
                   tarball_sha256=tgz_hash('/artifacts'), node=os.environ['NODE_VERSION'], checks=checks,
                   identity=identity,
+                  source=json.loads(Path('/tmp/source-metadata-result.json').read_text()),
                   build=json.loads(Path('/tmp/build-counts.json').read_text()),
                   viewer=json.loads(Path('/tmp/viewer-result.json').read_text()),
                   signals=json.loads(Path('/tmp/signals-result.json').read_text()))
@@ -39,6 +42,8 @@ elif sys.argv[1] == 'verify':
     assert result['nonce'] == nonce
     assert result['sha'] == sha and result['node'] == node
     assert result['tarball_sha256'] == tgz_hash(artifacts)
+    verify_source = runpy.run_path(str(Path(__file__).with_name('npm-source-metadata.py')))['verify_artifact']
+    assert result['source'] == verify_source(artifacts, sha)
     assert result['identity']['uid'] == int(uid) != 0
     assert set(result['checks']) == set(CHECKS)
     assert all(value == 'passed' for value in result['checks'].values())
