@@ -43,6 +43,7 @@ export type { EtaBasis } from "@bindings/EtaBasis";
  * (repo, commit_sha), so the service copy is the fresher one). */
 export interface CatalogueEntry {
   slug: string;
+  label?: string;
   owner: string;
   repo: string;
   /** Public path under /maps/ this entry's MapDocument was copied to.

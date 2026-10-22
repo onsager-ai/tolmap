@@ -39,7 +39,7 @@ pub(crate) fn is_object_id(value: &str) -> bool {
 
 /// Why a worker's result was not stored.
 #[derive(Debug)]
-pub(crate) enum Refused {
+pub enum Refused {
     /// The result is not what a worker for this job produces.
     Invalid(String),
     /// The filesystem failed underneath an otherwise acceptable result.
@@ -319,7 +319,7 @@ fn open_early_map_file(
 /// `districts` once it is in staging (docs/WORKER_TIER.md §5.4, "Checking
 /// results") -- a result whose counts disagree with the document it shipped
 /// is refused rather than stored under numbers nothing produced.
-pub(crate) struct Reported<'a> {
+pub struct Reported<'a> {
     pub map_path: &'a str,
     pub symbols_path: &'a str,
     pub symbols_dir: &'a str,
@@ -330,7 +330,7 @@ pub(crate) struct Reported<'a> {
 
 /// A checked result, moved into the staging directory. Every path is inside
 /// it, and the service is the only uid that can change what they name.
-pub(crate) struct Adopted {
+pub struct Adopted {
     pub map: PathBuf,
     pub symbols: PathBuf,
     pub symbols_dir: PathBuf,
@@ -374,7 +374,7 @@ impl OutputNames {
 }
 
 /// Creates `path` as a directory only its owner can enter.
-pub(crate) fn create_private_dir(path: &Path) -> std::io::Result<()> {
+pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
@@ -425,7 +425,7 @@ pub(crate) fn copy_for_worker(source: &Path, dest: &Path) -> std::io::Result<u64
 /// `staging` must be a directory the service has just created with
 /// [`create_private_dir`], on the same filesystem as `output_dir`. On
 /// failure it may hold part of the result; the caller removes it either way.
-pub(crate) fn adopt(
+pub fn adopt(
     output_dir: &Path,
     staging: &Path,
     repo: &str,

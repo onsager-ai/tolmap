@@ -16,6 +16,18 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Analyze a committed private checkout with a loopback-only viewer.
+    Local {
+        repo: PathBuf,
+        /// Private storage outside the checkout; never collected as public maps.
+        #[arg(long)]
+        data: PathBuf,
+        /// Existing production web/dist bundle.
+        #[arg(long)]
+        static_dir: PathBuf,
+        #[arg(long, default_value_t = 8988)]
+        port: u16,
+    },
     Build {
         // Exactly one of `repo` or `--graph` is required -- validated in
         // `main`, since clap's derive can't express "either, not both"
@@ -501,6 +513,13 @@ fn wants_multi_source(pkg: &[String], lang: &[String], all_sources: bool) -> boo
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Local {
+            repo,
+            data,
+            static_dir,
+            port,
+        } => tokio::runtime::Runtime::new()?
+            .block_on(tolmap::local::serve(repo, data, static_dir, port)),
         Command::Build {
             repo,
             pkg,

@@ -148,6 +148,14 @@ Opened from the control column. A radio list (District, Churn, Complexity, Packa
 
 A plain one-screen page: wordmark and theme button; "Map a codebase" with one sentence of what tolmap does; the repository field (16 px, mono) and a full-width "Map it" button; then "Mapped repositories" as 64 px rows with files, districts and language. On desktop the same content sits in a 640 px column.
 
+An authenticated host can compose this same page using the versioned
+[host profile](HOST_PROFILE.md): workspace/actions below the wordmark, an
+authorized-repository select in the existing field slot, and snapshot labels in
+the same catalogue rows. Progress, map and source reading remain the production
+OSS components. Private profiles do not fall back to a public catalogue or offer
+public issue links containing repository context. Existing OSS references remain
+unchanged; hosted identity/select states need separate human-reviewed candidates.
+
 ## 5. Desktop layout: map-first, floating (prototype "tolmap desktop prototype")
 
 This section was redesigned on 2026-09-28 after phase 5 shipped the first desktop layout (#179). The owner asked for the desktop to be "as modern and elegant as mobile". The #179 layout matched its artboard, but it read as a dashboard: a full-width top bar, a dense 320 px rail and a boxed inspector. The owner chose "Map-first, floating" and approved the clickable prototype after six rounds of changes (§12). The prototype is the reference for spacing, copy and behaviour. Where this text and the prototype disagree, this text wins.
@@ -405,3 +413,26 @@ Settled by the owner on 2026-09-28 (session `16030105-19f0-4a84-933b-c5953f23c6b
 Settled by the owner on 2026-09-28 (same session):
 
 - **7c includes the phone sheet.** "Phone too (Recommended)" (AskUserQuestion, transcript line 14253, 07:25:54Z) extended the layer-aware overview from the desktop panel to the phone.
+
+## 13. Snapshot source reading and local checkouts
+
+The `tolmap local` journey is described in [LOCAL.md](LOCAL.md). The native local
+page confirms detected scope before using the real process executor. It retains
+commit history, stages/cancel, storage/export disclosure and recovery. It never
+asks for an account, subscription, upload or provider OAuth.
+
+A selected file or symbol exposes **Read selected source**. The one production
+CodeMirror 6 reader is read only, with selectable/copyable text, line numbers,
+Find in file (including no results), recorded symbol ranges and lazy language
+highlighting/plain-text fallback. Loading/access errors and missing/expired,
+binary, symlink/submodule and large-file refusals are explicit. Long lines skip
+language parsing. Source text is inert; no repository HTML is injected.
+
+Desktop keeps the mounted map beside the reader overlay. Phone uses a full
+reading state with its own text scroller and a Return to map control. Source
+state is URL-addressable (`read=true`, `file`, `line`, `end`, optional immutable
+`commit`); a snapshot route itself is immutable. Browser Back closes reading
+before the selected map. Closing restores focus; reading does not unmount the
+map or move its camera. Search/highlighting remain within the reader component,
+so typing cannot rebuild the map. Existing geometry and 40/110 px gates retain
+their original verification. Physical iPhone gestures remain #177 acceptance.

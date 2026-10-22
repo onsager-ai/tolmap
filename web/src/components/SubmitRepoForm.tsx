@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import { validateRepoInput } from "@/api/repoInput";
 import { postIndexJob, ApiRequestError } from "@/api/client";
 import { useServiceAvailable } from "@/data/queries";
+import { hostProfile } from "@/host";
 
 /** Home's "Map a codebase" entry point (docs/UX.md §4.9): a labelled 16px
  * mono field and a full-width "Map it" button, stacked (never side by side
@@ -28,8 +29,9 @@ export function SubmitRepoForm() {
   // and one more tap raises the keyboard.)
   const hash = useLocation({ select: (l) => l.hash });
   const fieldRef = useRef<HTMLInputElement>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
   useEffect(() => {
-    if (hash === "repo-field") fieldRef.current?.focus();
+    if (hash === "repo-field") (hostProfile ? selectRef.current : fieldRef.current)?.focus();
   }, [hash]);
 
   async function onSubmit(e: FormEvent) {
@@ -37,7 +39,10 @@ export function SubmitRepoForm() {
     if (disabled || submitting) return;
     setSubmitError(null);
 
-    const result = validateRepoInput(value);
+    const choice = hostProfile?.repositories.find((r) => r.value === value);
+    const result = hostProfile
+      ? choice ? { ok: true as const, parsed: { apiValue: choice.value } } : { ok: false as const, message: "Choose an authorized repository." }
+      : validateRepoInput(value);
     if (!result.ok) {
       setValidationError(result.message);
       return;
@@ -69,9 +74,15 @@ export function SubmitRepoForm() {
   return (
     <form onSubmit={(e) => void onSubmit(e)} className="flex flex-col gap-2">
       <label htmlFor="repo-field" className="text-small font-semibold">
-        GitHub repository
+        {hostProfile ? "Authorized repository" : "GitHub repository"}
       </label>
-      <input
+      {hostProfile ? (
+        <select ref={selectRef} id="repo-field" data-repo-field value={value} onChange={(e) => setValue(e.target.value)} disabled={disabled || submitting}
+          className="h-[52px] rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)] px-4 font-mono text-body text-[var(--on)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]">
+          <option value="">{hostProfile.repositories.length ? "Select a repository" : "Connect a repository to begin"}</option>
+          {hostProfile.repositories.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+        </select>
+      ) : <input
         id="repo-field"
         ref={fieldRef}
         data-repo-field
@@ -85,7 +96,7 @@ export function SubmitRepoForm() {
         aria-describedby={validationError ? "repo-field-error" : undefined}
         disabled={disabled || submitting}
         className="h-[52px] rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)] px-4 font-mono text-body text-[var(--on)] outline-none placeholder:text-[var(--dim)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-50"
-      />
+      />}
       <button
         type="submit"
         disabled={disabled || submitting || value.trim().length === 0}

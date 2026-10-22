@@ -26,6 +26,10 @@ export interface MapSearch {
    * phase finished. The map view pins that job's commit and fetches
    * symbols once the job is done, then drops this. */
   job?: string;
+  commit?: string;
+  read?: boolean;
+  line?: number;
+  end?: number;
 }
 
 // "r" only: the geometry toggle that used to set "p" (plots) or "t"
@@ -58,7 +62,11 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const depthRaw = Number(search.depth);
   const depth = Number.isInteger(depthRaw) && depthRaw > 0 ? depthRaw : undefined;
   const job = typeof search.job === "string" && search.job.length > 0 ? search.job : undefined;
-  return { file, sym, hsym, d, dir, depth, geo, layer, job };
+  const commit = typeof search.commit === "string" && /^[a-f0-9]{40,64}$/.test(search.commit) ? search.commit : undefined;
+  const read = !!file && (search.read === true || search.read === "true");
+  const line = Math.floor(Math.max(1, Math.min(10_000_000, Number(search.line) || 1)));
+  const end = Math.floor(Math.max(line, Math.min(10_000_000, Number(search.end) || line)));
+  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, read, line, end };
 }
 
 /** Search state for the /new progress route (see routes/IndexJobView.tsx).
