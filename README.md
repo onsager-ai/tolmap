@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="web/public/assets/brand/tolmap-lockup-dark.svg">
+  <img src="web/public/assets/brand/tolmap-lockup-light.svg" width="240" alt="Tolmap">
+</picture>
+
 # tolmap
 
 Turn a source repository into a map a person can hold in their head.

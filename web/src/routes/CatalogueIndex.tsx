@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useCatalogue } from "@/data/queries";
 import { SubmitRepoForm } from "@/components/SubmitRepoForm";
+import { TolmapLogo } from "@/components/TolmapLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ChevronIcon } from "@/components/phone/icons";
 import type { CatalogueEntry } from "@/types";
@@ -54,7 +55,10 @@ export function CatalogueIndex() {
         style={{ paddingTop: "calc(28px + env(safe-area-inset-top, 0px))" }}
       >
         <div className="flex items-center justify-between">
-          <span className="text-title">tolmap{hostProfile ? " Hub" : ""}</span>
+          <div className="flex items-center gap-2">
+            <TolmapLogo className="h-9 w-auto shrink-0" />
+            {hostProfile && <span className="text-title">Hub</span>}
+          </div>
           <ThemeToggle className="h-11 w-11 rounded-full" />
         </div>
 
