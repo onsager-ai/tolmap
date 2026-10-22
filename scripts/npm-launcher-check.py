@@ -18,7 +18,12 @@ def descendants(parent):
     seen=set(); pending=[parent]
     while pending:
         current=pending.pop()
-        for children in Path(f'/proc/{current}/task').glob('*/children'):
+        try:
+            # A process can exit while glob lazily scans its task directory.
+            children_files=list(Path(f'/proc/{current}/task').glob('*/children'))
+        except FileNotFoundError:
+            continue
+        for children in children_files:
             try: ids=[int(x) for x in children.read_text().split()]
             except FileNotFoundError: continue
             for pid in ids:
