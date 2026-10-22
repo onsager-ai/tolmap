@@ -24,18 +24,22 @@ def tgz_hash(directory):
 if sys.argv[1] == 'write':
     checks = json.loads(Path('/tmp/consumer-checks.json').read_text())
     assert set(checks) == set(CHECKS) and all(v == 'passed' for v in checks.values())
+    identity = json.loads(Path('/tmp/consumer-identity.json').read_text())
+    assert identity['uid'] == os.geteuid() == int(os.environ['CONSUMER_UID']) != 0
     result = dict(nonce=os.environ['CONSUMER_NONCE'], sha=os.environ['EXPECTED_SHA'],
                   tarball_sha256=tgz_hash('/artifacts'), node=os.environ['NODE_VERSION'], checks=checks,
+                  identity=identity,
                   build=json.loads(Path('/tmp/build-counts.json').read_text()),
                   viewer=json.loads(Path('/tmp/viewer-result.json').read_text()),
                   signals=json.loads(Path('/tmp/signals-result.json').read_text()))
     Path('/out/consumer-result.json').write_text(json.dumps(result, indent=2) + '\n')
 elif sys.argv[1] == 'verify':
-    _, _, file, nonce, sha, artifacts, node = sys.argv
+    _, _, file, nonce, sha, artifacts, node, uid = sys.argv
     result = json.loads(Path(file).read_text())
     assert result['nonce'] == nonce
     assert result['sha'] == sha and result['node'] == node
     assert result['tarball_sha256'] == tgz_hash(artifacts)
+    assert result['identity']['uid'] == int(uid) != 0
     assert set(result['checks']) == set(CHECKS)
     assert all(value == 'passed' for value in result['checks'].values())
     assert result['build']['files'] >= 20 and result['build']['districts'] >= 1

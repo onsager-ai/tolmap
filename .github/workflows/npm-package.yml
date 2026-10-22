@@ -35,7 +35,7 @@ jobs:
       - name: Prove an empty consumer cannot pass the host oracle
         run: |
           empty=$(mktemp -d)
-          if python3 scripts/npm-consumer-result.py verify "$empty/consumer-result.json" nonce "$GITHUB_SHA" "$empty" 22.14.0; then
+          if python3 scripts/npm-consumer-result.py verify "$empty/consumer-result.json" nonce "$GITHUB_SHA" "$empty" 22.14.0 "$(id -u)"; then
             echo 'ERROR empty consumer passed' >&2
             exit 1
           fi
@@ -60,6 +60,18 @@ jobs:
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
+      - name: Identify Rust toolchain for the Ubuntu 22.04 cargo cache
+        id: rust-toolchain
+        run: |
+          echo "hash=$(rustc -vV | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Cache Ubuntu 22.04 cargo inputs and compilation
+        uses: actions/cache@v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: npm-cargo-ubuntu-22.04-x64-${{ steps.rust-toolchain.outputs.hash }}-${{ hashFiles('Cargo.lock', 'scripts/install-leiden.sh') }}
       - name: Install native build tools
         run: |
           sudo apt-get update
@@ -101,7 +113,10 @@ jobs:
       - name: Verify the tarball in a clean Ubuntu 22.04 consumer
         run: bash scripts/verify-npm-artifact.sh "$RUNNER_TEMP/tolmap-npm-artifact" "$GITHUB_WORKSPACE" "$GITHUB_SHA" "${{ matrix.node }}"
       - uses: actions/upload-artifact@v4.6.2
+        if: always()
         with:
           name: tolmap-consumer-${{ github.sha }}-node-${{ matrix.node }}
-          path: ${{ runner.temp }}/tolmap-npm-artifact/consumer-result-*.json
+          path: |
+            ${{ runner.temp }}/tolmap-npm-artifact/consumer-result-*.json
+            ${{ runner.temp }}/tolmap-npm-artifact/consumer-diagnostics-*.json
           if-no-files-found: error

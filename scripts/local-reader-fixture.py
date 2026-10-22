@@ -17,6 +17,11 @@ local_args=[str(binary),'local',str(repo),'--data',str(root/'store')]
 if os.environ.get('TOLMAP_TEST_PACKAGED_DEFAULT_STATIC') != '1':
     local_args += ['--static-dir',str(pathlib.Path('web/dist').resolve())]
 local_args += ['--port','8988']
+# Consumer CI traces the synthetic fixture's worker writes, including errors
+# otherwise consumed by the local service. Native reader CI keeps its usual path.
+if os.environ.get('TOLMAP_TEST_WRITE_TRACE'):
+    local_args = ['strace','-f','-qq','-e','trace=write','-s','1024','-o',
+                  os.environ['TOLMAP_TEST_WRITE_TRACE'],*local_args]
 p=subprocess.Popen(local_args,stdout=log,stderr=log,start_new_session=True)
 def req(path,post=False,headers=None):
     r=urllib.request.Request(origin+path,data=b'' if post else None,headers={'Origin':origin,**(headers or {})})

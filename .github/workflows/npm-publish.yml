@@ -79,6 +79,7 @@ jobs:
     name: publish verified tarball with npm OIDC
     needs: [guard, rebuild_and_verify]
     runs-on: ubuntu-22.04
+    # Ordinary OIDC environment binding; no reviewer approval is required.
     environment:
       name: npm-publish
       url: https://www.npmjs.com/package/tolmap

@@ -218,7 +218,18 @@ mkdir -p "$stage/source"
 cp "$artifact_dir/corresponding-source.tar.gz" "$artifact_dir/SOURCE_SHA256SUMS" "$stage/source/"
 cp -a /usr/share/common-licenses "$stage/licenses/runtime/common-licenses"
 cd "$stage"
-tarball=$(npm pack --ignore-scripts --pack-destination "$artifact_dir" | tail -n 1)
+npm pack --json --ignore-scripts --pack-destination "$artifact_dir" > "$artifact_dir/PACK_INFO.json"
+tarball=$(python3 - "$artifact_dir" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+pack, = json.loads((root/'PACK_INFO.json').read_text())
+sizes = dict(tarball_bytes=(root/pack['filename']).stat().st_size,
+             unpacked_package_bytes=pack['unpackedSize'],
+             source_bundle_bytes=(root/'corresponding-source.tar.gz').stat().st_size)
+(root/'PACKAGE_SIZES.json').write_text(json.dumps(sizes, indent=2) + '\n')
+print(pack['filename'])
+PY
+)
 [[ "$tarball" == "tolmap-$npm_version.tgz" ]] || {
   echo "unexpected npm pack output: $tarball" >&2
   exit 1
@@ -228,4 +239,5 @@ cp "$stage/BUILD_INFO.md" "$artifact_dir/BUILD_INFO.md"
 (cd "$artifact_dir" && sha256sum "$tarball" corresponding-source.tar.gz > SHA256SUMS)
 cat "$artifact_dir/SHA256SUMS"
 stat --printf="npm tarball: %s bytes\n" "$artifact_dir/$tarball"
+cat "$artifact_dir/PACKAGE_SIZES.json"
 echo "created $artifact_dir/$tarball for $sha"

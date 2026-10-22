@@ -1,11 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl git iproute2 python3 xz-utils libstdc++6 libgcc-s1
-rm -rf /var/lib/apt/lists/*
-curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" | tar -xJ -C /opt
+if [[ ${1:-} != --consumer ]]; then
+  [[ $(id -u) == 0 ]]
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends ca-certificates curl git iproute2 python3 xz-utils libstdc++6 libgcc-s1 passwd procps strace
+  rm -rf /var/lib/apt/lists/*
+  curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" | tar -xJ -C /opt
+  # Match the host's non-root uid so the private output mount stays writable
+  # without changing its owner/mode or any production source-store permissions.
+  [[ ${CONSUMER_UID:?} =~ ^[0-9]+$ && $CONSUMER_UID -ne 0 ]]
+  useradd --uid "$CONSUMER_UID" --create-home consumer
+  exec runuser --preserve-environment -u consumer -- env HOME=/home/consumer \
+    bash /repo/scripts/npm-consumer-check.sh --consumer
+fi
 export PATH="/opt/node-v${NODE_VERSION}-linux-x64/bin:$PATH"
+[[ $(id -u) != 0 && $(id -u) == "$CONSUMER_UID" ]]
+id
+python3 - <<'PY'
+import json, os, subprocess
+from pathlib import Path
+Path('/tmp/consumer-identity.json').write_text(json.dumps(dict(
+    uid=os.geteuid(), gid=os.getegid(), description=subprocess.check_output(['id'], text=True).strip())))
+PY
+trap 'status=$?; if [[ $status -ne 0 ]]; then python3 /repo/scripts/npm-consumer-diagnostics.py "$status" || true; fi; exit "$status"' EXIT
 node --version | grep -Fx "v${NODE_VERSION}"
 node -p 'process.report.getReport().header.glibcVersionRuntime' | grep -Fx 2.35
 printf '{}\n' > /tmp/consumer-checks.json
@@ -63,7 +81,8 @@ passed offline-parity
 mkdir -p tests/fixtures scripts
 cp -a /repo/tests/fixtures/service_identity tests/fixtures/service_identity
 cp /repo/scripts/local-reader-fixture.py scripts/
-TOLMAP_BINARY="$cli" TOLMAP_TEST_PACKAGED_DEFAULT_STATIC=1 timeout 900 python3 scripts/local-reader-fixture.py
+TOLMAP_BINARY="$cli" TOLMAP_TEST_PACKAGED_DEFAULT_STATIC=1 \
+  TOLMAP_TEST_WRITE_TRACE=/tmp/reader-worker-writes.log timeout 900 python3 scripts/local-reader-fixture.py
 passed reader-cancellation
 # A writable same-SHA checkout, with no host git safe-directory dependency.
 git -c safe.directory=/repo clone --no-hardlinks /repo /tmp/source
