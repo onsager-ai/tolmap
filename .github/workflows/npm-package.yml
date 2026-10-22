@@ -46,9 +46,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
-      LEIDEN_PREFIX: ${{ runner.temp }}/tolmap-leiden
-      TOLMAP_NATIVE_SOURCE_DIR: ${{ runner.temp }}/tolmap-native-source
-      TOLMAP_THIRD_PARTY_LICENSES_DIR: ${{ runner.temp }}/tolmap-native-licenses
+      LEIDEN_PREFIX: ${{ github.workspace }}/.native/npm-leiden
+      TOLMAP_NATIVE_SOURCE_DIR: ${{ github.workspace }}/.native/npm-source
+      TOLMAP_THIRD_PARTY_LICENSES_DIR: ${{ github.workspace }}/.native/npm-licenses
     steps:
       - uses: actions/checkout@v4.2.2
         with:
