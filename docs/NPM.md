@@ -2,7 +2,7 @@
 
 ## Install and use
 
-The prepared `tolmap` npm package contains the release Rust CLI, its Leiden/igraph shared libraries and the production web viewer. It does not run install scripts or download binaries during installation. The package is not published yet; use these commands after the first release.
+The `tolmap` npm package contains the release Rust CLI, its Leiden/igraph shared libraries and the production web viewer. It does not run install scripts or download binaries during installation.
 
 ```sh
 npm install -g tolmap
