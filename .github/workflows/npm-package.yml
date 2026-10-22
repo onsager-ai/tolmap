@@ -1,0 +1,78 @@
+name: npm package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-lint:
+    name: actionlint workflow syntax
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+      - name: Install pinned actionlint
+        run: |
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -version
+      - name: Lint npm workflows
+        run: "$RUNNER_TEMP/actionlint" .github/workflows/npm-package.yml .github/workflows/npm-publish.yml
+
+  package:
+    name: build reproducible npm tarball
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      LEIDEN_PREFIX: ${{ runner.temp }}/tolmap-leiden
+      TOLMAP_THIRD_PARTY_LICENSES_DIR: ${{ runner.temp }}/tolmap-native-licenses
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '24.21.0'
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential cmake curl patchelf pkg-config
+      - name: Build pinned Leiden/igraph and collect source licenses
+        run: bash scripts/install-leiden.sh "$LEIDEN_PREFIX"
+      - name: Build production web assets
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web exec vite build
+      - name: Build and pack for exact source SHA
+        run: bash scripts/package-npm.sh "$GITHUB_SHA" "$RUNNER_TEMP/tolmap-npm-artifact"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: tolmap-npm-${{ github.sha }}
+          path: ${{ runner.temp }}/tolmap-npm-artifact/
+          if-no-files-found: error
+          retention-days: 14
+
+  clean-consumer:
+    name: install and smoke-test in clean glibc 2.35 consumer
+    needs: package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: tolmap-npm-${{ github.sha }}
+          path: ${{ runner.temp }}/tolmap-npm-artifact
+      - name: Verify the tarball in a clean Ubuntu 22.04 consumer
+        run: bash scripts/verify-npm-artifact.sh "$RUNNER_TEMP/tolmap-npm-artifact" "$GITHUB_WORKSPACE" "$GITHUB_SHA"

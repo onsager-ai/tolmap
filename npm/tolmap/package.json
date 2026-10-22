@@ -1,0 +1,36 @@
+{
+  "name": "tolmap",
+  "version": "0.1.0",
+  "description": "Build deterministic maps of source repositories",
+  "license": "SEE LICENSE IN THIRD_PARTY_NOTICES.md",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/onsager-ai/tolmap.git"
+  },
+  "homepage": "https://github.com/onsager-ai/tolmap",
+  "bugs": {
+    "url": "https://github.com/onsager-ai/tolmap/issues"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "bin": {
+    "tolmap": "bin/tolmap.js"
+  },
+  "files": [
+    "bin/tolmap.js",
+    "lib/",
+    "web/dist/",
+    "licenses/",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "BUILD_INFO.md",
+    "README.md"
+  ]
+}

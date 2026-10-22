@@ -13,7 +13,11 @@ git('add','.');git('commit','-m','A');a=git('rev-parse','HEAD')
 binary=pathlib.Path(os.environ.get('TOLMAP_BINARY','target/release/tolmap')).resolve()
 origin='http://127.0.0.1:8988'
 log=open(root/'service.log','wb')
-p=subprocess.Popen([str(binary),'local',str(repo),'--data',str(root/'store'),'--static-dir',str(pathlib.Path('web/dist').resolve()),'--port','8988'],stdout=log,stderr=log,start_new_session=True)
+local_args=[str(binary),'local',str(repo),'--data',str(root/'store')]
+if os.environ.get('TOLMAP_TEST_PACKAGED_DEFAULT_STATIC') != '1':
+    local_args += ['--static-dir',str(pathlib.Path('web/dist').resolve())]
+local_args += ['--port','8988']
+p=subprocess.Popen(local_args,stdout=log,stderr=log,start_new_session=True)
 def req(path,post=False,headers=None):
     r=urllib.request.Request(origin+path,data=b'' if post else None,headers={'Origin':origin,**(headers or {})})
     try:
