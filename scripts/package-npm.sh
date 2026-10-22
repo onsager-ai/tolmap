@@ -104,7 +104,7 @@ copy_runtime_license() {
 }
 
 collect_dependencies() {
-  local target=$1 listing line needed arrow resolved destination
+  local target=$1 listing line needed _arrow resolved destination
   listing=$(LD_LIBRARY_PATH="$leiden_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$target") || {
     echo "ldd failed for $target" >&2
     exit 1
@@ -115,7 +115,7 @@ collect_dependencies() {
       exit 1
     fi
     if [[ "$line" == *' => '* ]]; then
-      read -r needed arrow resolved _ <<< "$line"
+      read -r needed _arrow resolved _ <<< "$line"
     else
       continue
     fi
@@ -149,11 +149,12 @@ done
 
 for elf in "$stage/lib/tolmap" "$stage"/lib/*.so*; do
   [[ -f "$elf" ]] || continue
+  # shellcheck disable=SC2016 # The ELF loader expands this token at runtime.
   patchelf --set-rpath '$ORIGIN' "$elf"
 done
 
 validate_dependencies() {
-  local target=$1 listing line needed arrow resolved
+  local target=$1 listing line needed _arrow resolved
   listing=$(ldd "$target") || { echo "ldd failed after relocation: $target" >&2; exit 1; }
   while IFS= read -r line; do
     if [[ "$line" == *'not found'* ]]; then
@@ -161,7 +162,7 @@ validate_dependencies() {
       exit 1
     fi
     if [[ "$line" == *' => '* ]]; then
-      read -r needed arrow resolved _ <<< "$line"
+      read -r needed _arrow resolved _ <<< "$line"
       if is_base_library "$needed"; then continue; fi
       if [[ "$resolved" != "$stage/lib/"* ]]; then
         echo "non-base dependency is not bundled: $needed => $resolved" >&2
@@ -225,4 +226,6 @@ tarball=$(npm pack --ignore-scripts --pack-destination "$artifact_dir" | tail -n
 tar -tzf "$artifact_dir/$tarball" > "$artifact_dir/PACK_LIST.txt"
 cp "$stage/BUILD_INFO.md" "$artifact_dir/BUILD_INFO.md"
 (cd "$artifact_dir" && sha256sum "$tarball" corresponding-source.tar.gz > SHA256SUMS)
+cat "$artifact_dir/SHA256SUMS"
+stat --printf="npm tarball: %s bytes\n" "$artifact_dir/$tarball"
 echo "created $artifact_dir/$tarball for $sha"

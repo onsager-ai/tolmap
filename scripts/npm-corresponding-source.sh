@@ -47,7 +47,8 @@ PY
 } > "$source_dir/BUILD-ENV.txt"
 cp "$repo/npm/tolmap/SOURCE-BUILD.md" "$source_dir/BUILD.md"
 printf '%s\n' "$sha" > "$source_dir/SOURCE_SHA"
-(cd "$source_dir" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+(cd "$source_dir" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$work/SHA256SUMS"
+mv "$work/SHA256SUMS" "$source_dir/SHA256SUMS"
 tar -czf "$artifacts/corresponding-source.tar.gz" -C "$work" corresponding-source
 (cd "$artifacts" && sha256sum corresponding-source.tar.gz > SOURCE_SHA256SUMS)
 stat --printf='Corresponding source: %s bytes\n' "$artifacts/corresponding-source.tar.gz"
