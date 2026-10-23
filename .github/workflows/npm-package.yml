@@ -1,0 +1,134 @@
+name: npm package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-lint:
+    name: actionlint workflow syntax
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install pinned actionlint
+        run: |
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -version
+      - name: Lint npm workflows
+        run: |
+          echo 'Checking npm-package.yml and npm-publish.yml with actionlint and shellcheck'
+          shellcheck --version
+          "$RUNNER_TEMP/actionlint" .github/workflows/npm-package.yml .github/workflows/npm-publish.yml
+          shellcheck scripts/package-npm.sh scripts/verify-npm-artifact.sh scripts/npm-consumer-check.sh scripts/npm-corresponding-source.sh scripts/install-leiden.sh
+      - name: Verify source-offer refusal conditions with small fixtures
+        run: python3 scripts/npm-source-metadata-test.py
+
+      - name: Prove an empty consumer cannot pass the host oracle
+        run: |
+          empty=$(mktemp -d)
+          if python3 scripts/npm-consumer-result.py verify "$empty/consumer-result.json" nonce "$GITHUB_SHA" "$empty" 22.14.0 "$(id -u)"; then
+            echo 'ERROR empty consumer passed' >&2
+            exit 1
+          fi
+          echo 'PASS empty consumer rejected'
+
+  package:
+    name: build exact-commit npm tarball and separate source asset
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      LEIDEN_PREFIX: ${{ github.workspace }}/.native/npm-leiden
+      TOLMAP_NATIVE_SOURCE_DIR: ${{ github.workspace }}/.native/npm-source
+      TOLMAP_THIRD_PARTY_LICENSES_DIR: ${{ github.workspace }}/.native/npm-licenses
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Identify Rust toolchain for the Ubuntu 22.04 cargo cache
+        id: rust-toolchain
+        run: |
+          echo "hash=$(rustc -vV | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Cache Ubuntu 22.04 cargo inputs and compilation
+        uses: actions/cache@v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: npm-cargo-ubuntu-22.04-x64-${{ steps.rust-toolchain.outputs.hash }}-${{ hashFiles('Cargo.lock', 'scripts/install-leiden.sh') }}
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential cmake curl patchelf pkg-config dpkg-dev liblzma5
+      - name: Build pinned Leiden/igraph and collect source licenses
+        run: bash scripts/install-leiden.sh "$LEIDEN_PREFIX"
+      - name: Build production web assets
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web exec vite build
+      - name: Build and pack for exact source SHA
+        run: bash scripts/package-npm.sh "$GITHUB_SHA" "$RUNNER_TEMP/tolmap-npm-artifact"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: tolmap-npm-${{ github.sha }}
+          # The source archive is a separate file, never nested in the npm tgz.
+          path: |
+            ${{ runner.temp }}/tolmap-npm-artifact/tolmap-*.tgz
+            ${{ runner.temp }}/tolmap-npm-artifact/tolmap-*-corresponding-source-*.tar.gz
+            ${{ runner.temp }}/tolmap-npm-artifact/SOURCE.json
+            ${{ runner.temp }}/tolmap-npm-artifact/SOURCE_SHA256SUMS
+            ${{ runner.temp }}/tolmap-npm-artifact/SHA256SUMS
+            ${{ runner.temp }}/tolmap-npm-artifact/PACKAGE_SIZES.json
+            ${{ runner.temp }}/tolmap-npm-artifact/PACK_INFO.json
+            ${{ runner.temp }}/tolmap-npm-artifact/PACK_LIST.txt
+            ${{ runner.temp }}/tolmap-npm-artifact/BUILD_INFO.md
+          if-no-files-found: error
+          retention-days: 14
+
+  clean-consumer:
+    name: install and smoke-test in clean glibc 2.35 consumer
+    needs: package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.14.0', '24.21.0']
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: tolmap-npm-${{ github.sha }}
+          path: ${{ runner.temp }}/tolmap-npm-artifact
+      - name: Verify the tarball in a clean Ubuntu 22.04 consumer
+        run: bash scripts/verify-npm-artifact.sh "$RUNNER_TEMP/tolmap-npm-artifact" "$GITHUB_WORKSPACE" "$GITHUB_SHA" "${{ matrix.node }}"
+      - uses: actions/upload-artifact@v4.6.2
+        if: always()
+        with:
+          name: tolmap-consumer-${{ github.sha }}-node-${{ matrix.node }}
+          path: |
+            ${{ runner.temp }}/tolmap-npm-artifact/consumer-result-*.json
+            ${{ runner.temp }}/tolmap-npm-artifact/consumer-diagnostics-*.json
+          if-no-files-found: error

@@ -1,0 +1,146 @@
+name: npm publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Accepted 40-character commit SHA (must be the selected ref's HEAD)
+        required: true
+        type: string
+      package_run_id:
+        description: Successful npm-package workflow run containing the exact accepted artifact
+        required: true
+        type: string
+      confirm:
+        description: Type exactly "publish tolmap@<version>"
+        required: true
+        type: string
+      dry_run:
+        description: Keep true for the first publish-workflow run
+        required: true
+        default: true
+        type: boolean
+
+permissions: {}
+
+jobs:
+  guard:
+    name: validate dispatch and release version
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Check event, SHA, version and confirmation
+        env:
+          RELEASE_SHA: ${{ inputs.sha }}
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]] || { echo 'only workflow_dispatch may publish' >&2; exit 1; }
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'sha must be exactly 40 lowercase hex characters' >&2; exit 1; }
+          [[ "$RELEASE_SHA" == "$GITHUB_SHA" ]] || { echo 'sha must equal the selected ref HEAD (github.sha)' >&2; exit 1; }
+          npm_version=$(node -p "require('./npm/tolmap/package.json').version")
+          cargo_version=$(python3 - <<'PY'
+          import tomllib
+          with open('Cargo.toml', 'rb') as source:
+              print(tomllib.load(source)['package']['version'])
+          PY
+          )
+          [[ "$npm_version" == "$cargo_version" ]] || { echo "npm version $npm_version does not match Cargo.toml $cargo_version" >&2; exit 1; }
+          expected="publish tolmap@$npm_version"
+          [[ "$RELEASE_CONFIRM" == "$expected" ]] || { echo "confirmation must equal: $expected" >&2; exit 1; }
+      - name: Require the successful exact-SHA packaging run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PACKAGE_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'package_run_id must be numeric' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID" > "$RUNNER_TEMP/package-run.json"
+          python3 - "$RUNNER_TEMP/package-run.json" <<'PY'
+          import json, os, sys
+          with open(sys.argv[1]) as source:
+              run = json.load(source)
+          assert run['head_sha'] == os.environ['GITHUB_SHA'], 'packaging run SHA mismatch'
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          assert run['path'] == '.github/workflows/npm-package.yml', 'wrong packaging workflow'
+          assert run['event'] in ('push', 'workflow_dispatch'), 'require a branch packaging run'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success', 'packaging run must pass all checks'
+          PY
+      - name: Reject a version already on the registry
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./npm/tolmap/package.json').version")
+          if output=$(npm view "tolmap@$version" version --json 2>&1); then
+            echo "tolmap@$version is already on the npm registry: $output" >&2
+            exit 1
+          fi
+          if [[ "$output" != *E404* ]]; then
+            echo "could not establish that tolmap@$version is absent from the registry:" >&2
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+
+  publish:
+    name: publish verified tarball with npm OIDC
+    needs: guard
+    runs-on: ubuntu-22.04
+    # Ordinary OIDC environment binding; no reviewer approval is required.
+    environment:
+      name: npm-publish
+      url: https://www.npmjs.com/package/tolmap
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '24.21.0'
+      - name: Install the trusted-publisher-compatible npm CLI
+        run: |
+          npm install --global npm@11.5.1
+          node --version
+          npm --version
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: tolmap-npm-${{ github.sha }}
+          path: release-artifact
+          run-id: ${{ inputs.package_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify the artifact built and accepted for this SHA
+        run: |
+          set -euo pipefail
+          cd release-artifact
+          sha256sum -c SHA256SUMS
+          grep -Fx -- "- Source commit: $GITHUB_SHA" BUILD_INFO.md
+          version=$(node -p "require('../npm/tolmap/package.json').version")
+          tarball="tolmap-$version.tgz"
+          tar -xOf "$tarball" package/BUILD_INFO.md > /tmp/tolmap-build-info.md
+          cmp BUILD_INFO.md /tmp/tolmap-build-info.md
+          packaged_version=$(tar -xOf "$tarball" package/package.json | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version));')
+          [[ "$packaged_version" == "$version" ]]
+      - name: Require the immutable public source asset before any publish or dry run
+        run: python3 scripts/npm-source-metadata.py release-artifact "$GITHUB_SHA" --release
+      - name: Publish with provenance
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./npm/tolmap/package.json').version")
+          args=(publish "./release-artifact/tolmap-$version.tgz" --access public --provenance)
+          if [[ "$DRY_RUN" == true ]]; then args+=(--dry-run); fi
+          npm "${args[@]}"

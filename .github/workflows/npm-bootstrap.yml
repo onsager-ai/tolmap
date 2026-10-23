@@ -1,0 +1,187 @@
+# One-time token bootstrap of the already accepted 0.1.0 artifact.
+# Subsequent releases use npm-publish.yml and npm trusted publishing.
+name: npm first release bootstrap
+
+on:
+  push:
+    branches: [feat/npm-first-release]
+    paths: [.github/workflows/npm-bootstrap.yml]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type exactly "publish tolmap@0.1.0"
+        required: true
+        type: string
+      dry_run:
+        description: Validate the accepted artifact without publishing
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: npm-publish-tolmap
+  cancel-in-progress: false
+
+env:
+  ACCEPTED_SHA: a8395b4b56f4203a48216dfab63033fb544db5b9
+  ACCEPTED_RUN: '39758651334'
+  ACCEPTED_ARTIFACT: '12418008660'
+  TARBALL_SHA256: 8761d5b37e5674fed500375c85b416b8a60ca809b4e9ea6151dfbca9e512e50a
+
+jobs:
+  workflow-lint:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Lint the bootstrap workflow
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends shellcheck
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/npm-bootstrap.yml
+
+  verify:
+    needs: workflow-lint
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Require the intended repository, branch and dispatch confirmation
+        env:
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == onsager-ai/tolmap ]]
+          [[ "$GITHUB_REF" == refs/heads/feat/npm-first-release ]]
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$RELEASE_CONFIRM" == 'publish tolmap@0.1.0' ]]
+          else
+            [[ "$GITHUB_EVENT_NAME" == push ]]
+          fi
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.ACCEPTED_SHA }}
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Require the accepted successful packaging run and immutable artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ACCEPTED_RUN" > "$RUNNER_TEMP/accepted-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ACCEPTED_ARTIFACT" > "$RUNNER_TEMP/accepted-artifact.json"
+          python3 - "$RUNNER_TEMP/accepted-run.json" "$RUNNER_TEMP/accepted-artifact.json" <<'PY'
+          import json, os, sys
+          with open(sys.argv[1]) as source:
+              run = json.load(source)
+          with open(sys.argv[2]) as source:
+              artifact = json.load(source)
+          sha = os.environ['ACCEPTED_SHA']
+          assert run['id'] == int(os.environ['ACCEPTED_RUN'])
+          assert run['head_sha'] == sha
+          assert run['head_repository']['full_name'] == 'onsager-ai/tolmap'
+          assert run['path'] == '.github/workflows/npm-package.yml'
+          assert run['event'] == 'push'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          assert artifact['id'] == int(os.environ['ACCEPTED_ARTIFACT'])
+          assert artifact['name'] == f'tolmap-npm-{sha}' and not artifact['expired']
+          assert artifact['workflow_run']['id'] == run['id']
+          assert artifact['workflow_run']['head_sha'] == sha
+          assert artifact['digest'] == 'sha256:be40c6b536df27e0aed1dfadb0cce3a1c78056345ff9dbfdcd25c2d5bc3a621a'
+          PY
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          artifact-ids: ${{ env.ACCEPTED_ARTIFACT }}
+          path: release-artifact
+          merge-multiple: true
+          run-id: ${{ env.ACCEPTED_RUN }}
+          github-token: ${{ github.token }}
+      - name: Verify the exact runtime tarball and public corresponding source
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$TARBALL_SHA256" release-artifact/tolmap-0.1.0.tgz | sha256sum -c -
+          [[ "$(stat -c %s release-artifact/tolmap-0.1.0.tgz)" == 30795227 ]]
+          python3 - <<'PY'
+          import base64, hashlib
+          with open('release-artifact/tolmap-0.1.0.tgz', 'rb') as source:
+              sha1, sha512 = hashlib.sha1(), hashlib.sha512()
+              for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                  sha1.update(chunk)
+                  sha512.update(chunk)
+          assert sha1.hexdigest() == '5882c6443d60f5affbea3622c633775404a94928'
+          assert 'sha512-' + base64.b64encode(sha512.digest()).decode() == 'sha512-O5LVMXYksM/20CoqZ/l/sJ8kCV3INd8JicOsYB8CK4ZI98O1FcyZrQsPV5+y1MOQPW/X7SuA+8VCHeZxedD9NQ=='
+          PY
+          python3 scripts/npm-source-metadata.py release-artifact "$ACCEPTED_SHA" --release
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '24.21.0'
+      - name: Require the release version to be absent from npm
+        run: |
+          set -euo pipefail
+          if output=$(npm view tolmap@0.1.0 version --json --registry=https://registry.npmjs.org 2>&1); then
+            echo "tolmap@0.1.0 already exists: $output" >&2
+            exit 1
+          fi
+          if [[ "$output" != *E404* ]]; then
+            printf 'Cannot establish registry absence: %s\n' "$output" >&2
+            exit 1
+          fi
+      - name: Dry run without a publishing credential
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: npm publish ./release-artifact/tolmap-0.1.0.tgz --access public --ignore-scripts --dry-run --registry=https://registry.npmjs.org
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && inputs.confirm == 'publish tolmap@0.1.0'
+    needs: verify
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '24.21.0'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          artifact-ids: ${{ env.ACCEPTED_ARTIFACT }}
+          path: release-artifact
+          merge-multiple: true
+          run-id: ${{ env.ACCEPTED_RUN }}
+          github-token: ${{ github.token }}
+      - name: Recheck the immutable tarball and refuse an existing version
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$TARBALL_SHA256" release-artifact/tolmap-0.1.0.tgz | sha256sum -c -
+          if output=$(npm view tolmap@0.1.0 version --json --registry=https://registry.npmjs.org 2>&1); then
+            echo "tolmap@0.1.0 already exists: $output" >&2
+            exit 1
+          fi
+          if [[ "$output" != *E404* ]]; then
+            printf 'Cannot establish registry absence: %s\n' "$output" >&2
+            exit 1
+          fi
+      - name: Publish the accepted tarball with the bootstrap token
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$NODE_AUTH_TOKEN" ]] || { echo 'NPM_TOKEN is missing' >&2; exit 1; }
+          npm publish ./release-artifact/tolmap-0.1.0.tgz --access public --ignore-scripts --registry=https://registry.npmjs.org
+      - name: Verify registry integrity after publication
+        run: |
+          set -euo pipefail
+          npm view tolmap@0.1.0 version dist.integrity dist.shasum --json --registry=https://registry.npmjs.org > registry.json
+          node --input-type=module <<'JS'
+          import {readFileSync} from 'node:fs';
+          import assert from 'node:assert/strict';
+          const metadata = JSON.parse(readFileSync('registry.json', 'utf8'));
+          assert.equal(metadata.version, '0.1.0');
+          assert.equal(metadata['dist.shasum'], '5882c6443d60f5affbea3622c633775404a94928');
+          assert.equal(metadata['dist.integrity'], 'sha512-O5LVMXYksM/20CoqZ/l/sJ8kCV3INd8JicOsYB8CK4ZI98O1FcyZrQsPV5+y1MOQPW/X7SuA+8VCHeZxedD9NQ==');
+          JS

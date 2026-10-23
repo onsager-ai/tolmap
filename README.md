@@ -26,6 +26,18 @@ python -m tolmap.cli render scrapy -o atlas.html
 
 `build` writes one self-contained `out/<name>.json`. `render` inlines any number of those into a standalone HTML page with no runtime dependencies.
 
+### Rust CLI / npm package
+
+The prepared first npm distribution is for Linux x64 with glibc 2.35 or newer. It bundles the native CLI, runtime libraries and production viewer; consumer machines do not need Rust or C++ build tools. After publication, install it with:
+
+```sh
+npm install -g tolmap
+tolmap --help
+npx tolmap local /path/to/private-repository --data "$HOME/.local/share/tolmap/private"
+```
+
+See [docs/NPM.md](docs/NPM.md) for platform limits, `tolmap local` options, licenses and the gated release process. CI builds and verifies a SHA-tied tarball; it never publishes automatically.
+
 ---
 
 ## What it does
