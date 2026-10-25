@@ -13,10 +13,10 @@
 //! file straight back without going through the database or an extra
 //! deserialise/reserialise round trip. The database row is the index into
 //! that file, not a duplicate of its content -- `map_path` is the join key.
-//! The path is deterministic (`<cache_dir>/maps/<owner>/<repo>/<commit>.json`),
-//! so nothing but the row's existence is actually load-bearing; the column
-//! is there for the same reason a lockfile records paths rather than making
-//! the reader reconstruct them: fewer places that have to agree on the
+//! Each complete snapshot is published atomically in the immutable directory
+//! `<cache_dir>/maps/<owner>/<repo>/<commit>-<job_id>/<commit>.json`.
+//! The row's `map_path` is load-bearing: readers follow the registered snapshot
+//! instead of reconstructing a path, so fewer places have to agree on the
 //! layout convention.
 
 use std::collections::BTreeMap;
