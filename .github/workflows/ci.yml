@@ -355,10 +355,16 @@ jobs:
       - run: pnpm --dir web install --frozen-lockfile
       - run: pnpm --dir web exec vite build
       - run: pnpm --dir web exec playwright install --with-deps chromium
+      - name: Install syscall trace for local no-upload qualification
+        run: sudo apt-get update && sudo apt-get install -y strace
+      - name: Public dependency boundary
+        run: python3 scripts/check-public-boundary.py
       - name: Real local API, process and private export
-        run: TOLMAP_BINARY=bin/tolmap python3 scripts/local-reader-fixture.py
+        run: TOLMAP_TEST_NETWORK_TRACE="$PWD/.local-reader/network.log" TOLMAP_BINARY=bin/tolmap python3 scripts/local-reader-fixture.py
       - name: Production reader behavior and candidate captures
         run: cd web && node scripts/check-source-reader.mjs
+      - name: Measured large-file, long-line and reader lifecycle costs
+        run: cd web && node scripts/measure-source-reader.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -6,7 +6,9 @@ root=pathlib.Path('.local-reader').resolve();root.mkdir(exist_ok=True)
 repo=root/'checkout';shutil.copytree('tests/fixtures/service_identity',repo)
 def git(*args):return subprocess.check_output(['git','-C',str(repo),*args],stderr=subprocess.DEVNULL).decode().strip()
 git('init');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid')
-(repo/'binary.dat').write_bytes(b'\0\x01');(repo/'large.txt').write_text('x'*(1024*1024+1));(repo/'long.txt').write_text('x'*21000)
+(repo/'binary.dat').write_bytes(b'\0\x01');(repo/'large.txt').write_text('x'*(1024*1024+1))
+(repo/'perf.py').write_text('def measured():\n    return 7\n' + '# performance fixture line 739\n'*30000 + '# PERF_NEEDLE_739\n')
+(repo/'long.txt').write_text('x'*900000+'PERF_NEEDLE_739')
 (repo/'inert.txt').write_text('<script>window.sourceInjected=true</script>\n')
 (repo/'escape').symlink_to('/etc/passwd')
 git('add','.');git('commit','-m','A');a=git('rev-parse','HEAD')
@@ -22,6 +24,8 @@ local_args += ['--port','8988']
 if os.environ.get('TOLMAP_TEST_WRITE_TRACE'):
     local_args = ['strace','-f','-qq','-e','trace=write','-s','1024','-o',
                   os.environ['TOLMAP_TEST_WRITE_TRACE'],*local_args]
+if os.environ.get('TOLMAP_TEST_NETWORK_TRACE'):
+    local_args = ['strace','-f','-qq','-e','trace=connect','-s','256','-o',os.environ['TOLMAP_TEST_NETWORK_TRACE'],*local_args]
 p=subprocess.Popen(local_args,stdout=log,stderr=log,start_new_session=True)
 def req(path,post=False,headers=None):
     r=urllib.request.Request(origin+path,data=b'' if post else None,headers={'Origin':origin,**(headers or {})})
@@ -60,7 +64,8 @@ assert req(base+'/source?path=shop/cart.py&commit='+'0'*40)[0]!=200
 assert req('/local/refresh',True,{'Origin':'https://attacker.invalid'})[0]==403
 assert req('/api/healthz',headers={'Host':'attacker.invalid'})[0]==403
 assert get('/api/maps')==[] and get('/maps/index.json')==[]
-export=get(base+'/artifact');assert export['F'] and 'text' not in export and original['text'] not in json.dumps(export)
+export=get(base+'/artifact');assert export==json.loads((root/'store/snapshots'/sid/'map.json').read_text())
+assert export['F'] and 'text' not in export and original['text'] not in json.dumps(export)
 (repo/'shop/cart.py').write_text((repo/'shop/cart.py').read_text()+'\n# committed B\n');git('commit','-am','B');b=git('rev-parse','HEAD')
 second=index();bid=next(iter(second-first));assert get('/api/maps/snapshot/'+bid+'/provenance')['commit']==b
 assert get(base+'/source?path=shop/cart.py')['text']==original['text']
@@ -109,6 +114,19 @@ assert sorted(ordered)==list(range(1,len(ordered)+1))
 # Even removal of the original checkout cannot replace/expire stored A.
 shutil.move(repo,root/'moved-checkout')
 assert get(base+'/source?path=shop/cart.py')['text']==original['text']
+# Inspect real process/worker outbound connect syscalls, including failures.
+network_trace=os.environ.get('TOLMAP_TEST_NETWORK_TRACE')
+if network_trace:
+    trace=pathlib.Path(network_trace).read_text()
+    internet=[line for line in trace.splitlines() if 'sa_family=AF_INET' in line]
+    assert not internet, ('unexpected network connect',internet)
+    pathlib.Path('reader-evidence').mkdir(exist_ok=True)
+    pathlib.Path('reader-evidence/network.json').write_text(json.dumps({'scope':'actual local service and descendants through A/B, read, export, cancellation; connect syscalls only','internetConnects':internet,'traceBytes':len(trace)},indent=2))
+# No private map/source was copied to the already-built public web assets.
+for output in pathlib.Path('web/dist').rglob('*'):
+    if output.is_file():
+        data=output.read_bytes()
+        assert original['text'].encode() not in data and sid.encode() not in data
 metadata={'a':a,'b':b,'snapshotA':sid,'snapshotB':bid,'file':'shop/cart.py','pid':p.pid,'repository':provenance['repository']}
 (root/'fixture.json').write_text(json.dumps(metadata))
 pathlib.Path('reader-evidence').mkdir(exist_ok=True)

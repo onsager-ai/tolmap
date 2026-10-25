@@ -436,3 +436,63 @@ before the selected map. Closing restores focus; reading does not unmount the
 map or move its camera. Search/highlighting remain within the reader component,
 so typing cannot rebuild the map. Existing geometry and 40/110 px gates retain
 their original verification. Physical iPhone gestures remain #177 acceptance.
+
+### 13.1 Local journey and recovery
+
+Open a checkout by starting `tolmap local <checkout> --data <private-store>` on
+that computer, then open its printed loopback URL. A browser or hosted URL cannot
+open a directory on the visitor's computer. **Detect committed source** captures
+HEAD, then **Confirm analysis scope** shows the commit, root, language, file count
+and confidence. Confirm the detected source or all listed candidates above the
+existing detection floor; this is a scope choice, not a claim of complete
+reference extraction. Indexing shows real stages and **Cancel indexing**.
+**Saved snapshots** opens map → selected file/symbol → **Read selected source**.
+**Refresh from checkout HEAD** prepares a new snapshot; saved links switch back
+to earlier snapshots without changing their source. To switch repositories, start
+a separate local command with a separate private store.
+
+Only committed HEAD is included. Dirty/untracked changes are excluded, never
+labeled as committed source; commit changes before refreshing. Processing and
+Git objects/maps/symbols/provenance remain in the explicitly chosen private data
+directory, outside the checkout and web assets. Storage is retained until the
+user removes the local store. Map JSON exports include paths, symbol names and
+structure, with no source text; treat them as private. A localhost link reaches
+only the same computer. A map export alone cannot retrieve source. Hub is an
+optional, separately explicit connection/audience choice; local analysis requires
+no login or upload and does not transition to Hub automatically.
+
+| State | Recovery and retained context |
+| --- | --- |
+| First run / missing bundle | Install/build the binary and web assets using LOCAL.md, restart with the same checkout/store; use the printed URL. |
+| No supported source / detection failed | Keep checkout/store selected; inspect committed contents and retry **Detect committed source** after committing supported files. No arbitrary hosted filesystem path is accepted. |
+| Uncertain or wrong root | Inspect root, evidence and confidence before confirming; choose the listed all-source option where appropriate, or correct the checkout/config and refresh. Do not silently treat uncertainty as full coverage. |
+| Indexing failure | Native page retains prepared scope and saved history; retry that scope or refresh after repairing the checkout. Existing snapshots remain readable. |
+| Cancel | Stops the engine child and prevents snapshot publication. Prepared scope and saved snapshots remain; retry explicitly. |
+| Checkout advanced / snapshot stale | Existing map/source still represent their saved commit. Refresh and index to create a new entry; switch via history. There is no automatic substitution of the current branch. |
+| Checkout moved / unavailable | Already saved independent Git objects remain readable. Restore the configured checkout for new detection/indexing; old history remains selected. |
+| Reader network/access failure | **Retry source** preserves repository, snapshot, path and line range; restore the local service/access first. Return to map preserves selection/camera. |
+| Missing / expired source | Restore the same private store/snapshot if available, or explicitly select a different saved snapshot. No public/default-branch fallback. |
+| Binary, symlink/submodule, over 1 MiB | Explicit refusal keeps selected map context. Inspect locally outside this reader; no truncated content is represented as complete. |
+| Long line / grammar load failure | Readable plain text, selection/copy/search remain; grammar failure does not block source retrieval. |
+| Search miss | **No results** leaves source and range intact; change query or close Find, then return to map. |
+
+### 13.2 Reader controls and qualification
+
+On phone the source action belongs to the existing selection sheet, ahead of
+its card, with no floating action over Zoom in. Portrait and landscape use the
+same action/ref and recorded file/symbol range. The reader fills the visual
+viewport, tracking keyboard height/offset; its editor scrolls separately from the
+map. Find inputs use at least 16 px text; option labels, buttons and close have
+at least 44 px targets. Tab stays in the modal reader; Escape closes Find first,
+then reading. Closing reading restores useful focus to its action. Native edge
+swipe, keyboard and safe-area behavior still require physical Safari acceptance.
+
+Syntax colors come from Tolmap chrome tokens in both themes; unsupported files
+and protected long lines use plain text. Browser CI checks actual token contrast
+against the editor, control dimensions/hit testing, immutable links, read-only
+paste/drop, copy, focus, Back and unchanged map camera. The reader-evidence
+artifact separately records measured load, lazy grammar readiness, search,
+scroll and mount/destroy heap observations for >800 kB files. These are CI
+Chromium measurements with automation overhead, not a Safari SLA or proof of
+absence of leaks. [READER_ACCEPTANCE.md](READER_ACCEPTANCE.md) owns revision and
+human/device handoff; [ACCESS.md](ACCESS.md) owns policy coverage boundaries.

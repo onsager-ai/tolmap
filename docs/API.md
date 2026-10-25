@@ -438,3 +438,39 @@ pruned, regardless of that setting -- docs/FINDINGS.md finding 4's warm
 start reads the previous commit's district membership out of exactly this
 row, so a policy that could evict it would silently degrade the highest-
 leverage property the store has (see `service::store::Store::prune`).
+
+## Immutable source and local snapshot API (v1)
+
+`GET /api/maps/{owner}/{repo}/provenance[?commit=<immutable>]` returns
+`version`, stable `repository`, and immutable `commit`.
+`GET /api/maps/{owner}/{repo}/source?commit=<immutable>&path=<relative>` returns
+those fields plus `path`, `status`, `text`, `bytes`, and `long_line`. These Rust
+contracts live in `src/source.rs`; no new TypeScript wire schema is authored here.
+The reader verifies version/repository/commit/path before displaying text. A
+commit mismatch is an error, never a fallback to HEAD. Successful source payloads
+are regular UTF-8 Git blobs up to 1 MiB. Explicit statuses include `missing`,
+`expired`, `binary`, `large`, `unsupported`; non-ready statuses have no source text.
+Traversal, absolute paths and unsafe Git paths are rejected. Lines longer than
+20,000 bytes bypass grammar parsing. API version and highlighting coverage do not
+claim broader indexing coverage.
+
+`tolmap local` uses the same reader contract at
+`/api/maps/snapshot/{snapshot-id}/{provenance,source}`; the route's persisted
+snapshot selects the immutable repository/commit. The map itself is at
+`/api/maps/snapshot/{snapshot-id}`, symbols at its `/symbols?district=<id>`, and
+map-only export at `/artifact`. Optional `commit` must match that snapshot.
+These loopback routes require neither login nor a hosted policy adapter. Local
+mutation forms check origin/host and accept prepared IDs rather than arbitrary
+filesystem paths. `/api/maps` and `/maps/index.json` remain empty here; private
+snapshots are never entered into the public catalogue. The exported artifact is
+the saved map JSON, including paths/names/structure, without source or Git objects.
+
+| Contract / surface | CI qualification | Limit |
+| --- | --- | --- |
+| Local index → A/B maps/source | `scripts/local-reader-fixture.py`, `tests/source.rs` | Real binary/worker/Git/store; fixture repo, not hosted custody |
+| No-login/no-upload / export | Process `connect` trace, browser outbound-request assertion; saved map equals artifact; built assets inspected | No internet connect observed for this fixture journey, not all possible CLI configurations |
+| Boundary / failure recovery | Host/origin, traversal/symlink/binary/large/expired tests; production Retry source | Local single-user boundary, not tenant isolation |
+| Reader interaction / phone control layout | `web/scripts/check-source-reader.mjs` | Chromium emulation, screenshots pending review |
+| Large-file / long-line / lifecycle | `web/scripts/measure-source-reader.mjs` | Actual costs in artifact, not physical Safari acceptance |
+| Protected embedding | `tests/access.rs`; ACCESS.md checkpoint matrix | Generic opt-in conformance; no protected standalone router |
+| Public dependency boundary | `scripts/check-public-boundary.py` | Manifest/generated-binding guard; normal Rust/web CI still required |

@@ -1,12 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { EditorState, Compartment } from "@codemirror/state";
 import { EditorView, lineNumbers, keymap, highlightSpecialChars, drawSelection } from "@codemirror/view";
-import { defaultHighlightStyle, syntaxHighlighting, LanguageDescription } from "@codemirror/language";
+import { defaultHighlightStyle, HighlightStyle, syntaxHighlighting, LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { search, searchKeymap, openSearchPanel, getSearchQuery, setSearchQuery } from "@codemirror/search";
 import { useEffectiveTheme } from "@/lib/theme";
 import { API_BASE } from "@/api/client";
+import { useVisualViewportBox } from "@/hooks/useVisualViewportBox";
 import "./reader.css";
+
+// Preserve the grammar tags, but own their palette. Default CM6 purple/blue
+// failed on dark chrome (reader visual review, 2026-10-25). These Tolmap
+// tokens are checked against the actual editor background in browser CI.
+const readerHighlightStyle = HighlightStyle.define(defaultHighlightStyle.specs.map(spec => ({
+  ...spec, color: spec.color ? ({ "#708": "var(--accent)", "#a11": "var(--link-in)", "#164": "var(--link-in)", "#a50": "var(--dim)" }[spec.color] ?? "var(--on)") : undefined,
+})));
 
 export interface Provenance { version: number; repository: string; commit: string }
 interface Source extends Provenance { path: string; status: string; text: string | null; bytes: number; long_line: boolean }
@@ -31,6 +39,7 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
   const [retry, setRetry] = useState(0);
   const [grammar, setGrammar] = useState("Plain text");
   const theme = useEffectiveTheme();
+  const viewport = useVisualViewportBox(modal);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     close.current?.focus({ preventScroll: true });
@@ -76,8 +85,8 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
           setSearchStatus(!q.valid ? "Enter text to search" : q.getCursor(update.state).next().done ? "No results" : "Matches found");
         }
       }),
-      syntaxHighlighting(defaultHighlightStyle), language.of([]),
-      EditorView.theme({ "&": { height: "100%", color: "var(--on)", backgroundColor: "var(--chrome2)" }, ".cm-scroller": { overflow: "auto", fontFamily: '"IBM Plex Mono", monospace', overscrollBehavior: "contain" }, ".cm-gutters": { backgroundColor: "var(--chrome)", color: "var(--dim)", borderColor: "var(--rule)" }, ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--on)" }, "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "var(--chrome-key)" } }, { dark: theme === "dark" }),
+      syntaxHighlighting(readerHighlightStyle), language.of([]),
+      EditorView.theme({ "&": { height: "100%", color: "var(--on)", backgroundColor: "var(--chrome2)" }, ".cm-scroller": { overflow: "auto", fontFamily: '"IBM Plex Mono", monospace', overscrollBehavior: "contain" }, ".cm-gutters": { backgroundColor: "var(--chrome)", color: "var(--dim)", borderColor: "var(--rule)" }, ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--on)" }, "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "var(--chrome)" } }, { dark: theme === "dark" }),
     ] }) });
     editor.current = view;
     const first = Math.max(1, Math.min(view.state.doc.lines, start));
@@ -88,7 +97,7 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
     if (description && !source.long_line) void description.load().then(support => { if (!disposed) view.dispatch({ effects: language.reconfigure(support) }); }).catch(() => { if (!disposed) setGrammar("Plain text · highlighting unavailable"); });
     return () => { disposed = true; editor.current = null; view.destroy(); };
   }, [source, path, start, end, theme]);
-  return <section ref={region} className="source-reader" data-source-reader role={modal ? "dialog" : "region"} aria-modal={modal || undefined} aria-label="Source reader" onKeyDown={e => {
+  return <section ref={region} style={modal && viewport ? { position: "fixed", top: viewport.top, height: viewport.height, bottom: "auto" } : undefined} className="source-reader" data-source-reader role={modal ? "dialog" : "region"} aria-modal={modal || undefined} aria-label="Source reader" onKeyDown={e => {
     e.stopPropagation();
     if (e.defaultPrevented) return;
     if (modal && e.key === "Tab") {

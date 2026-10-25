@@ -28,11 +28,52 @@ the loopback-first public `tolmap serve` API is a single trust domain, **not a
 multi-tenant protected server**. Its public URL catalogue/cache are not a private
 storage backend. Embedders must not forward arbitrary hosted requests to that
 router. The optional contract does not retrofit protection onto that router.
-Protected source reading and comparisons are future surfaces under #221/#224;
-their adapters must use this same contract before delivery. Local private work
+Source reading is implemented by `source::read`, the public source routes and
+`local` snapshot routes (#221/#226). It does not implicitly authorize protected
+reads. Protected embedding adapters must apply this contract before source
+materialization/delivery, including every warm cache hit. Comparisons follow the
+same Read/Artifact/Publish contract; comparison feature qualification belongs to
+#224. Local private work
 requires no policy adapter, account, hosted endpoint or subscription.
 
 Consumer conformance must exercise all operations, foreign domains, revoked and
 expired principals, warm caches and stale publication attempts. Unit conformance
 is not evidence of a consumer's database/storage isolation. This is a narrow
 first slice of #222; protected reusable HTTP route adapters remain future work.
+
+
+## Checkpoint and coverage matrix
+
+The v1 policy is a trusted in-process hook, not authentication middleware. Audit
+at Core `ec3455626e1d141b0c95f8df6770e9eb45e220ca`: the standalone HTTP router has
+no injected resource policy. Do not expose it as a protected multi-tenant server.
+No new enforcement hole is implied by a public/local route that never promised
+protected operation; a consumer must own its protected route adapters.
+
+| Surface | Required v1 operation / checkpoint | Core evidence / remaining consumer duty |
+| --- | --- | --- |
+| Map / symbol / comparison | Read before lookup and delivery | `tests/access.rs` named cases; authenticate, resolve ownership and both comparison inputs in consumer |
+| Source / provenance | Read for provenance; Source before Git materialization and delivery | `tests/source.rs` pins/path bounds; `tests/access.rs` policy denial; consumer wires both checks |
+| Job admission | Admit before source acquisition/enqueue | Contract fixture; consumer supplies trusted resource/domain, never browser headers |
+| Job status / cancellation | Read for each status; Cancel before mutation | Contract fixture; consumer must also authorize guessed job IDs |
+| SSE | Events before opening and every event; live monitor while idle | Contract fixture checks post-revoke event; consumer closes idle stream within its documented poll bound |
+| Artifact/download | Artifact before opening storage and each delivery boundary | Contract fixture; consumer denies signed URL/cache bypass and stale exports |
+| Cache / previous-map inputs | Same resource operation before lookup and delivery | Warm-cache denial test; domain/repo/revision in consumer cache keys |
+| Processing / publication | Source at materialization; live CancelProbe; Publish before atomic adoption | Revocation sequence fixture + real local cancellation child kill/reap; consumer must wire policy denial to CancelProbe independently of events |
+
+`tests/access.rs` varies principal, domain, repository, revision, current grant and
+policy availability. It enumerates reads/jobs/streams/artifacts/comparison/cache
+checkpoints and denies stale publication. Its spoof case demonstrates a trusted
+Request cannot be replaced by supplied header strings; it **does not** exercise a
+hosted HTTP/session implementation. Real source and local worker tests cover
+immutable A/B and cancellation separately. An already running synchronous action
+inside `enforce` is not interrupted by later revocation: embedders must monitor
+live authority, stop the child through CancelProbe and recheck at delivery and
+publication. Already-delivered bytes cannot be recalled.
+
+Remaining hosted qualification includes actual session/membership/token expiry,
+spoofed headers against real routes, guessed foreign IDs, cross-domain database
+and object storage, idle-stream revocation latency, cancellation during clone,
+cache isolation and provider revoke. No Core fixture or CI success certifies
+hosted production tenant isolation. Public manifests/generated bindings are
+checked for accidental private-app dependencies without importing private code.
