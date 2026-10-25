@@ -65,6 +65,18 @@ struct Probe {
     stopped: AtomicBool,
     pid: AtomicU32,
 }
+struct PreviewWorktree {
+    git_dir: PathBuf,
+    path: PathBuf,
+}
+impl Drop for PreviewWorktree {
+    fn drop(&mut self) {
+        let _ = source::git(&self.git_dir)
+            .args(["worktree", "remove", "--force"])
+            .arg(&self.path)
+            .output();
+    }
+}
 impl Probe {
     fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
@@ -133,6 +145,21 @@ fn checked(mut command: std::process::Command) -> Result<Vec<u8>> {
         "local Git operation failed; keep the checkout available and retry"
     );
     Ok(o.stdout)
+}
+fn comparison_preview(git_dir: &Path, preview_root: &Path, commit: &str) -> Result<PreviewWorktree> {
+    ensure!(source::valid_commit(commit), "snapshot commit is invalid");
+    private(preview_root)?;
+    let preview = PreviewWorktree {
+        git_dir: git_dir.to_owned(),
+        path: preview_root.join(Uuid::new_v4().to_string()),
+    };
+    let mut command = source::git(git_dir);
+    command
+        .args(["worktree", "add", "--detach"])
+        .arg(&preview.path)
+        .arg(commit);
+    checked(command)?;
+    Ok(preview)
 }
 fn command(repo: &Path, args: &[&str]) -> std::process::Command {
     let mut c = source::git(repo);
@@ -456,10 +483,12 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
     if parts.len() == 4 && parts[..3] == ["api", "compare", "snapshot"] {
         let id = Uuid::parse_str(parts[3])?;
         let all = snapshots(s)?;
-        let snap = all
+        let Some(snap) = all
             .iter()
             .find(|x| x.id == id)
-            .context("snapshot unavailable")?;
+        else {
+            return Ok(crate::comparison::unavailable().into_response());
+        };
         let query: crate::comparison::CompareQuery =
             serde_json::from_value(serde_json::to_value(&params)?).or_else(|_| {
                 // URL query values are strings; the API's typed extractor is
@@ -472,43 +501,55 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                     report_only: params.get("report_only").is_some_and(|v| v == "true"),
                 })
             })?;
-        let base = all
+        let Some(base) = all
             .iter()
             .find(|x| x.commit == query.base)
-            .context("base snapshot unavailable")?;
+        else {
+            return Ok(crate::comparison::unavailable().into_response());
+        };
         ensure!(
             query.base == snap.commit,
             "comparison must use this base snapshot"
         );
-        let head = all
+        let Some(head) = all
             .iter()
             .find(|x| x.commit == query.head)
-            .context("head snapshot unavailable")?;
-        let repo = s
+        else {
+            return Ok(crate::comparison::unavailable().into_response());
+        };
+        let prepared = s
             .data
             .join("prepared")
-            .join(head.prepared.to_string())
-            .join("preview");
+            .join(head.prepared.to_string());
+        let git_dir = prepared.join("source.git");
+        let preview_root = prepared.join("preview");
+        // prepare() removes its detection checkout. Recreate the committed
+        // head as a linked worktree so check::run sees the exact source and
+        // does not copy the immutable snapshot's object database.
+        let preview = match comparison_preview(&git_dir, &preview_root, &head.commit) {
+            Ok(preview) => preview,
+            Err(_) => return Ok(crate::comparison::unavailable().into_response()),
+        };
         let map = s
             .data
             .join("snapshots")
             .join(base.id.to_string())
             .join("map.json");
         let cache = s.data.join("comparisons");
-        return Ok(
-            match crate::comparison::run(
-                crate::comparison::Inputs {
-                    repository: &s.repository,
-                    repo: &repo,
-                    base_map: &map,
-                    cache: &cache,
-                },
-                query,
-            ) {
-                Ok(value) => axum::Json(value).into_response(),
-                Err(e) => e.into_response(),
+        let result = crate::comparison::run(
+            crate::comparison::Inputs {
+                repository: &s.repository,
+                repo: &preview.path,
+                base_map: &map,
+                cache: &cache,
             },
+            query,
         );
+        drop(preview);
+        return Ok(match result {
+            Ok(value) => axum::Json(value).into_response(),
+            Err(e) => e.into_response(),
+        });
     }
     if parts.len() >= 4 && parts[..3] == ["api", "maps", "snapshot"] {
         let id = Uuid::parse_str(parts[3])?;
@@ -630,4 +671,191 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
     eprintln!("Tolmap local: {origin} — committed source only; no upload");
     axum::serve(listener, axum::Router::new().fallback(handle).with_state(s)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::to_bytes,
+        http::{Method, StatusCode, Uri},
+    };
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
+
+    fn test_git(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Local test",
+                "-c",
+                "user.email=local@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    fn clone_bare(repo: &Path, destination: &Path) {
+        let mut clone = source::git(repo);
+        clone
+            .args(["clone", "--bare", "--no-local", "--"])
+            .arg(repo)
+            .arg(destination);
+        checked(clone).unwrap();
+    }
+
+    fn save_snapshot(
+        local: &Local,
+        id: Uuid,
+        prepared: Uuid,
+        commit: &str,
+        sequence: u64,
+    ) {
+        let directory = local.data.join("snapshots").join(id.to_string());
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("snapshot.json"),
+            serde_json::to_vec(&Snapshot {
+                id,
+                repository: local.repository.clone(),
+                commit: commit.into(),
+                prepared,
+                sequence,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    async fn json_response(response: Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 8 * 1024 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn snapshot_comparison_uses_head_objects_and_source_commit_overrides() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkout = directory.path().join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        test_git(&checkout, &["init", "-q"]);
+        std::fs::write(
+            checkout.join("pyproject.toml"),
+            "[project]\nname = \"local-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(checkout.join("src")).unwrap();
+        std::fs::write(checkout.join("src/__init__.py"), "").unwrap();
+        std::fs::write(checkout.join("src/module.py"), "VALUE = 1\n").unwrap();
+        test_git(&checkout, &["add", "-A"]);
+        test_git(&checkout, &["commit", "-qm", "base"]);
+        let base = test_git(&checkout, &["rev-parse", "HEAD"]);
+
+        let data = directory.path().join("private-data");
+        let base_id = Uuid::new_v4();
+        let base_prepared = Uuid::new_v4();
+        let base_prepared_dir = data.join("prepared").join(base_prepared.to_string());
+        std::fs::create_dir_all(&base_prepared_dir).unwrap();
+        clone_bare(&checkout, &base_prepared_dir.join("source.git"));
+
+        std::fs::write(checkout.join("src/module.py"), "VALUE = 2\n").unwrap();
+        test_git(&checkout, &["add", "-A"]);
+        test_git(&checkout, &["commit", "-qm", "head"]);
+        let head = test_git(&checkout, &["rev-parse", "HEAD"]);
+        let head_id = Uuid::new_v4();
+        let head_prepared = Uuid::new_v4();
+        let head_prepared_dir = data.join("prepared").join(head_prepared.to_string());
+        std::fs::create_dir_all(&head_prepared_dir).unwrap();
+        clone_bare(&checkout, &head_prepared_dir.join("source.git"));
+
+        let local = Arc::new(Local {
+            checkout: checkout.clone(),
+            data: data.clone(),
+            assets: directory.path().join("assets"),
+            origin: "127.0.0.1:8988".into(),
+            repository: "fixture/local".into(),
+            prepared: Mutex::new(None),
+            job: Mutex::new(None),
+            notice: Mutex::new(String::new()),
+        });
+        std::fs::create_dir_all(data.join("snapshots")).unwrap();
+        save_snapshot(&local, base_id, base_prepared, &base, 1);
+        save_snapshot(&local, head_id, head_prepared, &head, 2);
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("data/flask.json"),
+            data.join("snapshots")
+                .join(base_id.to_string())
+                .join("map.json"),
+        )
+        .unwrap();
+
+        for (commit, expected) in [(&base, "VALUE = 1\n"), (&head, "VALUE = 2\n")] {
+            let path = format!(
+                "/api/maps/snapshot/{head_id}/source?commit={commit}&path=src/module.py"
+            );
+            let uri: Uri = path.parse().unwrap();
+            let response = dispatch(&local, &Method::GET, &uri).unwrap();
+            let (status, body) = json_response(response).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["commit"], commit.as_str());
+            assert_eq!(body["text"], expected);
+        }
+
+        let path = format!("/api/compare/snapshot/{base_id}?base={base}&head={head}");
+        let uri: Uri = path.parse().unwrap();
+        let response = dispatch(&local, &Method::GET, &uri).unwrap();
+        let (status, body) = json_response(response).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["report"]["base"], base.as_str());
+        assert_eq!(body["report"]["head"], head.as_str());
+
+        let unrelated = directory.path().join("unrelated");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        test_git(&unrelated, &["init", "-q"]);
+        std::fs::write(
+            unrelated.join("pyproject.toml"),
+            "[project]\nname='other'\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(unrelated.join("src")).unwrap();
+        std::fs::write(unrelated.join("src/module.py"), "VALUE = 3\n").unwrap();
+        test_git(&unrelated, &["add", "-A"]);
+        test_git(&unrelated, &["commit", "-qm", "unrelated head"]);
+        let unreachable_head = test_git(&unrelated, &["rev-parse", "HEAD"]);
+        let unavailable_id = Uuid::new_v4();
+        let unavailable_prepared = Uuid::new_v4();
+        let unavailable_prepared_dir = data
+            .join("prepared")
+            .join(unavailable_prepared.to_string());
+        std::fs::create_dir_all(&unavailable_prepared_dir).unwrap();
+        clone_bare(&unrelated, &unavailable_prepared_dir.join("source.git"));
+        save_snapshot(
+            &local,
+            unavailable_id,
+            unavailable_prepared,
+            &unreachable_head,
+            3,
+        );
+
+        let path = format!("/api/compare/snapshot/{base_id}?base={base}&head={unreachable_head}");
+        let uri: Uri = path.parse().unwrap();
+        let response = dispatch(&local, &Method::GET, &uri).unwrap();
+        let (status, body) = json_response(response).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "comparison_unavailable");
+    }
 }

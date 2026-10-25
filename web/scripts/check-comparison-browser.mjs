@@ -26,8 +26,7 @@ try {
         const files = map.N.flatMap((row, index) => row[0] === district ? [index] : []);
         assert.notEqual(files.length, 0, `fixture district ${district} has a file`);
         json = {district,files,symbol_indices:files.map((_, index) => index),symbols:files.map((file, index) => [file,'FixtureSymbol',1,2,0,-1,index,false]),edges:[],kinds:['unknown'],module_code_lines:Object.fromEntries(files.map(file => [file,0]))};
-      }
-      else if (url.pathname === '/api/compare/fixture/town') {
+      } else if (url.pathname === '/api/compare/fixture/town') {
         if (state === 'error') return route.fulfill({status:404,json:{error:'comparison_unavailable',message:'Committed source unavailable'}});
         json = state === 'stale' ? {...value,report:{...value.report,head:base}} : value;
       } else if (url.pathname.endsWith('/provenance')) json = {version:1,repository:'fixture/town',commit:url.searchParams.get('commit')};

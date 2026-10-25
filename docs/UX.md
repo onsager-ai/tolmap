@@ -440,7 +440,7 @@ their original verification. Physical iPhone gestures remain #177 acceptance.
 ## 14. Change impact
 
 **Compare commits** opens a keyboard-accessible panel on desktop and an upper
-sheet on phones, leaving the phone's selection sheet available below it. Enter
+panel on phones, leaving the phone's selection sheet available below it. Enter
 full base/head commit IDs and optional check thresholds. District, file and
 symbol cards remain available from the phone sheet while comparison is open.
 The URL retains both commits and threshold settings through reload and source

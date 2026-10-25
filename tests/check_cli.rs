@@ -734,7 +734,7 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
     use std::sync::Arc;
     use tolmap::{
         access, comparison,
-        schema::Comparison,
+        schema::{CheckFileStatus, Comparison},
         service::{
             self,
             config::ServeConfig,
@@ -743,11 +743,15 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
         },
     };
     use tower::ServiceExt;
-    let (dir, old_repo, base) = fixture();
+    let (dir, old_repo, _fixture_base) = fixture();
     let cache = dir.path().join("cache");
     let repo = cache.join("repos/fixture/town");
     std::fs::create_dir_all(repo.parent().unwrap()).unwrap();
     std::fs::rename(old_repo, &repo).unwrap();
+    write(&repo, "README.md", "Documentation baseline\n");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-qm", "add unindexed documentation"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
     let out = cache.join("maps/fixture/town");
     let built = Command::new(TOLMAP)
         .args(["build"])
@@ -797,6 +801,8 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
         "delete",
         "unplaced",
         "outside",
+        "outside-rename",
+        "outside-delete",
     ] {
         git(&repo, &["reset", "--hard", &base]);
         git(&repo, &["clean", "-fd"]);
@@ -822,6 +828,12 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
             }
             "unplaced" => write(&repo, "town/alone.py", "ISOLATED_CONSTANT = 10\n"),
             "outside" => write(&repo, "README.md", "Documentation only\n"),
+            "outside-rename" => {
+                git(&repo, &["mv", "README.md", "README-renamed.md"]);
+            }
+            "outside-delete" => {
+                git(&repo, &["rm", "README.md"]);
+            }
             _ => unreachable!(),
         }
         git(&repo, &["add", "-A"]);
@@ -856,8 +868,27 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
         assert_eq!(c.provenance.head, head);
         assert_eq!(
             c.provenance.outside_graph.len(),
-            usize::from(case == "outside")
+            usize::from(case.starts_with("outside"))
         );
+        match case {
+            "outside" => assert_eq!(
+                c.provenance.outside_graph[0].status,
+                CheckFileStatus::Modified
+            ),
+            "outside-rename" => {
+                let changed = &c.provenance.outside_graph[0];
+                assert_eq!(changed.status, CheckFileStatus::Renamed);
+                assert_eq!(changed.path, "README-renamed.md");
+                assert_eq!(changed.base_path.as_deref(), Some("README.md"));
+            }
+            "outside-delete" => {
+                let changed = &c.provenance.outside_graph[0];
+                assert_eq!(changed.status, CheckFileStatus::Deleted);
+                assert_eq!(changed.path, "README.md");
+                assert_eq!(changed.base_path, None);
+            }
+            _ => assert!(c.provenance.outside_graph.is_empty()),
+        }
         assert_eq!(c.provenance.thresholds, c.report.thresholds);
         let response = app.clone().oneshot(get()).await.unwrap();
         let again = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
