@@ -353,10 +353,14 @@ jobs:
             target
           key: reader-profile-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
-      - uses: actions/download-artifact@v4
+      - uses: actions/cache@v4
+        id: profile-leiden
         with:
-          name: ci-leiden-lib
-          path: ${{ env.LEIDEN_PREFIX }}/lib
+          path: ${{ env.LEIDEN_PREFIX }}
+          key: leiden-${{ runner.os }}-${{ hashFiles('scripts/install-leiden.sh') }}
+      - name: Build native Leiden if cache unavailable
+        if: steps.profile-leiden.outputs.cache-hit != 'true'
+        run: bash scripts/install-leiden.sh "${{ env.LEIDEN_PREFIX }}"
       - name: Install debugger
         run: sudo apt-get update && sudo apt-get install -y gdb
       - name: Build identical release profile with line symbols
