@@ -12,7 +12,7 @@ separate tasks.
 | --- | --- | --- |
 | Historical combined gallery | Core `b073260b203877a2b1bcf1f427752e66068a938e` (capture merge tree `be495d1`), Hub `86b87f918676ba4bdd594d1c5f5112f810d6ea26`; dataset `tolmap-hub-20261020`, SHA-256 `03a8c0714d84f1f9d45f73d234856ea3b458104ae5a476f4c43349e5a8df3c4a` | Historical, pending human; 532 Core, 200 Hub native and 396 Hub viewer captures. Not current Core main. |
 | Logo-era Core candidate | Core `aa2b6cd7209de7b96bae37e7411c10caf0302b9b`; [run 39742883954](https://github.com/onsager-ai/tolmap/actions/runs/39742883954); visual artifact `12409484732`, Storybook artifact `12410610337` | Successful capture, pending human. Zero UI-path diff to baseline `ec3455626e1d141b0c95f8df6770e9eb45e220ca` in `web/`, `src/local_pages.rs`, `.github/workflows/storybook.yml` per Gateway audit. Does not include this reader fix. |
-| This reader revision | Draft PR head and exact CI runs recorded in PR check evidence; `reader-evidence/browser.json` and `performance.json` carry source SHA/run ID; `tolmap-reader-visual-review` contains Find-open PNGs plus the browser manifest | Pending CI and human image review; never promote an old capture as evidence for this head. |
+| This reader revision | Draft PR head and exact CI runs recorded in PR check evidence; `reader-evidence/browser.json` and `performance.json` carry PR-head `sourceSha`, tested merge `testedSha`, base SHA and run ID; `tolmap-reader-visual-review` contains Find-open PNGs plus the browser manifest | Pending CI and human image review; never promote an old capture as evidence for this head. |
 
 The existing owner-private gallery is
 <https://tolmap-visual-review.tikazyq.chatgpt.site>. Its historical candidate

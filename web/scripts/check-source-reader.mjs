@@ -4,6 +4,10 @@ import {createHash} from 'node:crypto';
 import {cameraBoxes,settleCamera} from './camera-settle.mjs';
 import assert from 'node:assert/strict';
 const fixture=JSON.parse(fs.readFileSync('../.local-reader/fixture.json'));
+const runEvent=process.env.GITHUB_EVENT_PATH?JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH,'utf8')):{};
+const sourceSha=runEvent.pull_request?.head?.sha??process.env.GITHUB_SHA??null;
+const baseSha=runEvent.pull_request?.base?.sha??null;
+const testedSha=process.env.GITHUB_SHA??null;
 fs.mkdirSync('../reader-evidence',{recursive:true});
 const browser=await chromium.launch({headless:true});
 const results=[];
@@ -128,7 +132,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[1280,900]])for(const
  assert(new URL(page.url()).searchParams.get('file')===fixture.file);await settleCamera(page);assert.deepEqual(await cameraBoxes(page),before);
  await page.goto(base+'&read=true&line=2.5&end=4.5');await page.locator('.cm-content').waitFor();
  if(narrow)assert.equal(await page.evaluate(()=>history.length-window.readerInitialHistoryLength),2,'selection and reader must create distinct native history entries');
- await page.reload();await page.locator('.cm-content').waitFor();
+ await page.reload();await page.locator('.cm-content').waitFor();await page.waitForFunction(()=>document.querySelector('.cm-content .cm-line span[class]'));await page.locator('.cm-selectionBackground').first().waitFor();
  await page.locator('.cm-content').focus();const deepLinkedRange=await inspectReaderContrast(page);
  assert((await page.locator('.source-provenance').first().innerText()).includes(fixture.a));
  const committed=await(await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}/source?commit=${fixture.a}&path=${encodeURIComponent(fixture.file)}`)).json();
@@ -174,5 +178,5 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[1280,900]])for(const
 }
 fs.renameSync('../.local-reader/checkout','../.local-reader/moved-checkout');
 const movedPage=await browser.newPage();const afterCheckoutMove=await(await movedPage.request.get(`${browserOrigin}/api/maps/snapshot/${fixture.snapshotA}/source?commit=${fixture.a}&path=${encodeURIComponent(fixture.file)}`)).json();assert.equal(createHash('sha256').update(afterCheckoutMove.text).digest('hex'),fixture.sourceSha256,'saved A source changed after checkout move');await movedPage.close();
-fs.writeFileSync('../reader-evidence/browser.json',JSON.stringify({sourceSha:process.env.GITHUB_SHA??null,runId:process.env.GITHUB_RUN_ID??null,fixture,results,nativeJourney:{steps:['local page','detect','confirm','index','saved map','search file','read source'],result:'passed on Chromium emulation',storagePathDisclosed:true},afterCheckoutMove:'saved A source remained readable after moving checkout',visualReview:'pending human; CI candidates are not approval',physicalDevice:'not run'},null,2));
+fs.writeFileSync('../reader-evidence/browser.json',JSON.stringify({sourceSha,baseSha,testedSha,runId:process.env.GITHUB_RUN_ID??null,fixture,results,nativeJourney:{steps:['local page','detect','confirm','index','saved map','search file','read source'],result:'passed on Chromium emulation',storagePathDisclosed:true},afterCheckoutMove:'saved A source remained readable after moving checkout',visualReview:'pending human; CI candidates are not approval',physicalDevice:'not run'},null,2));
 }finally{await browser.close()}

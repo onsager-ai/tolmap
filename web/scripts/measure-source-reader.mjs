@@ -3,6 +3,10 @@ import { chromium } from 'playwright';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 const fixture=JSON.parse(fs.readFileSync('../.local-reader/fixture.json'));
+const runEvent=process.env.GITHUB_EVENT_PATH?JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH,'utf8')):{};
+const sourceSha=runEvent.pull_request?.head?.sha??process.env.GITHUB_SHA??null;
+const baseSha=runEvent.pull_request?.base?.sha??null;
+const testedSha=process.env.GITHUB_SHA??null;
 const browser=await chromium.launch({headless:true});
 const samples=[];
 try {
@@ -39,6 +43,6 @@ try {
    samples.push({file,bytes:source.bytes,lines:source.text.split('\n').length,longLine:source.long_line,iteration,loadMs,languageReadyMs,searchMs,scrollMs,destroyMs,baselineHeap,mountedHeap,afterDestroyHeap:await heap()});
   }
  }
- fs.writeFileSync('../reader-evidence/performance.json',JSON.stringify({sourceSha:process.env.GITHUB_SHA??null,runId:process.env.GITHUB_RUN_ID??null,browser:browser.version(),samples,scope:'Desktop Chromium CI; load includes API/React/automation; languageReady includes lazy grammar; scroll is two animation frames; heap is CDP after GC, not process RSS or leak proof; iteration 0 is first mount per file, later iterations warm. No phone/Safari performance claim.'},null,2));
+ fs.writeFileSync('../reader-evidence/performance.json',JSON.stringify({sourceSha,baseSha,testedSha,runId:process.env.GITHUB_RUN_ID??null,browser:browser.version(),samples,scope:'Desktop Chromium CI; load includes API/React/automation; languageReady includes lazy grammar; scroll is two animation frames; heap is CDP after GC, not process RSS or leak proof; iteration 0 is first mount per file, later iterations warm. No phone/Safari performance claim.'},null,2));
  console.log(JSON.stringify(samples,null,2));
 } finally {await browser.close();}
