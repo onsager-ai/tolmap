@@ -934,6 +934,20 @@ export function MapView() {
 
   const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.source_commit ?? search.base ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.source_commit ?? search.base ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
 
+  const mapInsets = search.compare
+    ? {
+        ...frameInsets,
+        frame: { ...frameInsets.frame, right: narrow ? frameInsets.frame.right : 380 },
+        safe: {
+          ...frameInsets.safe,
+          right: narrow ? frameInsets.safe.right : 380,
+          top: narrow
+            ? frameInsets.safe.top + Math.min(metrics.height * (landscape ? 0.36 : 0.28), landscape ? 150 : 236) + 8
+            : frameInsets.safe.top,
+        },
+      }
+    : frameInsets;
+
   const mapCanvas = (
     <MapCanvas
       key={`${owner}/${repo}:${search.base ?? search.commit ?? early.commit ?? ""}`}
@@ -954,7 +968,7 @@ export function MapView() {
       activeDirectory={activeDirectory}
       districtSymbols={districtSymbolsMap}
       selHSym={selHSym}
-      insets={search.compare ? { ...frameInsets, frame: { ...frameInsets.frame, right: narrow ? frameInsets.frame.right : 380 }, safe: { ...frameInsets.safe, right: narrow ? frameInsets.safe.right : 380, bottom: narrow ? metrics.height * 0.45 : frameInsets.safe.bottom } } : frameInsets}
+      insets={mapInsets}
       callbacks={rendererCallbacks}
       handleRef={canvasRef}
     />
@@ -976,7 +990,7 @@ export function MapView() {
           narrow
           mapLeft={landscape && sideOpen ? `${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px)` : undefined}
         />
-        {!search.compare && <PhoneChrome
+        <PhoneChrome
           doc={doc}
           packageLayout={packageLayout}
           packageGrouping={packageGrouping}
@@ -1067,7 +1081,7 @@ export function MapView() {
           onSelectDirectory={selectDirectory}
           onBreadcrumbRepo={clearAll}
           onBreadcrumbFile={(i) => updateSearch({ file: doc.F[i], sym: undefined, hsym: undefined, d: undefined, dir: undefined })}
-        />}
+        />
       </div>
     );
   }

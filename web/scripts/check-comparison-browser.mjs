@@ -21,6 +21,12 @@ try {
       let json;
       if (url.pathname === '/api/healthz') json = {status:'ok'};
       else if (url.pathname === '/api/maps') json = [];
+      else if (url.pathname === '/api/maps/fixture/town/symbols') {
+        const district = Number(url.searchParams.get('district'));
+        const files = map.N.flatMap((row, index) => row[0] === district ? [index] : []);
+        assert.notEqual(files.length, 0, `fixture district ${district} has a file`);
+        json = {district,files,symbol_indices:files.map((_, index) => index),symbols:files.map((file, index) => [file,'FixtureSymbol',1,2,0,-1,index,false]),edges:[],kinds:['unknown'],module_code_lines:Object.fromEntries(files.map(file => [file,0]))};
+      }
       else if (url.pathname === '/api/compare/fixture/town') {
         if (state === 'error') return route.fulfill({status:404,json:{error:'comparison_unavailable',message:'Committed source unavailable'}});
         json = state === 'stale' ? {...value,report:{...value.report,head:base}} : value;
@@ -35,6 +41,26 @@ try {
     const panel = page.getByRole('complementary', {name:'Change impact'});
     await panel.getByText('Structural signal:',{exact:false}).waitFor();
     for (const name of ['Affected districts','Changed files','Unplaced files','Outside the graph','Cross-district edges added','Cross-district edges removed','Landmark touches']) await panel.getByRole('heading',{name,exact:true}).waitFor();
+    if (profile === 'phone') {
+      const sheet = page.locator('[data-phone-sheet]');
+      await sheet.waitFor();
+      await sheet.locator('[data-sheet-grabber]').click();
+      await sheet.locator('[data-sheet-grabber]').click();
+      const districtRow = sheet.locator(`[data-district-index-row="${d}"] button`).first();
+      await districtRow.tap();
+      await sheet.locator('[data-sheet-card="district"]').waitFor();
+      await sheet.locator('[data-district-files-toggle]').tap();
+      const fileRow = sheet.locator('[data-district-key-file]').first();
+      await fileRow.waitFor();
+      await fileRow.tap();
+      await sheet.locator('[data-sheet-card="file"]').waitFor();
+      const symbolRow = sheet.locator('button[data-outline-row]').first();
+      await symbolRow.waitFor();
+      await symbolRow.tap();
+      await sheet.locator('[data-sheet-card="symbol"]').waitFor();
+      assert.equal(new URL(page.url()).searchParams.get('compare'), 'true');
+      await sheet.locator('[data-sheet-grabber]').click();
+    }
     const item = panel.locator('li').filter({has:page.getByRole('button',{name:paths[1],exact:true})});
     assert.equal(await item.getByRole('link',{name:'head source'}).count(),0,'deleted file has no head');
     const rename = panel.locator('li').filter({has:page.getByRole('button',{name:`${paths[2]} → renamed.py`,exact:true})});
@@ -60,6 +86,12 @@ try {
       await panel.getByRole('alert').waitFor();
       assert.equal(await panel.getByText('Structural signal:',{exact:false}).count(),0,'old result hidden');
     }
+    await panel.getByRole('button',{name:'Return to map',exact:true}).click();
+    await panel.waitFor({state:'detached'});
+    const mapUrl = new URL(page.url());
+    assert.equal(mapUrl.searchParams.get('base'),base,'returning keeps the comparison base pinned');
+    assert.equal(mapUrl.searchParams.has('compare'),false,'returning closes comparison');
+    await page.getByRole('button',{name:'Compare commits',exact:true}).waitFor();
     await context.close();
   }
 } finally { await browser.close(); }

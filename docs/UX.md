@@ -439,8 +439,10 @@ their original verification. Physical iPhone gestures remain #177 acceptance.
 
 ## 14. Change impact
 
-**Compare commits** opens a keyboard-accessible panel on desktop and a lower
-sheet on phones. Enter full base/head commit IDs and optional check thresholds.
+**Compare commits** opens a keyboard-accessible panel on desktop and an upper
+sheet on phones, leaving the phone's selection sheet available below it. Enter
+full base/head commit IDs and optional check thresholds. District, file and
+symbol cards remain available from the phone sheet while comparison is open.
 The URL retains both commits and threshold settings through reload and source
 navigation. The map loads the stored **base** snapshot, never a head layout.
 Affected districts get dashed outlines; changed files are outlined only when
@@ -457,9 +459,11 @@ immutable provenance. Weights are compared only within their own graph.
 Base/head source links use the existing read-only source reader. Added files
 open only at head, deleted files only at base, renames use the old base path and
 new head path; modified files offer both. The base map stays mounted when the
-reader opens. Back and Return to map close source first. Reloading source links
-retains comparison provenance. Loading and revalidation hide old results; errors,
-missing source/maps and unsupported versions are explicit and retryable. A pinned
+reader opens. Back and Return to map close source first. Returning from the
+comparison panel closes comparison while keeping its base commit pinned as the
+map frame. Reloading source links retains comparison provenance. Loading and
+revalidation hide old results; errors, missing source/maps and unsupported
+versions are explicit and retryable. A pinned
 base-map fetch never falls back to an unrelated static fixture.
 
 Physical iPhone/Safari behavior and owner approval of visual baselines remain
