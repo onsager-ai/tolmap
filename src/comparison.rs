@@ -106,12 +106,20 @@ pub fn protected(
         Ok::<_, ApiError>(())
     };
     check_both()?;
-    let result = run(inputs, query.clone())?;
+    let result = run_in_domain(inputs, query.clone(), Some(request.resource.access_domain))?;
     check_both()?;
     Ok(result)
 }
 
 pub fn run(inputs: Inputs<'_>, query: CompareQuery) -> Result<Comparison, ApiError> {
+    run_in_domain(inputs, query, None)
+}
+
+fn run_in_domain(
+    inputs: Inputs<'_>,
+    query: CompareQuery,
+    access_domain: Option<&str>,
+) -> Result<Comparison, ApiError> {
     let base = resolve(inputs.repo, &query.base)?;
     let head = resolve(inputs.repo, &query.head)?;
     let mut options = check::CheckOptions {
@@ -135,6 +143,7 @@ pub fn run(inputs: Inputs<'_>, query: CompareQuery) -> Result<Comparison, ApiErr
         &thresholds,
         env!("CARGO_PKG_VERSION"),
         BUILD_REVISION,
+        access_domain,
         &map_hash,
     ))
     .map_err(internal)?;
