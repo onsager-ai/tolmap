@@ -12,8 +12,9 @@ import "./reader.css";
 // Preserve the grammar tags, but own their palette. Default CM6 purple/blue
 // failed on dark chrome (reader visual review, 2026-10-25). These Tolmap
 // tokens are checked against the actual editor background in browser CI.
+const readerPalette: Record<string, string> = { "#708": "var(--accent)", "#a11": "var(--link-in)", "#164": "var(--link-in)", "#a50": "var(--dim)" };
 const readerHighlightStyle = HighlightStyle.define(defaultHighlightStyle.specs.map(spec => ({
-  ...spec, color: spec.color ? ({ "#708": "var(--accent)", "#a11": "var(--link-in)", "#164": "var(--link-in)", "#a50": "var(--dim)" }[spec.color] ?? "var(--on)") : undefined,
+  ...spec, color: typeof spec.color === "string" ? (readerPalette[spec.color] ?? "var(--on)") : undefined,
 })));
 
 export interface Provenance { version: number; repository: string; commit: string }

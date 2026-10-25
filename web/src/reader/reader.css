@@ -1,4 +1,4 @@
-.source-reader{position:absolute;z-index:70;right:0;top:0;bottom:0;width:min(52%,900px);display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--chrome);color:var(--on);border-left:1px solid var(--rule);box-shadow:var(--chrome-shadow);padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) 0}
+.source-reader{position:absolute;z-index:70;right:0;top:0;bottom:0;width:min(52%,900px);display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--chrome);color:var(--on);border-left:1px solid var(--rule);box-shadow:var(--chrome-shadow);padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
 .source-reader header{display:flex;align-items:center;gap:12px;padding:12px;flex-wrap:wrap;border-bottom:1px solid var(--rule)}
 .source-reader header strong{flex:1;min-width:100px;overflow-wrap:anywhere;font-family:"IBM Plex Mono",monospace;font-size:13px}
 .source-reader button{min-height:44px;padding:8px 12px;border:1px solid var(--rule);border-radius:8px;background:var(--chrome2);color:var(--on)}
