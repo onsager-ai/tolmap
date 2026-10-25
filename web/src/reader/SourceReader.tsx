@@ -57,8 +57,8 @@ const readOnlyNavigationKeymap = [
   readerMovement("Mod-ArrowRight", (view, range) => view.moveByGroup(range, true)),
   readerMovement("Home", (view, range) => view.moveToLineBoundary(range, false)),
   readerMovement("End", (view, range) => view.moveToLineBoundary(range, true)),
-  readerMovement("Mod-Home", _view => EditorSelection.cursor(0).main),
-  readerMovement("Mod-End", view => EditorSelection.cursor(view.state.doc.length).main),
+  readerMovement("Mod-Home", _view => EditorSelection.cursor(0)),
+  readerMovement("Mod-End", view => EditorSelection.cursor(view.state.doc.length)),
   readerMovement("PageUp", (view, range) => view.moveVertically(range, false, view.scrollDOM.clientHeight)),
   readerMovement("PageDown", (view, range) => view.moveVertically(range, true, view.scrollDOM.clientHeight)),
 ];
