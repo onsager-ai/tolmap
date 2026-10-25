@@ -41,7 +41,7 @@ pub async fn compare(
 }
 #[derive(Deserialize)]
 pub struct SourceQuery {
-    pub commit: String,
+    pub commit: Option<String>,
     pub path: Option<String>,
 }
 pub async fn provenance(
@@ -50,7 +50,17 @@ pub async fn provenance(
     Query(query): Query<SourceQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let (repository, source) = comparison::public_paths(&state.config.cache_dir, &owner, &repo)?;
-    let commit = tokio::task::spawn_blocking(move || comparison::resolve(&source, &query.commit))
+    let wanted = match query.commit {
+        Some(commit) => commit,
+        None => {
+            state
+                .store
+                .latest(&repository)?
+                .ok_or_else(comparison::unavailable)?
+                .commit
+        }
+    };
+    let commit = tokio::task::spawn_blocking(move || comparison::resolve(&source, &wanted))
         .await
         .map_err(|e| ApiError::internal(e.to_string()))??;
     Ok((
@@ -69,8 +79,11 @@ pub async fn read_source(
     let path = query
         .path
         .ok_or_else(|| ApiError::invalid_request("path required"))?;
+    let commit = query
+        .commit
+        .ok_or_else(|| ApiError::invalid_request("immutable commit required"))?;
     let text =
-        tokio::task::spawn_blocking(move || source::read(&repo, &repository, &query.commit, &path))
+        tokio::task::spawn_blocking(move || source::read(&repo, &repository, &commit, &path))
             .await
             .map_err(|e| ApiError::internal(e.to_string()))??;
     Ok(([("cache-control", "no-store")], Json(text)))

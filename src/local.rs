@@ -488,7 +488,7 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             .data
             .join("prepared")
             .join(head.prepared.to_string())
-            .join("source.git");
+            .join("preview");
         let map = s
             .data
             .join("snapshots")

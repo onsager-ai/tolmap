@@ -130,6 +130,10 @@ pub fn run(inputs: Inputs<'_>, query: CompareQuery) -> Result<Comparison, ApiErr
     if path.exists() {
         return load(&path);
     }
+    static COMPUTATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _permit = COMPUTATION
+        .try_lock()
+        .map_err(|_| ApiError::busy("Another comparison is running; retry when it finishes"))?;
     // Local snapshots call their map map.json. check's provenance validation
     // deliberately requires <full-sha>.json, so copy verified bytes to an
     // isolated staging directory without changing the immutable snapshot.
