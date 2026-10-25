@@ -414,6 +414,7 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                     stopped: AtomicBool::new(false),
                     pid: AtomicU32::new(0),
                 });
+                *s.notice.lock().unwrap() = String::new();
                 *job = Some(Job {
                     id,
                     stage: "Queued".into(),
@@ -423,12 +424,13 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                 let state = s.clone();
                 std::thread::spawn(move || {
                     let result = run(state.clone(), prepared, commit, all, id, cancel);
-                    *state.job.lock().unwrap() = None;
+                    let mut job = state.job.lock().unwrap();
                     *state.notice.lock().unwrap() = if result.is_err() {
                         "Indexing failed or was cancelled. The committed source selection is retained; retry indexing or refresh from HEAD.".into()
                     } else {
                         "Snapshot saved. Open it from history below.".into()
                     };
+                    *job = None;
                 });
                 return Ok((StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response());
             }

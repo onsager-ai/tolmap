@@ -101,6 +101,7 @@ def prepare():
 def index_prepared(prepared):
     started=time.monotonic();observations=[]
     code,body,_=req('/local/index?id='+prepared,True);assert code==200,(code,body[:200])
+    if b'Cancel indexing' in body:assert b'Indexing failed or was cancelled.' not in body,body[-1000:]
     for poll in range(900):
         text=req('/')[1]
         if poll%100==0:
