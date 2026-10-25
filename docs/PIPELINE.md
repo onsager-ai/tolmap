@@ -69,3 +69,61 @@ The Rust product adds a seeded neighbourhood partition after the district partit
   "landmarks": [ { "node": "src/gateway/router.ts", "why": "entry", "rank": 1 } ]
 }
 ```
+
+## Incremental extraction and complete snapshots (#225)
+
+The opt-in CLI `--extraction-cache <outside-source-directory>` stores derivation,
+never configuration in the mapped repository. Standalone process jobs copy the
+selected prior snapshot's extraction into their private output, then retain only
+validated regular cache files with the next complete snapshot. The filesystem
+store is scoped by its data root, owner and logical repository. Embedding hosts
+must construct the repository/access-domain identity from their trusted adapter,
+check current Policy before prior selection and every cache lookup/publication,
+and use `Cache::with_authority`; standalone filesystem authority is not a hosted
+provider grant. No cache hit authorizes access.
+
+Each content-addressed record includes path, content SHA-256, language, symbol
+collection mode, repository/domain, source selection/config digest, extractor
+source digest (including Rust/Go syntax and symbol collection), schema source
+digest, resolver version and indexer version. Payload SHA-256 rejects truncation
+or accidental corruption. Extraction keeps one source tree alive at a time and
+spools cached symbols exactly as freshly collected records. Python syntax-error
+files remain conservatively excluded and are parsed again rather than cached.
+
+| Input/change | Extraction | Dependent work and observable reason |
+|---|---|---|
+| Unchanged bytes/path | Reuse matching record | All resolution/history/geometry rerun |
+| Content or cross-file exports/imports | Parse changed file | Global resolution rerun; `content_changed` |
+| Addition/deletion | New file parsed; deleted file omitted | Global file set rebuilt; `file_added` / `file_deleted` |
+| Rename | Path is part of key; new path parsed | Global resolution/history rerun; `file_renamed` for equal bytes |
+| Source scope/config/exclusions | Full parse fallback | `config_or_exclusions_changed` |
+| Extractor/schema/resolver/indexer version | Full parse fallback | `extractor_changed` / `schema_changed` / `resolver_changed` / `indexer_changed` |
+| Missing/corrupt entry | Parse that file | `cache_entry_missing_or_corrupt` if otherwise equivalent |
+| History revision/horizon | Raw syntax may be reused | Always walk requested history with existing 4000-commit algorithmic window; `history_window_advanced` |
+| Prior snapshot/naming input | Raw syntax may be reused | No downstream cache: use explicit prior membership and names as existing warm start does |
+| Revoked authority/different owner | Deny / distinct namespace | `cache_authority_revoked`; no cached permission |
+
+No graph, blend, partition, layout or naming result is cached. Their complete
+inputs (including the extracted set, history revision/window, prior snapshot and
+name cache) are consumed again every run. Thus cross-file changes and sliding
+co-change history cannot keep an old graph. The map schema, SEED=7, algorithms,
+mass normalization, thresholds and naming-continuity rules are unchanged.
+`index_reuse` JSON log observations record actual parsed/reused counts and reasons;
+`index_timing` observations record wall seconds and completed units outside maps.
+
+Service publication writes validated map and symbol artifacts into a unique,
+immutable directory, flushes them, then switches the map pointer and name cache
+in one SQLite transaction. Commit filenames remain full object IDs. The switch
+checks durable attempt epoch/status and serializes against registry cancellation.
+Failure before the switch leaves the last complete row readable; unreferenced
+crash leftovers are not snapshots. Local publication uses the existing complete
+snapshot metadata boundary, now flushed and fenced by the current local job ID.
+Source remains pinned to the immutable prepared Git revision in that metadata.
+An early map is explicitly provisional and never a complete snapshot.
+
+`GET /api/maps/{owner}/{repo}/freshness?commit=<loaded-commit>` reports indexed
+and requested commits separately, queued/indexing/complete/failed/stale state,
+failure code/text and retry availability. `complete` means a complete saved
+snapshot, not a claim that the provider's HEAD is current; unknown requested
+commit stays null. Map responses carry `X-Tolmap-Commit`; viewer detail/source
+requests use that returned commit to avoid following a different latest map.

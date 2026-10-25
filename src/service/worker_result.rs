@@ -142,7 +142,7 @@ pub(crate) fn artifact_cap(name: &str) -> Option<u64> {
     match name {
         "map" => Some(EARLY_MAP_MAX_BYTES),
         "symbols" => Some(FULL_SYMBOLS_MAX_BYTES),
-        "names" => Some(NAMES_CACHE_MAX_BYTES),
+        "names" | "index" => Some(NAMES_CACHE_MAX_BYTES),
         _ if crate::worker::is_valid_artifact_name(name) && name.starts_with("symbols_dir/") => {
             Some(DISTRICT_SYMBOLS_MAX_BYTES)
         }
@@ -512,6 +512,11 @@ pub fn adopt(
     } else {
         NameCache::default()
     };
+
+    let index = taken.join("index.json");
+    if std::fs::symlink_metadata(&index).is_ok() {
+        take_file(&index, &staging.join("index.json"), "index metadata", owner)?;
+    }
 
     // Optional extraction derivation travels with a complete local snapshot.
     // Move entries out of worker-owned directories before inspecting them,

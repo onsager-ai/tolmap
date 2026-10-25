@@ -155,6 +155,7 @@ pub struct ProgressValue {
 #[derive(Clone)]
 pub struct Progress {
     pub(crate) cache: Option<crate::incremental::Cache>,
+    observations: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     emit: Arc<dyn Fn(crate::worker::WorkerEvent) + Send + Sync>,
 }
 
@@ -162,6 +163,7 @@ impl Progress {
     pub fn new(emit: impl Fn(crate::worker::WorkerEvent) + Send + Sync + 'static) -> Self {
         Self {
             cache: None,
+            observations: Arc::new(std::sync::Mutex::new(Vec::new())),
             emit: Arc::new(emit),
         }
     }
@@ -190,7 +192,18 @@ impl Progress {
         counter
     }
 
+    pub fn observations(&self) -> Vec<serde_json::Value> {
+        self.observations.lock().unwrap().clone()
+    }
+
     pub fn log(&self, message: impl Into<String>) {
+        let message = message.into();
+        if let Some(value) = message
+            .strip_prefix("index_reuse ")
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        {
+            self.observations.lock().unwrap().push(value);
+        }
         (self.emit)(crate::worker::WorkerEvent::Log {
             v: 1,
             message: message.into(),

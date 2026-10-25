@@ -4,7 +4,7 @@ import type { CatalogueEntry, DistrictSymbols, MapDocument } from "@/types";
 import {
   getServiceCatalogue,
   getServiceDistrictSymbols,
-  getServiceMapDocument,
+  getServiceMapSnapshot,
   pingService,
   type ServiceCatalogueEntry,
 } from "@/api/client";
@@ -154,7 +154,7 @@ export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin 
 
   const serviceQuery = useQuery({
     queryKey: pin.commit ? ["map", "service", owner, repo, pin.commit] : ["map", "service", owner, repo],
-    queryFn: () => getServiceMapDocument(owner, repo, pin.commit),
+    queryFn: () => getServiceMapSnapshot(owner, repo, pin.commit),
     enabled: available === true && !!owner && !!repo && !pin.wait,
     staleTime: 15_000,
     // A 404 from the service just means this repo hasn't been indexed there
@@ -175,7 +175,7 @@ export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin 
     retry: false,
   });
 
-  const doc = serviceQuery.data ?? staticQuery.data;
+  const doc = serviceQuery.data?.document ?? staticQuery.data;
   const isLoading =
     !doc &&
     (checkingService || !!pin.wait || (available === true && serviceQuery.isFetching) || (serviceMiss && staticQuery.isFetching));
@@ -183,6 +183,7 @@ export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin 
 
   return {
     data: doc,
+    indexedCommit: serviceQuery.data?.indexedCommit,
     isLoading,
     isError,
     error: staticQuery.error ?? serviceQuery.error,

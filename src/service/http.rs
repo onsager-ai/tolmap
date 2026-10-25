@@ -564,3 +564,15 @@ fn freshness(
         job_id: request.map(|job| job.job_id.to_string()),
     }
 }
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::*;
+    #[test]
+    fn a_saved_snapshot_alone_does_not_invent_a_requested_commit() {
+        let value = freshness(Some("old".into()), None);
+        assert_eq!(value.indexed_commit.as_deref(), Some("old"));
+        assert!(value.requested_commit.is_none());
+        assert_eq!(value.state, crate::schema::FreshnessState::Complete);
+    }
+}

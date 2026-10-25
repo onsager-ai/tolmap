@@ -9,6 +9,7 @@ import { D_, districtClass, type Insets } from "@/map/geometry";
 import type { SearchPick } from "@/map/searchResults";
 import { dispatchDesktopKey, type DesktopFocusScope } from "@/map/desktopKeyboard";
 import { LoadProgressIndicator } from "@/components/LoadProgressIndicator";
+import { SnapshotFreshnessNote } from "@/components/SnapshotFreshnessNote";
 import { DetailStatusNote } from "@/components/DetailStatusNote";
 import { useEarlyMapJob } from "@/api/useEarlyMapJob";
 import { DesktopChrome, DesktopPanel } from "@/components/DesktopChrome";
@@ -57,7 +58,7 @@ export function MapView() {
   // (`?job=`) is pinned to that job's commit, and asks for symbols only once
   // the job is done.
   const early = useEarlyMapJob(search.job);
-  const { data: doc, isLoading, isError, error, source } = useMapDocument(owner, repo, {
+  const { data: doc, isLoading, isError, error, source, indexedCommit } = useMapDocument(owner, repo, {
     commit: search.commit ?? early.commit,
     wait: early.waiting,
   });
@@ -105,7 +106,7 @@ export function MapView() {
     repo,
     source,
     [...wantedDistricts],
-    { commit: search.commit ?? early.commit, ready: !early.waiting && !early.detailPending },
+    { commit: indexedCommit ?? search.commit ?? early.commit, ready: !early.waiting && !early.detailPending },
   );
   // The job ended: the map's URL is the plain one again (a shared link
   // should not watch a finished job), while the commit stays pinned.
@@ -291,8 +292,8 @@ export function MapView() {
   function openSource() {
     if (sel == null || !doc) return;
     const { line, end } = sourceRange(sel, selSym, selHSym);
-    if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end }); }
-    else { desktopReaderEntry.current = true; navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end }), state: true }); }
+    if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end, commit: indexedCommit ?? search.commit }); }
+    else { desktopReaderEntry.current = true; navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end, commit: indexedCommit ?? search.commit }), state: true }); }
   }
   function closeSource() {
     if (narrow) { dropOverlay("reader"); updateSearch({ read: undefined }); }
@@ -928,7 +929,7 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
-  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
+  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, indexedCommit ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={indexedCommit ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
   const mapCanvas = (
     <MapCanvas
       doc={doc}
@@ -961,6 +962,7 @@ export function MapView() {
           {mapCanvas}
         </div>
         {sourceReader}
+        <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow />
         <DetailStatusNote
           pending={early.detailPending}
           failed={early.detailFailed}
@@ -1121,6 +1123,7 @@ export function MapView() {
     >
       {mapCanvas}
       {sourceReader}
+      <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow={false} />
       <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
       <DesktopChrome
         catalogue={catalogue}

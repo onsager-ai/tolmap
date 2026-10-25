@@ -701,6 +701,7 @@ fn build_multi_source_inner(
     let graph_started = Instant::now();
     let mut graph = finish_graph(repo, merged, history, progress)?;
     graph.references = references;
+    progress.log(format!("index_work {}", serde_json::json!({"files":graph.nodes.len(), "graph_edges":graph.edges.len(), "resolved_import_pairs":graph.imports.len()})));
     graph_time += graph_started.elapsed();
     let total = started.elapsed();
     // These three durations are disjoint so a build log can account for
@@ -803,6 +804,15 @@ fn parse_files_inner(
             spool.is_some(),
             config,
         ))?),
+        history_revision: Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .unwrap_or_default(),
         files: BTreeMap::new(),
     };
     let manifest_key = format!(
@@ -822,7 +832,9 @@ fn parse_files_inner(
     let compatible = previous
         .as_ref()
         .is_none_or(|old| provenance.compatible(old));
-    let context_key = crate::incremental::digest(&serde_json::to_vec(&provenance)?);
+    let mut raw_inputs = provenance.clone();
+    raw_inputs.history_revision.clear();
+    let context_key = crate::incremental::digest(&serde_json::to_vec(&raw_inputs)?);
     let mut reused = 0usize;
     let mut parsed_count = 0usize;
 
@@ -1003,7 +1015,7 @@ fn parse_files_inner(
         raw.insert(file.clone(), file_raw);
         parse_stage.advance(1);
     }
-    let reasons = if progress.cache.is_some() {
+    let mut reasons = if progress.cache.is_some() {
         provenance.reasons(previous.as_ref())
     } else {
         vec!["cache_disabled"]

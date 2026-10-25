@@ -1114,6 +1114,41 @@ mod tests {
     }
 
     #[test]
+    fn publication_fences_stale_and_cancelled_attempts_and_keeps_last_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("store.sqlite");
+        let store = Store::open(&db).unwrap();
+        let old_path = dir.path().join("old.json");
+        std::fs::write(&old_path, b"old complete map").unwrap();
+        let old = row("o/a", "old", "2026-01-01", &old_path);
+        store.publish(&old, &NameCache::new(), None).unwrap();
+        let mut job = job_row("a", 1);
+        job.status = "running".into();
+        job.epoch = 2;
+        store.insert_job(&job).unwrap();
+        let staged = dir.path().join("new.json");
+        std::fs::write(&staged, b"new complete map").unwrap();
+        let next = row("o/a", "new", "2026-01-02", &staged);
+        // Crash before the switch: staged bytes have no visible row.
+        assert!(store.get("o/a", "new").unwrap().is_none());
+        assert!(store
+            .publish(&next, &NameCache::new(), Some(("a", 1)))
+            .is_err());
+        store.finish_job("a", "failed", "{}").unwrap();
+        assert!(store
+            .publish(&next, &NameCache::new(), Some(("a", 2)))
+            .is_err());
+        drop(store);
+        let restored = Store::open(&db).unwrap();
+        let visible = restored.latest("o/a").unwrap().unwrap();
+        assert_eq!(visible.commit, "old");
+        assert_eq!(
+            std::fs::read(visible.map_path).unwrap(),
+            b"old complete map"
+        );
+    }
+
+    #[test]
     fn prune_keeps_only_the_newest_n_and_deletes_older_map_files() {
         let (dir, store) = temp_store();
         let paths: Vec<PathBuf> = (0..3)

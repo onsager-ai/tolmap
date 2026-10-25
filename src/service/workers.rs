@@ -4908,6 +4908,7 @@ fn assemble(
             "map" => map.clone(),
             "symbols" => symbols.clone(),
             "names" => names.clone(),
+            "index" => output.join("index.json"),
             other => match other.strip_prefix("symbols_dir/") {
                 Some(entry) => symbols_dir.join(entry),
                 None => return Err(invalid_result(format!("{other:?} is not an artifact name"))),

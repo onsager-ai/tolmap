@@ -123,6 +123,8 @@ pub(crate) struct Provenance {
     pub resolver: String,
     pub indexer: String,
     pub config: String,
+    #[serde(default)]
+    pub history_revision: String,
     pub files: BTreeMap<String, String>,
 }
 
@@ -146,6 +148,9 @@ impl Provenance {
             if changed {
                 reasons.push(reason);
             }
+        }
+        if self.history_revision != old.history_revision {
+            reasons.push("history_window_advanced");
         }
         let removed: Vec<_> = old
             .files

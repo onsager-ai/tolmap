@@ -3172,3 +3172,36 @@ This is a deliberate move away from finding 60's rare-outlier target: #176 asked
 - The 13 "import" edges finding 60 listed for the warning alias were not traced one by one. That they were pruning artifacts is inferred from the fixed run listing no added cross-district edge for that commit.
 - The fire rate on agent-written changes, the case Ostrom and Duhem gate, is still unmeasured.
 - `eval/batch_stability.py` was not run: `tolmap build` still reads the checkout's own history, so no map changes. Only `tolmap check`'s head graph reads another commit's.
+
+## Incremental extraction baseline (#225, 2026-10-25)
+
+[CI run 40170563034](https://github.com/onsager-ai/tolmap/actions/runs/40170563034)
+measured `b693ebf077c67e2920e433f0d6eb620a6bb1694c` on a GitHub-hosted Ubuntu
+runner. [Raw stage/work observations](measurements/incremental-225-b693ebf.json)
+record `data/fixtures.toml` pins, SEED=7, hand references, empty IDF naming caches,
+no prior membership and full-history clones. The control disables extraction
+reuse. Each case ran once, in full/cold/unchanged/edit/edit-full order; these are
+observations, not medians or a hardware-independent budget. Clone time is outside
+build wall time; filesystem/page caches warm in that order.
+
+| Repository | Files | Full s | Cold cache s | Unchanged s (reused) | One-file edit s (reused) | Edit full control s |
+|---|---:|---:|---:|---:|---:|---:|
+| Flask | 24 | 0.2991 | 0.3228 | 0.2222 (24) | 0.2209 (23) | 0.2998 |
+| Django | 851 | 2.6743 | 3.3146 | 0.9645 (851) | 0.9541 (850) | 2.6709 |
+| Vue | 239 | 0.9545 | 1.1288 | 0.4313 (239) | 0.4624 (238) | 0.9423 |
+
+Full parse stages cost 0.0886/1.8503/0.5769 s respectively; unchanged parse stages
+cost 0.0087/0.1426/0.0437 s. Django's full history walk was 0.1873 s (4000 commits),
+resolution 0.0360 s, partition 0.0246 s and region drawing 0.3590 s. This supports
+single-file syntax/metric/symbol-collection reuse as the first target while
+recomputing all global stages. Cold-cache writes cost measurable extra time;
+this is not a win for one-off builds. Map and full-symbol SHA-256 matched for
+full/cold/unchanged and for edited incremental/full on all three repositories.
+The edit appends a comment to an indexed file (real content hash/LOC change,
+not an mtime touch); semantic import changes are covered by the Rust test case.
+
+These measurements predate complete-publication and freshness integration;
+head CI, fault cases, generated bindings and viewer/Storybook evidence must be
+reported separately. Remote-worker cache transport and production provider
+authority are not established by this CLI benchmark. No fixtures were refreshed
+and no algorithm thresholds were relaxed.
