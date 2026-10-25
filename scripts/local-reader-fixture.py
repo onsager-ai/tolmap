@@ -151,7 +151,7 @@ assert export['F'] and 'text' not in export and original['text'] not in json.dum
 (repo/'untracked-local.py').unlink()
 (repo/'shop/__init__.py').unlink();(repo/'pyproject.toml').unlink()
 git('add','-A');git('commit','-m','B');b=git('rev-parse','HEAD')
-prepared_b,confirm_b=prepare();assert b'Python at .' in confirm_b and b'low confidence' in confirm_b,confirm_b[-1200:]
+prepared_b,confirm_b=prepare();assert b'py at .' in confirm_b and b'low confidence' in confirm_b,confirm_b[-1200:]
 prepared_dir=root/'store'/'prepared'/prepared_b;source_git=prepared_dir/'source.git';backup=prepared_dir/'source.git.offline';source_git.rename(backup)
 try:
     code,body,_=req('/local/index?id='+prepared_b,True);assert code==200,(code,body[:200])
@@ -162,7 +162,7 @@ try:
     else:raise AssertionError('fixture indexing failure did not reach recovery page')
 finally:
     backup.rename(source_git)
-assert b'action=/local/index?id='+prepared_b.encode() in failed_scope and b'Python at .' in failed_scope,failed_scope[-1200:]
+assert b'action=/local/index?id='+prepared_b.encode() in failed_scope and b'py at .' in failed_scope,failed_scope[-1200:]
 second=index_prepared(prepared_b);bid=next(iter(second-first));assert get('/api/maps/snapshot/'+bid+'/provenance')['commit']==b
 assert get(base+'/source?path=shop/cart.py')['text']==original['text']
 # Pause the actual engine child, then require cancellation to kill/reap it
