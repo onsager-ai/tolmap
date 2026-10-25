@@ -40,21 +40,24 @@ function moveReadOnlySelection(view: EditorView, motion: ReaderMotion, extend: b
   return true;
 }
 
-function readerMovement(key: string, motion: ReaderMotion) {
+function readerMovement(key: string, motion: ReaderMotion, collapseForward?: boolean) {
   return {
     key,
-    run: (view: EditorView) => moveReadOnlySelection(view, motion, false),
+    run: (view: EditorView) => moveReadOnlySelection(view, (currentView, range) =>
+      !range.empty && collapseForward !== undefined
+        ? EditorSelection.cursor(collapseForward ? range.to : range.from)
+        : motion(currentView, range), false),
     shift: (view: EditorView) => moveReadOnlySelection(view, motion, true),
   };
 }
 
 const readOnlyNavigationKeymap = [
-  readerMovement("ArrowLeft", (view, range) => view.moveByChar(range, false)),
-  readerMovement("ArrowRight", (view, range) => view.moveByChar(range, true)),
+  readerMovement("ArrowLeft", (view, range) => view.moveByChar(range, false), false),
+  readerMovement("ArrowRight", (view, range) => view.moveByChar(range, true), true),
   readerMovement("ArrowUp", (view, range) => view.moveVertically(range, false)),
   readerMovement("ArrowDown", (view, range) => view.moveVertically(range, true)),
-  readerMovement("Mod-ArrowLeft", (view, range) => view.moveByGroup(range, false)),
-  readerMovement("Mod-ArrowRight", (view, range) => view.moveByGroup(range, true)),
+  readerMovement("Mod-ArrowLeft", (view, range) => view.moveByGroup(range, false), false),
+  readerMovement("Mod-ArrowRight", (view, range) => view.moveByGroup(range, true), true),
   readerMovement("Home", (view, range) => view.moveToLineBoundary(range, false)),
   readerMovement("End", (view, range) => view.moveToLineBoundary(range, true)),
   readerMovement("Mod-Home", _view => EditorSelection.cursor(0)),

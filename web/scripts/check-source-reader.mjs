@@ -176,6 +176,13 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  assert.deepEqual(await inspectDOMSelection(page),{from:0,to:3,text:'fro'},'Shift+ArrowLeft should shrink the keyboard selection to offsets 0..3');
  await page.keyboard.press('Shift+ArrowRight');
  assert.deepEqual(await inspectDOMSelection(page),{from:0,to:4,text:'from'},'keyboard selection should restore the original range');
+ await page.keyboard.press('ArrowLeft');
+ assert.deepEqual(await inspectDOMSelection(page),{from:0,to:0,text:''},'ArrowLeft should collapse an existing selection to its start');
+ for(let i=0;i<4;i++)await page.keyboard.press('Shift+ArrowRight');
+ await page.keyboard.press('ArrowRight');
+ assert.deepEqual(await inspectDOMSelection(page),{from:4,to:4,text:''},'ArrowRight should collapse an existing selection to its end');
+ await page.keyboard.press('Control+Home');for(let i=0;i<4;i++)await page.keyboard.press('Shift+ArrowRight');
+ assert.deepEqual(await inspectDOMSelection(page),{from:0,to:4,text:'from'},'keyboard selection should remain available after collapsing either edge');
  const selectionMatchColors=await matchStyle(selectionMatch);
  const selectionMatchContrast=contrast(selectionMatchColors.background,selectionMatchColors.color);assert(selectionMatchContrast>=4.5,JSON.stringify({selectionMatchColors,selectionMatchContrast}));
  await page.keyboard.type('cannot edit');
