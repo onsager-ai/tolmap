@@ -764,7 +764,7 @@ impl Store {
         if let Some((job, epoch)) = fence {
             let current: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM jobs WHERE job_id = ?1 AND epoch = ?2 AND status IN ('leased', 'running'))",
-                params![job, epoch], |row| row.get(0))?;
+                params![job, i64::try_from(epoch)?], |row| row.get(0))?;
             anyhow::ensure!(current, "stale_or_cancelled_attempt");
         }
         for (fingerprint, entry) in names {
