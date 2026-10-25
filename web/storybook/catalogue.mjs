@@ -20,7 +20,7 @@ export const cases = [
   ...['search', 'search-empty', 'layers', 'repositories', 'quality', 'keyboard', 'path'].map(overlay => [`map-${overlay}`, `Map · ${overlay}`, overlay === 'path' ? 'file' : '/onsager-ai/tolmap', 'map-ready', overlay]),
   ...['ready', 'loading', 'unavailable', 'missing', 'expired', 'binary', 'large', 'unsupported', 'long-line', 'search', 'search-empty'].map(state => [`source-${state}`, `Source · ${state}`, 'source', `source-${state}`]),
   ...['queued', 'indexing', 'failed', 'stale', 'complete'].map(state => [
-    `freshness-${state}`, `Snapshot freshness · ${state}`, '/', 'freshness', undefined,
+    `freshness-${state}`, `Snapshot freshness · ${state}`, '/', 'freshness', '',
     `tolmap-snapshot-freshness--${state}`,
   ]),
   ...['about', 'docs', 'api', 'settings', 'assets', 'static', 'health', 'login', 'admin', 'search'].map(name => [`reserved-${name}`, `Reserved · /${name}`, `/${name}`, 'home']),
