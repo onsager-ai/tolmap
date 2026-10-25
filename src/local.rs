@@ -198,6 +198,41 @@ fn snapshots(s: &Local) -> Result<Vec<Snapshot>> {
     result.sort_by_key(|x| (x.sequence, x.id));
     Ok(result)
 }
+
+/// The local snapshot metadata is its one visibility switch. Hold the job
+/// lock through the durable write so cancellation and stale retries cannot
+/// race a completed snapshot into view.
+fn publish_snapshot(
+    s: &Local,
+    id: Uuid,
+    prepared: Uuid,
+    commit: &str,
+    sequence: u64,
+    cancel: &Probe,
+) -> Result<()> {
+    let job = s.job.lock().unwrap();
+    ensure!(
+        !cancel.is_cancelled() && job.as_ref().is_some_and(|job| job.id == id),
+        "cancelled_or_stale_attempt"
+    );
+    let snap = Snapshot {
+        id,
+        repository: s.repository.clone(),
+        commit: commit.to_owned(),
+        prepared,
+        sequence,
+    };
+    crate::incremental::atomic_write(
+        &s.data
+            .join("snapshots")
+            .join(id.to_string())
+            .join("snapshot.json"),
+        &serde_json::to_vec(&snap)?,
+    )?;
+    drop(job);
+    Ok(())
+}
+
 fn run(
     s: Arc<Local>,
     prepared: Uuid,
@@ -286,22 +321,7 @@ fn run(
         )
         .map_err(|e| anyhow::anyhow!("invalid worker artifacts: {e}"))?;
         crate::naming::save_cache(&dir.join("names.json"), &adopted.names)?;
-        // Metadata is the visibility boundary. Cancellation serializes with it.
-        let job = s.job.lock().unwrap();
-        ensure!(
-            !cancel.is_cancelled() && job.as_ref().is_some_and(|job| job.id == id),
-            "cancelled_or_stale_attempt"
-        );
-        let snap = Snapshot {
-            id,
-            repository: s.repository.clone(),
-            commit,
-            prepared,
-            sequence,
-        };
-        crate::incremental::atomic_write(&dir.join("snapshot.json"), &serde_json::to_vec(&snap)?)?;
-        drop(job);
-        Ok(())
+        publish_snapshot(&s, id, prepared, &commit, sequence, cancel.as_ref())
     })();
     let _ = std::fs::remove_dir_all(work);
     publish
@@ -648,4 +668,155 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
     eprintln!("Tolmap local: {origin} — committed source only; no upload");
     axum::serve(listener, axum::Router::new().fallback(handle).with_state(s)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local(data: PathBuf) -> Local {
+        Local {
+            checkout: PathBuf::new(),
+            data,
+            assets: PathBuf::new(),
+            origin: String::new(),
+            repository: "fixture-repository".into(),
+            prepared: Mutex::new(None),
+            job: Mutex::new(None),
+            notice: Mutex::new(String::new()),
+            attempt: Mutex::new(None),
+        }
+    }
+
+    fn complete_snapshot(data: &Path, id: Uuid, prepared: Uuid, commit: &str) -> Snapshot {
+        let dir = data.join("snapshots").join(id.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("map.json"), format!("map:{commit}")).unwrap();
+        std::fs::write(dir.join("symbols.json"), format!("symbols:{commit}")).unwrap();
+        let source = data
+            .join("prepared")
+            .join(prepared.to_string())
+            .join("source.git");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("revision"), commit).unwrap();
+        let snapshot = Snapshot {
+            id,
+            repository: "fixture-repository".into(),
+            commit: commit.into(),
+            prepared,
+            sequence: 1,
+        };
+        crate::incremental::atomic_write(
+            &dir.join("snapshot.json"),
+            &serde_json::to_vec(&snapshot).unwrap(),
+        )
+        .unwrap();
+        snapshot
+    }
+
+    fn assert_previous_complete(s: &Local, previous: &Snapshot) {
+        let visible = snapshots(s).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, previous.id);
+        assert_eq!(visible[0].commit, previous.commit);
+        let dir = s.data.join("snapshots").join(previous.id.to_string());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("map.json")).unwrap(),
+            format!("map:{}", previous.commit)
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("symbols.json")).unwrap(),
+            format!("symbols:{}", previous.commit)
+        );
+        let source = s
+            .data
+            .join("prepared")
+            .join(previous.prepared.to_string())
+            .join("source.git/revision");
+        assert_eq!(std::fs::read_to_string(source).unwrap(), previous.commit);
+    }
+
+    fn staged_artifacts(data: &Path, id: Uuid, commit: &str) {
+        let dir = data.join("snapshots").join(id.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("map.json"), format!("partial-map:{commit}")).unwrap();
+        std::fs::write(
+            dir.join("symbols.json"),
+            format!("partial-symbols:{commit}"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn interrupted_staging_is_ignored_after_reopen_and_keeps_map_source_symbols_together() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        std::fs::create_dir_all(data.join("snapshots")).unwrap();
+        let previous = complete_snapshot(&data, Uuid::new_v4(), Uuid::new_v4(), "old-commit");
+        staged_artifacts(&data, Uuid::new_v4(), "crashed-commit");
+
+        // A restarted local server reconstructs visible history only from
+        // complete snapshot metadata; abandoned partial artifacts are inert.
+        let reopened = local(data);
+        assert_previous_complete(&reopened, &previous);
+    }
+
+    #[test]
+    fn cancelled_local_job_cannot_publish_and_preserves_previous_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        std::fs::create_dir_all(data.join("snapshots")).unwrap();
+        let previous = complete_snapshot(&data, Uuid::new_v4(), Uuid::new_v4(), "old-commit");
+        let id = Uuid::new_v4();
+        let prepared = Uuid::new_v4();
+        staged_artifacts(&data, id, "cancelled-commit");
+        let cancel = Arc::new(Probe {
+            stopped: AtomicBool::new(true),
+            pid: AtomicU32::new(0),
+        });
+        let s = local(data);
+        *s.job.lock().unwrap() = Some(Job {
+            id,
+            stage: "indexing".into(),
+            cancel: cancel.clone(),
+        });
+        assert!(publish_snapshot(&s, id, prepared, "cancelled-commit", 2, &cancel).is_err());
+        assert!(!s
+            .data
+            .join("snapshots")
+            .join(id.to_string())
+            .join("snapshot.json")
+            .exists());
+        assert_previous_complete(&s, &previous);
+    }
+
+    #[test]
+    fn stale_local_retry_cannot_publish_over_a_newer_job() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        std::fs::create_dir_all(data.join("snapshots")).unwrap();
+        let previous = complete_snapshot(&data, Uuid::new_v4(), Uuid::new_v4(), "old-commit");
+        let stale = Uuid::new_v4();
+        let current = Uuid::new_v4();
+        let prepared = Uuid::new_v4();
+        staged_artifacts(&data, stale, "stale-commit");
+        let cancel = Arc::new(Probe {
+            stopped: AtomicBool::new(false),
+            pid: AtomicU32::new(0),
+        });
+        let s = local(data);
+        *s.job.lock().unwrap() = Some(Job {
+            id: current,
+            stage: "indexing".into(),
+            cancel: cancel.clone(),
+        });
+        assert!(publish_snapshot(&s, stale, prepared, "stale-commit", 2, &cancel).is_err());
+        assert!(!s
+            .data
+            .join("snapshots")
+            .join(stale.to_string())
+            .join("snapshot.json")
+            .exists());
+        assert_previous_complete(&s, &previous);
+    }
 }

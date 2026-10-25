@@ -1118,33 +1118,119 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("store.sqlite");
         let store = Store::open(&db).unwrap();
-        let old_path = dir.path().join("old.json");
+        let old_dir = dir.path().join("snapshots/old");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let old_path = old_dir.join("map.json");
         std::fs::write(&old_path, b"old complete map").unwrap();
+        std::fs::write(old_dir.join("symbols.json"), b"old complete symbols").unwrap();
+        let old_source = dir.path().join("prepared/old/source-revision");
+        std::fs::create_dir_all(old_source.parent().unwrap()).unwrap();
+        std::fs::write(&old_source, b"old commit").unwrap();
         let old = row("o/a", "old", "2026-01-01", &old_path);
-        store.publish(&old, &NameCache::new(), None).unwrap();
+        let old_names = NameCache::from([(
+            "old-fingerprint".into(),
+            CacheEntry {
+                name: "old district".into(),
+                district: 0,
+                size: 1,
+                namer: "idf".into(),
+                numbered: false,
+            },
+        )]);
+        store.publish(&old, &old_names, None).unwrap();
         let mut job = job_row("a", 1);
         job.status = "running".into();
         job.epoch = 2;
         store.insert_job(&job).unwrap();
-        let staged = dir.path().join("new.json");
-        std::fs::write(&staged, b"new complete map").unwrap();
+        let staged_dir = dir.path().join("snapshots/new");
+        std::fs::create_dir_all(&staged_dir).unwrap();
+        let staged = staged_dir.join("map.json");
+        std::fs::write(&staged, b"new partial map").unwrap();
+        std::fs::write(staged_dir.join("symbols.json"), b"new partial symbols").unwrap();
+        let new_source = dir.path().join("prepared/new/source-revision");
+        std::fs::create_dir_all(new_source.parent().unwrap()).unwrap();
+        std::fs::write(&new_source, b"new commit").unwrap();
         let next = row("o/a", "new", "2026-01-02", &staged);
+        let new_names = NameCache::from([(
+            "new-fingerprint".into(),
+            CacheEntry {
+                name: "new district".into(),
+                district: 0,
+                size: 1,
+                namer: "idf".into(),
+                numbered: false,
+            },
+        )]);
         // Crash before the switch: staged bytes have no visible row.
         assert!(store.get("o/a", "new").unwrap().is_none());
-        assert!(store
-            .publish(&next, &NameCache::new(), Some(("a", 1)))
-            .is_err());
-        store.finish_job("a", "failed", "{}").unwrap();
-        assert!(store
-            .publish(&next, &NameCache::new(), Some(("a", 2)))
-            .is_err());
         drop(store);
+        let restarted = Store::open(&db).unwrap();
+        assert_eq!(restarted.latest("o/a").unwrap().unwrap().commit, "old");
+        assert!(restarted
+            .publish(&next, &new_names, Some(("a", 1)))
+            .is_err());
+        restarted.finish_job("a", "failed", "{}").unwrap();
+        assert!(restarted
+            .publish(&next, &new_names, Some(("a", 2)))
+            .is_err());
+        drop(restarted);
         let restored = Store::open(&db).unwrap();
         let visible = restored.latest("o/a").unwrap().unwrap();
         assert_eq!(visible.commit, "old");
+        assert_eq!(visible.map_path, old_path);
         assert_eq!(
-            std::fs::read(visible.map_path).unwrap(),
+            std::fs::read(&visible.map_path).unwrap(),
             b"old complete map"
+        );
+        assert_eq!(
+            std::fs::read(old_dir.join("symbols.json")).unwrap(),
+            b"old complete symbols"
+        );
+        assert_eq!(std::fs::read(old_source).unwrap(), b"old commit");
+        let names = restored.load_names("o/a").unwrap();
+        assert!(names.contains_key("old-fingerprint"));
+        assert!(!names.contains_key("new-fingerprint"));
+    }
+
+    #[test]
+    fn warm_start_candidates_are_scoped_to_the_full_owner_repository_slug() {
+        let (dir, store) = temp_store();
+        let owner_a_path = dir.path().join("owner-a.json");
+        let owner_b_path = dir.path().join("owner-b.json");
+        std::fs::write(&owner_a_path, b"owner a").unwrap();
+        std::fs::write(&owner_b_path, b"owner b").unwrap();
+        let mut owner_a = row("owner-a/repo", "commit-a", "2026-01-01", &owner_a_path);
+        owner_a.owner = "owner-a".into();
+        owner_a.repo = "repo".into();
+        let mut owner_b = row("owner-b/repo", "commit-b", "2026-01-02", &owner_b_path);
+        owner_b.owner = "owner-b".into();
+        owner_b.repo = "repo".into();
+        store.insert(&owner_a).unwrap();
+        store.insert(&owner_b).unwrap();
+
+        assert_eq!(
+            store
+                .warm_start_source("owner-a/repo", Some("main"))
+                .unwrap()
+                .unwrap()
+                .commit,
+            "commit-a"
+        );
+        assert_eq!(
+            store
+                .warm_start_source("owner-b/repo", Some("main"))
+                .unwrap()
+                .unwrap()
+                .commit,
+            "commit-b"
+        );
+        assert_eq!(
+            store.warm_start_candidates("owner-a/repo").unwrap().len(),
+            1
+        );
+        assert_eq!(
+            store.warm_start_candidates("owner-b/repo").unwrap().len(),
+            1
         );
     }
 
