@@ -50,6 +50,9 @@ async function assertPhoneActionAndControls(page,width,height){
  }
  return{detent:await page.locator('[data-phone-sheet]').getAttribute('data-detent'),sourceAction:actionBox,controlColumnVisible:count>0,controlCount:count};
 }
+async function matchStyle(locator){
+ return locator.evaluate(el=>{const style=getComputedStyle(el),text=el.querySelector('span')??el;return{background:style.backgroundColor,color:getComputedStyle(text).color,outlineStyle:style.outlineStyle,outlineWidth:style.outlineWidth,outlineColor:style.outlineColor};});
+}
 async function copySelection(page, expected){
  await page.locator('.cm-content').focus();
  await page.waitForFunction(value=>window.getSelection()?.toString()===value,expected);
@@ -103,7 +106,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[1280,900]])for(const
  const content=page.locator('.cm-content');await content.focus();const rangeContrast=await inspectReaderContrast(page);
  await page.keyboard.press('Control+Home');for(let i=0;i<4;i++)await page.keyboard.press('Shift+ArrowRight');
  const selectionMatch=page.locator('.cm-selectionMatch').first();await selectionMatch.waitFor();
- const selectionMatchColors=await selectionMatch.evaluate(el=>{const text=el.querySelector('span')??el;return{background:getComputedStyle(el).backgroundColor,color:getComputedStyle(text).color};});
+ const selectionMatchColors=await matchStyle(selectionMatch);
  const selectionMatchContrast=contrast(selectionMatchColors.background,selectionMatchColors.color);assert(selectionMatchContrast>=4.5,JSON.stringify({selectionMatchColors,selectionMatchContrast}));
  await page.keyboard.type('cannot edit');
  assert.equal(await page.locator('.cm-content').innerText(),original);
@@ -114,7 +117,11 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[1280,900]])for(const
  const findTargets=await inspectFindTargets(page);
  const search=page.locator('.cm-search input[name=search]');await search.fill('def');await page.locator('.cm-search button[name=next]').click();
  assert(await page.locator('.cm-search').isVisible());const activeMatch=page.locator('.cm-searchMatch-selected').first();await activeMatch.waitFor();
- const activeMatchColors=await activeMatch.evaluate(el=>{const text=el.querySelector('span')??el;return{background:getComputedStyle(el).backgroundColor,color:getComputedStyle(text).color};});
+ const activeMatchColors=await matchStyle(activeMatch);
+ const otherMatchColors=await matchStyle(page.locator('.cm-searchMatch:not(.cm-searchMatch-selected)').first());
+ assert.notDeepEqual(activeMatchColors,otherMatchColors,'current Find match must differ from other matches');
+ assert.notDeepEqual(activeMatchColors,selectionMatchColors,'current Find match must differ from selected-word matches');
+ assert.equal(activeMatchColors.outlineStyle,'solid');assert(parseFloat(activeMatchColors.outlineWidth)>=2);
  const activeMatchContrast=contrast(activeMatchColors.background,activeMatchColors.color);assert(activeMatchContrast>=4.5,JSON.stringify({activeMatchColors,activeMatchContrast}));
  const findScreenshot=`reader-find-${width}x${height}-${colorScheme}.png`;await page.screenshot({path:`../reader-evidence/${findScreenshot}`,animations:'disabled'});
  await search.fill('no_such_fixture_739');await page.locator('.cm-search button[name=next]').click();
@@ -174,7 +181,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[1280,900]])for(const
   await page.getByRole('button',{name:'Read selected source'}).click();await page.locator('.cm-content').waitFor();await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));assert.equal(new URL(page.url()).searchParams.get('file'),file);
  }
  assert.deepEqual(errors,[]);assert.deepEqual(outbound,[],'private local journey attempted outbound request');
- results.push({width,height,colorScheme,rangeContrast,selectionMatchContrast,activeMatchContrast,findTargets,findScreenshot,deepLinkedRange,phoneControls,images:[`local-${width}-${colorScheme}.png`,`map-source-action-${width}-${colorScheme}.png`,`reader-${width}-${colorScheme}.png`,findScreenshot],passed:true,reviewStatus:'unreviewed candidate',device:'Chromium emulation',browser:browser.version()});await context.close();
+ results.push({width,height,colorScheme,rangeContrast,selectionMatchContrast,activeMatchContrast,matchStyles:{selection:selectionMatchColors,current:activeMatchColors,other:otherMatchColors},findTargets,findScreenshot,deepLinkedRange,phoneControls,images:[`local-${width}-${colorScheme}.png`,`map-source-action-${width}-${colorScheme}.png`,`reader-${width}-${colorScheme}.png`,findScreenshot],passed:true,reviewStatus:'unreviewed candidate',device:'Chromium emulation',browser:browser.version()});await context.close();
 }
 fs.renameSync('../.local-reader/checkout','../.local-reader/moved-checkout');
 const movedPage=await browser.newPage();const afterCheckoutMove=await(await movedPage.request.get(`${browserOrigin}/api/maps/snapshot/${fixture.snapshotA}/source?commit=${fixture.a}&path=${encodeURIComponent(fixture.file)}`)).json();assert.equal(createHash('sha256').update(afterCheckoutMove.text).digest('hex'),fixture.sourceSha256,'saved A source changed after checkout move');await movedPage.close();

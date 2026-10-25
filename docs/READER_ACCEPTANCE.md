@@ -30,7 +30,7 @@ is older than this task; no deployment is authorized or performed here.
 | Prior candidate defect | Intended change / review focus | Automated evidence |
 | --- | --- | --- |
 | Phone Read selected source covered Zoom in | Action now belongs to the existing portrait/landscape selection sheet, retaining action ref and file/symbol range. Inspect Peek/Half card density and landscape sheet scroll; controls may hide when covered by the sheet. | Real local viewer action visibility/hit-testing and non-overlap at Peek and Half at 320×568 and 390×844, plus collapsed → toggle → action at 844×390, both themes. |
-| Default CM6 purple/blue unreadable on dark chrome; selected line nearly invisible | Reader-owned HighlightStyle retains grammar tags using theme-specific tokens; selection and selection-match colors clear the checked contrast thresholds. Inspect actual syntax, selected range and Find match in both themes. Plain-text fallback remains. | Rendered token text ≥4.5:1 on editor and selection backgrounds; selection background ≥1.5:1 from editor; active Find and selection-match text ≥4.5:1. |
+| Default CM6 purple/blue unreadable on dark chrome; selected line nearly invisible | Reader-owned HighlightStyle retains grammar tags using theme-specific tokens; the current Find match has an outline distinct from other matches and selected-word matches. Inspect actual syntax, selected range and Find match in both themes. Plain-text fallback remains. | Rendered token text ≥4.5:1 on editor and selection backgrounds; selection background ≥1.5:1 from editor; active Find and selection-match text ≥4.5:1; computed current-match style differs from both other highlight kinds. |
 | Small Find controls / Safari keyboard zoom risk | Inputs ≥16 px; labels/buttons/close ≥44 px; wrapping/scrolling panel; full reader follows visual viewport. Inspect keyboard, last match and safe areas on physical Safari. | Computed font/target dimensions; search match/miss; keyboard/focus/Back. Chromium cannot qualify the iOS keyboard. |
 | Find-open state absent from review screenshots; Escape did not dismiss Find from the reader header | Each profile now captures Find open with an active match; Escape closes Find first, then reading, and restores focus to the source action. | `reader-find-<width>x<height>-<theme>.png`, per-control dimensions, and two-step Escape/focus assertions in `reader-evidence/browser.json`. |
 
@@ -44,6 +44,24 @@ Actual local process CI adds A/B immutable source, refusal boundaries, map-only
 export, no-login and no non-loopback AF_INET/AF_INET6 connect; performance uses
 production >800 kB normal/long-line
 source, not the historical 20,032-byte screenshot as a performance proxy.
+
+The performance method now uses 14 mount/destroy cycles per file, excluding the
+first two as warmup. After teardown it waits two animation frames plus idle,
+forces CDP GC, records heap and probes live DIV objects for detached editor roots.
+All probe handles are released each cycle. The artifact reports a least-squares
+warm-cycle slope, residuals and an explicit plateau/growth classification rule;
+that observation heuristic is not an acceptance SLA or proof about leaks.
+The old `65f135d` three-cycle heap series grew monotonically and cannot qualify
+this revision. New measurements and retention counts still require review.
+
+The old npm consumer run `40172284928` timed out during local indexing while
+native reader CI passed. Its cause remains open. CI now records stage/process
+CPU observations, prepared/job state, bounded logs and worker-write tails on
+timeout (`reader-index-timeout-<node>.json`). A separate packaged `dump-graph`
+probe measures each large source with and without write tracing, bounded to
+30 seconds each (`reader-extraction-cost-<node>.json`). These fresh-process pairs
+diagnose extraction separately from reader load; a timeout is never a pass.
+The traced local acceptance journey and its polling bound remain in place.
 
 Review the exact new CI artifacts, not just green jobs. A reviewer must record
 source SHA, workflow/run ID, capture identity, image/hash, observed diff/reason,

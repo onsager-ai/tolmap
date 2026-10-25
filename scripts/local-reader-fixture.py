@@ -31,6 +31,55 @@ if os.environ.get('TOLMAP_TEST_WRITE_TRACE'):
 if os.environ.get('TOLMAP_TEST_NETWORK_TRACE'):
     local_args = ['strace','-f','-qq','-e','trace=connect','-s','256','-o',os.environ['TOLMAP_TEST_NETWORK_TRACE'],*local_args]
 p=subprocess.Popen(local_args,stdout=log,stderr=log,start_new_session=True)
+pathlib.Path('reader-evidence').mkdir(exist_ok=True)
+index_timings=[]
+def descendants(parent):
+    seen=set();pending=[parent]
+    while pending:
+        current=pending.pop()
+        for children in pathlib.Path(f'/proc/{current}/task').glob('*/children'):
+            try:ids=[int(x) for x in children.read_text().split()]
+            except (FileNotFoundError,ProcessLookupError):continue
+            for pid in ids:
+                if pid not in seen:seen.add(pid);pending.append(pid)
+    return seen
+def bounded_tail(path,limit=2048):
+    try:
+        with path.open('rb') as stream:
+            stream.seek(max(0,path.stat().st_size-limit))
+            return stream.read(limit).decode(errors='replace')
+    except OSError as error:return str(error)
+def process_state():
+    rows=[]
+    for pid in sorted({p.pid,*descendants(p.pid)})[:24]:
+        try:
+            fields=pathlib.Path(f'/proc/{pid}/stat').read_text().split()
+            rows.append({'pid':pid,'parent':int(fields[3]),'state':fields[2],
+                         'cpuSeconds':(int(fields[13])+int(fields[14]))/os.sysconf('SC_CLK_TCK'),
+                         'argv':pathlib.Path(f'/proc/{pid}/cmdline').read_bytes()[:500].replace(b'\0',b' ').decode(errors='replace')})
+        except (OSError,ValueError):pass
+    return rows
+def index_diagnostics(prepared,text,elapsed,observations):
+    logs={'service.log':bounded_tail(root/'service.log')};entries=[]
+    for current,dirs,files in os.walk(root/'store'):
+        dirs.sort();files.sort();directory=pathlib.Path(current)
+        entries.append(str(directory.relative_to(root)))
+        for name in files:
+            if len(logs)<12 and (name.endswith(('.log','.json')) or 'stderr' in name or 'status' in name):
+                path=directory/name;logs[str(path.relative_to(root))]=bounded_tail(path)
+        if len(entries)>=60:break
+    trace=os.environ.get('TOLMAP_TEST_WRITE_TRACE')
+    if trace:logs['worker-write-trace-tail']=bounded_tail(pathlib.Path(trace))
+    stage=re.search(rb'<h2>Indexing</h2><p>(.*?)</p>',text)
+    evidence={'reason':'index timeout','elapsedSeconds':elapsed,'prepared':prepared,
+              'preparedPresent':(root/'store/prepared'/prepared).is_dir(),
+              'lastStage':stage.group(1).decode(errors='replace') if stage else None,
+              'lastPageTail':text[-1800:].decode(errors='replace'),'processes':process_state(),
+              'observations':observations,'straceWriteWrapper':bool(trace),
+              'straceNetworkWrapper':bool(os.environ.get('TOLMAP_TEST_NETWORK_TRACE')),
+              'storeDirectories':entries,'logs':logs}
+    (root/'index-diagnostics.json').write_text(json.dumps(evidence,indent=2))
+    pathlib.Path('reader-evidence/index-diagnostics.json').write_text(json.dumps(evidence,indent=2))
 def req(path,post=False,headers=None):
     r=urllib.request.Request(origin+path,data=b'' if post else None,headers={'Origin':origin,**(headers or {})})
     try:
@@ -50,13 +99,25 @@ def prepare():
     prepared=re.search(rb'action=/local/index\?id=([a-f0-9-]+)',body).group(1).decode()
     return prepared,body
 def index_prepared(prepared):
+    started=time.monotonic();observations=[]
     code,body,_=req('/local/index?id='+prepared,True);assert code==200,(code,body[:200])
-    for _ in range(900):
+    for poll in range(900):
         text=req('/')[1]
+        if poll%100==0:
+            stage=re.search(rb'<h2>Indexing</h2><p>(.*?)</p>',text)
+            observations.append({'elapsedSeconds':time.monotonic()-started,
+                                 'stage':stage.group(1).decode(errors='replace') if stage else None,
+                                 'processes':process_state()})
         if b'Cancel indexing' not in text and b'Snapshot saved.' in text:break
         if b'Indexing failed or was cancelled.' in text:raise AssertionError(('indexing failed',text[-1000:]))
         time.sleep(.1)
-    else:raise AssertionError('index timeout')
+    else:
+        index_diagnostics(prepared,text,time.monotonic()-started,observations)
+        raise AssertionError('index timeout; see reader-evidence/index-diagnostics.json')
+    index_timings.append({'prepared':prepared,'elapsedSeconds':time.monotonic()-started,'observations':observations,
+                          'scope':'whole local index including extraction/blend/layout/publication; not reader load'})
+    pathlib.Path('reader-evidence/index-timings.json').write_text(json.dumps(index_timings,indent=2))
+    (root/'index-timings.json').write_text(json.dumps(index_timings,indent=2))
     paths=re.findall(rb'href=/snapshot/([a-f0-9-]+)',text)
     assert paths,('no snapshot published', (root/'service.log').read_text()[-3000:],text[-1500:])
     return {x.decode() for x in paths}
@@ -64,8 +125,13 @@ prepared_a,confirm_a=prepare();assert b'Confirm analysis scope' in confirm_a and
 git('rm','-r','-f','shop');git('rm','-f','pyproject.toml');git('commit','-m','no supported source')
 code,failed_detection,_=req('/local/refresh',True);assert code==200 and b'Source detection failed' in failed_detection
 assert b'action=/local/index?id='+prepared_a.encode() in failed_detection and a.encode() in failed_detection,failed_detection[-1200:]
-git('reset','--hard',a);(repo/'untracked-local.py').unlink(missing_ok=True)
+git('reset','--hard',a)
+# Keep both changes present through indexing, after the deliberate detection
+# failure changed the checkout. Prepared A must read only immutable Git objects.
+(repo/'shop/cart.py').write_text(committed_source+'\n# UNCOMMITTED_TRACKED_739\n')
+assert 'shop/cart.py' in git('status','--porcelain') and (repo/'untracked-local.py').exists()
 first=index_prepared(prepared_a);assert len(first)==1;sid=next(iter(first));base='/api/maps/snapshot/'+sid
+assert 'UNCOMMITTED_TRACKED_739' in (repo/'shop/cart.py').read_text() and (repo/'untracked-local.py').exists()
 provenance=get(base+'/provenance');assert provenance['commit']==a
 original=get(base+'/source?path=shop/cart.py&commit='+a);assert original['status']=='ready'
 assert original['text']==committed_source,'dirty tracked source was included in snapshot A'
@@ -82,6 +148,7 @@ assert get('/api/maps')==[] and get('/maps/index.json')==[]
 export=get(base+'/artifact');assert export==json.loads((root/'store/snapshots'/sid/'map.json').read_text())
 assert export['F'] and 'text' not in export and original['text'] not in json.dumps(export)
 (repo/'shop/cart.py').write_text(committed_source+'\n# committed B\n')
+(repo/'untracked-local.py').unlink()
 (repo/'shop/__init__.py').unlink();(repo/'pyproject.toml').unlink()
 git('add','-A');git('commit','-m','B');b=git('rev-parse','HEAD')
 prepared_b,confirm_b=prepare();assert b'Python at .' in confirm_b and b'low confidence' in confirm_b,confirm_b[-1200:]
@@ -101,16 +168,6 @@ assert get(base+'/source?path=shop/cart.py')['text']==original['text']
 # Pause the actual engine child, then require cancellation to kill/reap it
 # rather than waiting for stdout to reach EOF. Retry only if observation missed
 # the tiny fixture; a missed worker is never a cancellation pass.
-def descendants(parent):
-    seen=set();pending=[parent]
-    while pending:
-        current=pending.pop()
-        for children in pathlib.Path(f'/proc/{current}/task').glob('*/children'):
-            try:ids=[int(x) for x in children.read_text().split()]
-            except FileNotFoundError:continue
-            for pid in ids:
-                if pid not in seen:seen.add(pid);pending.append(pid)
-    return seen
 for attempt in range(5):
     body=req('/')[1];prepared=re.search(rb'action=/local/index\?id=([a-f0-9-]+)',body).group(1).decode()
     req('/local/index?id='+prepared,True)

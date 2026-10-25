@@ -8,19 +8,46 @@ const sourceSha=runEvent.pull_request?.head?.sha??process.env.GITHUB_SHA??null;
 const baseSha=runEvent.pull_request?.base?.sha??null;
 const testedSha=process.env.GITHUB_SHA??null;
 const browser=await chromium.launch({headless:true});
-const samples=[];
+const samples=[],summaries=[];
+const cycles=14,warmupCycles=2;
+const classificationRule='Observation heuristic, not an SLA: linear growth observed when the warm-cycle least-squares slope exceeds max(65536 bytes/cycle, 1% of mean warm after-destroy heap/cycle); otherwise plateau observed at this resolution. Inspect residuals and retention counts; neither label proves leak presence or absence.';
+function summarize(file){
+ const warm=samples.filter(s=>s.file===file&&!s.warmup);
+ const mean=values=>values.reduce((a,b)=>a+b,0)/values.length;
+ const x=mean(warm.map(s=>s.iteration)),y=mean(warm.map(s=>s.afterDestroyHeap));
+ const slope=warm.reduce((sum,s)=>sum+(s.iteration-x)*(s.afterDestroyHeap-y),0)/warm.reduce((sum,s)=>sum+(s.iteration-x)**2,0);
+ const residualRms=Math.sqrt(mean(warm.map(s=>(s.afterDestroyHeap-(y+slope*(s.iteration-x)))**2)));
+ const threshold=Math.max(65536,y*.01);
+ return{file,cycles,warmupCycles,measuredCycles:warm.length,meanAfterDestroyHeap:y,slopeBytesPerCycle:slope,residualRmsBytes:residualRms,thresholdBytesPerCycle:threshold,classification:slope>threshold?'linear growth observed':'plateau observed',maxDetachedEditors:Math.max(...warm.map(s=>s.retention.detachedEditors)),maxConnectedEditorsAfterDestroy:Math.max(...warm.map(s=>s.retention.connectedEditors)),classificationRule};
+}
 try {
  const page=await browser.newPage({viewport:{width:1280,height:900},reducedMotion:'reduce'});
  const cdp=await page.context().newCDPSession(page);
  await cdp.send('Performance.enable');
- const heap=async()=>{await cdp.send('HeapProfiler.collectGarbage');return (await cdp.send('Performance.getMetrics')).metrics.find(m=>m.name==='JSHeapUsedSize')?.value??null;};
+ const settle=()=>page.evaluate(async()=>{
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  await new Promise(r=>{if('requestIdleCallback' in window)requestIdleCallback(()=>r(),{timeout:100});else setTimeout(r,50);});
+ });
+ const heap=async()=>{await cdp.send('HeapProfiler.collectGarbage');const value=(await cdp.send('Performance.getMetrics')).metrics.find(m=>m.name==='JSHeapUsedSize')?.value;assert(Number.isFinite(value),'CDP heap metric missing');return value;};
+ // Query live DIV objects after GC, including detached roots unreachable by
+ // document.querySelector. Release handles so this probe cannot retain editors.
+ // This does not count non-DOM EditorView objects or process RSS.
+ const retention=async()=>{
+  const objectGroup='reader-retention';
+  try{
+   const {result:prototype}=await cdp.send('Runtime.evaluate',{expression:'HTMLDivElement.prototype',objectGroup});
+   const {objects}=await cdp.send('Runtime.queryObjects',{prototypeObjectId:prototype.objectId,objectGroup});
+   const {result}=await cdp.send('Runtime.callFunctionOn',{objectId:objects.objectId,functionDeclaration:'function(){let detachedEditors=0,connectedEditors=0;for(const el of this){if(el.classList?.contains("cm-editor")){if(el.isConnected)connectedEditors++;else detachedEditors++;}}return {detachedEditors,connectedEditors};}',returnByValue:true});
+   assert(result.value,'CDP retention probe missing');return result.value;
+  }finally{await cdp.send('Runtime.releaseObjectGroup',{objectGroup});}
+ };
  for(const file of ['shop/perf.py','shop/perf_long.py']) {
   await page.goto(`http://127.0.0.1:8988/snapshot/${fixture.snapshotA}?file=${file}`);
   await page.getByRole('button',{name:'Read selected source'}).waitFor();
   const source=await (await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}/source?path=${file}`)).json();
   assert(source.status==='ready'&&source.bytes>800000&&source.bytes<=1048576);
-  const baselineHeap=await heap();
-  for(let iteration=0;iteration<3;iteration++) {
+  await settle();const baselineHeap=await heap();
+  for(let iteration=0;iteration<cycles;iteration++) {
    const start=performance.now();
    await page.getByRole('button',{name:'Read selected source'}).click();
    await page.locator('.cm-content').waitFor();
@@ -40,9 +67,12 @@ try {
    await page.getByRole('button',{name:'Return to map'}).click();
    await page.waitForFunction(()=>!document.querySelector('.cm-editor'));
    const destroyMs=performance.now()-closeStart;
-   samples.push({file,bytes:source.bytes,lines:source.text.split('\n').length,longLine:source.long_line,iteration,loadMs,languageReadyMs,searchMs,scrollMs,destroyMs,baselineHeap,mountedHeap,afterDestroyHeap:await heap()});
+   await settle();const afterDestroyHeap=await heap();
+   samples.push({file,bytes:source.bytes,lines:source.text.split('\n').length,longLine:source.long_line,iteration,warmup:iteration<warmupCycles,loadMs,languageReadyMs,searchMs,scrollMs,destroyMs,baselineHeap,mountedHeap,afterDestroyHeap,retention:await retention()});
   }
+  summaries.push(summarize(file));
  }
- fs.writeFileSync('../reader-evidence/performance.json',JSON.stringify({sourceSha,baseSha,testedSha,runId:process.env.GITHUB_RUN_ID??null,browser:browser.version(),samples,scope:'Desktop Chromium CI; load includes API/React/automation; languageReady includes lazy grammar; scroll is two animation frames; heap is CDP after GC, not process RSS or leak proof; iteration 0 is first mount per file, later iterations warm. No phone/Safari performance claim.'},null,2));
- console.log(JSON.stringify(samples,null,2));
+ fs.mkdirSync('../reader-evidence',{recursive:true});
+ fs.writeFileSync('../reader-evidence/performance.json',JSON.stringify({sourceSha,baseSha,testedSha,runId:process.env.GITHUB_RUN_ID??null,browser:browser.version(),cycles,warmupCycles,classificationRule,summaries,samples,scope:'Desktop Chromium CI; load includes API/React/automation; languageReady includes lazy grammar; after destroy settles two animation frames plus idle before CDP GC. First two cycles are warmup. DIV queryObjects probe counts connected/detached cm-editor roots and releases handles each cycle; it cannot detect all non-DOM retention. Heap is not process RSS or proof of a leak. No phone/Safari performance claim.'},null,2));
+ console.log(JSON.stringify({summaries},null,2));
 } finally {await browser.close();}

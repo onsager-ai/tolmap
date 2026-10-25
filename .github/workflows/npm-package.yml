@@ -131,4 +131,6 @@ jobs:
           path: |
             ${{ runner.temp }}/tolmap-npm-artifact/consumer-result-*.json
             ${{ runner.temp }}/tolmap-npm-artifact/consumer-diagnostics-*.json
+            ${{ runner.temp }}/tolmap-npm-artifact/reader-extraction-cost-*.json
+            ${{ runner.temp }}/tolmap-npm-artifact/reader-index-timeout-*.json
           if-no-files-found: error

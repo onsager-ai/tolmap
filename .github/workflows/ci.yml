@@ -363,7 +363,8 @@ jobs:
         run: TOLMAP_TEST_NETWORK_TRACE="$PWD/.local-reader/network.log" TOLMAP_BINARY=bin/tolmap python3 scripts/local-reader-fixture.py
       - name: Production reader behavior and candidate captures
         run: cd web && node scripts/check-source-reader.mjs
-      - name: Measured large-file, long-line and reader lifecycle costs
+      - name: Measured large-file and long-line costs, 14 settled lifecycle cycles
+        timeout-minutes: 5
         run: cd web && node scripts/measure-source-reader.mjs
       - uses: actions/upload-artifact@v4
         if: always()

@@ -475,7 +475,8 @@ no login or upload and does not transition to Hub automatically.
 | Binary, symlink/submodule, over 1 MiB | Explicit refusal keeps selected map context. Inspect locally outside this reader; no truncated content is represented as complete. |
 
 CI exercises these recovery promises in `scripts/local-reader-fixture.py`: a
-dirty tracked edit and untracked file do not enter committed snapshot A; a
+dirty tracked edit and untracked file remain present through indexing but do
+not enter committed snapshot A; a
 detection failure leaves the prior prepared scope available; a low-confidence
 root is shown with its evidence before confirmation; and a failed indexing
 attempt keeps the prepared scope available for retry. The production browser
@@ -502,7 +503,10 @@ and protected long lines use plain text. Browser CI checks actual token contrast
 against the editor, control dimensions/hit testing, immutable links, read-only
 paste/drop, copy, focus, Back and unchanged map camera. The reader-evidence
 artifact separately records measured load, lazy grammar readiness, search,
-scroll and mount/destroy heap observations for >800 kB files. These are CI
+scroll and mount/destroy heap observations for >800 kB files over 14 cycles
+(two warmup), with settled GC, a heap slope and a
+detached-editor probe. The active Find match has its own outline, checked
+against other matches and selected-word highlights in both themes. These are CI
 Chromium measurements with automation overhead, not a Safari SLA or proof of
 absence of leaks. [READER_ACCEPTANCE.md](READER_ACCEPTANCE.md) owns revision and
 human/device handoff; [ACCESS.md](ACCESS.md) owns policy coverage boundaries.

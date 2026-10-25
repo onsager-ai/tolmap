@@ -12,6 +12,7 @@
 .source-editor .cm-search button{min-width:44px;min-height:44px;font-size:14px}
 .source-editor .cm-search button[name=close]{position:absolute;right:0;top:0}
 .source-editor .cm-editor .cm-searchMatch,.source-editor .cm-editor .cm-searchMatch-selected{background:var(--on);color:var(--chrome2)}
+.source-editor .cm-editor .cm-searchMatch-selected{outline:2px solid var(--accent);outline-offset:1px;border-radius:2px}
 .source-editor .cm-searchMatch span,.source-editor .cm-searchMatch-selected span{color:inherit!important}
 .source-editor .cm-selectionMatch,.source-editor .cm-selectionMatch span{background:var(--on);color:var(--chrome2)!important}
 .source-editor ::selection{background:var(--reader-selection-bg);color:var(--on)}

@@ -62,11 +62,17 @@ fn each_operation_has_an_independent_allow_and_deny_boundary() {
         owner.allowed.set(Some(operation));
         let warm_cache = Cell::new(0);
         assert_eq!(enforce(&owner, resource, || warm_cache.replace(1)), Ok(0));
-        for other in OPERATIONS.into_iter().filter(|candidate| *candidate != operation) {
+        for other in OPERATIONS
+            .into_iter()
+            .filter(|candidate| *candidate != operation)
+        {
             assert_eq!(
                 enforce(
                     &owner,
-                    Request { operation: other, ..resource },
+                    Request {
+                        operation: other,
+                        ..resource
+                    },
                     || warm_cache.set(9)
                 ),
                 Err(Denied),
@@ -152,7 +158,9 @@ fn untrusted_principal_and_guessed_resource_are_denied() {
         ..request(Operation::Read)
     };
     assert_eq!(
-        enforce(&owner, guessed_id, || panic!("guessed resource ID delivered bytes")),
+        enforce(&owner, guessed_id, || panic!(
+            "guessed resource ID delivered bytes"
+        )),
         Err(Denied)
     );
 }
@@ -187,7 +195,9 @@ fn revocation_between_admission_processing_events_and_publish_stops_later_action
     ] {
         owner.allowed.set(Some(operation));
         assert_eq!(
-            enforce(&owner, request(operation), || panic!("continued after revoke")),
+            enforce(&owner, request(operation), || panic!(
+                "continued after revoke"
+            )),
             Err(Denied)
         );
     }
