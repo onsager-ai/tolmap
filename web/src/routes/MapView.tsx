@@ -20,6 +20,13 @@ import { useLayoutProfile } from "@/hooks/useLayoutProfile";
 import { usePhoneMetrics } from "@/hooks/usePhoneMetrics";
 import { detentHeights, safeInsets, type Detent } from "@/map/phoneShell";
 import {
+  DESKTOP_GAP_PX,
+  DESKTOP_GUTTER_PX,
+  DESKTOP_PANEL_LEFT_PX,
+  DESKTOP_PANEL_SAFE_GAP_PX,
+  DESKTOP_PANEL_TOP_PX,
+  DESKTOP_PANEL_WIDTH_PX,
+  desktopControlSize,
   desktopSafeInsets,
   isPhoneShell,
   isTouchProfile,
@@ -1112,6 +1119,8 @@ export function MapView() {
   const panelTabLabel = activeDesktopView?.type === "overview"
     ? `Districts ${Object.values(doc.districts).filter((district) => districtClass(district) === "mainland").length.toLocaleString("en-US")}`
     : desktopPanelCrumbs(desktopViews, doc, `${owner}/${repo}`)[desktopViews.length - 1]?.label ?? "Map details";
+  const desktopNotesLeft = DESKTOP_PANEL_LEFT_PX + DESKTOP_PANEL_WIDTH_PX + DESKTOP_PANEL_SAFE_GAP_PX;
+  const desktopNotesRight = DESKTOP_GUTTER_PX + desktopControlSize(profile) + DESKTOP_GAP_PX;
   return (
     <div
       ref={mapAreaRef}
@@ -1123,8 +1132,18 @@ export function MapView() {
     >
       {mapCanvas}
       {sourceReader}
-      <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow={false} />
-      <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
+      <div
+        className="pointer-events-none absolute z-20 flex min-w-0 flex-col gap-2"
+        data-map-status-notes
+        style={{
+          left: `calc(${desktopNotesLeft}px + env(safe-area-inset-left, 0px))`,
+          top: `calc(${DESKTOP_PANEL_TOP_PX}px + env(safe-area-inset-top, 0px))`,
+          width: `min(380px, calc(100% - ${desktopNotesLeft + desktopNotesRight}px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)))`,
+        }}
+      >
+        <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} inline />
+        <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow={false} inline />
+      </div>
       <DesktopChrome
         catalogue={catalogue}
         doc={doc}
