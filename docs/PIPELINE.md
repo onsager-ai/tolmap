@@ -120,7 +120,7 @@ mass normalization, thresholds and naming-continuity rules are unchanged.
 `index_timing` observations record wall seconds and completed units outside maps.
 
 Service publication writes validated map and symbol artifacts into a unique,
-immutable directory, flushes them, then switches the map pointer and name cache
+immutable `<commit>-<job-id>-<publication-id>` directory, flushes them, then switches the map pointer and name cache
 in one SQLite transaction. Commit filenames remain full object IDs. The switch
 checks durable attempt epoch/status and serializes against registry cancellation.
 Same-host process results and remote-agent results converge on this same
@@ -128,7 +128,7 @@ Same-host process results and remote-agent results converge on this same
 complete-snapshot metadata switch.
 Failure before the switch leaves the last complete row readable; unreferenced
 crash leftovers are not snapshots. A process crash after the service renames
-`<commit>-<job-id>` into place but before SQLite commits can leave that
+`<commit>-<job-id>-<publication-id>` into place but before SQLite commits can leave that
 unreferenced directory behind; there is no startup garbage collector yet, so it
 is a disk leak until operator cleanup. Never infer that a directory is safe to
 delete without checking that no map row references it. Local publication uses
