@@ -126,8 +126,9 @@ async function copySelection(page, expected){
 }
 try{
 for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]])for(const colorScheme of ['light','dark']){
- const narrow=width<=820||height<=500;
- const context=await browser.newContext({viewport:{width,height},colorScheme,hasTouch:narrow,reducedMotion:'reduce',permissions:['clipboard-read','clipboard-write']});
+ // UX §9: tablets use the desktop map shell even when the reader is full width.
+ const phoneShell=width<=600||(height<=500&&width>height),touch=width<=1100||phoneShell;
+ const context=await browser.newContext({viewport:{width,height},colorScheme,hasTouch:touch,reducedMotion:'reduce',permissions:['clipboard-read','clipboard-write']});
  const outbound=[];await context.route('**/*',route=>{const url=new URL(route.request().url());if(url.protocol==='http:'&&url.hostname==='127.0.0.1'&&url.port==='8988')return route.continue();if(['data:','blob:'].includes(url.protocol))return route.continue();outbound.push(url.origin);return route.abort();});
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.addInitScript(()=>{window.readerInitialHistoryLength=history.length;window.readerHistory=[{kind:'load',url:location.href,state:history.state}];for(const kind of ['pushState','replaceState']){const original=history[kind].bind(history);history[kind]=(...args)=>{original(...args);window.readerHistory.push({kind,url:location.href,state:history.state});};}addEventListener('popstate',()=>window.readerHistory.push({kind:'pop',url:location.href,state:history.state}));});
@@ -147,7 +148,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  const before=await cameraBoxes(page);
  const sourceAction=page.getByRole('button',{name:'Read selected source'});
  let phoneControls=[];
- if(narrow&&height>500){
+ if(phoneShell&&height>500){
   await page.locator('[data-phone-sheet][data-detent="peek"]').waitFor();phoneControls.push(await assertPhoneActionAndControls(page,width,height));assert.equal(phoneControls.at(-1).controlCount,4,'Peek should leave all four map controls visible');
   await page.locator('[data-sheet-grabber]').click();await page.locator('[data-phone-sheet][data-detent="half"]').waitFor();phoneControls.push(await assertPhoneActionAndControls(page,width,height));
   assert.equal(phoneControls.at(-1).controlCount,width===320?0:4,'map controls should hide only when the short Half sheet covers them');
@@ -164,7 +165,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
   phoneControls.push(await assertPhoneActionAndControls(page,width,height));assert.equal(phoneControls.at(-1).controlCount,5,'landscape side sheet should expose the four map controls and sheet toggle');
  }
  await page.screenshot({path:`../reader-evidence/map-source-action-${width}-${colorScheme}.png`,animations:'disabled'});
- if(narrow)await sourceAction.tap();else await sourceAction.click();
+ if(touch)await sourceAction.tap();else await sourceAction.click();
  await page.locator('.cm-content').waitFor();
  assert.equal(await page.locator('.cm-content').getAttribute('contenteditable'),'false');
  const original=await page.locator('.cm-content').innerText();
@@ -217,7 +218,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));
  assert(new URL(page.url()).searchParams.get('file')===fixture.file);await settleCamera(page);assert.deepEqual(await cameraBoxes(page),before);
  await page.goto(base+'&read=true&line=2.5&end=4.5');await page.locator('.cm-content').waitFor();
- if(narrow)assert.equal(await page.evaluate(()=>history.length-window.readerInitialHistoryLength),2,'selection and reader must create distinct native history entries');
+ if(phoneShell)assert.equal(await page.evaluate(()=>history.length-window.readerInitialHistoryLength),2,'selection and reader must create distinct native history entries');
  await page.reload();await page.locator('.cm-content').waitFor();await page.waitForFunction(()=>!!document.querySelector('.cm-content .cm-line span[class]'));await page.locator('.cm-selectionBackground').first().waitFor();
  await page.locator('.cm-content').focus();const deepLinkedRange=await inspectReaderContrast(page);
  assert((await page.locator('.source-provenance').first().innerText()).includes(fixture.a));
