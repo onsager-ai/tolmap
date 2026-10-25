@@ -546,10 +546,18 @@ fn freshness(
     let state = match request.map(|job| job.status) {
         Some(JobStatus::Queued) => S::Queued,
         Some(JobStatus::Failed) => S::Failed,
-        Some(JobStatus::Done) if indexed_commit.is_some() && indexed_commit == requested_commit => {
-            S::Complete
+        Some(JobStatus::Done)
+            if indexed_commit.is_some()
+                && requested_commit
+                    .as_ref()
+                    .is_some_and(|requested| indexed_commit.as_ref() != Some(requested)) =>
+        {
+            S::Stale
         }
-        Some(JobStatus::Done) => S::Stale,
+        // A completed default-branch request may have no resolved commit in
+        // its job snapshot. Unknown is not evidence that the indexed map is
+        // stale; only two known, different commits can establish that.
+        Some(JobStatus::Done) => S::Complete,
         Some(_) => S::Indexing,
         None if indexed_commit.is_some() => S::Complete,
         None => S::Stale,
@@ -568,6 +576,99 @@ fn freshness(
 #[cfg(test)]
 mod freshness_tests {
     use super::*;
+
+    fn request(
+        status: JobStatus,
+        commit: Option<&str>,
+        error: Option<&str>,
+        error_code: Option<&str>,
+    ) -> JobSnapshot {
+        JobSnapshot {
+            job_id: Uuid::new_v4(),
+            slug: "owner/repo".into(),
+            commit: commit.map(str::to_owned),
+            status,
+            stage: "test".into(),
+            queue_position: None,
+            started_at: "now".into(),
+            finished_at: None,
+            error: error.map(str::to_owned),
+            error_code: error_code.map(str::to_owned),
+            progress: None,
+            eta: None,
+            eta_start_s: None,
+            elapsed_s: 0.0,
+            stages: Vec::new(),
+            map_ready: false,
+        }
+    }
+
+    #[test]
+    fn queued_and_indexing_requests_report_their_work_state() {
+        assert_eq!(
+            freshness(
+                Some("old".into()),
+                Some(&request(JobStatus::Queued, Some("new"), None, None)),
+            )
+            .state,
+            crate::schema::FreshnessState::Queued
+        );
+        assert_eq!(
+            freshness(
+                Some("old".into()),
+                Some(&request(JobStatus::Indexing, Some("new"), None, None)),
+            )
+            .state,
+            crate::schema::FreshnessState::Indexing
+        );
+    }
+
+    #[test]
+    fn failed_request_keeps_reason_and_retryability() {
+        let value = freshness(
+            Some("old".into()),
+            Some(&request(
+                JobStatus::Failed,
+                Some("new"),
+                Some("worker stopped"),
+                Some("worker_lost"),
+            )),
+        );
+        assert_eq!(value.state, crate::schema::FreshnessState::Failed);
+        assert_eq!(value.failure_reason.as_deref(), Some("worker stopped"));
+        assert_eq!(value.failure_code.as_deref(), Some("worker_lost"));
+        assert!(value.retryable);
+    }
+
+    #[test]
+    fn completed_request_is_complete_for_matching_or_unknown_commit() {
+        let matching = freshness(
+            Some("same".into()),
+            Some(&request(JobStatus::Done, Some("same"), None, None)),
+        );
+        assert_eq!(matching.state, crate::schema::FreshnessState::Complete);
+
+        let default_branch = freshness(
+            Some("indexed".into()),
+            Some(&request(JobStatus::Done, None, None, None)),
+        );
+        assert!(default_branch.requested_commit.is_none());
+        assert_eq!(
+            default_branch.state,
+            crate::schema::FreshnessState::Complete
+        );
+    }
+
+    #[test]
+    fn a_known_different_request_marks_the_saved_snapshot_stale() {
+        let value = freshness(
+            Some("indexed".into()),
+            Some(&request(JobStatus::Done, Some("requested"), None, None)),
+        );
+        assert_eq!(value.state, crate::schema::FreshnessState::Stale);
+        assert_eq!(value.requested_commit.as_deref(), Some("requested"));
+    }
+
     #[test]
     fn a_saved_snapshot_alone_does_not_invent_a_requested_commit() {
         let value = freshness(Some("old".into()), None);
