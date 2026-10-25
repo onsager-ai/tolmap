@@ -43,7 +43,9 @@ try {
     await first.focus(); await page.keyboard.press('ArrowDown');
     assert.equal(await page.getByRole('textbox',{name:'Base commit',exact:true}).evaluate(e => e === document.activeElement),true,'arrow navigation');
     await panel.getByRole('heading',{name:'Change impact',exact:true}).scrollIntoViewIfNeeded();
-    await page.screenshot({path:`shots/comparison/${profile}.png`});
+    await page.screenshot({path:`shots/comparison/${profile}-form.png`});
+    await panel.getByText('Structural signal:',{exact:false}).scrollIntoViewIfNeeded();
+    await page.screenshot({path:`shots/comparison/${profile}-result.png`});
     const link = panel.locator('li').filter({has:page.getByRole('button',{name:paths[0],exact:true})}).getByRole('link',{name:'head source'});
     await link.click();
     await page.locator('.cm-content').getByText('COMPARISON_SOURCE = 1').waitFor();
