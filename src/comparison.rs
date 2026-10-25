@@ -214,9 +214,9 @@ fn run_in_domain(
             tolmap_version: env!("CARGO_PKG_VERSION").into(),
             build_revision: BUILD_REVISION.into(),
             resolution: check::RESOLUTION,
-            prune: "node-relative".into(),
+            prune: crate::pipeline::PruneVariant::default().to_string(),
             seed: crate::SEED as u32,
-            refs: "hand".into(),
+            refs: crate::extract::RefsMode::default().to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(internal)?
