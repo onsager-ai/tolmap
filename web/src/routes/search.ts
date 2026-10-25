@@ -80,7 +80,7 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const max_districts = search.max_districts != null && Number.isSafeInteger(md) && md >= 0 ? md : undefined;
   const max_dq = search.max_dq != null && Number.isFinite(mq) && mq >= 0 ? mq : undefined;
   const report_only = search.report_only === true || search.report_only === "true";
-  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, read, line, end, compare, base, head, source_commit, max_districts, max_dq, report_only };
+  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, read, line, end, compare: compare || undefined, base, head, source_commit, max_districts, max_dq, report_only };
 }
 
 /** Search state for the /new progress route (see routes/IndexJobView.tsx).
