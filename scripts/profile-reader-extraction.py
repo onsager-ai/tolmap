@@ -19,6 +19,8 @@ sources = {
     "long": 'LONG = "' + 'x' * 900000 + 'PERF_NEEDLE_739"\n',
 }
 report = {"sha": os.environ.get("GITHUB_SHA"), "probeLimitSeconds": 30,
+          "releaseControlSha": "819306cea1b8cc1dc16ed9b03a6b3e9add0de70e",
+          "releaseControlRun": 40181067573,
           "profile": {"debug": "line-tables-only", "lto": "thin", "codegenUnits": 1,
                       "features": "default (no feature overrides)", "command": "cargo build --locked --release --bin tolmap"},
           "runs": []}

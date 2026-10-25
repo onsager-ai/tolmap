@@ -334,7 +334,6 @@ jobs:
 
   extraction-profile:
     name: bounded reader extraction profile
-    needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -343,6 +342,10 @@ jobs:
         with:
           name: ci-tolmap-binary
           path: bin
+          # This successful build has the identical pre-repair extraction
+          # source. Pin it so profiling need not wait for the full test gate.
+          run-id: 40181067573
+          github-token: ${{ github.token }}
       - run: chmod +x bin/tolmap
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
