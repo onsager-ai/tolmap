@@ -23,11 +23,16 @@ export function ComparisonPanel({ search, data, pending, refreshing, error, upda
 }) {
   const report = !error && !refreshing ? data?.report : undefined;
   const provenance = data?.provenance;
+  function href(path: string, commit: string) {
+    const query = comparisonQuery(search);
+    query.set("compare", "true"); query.set("file", path); query.set("read", "true"); query.set("source_commit", commit);
+    return `?${query}`;
+  }
   function files(items: CheckFile[]) {
     return <ul>{items.map(f => <li key={f.path}>
       <button className="impact-path" onClick={() => pick(f.base_path ?? f.path)}>{f.base_path ? `${f.base_path} → ` : ""}{f.path}</button>
       <small>{f.status}{f.placed ? " · placed by imports; no base footprint" : ""}</small>
-      <span className="impact-sides">{sourceSides(f, search.base!, search.head!).map(side => <a key={side.side} onClick={e => { if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey) { e.preventDefault(); read(side.path, side.commit); } }} href={`?${new URLSearchParams({ ...Object.fromEntries(comparisonQuery(search)), compare: "true", file: side.path, read: "true", source_commit: side.commit })}`}>{side.side} source</a>)}</span>
+      <span className="impact-sides">{sourceSides(f, search.base!, search.head!).map(side => <a key={side.side} onClick={e => { if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey) { e.preventDefault(); read(side.path, side.commit); } }} href={href(side.path, side.commit)}>{side.side} source</a>)}</span>
     </li>)}</ul>;
   }
   return <aside className="comparison-panel" aria-label="Change impact" onKeyDown={e => {
