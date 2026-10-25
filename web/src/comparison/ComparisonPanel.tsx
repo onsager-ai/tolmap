@@ -43,7 +43,7 @@ export function ComparisonPanel({ search, data, pending, refreshing, error, upda
     const i = controls.indexOf(document.activeElement as HTMLElement);
     if (i >= 0) { e.preventDefault(); controls[(i + (e.key === "ArrowDown" ? 1 : controls.length - 1)) % controls.length]?.focus(); }
   }}>
-    <header><h2>Change impact</h2><button aria-label="Close comparison" onClick={() => update({ compare: undefined, base: undefined, head: undefined, source_commit: undefined, read: undefined })}>Return to map</button></header>
+    <header><h2>Change impact</h2><button onClick={() => update({ compare: undefined, head: undefined, source_commit: undefined, read: undefined })}>Return to map</button></header>
     <form onSubmit={e => { e.preventDefault(); const form = new FormData(e.currentTarget); update({ compare: true, base: String(form.get("base")), head: String(form.get("head")), max_districts: form.get("max_districts") ? Number(form.get("max_districts")) : undefined, max_dq: form.get("max_dq") ? Number(form.get("max_dq")) : undefined, report_only: form.get("report_only") === "on", read: undefined, source_commit: undefined }); }}>
       <label>Base commit<input name="base" aria-label="Base commit" required pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.base ?? search.commit} /></label>
       <label>Head commit<input name="head" aria-label="Head commit" required pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.head} /></label>
