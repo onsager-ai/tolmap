@@ -80,7 +80,9 @@ store is scoped by its data root, owner and logical repository. Embedding hosts
 must construct the repository/access-domain identity from their trusted adapter,
 check current Policy before prior selection and every cache lookup/publication,
 and use `Cache::with_authority`; standalone filesystem authority is not a hosted
-provider grant. No cache hit authorizes access.
+provider grant. `cache_authority_revoked` from a cache read or write aborts the
+build before map publication; ordinary cache I/O failures remain logged misses
+or skipped writes. No cache hit authorizes access.
 
 Each content-addressed record includes path, content SHA-256, language, symbol
 collection mode, repository/domain, source selection/config digest, extractor
@@ -115,11 +117,22 @@ Service publication writes validated map and symbol artifacts into a unique,
 immutable directory, flushes them, then switches the map pointer and name cache
 in one SQLite transaction. Commit filenames remain full object IDs. The switch
 checks durable attempt epoch/status and serializes against registry cancellation.
+Same-host process results and remote-agent results converge on this same
+`Store::publish` switch. The private-checkout local viewer uses its own fenced
+complete-snapshot metadata switch.
 Failure before the switch leaves the last complete row readable; unreferenced
 crash leftovers are not snapshots. Local publication uses the existing complete
 snapshot metadata boundary, now flushed and fenced by the current local job ID.
 Source remains pinned to the immutable prepared Git revision in that metadata.
 An early map is explicitly provisional and never a complete snapshot.
+
+Extraction-cache transport is currently available to the local/loopback process
+worker, where the service copies a validated cache into that job's private
+output and adopts it with the completed snapshot. The remote-worker artifact
+protocol transfers map, symbols, names and index metadata, but not extraction
+records. Remote workers therefore perform a full extraction build; no remote
+cache reuse is claimed. This is a documented fallback until extraction records
+have an owner-scoped transport and the same validation and publication checks.
 
 `GET /api/maps/{owner}/{repo}/freshness?commit=<loaded-commit>` reports indexed
 and requested commits separately, queued/indexing/complete/failed/stale state,

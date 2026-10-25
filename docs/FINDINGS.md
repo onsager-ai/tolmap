@@ -3200,8 +3200,16 @@ full/cold/unchanged and for edited incremental/full on all three repositories.
 The edit appends a comment to an indexed file (real content hash/LOC change,
 not an mtime touch); semantic import changes are covered by the Rust test case.
 
-These measurements predate complete-publication and freshness integration;
-head CI, fault cases, generated bindings and viewer/Storybook evidence must be
-reported separately. Remote-worker cache transport and production provider
-authority are not established by this CLI benchmark. No fixtures were refreshed
-and no algorithm thresholds were relaxed.
+These measurements are pinned to `b693ebf077c67e2920e433f0d6eb620a6bb1694c`,
+not the final PR head, and remain single-run observations. Later commits add
+history provenance/reason reporting, keep the raw per-file key independent of
+the requested history revision, retain validated local/loopback extraction
+records with complete snapshots, and add atomic publication and freshness
+metadata. They do not change parsing, resolution, map algorithms, or the
+benchmark's same-revision cold/unchanged/edit workload; excluding history from
+the raw-file key only changes reuse across commits, which this benchmark does
+not exercise. The baseline is therefore evidence for that pinned workload, not
+a final-head timing claim. Head CI, publication fault cases, generated bindings
+and viewer/Storybook evidence must be reported separately. Remote-worker cache
+transport and production provider authority are not established by this CLI
+benchmark. No fixtures were refreshed and no algorithm thresholds were relaxed.
