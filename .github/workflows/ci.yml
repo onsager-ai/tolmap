@@ -332,6 +332,46 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  extraction-profile:
+    name: bounded reader extraction profile
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: bin
+      - run: chmod +x bin/tolmap
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: reader-profile-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-leiden-lib
+          path: ${{ env.LEIDEN_PREFIX }}/lib
+      - name: Install debugger
+        run: sudo apt-get update && sudo apt-get install -y gdb
+      - name: Build identical release profile with line symbols
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+        run: cargo build --locked --release --bin tolmap
+      - name: Profile unchanged reader fixtures (30-second probe bound)
+        run: python3 scripts/profile-reader-extraction.py bin/tolmap target/release/tolmap
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reader-extraction-profile
+          path: extraction-profile/
+          if-no-files-found: error
+
   reader:
     name: local snapshot + production CM6 journey
     needs: [gate, web]
