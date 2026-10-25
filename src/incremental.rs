@@ -224,6 +224,50 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     #[test]
+    fn provenance_versions_and_history_have_explicit_invalidation() {
+        let base = Provenance {
+            domain: "owner".into(),
+            repository: "repo".into(),
+            extractor: "1".into(),
+            schema: "1".into(),
+            resolver: "1".into(),
+            indexer: "1".into(),
+            config: "1".into(),
+            history_revision: "c1".into(),
+            files: BTreeMap::new(),
+        };
+        for (field, reason) in [
+            ("extractor", "extractor_changed"),
+            ("schema", "schema_changed"),
+            ("resolver", "resolver_changed"),
+            ("indexer", "indexer_changed"),
+            ("config", "config_or_exclusions_changed"),
+            ("domain", "repository_or_domain_changed"),
+        ] {
+            let mut changed = base.clone();
+            match field {
+                "extractor" => changed.extractor = "2".into(),
+                "schema" => changed.schema = "2".into(),
+                "resolver" => changed.resolver = "2".into(),
+                "indexer" => changed.indexer = "2".into(),
+                "config" => changed.config = "2".into(),
+                _ => changed.domain = "other".into(),
+            }
+            assert!(!changed.compatible(&base));
+            assert!(changed.reasons(Some(&base)).contains(&reason));
+        }
+        let mut history = base.clone();
+        history.history_revision = "c2".into();
+        assert!(
+            history.compatible(&base),
+            "history never changes raw syntax"
+        );
+        assert!(history
+            .reasons(Some(&base))
+            .contains(&"history_window_advanced"));
+    }
+
+    #[test]
     fn cache_is_owner_scoped_revocable_and_corruption_is_a_miss() {
         let dir = tempfile::tempdir().unwrap();
         let allowed = Arc::new(AtomicBool::new(true));

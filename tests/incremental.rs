@@ -132,3 +132,67 @@ fn full_and_reused_map_and_symbols_agree_after_dependency_and_file_changes() {
     git(&repo, &["commit", "-qm", "history advances"]);
     compare("", 8);
 }
+
+#[test]
+fn rust_go_and_typescript_raw_records_round_trip_without_changing_graphs() {
+    for (language, files) in [
+        (
+            LanguageKind::Rust,
+            vec![
+                (
+                    "Cargo.toml",
+                    "[package]\nname='fixture'\nversion='0.1.0'\nedition='2021'\n",
+                ),
+                (
+                    "src/lib.rs",
+                    "mod helper; pub fn run() { helper::value(); }\n",
+                ),
+                ("src/helper.rs", "pub fn value() {}\n"),
+            ],
+        ),
+        (
+            LanguageKind::Go,
+            vec![
+                ("go.mod", "module fixture\n\ngo 1.26\n"),
+                ("main.go", "package fixture\nfunc Run() { Value() }\n"),
+                ("helper.go", "package fixture\nfunc Value() {}\n"),
+            ],
+        ),
+        (
+            LanguageKind::TypeScript,
+            vec![
+                (
+                    "main.ts",
+                    "import { value } from './helper'; export function run() { return value(); }\n",
+                ),
+                ("helper.ts", "export function value() { return 1; }\n"),
+            ],
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        for (path, text) in files {
+            let path = repo.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "fixture"]);
+        let progress = Progress::silent()
+            .with_cache(Cache::local(root.path().join("cache"), "fixture".into()));
+        let sources = vec![(".".into(), language)];
+        let full = extract::build_multi_source(&repo, &sources).unwrap();
+        let cold = extract::build_multi_source_with_progress(&repo, &sources, &progress).unwrap();
+        let warm = extract::build_multi_source_with_progress(&repo, &sources, &progress).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&full).unwrap(),
+            serde_json::to_vec(&cold).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_vec(&full).unwrap(),
+            serde_json::to_vec(&warm).unwrap()
+        );
+    }
+}

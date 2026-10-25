@@ -811,7 +811,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
     )
     .map_err(|error| fail("index_failed", format!("{error:#}")))?;
     let metadata = serde_json::json!({"version":1, "indexed_commit":materialized.commit,
-        "extraction":progress.observations(), "prior_snapshot":previous_path,
+        "extraction":progress.observations(), "prior_snapshot":previous.as_ref().map(|doc| crate::incremental::digest(&serde_json::to_vec(doc).unwrap())),
         "downstream":"recompute_all", "seed":crate::SEED});
     crate::incremental::atomic_write(
         &PathBuf::from(&spec.output_dir).join("index.json"),
