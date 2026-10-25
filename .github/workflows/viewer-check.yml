@@ -79,6 +79,8 @@ jobs:
           cat vite.log; exit 1
       - name: check:view
         run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176
+      - name: Comparison protocol browser checks (desktop and phone)
+        run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176
       - name: Screenshots
         if: always()
         run: node scripts/screenshots.mjs --base http://127.0.0.1:5176 --out shots

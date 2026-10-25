@@ -936,6 +936,7 @@ export function MapView() {
 
   const mapCanvas = (
     <MapCanvas
+      key={`${owner}/${repo}:${search.base ?? search.commit ?? early.commit ?? ""}`}
       doc={doc}
       impactFiles={!comparison.isFetching && !comparison.error ? comparison.data?.report.files.map(f => f.base_path ?? f.path) : undefined}
       impactDistricts={!comparison.isFetching && !comparison.error ? comparison.data?.report.districts.map(d => d.id) : undefined}
