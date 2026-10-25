@@ -60,6 +60,7 @@ struct Local {
     prepared: Mutex<Option<Prepared>>,
     job: Mutex<Option<Job>>,
     notice: Mutex<String>,
+    attempt: Mutex<Option<crate::schema::SnapshotFreshness>>,
 }
 struct Probe {
     stopped: AtomicBool,
@@ -110,6 +111,9 @@ impl Sink {
     fn stage(&self, text: &str) {
         if let Some(j) = self.0.job.lock().unwrap().as_mut() {
             j.stage = text.into();
+        }
+        if let Some(attempt) = self.0.attempt.lock().unwrap().as_mut() {
+            attempt.state = crate::schema::FreshnessState::Indexing;
         }
     }
 }
@@ -421,11 +425,42 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                     stage: "Queued".into(),
                     cancel: cancel.clone(),
                 });
+                let attempt = crate::schema::SnapshotFreshness {
+                    indexed_commit: snapshots(s)?.last().map(|snapshot| snapshot.commit.clone()),
+                    requested_commit: Some(commit.clone()),
+                    state: crate::schema::FreshnessState::Queued,
+                    failure_reason: None,
+                    failure_code: None,
+                    retryable: false,
+                    job_id: Some(id.to_string()),
+                };
+                crate::incremental::atomic_write(
+                    &s.data.join("attempt.json"),
+                    &serde_json::to_vec(&attempt)?,
+                )?;
+                *s.attempt.lock().unwrap() = Some(attempt);
                 drop(job);
                 let state = s.clone();
                 std::thread::spawn(move || {
                     let result = run(state.clone(), prepared, commit, all, id, cancel);
                     *state.job.lock().unwrap() = None;
+                    if let Some(attempt) = state.attempt.lock().unwrap().as_mut() {
+                        if let Err(error) = &result {
+                            attempt.state = crate::schema::FreshnessState::Failed;
+                            attempt.failure_reason = Some(error.to_string());
+                            attempt.failure_code = Some("local_index_failed_or_cancelled".into());
+                            attempt.retryable = true;
+                        } else {
+                            attempt.state = crate::schema::FreshnessState::Complete;
+                            attempt.indexed_commit = attempt.requested_commit.clone();
+                        }
+                        if let Err(error) = crate::incremental::atomic_write(
+                            &state.data.join("attempt.json"),
+                            &serde_json::to_vec(attempt).unwrap(),
+                        ) {
+                            eprintln!("local attempt metadata: {error:#}");
+                        }
+                    }
                     *state.notice.lock().unwrap() = if result.is_err() {
                         "Indexing failed or was cancelled. The committed source selection is retained; retry indexing or refresh from HEAD.".into()
                     } else {
@@ -463,6 +498,33 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             params.get("commit").is_none_or(|x| x == &snap.commit),
             "commit mismatch"
         );
+        if parts.len() == 5 && parts[4] == "freshness" {
+            use crate::schema::{FreshnessState, SnapshotFreshness};
+            let mut value = s
+                .attempt
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(SnapshotFreshness {
+                    indexed_commit: Some(snap.commit.clone()),
+                    requested_commit: None,
+                    state: FreshnessState::Complete,
+                    failure_reason: None,
+                    failure_code: None,
+                    retryable: false,
+                    job_id: None,
+                });
+            value.indexed_commit = Some(snap.commit.clone());
+            if value.state == FreshnessState::Complete
+                && value
+                    .requested_commit
+                    .as_ref()
+                    .is_some_and(|c| c != &snap.commit)
+            {
+                value.state = FreshnessState::Stale;
+            }
+            return Ok(axum::Json(value).into_response());
+        }
         if parts.len() == 5 && parts[4] == "provenance" {
             return Ok(axum::Json(json!({"repository":snap.repository,"commit":snap.commit,"version":source::VERSION})).into_response());
         }
@@ -492,7 +554,13 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             dir.join("map.json")
         };
         return Ok((
-            [(header::CONTENT_TYPE, "application/json")],
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (
+                    axum::http::HeaderName::from_static("x-tolmap-commit"),
+                    snap.commit.as_str(),
+                ),
+            ],
             std::fs::read(file)?,
         )
             .into_response());
@@ -551,6 +619,21 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
     };
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let origin = format!("http://{}", listener.local_addr()?);
+    let mut attempt = std::fs::read(data.join("attempt.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<crate::schema::SnapshotFreshness>(&bytes).ok());
+    if let Some(value) = attempt.as_mut() {
+        if matches!(
+            value.state,
+            crate::schema::FreshnessState::Queued | crate::schema::FreshnessState::Indexing
+        ) {
+            value.state = crate::schema::FreshnessState::Failed;
+            value.failure_reason =
+                Some("Indexing was interrupted; retry from the retained committed source.".into());
+            value.failure_code = Some("interrupted".into());
+            value.retryable = true;
+        }
+    }
     let s = Arc::new(Local {
         checkout,
         data,
@@ -560,6 +643,7 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
         prepared: Mutex::new(None),
         job: Mutex::new(None),
         notice: Mutex::new(String::new()),
+        attempt: Mutex::new(attempt),
     });
     eprintln!("Tolmap local: {origin} — committed source only; no upload");
     axum::serve(listener, axum::Router::new().fallback(handle).with_state(s)).await?;
