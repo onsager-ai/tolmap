@@ -2343,6 +2343,8 @@ fn store_worker_result_owned(
                 "terminal_attempt"
             );
             let job_key = job_id.to_string();
+            // Nested lock order is job registry, then SQLite connection;
+            // store code must never acquire the registry while holding SQLite.
             state
                 .store
                 .publish(&row, &adopted.names, epoch.map(|e| (job_key.as_str(), e)))?;
@@ -4017,6 +4019,11 @@ mod tests {
                 br#"{"0123456789ab": {"name": "core", "district": 0, "size": 1}}"#,
             )
             .unwrap();
+            std::fs::write(
+                output_dir.join("index.json"),
+                br#"{"source_commit":"0123456789abcdef0123456789abcdef01234567"}"#,
+            )
+            .unwrap();
             let outside = dir.path().join("outside.json");
             std::fs::write(&outside, b"keep me").unwrap();
             ResultFixture {
@@ -4110,6 +4117,138 @@ mod tests {
             self.state.config.cache_dir.join("maps/test/demo")
         }
 
+        fn store_owned(&self, job_id: Uuid, epoch: Option<u64>) -> Result<(), ErrorBody> {
+            let path = |name: &str| self.output_dir.join(name).to_string_lossy().into_owned();
+            let output = WorkerOutput {
+                map_path: path("demo.json"),
+                symbols_path: path("demo.symbols.json"),
+                symbols_dir: path("demo.symbols"),
+                names_cache: path("demo.names.json"),
+                commit: RESULT_COMMIT.to_owned(),
+                lang: "py".to_owned(),
+                files: 1,
+                districts: 1,
+                modularity: 0.5,
+            };
+            let checkout = clone::Materialized {
+                path: self.job_dir.join("repo"),
+                commit: RESULT_COMMIT.to_owned(),
+                branch: Some("main".to_owned()),
+            };
+            store_worker_result_owned(
+                &self.state,
+                &self.repo_ref,
+                job_id,
+                &self.output_dir,
+                &checkout,
+                &output,
+                None,
+                epoch,
+            )
+        }
+
+        fn publish_previous_complete(&self) {
+            let previous_dir = self.maps_dir().join("old-commit-job");
+            let map_path = previous_dir.join("old.json");
+            std::fs::create_dir_all(map_path.with_extension("symbols")).unwrap();
+            std::fs::write(&map_path, b"old complete map").unwrap();
+            std::fs::write(
+                map_path.with_extension("symbols.json"),
+                b"old complete symbols",
+            )
+            .unwrap();
+            std::fs::write(
+                map_path.with_extension("symbols").join("0.json"),
+                b"old district symbols",
+            )
+            .unwrap();
+            std::fs::write(previous_dir.join("index.json"), b"old source revision").unwrap();
+            let names = crate::service::store::NameCache::from([(
+                "old-fingerprint".into(),
+                crate::service::store::CacheEntry {
+                    name: "old district".into(),
+                    district: 0,
+                    size: 1,
+                    namer: "idf".into(),
+                    numbered: false,
+                },
+            )]);
+            self.state
+                .store
+                .publish(
+                    &MapRow {
+                        slug: self.repo_ref.slug.clone(),
+                        owner: self.repo_ref.owner.clone(),
+                        repo: self.repo_ref.repo.clone(),
+                        commit: "old".into(),
+                        branch: Some("main".into()),
+                        lang: "py".into(),
+                        files: 1,
+                        districts: 1,
+                        modularity: 0.1,
+                        map_path,
+                        indexed_at: now_rfc3339(),
+                    },
+                    &names,
+                    None,
+                )
+                .unwrap();
+        }
+
+        fn register_attempt(&self, job_id: Uuid, status: JobStatus) {
+            let mut snapshot = blank_snapshot(&self.repo_ref.slug);
+            snapshot.job_id = job_id;
+            snapshot.status = status;
+            snapshot.commit = Some(RESULT_COMMIT.to_owned());
+            let (tx, _rx) = watch::channel(snapshot);
+            self.state.jobs.0.lock().unwrap().jobs.insert(job_id, tx);
+        }
+
+        fn assert_attempt_not_published(&self, job_id: Uuid, epoch: Option<u64>, reason: &str) {
+            let error = self
+                .store_owned(job_id, epoch)
+                .expect_err("attempt is fenced");
+            assert!(error.message.contains(reason), "{}", error.message);
+            assert!(self
+                .state
+                .store
+                .get(&self.repo_ref.slug, RESULT_COMMIT)
+                .unwrap()
+                .is_none());
+            assert!(!self
+                .maps_dir()
+                .join(format!("{RESULT_COMMIT}-{job_id}"))
+                .exists());
+            assert!(!self.maps_dir().join(format!(".job-{job_id}")).exists());
+            let previous = self
+                .state
+                .store
+                .latest(&self.repo_ref.slug)
+                .unwrap()
+                .expect("last complete row remains readable");
+            assert_eq!(previous.commit, "old");
+            assert_eq!(
+                std::fs::read(&previous.map_path).unwrap(),
+                b"old complete map"
+            );
+            assert_eq!(
+                std::fs::read(previous.map_path.with_extension("symbols.json")).unwrap(),
+                b"old complete symbols"
+            );
+            assert_eq!(
+                std::fs::read(previous.map_path.with_extension("symbols").join("0.json")).unwrap(),
+                b"old district symbols"
+            );
+            assert_eq!(
+                std::fs::read(previous.map_path.parent().unwrap().join("index.json")).unwrap(),
+                b"old source revision"
+            );
+            assert_eq!(
+                self.state.store.load_names(&self.repo_ref.slug).unwrap()["old-fingerprint"].name,
+                "old district"
+            );
+        }
+
         /// The job failed as an invalid result, and left nothing behind: no
         /// row, no stored file, no staging directory, the outside file as it
         /// was.
@@ -4152,6 +4291,10 @@ mod tests {
         assert!(map.is_file());
         assert!(map.with_extension("symbols.json").is_file());
         assert!(map.with_extension("symbols").join("0.json").is_file());
+        assert_eq!(
+            std::fs::read(map.parent().unwrap().join("index.json")).unwrap(),
+            br#"{"source_commit":"0123456789abcdef0123456789abcdef01234567"}"#
+        );
         let names = fixture
             .state
             .store
@@ -4164,6 +4307,59 @@ mod tests {
             .filter(|name| name.starts_with(".job-"))
             .collect();
         assert!(left.is_empty(), "staging left behind: {left:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_worker_result_cancel_rejection_keeps_last_complete_snapshot() {
+        let fixture = ResultFixture::new();
+        fixture.publish_previous_complete();
+        let job_id = Uuid::new_v4();
+        fixture.register_attempt(job_id, JobStatus::Indexing);
+        let cancelled = fixture.state.jobs.cancel(job_id).unwrap();
+        assert_eq!(cancelled.status, JobStatus::Failed);
+
+        fixture.assert_attempt_not_published(job_id, None, "cancelled");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_worker_result_terminal_rejection_keeps_last_complete_snapshot() {
+        let fixture = ResultFixture::new();
+        fixture.publish_previous_complete();
+        let job_id = Uuid::new_v4();
+        fixture.register_attempt(job_id, JobStatus::Failed);
+
+        fixture.assert_attempt_not_published(job_id, None, "terminal_attempt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_worker_result_stale_epoch_rejection_keeps_last_complete_snapshot() {
+        let fixture = ResultFixture::new();
+        fixture.publish_previous_complete();
+        let job_id = Uuid::new_v4();
+        fixture.register_attempt(job_id, JobStatus::Indexing);
+        fixture
+            .state
+            .store
+            .insert_job(&crate::service::store::JobRow {
+                job_id: job_id.to_string(),
+                slug: fixture.repo_ref.slug.clone(),
+                commit: RESULT_COMMIT.to_owned(),
+                spec_json: "{}".to_owned(),
+                class: 0,
+                status: "running".to_owned(),
+                attempt: 1,
+                epoch: 8,
+                lease_holder: Some("agent".to_owned()),
+                lease_deadline_ms: Some(10),
+                queue_order: 1,
+                snapshot_json: "{}".to_owned(),
+            })
+            .unwrap();
+
+        fixture.assert_attempt_not_published(job_id, Some(7), "stale_or_cancelled_attempt");
     }
 
     #[cfg(unix)]

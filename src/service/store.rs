@@ -1114,6 +1114,90 @@ mod tests {
     }
 
     #[test]
+    fn matching_running_epoch_publishes_complete_artifacts_and_names() {
+        let (dir, store) = temp_store();
+        let old_dir = dir.path().join("snapshots/old");
+        let old_map = old_dir.join("old.json");
+        std::fs::create_dir_all(old_map.with_extension("symbols")).unwrap();
+        std::fs::write(&old_map, b"old map").unwrap();
+        std::fs::write(old_map.with_extension("symbols.json"), b"old symbols").unwrap();
+        std::fs::write(old_dir.join("index.json"), b"old source revision").unwrap();
+        let old_names = NameCache::from([(
+            "old-fingerprint".into(),
+            CacheEntry {
+                name: "old district".into(),
+                district: 0,
+                size: 1,
+                namer: "idf".into(),
+                numbered: false,
+            },
+        )]);
+        store
+            .publish(&row("o/r", "old", "2026-01-01", &old_map), &old_names, None)
+            .unwrap();
+
+        let new_dir = dir.path().join("snapshots/new-complete");
+        let new_map = new_dir.join("new.json");
+        std::fs::create_dir_all(new_map.with_extension("symbols")).unwrap();
+        std::fs::write(&new_map, b"new map").unwrap();
+        std::fs::write(new_map.with_extension("symbols.json"), b"new symbols").unwrap();
+        std::fs::write(
+            new_map.with_extension("symbols").join("0.json"),
+            b"new district symbols",
+        )
+        .unwrap();
+        std::fs::write(new_dir.join("index.json"), b"new source revision").unwrap();
+        let new_names = NameCache::from([(
+            "new-fingerprint".into(),
+            CacheEntry {
+                name: "new district".into(),
+                district: 0,
+                size: 1,
+                namer: "idf".into(),
+                numbered: false,
+            },
+        )]);
+        let next = row("o/r", "new", "2026-01-02", &new_map);
+        let mut job = job_row("publish", 1);
+        job.slug = "o/r".into();
+        job.status = "running".into();
+        job.epoch = 7;
+        store.insert_job(&job).unwrap();
+
+        assert!(store.get("o/r", "new").unwrap().is_none());
+        assert_eq!(store.latest("o/r").unwrap().unwrap().commit, "old");
+        store
+            .publish(&next, &new_names, Some(("publish", 7)))
+            .unwrap();
+
+        let visible = store.get("o/r", "new").unwrap().expect("published map");
+        assert_eq!(visible.map_path, new_map);
+        assert_eq!(std::fs::read(&visible.map_path).unwrap(), b"new map");
+        assert_eq!(
+            std::fs::read(visible.map_path.with_extension("symbols.json")).unwrap(),
+            b"new symbols"
+        );
+        assert_eq!(
+            std::fs::read(visible.map_path.with_extension("symbols").join("0.json")).unwrap(),
+            b"new district symbols"
+        );
+        assert_eq!(
+            std::fs::read(visible.map_path.parent().unwrap().join("index.json")).unwrap(),
+            b"new source revision"
+        );
+        assert_eq!(store.latest("o/r").unwrap().unwrap().commit, "new");
+        assert_eq!(
+            store.load_names("o/r").unwrap()["new-fingerprint"].name,
+            "new district"
+        );
+        assert_eq!(std::fs::read(old_map).unwrap(), b"old map");
+        assert_eq!(
+            store.load_names("o/r").unwrap()["old-fingerprint"].name,
+            "old district"
+        );
+    }
+
+    #[test]
     fn publication_fences_stale_and_cancelled_attempts_and_keeps_last_complete() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("store.sqlite");

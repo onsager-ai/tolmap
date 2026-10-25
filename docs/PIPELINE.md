@@ -127,8 +127,13 @@ Same-host process results and remote-agent results converge on this same
 `Store::publish` switch. The private-checkout local viewer uses its own fenced
 complete-snapshot metadata switch.
 Failure before the switch leaves the last complete row readable; unreferenced
-crash leftovers are not snapshots. Local publication uses the existing complete
-snapshot metadata boundary, now flushed and fenced by the current local job ID.
+crash leftovers are not snapshots. A process crash after the service renames
+`<commit>-<job-id>` into place but before SQLite commits can leave that
+unreferenced directory behind; there is no startup garbage collector yet, so it
+is a disk leak until operator cleanup. Never infer that a directory is safe to
+delete without checking that no map row references it. Local publication uses
+the existing complete snapshot metadata boundary, now flushed and fenced by
+the current local job ID.
 Source remains pinned to the immutable prepared Git revision in that metadata.
 An early map is explicitly provisional and never a complete snapshot.
 
