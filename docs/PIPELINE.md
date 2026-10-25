@@ -86,11 +86,17 @@ or skipped writes. No cache hit authorizes access.
 
 Each content-addressed record includes path, content SHA-256, language, symbol
 collection mode, repository/domain, source selection/config digest, extractor
-source digest (including Rust/Go syntax and symbol collection), schema source
-digest, resolver version and indexer version. Payload SHA-256 rejects truncation
-or accidental corruption. Extraction keeps one source tree alive at a time and
-spools cached symbols exactly as freshly collected records. Python syntax-error
-files remain conservatively excluded and are parsed again rather than cached.
+source digest (the per-file parser, Rust resolver, symbol collector, Go build
+constraint logic, Cargo.toml and Cargo.lock), schema source digest, actual
+raw-resolver version and indexer version. Cargo.lock pins the tree-sitter
+grammars; both Cargo files are present in Rust CI and npm packaging, which
+compile the crate from the repository root. Refs/install modes are intentionally
+outside per-file provenance: they are consumed by SCIP replacement/install
+after raw parsing and source resolution, so they cannot change these records.
+Payload SHA-256 rejects truncation or accidental corruption. Extraction keeps
+one source tree alive at a time and spools cached symbols exactly as freshly
+collected records. Python syntax-error files remain conservatively excluded
+and are parsed again rather than cached.
 
 | Input/change | Extraction | Dependent work and observable reason |
 |---|---|---|
@@ -99,7 +105,7 @@ files remain conservatively excluded and are parsed again rather than cached.
 | Addition/deletion | New file parsed; deleted file omitted | Global file set rebuilt; `file_added` / `file_deleted` |
 | Rename | Path is part of key; new path parsed | Global resolution/history rerun; `file_renamed` for equal bytes |
 | Source scope/config/exclusions | Full parse fallback | `config_or_exclusions_changed` |
-| Extractor/schema/resolver/indexer version | Full parse fallback | `extractor_changed` / `schema_changed` / `resolver_changed` / `indexer_changed` |
+| Extractor source/Cargo.lock, schema, resolver version or indexer version | Full parse fallback | `extractor_changed` / `schema_changed` / `resolver_changed` / `indexer_changed` |
 | Missing/corrupt entry | Parse that file | `cache_entry_missing_or_corrupt` if otherwise equivalent |
 | History revision/horizon | Raw syntax may be reused | Always walk requested history with existing 4000-commit algorithmic window; `history_window_advanced` |
 | Prior snapshot/naming input | Raw syntax may be reused | No downstream cache: use explicit prior membership and names as existing warm start does |

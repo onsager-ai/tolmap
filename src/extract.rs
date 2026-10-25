@@ -641,6 +641,10 @@ fn build_multi_source_inner(
         .then(crate::symbols::SymbolSpool::new)
         .transpose()?;
     for (pkg, language) in &sorted_sources {
+        // The cache below stores only per-file parser and symbol records.
+        // RefsMode and InstallMode are consumed later, after raw parsing and
+        // source resolution, by apply_scip_references; they cannot affect
+        // these records and therefore stay out of their provenance keys.
         let (parsed, raw, collection_time, steps) =
             parse_files_inner(repo, pkg, *language, spool.as_mut(), progress)?;
         symbol_collection += collection_time;
@@ -729,6 +733,22 @@ fn build_multi_source_inner(
     Ok((graph, spool))
 }
 
+/// Computes the versioned source digest used by per-file extraction records.
+fn extractor_source_digest(lockfile: &str) -> String {
+    let mut inputs = concat!(
+        include_str!("extract.rs"),
+        include_str!("extract/rust.rs"),
+        include_str!("symbols.rs"),
+        include_str!("go_build.rs"),
+        include_str!("../Cargo.toml")
+    )
+    .as_bytes()
+    .to_vec();
+    inputs.extend_from_slice(b"\0Cargo.lock\0");
+    inputs.extend_from_slice(lockfile.as_bytes());
+    crate::incremental::digest(&inputs)
+}
+
 /// Parses every source file `source_files` finds for `(pkg, language)` under
 /// `repo` with tree-sitter, computing both the per-file metrics (`loc`,
 /// `complexity`, `identifiers`, `symbols`) that survive for the rest of the
@@ -743,7 +763,7 @@ fn build_multi_source_inner(
 /// the split is divided). Both walks that used to run against `parsed_file.
 /// tree` in a later pass (import extraction, and the selector/attribute walk
 /// behind `uses`) run here instead, against the same tree, before it is
-/// dropped.
+/// dropped. This wrapper exercises the parser without an incremental cache.
 #[cfg(test)]
 fn parse_files(
     repo: &Path,
@@ -786,15 +806,7 @@ fn parse_files_inner(
             .as_ref()
             .map(|c| c.repository.clone())
             .unwrap_or_default(),
-        extractor: crate::incremental::digest(
-            concat!(
-                include_str!("extract.rs"),
-                include_str!("extract/rust.rs"),
-                include_str!("symbols.rs"),
-                include_str!("go_build.rs")
-            )
-            .as_bytes(),
-        ),
+        extractor: extractor_source_digest(include_str!("../Cargo.lock")),
         schema: crate::incremental::digest(include_str!("schema.rs").as_bytes()),
         resolver: "hand-resolver-v1".into(),
         indexer: env!("CARGO_PKG_VERSION").into(),
@@ -6973,6 +6985,47 @@ pub(crate) fn round_to(value: f64, digits: i32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lockfile_change_misses_cache_with_extractor_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::incremental::Cache::local(dir.path().into(), "repo".into());
+        let make = |lockfile: &str| crate::incremental::Provenance {
+            domain: "local".into(),
+            repository: "repo".into(),
+            extractor: extractor_source_digest(lockfile),
+            schema: crate::incremental::digest(include_str!("schema.rs").as_bytes()),
+            resolver: "hand-resolver-v1".into(),
+            indexer: env!("CARGO_PKG_VERSION").into(),
+            config: crate::incremental::digest(
+                &serde_json::to_vec(&("pkg", "py", false, Vec::<u8>::new())).unwrap(),
+            ),
+            history_revision: "head".into(),
+            files: BTreeMap::from([("pkg/a.py".into(), "content".into())]),
+        };
+        let base = make("lockfile-v1");
+        let base_entry =
+            crate::incremental::cache_file_key(&base.cache_context_key(), "pkg/a.py", "content");
+        cache.write("manifest", &base).unwrap();
+        cache.write(&base_entry, &"parsed output").unwrap();
+
+        let lock_bump = make("lockfile-v2");
+        let previous: crate::incremental::Provenance =
+            cache.read("manifest").unwrap().expect("prior manifest");
+        assert!(!lock_bump.compatible(&previous));
+        assert!(lock_bump
+            .reasons(Some(&previous))
+            .contains(&"extractor_changed"));
+        assert_ne!(lock_bump.cache_context_key(), base.cache_context_key());
+        assert!(cache
+            .read::<String>(&crate::incremental::cache_file_key(
+                &lock_bump.cache_context_key(),
+                "pkg/a.py",
+                "content",
+            ))
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn nested_python_package_anchors_on_last_source_segment() {
