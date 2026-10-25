@@ -199,6 +199,7 @@ fn run(
     prepared: Uuid,
     commit: String,
     all: bool,
+    confirmed_scope: Option<String>,
     id: Uuid,
     cancel: Arc<Probe>,
 ) -> Result<()> {
@@ -246,14 +247,26 @@ fn run(
         worker_gid: 10001,
         allow_openrouter_key: false,
     };
-    let result = executor::execute(
-        &env,
-        id,
-        &spec,
-        &inputs,
-        &mut Sink(s.clone()),
-        cancel.as_ref(),
-    )
+    let result = if let Some(scope) = confirmed_scope {
+        executor::execute_confirmed_local(
+            &env,
+            id,
+            &spec,
+            &inputs,
+            &mut Sink(s.clone()),
+            cancel.as_ref(),
+            &scope,
+        )
+    } else {
+        executor::execute(
+            &env,
+            id,
+            &spec,
+            &inputs,
+            &mut Sink(s.clone()),
+            cancel.as_ref(),
+        )
+    }
     .map_err(|e| anyhow::anyhow!("local executor stopped: {}", e.error))?;
     let work = result.job_dir.clone();
     let publish = (|| -> Result<()> {
@@ -403,10 +416,11 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                     params.get("id") == Some(&p.id.to_string()),
                     "selection expired; confirm again"
                 );
-                let (prepared, commit, all) = (
+                let (prepared, commit, all, chosen) = (
                     p.id,
                     p.commit.clone(),
                     params.get("all").is_some_and(|x| x == "true"),
+                    p.chosen.clone(),
                 );
                 ensure!(!all || !p.all.is_empty(), "no selected sources");
                 let id = Uuid::new_v4();
@@ -423,7 +437,16 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                 drop(job);
                 let state = s.clone();
                 std::thread::spawn(move || {
-                    let result = run(state.clone(), prepared, commit, all, id, cancel);
+                    let confirmed_scope = (!all).then_some(chosen);
+                    let result = run(
+                        state.clone(),
+                        prepared,
+                        commit,
+                        all,
+                        confirmed_scope,
+                        id,
+                        cancel,
+                    );
                     let mut job = state.job.lock().unwrap();
                     *state.notice.lock().unwrap() = if result.is_err() {
                         "Indexing failed or was cancelled. The committed source selection is retained; retry indexing or refresh from HEAD.".into()

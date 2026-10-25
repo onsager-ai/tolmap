@@ -175,6 +175,35 @@ pub fn execute(
     sink: &mut dyn EventSink,
     probe: &dyn CancelProbe,
 ) -> Result<Executed, ErrorBody> {
+    execute_inner(env, job_id, job, inputs, sink, probe, None)
+}
+
+/// Only the loopback local UX may forward its pinned, owner-confirmed selection.
+/// This parent-owned value never crosses the public job/spec protocol.
+pub(crate) fn execute_confirmed_local(
+    env: &ExecEnv,
+    job_id: Uuid,
+    job: &JobSpec,
+    inputs: &JobInputs,
+    sink: &mut dyn EventSink,
+    probe: &dyn CancelProbe,
+    confirmed_scope: &str,
+) -> Result<Executed, ErrorBody> {
+    if !job.local || job.all_sources {
+        return Err(ApiError::internal("confirmed scope requires a single local source").body);
+    }
+    execute_inner(env, job_id, job, inputs, sink, probe, Some(confirmed_scope))
+}
+
+fn execute_inner(
+    env: &ExecEnv,
+    job_id: Uuid,
+    job: &JobSpec,
+    inputs: &JobInputs,
+    sink: &mut dyn EventSink,
+    probe: &dyn CancelProbe,
+    confirmed_scope: Option<&str>,
+) -> Result<Executed, ErrorBody> {
     let internal = |error: &dyn std::fmt::Display| ApiError::internal(error.to_string()).body;
     let repo_ref = RepoRef {
         slug: job.slug.clone(),
@@ -297,6 +326,7 @@ pub fn execute(
         uid: env.worker_uid,
         gid: env.worker_gid,
         allow_openrouter_key: env.allow_openrouter_key,
+        confirmed_scope: confirmed_scope.map(str::to_owned),
     };
     let output = run_child(
         &env.worker_exe,
@@ -678,6 +708,8 @@ pub(crate) struct WorkerHardening {
     /// controlled; a no-op (key withheld) for today's production default
     /// (`NamerKind::Idf`).
     pub(crate) allow_openrouter_key: bool,
+    /// Set only by the local confirmation entry point, never inherited.
+    pub(crate) confirmed_scope: Option<String>,
 }
 
 #[cfg(test)]
@@ -693,6 +725,7 @@ impl WorkerHardening {
             uid: current_uid(),
             gid: current_gid(),
             allow_openrouter_key: false,
+            confirmed_scope: None,
         }
     }
 }
@@ -878,6 +911,9 @@ pub(crate) fn run_child(
         if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
             command.env("OPENROUTER_API_KEY", key);
         }
+    }
+    if let Some(scope) = &hardening.confirmed_scope {
+        command.env("TOLMAP_WORKER_CONFIRMED_SCOPE", scope);
     }
     #[cfg(unix)]
     {

@@ -580,6 +580,21 @@ pub struct WorkerError {
     pub message: String,
 }
 
+fn admit_chosen(
+    chosen: &crate::detect::SourceCandidate,
+    confirmed_scope: Option<&str>,
+) -> std::result::Result<(), WorkerError> {
+    if chosen.confidence == crate::detect::Confidence::Low
+        && confirmed_scope != Some(chosen.describe().as_str())
+    {
+        return Err(WorkerError {
+            code: "detection_uncertain".to_owned(),
+            message: chosen.describe(),
+        });
+    }
+    Ok(())
+}
+
 fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent, WorkerError> {
     use crate::service::{clone, config::Limits, store};
     use crate::{detect, extract, geometry, symbols};
@@ -646,9 +661,8 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         let detection = detect::detect(&materialized.path)
             .map_err(|error| fail("detection_failed", error.to_string()))?;
         let chosen = detection.chosen;
-        if chosen.confidence == detect::Confidence::Low {
-            return Err(fail("detection_uncertain", chosen.describe()));
-        }
+        let confirmed = std::env::var("TOLMAP_WORKER_CONFIRMED_SCOPE").ok();
+        admit_chosen(&chosen, confirmed.as_deref())?;
         vec![chosen]
     };
     if sources.is_empty() {
@@ -907,6 +921,30 @@ mod tests {
             namer_model: String::new(),
             refs: Some("hand".to_owned()),
             install: None,
+        }
+    }
+
+    #[test]
+    fn low_confidence_requires_the_exact_parent_confirmed_scope() {
+        let mut chosen = crate::detect::SourceCandidate {
+            language: crate::extract::LanguageKind::Python,
+            pkg: ".".into(),
+            confidence: crate::detect::Confidence::Low,
+            file_count: 13,
+            evidence: "fallback fixture".into(),
+        };
+        for confirmation in [None, Some(""), Some("a different root")] {
+            let error = admit_chosen(&chosen, confirmation).err().unwrap();
+            assert_eq!(error.code, "detection_uncertain");
+            assert_eq!(error.message, chosen.describe());
+        }
+        assert!(admit_chosen(&chosen, Some(&chosen.describe())).is_ok());
+        for confidence in [
+            crate::detect::Confidence::Medium,
+            crate::detect::Confidence::High,
+        ] {
+            chosen.confidence = confidence;
+            assert!(admit_chosen(&chosen, None).is_ok());
         }
     }
 

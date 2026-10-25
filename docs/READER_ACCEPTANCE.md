@@ -40,6 +40,9 @@ landscape and tablet in light/dark. Local process CI covers detect/confirm/index
 dirty/untracked exclusion, detection failure, low-confidence root confirmation,
 indexing retry, cancellation and history. Existing viewer CI retains named
 districts, landmarks, district/file/symbol cards and 40/110 px visibility gates.
+The loopback confirmation forwards the exact detected scope for the pinned commit
+through parent-owned child configuration; public and hosted jobs still reject
+unconfirmed low-confidence sources, and job JSON cannot grant confirmation.
 Actual local process CI adds A/B immutable source, refusal boundaries, map-only
 export, no-login and no non-loopback AF_INET/AF_INET6 connect; performance uses
 production >800 kB normal/long-line
