@@ -441,36 +441,70 @@ leverage property the store has (see `service::store::Store::prune`).
 
 ## Immutable source and local snapshot API (v1)
 
-`GET /api/maps/{owner}/{repo}/provenance[?commit=<immutable>]` returns
-`version`, stable `repository`, and immutable `commit`.
-`GET /api/maps/{owner}/{repo}/source?commit=<immutable>&path=<relative>` returns
-those fields plus `path`, `status`, `text`, `bytes`, and `long_line`. These Rust
-contracts live in `src/source.rs`; no new TypeScript wire schema is authored here.
-The reader verifies version/repository/commit/path before displaying text. A
-commit mismatch is an error, never a fallback to HEAD. Successful source payloads
-are regular UTF-8 Git blobs up to 1 MiB. Explicit statuses include `missing`,
-`expired`, `binary`, `large`, `unsupported`; non-ready statuses have no source text.
-Traversal, absolute paths and unsafe Git paths are rejected. Lines longer than
-20,000 bytes bypass grammar parsing. API version and highlighting coverage do not
-claim broader indexing coverage.
+`src/source.rs::read` returns `version`, stable `repository`, immutable
+`commit`, relative `path`, `status`, `text`, `bytes` and `long_line`. A commit
+mismatch is an error, never a fallback to HEAD. Successful payloads are regular
+UTF-8 Git blobs up to 1 MiB. Explicit statuses include `missing`, `expired`,
+`binary`, `large` and `unsupported`; non-ready statuses have no source text.
+Traversal, absolute paths and unsafe Git paths are refused. Lines longer than
+20,000 bytes bypass grammar parsing. These are source-library/local-reader
+contracts, not proof of broader extraction coverage.
 
-`tolmap local` uses the same reader contract at
-`/api/maps/snapshot/{snapshot-id}/{provenance,source}`; the route's persisted
-snapshot selects the immutable repository/commit. The map itself is at
-`/api/maps/snapshot/{snapshot-id}`, symbols at its `/symbols?district=<id>`, and
-map-only export at `/artifact`. Optional `commit` must match that snapshot.
-These loopback routes require neither login nor a hosted policy adapter. Local
-mutation forms check origin/host and accept prepared IDs rather than arbitrary
-filesystem paths. `/api/maps` and `/maps/index.json` remain empty here; private
-snapshots are never entered into the public catalogue. The exported artifact is
-the saved map JSON, including paths/names/structure, without source or Git objects.
+### Current Core route and handler inventory
+
+`service::http::router` in `src/service/http.rs` registers the following public,
+single-trust-domain routes. These handlers do not call `access::enforce`.
+
+| Route | Handler | Storage/cache behavior |
+| --- | --- | --- |
+| `POST /api/index` | `service::http::post_index` | Resolves HEAD, checks `Store::get` for a warm commit, then returns cached completion or calls `jobs::spawn_job`. |
+| `GET /api/jobs/{job_id}` | `service::http::get_job` | Reads the in-memory or persisted job snapshot. |
+| `POST /api/jobs/{job_id}/cancel` | `service::http::post_cancel_job` | Resolves the job slug and invokes `jobs::cancel_job`. |
+| `GET /api/jobs/{job_id}/events` | `service::http::get_job_events` | Opens a snapshot SSE stream. There is no per-event policy hook or live revoke monitor. |
+| `GET /api/maps` | `service::http::get_maps` | Lists the public service catalogue through `Store::list_latest`. |
+| `GET /api/maps/{owner}/{repo}` | `service::http::get_map` | Uses `Store::get`/`Store::latest`; may return the active job's early map, then reads the stored map. |
+| `GET /api/maps/{owner}/{repo}/symbols` | `service::http::get_symbols` | Uses the stored map identity and reads a district symbol file. |
+| `GET /api/healthz` | `service::http::get_healthz` | Health/build identity. |
+
+There is no standalone hosted `/api/maps/{owner}/{repo}/provenance`, `/source`,
+artifact/download or comparison route in this router. Unmatched `/api/*` paths
+return JSON 404 rather than falling through to static files
+(`tests/static_serving.rs::static_dir_set_api_404_is_never_html`). The hosted
+React reader requires an embedding consumer that supplies and protects those
+handlers.
+`Read`, `Source`, `Admit`, `Cancel`, `Events`, `Artifact` and `Publish` remain
+opt-in policy operations; no route-level isolation is implied. See
+[ACCESS.md](ACCESS.md) for handler-by-handler consumer duties.
+
+### `tolmap local` routes
+
+The owner-local server routes through `local::handle` and `local::dispatch` in
+`src/local.rs`. `POST /local/refresh` detects the committed scope;
+`POST /local/index` starts indexing a retained prepared scope; and
+`POST /local/cancel` requests worker cancellation. The persisted snapshot
+selects the immutable repository and commit for
+`GET /api/maps/snapshot/{snapshot-id}/provenance` and
+`GET /api/maps/snapshot/{snapshot-id}/source?path=<relative>`. The saved map is
+at `/api/maps/snapshot/{snapshot-id}`, symbols at
+`/api/maps/snapshot/{snapshot-id}/symbols?district=<id>`, and the map-only export
+at `/api/maps/snapshot/{snapshot-id}/artifact`. An optional `commit` query must
+match the snapshot. `/snapshot/{snapshot-id}` serves the map application.
+
+These loopback routes need no login, provider upload or hosted policy adapter.
+The local page may show the chosen checkout/storage path so the owner can recover
+their work. Its mutations check Host/Origin and accept prepared IDs rather than
+arbitrary filesystem paths; source reads resolve relative paths inside the saved
+Git object store. `/api/maps` and `/maps/index.json` remain empty in local mode.
+The export is the saved map JSON, without source text, Git objects or absolute
+host paths. Built web assets and the public catalogue are checked separately.
 
 | Contract / surface | CI qualification | Limit |
 | --- | --- | --- |
-| Local index → A/B maps/source | `scripts/local-reader-fixture.py`, `tests/source.rs` | Real binary/worker/Git/store; fixture repo, not hosted custody |
-| No-login/no-upload / export | Process `connect` trace, browser outbound-request assertion; saved map equals artifact; built assets inspected | No internet connect observed for this fixture journey, not all possible CLI configurations |
-| Boundary / failure recovery | Host/origin, traversal/symlink/binary/large/expired tests; production Retry source | Local single-user boundary, not tenant isolation |
-| Reader interaction / phone control layout | `web/scripts/check-source-reader.mjs` | Chromium emulation, screenshots pending review |
-| Large-file / long-line / lifecycle | `web/scripts/measure-source-reader.mjs` | Actual costs in artifact, not physical Safari acceptance |
-| Protected embedding | `tests/access.rs`; ACCESS.md checkpoint matrix | Generic opt-in conformance; no protected standalone router |
+| Local index → A/B immutable map/source | `scripts/local-reader-fixture.py`, `tests/source.rs` | Real binary/worker/Git/store; fixture repository, not hosted custody |
+| Dirty/untracked exclusion and native recovery | `scripts/local-reader-fixture.py` | Exercises dirty tracked and untracked source exclusion, detection failure retaining scope, low-confidence root confirmation and retry after an indexing failure |
+| No-login/no-upload / export | Process AF_INET/AF_INET6 connect trace, Playwright outbound-request assertion, saved map/artifact equality, post-snapshot asset/catalogue scan | A fixture journey; owner-local page intentionally discloses its selected storage path |
+| Hosted/local path boundary | `tests/static_serving.rs::static_dir_set_api_404_is_never_html`, `tests/source.rs::objects_preserve_a_after_b_and_refuse_boundaries`, `scripts/local-reader-fixture.py` | Unmatched hosted API paths are 404; local source requests stay inside saved Git objects |
+| Reader interaction / phone controls | `web/scripts/check-source-reader.mjs`, `reader-evidence/browser.json` | Chromium emulation at 320×568, 390×844, 844×390 and 1280×900; visual approval and physical Safari remain separate |
+| Large-file / long-line / lifecycle | `web/scripts/measure-source-reader.mjs` | Actual CI costs in `performance.json`; not physical Safari acceptance |
+| Protected embedding | `tests/access.rs`; [ACCESS.md](ACCESS.md) checkpoint matrix | Operation-aware generic library conformance; consumer route responsibility, no protected standalone router |
 | Public dependency boundary | `scripts/check-public-boundary.py` | Manifest/generated-binding guard; normal Rust/web CI still required |

@@ -163,6 +163,20 @@
   --on-accent: #ffffff;
   --grabber: #b9c0bb;
   --warn: #87681b;
+  /* Reader backgrounds and grammar colors. The light selection is 1.59:1
+   * against --chrome2; every grammar color remains at least 4.7:1 on both
+   * that tint and --chrome2. Browser CI checks the actual computed colors. */
+  --reader-selection-bg: #c3d0c9;
+  --reader-syntax-keyword: #50346e;
+  --reader-syntax-string: #185a4b;
+  --reader-syntax-comment: #465c16;
+  --reader-syntax-number: #813e19;
+  --reader-syntax-type: #1c4c73;
+  --reader-syntax-function: #702f54;
+  --reader-syntax-variable: #334e63;
+  --reader-syntax-operator: #625020;
+  --reader-syntax-meta: #5b421a;
+  --reader-syntax-invalid: #8b1e28;
   /* Older floating map overlays use this RGB-only value for callers that
    * supply an alpha. The phase 7a command bar and panel use --chrome-glass. */
   --chrome-float-rgb: 255, 255, 255;
@@ -238,6 +252,19 @@
   --on-accent: #0a1410;
   --grabber: #3a474f;
   --warn: #c9a14a;
+  /* Dark selection is 1.77:1 against --chrome2; the light grammar colors
+   * retain at least 4.7:1 on both surfaces. See the reader CI assertions. */
+  --reader-selection-bg: #3d4f55;
+  --reader-syntax-keyword: #d5c0ff;
+  --reader-syntax-string: #a1e3cd;
+  --reader-syntax-comment: #c5e19a;
+  --reader-syntax-number: #ffd18a;
+  --reader-syntax-type: #91c7ff;
+  --reader-syntax-function: #dfb8ff;
+  --reader-syntax-variable: #d9e1e3;
+  --reader-syntax-operator: #aebeff;
+  --reader-syntax-meta: #ffb1a7;
+  --reader-syntax-invalid: #ffb8b8;
   --chrome-float-rgb: 21, 28, 33;
   --canvas: #0e161a;
   --coast: #293539;
@@ -283,6 +310,17 @@
     --on-accent: #0a1410;
     --grabber: #3a474f;
     --warn: #c9a14a;
+    --reader-selection-bg: #3d4f55;
+    --reader-syntax-keyword: #d5c0ff;
+    --reader-syntax-string: #a1e3cd;
+    --reader-syntax-comment: #c5e19a;
+    --reader-syntax-number: #ffd18a;
+    --reader-syntax-type: #91c7ff;
+    --reader-syntax-function: #dfb8ff;
+    --reader-syntax-variable: #d9e1e3;
+    --reader-syntax-operator: #aebeff;
+    --reader-syntax-meta: #ffb1a7;
+    --reader-syntax-invalid: #ffb8b8;
     --chrome-float-rgb: 21, 28, 33;
     --canvas: #0e161a;
     --coast: #293539;

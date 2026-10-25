@@ -1,11 +1,51 @@
 import { chromium } from 'playwright';
 import fs from 'node:fs';
+import {createHash} from 'node:crypto';
 import {cameraBoxes,settleCamera} from './camera-settle.mjs';
 import assert from 'node:assert/strict';
 const fixture=JSON.parse(fs.readFileSync('../.local-reader/fixture.json'));
 fs.mkdirSync('../reader-evidence',{recursive:true});
 const browser=await chromium.launch({headless:true});
 const results=[];
+const browserOrigin='http://127.0.0.1:8988';
+const contrast=(a,b)=>{const lum=s=>{const rgb=s.match(/[\d.]+/g).slice(0,3).map(Number).map(x=>{x/=255;return x<=.04045?x/12.92:((x+.055)/1.055)**2.4});return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};const [x,y]=[lum(a),lum(b)].sort((x,y)=>y-x);return(x+.05)/(y+.05);};
+async function inspectReaderContrast(page){
+ const result=await page.locator('.cm-content').evaluate(el=>{
+  const editor=el.closest('.cm-editor'),selection=editor.querySelector('.cm-selectionBackground');
+  if(!selection)throw new Error('deep-linked selection background is missing');
+  const background=getComputedStyle(editor).backgroundColor,selectionBackground=getComputedStyle(selection).backgroundColor;
+  const tokens=[...el.querySelectorAll('span[class]')].filter(x=>x.textContent.trim()).map(x=>({text:x.textContent.slice(0,40),color:getComputedStyle(x).color}));
+  return{background,selectionBackground,tokens};
+ });
+ assert(result.tokens.length,'no syntax tokens rendered');
+ assert(new Set(result.tokens.map(x=>x.color)).size>=3,`expected three syntax colors, got ${JSON.stringify([...new Set(result.tokens.map(x=>x.color))])}`);
+ for(const token of result.tokens){assert(contrast(token.color,result.background)>=4.5,`token on editor background: ${JSON.stringify(token)}`);assert(contrast(token.color,result.selectionBackground)>=4.5,`token on selected range: ${JSON.stringify(token)}`);}
+ assert(contrast(result.selectionBackground,result.background)>=1.5,`selection tint is too close to editor background: ${JSON.stringify(result)}`);
+ return{background:result.background,selectionBackground:result.selectionBackground,selectionContrast:contrast(result.selectionBackground,result.background),distinctTokenColors:[...new Set(result.tokens.map(x=>x.color))],minimumTokenContrast:Math.min(...result.tokens.flatMap(x=>[contrast(x.color,result.background),contrast(x.color,result.selectionBackground)]))};
+}
+async function inspectFindTargets(page){
+ const targets=await page.locator('.cm-search').evaluate(el=>[...el.querySelectorAll('input:not([type=checkbox]),label,button')].map(x=>{const r=x.getBoundingClientRect();return{tag:x.tagName,type:x.getAttribute('type'),font:parseFloat(getComputedStyle(x).fontSize),width:r.width,height:r.height};}));
+ assert(targets.length,'Find panel has no measurable controls');
+ for(const target of targets){assert(target.height>=44,JSON.stringify(target));if(target.tag==='INPUT')assert(target.font>=16,JSON.stringify(target));if(target.tag==='BUTTON')assert(target.width>=44,JSON.stringify(target));}
+ return targets;
+}
+async function assertPhoneActionAndControls(page,width,height){
+ const action=page.getByRole('button',{name:'Read selected source'}),actionBox=await action.boundingBox();
+ assert(await action.isVisible()&&actionBox,`source action missing at ${width}x${height}`);
+ assert(actionBox.x>=0&&actionBox.y>=0&&actionBox.x+actionBox.width<=width+1&&actionBox.y+actionBox.height<=height+1,`source action outside viewport: ${JSON.stringify(actionBox)}`);
+ assert(await action.evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),'source action is covered');
+ const column=page.locator('[data-control-column]'),buttons=column.locator('button'),count=await buttons.count();
+ if(count){
+  const actionRect={left:actionBox.x,right:actionBox.x+actionBox.width,top:actionBox.y,bottom:actionBox.y+actionBox.height};
+  for(const button of await buttons.all()){
+   const box=await button.boundingBox();assert(box&&box.x>=0&&box.y>=0&&box.x+box.width<=width+1&&box.y+box.height<=height+1,`map control outside viewport: ${JSON.stringify(box)}`);
+   assert(await button.evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),'map control is covered');
+   assert(box.x>=actionRect.right||box.x+box.width<=actionRect.left||box.y>=actionRect.bottom||box.y+box.height<=actionRect.top,`source action overlaps map control: ${JSON.stringify({actionBox,box})}`);
+  }
+  assert(count>=4,`partial map control column at ${width}x${height}: ${count}`);
+ }
+ return{detent:await page.locator('[data-phone-sheet]').getAttribute('data-detent'),sourceAction:actionBox,controlColumnVisible:count>0,controlCount:count};
+}
 async function copySelection(page, expected){
  await page.locator('.cm-content').focus();
  await page.waitForFunction(value=>window.getSelection()?.toString()===value,expected);
@@ -13,25 +53,42 @@ async function copySelection(page, expected){
  await page.waitForFunction(async value=>(await navigator.clipboard.readText())===value,expected);
 }
 try{
-for(const [width,height] of [[320,568],[390,900],[844,390],[1280,900]])for(const colorScheme of ['light','dark']){
+for(const [width,height] of [[320,568],[390,844],[844,390],[1280,900]])for(const colorScheme of ['light','dark']){
  const narrow=width<=820||height<=500;
  const context=await browser.newContext({viewport:{width,height},colorScheme,hasTouch:narrow,reducedMotion:'reduce',permissions:['clipboard-read','clipboard-write']});
  const outbound=[];await context.route('**/*',route=>{const url=new URL(route.request().url());if(url.protocol==='http:'&&url.hostname==='127.0.0.1'&&url.port==='8988')return route.continue();if(['data:','blob:'].includes(url.protocol))return route.continue();outbound.push(url.origin);return route.abort();});
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.addInitScript(()=>{window.readerInitialHistoryLength=history.length;window.readerHistory=[{kind:'load',url:location.href,state:history.state}];for(const kind of ['pushState','replaceState']){const original=history[kind].bind(history);history[kind]=(...args)=>{original(...args);window.readerHistory.push({kind,url:location.href,state:history.state});};}addEventListener('popstate',()=>window.readerHistory.push({kind:'pop',url:location.href,state:history.state}));});
- await page.goto('http://127.0.0.1:8988/');await page.getByRole('heading',{name:'Your local repository'}).waitFor();await page.screenshot({path:`../reader-evidence/local-${width}-${colorScheme}.png`,animations:'disabled'});
+ await page.goto(`${browserOrigin}/`);await page.getByRole('heading',{name:'Your local repository'}).waitFor();
+ if(width===320&&colorScheme==='light'){
+  const homeText=await page.locator('[data-local-page]').innerText(),storagePath=homeText.match(/^Storage:\s*(.+)$/m)?.[1];assert(storagePath?.startsWith('/')&&/[\\/]store$/.test(storagePath),'owner-local storage path disclosure is missing');assert(homeText.includes('Only committed HEAD is analyzed'));
+  await page.getByRole('button',{name:'Refresh from checkout HEAD'}).click();await page.getByRole('heading',{name:'Confirm analysis scope'}).waitFor();
+  await page.getByRole('button',{name:'Index detected source'}).click();
+  const saved=page.getByRole('link',{name:/Open/}).last();await saved.waitFor({timeout:120000});await saved.click();await page.locator('.map-svg').waitFor();
+  await page.locator('[data-open-search]').click();await page.getByRole('combobox',{name:'Search districts, files and symbols'}).fill('cart.py');
+  await page.getByRole('option').first().click();await page.getByRole('button',{name:'Read selected source'}).waitFor();await page.getByRole('button',{name:'Read selected source'}).tap();await page.locator('.cm-content').waitFor();
+  assert(await page.locator('.cm-content').innerText().then(text=>text.includes('def ')),'native detect → confirm → index → map → read journey did not display committed source');
+ }
+ await page.goto(`${browserOrigin}/`);await page.getByRole('heading',{name:'Your local repository'}).waitFor();await page.screenshot({path:`../reader-evidence/local-${width}-${colorScheme}.png`,animations:'disabled'});
  const base=`http://127.0.0.1:8988/snapshot/${fixture.snapshotA}?file=${fixture.file}`;
  await page.goto(base);await page.locator('.map-svg').waitFor();await page.getByRole('button',{name:'Read selected source'}).waitFor();await settleCamera(page);
  const before=await cameraBoxes(page);
  const sourceAction=page.getByRole('button',{name:'Read selected source'});
- if(narrow){
-  const controls=page.locator('[data-control-column] button');assert(await controls.count()>=4);
-  const actionBox=await sourceAction.boundingBox();assert(actionBox);
-  for(const button of [sourceAction,...await controls.all()]){
-   const box=await button.boundingBox();assert(box&&box.x>=0&&box.y>=0&&box.x+box.width<=width+1&&box.y+box.height<=height+1);
-   assert(await button.evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),'map control is covered');
-   if(button!==sourceAction)assert(box.x>=actionBox.x+actionBox.width||box.x+box.width<=actionBox.x||box.y>=actionBox.y+actionBox.height||box.y+box.height<=actionBox.y,'source action overlaps control');
+ let phoneControls=[];
+ if(narrow&&height>500){
+  await page.locator('[data-phone-sheet][data-detent="peek"]').waitFor();phoneControls.push(await assertPhoneActionAndControls(page,width,height));assert.equal(phoneControls.at(-1).controlCount,4,'Peek should leave all four map controls visible');
+  await page.locator('[data-sheet-grabber]').click();await page.locator('[data-phone-sheet][data-detent="half"]').waitFor();phoneControls.push(await assertPhoneActionAndControls(page,width,height));
+  assert.equal(phoneControls.at(-1).controlCount,width===320?0:4,'map controls should hide only when the short Half sheet covers them');
+  await page.goto(base);await page.locator('.map-svg').waitFor();await page.getByRole('button',{name:'Read selected source'}).waitFor();await settleCamera(page);
+ }else if(width===844&&height===390){
+  const sheet=page.locator('[data-side-sheet]'),toggle=page.locator('[data-side-toggle]');await sheet.waitFor();await toggle.waitFor();
+  if(await sheet.getAttribute('data-side-open')==='true'){
+   assert(await toggle.isVisible());const toggleBox=await toggle.boundingBox();assert(toggleBox&&await toggle.evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}));
+   await toggle.click();
   }
+  await page.locator('[data-side-sheet][data-side-open="false"]').waitFor();
+  await page.getByRole('button',{name:'Show the side sheet'}).click();await page.locator('[data-side-sheet][data-side-open="true"]').waitFor();
+  phoneControls.push(await assertPhoneActionAndControls(page,width,height));assert.equal(phoneControls.at(-1).controlCount,5,'landscape side sheet should expose the four map controls and sheet toggle');
  }
  await page.screenshot({path:`../reader-evidence/map-source-action-${width}-${colorScheme}.png`,animations:'disabled'});
  if(narrow)await sourceAction.tap();else await sourceAction.click();
@@ -39,38 +96,40 @@ for(const [width,height] of [[320,568],[390,900],[844,390],[1280,900]])for(const
  assert.equal(await page.locator('.cm-content').getAttribute('contenteditable'),'false');
  const original=await page.locator('.cm-content').innerText();
  await page.waitForFunction(()=>document.querySelector('.cm-content .cm-line span[class]'));
- const contrasts=await page.locator('.cm-content').evaluate(el=>{
-  const rgb=s=>s.match(/[\d.]+/g).slice(0,3).map(Number);
-  const lum=s=>rgb(s).map(x=>{x/=255;return x<=.04045?x/12.92:((x+.055)/1.055)**2.4}).reduce((a,x,i)=>a+x*[.2126,.7152,.0722][i],0);
-  const background=lum(getComputedStyle(el.closest('.cm-editor')).backgroundColor);
-  return [...el.querySelectorAll('span[class]')].filter(x=>x.textContent.trim()).map(x=>{const color=getComputedStyle(x).color;const l=lum(color);return {text:x.textContent.slice(0,40),color,ratio:(Math.max(l,background)+.05)/(Math.min(l,background)+.05)};});
- });assert(contrasts.length);for(const token of contrasts)assert(token.ratio>=4.5,JSON.stringify(token));
- await page.locator('.cm-content').focus();await page.keyboard.type('cannot edit');
+ const content=page.locator('.cm-content');await content.focus();const rangeContrast=await inspectReaderContrast(page);
+ await page.keyboard.press('Control+Home');for(let i=0;i<4;i++)await page.keyboard.press('Shift+ArrowRight');
+ const selectionMatch=page.locator('.cm-selectionMatch').first();await selectionMatch.waitFor();
+ const selectionMatchColors=await selectionMatch.evaluate(el=>{const text=el.querySelector('span')??el;return{background:getComputedStyle(el).backgroundColor,color:getComputedStyle(text).color};});
+ const selectionMatchContrast=contrast(selectionMatchColors.background,selectionMatchColors.color);assert(selectionMatchContrast>=4.5,JSON.stringify({selectionMatchColors,selectionMatchContrast}));
+ await page.keyboard.type('cannot edit');
  assert.equal(await page.locator('.cm-content').innerText(),original);
  await page.keyboard.press('Control+a');await page.keyboard.press('Control+c');
  assert((await page.evaluate(()=>navigator.clipboard.readText())).includes('def '));
  await page.locator('.cm-content').evaluate(el=>{const data=new DataTransfer();data.setData('text/plain','mutated paste');el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});assert.equal(await page.locator('.cm-content').innerText(),original);
  await page.getByRole('button',{name:'Find in file'}).click();
- if(narrow){
-  const dimensions=await page.locator('.cm-search').evaluate(el=>[...el.querySelectorAll('input:not([type=checkbox]),label,button')].map(x=>{const r=x.getBoundingClientRect();return {tag:x.tagName,type:x.getAttribute('type'),font:parseFloat(getComputedStyle(x).fontSize),width:r.width,height:r.height};}));
-  for(const target of dimensions){assert(target.height>=44,JSON.stringify(target));if(target.tag==='INPUT')assert(target.font>=16,JSON.stringify(target));if(target.tag==='BUTTON')assert(target.width>=44,JSON.stringify(target));}
- }
+ const findTargets=await inspectFindTargets(page);
  const search=page.locator('.cm-search input[name=search]');await search.fill('def');await page.locator('.cm-search button[name=next]').click();
- assert(await page.locator('.cm-search').isVisible());
+ assert(await page.locator('.cm-search').isVisible());const activeMatch=page.locator('.cm-searchMatch-selected').first();await activeMatch.waitFor();
+ const activeMatchColors=await activeMatch.evaluate(el=>{const text=el.querySelector('span')??el;return{background:getComputedStyle(el).backgroundColor,color:getComputedStyle(text).color};});
+ const activeMatchContrast=contrast(activeMatchColors.background,activeMatchColors.color);assert(activeMatchContrast>=4.5,JSON.stringify({activeMatchColors,activeMatchContrast}));
+ const findScreenshot=`reader-find-${width}x${height}-${colorScheme}.png`;await page.screenshot({path:`../reader-evidence/${findScreenshot}`,animations:'disabled'});
  await search.fill('no_such_fixture_739');await page.locator('.cm-search button[name=next]').click();
- await page.getByText('No results',{exact:true}).waitFor();
+ await page.getByText('No results',{exact:true}).waitFor();await page.getByRole('button',{name:'Find in file'}).focus();
  const afterTyping=await cameraBoxes(page);assert.deepEqual(afterTyping,before,'source typing changed map geometry');
- await page.keyboard.press('Escape');
+ await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.querySelector('.cm-search'));assert.equal(await page.locator('[data-source-reader]').count(),1,'Escape should close Find before reading');
+ assert(await page.getByRole('button',{name:'Find in file'}).evaluate(el=>el===document.activeElement),'closing Find should focus its opener');
  await page.screenshot({path:`../reader-evidence/reader-${width}-${colorScheme}.png`,animations:'disabled'});
- await page.getByRole('button',{name:'Return to map'}).click();assert.equal(await page.locator('[data-source-reader]').count(),0);
+ await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));assert.equal(await page.locator('[data-source-reader]').count(),0,'second Escape should close reading');
  assert(await page.getByRole('button',{name:'Read selected source'}).evaluate(el=>el===document.activeElement));
  await settleCamera(page);assert.deepEqual(await cameraBoxes(page),before);
+ await page.getByRole('button',{name:'Read selected source'}).click();await page.locator('.cm-content').waitFor();await page.getByRole('button',{name:'Return to map'}).click();assert.equal(await page.locator('[data-source-reader]').count(),0);assert(await page.getByRole('button',{name:'Read selected source'}).evaluate(el=>el===document.activeElement));
  await page.getByRole('button',{name:'Read selected source'}).click();await page.locator('.cm-content').waitFor();
  await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));
  assert(new URL(page.url()).searchParams.get('file')===fixture.file);await settleCamera(page);assert.deepEqual(await cameraBoxes(page),before);
  await page.goto(base+'&read=true&line=2.5&end=4.5');await page.locator('.cm-content').waitFor();
  if(narrow)assert.equal(await page.evaluate(()=>history.length-window.readerInitialHistoryLength),2,'selection and reader must create distinct native history entries');
  await page.reload();await page.locator('.cm-content').waitFor();
+ await page.locator('.cm-content').focus();const deepLinkedRange=await inspectReaderContrast(page);
  assert((await page.locator('.source-provenance').first().innerText()).includes(fixture.a));
  const committed=await(await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}/source?commit=${fixture.a}&path=${encodeURIComponent(fixture.file)}`)).json();
  await copySelection(page,committed.text.split('\n').slice(1,4).join('\n'));
@@ -110,7 +169,10 @@ for(const [width,height] of [[320,568],[390,900],[844,390],[1280,900]])for(const
   await page.getByRole('button',{name:'Return to map'}).click();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));assert.equal(new URL(page.url()).searchParams.get('file'),file);await settleCamera(page);assert.deepEqual(await cameraBoxes(page),selectedCamera);
   await page.getByRole('button',{name:'Read selected source'}).click();await page.locator('.cm-content').waitFor();await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));assert.equal(new URL(page.url()).searchParams.get('file'),file);
  }
- assert.deepEqual(errors,[]);assert.deepEqual(outbound,[],'private local journey attempted outbound request');results.push({width,height,contrasts,colorScheme,passed:true,images:'unreviewed candidates',device:'Chromium emulation',browser:browser.version()});await context.close();
+ assert.deepEqual(errors,[]);assert.deepEqual(outbound,[],'private local journey attempted outbound request');
+ results.push({width,height,colorScheme,rangeContrast,selectionMatchContrast,activeMatchContrast,findTargets,findScreenshot,deepLinkedRange,phoneControls,images:[`local-${width}-${colorScheme}.png`,`map-source-action-${width}-${colorScheme}.png`,`reader-${width}-${colorScheme}.png`,findScreenshot],passed:true,reviewStatus:'unreviewed candidate',device:'Chromium emulation',browser:browser.version()});await context.close();
 }
-fs.writeFileSync('../reader-evidence/browser.json',JSON.stringify({sourceSha:process.env.GITHUB_SHA??null,runId:process.env.GITHUB_RUN_ID??null,fixture,results,visualReview:'pending human; CI candidates are not approval',physicalDevice:'not run'},null,2));
+fs.renameSync('../.local-reader/checkout','../.local-reader/moved-checkout');
+const movedPage=await browser.newPage();const afterCheckoutMove=await(await movedPage.request.get(`${browserOrigin}/api/maps/snapshot/${fixture.snapshotA}/source?commit=${fixture.a}&path=${encodeURIComponent(fixture.file)}`)).json();assert.equal(createHash('sha256').update(afterCheckoutMove.text).digest('hex'),fixture.sourceSha256,'saved A source changed after checkout move');await movedPage.close();
+fs.writeFileSync('../reader-evidence/browser.json',JSON.stringify({sourceSha:process.env.GITHUB_SHA??null,runId:process.env.GITHUB_RUN_ID??null,fixture,results,nativeJourney:{steps:['local page','detect','confirm','index','saved map','search file','read source'],result:'passed on Chromium emulation',storagePathDisclosed:true},afterCheckoutMove:'saved A source remained readable after moving checkout',visualReview:'pending human; CI candidates are not approval',physicalDevice:'not run'},null,2));
 }finally{await browser.close()}

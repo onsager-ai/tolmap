@@ -371,6 +371,15 @@ jobs:
           name: reader-evidence
           path: reader-evidence/
           if-no-files-found: warn
+      - name: Upload focused reader visual review candidates
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tolmap-reader-visual-review
+          path: |
+            reader-evidence/browser.json
+            reader-evidence/reader-find-*.png
+          if-no-files-found: warn
 
   # Issue #110 P1a: `tolmap build --refs scip` must be as deterministic as
   # the hand-written path -- three builds, byte-identical map and symbols

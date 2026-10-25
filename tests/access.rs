@@ -3,14 +3,27 @@
 use std::cell::Cell;
 use tolmap::access::{enforce, Denied, Operation, Policy, Request, Resource};
 
+const OPERATIONS: [Operation; 7] = [
+    Operation::Read,
+    Operation::Source,
+    Operation::Admit,
+    Operation::Cancel,
+    Operation::Events,
+    Operation::Artifact,
+    Operation::Publish,
+];
+
 struct Owner {
     active: Cell<bool>,
     available: Cell<bool>,
+    allowed: Cell<Option<Operation>>,
 }
+
 impl Policy for Owner {
     fn check(&self, request: Request<'_>) -> Result<(), Denied> {
         if self.active.get()
             && self.available.get()
+            && self.allowed.get() == Some(request.operation)
             && request.principal == "authenticated-reader"
             && request.resource.access_domain == "workspace-a"
             && request.resource.repository == "private-repo"
@@ -22,6 +35,7 @@ impl Policy for Owner {
         }
     }
 }
+
 fn request(operation: Operation) -> Request<'static> {
     Request {
         principal: "authenticated-reader",
@@ -35,30 +49,31 @@ fn request(operation: Operation) -> Request<'static> {
 }
 
 #[test]
-fn protected_surfaces_require_current_authority_before_even_warm_delivery() {
+fn each_operation_has_an_independent_allow_and_deny_boundary() {
     let owner = Owner {
         active: Cell::new(true),
         available: Cell::new(true),
+        allowed: Cell::new(None),
     };
-    // Status, map, symbol and comparison reads share Read in v1. A cache hit
-    // is the same operation on the same full resource identity, never a grant.
-    for (surface, operation) in [
-        ("map", Operation::Read),
-        ("symbol", Operation::Read),
-        ("comparison", Operation::Read),
-        ("status", Operation::Read),
-        ("source", Operation::Source),
-        ("admit", Operation::Admit),
-        ("cancel", Operation::Cancel),
-        ("SSE event", Operation::Events),
-        ("artifact/download", Operation::Artifact),
-        ("publication", Operation::Publish),
-    ] {
+    // One operation grant cannot be reused as another operation. This is a
+    // library contract fixture; route adapters must still wire each handler.
+    for operation in OPERATIONS {
         let resource = request(operation);
-        owner.active.set(true);
-        owner.available.set(true);
+        owner.allowed.set(Some(operation));
         let warm_cache = Cell::new(0);
         assert_eq!(enforce(&owner, resource, || warm_cache.replace(1)), Ok(0));
+        for other in OPERATIONS.into_iter().filter(|candidate| *candidate != operation) {
+            assert_eq!(
+                enforce(
+                    &owner,
+                    Request { operation: other, ..resource },
+                    || warm_cache.set(9)
+                ),
+                Err(Denied),
+                "operation {other:?} cannot reuse {operation:?} authority"
+            );
+            assert_eq!(warm_cache.get(), 1, "denied operation touched cache");
+        }
         for invalid in [
             Request {
                 principal: "guessed-reader",
@@ -79,6 +94,7 @@ fn protected_surfaces_require_current_authority_before_even_warm_delivery() {
                 ..resource
             },
             Request {
+                // A guessed immutable foreign-resource ID is not authority.
                 resource: Resource {
                     revision: Some("guessed-snapshot"),
                     ..resource.resource
@@ -89,47 +105,54 @@ fn protected_surfaces_require_current_authority_before_even_warm_delivery() {
             assert_eq!(
                 enforce(&owner, invalid, || warm_cache.set(9)),
                 Err(Denied),
-                "{surface}"
+                "{operation:?}"
             );
-            assert_eq!(warm_cache.get(), 1, "denied {surface} touched cache");
+            assert_eq!(warm_cache.get(), 1, "denied {operation:?} touched cache");
         }
         owner.active.set(false);
         assert_eq!(
             enforce(&owner, resource, || warm_cache.set(9)),
             Err(Denied),
-            "revoked {surface}"
+            "revoked {operation:?}"
         );
         owner.active.set(true);
         owner.available.set(false);
         assert_eq!(
             enforce(&owner, resource, || warm_cache.set(9)),
             Err(Denied),
-            "unavailable policy {surface}"
+            "unavailable policy {operation:?}"
         );
         assert_eq!(warm_cache.get(), 1);
+        owner.available.set(true);
     }
 }
 
 #[test]
-fn untrusted_headers_do_not_replace_trusted_context() {
+fn untrusted_principal_and_guessed_resource_are_denied() {
     let owner = Owner {
         active: Cell::new(true),
         available: Cell::new(true),
+        allowed: Cell::new(Some(Operation::Read)),
     };
-    // There is deliberately no header deserializer on Request/Resource.
-    // Model an adapter which holds a foreign authenticated principal while an
-    // attacker supplies plausible header values: they cannot change its Request.
-    let headers = [
-        ("X-Principal", "authenticated-reader"),
-        ("X-Workspace", "workspace-a"),
-    ];
-    assert_eq!(headers.len(), 2);
-    let trusted = Request {
+    let foreign_principal = Request {
         principal: "foreign-reader",
         ..request(Operation::Read)
     };
     assert_eq!(
-        enforce(&owner, trusted, || panic!("spoof delivered bytes")),
+        enforce(&owner, foreign_principal, || {
+            panic!("foreign principal delivered bytes")
+        }),
+        Err(Denied)
+    );
+    let guessed_id = Request {
+        resource: Resource {
+            revision: Some("guessed-snapshot"),
+            ..request(Operation::Read).resource
+        },
+        ..request(Operation::Read)
+    };
+    assert_eq!(
+        enforce(&owner, guessed_id, || panic!("guessed resource ID delivered bytes")),
         Err(Denied)
     );
 }
@@ -139,15 +162,18 @@ fn revocation_between_admission_processing_events_and_publish_stops_later_action
     let owner = Owner {
         active: Cell::new(true),
         available: Cell::new(true),
+        allowed: Cell::new(Some(Operation::Admit)),
     };
     assert_eq!(
         enforce(&owner, request(Operation::Admit), || "admitted"),
         Ok("admitted")
     );
+    owner.allowed.set(Some(Operation::Source));
     assert_eq!(
         enforce(&owner, request(Operation::Source), || "materialized"),
         Ok("materialized")
     );
+    owner.allowed.set(Some(Operation::Events));
     assert_eq!(
         enforce(&owner, request(Operation::Events), || "first event"),
         Ok("first event")
@@ -159,14 +185,12 @@ fn revocation_between_admission_processing_events_and_publish_stops_later_action
         Operation::Publish,
         Operation::Artifact,
     ] {
+        owner.allowed.set(Some(operation));
         assert_eq!(
-            enforce(&owner, request(operation), || panic!(
-                "continued after revoke"
-            )),
+            enforce(&owner, request(operation), || panic!("continued after revoke")),
             Err(Denied)
         );
     }
-    // An embedding CancelProbe must translate live policy denial into process
-    // cancellation too. Actual child kill/reap is qualified by local-reader CI;
-    // this contract test does not invent an HTTP stream or a process monitor.
+    // No process or stream hook is part of this library. An embedding adapter
+    // must translate live policy denial into CancelProbe and close its stream.
 }

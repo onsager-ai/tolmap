@@ -12,9 +12,9 @@
 .source-editor .cm-search button{min-width:44px;min-height:44px;font-size:14px}
 .source-editor .cm-search button[name=close]{position:absolute;right:0;top:0}
 .source-editor .cm-editor .cm-searchMatch,.source-editor .cm-editor .cm-searchMatch-selected{background:var(--on);color:var(--chrome2)}
-.source-editor .cm-searchMatch span{color:inherit!important}
-.source-editor .cm-selectionMatch{background:var(--chrome)}
-.source-editor ::selection{background:var(--on);color:var(--chrome2)}
+.source-editor .cm-searchMatch span,.source-editor .cm-searchMatch-selected span{color:inherit!important}
+.source-editor .cm-selectionMatch,.source-editor .cm-selectionMatch span{background:var(--on);color:var(--chrome2)!important}
+.source-editor ::selection{background:var(--reader-selection-bg);color:var(--on)}
 .source-action{position:absolute;right:calc(80px + env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:45;min-height:44px;padding:10px 16px;border-radius:12px;background:var(--accent);color:var(--on-accent);box-shadow:var(--chrome-shadow)}
 .source-action-sheet{position:static;display:block;width:100%;box-shadow:none}
 @media(max-width:820px),(max-height:500px){.source-reader{width:100%;border-left:0}}

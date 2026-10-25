@@ -473,6 +473,16 @@ no login or upload and does not transition to Hub automatically.
 | Reader network/access failure | **Retry source** preserves repository, snapshot, path and line range; restore the local service/access first. Return to map preserves selection/camera. |
 | Missing / expired source | Restore the same private store/snapshot if available, or explicitly select a different saved snapshot. No public/default-branch fallback. |
 | Binary, symlink/submodule, over 1 MiB | Explicit refusal keeps selected map context. Inspect locally outside this reader; no truncated content is represented as complete. |
+
+CI exercises these recovery promises in `scripts/local-reader-fixture.py`: a
+dirty tracked edit and untracked file do not enter committed snapshot A; a
+detection failure leaves the prior prepared scope available; a low-confidence
+root is shown with its evidence before confirmation; and a failed indexing
+attempt keeps the prepared scope available for retry. The production browser
+journey in `web/scripts/check-source-reader.mjs` drives the native pages through
+detect → confirm → index → map → file search → read, then separately checks
+history navigation and browser Back. This is fixture evidence for local mode,
+not hosted custody or physical Safari acceptance.
 | Long line / grammar load failure | Readable plain text, selection/copy/search remain; grammar failure does not block source retrieval. |
 | Search miss | **No results** leaves source and range intact; change query or close Find, then return to map. |
 

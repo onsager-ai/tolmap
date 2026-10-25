@@ -12,7 +12,7 @@ separate tasks.
 | --- | --- | --- |
 | Historical combined gallery | Core `b073260b203877a2b1bcf1f427752e66068a938e` (capture merge tree `be495d1`), Hub `86b87f918676ba4bdd594d1c5f5112f810d6ea26`; dataset `tolmap-hub-20261020`, SHA-256 `03a8c0714d84f1f9d45f73d234856ea3b458104ae5a476f4c43349e5a8df3c4a` | Historical, pending human; 532 Core, 200 Hub native and 396 Hub viewer captures. Not current Core main. |
 | Logo-era Core candidate | Core `aa2b6cd7209de7b96bae37e7411c10caf0302b9b`; [run 39742883954](https://github.com/onsager-ai/tolmap/actions/runs/39742883954); visual artifact `12409484732`, Storybook artifact `12410610337` | Successful capture, pending human. Zero UI-path diff to baseline `ec3455626e1d141b0c95f8df6770e9eb45e220ca` in `web/`, `src/local_pages.rs`, `.github/workflows/storybook.yml` per Gateway audit. Does not include this reader fix. |
-| This reader revision | Draft PR head and exact CI runs recorded in PR check evidence; `reader-evidence/browser.json` and `performance.json` carry source SHA/run ID; Storybook candidate manifest owns capture identities | Pending CI and human image review; never promote an old capture as evidence for this head. |
+| This reader revision | Draft PR head and exact CI runs recorded in PR check evidence; `reader-evidence/browser.json` and `performance.json` carry source SHA/run ID; `tolmap-reader-visual-review` contains Find-open PNGs plus the browser manifest | Pending CI and human image review; never promote an old capture as evidence for this head. |
 
 The existing owner-private gallery is
 <https://tolmap-visual-review.tikazyq.chatgpt.site>. Its historical candidate
@@ -29,17 +29,20 @@ is older than this task; no deployment is authorized or performed here.
 
 | Prior candidate defect | Intended change / review focus | Automated evidence |
 | --- | --- | --- |
-| Phone Read selected source covered Zoom in | Action now belongs to existing portrait/landscape selection sheet, retaining action ref and file/symbol range. Inspect Peek card density and landscape sheet scroll; all map controls must remain usable. | Real local viewer control bounds, pairwise action/control non-overlap and center hit-testing at 320×568, 390×900 and 844×390, both themes. |
-| Default CM6 purple/blue unreadable on dark chrome | Reader-owned HighlightStyle retains grammar tags using Tolmap tokens; inspect actual syntax, selected range and Find match in both themes. Plain-text fallback remains. | Actual rendered token contrast ≥4.5:1, read-only/search/copy checks. |
+| Phone Read selected source covered Zoom in | Action now belongs to the existing portrait/landscape selection sheet, retaining action ref and file/symbol range. Inspect Peek/Half card density and landscape sheet scroll; controls may hide when covered by the sheet. | Real local viewer action visibility/hit-testing and non-overlap at Peek and Half at 320×568 and 390×844, plus collapsed → toggle → action at 844×390, both themes. |
+| Default CM6 purple/blue unreadable on dark chrome; selected line nearly invisible | Reader-owned HighlightStyle retains grammar tags using theme-specific tokens; selection and selection-match colors clear the checked contrast thresholds. Inspect actual syntax, selected range and Find match in both themes. Plain-text fallback remains. | Rendered token text ≥4.5:1 on editor and selection backgrounds; selection background ≥1.5:1 from editor; active Find and selection-match text ≥4.5:1. |
 | Small Find controls / Safari keyboard zoom risk | Inputs ≥16 px; labels/buttons/close ≥44 px; wrapping/scrolling panel; full reader follows visual viewport. Inspect keyboard, last match and safe areas on physical Safari. | Computed font/target dimensions; search match/miss; keyboard/focus/Back. Chromium cannot qualify the iOS keyboard. |
+| Find-open state absent from review screenshots; Escape did not dismiss Find from the reader header | Each profile now captures Find open with an active match; Escape closes Find first, then reading, and restores focus to the source action. | `reader-find-<width>x<height>-<theme>.png`, per-control dimensions, and two-step Escape/focus assertions in `reader-evidence/browser.json`. |
 
 Storybook retains production states for source ready/search/miss/loading/access
 failure/expired/missing/binary/large/unsupported/long-line across desktop, phone,
-landscape and tablet in light/dark. Local states cover detect/confirm/index/
-cancel/failure/history. Existing viewer CI retains named districts, landmarks,
-district/file/symbol cards and 40/110 px visibility gates. Actual local process
-CI adds A/B immutable source, refusal boundaries, map-only export, no-login and
-no observed outbound connect; performance uses production >800 kB normal/long-line
+landscape and tablet in light/dark. Local process CI covers detect/confirm/index,
+dirty/untracked exclusion, detection failure, low-confidence root confirmation,
+indexing retry, cancellation and history. Existing viewer CI retains named
+districts, landmarks, district/file/symbol cards and 40/110 px visibility gates.
+Actual local process CI adds A/B immutable source, refusal boundaries, map-only
+export, no-login and no non-loopback AF_INET/AF_INET6 connect; performance uses
+production >800 kB normal/long-line
 source, not the historical 20,032-byte screenshot as a performance proxy.
 
 Review the exact new CI artifacts, not just green jobs. A reviewer must record
