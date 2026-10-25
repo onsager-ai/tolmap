@@ -58,6 +58,7 @@ fn export_to(directory: &Path) -> Result<()> {
     // Issue #170: `tolmap check --format json`'s report, for the consumers
     // that gate on it (docs/CHECK.md).
     CheckReport::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::schema::SnapshotFreshness::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 

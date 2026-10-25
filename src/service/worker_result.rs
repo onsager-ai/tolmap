@@ -513,6 +513,54 @@ pub fn adopt(
         NameCache::default()
     };
 
+    // Optional extraction derivation travels with a complete local snapshot.
+    // Move entries out of worker-owned directories before inspecting them,
+    // exactly as for symbols; no symlink or unchecked path is carried forward.
+    let cache = taken.join("extraction");
+    if std::fs::symlink_metadata(&cache).is_ok() {
+        let work = staging.join("extraction.worker");
+        take(&cache, &work)?;
+        if !is_real_dir(&work)? {
+            return Err(invalid("extraction cache is not a directory"));
+        }
+        let dest = staging.join("extraction");
+        create_private_dir(&dest)?;
+        for namespace in std::fs::read_dir(&work)? {
+            let namespace = namespace?;
+            let name = namespace.file_name();
+            let valid = name.to_str().is_some_and(is_cache_digest);
+            if !valid {
+                return Err(invalid("invalid extraction namespace"));
+            }
+            let moved = staging.join(format!("cache-{}", name.to_string_lossy()));
+            take(&namespace.path(), &moved)?;
+            if !is_real_dir(&moved)? {
+                return Err(invalid("invalid extraction namespace directory"));
+            }
+            let target = dest.join(&name);
+            create_private_dir(&target)?;
+            for entry in std::fs::read_dir(&moved)? {
+                let entry = entry?;
+                let leaf = entry.file_name();
+                let valid = leaf
+                    .to_str()
+                    .and_then(|n| n.strip_suffix(".json"))
+                    .is_some_and(|n| is_cache_digest(n.strip_prefix("manifest-").unwrap_or(n)));
+                if !valid {
+                    return Err(invalid("invalid extraction cache entry"));
+                }
+                take_file(
+                    &entry.path(),
+                    &target.join(&leaf),
+                    "extraction cache entry",
+                    owner,
+                )?;
+            }
+            std::fs::remove_dir(&moved)?;
+        }
+        std::fs::remove_dir(&work)?;
+    }
+
     Ok(Adopted {
         map,
         symbols,
@@ -528,6 +576,39 @@ fn take(from: &Path, to: &Path) -> Result<bool, Refused> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
+}
+
+fn is_cache_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Copy only the sanitized derivation owned by a selected prior snapshot.
+/// A trusted embedding adapter must scope previous_maps by current authority.
+pub(crate) fn copy_extraction(source: &Path, dest: &Path) -> std::io::Result<()> {
+    if !source.is_dir() {
+        return Ok(());
+    }
+    create_private_dir(dest)?;
+    for namespace in std::fs::read_dir(source)? {
+        let namespace = namespace?;
+        if !namespace.file_type()?.is_dir()
+            || !namespace.file_name().to_str().is_some_and(is_cache_digest)
+        {
+            continue;
+        }
+        let target = dest.join(namespace.file_name());
+        create_private_dir(&target)?;
+        for entry in std::fs::read_dir(namespace.path())? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                copy_for_worker(&entry.path(), &target.join(entry.file_name()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn take_file(from: &Path, to: &Path, what: &str, owner: Option<u32>) -> Result<(), Refused> {

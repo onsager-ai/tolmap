@@ -706,6 +706,16 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         .into_iter()
         .map(|source| (source.pkg, source.language))
         .collect::<Vec<_>>();
+    let cache_identity =
+        std::fs::read(PathBuf::from(&spec.cache_dir).join("extraction-identity.json"))
+            .map(|bytes| crate::incremental::digest(&bytes))
+            .unwrap_or_else(|_| crate::incremental::digest(repo_ref.slug.as_bytes()));
+    let progress = &progress
+        .clone()
+        .with_cache(crate::incremental::Cache::local(
+            PathBuf::from(&spec.output_dir).join("extraction"),
+            cache_identity,
+        ));
     let (graph, symbol_records) = extract::build_multi_source_with_symbols_progress(
         &materialized.path,
         &source_pairs,

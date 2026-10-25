@@ -704,6 +704,11 @@ impl Store {
         Ok(rows)
     }
 
+    pub(crate) fn latest_request(&self, slug: &str) -> Result<Option<JobRow>> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        conn.query_row("SELECT job_id, slug, commit_sha, spec_json, class, status, attempt, epoch, lease_holder, lease_deadline_ms, queue_order, snapshot_json FROM jobs WHERE slug = ?1 ORDER BY queue_order DESC LIMIT 1", [slug], row_to_job).optional_context()
+    }
+
     pub fn job(&self, job_id: &str) -> Result<Option<JobRow>> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         conn.query_row(

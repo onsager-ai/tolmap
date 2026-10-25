@@ -251,6 +251,33 @@ pub fn execute(
         checkout.branch.as_deref(),
         &|line: String| eprintln!("job {job_id}: {line}"),
     );
+    // Derivation follows the exact same prior-snapshot selection as naming.
+    // It is copied, never shared with another worker's uid or repository.
+    if let Some(prior) = inputs
+        .previous_maps
+        .iter()
+        .find(|row| row.branch == checkout.branch)
+        .or_else(|| inputs.previous_maps.first())
+    {
+        if let Some(parent) = prior.path.parent() {
+            if let Err(error) = worker_result::copy_extraction(
+                &parent.join("extraction"),
+                &output_dir.join("extraction"),
+            ) {
+                eprintln!("job {job_id}: extraction_cache_copy_failed: {error}");
+                let _ = std::fs::remove_dir_all(output_dir.join("extraction"));
+            }
+        }
+    }
+    let cache_identity =
+        serde_json::to_vec(&(env.clone_cache.to_string_lossy(), &job.owner, &job.slug))
+            .map_err(|error| internal(&error))?;
+    if let Err(error) = std::fs::write(
+        worker_cache_dir.join("extraction-identity.json"),
+        cache_identity,
+    ) {
+        return fail(internal(&error));
+    }
     // Chown + lock down the job's directory *before* the child that will
     // run inside it is spawned -- see `harden_job_dir`. This covers the
     // fresh `repo/` checkout made above too: a real, non-hardlinked copy,

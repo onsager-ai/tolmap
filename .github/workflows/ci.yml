@@ -145,6 +145,13 @@ jobs:
       - name: cargo build
         run: cargo build --locked --release --bin tolmap
 
+      - name: Export schema for review (CI owns generation)
+        run: cargo run --locked --release --bin generate-types -- --output generated-bindings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generated-bindings
+          path: generated-bindings
+
       - name: Incremental indexing paired measurements (#225)
         run: python3 eval/incremental_benchmark.py ./target/release/tolmap incremental-results
 

@@ -229,6 +229,7 @@ struct RegistryInner {
     remote_classes: Option<Vec<Class>>,
     /// The last admission number given out (`PendingJob::order`).
     next_order: i64,
+    request_orders: HashMap<Uuid, i64>,
     /// Worker modes (#97 phase 2): jobs whose runner put them back in the
     /// queue (a lost worker, a released job). `worker_loop` re-inserts
     /// them when the runner returns instead of ending them.
@@ -744,6 +745,23 @@ impl JobRegistry {
         tx.send_modify(|snapshot| snapshot.eta = Some(eta));
         simulate_queue_etas(&registry);
     }
+    pub(crate) fn latest_request(&self, slug: &str) -> Option<(i64, JobSnapshot)> {
+        let registry = self.0.lock().expect("job registry mutex poisoned");
+        registry
+            .jobs
+            .iter()
+            .filter_map(|(id, tx)| {
+                let snapshot = tx.borrow();
+                (snapshot.slug == slug).then(|| {
+                    (
+                        *registry.request_orders.get(id).unwrap_or(&0),
+                        snapshot.clone(),
+                    )
+                })
+            })
+            .max_by_key(|(order, _)| *order)
+    }
+
     pub fn subscribe(&self, id: Uuid) -> Option<watch::Receiver<JobSnapshot>> {
         self.0
             .lock()
@@ -1233,6 +1251,7 @@ fn admit(
     registry.active.insert(key.clone(), job_id);
     registry.next_order += 1;
     let order = registry.next_order;
+    registry.request_orders.insert(job_id, order);
     // Worker modes: the job may not start before its row is written, off
     // this lock, by `spawn_job`; it waits in its queue, unstartable, until
     // `JobRegistry::admitted`.
@@ -1401,6 +1420,7 @@ pub fn restore(state: &Arc<AppState>) -> anyhow::Result<()> {
             };
             let (tx, _rx) = watch::channel(snapshot);
             registry.jobs.insert(id, tx.clone());
+            registry.request_orders.insert(id, row.queue_order);
             registry.active.insert(key.clone(), id);
             registry.features.insert(id, prior.clone());
             let job = PendingJob {

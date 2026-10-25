@@ -38,6 +38,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/maps", get(get_maps))
         .route("/api/maps/{owner}/{repo}", get(get_map))
         .route("/api/maps/{owner}/{repo}/symbols", get(get_symbols))
+        .route("/api/maps/{owner}/{repo}/freshness", get(get_freshness))
         .route("/api/healthz", get(get_healthz));
 
     // Opt-in (TOLMAP_STATIC_DIR unset keeps this identical to before it
@@ -396,7 +397,13 @@ async fn get_map(
         .map_err(|err| ApiError::internal(format!("read {}: {err}", row.map_path.display())))?;
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (
+                axum::http::HeaderName::from_static("x-tolmap-commit"),
+                row.commit.as_str(),
+            ),
+        ],
         bytes,
     )
         .into_response())
@@ -499,4 +506,61 @@ async fn get_healthz() -> Json<HealthzResponse> {
         status: "ok".to_owned(),
         build: crate::service::workers::own_build(),
     })
+}
+
+async fn get_freshness(
+    State(state): State<Arc<AppState>>,
+    AxPath((owner, repo)): AxPath<(String, String)>,
+    Query(query): Query<MapQuery>,
+) -> Result<Json<crate::schema::SnapshotFreshness>, ApiError> {
+    let slug = format!(
+        "{}/{}",
+        clone::canonicalize(&owner),
+        clone::canonicalize(&repo)
+    );
+    let row = match query.commit {
+        Some(commit) => state.store.get(&slug, &commit)?,
+        None => state.store.latest(&slug)?,
+    };
+    let persisted = state.store.latest_request(&slug)?.and_then(|row| {
+        serde_json::from_str::<JobSnapshot>(&row.snapshot_json)
+            .ok()
+            .map(|snapshot| (row.queue_order, snapshot))
+    });
+    let request = state
+        .jobs
+        .latest_request(&slug)
+        .into_iter()
+        .chain(persisted)
+        .max_by_key(|(order, _)| *order)
+        .map(|(_, snapshot)| snapshot);
+    Ok(Json(freshness(row.map(|row| row.commit), request.as_ref())))
+}
+
+fn freshness(
+    indexed_commit: Option<String>,
+    request: Option<&JobSnapshot>,
+) -> crate::schema::SnapshotFreshness {
+    use crate::schema::{FreshnessState as S, SnapshotFreshness};
+    let requested_commit = request.and_then(|job| job.commit.clone());
+    let state = match request.map(|job| job.status) {
+        Some(JobStatus::Queued) => S::Queued,
+        Some(JobStatus::Failed) => S::Failed,
+        Some(JobStatus::Done) if indexed_commit.is_some() && indexed_commit == requested_commit => {
+            S::Complete
+        }
+        Some(JobStatus::Done) => S::Stale,
+        Some(_) => S::Indexing,
+        None if indexed_commit.is_some() => S::Complete,
+        None => S::Stale,
+    };
+    SnapshotFreshness {
+        indexed_commit,
+        requested_commit,
+        state,
+        failure_reason: request.and_then(|job| job.error.clone()),
+        failure_code: request.and_then(|job| job.error_code.clone()),
+        retryable: state == S::Failed,
+        job_id: request.map(|job| job.job_id.to_string()),
+    }
 }
