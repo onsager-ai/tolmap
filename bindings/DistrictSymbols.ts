@@ -5,4 +5,4 @@ export type DistrictSymbols = { district: number, files: Array<number>,
 /**
  * Global symbol indices, including remote endpoints of touching edges.
  */
-symbol_indices: Array<number>, symbols: Array<HierSymbolRow>, edges: Array<[number, number, number, number]>, kinds: Array<string>, module_code_lines: { [key in number]: number }, symbol_rings?: Array<Array<Array<bigint>> | null> | null, module_rings?: { [key in number]: Array<Array<bigint>> } | null, header_rings?: { [key in number]: Array<Array<bigint>> } | null, };
+symbol_indices: Array<number>, symbols: Array<HierSymbolRow>, edges: Array<[number, number, number, number]>, kinds: Array<string>, module_code_lines: { [key in number]: number }, symbol_rings?: Array<Array<Array<number>> | null> | null, module_rings?: { [key in number]: Array<Array<number>> } | null, header_rings?: { [key in number]: Array<Array<number>> } | null, };

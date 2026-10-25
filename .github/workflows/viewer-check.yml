@@ -104,6 +104,12 @@ jobs:
           name: viewer-shots
           path: web/shots/
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-review-samples
+          path: web/shots/comparison/
+          if-no-files-found: warn
       # B4 perf follow-up (issue #82, owner review): dify is the one fixture
       # large enough (6,347 files) for paint cost to be worth measuring in
       # CI -- perf-bench.mjs is Playwright-based, so this is the only place

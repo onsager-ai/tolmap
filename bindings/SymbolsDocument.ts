@@ -16,4 +16,4 @@ module_code_lines: { [key in number]: number }, coverage: SymbolCoverage,
  * absolute first point, then deltas, all in 1e-11 world units. Exterior
  * and hole rings use even-odd fill when a card surrounds a sibling.
  */
-symbol_rings?: Array<Array<Array<bigint>> | null> | null, module_rings?: { [key in number]: Array<Array<bigint>> } | null, header_rings?: { [key in number]: Array<Array<bigint>> } | null, };
+symbol_rings?: Array<Array<Array<number>> | null> | null, module_rings?: { [key in number]: Array<Array<number>> } | null, header_rings?: { [key in number]: Array<Array<number>> } | null, };
