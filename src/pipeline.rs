@@ -174,7 +174,9 @@ pub fn run_with_variant_progress<P: Partitioner>(
     } = partitioner.partition(&graph, resolution, SEED, initial_membership)?;
     partition_stage.finish();
     let membership = merge_tiny(&membership, &data, 4);
+    let layout_started = std::time::Instant::now();
     let (districts, nodes) = layout(&membership, &data);
+    progress.log(format!("index_timing {}", serde_json::json!({"stage":"district_layout", "duration_s":layout_started.elapsed().as_secs_f64(), "done":nodes.len(), "unit":"files", "success":true})));
     let landmarks = landmarks(&membership, &data, &graph);
     Ok(PipelineOutput {
         membership,

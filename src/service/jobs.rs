@@ -229,6 +229,7 @@ struct RegistryInner {
     remote_classes: Option<Vec<Class>>,
     /// The last admission number given out (`PendingJob::order`).
     next_order: i64,
+    request_orders: HashMap<Uuid, i64>,
     /// Worker modes (#97 phase 2): jobs whose runner put them back in the
     /// queue (a lost worker, a released job). `worker_loop` re-inserts
     /// them when the runner returns instead of ending them.
@@ -744,6 +745,23 @@ impl JobRegistry {
         tx.send_modify(|snapshot| snapshot.eta = Some(eta));
         simulate_queue_etas(&registry);
     }
+    pub(crate) fn latest_request(&self, slug: &str) -> Option<(i64, JobSnapshot)> {
+        let registry = self.0.lock().expect("job registry mutex poisoned");
+        registry
+            .jobs
+            .iter()
+            .filter_map(|(id, tx)| {
+                let snapshot = tx.borrow();
+                (snapshot.slug == slug).then(|| {
+                    (
+                        *registry.request_orders.get(id).unwrap_or(&0),
+                        snapshot.clone(),
+                    )
+                })
+            })
+            .max_by_key(|(order, _)| *order)
+    }
+
     pub fn subscribe(&self, id: Uuid) -> Option<watch::Receiver<JobSnapshot>> {
         self.0
             .lock()
@@ -1233,6 +1251,7 @@ fn admit(
     registry.active.insert(key.clone(), job_id);
     registry.next_order += 1;
     let order = registry.next_order;
+    registry.request_orders.insert(job_id, order);
     // Worker modes: the job may not start before its row is written, off
     // this lock, by `spawn_job`; it waits in its queue, unstartable, until
     // `JobRegistry::admitted`.
@@ -1401,6 +1420,7 @@ pub fn restore(state: &Arc<AppState>) -> anyhow::Result<()> {
             };
             let (tx, _rx) = watch::channel(snapshot);
             registry.jobs.insert(id, tx.clone());
+            registry.request_orders.insert(id, row.queue_order);
             registry.active.insert(key.clone(), id);
             registry.features.insert(id, prior.clone());
             let job = PendingJob {
@@ -2122,6 +2142,7 @@ fn register(
         started,
         executed,
         Some(worker_uid_in_effect(state.config.worker_uid)),
+        None,
     );
 }
 
@@ -2138,6 +2159,7 @@ pub(crate) fn register_owned(
     started: Instant,
     executed: executor::Executed,
     owner: Option<u32>,
+    epoch: Option<u64>,
 ) -> Result<(), ErrorBody> {
     let job_id = tx.borrow().job_id;
     let stored = store_worker_result_owned(
@@ -2148,6 +2170,7 @@ pub(crate) fn register_owned(
         &executed.checkout,
         &executed.output,
         owner,
+        epoch,
     );
     let _ = std::fs::remove_dir_all(&executed.job_dir);
     if let Err(error) = stored {
@@ -2213,6 +2236,7 @@ fn store_worker_result(
         checkout,
         output,
         Some(worker_uid_in_effect(state.config.worker_uid)),
+        None,
     )
 }
 
@@ -2226,6 +2250,7 @@ fn store_worker_result_owned(
     checkout: &clone::Materialized,
     output: &WorkerOutput,
     owner: Option<u32>,
+    epoch: Option<u64>,
 ) -> Result<(), ErrorBody> {
     // The commit names the stored file (`<commit>.json`).
     if !worker_result::is_object_id(&output.commit) || output.commit != checkout.commit {
@@ -2242,6 +2267,9 @@ fn store_worker_result_owned(
         .join(&repo_ref.repo)
         .join(format!("{}.json", checkout.commit));
     let final_parent = final_path.parent().expect("map parent").to_path_buf();
+    let publication_id = Uuid::new_v4();
+    let complete = final_parent.join(format!("{}-{job_id}-{publication_id}", checkout.commit));
+    let final_path = complete.join(format!("{}.json", checkout.commit));
     std::fs::create_dir_all(&final_parent).map_err(internal)?;
     // Persistent store, not a per-job scratch dir: owned by the
     // service's own uid (root in production), not `tolmap-worker` --
@@ -2251,8 +2279,9 @@ fn store_worker_result_owned(
     harden_persistent_dir(&final_parent).map_err(internal)?;
     // Beside the final location, so every rename below stays on one
     // filesystem, and private to the service from the moment it exists.
-    let staging = final_parent.join(format!(".job-{job_id}"));
+    let staging = final_parent.join(format!(".job-{job_id}-{publication_id}"));
     worker_result::create_private_dir(&staging).map_err(internal)?;
+    let mut renamed = false;
     let stored = (|| -> Result<(), ErrorBody> {
         let adopted = worker_result::adopt(
             output_dir,
@@ -2273,14 +2302,24 @@ fn store_worker_result_owned(
             worker_result::Refused::Io(error) => internal(error),
         })?;
         let save = (|| -> anyhow::Result<()> {
-            std::fs::rename(&adopted.map, &final_path)?;
-            std::fs::rename(&adopted.symbols, final_path.with_extension("symbols.json"))?;
-            let final_dir = final_path.with_extension("symbols");
-            if final_dir.exists() {
-                std::fs::remove_dir_all(&final_dir)?;
+            let staged_map = staging.join(format!("{}.json", checkout.commit));
+            std::fs::rename(&adopted.map, &staged_map)?;
+            std::fs::rename(&adopted.symbols, staged_map.with_extension("symbols.json"))?;
+            std::fs::rename(&adopted.symbols_dir, staged_map.with_extension("symbols"))?;
+            // Artifacts are immutable after this point. A crash before the DB
+            // switch leaves only an unreferenced complete directory.
+            for path in [&staged_map, &staged_map.with_extension("symbols.json")] {
+                std::fs::File::open(path)?.sync_all()?;
             }
-            std::fs::rename(&adopted.symbols_dir, final_dir)?;
-            state.store.save_names(&repo_ref.slug, &adopted.names)?;
+            let districts = staged_map.with_extension("symbols");
+            for entry in std::fs::read_dir(&districts)? {
+                std::fs::File::open(entry?.path())?.sync_all()?;
+            }
+            std::fs::File::open(&districts)?.sync_all()?;
+            std::fs::File::open(&staging)?.sync_all()?;
+            std::fs::rename(&staging, &complete)?;
+            renamed = true;
+            std::fs::File::open(&final_parent)?.sync_all()?;
             let row = MapRow {
                 slug: repo_ref.slug.clone(),
                 owner: repo_ref.owner.clone(),
@@ -2294,12 +2333,33 @@ fn store_worker_result_owned(
                 map_path: final_path.clone(),
                 indexed_at: now_rfc3339(),
             };
-            state.store.insert(&row)?;
+            // Serialize the visibility switch against in-memory cancellation.
+            // Durable cancellation and epoch replacement are fenced inside the
+            // same SQLite transaction as the map pointer.
+            let registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+            anyhow::ensure!(!registry.cancelled.contains(&job_id), "cancelled");
+            anyhow::ensure!(
+                registry
+                    .jobs
+                    .get(&job_id)
+                    .is_none_or(|tx| !is_terminal(&tx.borrow())),
+                "terminal_attempt"
+            );
+            let job_key = job_id.to_string();
+            // Nested lock order is job registry, then SQLite connection;
+            // store code must never acquire the registry while holding SQLite.
+            state
+                .store
+                .publish(&row, &adopted.names, epoch.map(|e| (job_key.as_str(), e)))?;
+            drop(registry);
             Ok(())
         })();
         save.map_err(|error| ApiError::internal(format!("{error:#}")).body)
     })();
     let _ = std::fs::remove_dir_all(&staging);
+    if stored.is_err() && renamed {
+        let _ = std::fs::remove_dir_all(&complete);
+    }
     stored
 }
 
@@ -3962,6 +4022,11 @@ mod tests {
                 br#"{"0123456789ab": {"name": "core", "district": 0, "size": 1}}"#,
             )
             .unwrap();
+            std::fs::write(
+                output_dir.join("index.json"),
+                br#"{"source_commit":"0123456789abcdef0123456789abcdef01234567"}"#,
+            )
+            .unwrap();
             let outside = dir.path().join("outside.json");
             std::fs::write(&outside, b"keep me").unwrap();
             ResultFixture {
@@ -4055,6 +4120,147 @@ mod tests {
             self.state.config.cache_dir.join("maps/test/demo")
         }
 
+        fn store_owned(&self, job_id: Uuid, epoch: Option<u64>) -> Result<(), ErrorBody> {
+            let path = |name: &str| self.output_dir.join(name).to_string_lossy().into_owned();
+            let output = WorkerOutput {
+                map_path: path("demo.json"),
+                symbols_path: path("demo.symbols.json"),
+                symbols_dir: path("demo.symbols"),
+                names_cache: path("demo.names.json"),
+                commit: RESULT_COMMIT.to_owned(),
+                lang: "py".to_owned(),
+                files: 1,
+                districts: 1,
+                modularity: 0.5,
+            };
+            let checkout = clone::Materialized {
+                path: self.job_dir.join("repo"),
+                commit: RESULT_COMMIT.to_owned(),
+                branch: Some("main".to_owned()),
+            };
+            store_worker_result_owned(
+                &self.state,
+                &self.repo_ref,
+                job_id,
+                &self.output_dir,
+                &checkout,
+                &output,
+                None,
+                epoch,
+            )
+        }
+
+        fn publish_previous_complete(&self) {
+            let previous_dir = self.maps_dir().join("old-commit-job");
+            let map_path = previous_dir.join("old.json");
+            std::fs::create_dir_all(map_path.with_extension("symbols")).unwrap();
+            std::fs::write(&map_path, b"old complete map").unwrap();
+            std::fs::write(
+                map_path.with_extension("symbols.json"),
+                b"old complete symbols",
+            )
+            .unwrap();
+            std::fs::write(
+                map_path.with_extension("symbols").join("0.json"),
+                b"old district symbols",
+            )
+            .unwrap();
+            std::fs::write(previous_dir.join("index.json"), b"old source revision").unwrap();
+            let names = crate::naming::NameCache::from([(
+                "old-fingerprint".into(),
+                crate::naming::CacheEntry {
+                    name: "old district".into(),
+                    district: 0,
+                    size: 1,
+                    namer: "idf".into(),
+                    numbered: false,
+                },
+            )]);
+            self.state
+                .store
+                .publish(
+                    &MapRow {
+                        slug: self.repo_ref.slug.clone(),
+                        owner: self.repo_ref.owner.clone(),
+                        repo: self.repo_ref.repo.clone(),
+                        commit: "old".into(),
+                        branch: Some("main".into()),
+                        lang: "py".into(),
+                        files: 1,
+                        districts: 1,
+                        modularity: 0.1,
+                        map_path,
+                        indexed_at: now_rfc3339(),
+                    },
+                    &names,
+                    None,
+                )
+                .unwrap();
+        }
+
+        fn register_attempt(&self, job_id: Uuid, status: JobStatus) {
+            let mut snapshot = blank_snapshot(&self.repo_ref.slug);
+            snapshot.job_id = job_id;
+            snapshot.status = status;
+            snapshot.commit = Some(RESULT_COMMIT.to_owned());
+            let (tx, _rx) = watch::channel(snapshot);
+            self.state.jobs.0.lock().unwrap().jobs.insert(job_id, tx);
+        }
+
+        fn assert_attempt_not_published(&self, job_id: Uuid, epoch: Option<u64>, reason: &str) {
+            let error = self
+                .store_owned(job_id, epoch)
+                .expect_err("attempt is fenced");
+            assert!(error.message.contains(reason), "{}", error.message);
+            assert!(self
+                .state
+                .store
+                .get(&self.repo_ref.slug, RESULT_COMMIT)
+                .unwrap()
+                .is_none());
+            assert!(!self
+                .maps_dir()
+                .join(format!("{RESULT_COMMIT}-{job_id}"))
+                .exists());
+            assert!(!self.maps_dir().join(format!(".job-{job_id}")).exists());
+            let complete_prefix = format!("{RESULT_COMMIT}-{job_id}-");
+            let staging_prefix = format!(".job-{job_id}-");
+            for entry in std::fs::read_dir(self.maps_dir()).unwrap() {
+                let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+                assert!(
+                    !name.starts_with(&complete_prefix) && !name.starts_with(&staging_prefix),
+                    "rejected attempt left {name}"
+                );
+            }
+            let previous = self
+                .state
+                .store
+                .latest(&self.repo_ref.slug)
+                .unwrap()
+                .expect("last complete row remains readable");
+            assert_eq!(previous.commit, "old");
+            assert_eq!(
+                std::fs::read(&previous.map_path).unwrap(),
+                b"old complete map"
+            );
+            assert_eq!(
+                std::fs::read(previous.map_path.with_extension("symbols.json")).unwrap(),
+                b"old complete symbols"
+            );
+            assert_eq!(
+                std::fs::read(previous.map_path.with_extension("symbols").join("0.json")).unwrap(),
+                b"old district symbols"
+            );
+            assert_eq!(
+                std::fs::read(previous.map_path.parent().unwrap().join("index.json")).unwrap(),
+                b"old source revision"
+            );
+            assert_eq!(
+                self.state.store.load_names(&self.repo_ref.slug).unwrap()["old-fingerprint"].name,
+                "old district"
+            );
+        }
+
         /// The job failed as an invalid result, and left nothing behind: no
         /// row, no stored file, no staging directory, the outside file as it
         /// was.
@@ -4086,13 +4292,21 @@ mod tests {
             .get(&fixture.repo_ref.slug, RESULT_COMMIT)
             .unwrap()
             .expect("stored row");
-        let map = fixture.maps_dir().join(format!("{RESULT_COMMIT}.json"));
-        assert_eq!(row.map_path, map);
+        let map = row.map_path;
+        assert_eq!(
+            map.file_name().unwrap(),
+            format!("{RESULT_COMMIT}.json").as_str()
+        );
+        assert!(map.starts_with(fixture.maps_dir()));
         // The service's checkout names the branch, not the worker.
         assert_eq!(row.branch.as_deref(), Some("main"));
         assert!(map.is_file());
         assert!(map.with_extension("symbols.json").is_file());
         assert!(map.with_extension("symbols").join("0.json").is_file());
+        assert_eq!(
+            std::fs::read(map.parent().unwrap().join("index.json")).unwrap(),
+            br#"{"source_commit":"0123456789abcdef0123456789abcdef01234567"}"#
+        );
         let names = fixture
             .state
             .store
@@ -4105,6 +4319,194 @@ mod tests {
             .filter(|name| name.starts_with(".job-"))
             .collect();
         assert!(left.is_empty(), "staging left behind: {left:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_job_republication_and_rejected_retry_preserve_complete_snapshots() {
+        let fixture = ResultFixture::new();
+        let outputs = [
+            "demo.json",
+            "demo.symbols.json",
+            "demo.symbols/0.json",
+            "demo.names.json",
+            "index.json",
+        ]
+        .map(|name| (name, std::fs::read(fixture.output_dir.join(name)).unwrap()));
+        let restore_outputs = || {
+            for (name, bytes) in &outputs {
+                let path = fixture.output_dir.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, bytes).unwrap();
+            }
+        };
+        let complete_bytes = |map: &Path| {
+            let mut paths = vec![
+                map.to_path_buf(),
+                map.with_extension("symbols.json"),
+                map.parent().unwrap().join("index.json"),
+            ];
+            paths.extend(
+                std::fs::read_dir(map.with_extension("symbols"))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+            paths.sort();
+            paths
+                .into_iter()
+                .map(|path| {
+                    let bytes = std::fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+                .collect::<Vec<_>>()
+        };
+        let directories = || {
+            let mut names = std::fs::read_dir(fixture.maps_dir())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let job_id = Uuid::new_v4();
+        fixture.register_attempt(job_id, JobStatus::Indexing);
+        fixture
+            .state
+            .store
+            .insert_job(&crate::service::store::JobRow {
+                job_id: job_id.to_string(),
+                slug: fixture.repo_ref.slug.clone(),
+                commit: RESULT_COMMIT.to_owned(),
+                spec_json: "{}".to_owned(),
+                class: 0,
+                status: "running".to_owned(),
+                attempt: 1,
+                epoch: 7,
+                lease_holder: Some("agent".to_owned()),
+                lease_deadline_ms: Some(10),
+                queue_order: 1,
+                snapshot_json: "{}".to_owned(),
+            })
+            .unwrap();
+        let registered = || {
+            fixture
+                .state
+                .store
+                .get(&fixture.repo_ref.slug, RESULT_COMMIT)
+                .unwrap()
+                .unwrap()
+        };
+
+        fixture.store_owned(job_id, Some(7)).unwrap();
+        let first = registered();
+        let first_bytes = complete_bytes(&first.map_path);
+        restore_outputs();
+        fixture.store_owned(job_id, Some(7)).unwrap();
+        let second = registered();
+        let second_bytes = complete_bytes(&second.map_path);
+        assert_ne!(first.map_path, second.map_path);
+        assert_eq!(
+            first_bytes
+                .iter()
+                .map(|(_, bytes)| bytes)
+                .collect::<Vec<_>>(),
+            second_bytes
+                .iter()
+                .map(|(_, bytes)| bytes)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            fixture
+                .state
+                .store
+                .load_names(&fixture.repo_ref.slug)
+                .unwrap()["0123456789ab"]
+                .name,
+            "core"
+        );
+
+        restore_outputs();
+        let before_rejection = directories();
+        fixture
+            .state
+            .store
+            .finish_job(&job_id.to_string(), "failed", "{}")
+            .unwrap();
+        let error = fixture
+            .store_owned(job_id, Some(7))
+            .expect_err("terminal durable attempt must be fenced");
+        assert!(
+            error.message.contains("stale_or_cancelled_attempt"),
+            "{}",
+            error.message
+        );
+        assert_eq!(registered().map_path, second.map_path);
+        assert_eq!(
+            directories(),
+            before_rejection,
+            "rejected retry left artifacts"
+        );
+        for (path, expected) in first_bytes.iter().chain(&second_bytes) {
+            assert_eq!(
+                &std::fs::read(path).unwrap(),
+                expected,
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_worker_result_cancel_rejection_keeps_last_complete_snapshot() {
+        let fixture = ResultFixture::new();
+        fixture.publish_previous_complete();
+        let job_id = Uuid::new_v4();
+        fixture.register_attempt(job_id, JobStatus::Indexing);
+        let cancelled = fixture.state.jobs.cancel(job_id).unwrap();
+        assert_eq!(cancelled.status, JobStatus::Failed);
+
+        fixture.assert_attempt_not_published(job_id, None, "cancelled");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_worker_result_terminal_rejection_keeps_last_complete_snapshot() {
+        let fixture = ResultFixture::new();
+        fixture.publish_previous_complete();
+        let job_id = Uuid::new_v4();
+        fixture.register_attempt(job_id, JobStatus::Failed);
+
+        fixture.assert_attempt_not_published(job_id, None, "terminal_attempt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_worker_result_stale_epoch_rejection_keeps_last_complete_snapshot() {
+        let fixture = ResultFixture::new();
+        fixture.publish_previous_complete();
+        let job_id = Uuid::new_v4();
+        fixture.register_attempt(job_id, JobStatus::Indexing);
+        fixture
+            .state
+            .store
+            .insert_job(&crate::service::store::JobRow {
+                job_id: job_id.to_string(),
+                slug: fixture.repo_ref.slug.clone(),
+                commit: RESULT_COMMIT.to_owned(),
+                spec_json: "{}".to_owned(),
+                class: 0,
+                status: "running".to_owned(),
+                attempt: 1,
+                epoch: 8,
+                lease_holder: Some("agent".to_owned()),
+                lease_deadline_ms: Some(10),
+                queue_order: 1,
+                snapshot_json: "{}".to_owned(),
+            })
+            .unwrap();
+
+        fixture.assert_attempt_not_published(job_id, Some(7), "stale_or_cancelled_attempt");
     }
 
     #[cfg(unix)]

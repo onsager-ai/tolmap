@@ -51,3 +51,13 @@ jobs:
         with:
           name: tolmap-visual-candidates
           path: web/storybook-evidence/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tolmap-freshness-review-samples
+          path: |
+            web/storybook-evidence/manifest.json
+            web/storybook-evidence/oss-freshness-*-phone-*.png
+            web/storybook-evidence/oss-freshness-*-desktop-*.png
+            web/storybook-evidence/oss-map-freshness-*-*.png
+          if-no-files-found: warn

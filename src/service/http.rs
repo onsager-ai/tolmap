@@ -38,6 +38,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/maps", get(get_maps))
         .route("/api/maps/{owner}/{repo}", get(get_map))
         .route("/api/maps/{owner}/{repo}/symbols", get(get_symbols))
+        .route("/api/maps/{owner}/{repo}/freshness", get(get_freshness))
         .route("/api/healthz", get(get_healthz));
 
     // Opt-in (TOLMAP_STATIC_DIR unset keeps this identical to before it
@@ -396,7 +397,13 @@ async fn get_map(
         .map_err(|err| ApiError::internal(format!("read {}: {err}", row.map_path.display())))?;
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (
+                axum::http::HeaderName::from_static("x-tolmap-commit"),
+                row.commit.as_str(),
+            ),
+        ],
         bytes,
     )
         .into_response())
@@ -499,4 +506,174 @@ async fn get_healthz() -> Json<HealthzResponse> {
         status: "ok".to_owned(),
         build: crate::service::workers::own_build(),
     })
+}
+
+async fn get_freshness(
+    State(state): State<Arc<AppState>>,
+    AxPath((owner, repo)): AxPath<(String, String)>,
+    Query(query): Query<MapQuery>,
+) -> Result<Json<crate::schema::SnapshotFreshness>, ApiError> {
+    let slug = format!(
+        "{}/{}",
+        clone::canonicalize(&owner),
+        clone::canonicalize(&repo)
+    );
+    let row = match query.commit {
+        Some(commit) => state.store.get(&slug, &commit)?,
+        None => state.store.latest(&slug)?,
+    };
+    let persisted = state.store.latest_request(&slug)?.and_then(|row| {
+        serde_json::from_str::<JobSnapshot>(&row.snapshot_json)
+            .ok()
+            .map(|snapshot| (row.queue_order, snapshot))
+    });
+    let request = state
+        .jobs
+        .latest_request(&slug)
+        .into_iter()
+        .chain(persisted)
+        .max_by_key(|(order, _)| *order)
+        .map(|(_, snapshot)| snapshot);
+    Ok(Json(freshness(row.map(|row| row.commit), request.as_ref())))
+}
+
+fn freshness(
+    indexed_commit: Option<String>,
+    request: Option<&JobSnapshot>,
+) -> crate::schema::SnapshotFreshness {
+    use crate::schema::{FreshnessState as S, SnapshotFreshness};
+    let requested_commit = request.and_then(|job| job.commit.clone());
+    let state = match request.map(|job| job.status) {
+        Some(JobStatus::Queued) => S::Queued,
+        Some(JobStatus::Failed) => S::Failed,
+        Some(JobStatus::Done)
+            if indexed_commit.is_some()
+                && requested_commit
+                    .as_ref()
+                    .is_some_and(|requested| indexed_commit.as_ref() != Some(requested)) =>
+        {
+            S::Stale
+        }
+        // A completed default-branch request may have no resolved commit in
+        // its job snapshot. Unknown is not evidence that the indexed map is
+        // stale; only two known, different commits can establish that.
+        Some(JobStatus::Done) => S::Complete,
+        Some(_) => S::Indexing,
+        None if indexed_commit.is_some() => S::Complete,
+        None => S::Stale,
+    };
+    SnapshotFreshness {
+        indexed_commit,
+        requested_commit,
+        state,
+        failure_reason: request.and_then(|job| job.error.clone()),
+        failure_code: request.and_then(|job| job.error_code.clone()),
+        retryable: state == S::Failed,
+        job_id: request.map(|job| job.job_id.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::*;
+
+    fn request(
+        status: JobStatus,
+        commit: Option<&str>,
+        error: Option<&str>,
+        error_code: Option<&str>,
+    ) -> JobSnapshot {
+        JobSnapshot {
+            job_id: Uuid::new_v4(),
+            slug: "owner/repo".into(),
+            commit: commit.map(str::to_owned),
+            status,
+            stage: "test".into(),
+            queue_position: None,
+            started_at: "now".into(),
+            finished_at: None,
+            error: error.map(str::to_owned),
+            error_code: error_code.map(str::to_owned),
+            progress: None,
+            eta: None,
+            eta_start_s: None,
+            elapsed_s: 0.0,
+            stages: Vec::new(),
+            map_ready: false,
+        }
+    }
+
+    #[test]
+    fn queued_and_indexing_requests_report_their_work_state() {
+        assert_eq!(
+            freshness(
+                Some("old".into()),
+                Some(&request(JobStatus::Queued, Some("new"), None, None)),
+            )
+            .state,
+            crate::schema::FreshnessState::Queued
+        );
+        assert_eq!(
+            freshness(
+                Some("old".into()),
+                Some(&request(JobStatus::Indexing, Some("new"), None, None)),
+            )
+            .state,
+            crate::schema::FreshnessState::Indexing
+        );
+    }
+
+    #[test]
+    fn failed_request_keeps_reason_and_retryability() {
+        let value = freshness(
+            Some("old".into()),
+            Some(&request(
+                JobStatus::Failed,
+                Some("new"),
+                Some("worker stopped"),
+                Some("worker_lost"),
+            )),
+        );
+        assert_eq!(value.state, crate::schema::FreshnessState::Failed);
+        assert_eq!(value.failure_reason.as_deref(), Some("worker stopped"));
+        assert_eq!(value.failure_code.as_deref(), Some("worker_lost"));
+        assert!(value.retryable);
+    }
+
+    #[test]
+    fn completed_request_is_complete_for_matching_or_unknown_commit() {
+        let matching = freshness(
+            Some("same".into()),
+            Some(&request(JobStatus::Done, Some("same"), None, None)),
+        );
+        assert_eq!(matching.state, crate::schema::FreshnessState::Complete);
+
+        let default_branch = freshness(
+            Some("indexed".into()),
+            Some(&request(JobStatus::Done, None, None, None)),
+        );
+        assert!(default_branch.requested_commit.is_none());
+        assert_eq!(
+            default_branch.state,
+            crate::schema::FreshnessState::Complete
+        );
+    }
+
+    #[test]
+    fn a_known_different_request_marks_the_saved_snapshot_stale() {
+        let value = freshness(
+            Some("indexed".into()),
+            Some(&request(JobStatus::Done, Some("requested"), None, None)),
+        );
+        assert_eq!(value.state, crate::schema::FreshnessState::Stale);
+        assert_eq!(value.requested_commit.as_deref(), Some("requested"));
+    }
+
+    #[test]
+    fn a_saved_snapshot_alone_does_not_invent_a_requested_commit() {
+        let value = freshness(Some("old".into()), None);
+        assert_eq!(value.indexed_commit.as_deref(), Some("old"));
+        assert!(value.requested_commit.is_none());
+        assert_eq!(value.state, crate::schema::FreshnessState::Complete);
+    }
 }

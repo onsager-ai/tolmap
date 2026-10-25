@@ -9,6 +9,7 @@ import { D_, districtClass, type Insets } from "@/map/geometry";
 import type { SearchPick } from "@/map/searchResults";
 import { dispatchDesktopKey, type DesktopFocusScope } from "@/map/desktopKeyboard";
 import { LoadProgressIndicator } from "@/components/LoadProgressIndicator";
+import { SnapshotFreshnessNote } from "@/components/SnapshotFreshnessNote";
 import { DetailStatusNote } from "@/components/DetailStatusNote";
 import { useEarlyMapJob } from "@/api/useEarlyMapJob";
 import { DesktopChrome, DesktopPanel } from "@/components/DesktopChrome";
@@ -19,6 +20,13 @@ import { useLayoutProfile } from "@/hooks/useLayoutProfile";
 import { usePhoneMetrics } from "@/hooks/usePhoneMetrics";
 import { detentHeights, safeInsets, type Detent } from "@/map/phoneShell";
 import {
+  DESKTOP_GAP_PX,
+  DESKTOP_GUTTER_PX,
+  DESKTOP_PANEL_LEFT_PX,
+  DESKTOP_PANEL_SAFE_GAP_PX,
+  DESKTOP_PANEL_TOP_PX,
+  DESKTOP_PANEL_WIDTH_PX,
+  desktopControlSize,
   desktopSafeInsets,
   isPhoneShell,
   isTouchProfile,
@@ -57,7 +65,7 @@ export function MapView() {
   // (`?job=`) is pinned to that job's commit, and asks for symbols only once
   // the job is done.
   const early = useEarlyMapJob(search.job);
-  const { data: doc, isLoading, isError, error, source } = useMapDocument(owner, repo, {
+  const { data: doc, isLoading, isError, error, source, indexedCommit } = useMapDocument(owner, repo, {
     commit: search.commit ?? early.commit,
     wait: early.waiting,
   });
@@ -105,7 +113,7 @@ export function MapView() {
     repo,
     source,
     [...wantedDistricts],
-    { commit: search.commit ?? early.commit, ready: !early.waiting && !early.detailPending },
+    { commit: indexedCommit ?? search.commit ?? early.commit, ready: !early.waiting && !early.detailPending },
   );
   // The job ended: the map's URL is the plain one again (a shared link
   // should not watch a finished job), while the commit stays pinned.
@@ -291,8 +299,8 @@ export function MapView() {
   function openSource() {
     if (sel == null || !doc) return;
     const { line, end } = sourceRange(sel, selSym, selHSym);
-    if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end }); }
-    else { desktopReaderEntry.current = true; navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end }), state: true }); }
+    if (narrow) { pushOverlay("reader"); updateSearch({ read: true, line, end, commit: indexedCommit ?? search.commit }); }
+    else { desktopReaderEntry.current = true; navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, read: true, line, end, commit: indexedCommit ?? search.commit }), state: true }); }
   }
   function closeSource() {
     if (narrow) { dropOverlay("reader"); updateSearch({ read: undefined }); }
@@ -928,7 +936,7 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
-  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
+  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, indexedCommit ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={indexedCommit ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
   const mapCanvas = (
     <MapCanvas
       doc={doc}
@@ -953,6 +961,7 @@ export function MapView() {
   );
 
   if (narrow) {
+    const mapLeft = landscape && sideOpen ? `${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px)` : "env(safe-area-inset-left, 0px)";
     // docs/UX.md §3: the map is full screen; everything else floats over it
     // or lives in the one sheet. No fullscreen mode on phones (§3).
     return (
@@ -961,12 +970,12 @@ export function MapView() {
           {mapCanvas}
         </div>
         {sourceReader}
-        <DetailStatusNote
-          pending={early.detailPending}
-          failed={early.detailFailed}
-          narrow
-          mapLeft={landscape && sideOpen ? `${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px)` : undefined}
-        />
+        <div className="pointer-events-none absolute z-20 flex flex-col gap-2" data-map-status-notes
+          style={{ left: `calc(${mapLeft} + 12px)`, right: "calc(68px + env(safe-area-inset-right, 0px))",
+            top: `calc(${early.detailPending || early.detailFailed ? 72 : 122}px + env(safe-area-inset-top, 0px))` }}>
+          <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow mapLeft={mapLeft} inline />
+          <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow mapLeft={mapLeft} inline />
+        </div>
         <PhoneChrome
           doc={doc}
           packageLayout={packageLayout}
@@ -1110,6 +1119,8 @@ export function MapView() {
   const panelTabLabel = activeDesktopView?.type === "overview"
     ? `Districts ${Object.values(doc.districts).filter((district) => districtClass(district) === "mainland").length.toLocaleString("en-US")}`
     : desktopPanelCrumbs(desktopViews, doc, `${owner}/${repo}`)[desktopViews.length - 1]?.label ?? "Map details";
+  const desktopNotesLeft = DESKTOP_PANEL_LEFT_PX + DESKTOP_PANEL_WIDTH_PX + DESKTOP_PANEL_SAFE_GAP_PX;
+  const desktopNotesRight = DESKTOP_GUTTER_PX + desktopControlSize(profile) + DESKTOP_GAP_PX;
   return (
     <div
       ref={mapAreaRef}
@@ -1121,7 +1132,18 @@ export function MapView() {
     >
       {mapCanvas}
       {sourceReader}
-      <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
+      <div
+        className="pointer-events-none absolute z-20 flex min-w-0 flex-col gap-2"
+        data-map-status-notes
+        style={{
+          left: `calc(${desktopNotesLeft}px + env(safe-area-inset-left, 0px))`,
+          top: `calc(${DESKTOP_PANEL_TOP_PX}px + env(safe-area-inset-top, 0px))`,
+          width: `min(380px, calc(100% - ${desktopNotesLeft + desktopNotesRight}px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)))`,
+        }}
+      >
+        <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} inline />
+        <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow={false} inline />
+      </div>
       <DesktopChrome
         catalogue={catalogue}
         doc={doc}

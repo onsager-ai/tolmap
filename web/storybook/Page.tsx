@@ -2,12 +2,15 @@ import { useMemo } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { routeTree } from "../src/router";
+import type { SnapshotFreshness } from "../../bindings/SnapshotFreshness";
+import { commit } from "./fixtures";
 
-export function Page({ route }: { route: string }) {
-  const state = useMemo(() => ({
-    query: new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } }),
-    router: createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [route] }) }),
-  }), [route]);
+export function Page({ route, freshness }: { route: string; freshness?: SnapshotFreshness }) {
+  const state = useMemo(() => {
+    const query = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
+    if (freshness) query.setQueryData(["snapshot-freshness", "onsager-ai", "tolmap", commit], freshness);
+    return { query, router: createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [route] }) }) };
+  }, [route, freshness]);
   return <div style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
     <div data-design-fixture style={{ flex: "0 0 auto", padding: "6px 12px", font: "12px/20px Archivo, sans-serif", background: "var(--chrome2)", color: "var(--dim)", borderBottom: "1px solid var(--rule)" }}>
       Design fixture · synthetic data · candidate reference

@@ -29,6 +29,7 @@ export const FailedIndexFailed = { ...page('failed-index-failed') };
 export const FailedInternalError = { ...page('failed-internal-error') };
 export const FailedUnknown = { ...page('failed-unknown') };
 export const MapOverview = { ...page('map-overview') };
+export const MapFreshness = { ...page('map-freshness') };
 export const MapLoading = { ...page('map-loading') };
 export const MapUnavailable = { ...page('map-unavailable') };
 export const MapDistrict = { ...page('map-district') };

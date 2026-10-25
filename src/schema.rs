@@ -900,3 +900,26 @@ mod tests {
         );
     }
 }
+
+/// Metadata separate from deterministic map geometry. `complete` means the
+/// recorded request is complete, never that a provider's branch is current.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct SnapshotFreshness {
+    pub indexed_commit: Option<String>,
+    pub requested_commit: Option<String>,
+    pub state: FreshnessState,
+    pub failure_reason: Option<String>,
+    pub failure_code: Option<String>,
+    pub retryable: bool,
+    pub job_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FreshnessState {
+    Queued,
+    Indexing,
+    Complete,
+    Failed,
+    Stale,
+}

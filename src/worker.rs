@@ -100,7 +100,7 @@ pub struct Artifact {
 /// `strip_prefix`/`strip_suffix` leave those out of the all-digits check.
 pub fn is_valid_artifact_name(name: &str) -> bool {
     match name {
-        "map" | "symbols" | "names" => true,
+        "map" | "symbols" | "names" | "index" => true,
         _ => name
             .strip_prefix("symbols_dir/")
             .and_then(|entry| entry.strip_suffix(".json"))
@@ -609,7 +609,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         .map_err(|error| fail("internal_error", error))?;
     let clone_stage = progress.stage(StageId::Clone, None);
     let materialized = clone::materialize_with_progress(
-        &PathBuf::from(spec.cache_dir),
+        &PathBuf::from(&spec.cache_dir),
         &repo_ref,
         &limits,
         progress,
@@ -706,6 +706,16 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         .into_iter()
         .map(|source| (source.pkg, source.language))
         .collect::<Vec<_>>();
+    let cache_identity =
+        std::fs::read(PathBuf::from(&spec.cache_dir).join("extraction-identity.json"))
+            .map(|bytes| crate::incremental::digest(&bytes))
+            .unwrap_or_else(|_| crate::incremental::digest(repo_ref.slug.as_bytes()));
+    let progress = &progress
+        .clone()
+        .with_cache(crate::incremental::Cache::local(
+            PathBuf::from(&spec.output_dir).join("extraction"),
+            cache_identity,
+        ));
     let (graph, symbol_records) = extract::build_multi_source_with_symbols_progress(
         &materialized.path,
         &source_pairs,
@@ -752,7 +762,7 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
             }
         }
     };
-    let output_dir = PathBuf::from(spec.output_dir);
+    let output_dir = PathBuf::from(&spec.output_dir);
     std::fs::create_dir_all(&output_dir)
         .map_err(|error| fail("internal_error", error.to_string()))?;
     let names_path = output_dir.join(format!("{}.names.json", repo_ref.repo));
@@ -800,6 +810,14 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         progress,
     )
     .map_err(|error| fail("index_failed", format!("{error:#}")))?;
+    let metadata = serde_json::json!({"version":1, "indexed_commit":materialized.commit,
+        "extraction":progress.observations(), "prior_snapshot":previous.as_ref().map(|doc| crate::incremental::digest(&serde_json::to_vec(doc).unwrap())),
+        "downstream":"recompute_all", "seed":crate::SEED});
+    crate::incremental::atomic_write(
+        &PathBuf::from(&spec.output_dir).join("index.json"),
+        &serde_json::to_vec(&metadata).unwrap(),
+    )
+    .map_err(|error| fail("internal_error", error.to_string()))?;
     let document = store::read_map_document(&map_path)
         .map_err(|error| fail("internal_error", error.to_string()))?;
     Ok(WorkerEvent::Result {

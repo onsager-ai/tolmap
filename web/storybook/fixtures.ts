@@ -2,9 +2,16 @@ import { http, HttpResponse, delay } from "msw";
 import { setupWorker } from "msw/browser";
 import type { JobSnapshot, MapDocument } from "../src/types";
 import type { StageId } from "../../bindings/StageId";
+import type { SnapshotFreshness } from "../../bindings/SnapshotFreshness";
 
 export const commit = "1111111111111111111111111111111111111111";
 export const slug = "onsager-ai/tolmap";
+export const failedFreshness: SnapshotFreshness = {
+  indexed_commit: commit, requested_commit: "abcdef0123456789abcdef0123456789abcdef01",
+  state: "failed", failure_code: "worker_crashed",
+  failure_reason: "The worker stopped before publishing the requested snapshot. The saved map and committed source remain available while you retry indexing.",
+  retryable: true, job_id: null,
+};
 const worker = setupWorker();
 let started: Promise<unknown> | undefined;
 let map: MapDocument;
@@ -32,13 +39,14 @@ const json = (value: unknown, status = 200) => new HttpResponse(JSON.stringify(v
 
 export async function installFixture(state: string) {
   if (!map) map = await (await nativeFetch(asset("map.json"))).json() as MapDocument;
-  let job = snapshot(state);
+  let job = snapshot(state === "freshness-in-map" ? "early" : state);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const emit = () => new TextEncoder().encode(`data: ${JSON.stringify(job, (_key, value) => typeof value === "bigint" ? Number(value) : value)}\n\n`);
   const entry = { slug, owner: "onsager-ai", repo: "tolmap", label: "acme/platform", files: map.F.length, districts: Object.keys(map.districts).length, lang: "rs", modularity: map.q, commit, indexed_at: "2026-10-19T08:00:00Z" };
   const handler = async ({ request }: { request: Request }) => {
     const url = new URL(request.url), path = url.pathname;
     if (path === "/api/healthz") return json({ status: "ok" });
+    if (path.endsWith("/freshness")) return state === "freshness-in-map" ? json(failedFreshness) : json({}, 404);
     if (path === "/api/maps" || path === "/maps/index.json") {
       if (state === "loading") { await delay("infinite"); return json([]); }
       return state === "unavailable" ? json({ error: "unavailable" }, 503) : json(state === "empty" ? [] : [entry]);

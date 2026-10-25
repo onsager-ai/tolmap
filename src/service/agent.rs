@@ -2174,6 +2174,10 @@ impl JobContext {
             ("map".to_owned(), adopted.map.clone()),
             ("symbols".to_owned(), adopted.symbols.clone()),
         ];
+        let index = staging.join("index.json");
+        if index.is_file() {
+            files.push(("index".into(), index));
+        }
         let mut entries = std::fs::read_dir(&adopted.symbols_dir)
             .map_err(internal)?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))

@@ -60,6 +60,7 @@ struct Local {
     prepared: Mutex<Option<Prepared>>,
     job: Mutex<Option<Job>>,
     notice: Mutex<String>,
+    attempt: Mutex<Option<crate::schema::SnapshotFreshness>>,
 }
 struct Probe {
     stopped: AtomicBool,
@@ -110,6 +111,9 @@ impl Sink {
     fn stage(&self, text: &str) {
         if let Some(j) = self.0.job.lock().unwrap().as_mut() {
             j.stage = text.into();
+        }
+        if let Some(attempt) = self.0.attempt.lock().unwrap().as_mut() {
+            attempt.state = crate::schema::FreshnessState::Indexing;
         }
     }
 }
@@ -194,6 +198,41 @@ fn snapshots(s: &Local) -> Result<Vec<Snapshot>> {
     result.sort_by_key(|x| (x.sequence, x.id));
     Ok(result)
 }
+
+/// The local snapshot metadata is its one visibility switch. Hold the job
+/// lock through the durable write so cancellation and stale retries cannot
+/// race a completed snapshot into view.
+fn publish_snapshot(
+    s: &Local,
+    id: Uuid,
+    prepared: Uuid,
+    commit: &str,
+    sequence: u64,
+    cancel: &Probe,
+) -> Result<()> {
+    let job = s.job.lock().unwrap();
+    ensure!(
+        !cancel.is_cancelled() && job.as_ref().is_some_and(|job| job.id == id),
+        "cancelled_or_stale_attempt"
+    );
+    let snap = Snapshot {
+        id,
+        repository: s.repository.clone(),
+        commit: commit.to_owned(),
+        prepared,
+        sequence,
+    };
+    crate::incremental::atomic_write(
+        &s.data
+            .join("snapshots")
+            .join(id.to_string())
+            .join("snapshot.json"),
+        &serde_json::to_vec(&snap)?,
+    )?;
+    drop(job);
+    Ok(())
+}
+
 fn run(
     s: Arc<Local>,
     prepared: Uuid,
@@ -282,20 +321,7 @@ fn run(
         )
         .map_err(|e| anyhow::anyhow!("invalid worker artifacts: {e}"))?;
         crate::naming::save_cache(&dir.join("names.json"), &adopted.names)?;
-        // Metadata is the visibility boundary. Cancellation serializes with it.
-        let job = s.job.lock().unwrap();
-        ensure!(!cancel.is_cancelled(), "cancelled");
-        let snap = Snapshot {
-            id,
-            repository: s.repository.clone(),
-            commit,
-            prepared,
-            sequence,
-        };
-        std::fs::write(dir.join("snapshot.json.tmp"), serde_json::to_vec(&snap)?)?;
-        std::fs::rename(dir.join("snapshot.json.tmp"), dir.join("snapshot.json"))?;
-        drop(job);
-        Ok(())
+        publish_snapshot(&s, id, prepared, &commit, sequence, cancel.as_ref())
     })();
     let _ = std::fs::remove_dir_all(work);
     publish
@@ -419,11 +445,42 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                     stage: "Queued".into(),
                     cancel: cancel.clone(),
                 });
+                let attempt = crate::schema::SnapshotFreshness {
+                    indexed_commit: snapshots(s)?.last().map(|snapshot| snapshot.commit.clone()),
+                    requested_commit: Some(commit.clone()),
+                    state: crate::schema::FreshnessState::Queued,
+                    failure_reason: None,
+                    failure_code: None,
+                    retryable: false,
+                    job_id: Some(id.to_string()),
+                };
+                crate::incremental::atomic_write(
+                    &s.data.join("attempt.json"),
+                    &serde_json::to_vec(&attempt)?,
+                )?;
+                *s.attempt.lock().unwrap() = Some(attempt);
                 drop(job);
                 let state = s.clone();
                 std::thread::spawn(move || {
                     let result = run(state.clone(), prepared, commit, all, id, cancel);
                     *state.job.lock().unwrap() = None;
+                    if let Some(attempt) = state.attempt.lock().unwrap().as_mut() {
+                        if let Err(error) = &result {
+                            attempt.state = crate::schema::FreshnessState::Failed;
+                            attempt.failure_reason = Some(error.to_string());
+                            attempt.failure_code = Some("local_index_failed_or_cancelled".into());
+                            attempt.retryable = true;
+                        } else {
+                            attempt.state = crate::schema::FreshnessState::Complete;
+                            attempt.indexed_commit = attempt.requested_commit.clone();
+                        }
+                        if let Err(error) = crate::incremental::atomic_write(
+                            &state.data.join("attempt.json"),
+                            &serde_json::to_vec(attempt).unwrap(),
+                        ) {
+                            eprintln!("local attempt metadata: {error:#}");
+                        }
+                    }
                     *state.notice.lock().unwrap() = if result.is_err() {
                         "Indexing failed or was cancelled. The committed source selection is retained; retry indexing or refresh from HEAD.".into()
                     } else {
@@ -461,6 +518,33 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             params.get("commit").is_none_or(|x| x == &snap.commit),
             "commit mismatch"
         );
+        if parts.len() == 5 && parts[4] == "freshness" {
+            use crate::schema::{FreshnessState, SnapshotFreshness};
+            let mut value = s
+                .attempt
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(SnapshotFreshness {
+                    indexed_commit: Some(snap.commit.clone()),
+                    requested_commit: None,
+                    state: FreshnessState::Complete,
+                    failure_reason: None,
+                    failure_code: None,
+                    retryable: false,
+                    job_id: None,
+                });
+            value.indexed_commit = Some(snap.commit.clone());
+            if value.state == FreshnessState::Complete
+                && value
+                    .requested_commit
+                    .as_ref()
+                    .is_some_and(|c| c != &snap.commit)
+            {
+                value.state = FreshnessState::Stale;
+            }
+            return Ok(axum::Json(value).into_response());
+        }
         if parts.len() == 5 && parts[4] == "provenance" {
             return Ok(axum::Json(json!({"repository":snap.repository,"commit":snap.commit,"version":source::VERSION})).into_response());
         }
@@ -490,7 +574,13 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             dir.join("map.json")
         };
         return Ok((
-            [(header::CONTENT_TYPE, "application/json")],
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (
+                    axum::http::HeaderName::from_static("x-tolmap-commit"),
+                    snap.commit.as_str(),
+                ),
+            ],
             std::fs::read(file)?,
         )
             .into_response());
@@ -549,6 +639,21 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
     };
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let origin = format!("http://{}", listener.local_addr()?);
+    let mut attempt = std::fs::read(data.join("attempt.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<crate::schema::SnapshotFreshness>(&bytes).ok());
+    if let Some(value) = attempt.as_mut() {
+        if matches!(
+            value.state,
+            crate::schema::FreshnessState::Queued | crate::schema::FreshnessState::Indexing
+        ) {
+            value.state = crate::schema::FreshnessState::Failed;
+            value.failure_reason =
+                Some("Indexing was interrupted; retry from the retained committed source.".into());
+            value.failure_code = Some("interrupted".into());
+            value.retryable = true;
+        }
+    }
     let s = Arc::new(Local {
         checkout,
         data,
@@ -558,8 +663,160 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
         prepared: Mutex::new(None),
         job: Mutex::new(None),
         notice: Mutex::new(String::new()),
+        attempt: Mutex::new(attempt),
     });
     eprintln!("Tolmap local: {origin} — committed source only; no upload");
     axum::serve(listener, axum::Router::new().fallback(handle).with_state(s)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local(data: PathBuf) -> Local {
+        Local {
+            checkout: PathBuf::new(),
+            data,
+            assets: PathBuf::new(),
+            origin: String::new(),
+            repository: "fixture-repository".into(),
+            prepared: Mutex::new(None),
+            job: Mutex::new(None),
+            notice: Mutex::new(String::new()),
+            attempt: Mutex::new(None),
+        }
+    }
+
+    fn complete_snapshot(data: &Path, id: Uuid, prepared: Uuid, commit: &str) -> Snapshot {
+        let dir = data.join("snapshots").join(id.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("map.json"), format!("map:{commit}")).unwrap();
+        std::fs::write(dir.join("symbols.json"), format!("symbols:{commit}")).unwrap();
+        let source = data
+            .join("prepared")
+            .join(prepared.to_string())
+            .join("source.git");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("revision"), commit).unwrap();
+        let snapshot = Snapshot {
+            id,
+            repository: "fixture-repository".into(),
+            commit: commit.into(),
+            prepared,
+            sequence: 1,
+        };
+        crate::incremental::atomic_write(
+            &dir.join("snapshot.json"),
+            &serde_json::to_vec(&snapshot).unwrap(),
+        )
+        .unwrap();
+        snapshot
+    }
+
+    fn assert_previous_complete(s: &Local, previous: &Snapshot) {
+        let visible = snapshots(s).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, previous.id);
+        assert_eq!(visible[0].commit, previous.commit);
+        let dir = s.data.join("snapshots").join(previous.id.to_string());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("map.json")).unwrap(),
+            format!("map:{}", previous.commit)
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("symbols.json")).unwrap(),
+            format!("symbols:{}", previous.commit)
+        );
+        let source = s
+            .data
+            .join("prepared")
+            .join(previous.prepared.to_string())
+            .join("source.git/revision");
+        assert_eq!(std::fs::read_to_string(source).unwrap(), previous.commit);
+    }
+
+    fn staged_artifacts(data: &Path, id: Uuid, commit: &str) {
+        let dir = data.join("snapshots").join(id.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("map.json"), format!("partial-map:{commit}")).unwrap();
+        std::fs::write(
+            dir.join("symbols.json"),
+            format!("partial-symbols:{commit}"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn interrupted_staging_is_ignored_after_reopen_and_keeps_map_source_symbols_together() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        std::fs::create_dir_all(data.join("snapshots")).unwrap();
+        let previous = complete_snapshot(&data, Uuid::new_v4(), Uuid::new_v4(), "old-commit");
+        staged_artifacts(&data, Uuid::new_v4(), "crashed-commit");
+
+        // A restarted local server reconstructs visible history only from
+        // complete snapshot metadata; abandoned partial artifacts are inert.
+        let reopened = local(data);
+        assert_previous_complete(&reopened, &previous);
+    }
+
+    #[test]
+    fn cancelled_local_job_cannot_publish_and_preserves_previous_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        std::fs::create_dir_all(data.join("snapshots")).unwrap();
+        let previous = complete_snapshot(&data, Uuid::new_v4(), Uuid::new_v4(), "old-commit");
+        let id = Uuid::new_v4();
+        let prepared = Uuid::new_v4();
+        staged_artifacts(&data, id, "cancelled-commit");
+        let cancel = Arc::new(Probe {
+            stopped: AtomicBool::new(true),
+            pid: AtomicU32::new(0),
+        });
+        let s = local(data);
+        *s.job.lock().unwrap() = Some(Job {
+            id,
+            stage: "indexing".into(),
+            cancel: cancel.clone(),
+        });
+        assert!(publish_snapshot(&s, id, prepared, "cancelled-commit", 2, &cancel).is_err());
+        assert!(!s
+            .data
+            .join("snapshots")
+            .join(id.to_string())
+            .join("snapshot.json")
+            .exists());
+        assert_previous_complete(&s, &previous);
+    }
+
+    #[test]
+    fn stale_local_retry_cannot_publish_over_a_newer_job() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        std::fs::create_dir_all(data.join("snapshots")).unwrap();
+        let previous = complete_snapshot(&data, Uuid::new_v4(), Uuid::new_v4(), "old-commit");
+        let stale = Uuid::new_v4();
+        let current = Uuid::new_v4();
+        let prepared = Uuid::new_v4();
+        staged_artifacts(&data, stale, "stale-commit");
+        let cancel = Arc::new(Probe {
+            stopped: AtomicBool::new(false),
+            pid: AtomicU32::new(0),
+        });
+        let s = local(data);
+        *s.job.lock().unwrap() = Some(Job {
+            id: current,
+            stage: "indexing".into(),
+            cancel: cancel.clone(),
+        });
+        assert!(publish_snapshot(&s, stale, prepared, "stale-commit", 2, &cancel).is_err());
+        assert!(!s
+            .data
+            .join("snapshots")
+            .join(stale.to_string())
+            .join("snapshot.json")
+            .exists());
+        assert_previous_complete(&s, &previous);
+    }
 }
