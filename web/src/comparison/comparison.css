@@ -13,3 +13,6 @@
 .impact-sides { display:flex; gap:18px; }
 .impact-launch { position:absolute; z-index:40; right:12px; top:72px; min-height:44px; padding:8px 12px; border-radius:8px; background:var(--chrome); color:var(--on); border:1px solid var(--rule); }
 @media (max-width:600px), (max-height:500px) { .comparison-panel { top:auto; bottom:0; left:0; right:0; width:100%; height:45%; padding-bottom:calc(16px + env(safe-area-inset-bottom)); border-radius:12px 12px 0 0; } }
+/* Keep the existing zoom/layer control column available. */
+@media (min-width:601px) and (min-height:501px) { .comparison-panel { right:72px; } }
+@media (max-width:600px), (max-height:500px) { .impact-launch { left:12px; right:auto; top:calc(68px + env(safe-area-inset-top, 0px)); } }
