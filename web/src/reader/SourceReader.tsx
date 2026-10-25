@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { EditorState, Compartment } from "@codemirror/state";
+import { EditorSelection, EditorState, Compartment, type SelectionRange } from "@codemirror/state";
 import { EditorView, lineNumbers, keymap, highlightSpecialChars, drawSelection } from "@codemirror/view";
 import { HighlightStyle, syntaxHighlighting, LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
@@ -26,6 +26,42 @@ const readerHighlightStyle = HighlightStyle.define([
   { tag: tags.meta, color: "var(--reader-syntax-meta)" },
   { tag: tags.invalid, color: "var(--reader-syntax-invalid)", textDecoration: "underline" },
 ]);
+
+type ReaderMotion = (view: EditorView, range: SelectionRange) => SelectionRange;
+
+function moveReadOnlySelection(view: EditorView, motion: ReaderMotion, extend: boolean) {
+  const current = view.state.selection;
+  const ranges = current.ranges.map(range => {
+    const moved = motion(view, range);
+    return extend ? EditorSelection.range(range.anchor, moved.head, moved.goalColumn) : moved;
+  });
+  const selection = EditorSelection.create(ranges, current.mainIndex);
+  view.dispatch({ selection, effects: EditorView.scrollIntoView(selection.main.head) });
+  return true;
+}
+
+function readerMovement(key: string, motion: ReaderMotion) {
+  return {
+    key,
+    run: (view: EditorView) => moveReadOnlySelection(view, motion, false),
+    shift: (view: EditorView) => moveReadOnlySelection(view, motion, true),
+  };
+}
+
+const readOnlyNavigationKeymap = [
+  readerMovement("ArrowLeft", (view, range) => view.moveByChar(range, false)),
+  readerMovement("ArrowRight", (view, range) => view.moveByChar(range, true)),
+  readerMovement("ArrowUp", (view, range) => view.moveVertically(range, false)),
+  readerMovement("ArrowDown", (view, range) => view.moveVertically(range, true)),
+  readerMovement("Mod-ArrowLeft", (view, range) => view.moveByGroup(range, false)),
+  readerMovement("Mod-ArrowRight", (view, range) => view.moveByGroup(range, true)),
+  readerMovement("Home", (view, range) => view.moveToLineBoundary(range, false)),
+  readerMovement("End", (view, range) => view.moveToLineBoundary(range, true)),
+  readerMovement("Mod-Home", _view => EditorSelection.cursor(0).main),
+  readerMovement("Mod-End", view => EditorSelection.cursor(view.state.doc.length).main),
+  readerMovement("PageUp", (view, range) => view.moveVertically(range, false, view.scrollDOM.clientHeight)),
+  readerMovement("PageDown", (view, range) => view.moveVertically(range, true, view.scrollDOM.clientHeight)),
+];
 
 export interface Provenance { version: number; repository: string; commit: string }
 interface Source extends Provenance { path: string; status: string; text: string | null; bytes: number; long_line: boolean }
@@ -90,7 +126,7 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
       // its selection first. Make the committed line range available to copy
       // immediately, including keyboard focus after a deep-link reload.
       EditorView.domEventHandlers({ focus: (_event, focused) => { focused.focus(); return false; } }),
-      lineNumbers(), highlightSpecialChars(), drawSelection(), search({ top: true }), highlightSelectionMatches(), keymap.of([...searchKeymap, { key: "Mod-a", run: v => { v.dispatch({ selection: { anchor: 0, head: v.state.doc.length } }); return true; } }]),
+      lineNumbers(), highlightSpecialChars(), drawSelection(), search({ top: true }), highlightSelectionMatches(), keymap.of([...searchKeymap, ...readOnlyNavigationKeymap, { key: "Mod-a", run: v => { v.dispatch({ selection: { anchor: 0, head: v.state.doc.length } }); return true; } }]),
       EditorView.updateListener.of(update => {
         if (update.transactions.some(t => t.effects.some(e => e.is(setSearchQuery)))) {
           const q = getSearchQuery(update.state);
