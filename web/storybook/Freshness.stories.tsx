@@ -1,6 +1,19 @@
+import type { Meta } from '@storybook/react-vite';
 import { FreshnessStatus } from '../src/components/SnapshotFreshnessNote';
 import type { SnapshotFreshness } from '../../bindings/SnapshotFreshness';
-export default { title: 'Tolmap/Snapshot freshness', component: FreshnessStatus };
+import { setHost } from './host';
+import { applyThemeChoice } from '../src/lib/theme';
+const meta = {
+  title: 'Tolmap/Snapshot freshness',
+  component: FreshnessStatus,
+  loaders: [({ globals }) => {
+    delete document.documentElement.dataset.visualReady;
+    setHost(globals.host);
+    applyThemeChoice(globals.theme);
+    return {};
+  }],
+} satisfies Meta<typeof FreshnessStatus>;
+export default meta;
 const base: SnapshotFreshness = { indexed_commit: '1234567890abcdef', requested_commit: 'abcdef0123456789', state: 'queued', failure_reason: null, failure_code: null, retryable: false, job_id: null };
 const story = (state: SnapshotFreshness['state'], value: SnapshotFreshness) => ({
   args: { value },

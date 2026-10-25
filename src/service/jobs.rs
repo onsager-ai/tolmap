@@ -4163,9 +4163,9 @@ mod tests {
             )
             .unwrap();
             std::fs::write(previous_dir.join("index.json"), b"old source revision").unwrap();
-            let names = crate::service::store::NameCache::from([(
+            let names = crate::naming::NameCache::from([(
                 "old-fingerprint".into(),
-                crate::service::store::CacheEntry {
+                crate::naming::CacheEntry {
                     name: "old district".into(),
                     district: 0,
                     size: 1,
