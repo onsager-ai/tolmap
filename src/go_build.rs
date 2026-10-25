@@ -24,7 +24,7 @@
 //! outside the repository.
 
 /// Whether a Go file is compiled for [`GO_BUILD_TARGET`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum GoBuild {
     In,
     Out,

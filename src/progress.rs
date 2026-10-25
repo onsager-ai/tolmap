@@ -154,14 +154,21 @@ pub struct ProgressValue {
 
 #[derive(Clone)]
 pub struct Progress {
+    pub(crate) cache: Option<crate::incremental::Cache>,
     emit: Arc<dyn Fn(crate::worker::WorkerEvent) + Send + Sync>,
 }
 
 impl Progress {
     pub fn new(emit: impl Fn(crate::worker::WorkerEvent) + Send + Sync + 'static) -> Self {
         Self {
+            cache: None,
             emit: Arc::new(emit),
         }
+    }
+
+    pub fn with_cache(mut self, cache: crate::incremental::Cache) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     pub fn silent() -> Self {
@@ -253,6 +260,13 @@ impl StageCounter {
     pub fn finish(mut self) {
         self.emit_progress();
         self.finished = true;
+        self.progress.log(format!(
+            "index_timing {}",
+            serde_json::json!({
+                "stage": self.id, "duration_s": self.started.elapsed().as_secs_f64(),
+                "done": self.done.load(Ordering::Relaxed), "unit": self.id.unit(), "success": true
+            })
+        ));
         (self.progress.emit)(crate::worker::WorkerEvent::StageFinished {
             v: 1,
             stage: self.id,

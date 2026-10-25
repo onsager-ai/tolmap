@@ -6,6 +6,7 @@ pub mod detect;
 pub mod extract;
 pub mod geometry;
 pub(crate) mod go_build;
+pub mod incremental;
 pub mod indexers;
 pub mod local;
 pub mod local_pages;

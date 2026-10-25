@@ -145,6 +145,15 @@ jobs:
       - name: cargo build
         run: cargo build --locked --release --bin tolmap
 
+      - name: Incremental indexing paired measurements (#225)
+        run: python3 eval/incremental_benchmark.py ./target/release/tolmap incremental-results
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: incremental-indexing
+          path: incremental-results/*.json
+
       - name: cargo test
         run: cargo test --locked --release
 
