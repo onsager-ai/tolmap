@@ -158,7 +158,8 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
    assert(await toggle.isVisible());const toggleBox=await toggle.boundingBox();assert(toggleBox&&await toggle.evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}));
    await toggle.click();
   }
-  await page.locator('[data-side-sheet][data-side-open="false"]').waitFor();
+  const closedSheet=page.locator('[data-side-sheet][data-side-open="false"]');
+  await closedSheet.waitFor({state:'attached'});assert.equal(await closedSheet.isVisible(),false,'closed landscape sheet should be hidden');
   await page.getByRole('button',{name:'Show the side sheet'}).click();await page.locator('[data-side-sheet][data-side-open="true"]').waitFor();
   phoneControls.push(await assertPhoneActionAndControls(page,width,height));assert.equal(phoneControls.at(-1).controlCount,5,'landscape side sheet should expose the four map controls and sheet toggle');
  }
@@ -167,7 +168,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  await page.locator('.cm-content').waitFor();
  assert.equal(await page.locator('.cm-content').getAttribute('contenteditable'),'false');
  const original=await page.locator('.cm-content').innerText();
- await page.waitForFunction(()=>document.querySelector('.cm-content .cm-line span[class]'));
+ await page.waitForFunction(()=>!!document.querySelector('.cm-content .cm-line span[class]'));
  const content=page.locator('.cm-content');await content.focus();const rangeContrast=await inspectReaderContrast(page);
  await page.keyboard.press('Control+Home');for(let i=0;i<4;i++)await page.keyboard.press('Shift+ArrowRight');
  const selectionMatch=page.locator('.cm-selectionMatch').first();await selectionMatch.waitFor();
@@ -217,7 +218,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  assert(new URL(page.url()).searchParams.get('file')===fixture.file);await settleCamera(page);assert.deepEqual(await cameraBoxes(page),before);
  await page.goto(base+'&read=true&line=2.5&end=4.5');await page.locator('.cm-content').waitFor();
  if(narrow)assert.equal(await page.evaluate(()=>history.length-window.readerInitialHistoryLength),2,'selection and reader must create distinct native history entries');
- await page.reload();await page.locator('.cm-content').waitFor();await page.waitForFunction(()=>document.querySelector('.cm-content .cm-line span[class]'));await page.locator('.cm-selectionBackground').first().waitFor();
+ await page.reload();await page.locator('.cm-content').waitFor();await page.waitForFunction(()=>!!document.querySelector('.cm-content .cm-line span[class]'));await page.locator('.cm-selectionBackground').first().waitFor();
  await page.locator('.cm-content').focus();const deepLinkedRange=await inspectReaderContrast(page);
  assert((await page.locator('.source-provenance').first().innerText()).includes(fixture.a));
  const committed=await(await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}/source?commit=${fixture.a}&path=${encodeURIComponent(fixture.file)}`)).json();

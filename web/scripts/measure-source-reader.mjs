@@ -52,7 +52,9 @@ try {
    await page.getByRole('button',{name:'Read selected source'}).click();
    await page.locator('.cm-content').waitFor();
    const loadMs=performance.now()-start;
-   if(!source.long_line) await page.waitForFunction(()=>document.querySelector('.cm-content .cm-line span[class]'));
+   // Return a primitive: an undisposed DOM JSHandle would retain each editor
+   // across unmount and contaminate the heap and detached-root measurements.
+   if(!source.long_line) await page.waitForFunction(()=>!!document.querySelector('.cm-content .cm-line span[class]'));
    else await page.getByText('Plain text · long line protection',{exact:false}).waitFor();
    const languageReadyMs=performance.now()-start;
    await page.getByRole('button',{name:'Find in file'}).click();
