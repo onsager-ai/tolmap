@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix="scanner-probe-") as tmp:
         scanner = tmp / f"{label}.c"
         scanner.write_text(source[:begin] + scan + source[end:])
         binary = tmp / label
-        subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L",
+        subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE",
             f"-I{core / 'include'}", f"-I{core / 'src'}", f"-I{directory / 'src'}",
             str(core / "src/lib.c"), str(directory / "src/parser.c"), str(scanner),
             "scripts/scanner-probe.c", "-o", str(binary)], check=True)
