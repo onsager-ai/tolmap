@@ -863,12 +863,17 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
         let again = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         assert_eq!(bytes, again, "immutable envelope {case}");
 
-        struct Grant(bool);
-        impl access::Policy for Grant {
+        struct Grant<'a> {
+            allowed: bool,
+            domain: &'a str,
+        }
+        impl access::Policy for Grant<'_> {
             fn check(&self, request: access::Request<'_>) -> Result<(), access::Denied> {
-                if self.0
+                if self.allowed
                     && request.principal == "owner"
                     && request.resource.repository == "fixture/town"
+                    && request.resource.access_domain == self.domain
+                    && request.operation == access::Operation::Read
                 {
                     Ok(())
                 } else {
@@ -899,20 +904,102 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
             },
         };
         assert_eq!(
-            comparison::protected(inputs(), query.clone(), &Grant(false), request)
+            comparison::protected(
+                inputs(),
+                query.clone(),
+                &Grant {
+                    allowed: false,
+                    domain: "private",
+                },
+                request,
+            )
                 .unwrap_err()
                 .status,
             StatusCode::FORBIDDEN
         );
+        let private_a = comparison::protected(
+            inputs(),
+            query.clone(),
+            &Grant {
+                allowed: true,
+                domain: "private",
+            },
+            request,
+        )
+        .unwrap();
         assert_eq!(
-            comparison::protected(inputs(), query.clone(), &Grant(true), request).unwrap(),
-            c
+            serde_json::to_value(&private_a.report).unwrap(),
+            serde_json::to_value(&c.report).unwrap()
         );
+
+        let mut source_request = request;
+        source_request.operation = access::Operation::Source;
+        let forced_read = comparison::protected(
+            inputs(),
+            query.clone(),
+            &Grant {
+                allowed: true,
+                domain: "private",
+            },
+            source_request,
+        )
+        .unwrap();
+        assert_eq!(forced_read.id, private_a.id);
+
+        let request_b = access::Request {
+            resource: access::Resource {
+                access_domain: "other-private",
+                repository: "fixture/town",
+                revision: Some(&base),
+            },
+            ..request
+        };
         assert_eq!(
-            comparison::protected(inputs(), query.clone(), &Grant(false), request)
+            comparison::protected(
+                inputs(),
+                query.clone(),
+                &Grant {
+                    allowed: true,
+                    domain: "private",
+                },
+                request_b,
+            )
+            .unwrap_err()
+            .status,
+            StatusCode::FORBIDDEN,
+            "policy must reject a foreign access domain"
+        );
+        let private_b = comparison::protected(
+            inputs(),
+            query.clone(),
+            &Grant {
+                allowed: true,
+                domain: "other-private",
+            },
+            request_b,
+        )
+        .unwrap();
+        assert_ne!(private_a.id, private_b.id, "domains have separate cache keys");
+        assert!(comparison_cache
+            .join(format!("{}.json", private_a.id))
+            .is_file());
+        assert!(comparison_cache
+            .join(format!("{}.json", private_b.id))
+            .is_file());
+        assert_eq!(
+            comparison::protected(
+                inputs(),
+                query.clone(),
+                &Grant {
+                    allowed: false,
+                    domain: "private",
+                },
+                request,
+            )
                 .unwrap_err()
                 .status,
-            StatusCode::FORBIDDEN
+            StatusCode::FORBIDDEN,
+            "a revoked principal is denied even when the comparison is cached"
         );
         let mut invalid = query.clone();
         invalid.report_only = true;
