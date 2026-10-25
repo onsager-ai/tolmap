@@ -6,7 +6,7 @@ export const REQUIRED_STORIES = [
   'map-overview', 'map-loading', 'map-unavailable', 'map-district', 'map-file', 'map-symbol', 'map-folder', 'map-layer-c', 'map-layer-x', 'map-layer-p', 'map-detail-pending',
   'map-search', 'map-search-empty', 'map-layers', 'map-repositories', 'map-quality', 'map-keyboard', 'map-path',
   'source-ready', 'source-loading', 'source-unavailable', 'source-missing', 'source-expired', 'source-binary', 'source-large', 'source-unsupported', 'source-long-line', 'source-search', 'source-search-empty',
-  'freshness-queued', 'freshness-indexing', 'freshness-failed', 'freshness-stale', 'freshness-complete',
+  'freshness-queued', 'freshness-indexing', 'freshness-failed', 'freshness-stale', 'freshness-complete', 'map-freshness',
   'reserved-about', 'reserved-docs', 'reserved-api', 'reserved-settings', 'reserved-assets', 'reserved-static', 'reserved-health', 'reserved-login', 'reserved-admin', 'reserved-search',
 ];
 

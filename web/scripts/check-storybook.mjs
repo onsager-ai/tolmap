@@ -55,6 +55,39 @@ try {
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `horizontal overflow: ${item.id}`);
         assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
         if (item.id === 'map-overview') assert.ok(await page.locator('.map-svg path').count() > 0);
+        if (item.id === 'map-freshness') {
+          assert.ok(await page.locator('.map-svg path').count() > 0, 'freshness must use the real map');
+          if (viewport.name === 'desktop') assert.equal(await page.locator('.desktop-panel').evaluate(panel => getComputedStyle(panel).opacity), '1', 'exercise the default open desktop panel');
+          if (['phone', 'landscape'].includes(viewport.name)) assert.equal(await page.locator('[data-control-column]').count(), 1, 'exercise the real phone controls');
+          const geometry = await page.locator('[data-snapshot-freshness-note]').evaluate(note => {
+            const rect = note.getBoundingClientRect();
+            const visible = element => {
+              const box = element.getBoundingClientRect();
+              return box.width > 0 && box.height > 0 && box.right > 0 && box.left < innerWidth
+                && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).opacity !== '0';
+            };
+            const overlaps = [...document.querySelectorAll('.desktop-panel, [data-map-controls], [data-detail-status], [data-control-column]')]
+              .filter(visible).filter(element => {
+                const other = element.getBoundingClientRect();
+                return rect.left < other.right && rect.right > other.left && rect.top < other.bottom && rect.bottom > other.top;
+              }).map(element => element.outerHTML.slice(0, 180));
+            const retry = note.querySelector('a');
+            const retryRect = retry?.getBoundingClientRect();
+            const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            const retryHit = retryRect && document.elementFromPoint(retryRect.left + retryRect.width / 2, retryRect.top + retryRect.height / 2);
+            return {
+              inViewport: rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+              fits: note.scrollWidth <= note.clientWidth, overlaps,
+              centerHit: !!center && note.contains(center),
+              retryHit: !!retryHit && !!retry && retry.contains(retryHit),
+            };
+          });
+          assert.equal(geometry.inViewport, true, 'freshness note must stay in the viewport');
+          assert.equal(geometry.fits, true, 'freshness text must wrap');
+          assert.deepEqual(geometry.overlaps, [], 'freshness must clear the panel, controls and detail note');
+          assert.equal(geometry.centerHit, true, 'freshness note is covered');
+          assert.equal(geometry.retryHit, true, 'retry indexing must be clickable');
+        }
         if (item.id === 'source-ready') assert.equal(await page.locator('.cm-content').getAttribute('aria-readonly'), 'true');
         await page.screenshot({ path: path.join(output, row.file), animations: 'disabled' });
         assert.deepEqual(errors, [], `browser errors while rendering ${item.id}`);

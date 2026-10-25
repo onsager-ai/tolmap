@@ -954,6 +954,7 @@ export function MapView() {
   );
 
   if (narrow) {
+    const mapLeft = landscape && sideOpen ? `${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px)` : "env(safe-area-inset-left, 0px)";
     // docs/UX.md §3: the map is full screen; everything else floats over it
     // or lives in the one sheet. No fullscreen mode on phones (§3).
     return (
@@ -962,13 +963,12 @@ export function MapView() {
           {mapCanvas}
         </div>
         {sourceReader}
-        <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow />
-        <DetailStatusNote
-          pending={early.detailPending}
-          failed={early.detailFailed}
-          narrow
-          mapLeft={landscape && sideOpen ? `${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px)` : undefined}
-        />
+        <div className="pointer-events-none absolute z-20 flex flex-col gap-2" data-map-status-notes
+          style={{ left: `calc(${mapLeft} + 12px)`, right: "calc(68px + env(safe-area-inset-right, 0px))",
+            top: `calc(${early.detailPending || early.detailFailed ? 72 : 122}px + env(safe-area-inset-top, 0px))` }}>
+          <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow mapLeft={mapLeft} inline />
+          <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow mapLeft={mapLeft} inline />
+        </div>
         <PhoneChrome
           doc={doc}
           packageLayout={packageLayout}

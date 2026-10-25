@@ -59,4 +59,5 @@ jobs:
             web/storybook-evidence/manifest.json
             web/storybook-evidence/oss-freshness-*-phone-*.png
             web/storybook-evidence/oss-freshness-*-desktop-*.png
+            web/storybook-evidence/oss-map-freshness-*-*.png
           if-no-files-found: warn

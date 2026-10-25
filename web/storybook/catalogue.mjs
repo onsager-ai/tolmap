@@ -9,6 +9,7 @@ export const cases = [
   ...['queued', 'fetch', 'read', 'map', 'detail'].map(state => [`job-${state}`, `Indexing ${state}`, '/new?job=fixture&slug=onsager-ai/tolmap', state]),
   ...['detection_uncertain', 'detection_failed', 'cancelled', 'clone_failed', 'worker_crashed', 'busy', 'server_stopping', 'rate_limited', 'index_failed', 'internal_error', 'unknown'].map(code => [`failed-${code.replaceAll('_', '-')}`, `Failure · ${code}`, '/new?job=fixture&slug=onsager-ai/tolmap', code]),
   ['map-overview', 'Map overview', '/onsager-ai/tolmap', 'map-ready'],
+  ['map-freshness', 'Snapshot freshness on the map', '/onsager-ai/tolmap?job=fixture', 'freshness-in-map'],
   ['map-loading', 'Map loading', '/onsager-ai/tolmap', 'map-loading'],
   ['map-unavailable', 'Map unavailable', '/onsager-ai/tolmap', 'map-unavailable'],
   ['map-district', 'District selected', 'district', 'map-ready'],

@@ -13,6 +13,7 @@ export function DetailStatusNote({
   failed,
   narrow,
   mapLeft = "env(safe-area-inset-left, 0px)",
+  inline = false,
 }: {
   pending: boolean;
   failed: string | null;
@@ -20,6 +21,7 @@ export function DetailStatusNote({
   /** Phone shell: where the map starts on the left (§9: beside the side
    * sheet in landscape), the same edge the search pill floats from. */
   mapLeft?: string;
+  inline?: boolean;
 }) {
   const [dismissed, setDismissed] = useState(false);
   if (!pending && (failed == null || dismissed)) return null;
@@ -37,8 +39,8 @@ export function DetailStatusNote({
     <div
       role="status"
       data-detail-status={pending ? "pending" : "failed"}
-      style={style}
-      className={`pointer-events-auto absolute z-20 flex items-center gap-2.5 rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] px-3 py-2 text-small text-[var(--on)] shadow-md ${position}`}
+      style={inline ? undefined : style}
+      className={`pointer-events-auto flex min-w-0 items-center gap-2.5 rounded-[12px] border border-[var(--rule)] bg-[var(--chrome2)] px-3 py-2 text-small text-[var(--on)] shadow-md ${inline ? "" : `absolute z-20 ${position}`}`}
     >
       {pending ? (
         <>
