@@ -49,7 +49,8 @@ try {
     for (const item of cases.filter(item => applicable(item, viewport))) {
       const row = resultMap.get(JSON.stringify([item.id, host, viewport.name, theme]));
       try {
-        await page.goto(`${base}/iframe.html?id=tolmap-pages--${item.id}&viewMode=story&globals=theme:${theme};host:${host}`);
+        const storyId = item.storybookId ?? `tolmap-pages--${item.id}`;
+        await page.goto(`${base}/iframe.html?id=${storyId}&viewMode=story&globals=theme:${theme};host:${host}`);
         await page.locator(`html[data-visual-ready="${item.id}"]`).waitFor({ timeout: 30000 });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `horizontal overflow: ${item.id}`);
         assert.equal(await page.locator('html').getAttribute('data-theme'), theme);

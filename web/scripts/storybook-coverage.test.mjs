@@ -19,7 +19,7 @@ after(async () => { await browser?.close(); if (root) await fs.rm(root, { recurs
 
 test('catalogue, Storybook IDs and production route paths stay in exact coverage', async () => {
   const index = { entries: Object.fromEntries(cases.map(item => {
-    const id = `tolmap-pages--${item.id}`;
+    const id = item.storybookId ?? `tolmap-pages--${item.id}`;
     return [id, { id, type: 'story' }];
   })) };
   assert.equal(assertStorybookCoverage(cases, index, reserved).storyCount, cases.length);
@@ -28,6 +28,7 @@ test('catalogue, Storybook IDs and production route paths stay in exact coverage
   assert.throws(() => assertStorybookCoverage(cases, { entries: { ...index.entries, extra: { id: 'tolmap-pages--unexpected', type: 'story' } } }, reserved), /extra=\[tolmap-pages--unexpected\]/);
   assert.throws(() => assertStorybookCoverage(cases, { entries: { ...index.entries, duplicate: { id: 'tolmap-pages--home', type: 'story' } } }, reserved), /duplicate=\[tolmap-pages--home\]/);
   assert.throws(() => assertStorybookCoverage([...cases, cases[0]], index, reserved), /Duplicate catalogue story IDs/);
+  assert.throws(() => assertStorybookCoverage([...cases, { ...cases.find(item => item.storybookId), id: 'freshness-duplicate' }], index, reserved), /Duplicate catalogue Storybook IDs/);
   assert.throws(() => assertStorybookCoverage(cases.filter(item => item.id !== 'home'), { entries: Object.fromEntries(cases.filter(item => item.id !== 'home').map(item => [`tolmap-pages--${item.id}`, { id: `tolmap-pages--${item.id}`, type: 'story' }])) }, reserved), /Required story states are absent/);
   assert.equal(captureApplies({ id: 'map-keyboard' }, { name: 'phone' }, 'oss'), false);
   assert.equal(captureApplies({ id: 'reserved-about' }, { name: 'desktop' }, 'hub'), false);

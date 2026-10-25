@@ -19,8 +19,12 @@ export const cases = [
   ['map-detail-pending', 'Detail still running', '/onsager-ai/tolmap?job=fixture', 'early'],
   ...['search', 'search-empty', 'layers', 'repositories', 'quality', 'keyboard', 'path'].map(overlay => [`map-${overlay}`, `Map · ${overlay}`, overlay === 'path' ? 'file' : '/onsager-ai/tolmap', 'map-ready', overlay]),
   ...['ready', 'loading', 'unavailable', 'missing', 'expired', 'binary', 'large', 'unsupported', 'long-line', 'search', 'search-empty'].map(state => [`source-${state}`, `Source · ${state}`, 'source', `source-${state}`]),
+  ...['queued', 'indexing', 'failed', 'stale', 'complete'].map(state => [
+    `freshness-${state}`, `Snapshot freshness · ${state}`, '/', 'freshness', undefined,
+    `tolmap-snapshot-freshness--${state}`,
+  ]),
   ...['about', 'docs', 'api', 'settings', 'assets', 'static', 'health', 'login', 'admin', 'search'].map(name => [`reserved-${name}`, `Reserved · /${name}`, `/${name}`, 'home']),
-].map(([id, name, route, fixture, action]) => ({ id, name, route, fixture, action }));
+].map(([id, name, route, fixture, action, storybookId]) => ({ id, name, route, fixture, action, storybookId }));
 
 export const viewports = [
   { name: 'phone', width: 390, height: 844, touch: true },
