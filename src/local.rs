@@ -453,25 +453,93 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
         return Ok(axum::Json(json!([])).into_response());
     }
     let parts: Vec<_> = path.trim_matches('/').split('/').collect();
+    if parts.len() == 4 && parts[..3] == ["api", "compare", "snapshot"] {
+        let id = Uuid::parse_str(parts[3])?;
+        let all = snapshots(s)?;
+        let snap = all
+            .iter()
+            .find(|x| x.id == id)
+            .context("snapshot unavailable")?;
+        let query: crate::comparison::CompareQuery =
+            serde_json::from_value(serde_json::to_value(&params)?).or_else(|_| {
+                // URL query values are strings; the API's typed extractor is
+                // not used by this loopback fallback router.
+                Ok::<_, anyhow::Error>(crate::comparison::CompareQuery {
+                    base: params.get("base").context("base")?.clone(),
+                    head: params.get("head").context("head")?.clone(),
+                    max_districts: params.get("max_districts").map(|v| v.parse()).transpose()?,
+                    max_dq: params.get("max_dq").map(|v| v.parse()).transpose()?,
+                    report_only: params.get("report_only").is_some_and(|v| v == "true"),
+                })
+            })?;
+        let base = all
+            .iter()
+            .find(|x| x.commit == query.base)
+            .context("base snapshot unavailable")?;
+        ensure!(
+            query.base == snap.commit,
+            "comparison must use this base snapshot"
+        );
+        let head = all
+            .iter()
+            .find(|x| x.commit == query.head)
+            .context("head snapshot unavailable")?;
+        let repo = s
+            .data
+            .join("prepared")
+            .join(head.prepared.to_string())
+            .join("source.git");
+        let map = s
+            .data
+            .join("snapshots")
+            .join(base.id.to_string())
+            .join("map.json");
+        let cache = s.data.join("comparisons");
+        return Ok(
+            match crate::comparison::run(
+                crate::comparison::Inputs {
+                    repository: &s.repository,
+                    repo: &repo,
+                    base_map: &map,
+                    cache: &cache,
+                },
+                query,
+            ) {
+                Ok(value) => axum::Json(value).into_response(),
+                Err(e) => e.into_response(),
+            },
+        );
+    }
     if parts.len() >= 4 && parts[..3] == ["api", "maps", "snapshot"] {
         let id = Uuid::parse_str(parts[3])?;
         let dir = s.data.join("snapshots").join(id.to_string());
         let snap: Snapshot = serde_json::from_slice(&std::fs::read(dir.join("snapshot.json"))?)?;
-        ensure!(
-            params.get("commit").is_none_or(|x| x == &snap.commit),
-            "commit mismatch"
-        );
+        let source_snap = if parts.len() == 5 && matches!(parts[4], "source" | "provenance") {
+            match params.get("commit") {
+                Some(commit) => snapshots(s)?
+                    .into_iter()
+                    .find(|x| &x.commit == commit)
+                    .context("source snapshot unavailable")?,
+                None => snap.clone(),
+            }
+        } else {
+            ensure!(
+                params.get("commit").is_none_or(|x| x == &snap.commit),
+                "commit mismatch"
+            );
+            snap.clone()
+        };
         if parts.len() == 5 && parts[4] == "provenance" {
-            return Ok(axum::Json(json!({"repository":snap.repository,"commit":snap.commit,"version":source::VERSION})).into_response());
+            return Ok(axum::Json(json!({"repository":source_snap.repository,"commit":source_snap.commit,"version":source::VERSION})).into_response());
         }
         if parts.len() == 5 && parts[4] == "source" {
             let text = source::read(
                 &s.data
                     .join("prepared")
-                    .join(snap.prepared.to_string())
+                    .join(source_snap.prepared.to_string())
                     .join("source.git"),
-                &snap.repository,
-                &snap.commit,
+                &source_snap.repository,
+                &source_snap.commit,
                 params.get("path").context("path")?,
             )?;
             return Ok(axum::Json(text).into_response());

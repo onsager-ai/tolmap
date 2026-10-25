@@ -900,3 +900,33 @@ mod tests {
         );
     }
 }
+
+// Comparison envelope adds provenance without changing CheckReport v1.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct Comparison {
+    pub id: String,
+    pub report: CheckReport,
+    pub provenance: ComparisonProvenance,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct ComparisonProvenance {
+    pub repository: String,
+    pub base: String,
+    pub head: String,
+    pub report_version: u32,
+    pub thresholds: CheckThresholds,
+    pub base_map_source: String,
+    pub base_map_sha256: String,
+    pub base_files: usize,
+    pub base_districts: usize,
+    pub indexed_changes: usize,
+    pub outside_graph: Vec<CheckFile>,
+    pub tolmap_version: String,
+    pub build_revision: String,
+    pub resolution: f64,
+    pub prune: String,
+    pub seed: u32,
+    pub refs: String,
+    pub created_at: String,
+}

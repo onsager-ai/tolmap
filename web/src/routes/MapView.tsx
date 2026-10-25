@@ -1,3 +1,4 @@
+import { ComparisonPanel, useComparison } from "@/comparison/ComparisonPanel";
 import { SourceReader } from "@/reader/SourceReader";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
@@ -45,6 +46,7 @@ export function MapView() {
   const { owner, repo } = useParams({ strict: false }) as { owner: string; repo: string };
   const search = useSearch({ strict: false }) as MapSearch;
   const navigate = useNavigate();
+  const comparison = useComparison(owner, repo, search);
   const sourceActionRef = useRef<HTMLButtonElement>(null);
   const sourceWasOpen = useRef(!!search.read);
   useEffect(() => {
@@ -58,7 +60,7 @@ export function MapView() {
   // the job is done.
   const early = useEarlyMapJob(search.job);
   const { data: doc, isLoading, isError, error, source } = useMapDocument(owner, repo, {
-    commit: search.commit ?? early.commit,
+    commit: search.base ?? search.commit ?? early.commit,
     wait: early.waiting,
   });
 
@@ -105,7 +107,7 @@ export function MapView() {
     repo,
     source,
     [...wantedDistricts],
-    { commit: search.commit ?? early.commit, ready: !early.waiting && !early.detailPending },
+    { commit: search.base ?? search.commit ?? early.commit, ready: !early.waiting && !early.detailPending },
   );
   // The job ended: the map's URL is the plain one again (a shared link
   // should not watch a finished job), while the commit stays pinned.
@@ -901,6 +903,7 @@ export function MapView() {
     onNeedSymbols: (d) => onNeedSymbols(d),
   };
 
+  const comparisonChrome = search.compare ? <ComparisonPanel search={search} data={comparison.data} pending={comparison.isPending} refreshing={comparison.isFetching && !!comparison.data} error={comparison.error} retry={() => { void comparison.refetch(); }} update={updateSearch} read={(file, commit) => { if (narrow) { pushOverlay("reader"); updateSearch({file, source_commit: commit, read: true, line: 1, end: 1}); } else { desktopReaderEntry.current = true; navigate({to: ".", search: (prev: Record<string, unknown>) => ({...prev, file, source_commit: commit, read: true, line: 1, end: 1}), state: true}); } }} pick={(file, d) => { updateSearch({file, d, read: undefined, source_commit: undefined}); if (d != null) canvasRef.current?.panToDistrict(d); else if (file) { const i = doc?.F.indexOf(file) ?? -1; if (i >= 0) canvasRef.current?.panTo(i); } }} /> : <button className="impact-launch" onClick={() => updateSearch({compare: true})}>Compare commits</button>;
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center bg-[var(--chrome)] text-small text-[var(--dim)]">
@@ -911,6 +914,7 @@ export function MapView() {
   if (isError || !doc || !packageLayout) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--chrome)] p-6 text-center text-small text-[var(--link-out)]">
+        {comparisonChrome}
         <p>couldn't load {owner}/{repo}.</p>
         <p className="text-[var(--dim)]">{error instanceof Error ? error.message : "not in the catalogue"}</p>
       </div>
@@ -928,10 +932,13 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
-  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
+  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.source_commit ?? search.base ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.source_commit ?? search.base ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
+
   const mapCanvas = (
     <MapCanvas
       doc={doc}
+      impactFiles={!comparison.isFetching && !comparison.error ? comparison.data?.report.files.map(f => f.base_path ?? f.path) : undefined}
+      impactDistricts={!comparison.isFetching && !comparison.error ? comparison.data?.report.districts.map(d => d.id) : undefined}
       geo={search.geo}
       layer={search.layer}
       sel={sel}
@@ -946,7 +953,7 @@ export function MapView() {
       activeDirectory={activeDirectory}
       districtSymbols={districtSymbolsMap}
       selHSym={selHSym}
-      insets={frameInsets}
+      insets={search.compare ? { ...frameInsets, frame: { ...frameInsets.frame, right: narrow ? frameInsets.frame.right : 380 }, safe: { ...frameInsets.safe, right: narrow ? frameInsets.safe.right : 380, bottom: narrow ? metrics.height * 0.45 : frameInsets.safe.bottom } } : frameInsets}
       callbacks={rendererCallbacks}
       handleRef={canvasRef}
     />
@@ -961,13 +968,14 @@ export function MapView() {
           {mapCanvas}
         </div>
         {sourceReader}
+        {comparisonChrome}
         <DetailStatusNote
           pending={early.detailPending}
           failed={early.detailFailed}
           narrow
           mapLeft={landscape && sideOpen ? `${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px)` : undefined}
         />
-        <PhoneChrome
+        {!search.compare && <PhoneChrome
           doc={doc}
           packageLayout={packageLayout}
           packageGrouping={packageGrouping}
@@ -1058,7 +1066,7 @@ export function MapView() {
           onSelectDirectory={selectDirectory}
           onBreadcrumbRepo={clearAll}
           onBreadcrumbFile={(i) => updateSearch({ file: doc.F[i], sym: undefined, hsym: undefined, d: undefined, dir: undefined })}
-        />
+        />}
       </div>
     );
   }
@@ -1121,6 +1129,7 @@ export function MapView() {
     >
       {mapCanvas}
       {sourceReader}
+        {comparisonChrome}
       <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
       <DesktopChrome
         catalogue={catalogue}

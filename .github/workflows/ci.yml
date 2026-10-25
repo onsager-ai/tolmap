@@ -145,11 +145,20 @@ jobs:
       - name: cargo build
         run: cargo build --locked --release --bin tolmap
 
-      - name: cargo test
-        run: cargo test --locked --release
-
+      # Keep generated artifacts available when a CI-only host cannot run
+      # the Rust generator locally. The subsequent check still requires the
+      # checked-in files to match exactly.
+      - name: Generate binding artifacts
+        run: cargo run --locked --release --bin generate-types -- --output target/generated-bindings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generated-bindings
+          path: target/generated-bindings/
       - name: Generated TypeScript bindings
         run: cargo run --release --bin generate-types -- --check
+
+      - name: cargo test
+        run: cargo test --locked --release
 
       # `--refs hand` on every build in this job (issue #110 P2a). These
       # gates test the hand-written resolver -- the only one the frozen
@@ -1260,6 +1269,7 @@ jobs:
       # only reaches `@/...` modules through `import type`, which the
       # compiler erases before this would matter.
       - run: TSX_TSCONFIG_PATH=tsconfig.app.json npx --yes tsx@4.23.15 scripts/check-repo-input.ts
+      - run: TSX_TSCONFIG_PATH=tsconfig.app.json npx --yes tsx@4.23.15 scripts/check-comparison.tsx
       - run: pnpm build
 
   full-fixtures:

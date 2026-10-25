@@ -35,6 +35,8 @@ export interface MapCanvasHandle {
 
 interface MapCanvasProps {
   doc: MapDocument;
+  impactFiles?: readonly string[];
+  impactDistricts?: readonly number[];
   geo: Geo;
   layer: Layer;
   sel: number | null;
@@ -66,6 +68,8 @@ interface MapCanvasProps {
  * pan frame is the thing this split avoids. */
 export function MapCanvas({
   doc,
+  impactFiles,
+  impactDistricts,
   geo,
   layer,
   sel,
@@ -170,6 +174,8 @@ export function MapCanvas({
     renderer.setInsets(insetsRef.current);
     const state: MapRenderState = {
       doc,
+      impactFiles,
+      impactDistricts,
       geo,
       layer,
       sel,
@@ -210,6 +216,8 @@ export function MapCanvas({
     }
     const state: MapRenderState = {
       doc,
+      impactFiles,
+      impactDistricts,
       geo,
       layer,
       sel,
@@ -226,7 +234,7 @@ export function MapCanvas({
       selHSym,
     };
     renderer.render(state);
-  }, [doc, geo, layer, sel, selSym, selD, route, packageGrouping, districtPaths, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
+  }, [doc, impactFiles, impactDistricts, geo, layer, sel, selSym, selD, route, packageGrouping, districtPaths, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
 
   // docs/UX.md §3.3: new chrome insets (a sheet detent, a resize) reach the
   // renderer without moving the camera -- MapView decides when a move is
