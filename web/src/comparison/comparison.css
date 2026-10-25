@@ -1,0 +1,19 @@
+.comparison-panel { position:absolute; z-index:45; right:12px; top:72px; bottom:16px; width:350px; overflow:auto; overscroll-behavior:contain; background:var(--chrome); color:var(--on); border:1px solid var(--rule); border-radius:12px; padding:16px; font-size:14px; overflow-wrap:anywhere; }
+.comparison-panel header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.comparison-panel h2 { font-size:20px; font-weight:600; }
+.comparison-panel h3 { font-weight:600; margin-top:20px; }
+.comparison-panel p { margin:10px 0; }
+.comparison-panel label { display:block; margin:8px 0; }
+.comparison-panel input:not([type=checkbox]) { display:block; width:100%; background:var(--chrome2); border:1px solid var(--rule); padding:8px; font-size:16px; }
+.comparison-panel button,.comparison-panel a,.comparison-panel summary { min-height:44px; padding:8px 4px; text-align:left; }
+.comparison-panel a { display:inline-flex; align-items:center; text-decoration:underline; color:var(--accent); }
+.comparison-panel li { border-bottom:1px solid var(--rule); padding:6px 0; }
+.comparison-panel small { display:block; color:var(--dim); }
+.comparison-panel :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.impact-sides { display:flex; gap:18px; }
+.impact-launch { position:absolute; z-index:40; right:12px; top:72px; min-height:44px; padding:8px 12px; border-radius:8px; background:var(--chrome); color:var(--on); border:1px solid var(--rule); }
+@media (max-width:600px), (max-height:500px) { .comparison-panel { z-index:24; top:calc(68px + env(safe-area-inset-top, 0px)); bottom:auto; left:12px; right:68px; width:auto; height:min(28vh, 236px); padding-bottom:calc(16px + env(safe-area-inset-bottom)); border-radius:12px; } }
+@media (max-height:500px) and (min-width:601px) { .comparison-panel { left:calc(360px + env(safe-area-inset-left, 0px) + 12px); right:68px; height:min(36vh, 150px); } }
+/* Keep the existing zoom/layer control column available. */
+@media (min-width:601px) and (min-height:501px) { .comparison-panel { right:72px; } }
+@media (max-width:600px), (max-height:500px) { .impact-launch { left:12px; right:auto; top:calc(68px + env(safe-area-inset-top, 0px)); } }

@@ -170,16 +170,16 @@ export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin 
   const staticQuery = useQuery({
     queryKey: ["map", "static", owner, repo],
     queryFn: () => fetchStaticMap(owner, repo),
-    enabled: !hostProfile?.private && serviceMiss && !!owner && !!repo,
+    enabled: !pin.commit && !hostProfile?.private && serviceMiss && !!owner && !!repo,
     staleTime: Infinity,
     retry: false,
   });
 
-  const doc = serviceQuery.data ?? staticQuery.data;
+  const doc = serviceQuery.data ?? (!pin.commit ? staticQuery.data : undefined);
   const isLoading =
     !doc &&
     (checkingService || !!pin.wait || (available === true && serviceQuery.isFetching) || (serviceMiss && staticQuery.isFetching));
-  const isError = !doc && serviceMiss && (hostProfile?.private || staticQuery.isError);
+  const isError = !doc && serviceMiss && (!!pin.commit || hostProfile?.private || staticQuery.isError);
 
   return {
     data: doc,

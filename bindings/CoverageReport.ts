@@ -2,7 +2,7 @@
 import type { CoverageLanguage } from "./CoverageLanguage";
 import type { ReferenceCoverage } from "./ReferenceCoverage";
 
-export type CoverageReport = { zero_edge_files: number, total_files: number, by_language: { [key in string]: CoverageLanguage }, references?: { [key in string]: ReferenceCoverage } | null,
+export type CoverageReport = { zero_edge_files: number, total_files: number, by_language: { [key in string]: CoverageLanguage }, references?: { [key in string]: ReferenceCoverage } | null, 
 /**
  * Issue #115's guarded mirror rule ("Mirror rule, guarded"): the count
  * of TypeScript workspace-package import specifiers resolved, during
@@ -17,7 +17,7 @@ export type CoverageReport = { zero_edge_files: number, total_files: number, by_
  * without this exact shape), so it is omitted rather than written as
  * `0`, keeping every such map byte-identical.
  */
-build_output_mirror?: number,
+build_output_mirror?: number, 
 /**
  * Issue #162: Python import statements that resolved only through
  * the guarded cross-project fallback -- an absolute import no scope of

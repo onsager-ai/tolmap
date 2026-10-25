@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use tolmap::schema::{CheckReport, DistrictSymbols, MapDocument, SymbolsDocument};
+use tolmap::schema::{CheckReport, Comparison, DistrictSymbols, MapDocument, SymbolsDocument};
 use tolmap::service::http::HealthzResponse;
 use tolmap::service::jobs::JobSnapshot;
 use tolmap::worker::{WorkerEvent, WorkerSpec};
@@ -58,6 +58,7 @@ fn export_to(directory: &Path) -> Result<()> {
     // Issue #170: `tolmap check --format json`'s report, for the consumers
     // that gate on it (docs/CHECK.md).
     CheckReport::export_all(&Config::default().with_out_dir(directory))?;
+    Comparison::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 

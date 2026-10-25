@@ -1,0 +1,97 @@
+//! Public OSS adapter. Protected hosts use comparison::protected with their
+//! trusted #222 context; this router never resolves private credentials.
+use super::{error::ApiError, AppState};
+use crate::{
+    comparison::{self, CompareQuery, Inputs},
+    source,
+};
+use axum::{
+    extract::{Path, Query, State},
+    response::IntoResponse,
+    Json,
+};
+use serde::Deserialize;
+use std::sync::Arc;
+
+pub async fn compare(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    Query(query): Query<CompareQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (repository, source) = comparison::public_paths(&state.config.cache_dir, &owner, &repo)?;
+    if !source::valid_commit(&query.base) || !source::valid_commit(&query.head) {
+        return Err(ApiError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "comparison_input",
+            "base and head must be full commit IDs",
+        ));
+    }
+    let row = state
+        .store
+        .get(&repository, &query.base)?
+        .ok_or_else(comparison::unavailable)?;
+    let cache = state.config.cache_dir.join("comparisons");
+    tokio::task::spawn_blocking(move || {
+        comparison::run(
+            Inputs {
+                repository: &repository,
+                repo: &source,
+                base_map: &row.map_path,
+                cache: &cache,
+            },
+            query,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?
+    .map(|c| ([("cache-control", "no-store")], Json(c)))
+}
+#[derive(Deserialize)]
+pub struct SourceQuery {
+    pub commit: Option<String>,
+    pub path: Option<String>,
+}
+pub async fn provenance(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    Query(query): Query<SourceQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (repository, source) = comparison::public_paths(&state.config.cache_dir, &owner, &repo)?;
+    let wanted = match query.commit {
+        Some(commit) => commit,
+        None => {
+            state
+                .store
+                .latest(&repository)?
+                .ok_or_else(comparison::unavailable)?
+                .commit
+        }
+    };
+    let commit = tokio::task::spawn_blocking(move || comparison::resolve(&source, &wanted))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))??;
+    Ok((
+        [("cache-control", "no-store")],
+        Json(
+            serde_json::json!({"version":source::VERSION, "repository":repository, "commit":commit}),
+        ),
+    ))
+}
+pub async fn read_source(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    Query(query): Query<SourceQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (repository, repo) = comparison::public_paths(&state.config.cache_dir, &owner, &repo)?;
+    let path = query
+        .path
+        .ok_or_else(|| ApiError::invalid_request("path required"))?;
+    let commit = query
+        .commit
+        .ok_or_else(|| ApiError::invalid_request("immutable commit required"))?;
+    let text =
+        tokio::task::spawn_blocking(move || source::read(&repo, &repository, &commit, &path))
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))??;
+    Ok(([("cache-control", "no-store")], Json(text)))
+}

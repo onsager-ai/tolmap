@@ -438,3 +438,29 @@ pruned, regardless of that setting -- docs/FINDINGS.md finding 4's warm
 start reads the previous commit's district membership out of exactly this
 row, so a policy that could evict it would silently degrade the highest-
 leverage property the store has (see `service::store::Store::prune`).
+
+## Commit comparisons and source
+
+`GET /api/compare/{owner}/{repo}?base=<full-sha>&head=<full-sha>` returns the
+Rust-defined `Comparison` envelope. Optional `max_districts`, `max_dq` and
+`report_only` have the exact [check semantics](CHECK.md#comparison-resource-224).
+The public adapter uses retained clones and a stored base map; unavailable
+objects return 404 `comparison_unavailable`, invalid inputs 400
+`comparison_input`, internal check failures 500 `comparison_internal`, unsupported
+versions 409 `comparison_version`. Responses use `Cache-Control: no-store`.
+
+`GET /api/maps/{owner}/{repo}/provenance?commit=<full-sha>` returns source v1,
+repository identity and the verified commit. The sibling `/source` also requires
+`path=<relative-path>` and returns the existing inert source contract, including
+missing/expired/binary/large/unsupported states. Neither route falls back to a
+moving ref or a working tree. Clone eviction can make source unavailable even
+when a derived map remains retained.
+
+Standalone public and loopback-local use have no Hub dependency. Protected
+embedding adapters call `comparison::protected` with trusted #222 policy context
+for the source repository, before any cache hit and again before delivery. The
+public router is not a private hosting authorization adapter and accepts no
+principal headers or credentials. Local routes retain their existing loopback,
+same-origin and private-storage boundaries; `/api/compare/snapshot/{base-id}`
+requires retained base and head snapshots. Source routes on that base snapshot
+accept another explicitly retained commit to read the head without moving maps.

@@ -77,6 +77,11 @@ jobs:
           nohup pnpm exec vite --host 127.0.0.1 --port 5176 --strictPort > vite.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:5176/ >/dev/null && exit 0; sleep 1; done
           cat vite.log; exit 1
+      - name: Comparison protocol browser checks (desktop and phone)
+        run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176
+      - name: Vite log on comparison failure
+        if: failure()
+        run: tail -n 120 vite.log || true
       - name: check:view
         run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176
       - name: Screenshots
@@ -98,6 +103,12 @@ jobs:
         with:
           name: viewer-shots
           path: web/shots/
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-review-samples
+          path: web/shots/comparison/
           if-no-files-found: warn
       # B4 perf follow-up (issue #82, owner review): dify is the one fixture
       # large enough (6,347 files) for paint cost to be worth measuring in
