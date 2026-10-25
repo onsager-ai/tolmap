@@ -944,8 +944,8 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
                 },
                 request,
             )
-                .unwrap_err()
-                .status,
+            .unwrap_err()
+            .status,
             StatusCode::FORBIDDEN
         );
         let private_a = comparison::protected(
@@ -1010,7 +1010,10 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
             request_b,
         )
         .unwrap();
-        assert_ne!(private_a.id, private_b.id, "domains have separate cache keys");
+        assert_ne!(
+            private_a.id, private_b.id,
+            "domains have separate cache keys"
+        );
         assert!(comparison_cache
             .join(format!("{}.json", private_a.id))
             .is_file());
@@ -1027,8 +1030,8 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
                 },
                 request,
             )
-                .unwrap_err()
-                .status,
+            .unwrap_err()
+            .status,
             StatusCode::FORBIDDEN,
             "a revoked principal is denied even when the comparison is cached"
         );

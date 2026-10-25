@@ -146,7 +146,11 @@ fn checked(mut command: std::process::Command) -> Result<Vec<u8>> {
     );
     Ok(o.stdout)
 }
-fn comparison_preview(git_dir: &Path, preview_root: &Path, commit: &str) -> Result<PreviewWorktree> {
+fn comparison_preview(
+    git_dir: &Path,
+    preview_root: &Path,
+    commit: &str,
+) -> Result<PreviewWorktree> {
     ensure!(source::valid_commit(commit), "snapshot commit is invalid");
     private(preview_root)?;
     let preview = PreviewWorktree {
@@ -483,10 +487,7 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
     if parts.len() == 4 && parts[..3] == ["api", "compare", "snapshot"] {
         let id = Uuid::parse_str(parts[3])?;
         let all = snapshots(s)?;
-        let Some(snap) = all
-            .iter()
-            .find(|x| x.id == id)
-        else {
+        let Some(snap) = all.iter().find(|x| x.id == id) else {
             return Ok(crate::comparison::unavailable().into_response());
         };
         let query: crate::comparison::CompareQuery =
@@ -501,26 +502,17 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                     report_only: params.get("report_only").is_some_and(|v| v == "true"),
                 })
             })?;
-        let Some(base) = all
-            .iter()
-            .find(|x| x.commit == query.base)
-        else {
+        let Some(base) = all.iter().find(|x| x.commit == query.base) else {
             return Ok(crate::comparison::unavailable().into_response());
         };
         ensure!(
             query.base == snap.commit,
             "comparison must use this base snapshot"
         );
-        let Some(head) = all
-            .iter()
-            .find(|x| x.commit == query.head)
-        else {
+        let Some(head) = all.iter().find(|x| x.commit == query.head) else {
             return Ok(crate::comparison::unavailable().into_response());
         };
-        let prepared = s
-            .data
-            .join("prepared")
-            .join(head.prepared.to_string());
+        let prepared = s.data.join("prepared").join(head.prepared.to_string());
         let git_dir = prepared.join("source.git");
         let preview_root = prepared.join("preview");
         // prepare() removes its detection checkout. Recreate the committed
@@ -716,13 +708,7 @@ mod tests {
         checked(clone).unwrap();
     }
 
-    fn save_snapshot(
-        local: &Local,
-        id: Uuid,
-        prepared: Uuid,
-        commit: &str,
-        sequence: u64,
-    ) {
+    fn save_snapshot(local: &Local, id: Uuid, prepared: Uuid, commit: &str, sequence: u64) {
         let directory = local.data.join("snapshots").join(id.to_string());
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
@@ -804,9 +790,8 @@ mod tests {
         .unwrap();
 
         for (commit, expected) in [(&base, "VALUE = 1\n"), (&head, "VALUE = 2\n")] {
-            let path = format!(
-                "/api/maps/snapshot/{head_id}/source?commit={commit}&path=src/module.py"
-            );
+            let path =
+                format!("/api/maps/snapshot/{head_id}/source?commit={commit}&path=src/module.py");
             let uri: Uri = path.parse().unwrap();
             let response = dispatch(&local, &Method::GET, &uri).unwrap();
             let (status, body) = json_response(response).await;
@@ -838,9 +823,7 @@ mod tests {
         let unreachable_head = test_git(&unrelated, &["rev-parse", "HEAD"]);
         let unavailable_id = Uuid::new_v4();
         let unavailable_prepared = Uuid::new_v4();
-        let unavailable_prepared_dir = data
-            .join("prepared")
-            .join(unavailable_prepared.to_string());
+        let unavailable_prepared_dir = data.join("prepared").join(unavailable_prepared.to_string());
         std::fs::create_dir_all(&unavailable_prepared_dir).unwrap();
         clone_bare(&unrelated, &unavailable_prepared_dir.join("source.git"));
         save_snapshot(

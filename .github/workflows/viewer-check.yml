@@ -79,6 +79,9 @@ jobs:
           cat vite.log; exit 1
       - name: Comparison protocol browser checks (desktop and phone)
         run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176
+      - name: Vite log on comparison failure
+        if: failure()
+        run: tail -n 120 vite.log || true
       - name: check:view
         run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176
       - name: Screenshots

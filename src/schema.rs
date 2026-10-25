@@ -292,10 +292,13 @@ pub struct SymbolsDocument {
     /// absolute first point, then deltas, all in 1e-11 world units. Exterior
     /// and hole rings use even-odd fill when a card surrounds a sibling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "Array<Array<Array<number>> | null> | null")]
     pub symbol_rings: Option<Vec<Option<Vec<Vec<i64>>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ [key in number]: Array<Array<number>> } | null")]
     pub module_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ [key in number]: Array<Array<number>> } | null")]
     pub header_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
 }
 
@@ -313,10 +316,13 @@ pub struct DistrictSymbols {
     pub kinds: Vec<String>,
     pub module_code_lines: BTreeMap<usize, usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "Array<Array<Array<number>> | null> | null")]
     pub symbol_rings: Option<Vec<Option<Vec<Vec<i64>>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ [key in number]: Array<Array<number>> } | null")]
     pub module_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ [key in number]: Array<Array<number>> } | null")]
     pub header_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
 }
 
