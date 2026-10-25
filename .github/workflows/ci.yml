@@ -431,6 +431,7 @@ jobs:
       - name: Production reader behavior and candidate captures
         run: cd web && node scripts/check-source-reader.mjs
       - name: Measured large-file and long-line costs, 14 settled lifecycle cycles
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         run: cd web && node scripts/measure-source-reader.mjs
       - uses: actions/upload-artifact@v4

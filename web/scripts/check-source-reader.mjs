@@ -100,6 +100,24 @@ async function assertPhoneActionAndControls(page,width,height){
 async function matchStyle(locator){
  return locator.evaluate(el=>{const style=getComputedStyle(el),text=el.querySelector('span')??el;return{background:style.backgroundColor,color:getComputedStyle(text).color,outlineStyle:style.outlineStyle,outlineWidth:style.outlineWidth,outlineColor:style.outlineColor};});
 }
+async function inspectDOMSelection(page){
+ return page.locator('.cm-content').evaluate(content=>{
+  const selection=window.getSelection();
+  if(!selection?.anchorNode||!selection.focusNode||!content.contains(selection.anchorNode)||!content.contains(selection.focusNode))return null;
+  const offset=(node,position)=>{const range=document.createRange();range.selectNodeContents(content);range.setEnd(node,position);return range.toString().length;};
+  const anchor=offset(selection.anchorNode,selection.anchorOffset),focus=offset(selection.focusNode,selection.focusOffset);
+  return{from:Math.min(anchor,focus),to:Math.max(anchor,focus),text:selection.toString()};
+ });
+}
+async function assertFindGeometryNegativeControl(page,width,height){
+ const style=await page.addStyleTag({content:'.source-editor .cm-editor .cm-panel.cm-search{padding-right:4px!important}.source-editor .cm-editor .cm-panel.cm-search button[name=close]{box-sizing:border-box!important;width:18px!important;height:18px!important;min-width:0!important;min-height:0!important;padding:2px!important;border:0!important}'});
+ let failureText='';
+ try{await inspectFindTargets(page,width,height);}catch(error){failureText=error instanceof Error?error.message:String(error);}
+ finally{await style.evaluate(element=>element.remove());}
+ assert(failureText,`Find geometry oracle passed its injected negative control at ${width}x${height}`);
+ assert(/Find close target is smaller than 44x44|Find control intersects close target/.test(failureText),`negative control failed for an unrelated reason at ${width}x${height}: ${failureText}`);
+ return{label:'negative control of the geometry oracle; injected unreserved panel and undersized close target',failureText};
+}
 async function copySelection(page, expected){
  await page.locator('.cm-content').focus();
  await page.waitForFunction(value=>window.getSelection()?.toString()===value,expected);
@@ -153,6 +171,11 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  const content=page.locator('.cm-content');await content.focus();const rangeContrast=await inspectReaderContrast(page);
  await page.keyboard.press('Control+Home');for(let i=0;i<4;i++)await page.keyboard.press('Shift+ArrowRight');
  const selectionMatch=page.locator('.cm-selectionMatch').first();await selectionMatch.waitFor();
+ assert.deepEqual(await inspectDOMSelection(page),{from:0,to:4,text:'from'},'keyboard selection should cover offsets 0..4 and select "from"');
+ await page.keyboard.press('Shift+ArrowLeft');
+ assert.deepEqual(await inspectDOMSelection(page),{from:0,to:3,text:'fro'},'Shift+ArrowLeft should shrink the keyboard selection to offsets 0..3');
+ await page.keyboard.press('Shift+ArrowRight');
+ assert.deepEqual(await inspectDOMSelection(page),{from:0,to:4,text:'from'},'keyboard selection should restore the original range');
  const selectionMatchColors=await matchStyle(selectionMatch);
  const selectionMatchContrast=contrast(selectionMatchColors.background,selectionMatchColors.color);assert(selectionMatchContrast>=4.5,JSON.stringify({selectionMatchColors,selectionMatchContrast}));
  await page.keyboard.type('cannot edit');
@@ -161,6 +184,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  assert((await page.evaluate(()=>navigator.clipboard.readText())).includes('def '));
  await page.locator('.cm-content').evaluate(el=>{const data=new DataTransfer();data.setData('text/plain','mutated paste');el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});assert.equal(await page.locator('.cm-content').innerText(),original);
  await page.getByRole('button',{name:'Find in file'}).click();
+ const geometryNegativeControl=await assertFindGeometryNegativeControl(page,width,height);
  const findTargets=await inspectFindTargets(page,width,height);
  const search=page.locator('.cm-search input[name=search]');await search.fill('def');await page.locator('.cm-search button[name=next]').click();
  assert(await page.locator('.cm-search').isVisible());const activeMatch=page.locator('.cm-searchMatch-selected').first();await activeMatch.waitFor();
@@ -228,7 +252,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
   await page.getByRole('button',{name:'Read selected source'}).click();await page.locator('.cm-content').waitFor();await page.goBack();await page.waitForFunction(()=>!document.querySelector('[data-source-reader]'));assert.equal(new URL(page.url()).searchParams.get('file'),file);
  }
  assert.deepEqual(errors,[]);assert.deepEqual(outbound,[],'private local journey attempted outbound request');
- results.push({width,height,colorScheme,rangeContrast,selectionMatchContrast,activeMatchContrast,matchStyles:{selection:selectionMatchColors,current:activeMatchColors,other:otherMatchColors},findTargets,findScreenshot,deepLinkedRange,phoneControls,images:[`local-${width}-${colorScheme}.png`,`map-source-action-${width}-${colorScheme}.png`,`reader-${width}-${colorScheme}.png`,findScreenshot],passed:true,reviewStatus:'unreviewed candidate',device:'Chromium emulation',browser:browser.version()});await context.close();
+ results.push({width,height,colorScheme,rangeContrast,selectionMatchContrast,activeMatchContrast,matchStyles:{selection:selectionMatchColors,current:activeMatchColors,other:otherMatchColors},geometryNegativeControl,findTargets,findScreenshot,deepLinkedRange,phoneControls,images:[`local-${width}-${colorScheme}.png`,`map-source-action-${width}-${colorScheme}.png`,`reader-${width}-${colorScheme}.png`,findScreenshot],passed:true,reviewStatus:'unreviewed candidate',device:'Chromium emulation',browser:browser.version()});await context.close();
 }
 fs.renameSync('../.local-reader/checkout','../.local-reader/moved-checkout');
 const movedPage=await browser.newPage();const afterCheckoutMove=await(await movedPage.request.get(`${browserOrigin}/api/maps/snapshot/${fixture.snapshotA}/source?commit=${fixture.a}&path=${encodeURIComponent(fixture.file)}`)).json();assert.equal(createHash('sha256').update(afterCheckoutMove.text).digest('hex'),fixture.sourceSha256,'saved A source changed after checkout move');await movedPage.close();
