@@ -33,6 +33,7 @@ for(const [width,height] of [[320,568],[390,900],[844,390],[1280,900]])for(const
    if(button!==sourceAction)assert(box.x>=actionBox.x+actionBox.width||box.x+box.width<=actionBox.x||box.y>=actionBox.y+actionBox.height||box.y+box.height<=actionBox.y,'source action overlaps control');
   }
  }
+ await page.screenshot({path:`../reader-evidence/map-source-action-${width}-${colorScheme}.png`,animations:'disabled'});
  if(narrow)await sourceAction.tap();else await sourceAction.click();
  await page.locator('.cm-content').waitFor();
  assert.equal(await page.locator('.cm-content').getAttribute('contenteditable'),'false');

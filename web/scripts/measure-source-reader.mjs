@@ -10,7 +10,7 @@ try {
  const cdp=await page.context().newCDPSession(page);
  await cdp.send('Performance.enable');
  const heap=async()=>{await cdp.send('HeapProfiler.collectGarbage');return (await cdp.send('Performance.getMetrics')).metrics.find(m=>m.name==='JSHeapUsedSize')?.value??null;};
- for(const file of ['perf.py','long.txt']) {
+ for(const file of ['shop/perf.py','shop/perf_long.py']) {
   await page.goto(`http://127.0.0.1:8988/snapshot/${fixture.snapshotA}?file=${file}`);
   await page.getByRole('button',{name:'Read selected source'}).waitFor();
   const source=await (await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}/source?path=${file}`)).json();
@@ -21,7 +21,7 @@ try {
    await page.getByRole('button',{name:'Read selected source'}).click();
    await page.locator('.cm-content').waitFor();
    const loadMs=performance.now()-start;
-   if(file.endsWith('.py')) await page.waitForFunction(()=>document.querySelector('.cm-content .cm-line span[class]'));
+   if(!source.long_line) await page.waitForFunction(()=>document.querySelector('.cm-content .cm-line span[class]'));
    else await page.getByText('Plain text · long line protection',{exact:false}).waitFor();
    const languageReadyMs=performance.now()-start;
    await page.getByRole('button',{name:'Find in file'}).click();
