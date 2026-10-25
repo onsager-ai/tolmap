@@ -4231,6 +4231,7 @@ pub(crate) fn run_remote(
                             &lease.dir,
                             &admitted_commit,
                             &event,
+                            epoch,
                         );
                         match registered {
                             Ok(()) => hub.verdict(job_id, true, "registered".to_owned()),
@@ -4729,6 +4730,7 @@ fn register_result(
     dir: &Path,
     admitted_commit: &str,
     event: &WorkerEvent,
+    epoch: u64,
 ) -> Result<(), ErrorBody> {
     // A cancel that landed between the result and here still wins (§2.4).
     if state.jobs.is_cancelled(job_id) {
@@ -4752,6 +4754,7 @@ fn register_result(
         started,
         executed,
         Some(executor::current_uid()),
+        Some(epoch),
     )
 }
 

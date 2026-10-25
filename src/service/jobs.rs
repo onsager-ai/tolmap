@@ -2122,6 +2122,7 @@ fn register(
         started,
         executed,
         Some(worker_uid_in_effect(state.config.worker_uid)),
+        None,
     );
 }
 
@@ -2138,6 +2139,7 @@ pub(crate) fn register_owned(
     started: Instant,
     executed: executor::Executed,
     owner: Option<u32>,
+    epoch: Option<u64>,
 ) -> Result<(), ErrorBody> {
     let job_id = tx.borrow().job_id;
     let stored = store_worker_result_owned(
@@ -2148,6 +2150,7 @@ pub(crate) fn register_owned(
         &executed.checkout,
         &executed.output,
         owner,
+        epoch,
     );
     let _ = std::fs::remove_dir_all(&executed.job_dir);
     if let Err(error) = stored {
@@ -2213,6 +2216,7 @@ fn store_worker_result(
         checkout,
         output,
         Some(worker_uid_in_effect(state.config.worker_uid)),
+        None,
     )
 }
 
@@ -2226,6 +2230,7 @@ fn store_worker_result_owned(
     checkout: &clone::Materialized,
     output: &WorkerOutput,
     owner: Option<u32>,
+    epoch: Option<u64>,
 ) -> Result<(), ErrorBody> {
     // The commit names the stored file (`<commit>.json`).
     if !worker_result::is_object_id(&output.commit) || output.commit != checkout.commit {
@@ -2242,6 +2247,8 @@ fn store_worker_result_owned(
         .join(&repo_ref.repo)
         .join(format!("{}.json", checkout.commit));
     let final_parent = final_path.parent().expect("map parent").to_path_buf();
+    let complete = final_parent.join(format!("{}-{job_id}", checkout.commit));
+    let final_path = complete.join(format!("{}.json", checkout.commit));
     std::fs::create_dir_all(&final_parent).map_err(internal)?;
     // Persistent store, not a per-job scratch dir: owned by the
     // service's own uid (root in production), not `tolmap-worker` --
@@ -2273,14 +2280,23 @@ fn store_worker_result_owned(
             worker_result::Refused::Io(error) => internal(error),
         })?;
         let save = (|| -> anyhow::Result<()> {
-            std::fs::rename(&adopted.map, &final_path)?;
-            std::fs::rename(&adopted.symbols, final_path.with_extension("symbols.json"))?;
-            let final_dir = final_path.with_extension("symbols");
-            if final_dir.exists() {
-                std::fs::remove_dir_all(&final_dir)?;
+            let staged_map = staging.join(format!("{}.json", checkout.commit));
+            std::fs::rename(&adopted.map, &staged_map)?;
+            std::fs::rename(&adopted.symbols, staged_map.with_extension("symbols.json"))?;
+            std::fs::rename(&adopted.symbols_dir, staged_map.with_extension("symbols"))?;
+            // Artifacts are immutable after this point. A crash before the DB
+            // switch leaves only an unreferenced complete directory.
+            for path in [&staged_map, &staged_map.with_extension("symbols.json")] {
+                std::fs::File::open(path)?.sync_all()?;
             }
-            std::fs::rename(&adopted.symbols_dir, final_dir)?;
-            state.store.save_names(&repo_ref.slug, &adopted.names)?;
+            let districts = staged_map.with_extension("symbols");
+            for entry in std::fs::read_dir(&districts)? {
+                std::fs::File::open(entry?.path())?.sync_all()?;
+            }
+            std::fs::File::open(&districts)?.sync_all()?;
+            std::fs::File::open(&staging)?.sync_all()?;
+            std::fs::rename(&staging, &complete)?;
+            std::fs::File::open(&final_parent)?.sync_all()?;
             let row = MapRow {
                 slug: repo_ref.slug.clone(),
                 owner: repo_ref.owner.clone(),
@@ -2294,12 +2310,31 @@ fn store_worker_result_owned(
                 map_path: final_path.clone(),
                 indexed_at: now_rfc3339(),
             };
-            state.store.insert(&row)?;
+            // Serialize the visibility switch against in-memory cancellation.
+            // Durable cancellation and epoch replacement are fenced inside the
+            // same SQLite transaction as the map pointer.
+            let registry = state.jobs.0.lock().expect("job registry mutex poisoned");
+            anyhow::ensure!(!registry.cancelled.contains(&job_id), "cancelled");
+            anyhow::ensure!(
+                registry
+                    .jobs
+                    .get(&job_id)
+                    .is_none_or(|tx| !is_terminal(&tx.borrow())),
+                "terminal_attempt"
+            );
+            let job_key = job_id.to_string();
+            state
+                .store
+                .publish(&row, &adopted.names, epoch.map(|e| (job_key.as_str(), e)))?;
+            drop(registry);
             Ok(())
         })();
         save.map_err(|error| ApiError::internal(format!("{error:#}")).body)
     })();
     let _ = std::fs::remove_dir_all(&staging);
+    if stored.is_err() {
+        let _ = std::fs::remove_dir_all(&complete);
+    }
     stored
 }
 
@@ -4086,8 +4121,12 @@ mod tests {
             .get(&fixture.repo_ref.slug, RESULT_COMMIT)
             .unwrap()
             .expect("stored row");
-        let map = fixture.maps_dir().join(format!("{RESULT_COMMIT}.json"));
-        assert_eq!(row.map_path, map);
+        let map = row.map_path;
+        assert_eq!(
+            map.file_name().unwrap(),
+            format!("{RESULT_COMMIT}.json").as_str()
+        );
+        assert!(map.starts_with(fixture.maps_dir()));
         // The service's checkout names the branch, not the worker.
         assert_eq!(row.branch.as_deref(), Some("main"));
         assert!(map.is_file());

@@ -284,7 +284,10 @@ fn run(
         crate::naming::save_cache(&dir.join("names.json"), &adopted.names)?;
         // Metadata is the visibility boundary. Cancellation serializes with it.
         let job = s.job.lock().unwrap();
-        ensure!(!cancel.is_cancelled(), "cancelled");
+        ensure!(
+            !cancel.is_cancelled() && job.as_ref().is_some_and(|job| job.id == id),
+            "cancelled_or_stale_attempt"
+        );
         let snap = Snapshot {
             id,
             repository: s.repository.clone(),
@@ -292,8 +295,7 @@ fn run(
             prepared,
             sequence,
         };
-        std::fs::write(dir.join("snapshot.json.tmp"), serde_json::to_vec(&snap)?)?;
-        std::fs::rename(dir.join("snapshot.json.tmp"), dir.join("snapshot.json"))?;
+        crate::incremental::atomic_write(&dir.join("snapshot.json"), &serde_json::to_vec(&snap)?)?;
         drop(job);
         Ok(())
     })();

@@ -742,7 +742,38 @@ impl Store {
 
     pub fn insert(&self, row: &MapRow) -> Result<()> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
-        conn.execute(
+        insert_map(&conn, row)
+    }
+
+    /// The single visibility switch for an immutable, complete artifact set.
+    /// Names and the map pointer advance together; a cancelled/stale durable
+    /// attempt cannot replace the last complete snapshot.
+    pub(crate) fn publish(
+        &self,
+        row: &MapRow,
+        names: &NameCache,
+        fence: Option<(&str, u64)>,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
+        let tx = conn.transaction()?;
+        if let Some((job, epoch)) = fence {
+            let current: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE job_id = ?1 AND epoch = ?2 AND status IN ('leased', 'running'))",
+                params![job, epoch], |row| row.get(0))?;
+            anyhow::ensure!(current, "stale_or_cancelled_attempt");
+        }
+        for (fingerprint, entry) in names {
+            tx.execute("INSERT OR REPLACE INTO district_names (slug, fingerprint, entry_json) VALUES (?1, ?2, ?3)",
+                params![row.slug, fingerprint, serde_json::to_string(entry)?])?;
+        }
+        insert_map(&tx, row)?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+fn insert_map(conn: &Connection, row: &MapRow) -> Result<()> {
+    conn.execute(
             "INSERT INTO maps (slug, owner, repo, commit_sha, branch, lang, files, districts, modularity, map_path, indexed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (slug, commit_sha) DO UPDATE SET
@@ -763,8 +794,7 @@ impl Store {
                 row.indexed_at,
             ],
         )?;
-        Ok(())
-    }
+    Ok(())
 }
 
 fn row_to_map(row: &rusqlite::Row) -> rusqlite::Result<MapRow> {
