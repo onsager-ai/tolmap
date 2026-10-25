@@ -747,9 +747,35 @@ mod tests {
         std::fs::create_dir_all(checkout.join("src")).unwrap();
         std::fs::write(checkout.join("src/__init__.py"), "").unwrap();
         std::fs::write(checkout.join("src/module.py"), "VALUE = 1\n").unwrap();
+        std::fs::write(
+            checkout.join("src/consumer.py"),
+            "from .module import VALUE\n",
+        )
+        .unwrap();
         test_git(&checkout, &["add", "-A"]);
         test_git(&checkout, &["commit", "-qm", "base"]);
         let base = test_git(&checkout, &["rev-parse", "HEAD"]);
+        let graph = crate::extract::build_multi_source_with_refs(
+            &checkout,
+            &[("src".into(), crate::extract::LanguageKind::Python)],
+            crate::extract::RefsMode::default(),
+        )
+        .unwrap();
+        let base_map = crate::geometry::build_from_graph(
+            graph,
+            base.clone(),
+            &directory.path().join("base-map"),
+            crate::check::RESOLUTION,
+            crate::geometry::BuildFeatures {
+                parcels: false,
+                prune_variant: crate::pipeline::PruneVariant::default(),
+                namer: crate::naming::NamerKind::Idf,
+                namer_model: crate::naming::DEFAULT_MODEL.to_owned(),
+                refs: crate::extract::RefsMode::default(),
+                install: crate::extract::InstallMode::Off,
+            },
+        )
+        .unwrap();
 
         let data = directory.path().join("private-data");
         let base_id = Uuid::new_v4();
@@ -782,7 +808,7 @@ mod tests {
         save_snapshot(&local, base_id, base_prepared, &base, 1);
         save_snapshot(&local, head_id, head_prepared, &head, 2);
         std::fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("data/flask.json"),
+            base_map,
             data.join("snapshots")
                 .join(base_id.to_string())
                 .join("map.json"),
@@ -804,7 +830,7 @@ mod tests {
         let uri: Uri = path.parse().unwrap();
         let response = dispatch(&local, &Method::GET, &uri).unwrap();
         let (status, body) = json_response(response).await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["report"]["base"], base.as_str());
         assert_eq!(body["report"]["head"], head.as_str());
 
