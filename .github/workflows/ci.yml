@@ -332,6 +332,26 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  scanner-probe:
+    name: Python scanner mechanism and differential AST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: scanner-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - run: cargo fetch --locked
+      - run: python3 scripts/scanner-probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-scanner-evidence
+          path: scanner-evidence/
+          if-no-files-found: error
+
   extraction-profile:
     name: bounded reader extraction profile
     runs-on: ubuntu-latest
