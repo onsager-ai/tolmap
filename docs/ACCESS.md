@@ -13,6 +13,8 @@ stable repository and immutable revision. Domain must be part of private cache
 keys, including previous-map/naming inputs. No reusable positive decision cache
 is provided. Revocation is checked on each call; stream adapters own a documented
 poll bound and must close on denial. Already-delivered bytes cannot be recalled.
+The protected comparison wrapper authorizes both commits as `Read`, regardless
+of the operation supplied by its caller.
 
 The existing `service::executor::{execute, EventSink, CancelProbe}` and versioned
 `worker::{JobSpec, WorkerSpec, WorkerEvent}` remain the processing boundary. An

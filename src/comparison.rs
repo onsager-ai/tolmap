@@ -85,7 +85,7 @@ pub fn protected(
     inputs: Inputs<'_>,
     query: CompareQuery,
     policy: &dyn access::Policy,
-    request: access::Request<'_>,
+    mut request: access::Request<'_>,
 ) -> Result<Comparison, ApiError> {
     let denied = || {
         ApiError::new(
@@ -97,6 +97,7 @@ pub fn protected(
     if request.resource.repository != inputs.repository {
         return Err(denied());
     }
+    request.operation = access::Operation::Read;
     let check_both = || {
         for revision in [&query.base, &query.head] {
             let mut side = request;
