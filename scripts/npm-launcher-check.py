@@ -38,7 +38,7 @@ for signum in (signal.SIGTERM, signal.SIGINT):
         request=urllib.request.Request(origin+path, data=b'' if post else None, headers={'Origin':origin})
         with urllib.request.urlopen(request, timeout=20) as res: return res.read()
     with open(f'/tmp/launcher-{signum.name}.log', 'wb') as log:
-        p=subprocess.Popen([binary, 'local', str(Path('.local-reader/moved-checkout').resolve()),
+        p=subprocess.Popen([binary, 'local', str(Path('.local-reader/checkout').resolve()),
             '--data', f'/tmp/launcher-store-{signum.name}', '--port', str(port)], stdout=log, stderr=log)
         try:
             for _ in range(200):

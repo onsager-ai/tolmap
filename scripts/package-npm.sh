@@ -181,6 +181,8 @@ for library in "$stage"/lib/*.so*; do
 done
 
 node "$repo/scripts/collect-npm-web-licenses.mjs" "$repo/web" "$stage/licenses/web"
+mkdir -p "$stage/licenses/tree-sitter-python"
+cp "$repo/vendor/tree-sitter-python/LICENSE" "$repo/vendor/tree-sitter-python/PROVENANCE.md" "$stage/licenses/tree-sitter-python/"
 cat > "$stage/BUILD_INFO.md" <<EOF
 # Build information
 

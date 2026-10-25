@@ -91,6 +91,9 @@ passed offline-parity
 mkdir -p tests/fixtures scripts
 cp -a /repo/tests/fixtures/service_identity tests/fixtures/service_identity
 cp /repo/scripts/local-reader-fixture.py scripts/
+# Diagnose large-source extraction independently of CM6 and the local service.
+# Keep the original traced acceptance journey and its 90 s bound unchanged.
+python3 /repo/scripts/measure-local-extraction.py "$cli"
 TOLMAP_BINARY="$cli" TOLMAP_TEST_PACKAGED_DEFAULT_STATIC=1 \
   TOLMAP_TEST_WRITE_TRACE=/tmp/reader-worker-writes.log timeout 900 python3 scripts/local-reader-fixture.py
 passed reader-cancellation

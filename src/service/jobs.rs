@@ -3807,6 +3807,7 @@ mod tests {
                 uid,
                 gid,
                 allow_openrouter_key: false,
+                confirmed_scope: None,
             };
             let error = process_worker_exe(
                 &tx,

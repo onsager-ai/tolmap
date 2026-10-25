@@ -9734,6 +9734,48 @@ mod tests {
     }
 
     #[test]
+    fn python_comment_run_preserves_reader_metrics_and_scales() {
+        // Reader acceptance's unchanged 930047-byte input exposed quadratic
+        // lookahead in tree-sitter-python's external scanner, before metrics.
+        // Keep both the full fixture and a scaling check: a larger timeout or
+        // a single long comment would hide the measured failure.
+        let prefix = "def measured():\n    return 7\n";
+        let source = |lines| {
+            format!(
+                "{prefix}{}# PERF_NEEDLE_739\n",
+                "# performance fixture line 739\n".repeat(lines)
+            )
+        };
+        let mut parser = Parser::new();
+        parser
+            .set_language(&LanguageKind::Python.tree_sitter())
+            .unwrap();
+        let mut parse = |source: &str| {
+            let start = std::time::Instant::now();
+            let tree = parser.parse(source, None).unwrap();
+            let elapsed = start.elapsed();
+            assert!(!tree.root_node().has_error());
+            (tree, elapsed)
+        };
+        // A generous additive allowance avoids treating runner noise as a
+        // failure. CI also asserts deterministic scanner-work scaling, which
+        // does not depend on scheduling or wall time.
+        let (_, small) = parse(&source(2000));
+        let (_, large) = parse(&source(8000));
+        assert!(large <= small * 8 + Duration::from_millis(100));
+        let full = source(30000);
+        assert_eq!(full.len(), 930047);
+        let (tree, elapsed) = parse(&full);
+        assert!(elapsed < Duration::from_secs(5), "parse took {elapsed:?}");
+        let flags = code_line_flags(tree.root_node(), full.as_bytes(), LanguageKind::Python);
+        assert_eq!(&flags[..2], &[true, true]);
+        assert!(flags[2..].iter().all(|flag| !flag));
+        assert_eq!(symbols_of(&full), symbols_of(prefix));
+        assert_eq!(identifiers_of(&full), identifiers_of(prefix));
+        assert_eq!(complexity_of(&full), complexity_of(prefix));
+    }
+
+    #[test]
     fn symbol_end_line_ignores_a_block_ending_trailing_comment_but_not_a_comment_inside_brackets() {
         // A comment that is the true last thing in a block (nothing follows
         // it before the dedent) is not part of Python's ast at all -- ast.
