@@ -832,9 +832,7 @@ fn parse_files_inner(
     let compatible = previous
         .as_ref()
         .is_none_or(|old| provenance.compatible(old));
-    let mut raw_inputs = provenance.clone();
-    raw_inputs.history_revision.clear();
-    let context_key = crate::incremental::digest(&serde_json::to_vec(&raw_inputs)?);
+    let context_key = provenance.cache_context_key();
     let mut reused = 0usize;
     let mut parsed_count = 0usize;
 
@@ -856,8 +854,7 @@ fn parse_files_inner(
         let source = fs::read(repo.join(file)).with_context(|| format!("read {file}"))?;
         let content_hash = crate::incremental::digest(&source);
         provenance.files.insert(file.clone(), content_hash.clone());
-        let key =
-            crate::incremental::digest(&serde_json::to_vec(&(&context_key, file, content_hash))?);
+        let key = crate::incremental::cache_file_key(&context_key, file, &content_hash);
         if compatible {
             if let Some(cache) = &progress.cache {
                 if let Some((metrics, syntax, symbols)) =
@@ -1009,6 +1006,9 @@ fn parse_files_inner(
                 &key,
                 &(parsed.get(file).unwrap(), &file_raw, &cached_symbols),
             ) {
+                if crate::incremental::authority_revoked(&error) {
+                    return Err(error.context("incremental cache authority revoked"));
+                }
                 progress.log(format!("index_cache_write_failed: {error:#}"));
             }
         }
@@ -1027,6 +1027,9 @@ fn parse_files_inner(
     })));
     if let Some(cache) = &progress.cache {
         if let Err(error) = cache.write(&manifest_key, &provenance) {
+            if crate::incremental::authority_revoked(&error) {
+                return Err(error.context("incremental cache authority revoked"));
+            }
             progress.log(format!("index_cache_write_failed: {error:#}"));
         }
     }

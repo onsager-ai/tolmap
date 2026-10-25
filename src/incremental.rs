@@ -13,6 +13,12 @@ pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+pub(crate) fn authority_revoked(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string() == "cache_authority_revoked")
+}
+
 #[derive(Clone)]
 pub struct Cache {
     root: PathBuf,
@@ -129,6 +135,15 @@ pub(crate) struct Provenance {
 }
 
 impl Provenance {
+    /// Shared cache key for per-file parse outputs. History is intentionally
+    /// excluded: it changes downstream co-change work, never raw syntax.
+    pub(crate) fn cache_context_key(&self) -> String {
+        let mut raw_inputs = self.clone();
+        raw_inputs.history_revision.clear();
+        raw_inputs.files.clear();
+        digest(&serde_json::to_vec(&raw_inputs).expect("provenance serialization is infallible"))
+    }
+
     pub fn reasons(&self, previous: Option<&Self>) -> Vec<&'static str> {
         let Some(old) = previous else {
             return vec!["cold_cache"];
@@ -193,6 +208,15 @@ impl Provenance {
             && self.indexer == previous.indexer
             && self.config == previous.config
     }
+}
+
+/// File cache key used by extraction. Keeping this construction here makes
+/// version invalidation test the same key path as production.
+pub(crate) fn cache_file_key(context_key: &str, path: &str, content_sha256: &str) -> String {
+    digest(
+        &serde_json::to_vec(&(context_key, path, content_sha256))
+            .expect("cache key serialization is infallible"),
+    )
 }
 
 /// JSON object keys cannot encode scoped Rust syntax paths (Vec<String>).
@@ -265,6 +289,56 @@ mod tests {
         assert!(history
             .reasons(Some(&base))
             .contains(&"history_window_advanced"));
+        assert_eq!(history.cache_context_key(), base.cache_context_key());
+    }
+
+    #[test]
+    fn provenance_version_bumps_miss_the_previous_file_entry_with_a_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::local(dir.path().into(), "repo".into());
+        let base = Provenance {
+            domain: "owner".into(),
+            repository: "repo".into(),
+            extractor: "extractor-1".into(),
+            schema: "schema-1".into(),
+            resolver: "resolver-1".into(),
+            indexer: "indexer-1".into(),
+            config: "config-1".into(),
+            history_revision: "c1".into(),
+            files: BTreeMap::from([("src/lib.rs".into(), "content".into())]),
+        };
+        let entry = cache_file_key(&base.cache_context_key(), "src/lib.rs", "content");
+        cache.write("manifest", &base).unwrap();
+        cache.write(&entry, &"parsed result").unwrap();
+
+        for (field, reason) in [
+            ("extractor", "extractor_changed"),
+            ("schema", "schema_changed"),
+            ("resolver", "resolver_changed"),
+            ("indexer", "indexer_changed"),
+        ] {
+            let mut bumped = base.clone();
+            match field {
+                "extractor" => bumped.extractor.push_str("-2"),
+                "schema" => bumped.schema.push_str("-2"),
+                "resolver" => bumped.resolver.push_str("-2"),
+                _ => bumped.indexer.push_str("-2"),
+            }
+            let previous: Provenance = cache.read("manifest").unwrap().unwrap();
+            assert!(bumped.reasons(Some(&previous)).contains(&reason));
+            assert_ne!(bumped.cache_context_key(), base.cache_context_key());
+            assert_eq!(
+                cache
+                    .read::<String>(&cache_file_key(
+                        &bumped.cache_context_key(),
+                        "src/lib.rs",
+                        "content",
+                    ))
+                    .unwrap(),
+                None,
+                "{field} bump reused the old entry"
+            );
+        }
     }
 
     #[test]
@@ -281,8 +355,14 @@ mod tests {
         let other = Cache::with_authority(dir.path().into(), "b".into(), "repo".into(), || true);
         assert_eq!(other.read::<Vec<u8>>("entry").unwrap(), None);
         allowed.store(false, Ordering::SeqCst);
-        assert!(cache.read::<Vec<u8>>("entry").is_err());
-        assert!(cache.write("entry", &vec![3]).is_err());
+        assert_eq!(
+            cache.read::<Vec<u8>>("entry").unwrap_err().to_string(),
+            "cache_authority_revoked"
+        );
+        assert_eq!(
+            cache.write("entry", &vec![3]).unwrap_err().to_string(),
+            "cache_authority_revoked"
+        );
         allowed.store(true, Ordering::SeqCst);
         std::fs::write(cache.root.join("entry.json"), b"partial").unwrap();
         assert_eq!(cache.read::<Vec<u8>>("entry").unwrap(), None);
