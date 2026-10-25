@@ -56,7 +56,9 @@ fn check_error(e: check::CheckError) -> ApiError {
 pub fn resolve(repo: &Path, revision: &str) -> Result<String, ApiError> {
     // No option/revision-expression injection or working-tree service head.
     if !source::valid_commit(revision) {
-        return Err(ApiError::invalid_request(
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "comparison_input",
             "base and head must be full commit IDs",
         ));
     }
@@ -92,9 +94,21 @@ pub fn protected(
             "Comparison access denied",
         )
     };
-    let result =
-        access::enforce(policy, request, || run(inputs, query)).map_err(|_| denied())??;
-    access::enforce(policy, request, || result).map_err(|_| denied())
+    if request.resource.repository != inputs.repository {
+        return Err(denied());
+    }
+    let check_both = || {
+        for revision in [&query.base, &query.head] {
+            let mut side = request;
+            side.resource.revision = Some(revision);
+            access::enforce(policy, side, || ()).map_err(|_| denied())?;
+        }
+        Ok::<_, ApiError>(())
+    };
+    check_both()?;
+    let result = run(inputs, query.clone())?;
+    check_both()?;
+    Ok(result)
 }
 
 pub fn run(inputs: Inputs<'_>, query: CompareQuery) -> Result<Comparison, ApiError> {

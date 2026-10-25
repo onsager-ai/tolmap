@@ -19,6 +19,13 @@ pub async fn compare(
     Query(query): Query<CompareQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let (repository, source) = comparison::public_paths(&state.config.cache_dir, &owner, &repo)?;
+    if !source::valid_commit(&query.base) || !source::valid_commit(&query.head) {
+        return Err(ApiError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "comparison_input",
+            "base and head must be full commit IDs",
+        ));
+    }
     let row = state
         .store
         .get(&repository, &query.base)?
