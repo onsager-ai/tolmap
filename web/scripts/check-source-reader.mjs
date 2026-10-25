@@ -27,11 +27,58 @@ async function inspectReaderContrast(page){
  assert(contrast(result.selectionBackground,result.background)>=1.5,`selection tint is too close to editor background: ${JSON.stringify(result)}`);
  return{background:result.background,selectionBackground:result.selectionBackground,selectionContrast:contrast(result.selectionBackground,result.background),distinctTokenColors:[...new Set(result.tokens.map(x=>x.color))],minimumTokenContrast:Math.min(...result.tokens.flatMap(x=>[contrast(x.color,result.background),contrast(x.color,result.selectionBackground)]))};
 }
-async function inspectFindTargets(page){
- const targets=await page.locator('.cm-search').evaluate(el=>[...el.querySelectorAll('input:not([type=checkbox]),label,button')].map(x=>{const r=x.getBoundingClientRect();return{tag:x.tagName,type:x.getAttribute('type'),font:parseFloat(getComputedStyle(x).fontSize),width:r.width,height:r.height};}));
- assert(targets.length,'Find panel has no measurable controls');
- for(const target of targets){assert(target.height>=44,JSON.stringify(target));if(target.tag==='INPUT')assert(target.font>=16,JSON.stringify(target));if(target.tag==='BUTTON')assert(target.width>=44,JSON.stringify(target));}
- return targets;
+async function inspectFindTargets(page,width,height){
+ const panel=await page.locator('.cm-search').evaluate(el=>{
+  const rect=x=>{const r=x.getBoundingClientRect();return{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+  const style=x=>{const s=getComputedStyle(x);return{display:s.display,padding:s.padding,paddingRight:s.paddingRight,overflow:s.overflow,maxHeight:s.maxHeight,background:s.backgroundColor,border:s.border,borderStyle:s.borderStyle,borderWidth:s.borderWidth,borderRightWidth:s.borderRightWidth};};
+  const panelStyle=getComputedStyle(el),panelRect=rect(el),close=el.querySelector('button[name=close]');
+  if(!close)return{panelRect,panelStyle:style(el),missingClose:true,targets:[]};
+  const closeStyle=getComputedStyle(close),closeRect=rect(close),paddingRight=parseFloat(panelStyle.paddingRight)||0,borderRight=parseFloat(panelStyle.borderRightWidth)||0;
+  const contentRight=panelRect.right-paddingRight-borderRight;
+  const targets=[...el.querySelectorAll('label,input,button:not([name=close])')].map(node=>{
+   const r=rect(node),targetStyle=getComputedStyle(node),tag=node.tagName.toLowerCase(),text=tag==='label'?node.innerText.trim().replace(/\s+/g,' '):'';
+   const textRects=[];
+   if(tag==='label'){
+    const walker=document.createTreeWalker(node,NodeFilter.SHOW_TEXT);
+    while(walker.nextNode()){
+     const textNode=walker.currentNode;if(!textNode.textContent.trim())continue;
+     const range=document.createRange();range.selectNodeContents(textNode);
+     for(const textRect of range.getClientRects()){
+      const t={left:textRect.left,top:textRect.top,right:textRect.right,bottom:textRect.bottom,width:textRect.width,height:textRect.height};
+      const points=[[t.left+t.width/2,t.top+t.height/2],[Math.max(t.left,t.right-.5),t.top+t.height/2]];
+      textRects.push({...t,hits:points.map(([x,y])=>{const hit=document.elementFromPoint(x,y);return!!hit&&node.contains(hit);})});
+     }
+    }
+   }
+   return{id:tag==='label'?`label:${text}`:`${tag}${node.getAttribute('type')?`[${node.getAttribute('type')}]`:''}${node.getAttribute('name')?`[name=${node.getAttribute('name')}]`:''}`,tag,type:node.getAttribute('type'),name:node.getAttribute('name'),text,rect:r,scrollWidth:node.scrollWidth,clientWidth:node.clientWidth,font:parseFloat(targetStyle.fontSize),textRects};
+  });
+  return{panelRect,panelStyle:style(el),contentRight,close:{rect:closeRect,style:{width:closeStyle.width,height:closeStyle.height,minWidth:closeStyle.minWidth,minHeight:closeStyle.minHeight,padding:closeStyle.padding,border:closeStyle.border,borderStyle:closeStyle.borderStyle,borderWidth:closeStyle.borderWidth,background:closeStyle.backgroundColor,color:closeStyle.color,position:closeStyle.position,right:closeStyle.right,top:closeStyle.top}},targets};
+ });
+ const at=`${width}x${height}`,details=JSON.stringify({panel:panel.panelStyle,panelRect:panel.panelRect,contentRight:panel.contentRight,close:panel.close});
+ assert(!panel.missingClose,`Find close control missing at ${at}: ${details}`);
+ assert(panel.targets.length,`Find panel has no measurable controls at ${at}: ${details}`);
+ const close=panel.close.rect;
+ assert(close.width>=44&&close.height>=44,`Find close target is smaller than 44x44 at ${at}: ${details}`);
+ assert(close.left>=panel.panelRect.left-.5&&close.top>=panel.panelRect.top-.5&&close.right<=panel.panelRect.right+.5&&close.bottom<=panel.panelRect.bottom+.5,`Find close target is outside its panel at ${at}: ${details}`);
+ assert(close.left>=-.5&&close.top>=-.5&&close.right<=width+.5&&close.bottom<=height+.5,`Find close target is outside viewport at ${at}: ${details}`);
+ const closeBackground=panel.close.style.background;
+ const visibleBorder=!['none','hidden'].includes(panel.close.style.borderStyle)&&parseFloat(panel.close.style.borderWidth)>=1;
+ assert(visibleBorder||closeBackground!=='rgba(0, 0, 0, 0)',`Find close target has no visible border or background at ${at}: ${details}`);
+ const overlaps=(a,b)=>Math.min(a.right,b.right)-Math.max(a.left,b.left)>.5&&Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>.5;
+ for(const target of panel.targets){
+  const where=`${at} ${target.id}`,t=target.rect;
+  assert(!overlaps(t,close),`Find control intersects close target at ${where}: ${JSON.stringify({control:t,close,contentRight:panel.contentRight})}`);
+  assert(t.right<=panel.contentRight+.5,`Find control crosses panel right padding edge at ${where}: ${JSON.stringify({control:t,contentRight:panel.contentRight})}`);
+  if(target.tag==='label'){
+   assert(target.scrollWidth<=target.clientWidth,`Find option text is clipped at ${where}: ${JSON.stringify({scrollWidth:target.scrollWidth,clientWidth:target.clientWidth,rect:t})}`);
+   assert(target.textRects.length,`Find option has no measurable text at ${where}`);
+   for(const r of target.textRects)assert(r.left>=-.5&&r.right<=panel.contentRight+.5&&r.hits.length===2&&r.hits.every(Boolean),`Find option text is obscured at ${where}: ${JSON.stringify({textRect:r,close})}`);
+  }
+  if(target.tag==='input')assert(target.font>=16,`Find input is below 16px at ${where}: ${JSON.stringify(target)}`);
+  if(target.tag==='button')assert(t.height>=44&&t.width>=44,`Find button target is smaller than 44x44 at ${where}: ${JSON.stringify(target)}`);
+ }
+ assert(panel.targets.some(x=>x.tag==='label'&&/\bby\s+word\b/i.test(x.text)),`Find panel is missing the by word option at ${at}`);
+ return{panel:panel.panelStyle,panelRect:panel.panelRect,contentRight:panel.contentRight,close:panel.close,targets:panel.targets};
 }
 async function assertPhoneActionAndControls(page,width,height){
  const action=page.getByRole('button',{name:'Read selected source'}),actionBox=await action.boundingBox();
@@ -60,7 +107,7 @@ async function copySelection(page, expected){
  await page.waitForFunction(async value=>(await navigator.clipboard.readText())===value,expected);
 }
 try{
-for(const [width,height] of [[320,568],[390,844],[844,390],[1280,900]])for(const colorScheme of ['light','dark']){
+for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]])for(const colorScheme of ['light','dark']){
  const narrow=width<=820||height<=500;
  const context=await browser.newContext({viewport:{width,height},colorScheme,hasTouch:narrow,reducedMotion:'reduce',permissions:['clipboard-read','clipboard-write']});
  const outbound=[];await context.route('**/*',route=>{const url=new URL(route.request().url());if(url.protocol==='http:'&&url.hostname==='127.0.0.1'&&url.port==='8988')return route.continue();if(['data:','blob:'].includes(url.protocol))return route.continue();outbound.push(url.origin);return route.abort();});
@@ -114,7 +161,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[1280,900]])for(const
  assert((await page.evaluate(()=>navigator.clipboard.readText())).includes('def '));
  await page.locator('.cm-content').evaluate(el=>{const data=new DataTransfer();data.setData('text/plain','mutated paste');el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});assert.equal(await page.locator('.cm-content').innerText(),original);
  await page.getByRole('button',{name:'Find in file'}).click();
- const findTargets=await inspectFindTargets(page);
+ const findTargets=await inspectFindTargets(page,width,height);
  const search=page.locator('.cm-search input[name=search]');await search.fill('def');await page.locator('.cm-search button[name=next]').click();
  assert(await page.locator('.cm-search').isVisible());const activeMatch=page.locator('.cm-searchMatch-selected').first();await activeMatch.waitFor();
  const activeMatchColors=await matchStyle(activeMatch);
