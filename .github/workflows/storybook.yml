@@ -51,3 +51,15 @@ jobs:
         with:
           name: tolmap-visual-candidates
           path: web/storybook-evidence/
+      - name: Upload focused reader review images
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tolmap-reader-review-samples
+          path: |
+            web/storybook-evidence/manifest.json
+            web/storybook-evidence/oss-source-ready-*.png
+            web/storybook-evidence/oss-source-search-*.png
+            web/storybook-evidence/oss-source-long-line-*.png
+            web/storybook-evidence/oss-map-file-*.png
+          if-no-files-found: error

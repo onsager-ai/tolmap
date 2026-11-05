@@ -6,7 +6,7 @@ import stat
 import subprocess
 import sys
 
-LIMIT = 64 * 1024
+LIMIT = 2 * 1024
 
 
 def tail(path):
@@ -18,9 +18,11 @@ def tail(path):
 evidence = dict(exit_status=int(sys.argv[1]), uid=os.geteuid(), gid=os.getegid(),
                 identity=subprocess.check_output(['id'], text=True).strip(),
                 processes=subprocess.check_output(
-                    ['ps', '-eo', 'user,uid,gid,pid,ppid,pgid,stat,args'], text=True)[-LIMIT:],
+                    ['ps', '-eo', 'user,uid,gid,pid,ppid,pgid,stat,time,pcpu,args'], text=True)[-8192:],
                 logs={}, store_entries=[])
 logs = [Path('/tmp/consumer/.local-reader/service.log'),
+        Path('/tmp/consumer/.local-reader/index-diagnostics.json'),
+        Path('/tmp/consumer/.local-reader/index-timings.json'),
         Path('/tmp/reader-worker-writes.log'),
         *Path('/tmp').glob('launcher-*.log')]
 store = Path('/tmp/consumer/.local-reader/store')
@@ -37,11 +39,15 @@ for current, dirs, files in os.walk(store):
             logs.append(path / name)
     if len(evidence['store_entries']) >= 100:
         break
-for path in logs[:40]:
+for path in logs[:12]:
     try:
         if path.is_file():
             evidence['logs'][str(path)] = tail(path)
     except OSError as error:
         evidence['logs'][str(path)] = str(error)
 Path('/out/consumer-diagnostics.json').write_text(json.dumps(evidence, indent=2) + '\n')
+# Preserve the structured timeout record intact, rather than only its log tail.
+timeout_record = Path('/tmp/consumer/.local-reader/index-diagnostics.json')
+if timeout_record.is_file():
+    Path('/out/reader-index-timeout.json').write_bytes(timeout_record.read_bytes())
 print('Captured bounded consumer identity, processes, worker writes and store log/status evidence', file=sys.stderr)

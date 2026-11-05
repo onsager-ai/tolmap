@@ -17,6 +17,7 @@ import { ChevronDownIcon, ChevronIcon, CloseIcon, FitIcon, HomeIcon, LayersIcon,
 import { OverviewCard, SelectionCard, type PathPick, type StructureCardState } from "./SheetCards";
 
 export interface PhoneChromeProps {
+  sourceAction?: ReactNode;
   doc: MapDocument;
   packageLayout: PackageLayout;
   packageGrouping: PackageGrouping;
@@ -183,7 +184,7 @@ export function PhoneChrome(p: PhoneChromeProps) {
     />
   );
   const somethingShown = !!p.pathPick || !!p.structure || p.quality || p.sel != null || p.selD != null;
-  const sheetContent = somethingShown ? content : overview;
+  const sheetContent = <>{p.sourceAction && <div className={p.landscape ? "pb-3" : "pt-4 pb-3"}>{p.sourceAction}</div>}{somethingShown ? content : overview}</>;
   // §9: in landscape the pill and the control column float over the map
   // beside the side sheet (the sheet's width plus the left safe inset when
   // open; the left inset alone when collapsed).

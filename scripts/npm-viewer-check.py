@@ -1,4 +1,5 @@
 """CI only: real production snapshot, assets, immutable source and bind checks."""
+import hashlib
 import json
 from html.parser import HTMLParser
 from pathlib import Path
@@ -35,8 +36,9 @@ for url, kind in parser.assets:
 with fetch(base + '/artifact') as res: assert json.load(res)['F']
 with fetch(base + '/source?path=' + meta['file'] + '&commit=' + meta['a']) as res:
     source = json.load(res)
-expected = subprocess.check_output(['git', '-C', '.local-reader/moved-checkout', 'show', meta['a'] + ':' + meta['file']])
-assert source['status'] == 'ready' and source['text'].encode() == expected
+# The fixture captures committed bytes before dirty/untracked mutations. Its
+# digest remains an independent oracle regardless of the checkout's location.
+assert source['status'] == 'ready' and hashlib.sha256(source['text'].encode()).hexdigest() == meta['sourceSha256']
 for path in ['/source?path=%2Fetc%2Fpasswd', '/source?path=' + meta['file'] + '&commit=' + '0'*40]:
     try:
         with fetch(base + path) as res: assert json.load(res)['text'] is None

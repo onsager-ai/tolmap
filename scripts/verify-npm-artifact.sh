@@ -14,7 +14,13 @@ nonce=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 capture_diagnostics() {
   if [[ -f "$out/consumer-diagnostics.json" ]]; then
     cp "$out/consumer-diagnostics.json" "$artifact_dir/consumer-diagnostics-$node_version.json"
-    cat "$out/consumer-diagnostics.json" >&2
+    echo "Consumer failed; bounded details saved in consumer-diagnostics-$node_version.json" >&2
+  fi
+  if [[ -f "$out/reader-extraction-cost.json" ]]; then
+    cp "$out/reader-extraction-cost.json" "$artifact_dir/reader-extraction-cost-$node_version.json"
+  fi
+  if [[ -f "$out/reader-index-timeout.json" ]]; then
+    cp "$out/reader-index-timeout.json" "$artifact_dir/reader-index-timeout-$node_version.json"
   fi
   rm -rf -- "$out"
 }
