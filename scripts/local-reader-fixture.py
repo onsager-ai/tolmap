@@ -164,7 +164,18 @@ try:
 finally:
     backup.rename(source_git)
 assert b'action=/local/index?id='+prepared_b.encode() in failed_scope and b'py at .' in failed_scope,failed_scope[-1200:]
+# #233 freshness for the failed attempt: the saved snapshot stays A, the failure is
+# retryable and names the requested commit; the page says what to do next.
+failed_state=get(base+'/freshness')
+assert failed_state['state']=='failed' and failed_state['indexed_commit']==a and failed_state['requested_commit']==b,failed_state
+assert failed_state['retryable'] is True and failed_state['failure_code'] and failed_state['failure_reason'],failed_state
+assert b'retry indexing or refresh from HEAD' in failed_scope and b'Saved snapshots' in failed_scope and a.encode() in failed_scope
 second=index_prepared(prepared_b);bid=next(iter(second-first));assert get('/api/maps/snapshot/'+bid+'/provenance')['commit']==b
+# A is stale once the checkout's newer committed B was indexed, yet A keeps
+# its own commit; B is complete. Neither state substitutes the other's source.
+stale_a=get(base+'/freshness');fresh_b=get('/api/maps/snapshot/'+bid+'/freshness')
+assert (stale_a['state'],stale_a['indexed_commit'],stale_a['requested_commit'])==('stale',a,b),stale_a
+assert (fresh_b['state'],fresh_b['indexed_commit'],fresh_b['requested_commit'])==('complete',b,b),fresh_b
 assert get(base+'/source?path=shop/cart.py')['text']==original['text']
 # Pause the actual engine child, then require cancellation to kill/reap it
 # rather than waiting for stdout to reach EOF. Retry only if observation missed
@@ -198,6 +209,74 @@ assert len(list((root/'store/snapshots').glob('*/snapshot.json')))==before_cance
 prepared_third,_=prepare();third=index_prepared(prepared_third)
 ordered=[json.loads(x.read_text())['sequence'] for x in (root/'store/snapshots').glob('*/snapshot.json')]
 assert sorted(ordered)==list(range(1,len(ordered)+1))
+# Recovery with the checkout moved, a snapshot's private objects/bundle missing,
+# and the whole store removed. Each state is restored before the browser checks.
+# Required: an actionable message, retained saved-snapshot context, and no
+# substitution of another commit, branch or snapshot's source.
+bbase='/api/maps/snapshot/'+bid
+def assert_unavailable(code,body,*forbidden):
+    if code==200:
+        data=json.loads(body);assert data['status'] in ('expired','missing') and data['text'] is None,data
+    else:assert code==400 and b'No newer source was substituted' in body and b'refresh the committed source or retry' in body,(code,body[:300])
+    assert b'committed B' not in body and committed_source.encode() not in body and all(x not in body for x in forbidden)
+moved=root/'checkout.moved';repo.rename(moved)
+try:
+    code,page,_=req('/local/refresh',True)
+    assert code==200 and b'Source detection failed' in page and b'retry' in page,(code,page[-800:])
+    assert b'Saved snapshots' in page and a.encode() in page and b.encode() in page,'saved history lost when the checkout moved'
+    assert get(base+'/source?path=shop/cart.py')['text']==original['text'] and get(base+'/provenance')['commit']==a
+    assert get(bbase+'/provenance')['commit']==b
+finally:moved.rename(repo)
+a_prepared=json.loads((root/'store/snapshots'/sid/'snapshot.json').read_text())['prepared']
+a_git=root/'store/prepared'/a_prepared/'source.git';a_offline=a_git.with_name('source.git.offline')
+a_git.rename(a_offline)
+try:
+    assert_unavailable(*req(base+'/source?path=shop/cart.py')[:2])
+    # B is a different immutable snapshot and still readable; A's request did not use it.
+    assert get(bbase+'/source?path=shop/cart.py')['status']=='ready'
+    assert get(base+'/provenance')['commit']==a and b.encode() in req('/')[1]
+finally:a_offline.rename(a_git)
+assert get(base+'/source?path=shop/cart.py')['text']==original['text']
+snapshot_dir=root/'store/snapshots'/sid;snapshot_off=root/'store/snapshots'/(sid+'.offline');snapshot_dir.rename(snapshot_off)
+try:
+    for suffix in ('/source?path=shop/cart.py','/provenance','/freshness','/artifact','/symbols?district=0'):
+        code,body,_=req(base+suffix);assert code==400,(suffix,code,body[:200]);assert_unavailable(code,body)
+    assert req('/api/maps/snapshot/'+'0'*8+'-0000-0000-0000-'+'0'*12+'/source?path=shop/cart.py')[0]==400
+    assert get(bbase+'/provenance')['commit']==b and a.encode() not in req('/')[1],'removed snapshot is still listed'
+finally:snapshot_off.rename(snapshot_dir)
+store_off=root/'store.removed';(root/'store').rename(store_off)
+try:
+    for suffix in ('/source?path=shop/cart.py','/provenance','/artifact'):
+        code,body,_=req(base+suffix);assert code==400,(suffix,code,body[:200]);assert_unavailable(code,body)
+    assert req('/api/healthz')[0]==200
+finally:store_off.rename(root/'store')
+assert get(base+'/source?path=shop/cart.py')['text']==original['text'] and get(bbase+'/provenance')['commit']==b
+# The local service takes no path, URL or repository from a request.
+code,page,_=req('/local/refresh?path=/etc&repo=https://example.invalid/x.git',True)
+assert code==200 and b.encode() in page and b'/etc' not in page and b'example.invalid' not in page,page[-800:]
+assert req('/api/index',True)[0]==400 and req('/api/index')[0]==400
+# Exact export fields and nothing path- or source-shaped in provenance/symbols.
+MAP_REQUIRED={'repo','q','names','districts','F','N','E','L','S','U','roads','lang'}
+MAP_ALLOWED=MAP_REQUIRED|{'C','coverage','P','footprint_centroids','file_neighbourhoods','neighbourhoods'}
+assert MAP_REQUIRED<=set(export)<=MAP_ALLOWED,('export fields',sorted(set(export)^MAP_ALLOWED))
+SYMBOLS_REQUIRED={'district','files','symbol_indices','symbols','edges','kinds','module_code_lines'}
+SYMBOLS_ALLOWED=SYMBOLS_REQUIRED|{'symbol_rings','module_rings','header_rings'}
+PROVENANCE_FIELDS={'repository','commit','version'}
+host_paths=(str(pathlib.Path.cwd().resolve()),str(root),str(repo),str(moved))
+source_lines=[x.strip() for x in committed_source.splitlines() if len(x.strip())>=16 and ' ' in x.strip()]
+assert source_lines
+def assert_private_safe(label,value):
+    text=json.dumps(value);assert all(x not in text for x in host_paths),(label,'absolute host path')
+    assert '/home/' not in text and '/tmp/' not in text and '/Users/' not in text,(label,'absolute path')
+    assert committed_source not in text and json.dumps(committed_source)[1:-1] not in text and 'UNTRACKED_SOURCE_739' not in text and 'UNCOMMITTED_TRACKED_739' not in text,(label,'source text')
+    assert all(x not in text for x in source_lines),(label,'source line')
+assert set(provenance)==PROVENANCE_FIELDS,provenance
+assert_private_safe('provenance',provenance)
+assert export['districts'],'fixture export has no districts'
+for district in sorted(export['districts'],key=int):
+    document=get(base+'/symbols?district='+district)
+    assert SYMBOLS_REQUIRED<=set(document)<=SYMBOLS_ALLOWED,(district,sorted(set(document)^SYMBOLS_ALLOWED))
+    assert_private_safe('symbols district '+district,document)
 # Inspect real process/worker outbound connect syscalls, including failures.
 network_trace=os.environ.get('TOLMAP_TEST_NETWORK_TRACE')
 if network_trace:

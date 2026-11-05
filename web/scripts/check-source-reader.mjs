@@ -13,6 +13,20 @@ const browser=await chromium.launch({headless:true});
 const results=[];
 const browserOrigin='http://127.0.0.1:8988';
 const contrast=(a,b)=>{const lum=s=>{const rgb=s.match(/[\d.]+/g).slice(0,3).map(Number).map(x=>{x/=255;return x<=.04045?x/12.92:((x+.055)/1.055)**2.4});return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};const [x,y]=[lum(a),lum(b)].sort((x,y)=>y-x);return(x+.05)/(y+.05);};
+// Visible reach/disclosure wording of the native local page (docs/UX.md 13.1):
+// where processing happens, what a localhost link or export can reach, and
+// which contexts cannot open this computer's folders.
+async function assertLocalDisclosures(page){
+ const text=(await page.locator('[data-local-page]').innerText()).replace(/\s+/g,' ');
+ for(const sentence of [
+  'Processing and storage stay on this computer. No account, subscription, provider login or upload is required.',
+  'This page opens only the checkout tolmap local was started with. A browser or hosted tolmap URL cannot open a folder on your computer, and nothing is sent to Hub from here; Hub is an optional, separate choice.',
+  'Only committed HEAD is analyzed. Uncommitted and untracked files are excluded. Commit your changes before refreshing.',
+  'Localhost links work only on this computer. Map exports contain structure and symbol names, but no source text. Treat exported maps as private.',
+ ])assert(text.includes(sentence),`local page lost disclosure: ${sentence}`);
+ const exportLink=page.getByRole('link',{name:'Export map JSON (no source)'}).first();await exportLink.waitFor();
+ assert.match(await exportLink.getAttribute('href'),/^\/api\/maps\/snapshot\/[0-9a-f-]+\/artifact$/,'export link must name a private local snapshot artifact');
+}
 async function inspectReaderContrast(page){
  const result=await page.locator('.cm-content').evaluate(el=>{
   const editor=el.closest('.cm-editor'),selection=editor.querySelector('.cm-selectionBackground');
@@ -142,7 +156,7 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
   await page.getByRole('option').first().click();await page.getByRole('button',{name:'Read selected source'}).waitFor();await page.getByRole('button',{name:'Read selected source'}).tap();await page.locator('.cm-content').waitFor();
   assert(await page.locator('.cm-content').innerText().then(text=>text.includes('def ')),'native detect → confirm → index → map → read journey did not display committed source');
  }
- await page.goto(`${browserOrigin}/`);await page.getByRole('heading',{name:'Your local repository'}).waitFor();await page.screenshot({path:`../reader-evidence/local-${width}-${colorScheme}.png`,animations:'disabled'});
+ await page.goto(`${browserOrigin}/`);await page.getByRole('heading',{name:'Your local repository'}).waitFor();await assertLocalDisclosures(page);await page.screenshot({path:`../reader-evidence/local-${width}-${colorScheme}.png`,animations:'disabled'});
  const base=`http://127.0.0.1:8988/snapshot/${fixture.snapshotA}?file=${fixture.file}`;
  await page.goto(base);await page.locator('.map-svg').waitFor();await page.getByRole('button',{name:'Read selected source'}).waitFor();await settleCamera(page);
  const before=await cameraBoxes(page);
