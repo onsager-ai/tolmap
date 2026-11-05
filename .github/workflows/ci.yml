@@ -372,6 +372,10 @@ jobs:
 
   extraction-profile:
     name: bounded reader extraction profile
+    # Diagnostic only, so it runs on demand and nightly like the other
+    # diagnostic lanes. On every PR its 4-second gdb attach bound timed
+    # out in about 2 of 5 runs (Nov 2026) without any code change.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
