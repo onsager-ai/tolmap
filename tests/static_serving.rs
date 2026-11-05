@@ -43,6 +43,7 @@ fn state_with_static_dir(
     let store = Store::open(&db_path).unwrap();
     let config = ServeConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
+        allow_local_paths: false,
         db_path,
         cache_dir,
         static_dir,

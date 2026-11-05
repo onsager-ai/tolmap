@@ -5,10 +5,9 @@
 //! before any job, clone-cache directory or stored map exists, and that the
 //! rejection never carries the content of the file it named.
 //!
-//! Not covered, deliberately: `{"path": ...}` is the documented
-//! fixtures/dev form of `POST /api/index` (docs/API.md "Repository
-//! identifiers") and standalone `tolmap serve` is one trust domain
-//! (docs/ACCESS.md); it is not asserted either way here.
+//! `{"path": ...}` (the fixtures/dev form, docs/API.md "Repository
+//! identifiers") is accepted on a loopback bind, and off loopback only with
+//! `allow_local_paths` (`TOLMAP_ALLOW_LOCAL_PATHS=1`).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,9 +23,14 @@ use tolmap::service::store::Store;
 use tolmap::service::{http, jobs, AppState};
 
 fn state(dir: &std::path::Path) -> Arc<AppState> {
+    state_with(dir, "0.0.0.0:8787", false)
+}
+
+fn state_with(dir: &std::path::Path, bind: &str, allow_local_paths: bool) -> Arc<AppState> {
     let db_path = dir.join("tolmap.sqlite3");
     let config = ServeConfig {
-        bind: "0.0.0.0:8787".parse().unwrap(),
+        bind: bind.parse().unwrap(),
+        allow_local_paths,
         db_path: db_path.clone(),
         cache_dir: dir.join("cache"),
         static_dir: None,
@@ -112,4 +116,47 @@ async fn naming_both_repo_and_path_is_rejected_before_either_is_read() {
     let (status, text) = post_index(state.clone(), &body).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
     assert!(state.store.list_latest().unwrap().is_empty());
+}
+
+/// A real directory that is not a git repository: it passes `resolve`, so
+/// reaching `resolve_head` (502 `clone_failed`) proves the path gate let the
+/// request through, without ever queueing a job.
+fn path_body(dir: &std::path::Path) -> (String, std::path::PathBuf) {
+    let target = dir.join("private-checkout");
+    std::fs::create_dir_all(&target).unwrap();
+    (serde_json::json!({ "path": target }).to_string(), target)
+}
+
+#[tokio::test]
+async fn path_requests_off_loopback_are_rejected_without_the_opt_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_with(dir.path(), "0.0.0.0:8787", false);
+    let (body, _) = path_body(dir.path());
+    let (status, text) = post_index(state.clone(), &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(json["error"], "invalid_request", "{text}");
+    assert!(text.contains("TOLMAP_ALLOW_LOCAL_PATHS"), "{text}");
+    assert!(state.store.list_latest().unwrap().is_empty());
+    assert!(!dir.path().join("cache/repos").exists());
+}
+
+#[tokio::test]
+async fn path_requests_off_loopback_with_the_opt_in_reach_the_indexer() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_with(dir.path(), "0.0.0.0:8787", true);
+    let (body, _) = path_body(dir.path());
+    let (status, text) = post_index(state, &body).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{text}");
+    assert!(text.contains("clone_failed"), "{text}");
+}
+
+#[tokio::test]
+async fn path_requests_on_loopback_are_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_with(dir.path(), "127.0.0.1:8787", false);
+    let (body, _) = path_body(dir.path());
+    let (status, text) = post_index(state, &body).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{text}");
+    assert!(text.contains("clone_failed"), "{text}");
 }

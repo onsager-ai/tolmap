@@ -18,7 +18,10 @@ The protected comparison wrapper authorizes both commits as `Read`, regardless
 of the operation supplied by its caller.
 
 This is an opt-in library boundary, not authentication middleware. Standalone
-`tolmap serve` remains one trust domain. Its public catalogue/cache and loopback-
+`tolmap serve` remains one trust domain. Off loopback it also refuses
+`POST /api/index {"path": ...}` (a server directory named in a request body)
+unless the operator sets `TOLMAP_ALLOW_LOCAL_PATHS=1`
+(`tests/hosted_repo_requests.rs`); this is a behaviour change from 2026-11-06. Its public catalogue/cache and loopback-
 first API are not a protected multi-tenant backend. The policy does not retrofit
 protection onto the router. A consumer must authenticate and authorize its own
 routes, bind resource identity from trusted state, and apply checks before

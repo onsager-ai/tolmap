@@ -139,6 +139,18 @@ async fn post_index(
     }
 
     let Json(body) = body.map_err(|err| ApiError::invalid_request(err.to_string()))?;
+    // A directory on the server's disk may be named only on a loopback bind
+    // or with the explicit opt-in (issue #226); checked before any
+    // filesystem access.
+    if body.path.is_some()
+        && !state.config.bind.ip().is_loopback()
+        && !state.config.allow_local_paths
+    {
+        return Err(ApiError::invalid_request(
+            "\"path\" is not accepted when the service is bound off loopback; \
+             set TOLMAP_ALLOW_LOCAL_PATHS=1 to allow it",
+        ));
+    }
     let repo_ref = clone::resolve(body.repo.as_deref(), body.path.as_deref())?;
 
     if let Verdict::Denied { message } = state.rate_limiter.check_repo(

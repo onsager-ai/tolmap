@@ -43,6 +43,7 @@ async fn district_route_includes_remote_symbol_endpoint() {
     .unwrap();
     let config = ServeConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
+        allow_local_paths: false,
         db_path: dir.path().join("store.sqlite3"),
         cache_dir: dir.path().join("cache"),
         static_dir: None,
