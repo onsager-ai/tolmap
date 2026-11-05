@@ -376,15 +376,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: ci-tolmap-binary
-          path: bin
-          # This successful build has the identical pre-repair extraction
-          # source. Pin it so profiling need not wait for the full test gate.
-          run-id: 40181067573
-          github-token: ${{ github.token }}
-      - run: chmod +x bin/tolmap
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
@@ -402,6 +395,16 @@ jobs:
       - name: Build native Leiden if cache unavailable
         if: steps.profile-leiden.outputs.cache-hit != 'true'
         run: bash scripts/install-leiden.sh "${{ env.LEIDEN_PREFIX }}"
+      # The control is the pre-repair release at 819306c (CI run 40181067573).
+      # That run's ci-tolmap-binary artifact had 3-day retention, so pinning
+      # the downloaded artifact broke this job once it expired. Rebuild the
+      # identical source instead.
+      - name: Build pre-repair release control at 819306c
+        run: |
+          git worktree add ../control 819306cea1b8cc1dc16ed9b03a6b3e9add0de70e
+          cargo build --locked --release --bin tolmap \
+            --manifest-path ../control/Cargo.toml --target-dir ../control-target
+          mkdir -p bin && cp ../control-target/release/tolmap bin/tolmap
       - name: Install debugger
         run: sudo apt-get update && sudo apt-get install -y gdb
       - name: Build identical release profile with line symbols
