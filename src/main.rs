@@ -73,6 +73,10 @@ enum Command {
         /// builds remain cold when omitted.
         #[arg(long)]
         previous_map: Option<PathBuf>,
+        /// Reuse versioned per-file extraction in a private derivation store.
+        /// Omit for an uncached control; never place this inside the source tree.
+        #[arg(long)]
+        extraction_cache: Option<PathBuf>,
         /// District namer. Model calls require an environment key and budget.
         #[arg(long, default_value_t = tolmap::naming::NamerKind::Idf)]
         namer: tolmap::naming::NamerKind,
@@ -531,13 +535,31 @@ fn main() -> Result<()> {
             no_parcels,
             prune_variant,
             previous_map,
+            extraction_cache,
             namer,
             namer_model,
             graph,
             refs,
             install,
         } => {
-            let progress = cli_progress();
+            let mut progress = cli_progress();
+            if let Some(cache) = extraction_cache {
+                let repository = repo
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("--extraction-cache requires a repository"))?
+                    .canonicalize()?;
+                anyhow::ensure!(
+                    !cache
+                        .canonicalize()
+                        .unwrap_or(cache.clone())
+                        .starts_with(&repository),
+                    "extraction cache must be outside the source tree"
+                );
+                progress = progress.with_cache(tolmap::incremental::Cache::local(
+                    cache,
+                    repository.to_string_lossy().into_owned(),
+                ));
+            }
             let namer_model = namer_model
                 .or_else(|| std::env::var("TOLMAP_NAMER_MODEL").ok())
                 .unwrap_or_else(|| tolmap::naming::DEFAULT_MODEL.to_owned());

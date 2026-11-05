@@ -49,11 +49,76 @@ try {
     for (const item of cases.filter(item => applicable(item, viewport))) {
       const row = resultMap.get(JSON.stringify([item.id, host, viewport.name, theme]));
       try {
-        await page.goto(`${base}/iframe.html?id=tolmap-pages--${item.id}&viewMode=story&globals=theme:${theme};host:${host}`);
+        const storyId = item.storybookId ?? `tolmap-pages--${item.id}`;
+        await page.goto(`${base}/iframe.html?id=${storyId}&viewMode=story&globals=theme:${theme};host:${host}`);
         await page.locator(`html[data-visual-ready="${item.id}"]`).waitFor({ timeout: 30000 });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `horizontal overflow: ${item.id}`);
         assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
         if (item.id === 'map-overview') assert.ok(await page.locator('.map-svg path').count() > 0);
+        if (item.id === 'map-freshness') {
+          assert.ok(await page.locator('.map-svg path').count() > 0, 'freshness must use the real map');
+          if (viewport.name === 'desktop') assert.equal(await page.locator('.desktop-panel').evaluate(panel => getComputedStyle(panel).opacity), '1', 'exercise the default open desktop panel');
+          if (['phone', 'landscape'].includes(viewport.name)) assert.equal(await page.locator('[data-control-column]').count(), 1, 'exercise the real phone controls');
+          assert.equal(await page.locator('[data-map-status-notes]').count(), 1, 'both notes must share one positioned column');
+          const geometry = await page.locator('[data-map-status-notes]').evaluate(container => {
+            const notes = [...container.querySelectorAll('[data-detail-status], [data-snapshot-freshness-note]')];
+            const visible = element => {
+              const box = element.getBoundingClientRect();
+              return box.width > 0 && box.height > 0 && box.right > 0 && box.left < innerWidth
+                && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).opacity !== '0';
+            };
+            const overlaps = (left, right) => {
+              const a = left.getBoundingClientRect(), b = right.getBoundingClientRect();
+              return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+            };
+            const noteGeometry = notes.map(note => {
+              const rect = note.getBoundingClientRect();
+              const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+              const actionHits = [...note.querySelectorAll('a, button')].map(action => {
+                const box = action.getBoundingClientRect();
+                const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                return !!hit && action.contains(hit);
+              });
+              return {
+                name: note.hasAttribute('data-detail-status') ? 'detail' : 'freshness',
+                inFlow: getComputedStyle(note).position === 'static',
+                inViewport: rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+                fits: note.scrollWidth <= note.clientWidth && note.scrollHeight <= note.clientHeight,
+                centerHit: !!center && note.contains(center),
+                actionHits,
+              };
+            });
+            const noteOverlaps = notes.flatMap((note, index) => notes.slice(index + 1)
+              .filter(other => overlaps(note, other)).map(other => `${note.hasAttribute('data-detail-status') ? 'detail' : 'freshness'} vs ${other.hasAttribute('data-detail-status') ? 'detail' : 'freshness'}`));
+            const controls = [...document.querySelectorAll('.desktop-panel, [data-panel-tab], [data-desktop-actions], [data-command-bar], [data-map-controls], [data-control-column]')].filter(visible);
+            const controlOverlaps = notes.flatMap(note => controls.filter(control => overlaps(note, control))
+              .map(control => `${note.hasAttribute('data-detail-status') ? 'detail' : 'freshness'} vs ${control.getAttribute('data-panel-tab') !== null ? 'panel tab' : control.className || control.tagName}`));
+            const freshness = container.querySelector('[data-snapshot-freshness-note]');
+            const retry = freshness?.querySelector('a');
+            const retryRect = retry?.getBoundingClientRect();
+            const retryHit = retryRect && document.elementFromPoint(retryRect.left + retryRect.width / 2, retryRect.top + retryRect.height / 2);
+            return {
+              noteCount: notes.length,
+              notes: noteGeometry,
+              noteOverlaps,
+              controlOverlaps,
+              retryExists: !!retry,
+              retryHit: !!retryHit && !!retry && retry.contains(retryHit),
+            };
+          });
+          assert.equal(geometry.noteCount, 2, 'the detail and freshness notes must both render');
+          for (const note of geometry.notes) {
+            assert.equal(note.inFlow, true, `${note.name} note must use the shared column position`);
+            assert.equal(note.inViewport, true, `${note.name} note must stay in the viewport`);
+            assert.equal(note.fits, true, `${note.name} text must wrap without clipping`);
+            assert.equal(note.centerHit, true, `${note.name} note must receive pointer hits`);
+            assert.equal(note.actionHits.every(Boolean), true, `${note.name} actions must receive pointer hits`);
+          }
+          assert.deepEqual(geometry.noteOverlaps, [], 'detail and freshness notes must not overlap');
+          assert.deepEqual(geometry.controlOverlaps, [], 'both notes must clear the panel and real map controls');
+          assert.equal(geometry.retryExists, true, 'failed freshness must show its retry action');
+          assert.equal(geometry.retryHit, true, 'retry indexing must be clickable beside the detail note');
+        }
         if (item.id === 'source-ready') assert.equal(await page.locator('.cm-content').getAttribute('aria-readonly'), 'true');
         await page.screenshot({ path: path.join(output, row.file), animations: 'disabled' });
         assert.deepEqual(errors, [], `browser errors while rendering ${item.id}`);

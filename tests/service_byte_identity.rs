@@ -115,7 +115,7 @@ fn district_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
 }
 
 /// Runs `tolmap serve` with `env` on a fresh store, indexes `repo` through
-/// it, and returns the cache directory the stored map is under.
+/// it, and returns the stored map's registered path after the service exits.
 fn serve_and_index(
     dir: &Path,
     name: &str,
@@ -147,7 +147,7 @@ fn serve_and_index(
     for (key, value) in env {
         serve.env(key, value);
     }
-    let _service = Service(serve.spawn().unwrap());
+    let service = Service(serve.spawn().unwrap());
 
     let deadline = Instant::now() + Duration::from_secs(60);
     while !matches!(http(port, "GET", "/api/healthz", ""), Ok((200, _))) {
@@ -187,7 +187,16 @@ fn serve_and_index(
         .cloned()
         .unwrap_or_default();
     assert_eq!(clone["state"], "done", "{name}: {snapshot}");
-    cache
+    drop(service);
+    let slug = format!("local/{}", repo.file_name().unwrap().to_str().unwrap());
+    let stored = tolmap::service::store::Store::open(&dir.join(format!("store-{name}.sqlite3")))
+        .unwrap()
+        .get(&slug, commit)
+        .unwrap()
+        .unwrap_or_else(|| panic!("completed {name} map is registered"));
+    assert!(stored.map_path.starts_with(&cache));
+    assert_eq!(stored.commit, commit);
+    stored.map_path
 }
 
 #[test]
@@ -223,10 +232,7 @@ fn tolmap_build_and_the_local_service_store_byte_identical_maps() {
         ("local", &[][..]),
         ("loopback", &[("TOLMAP_WORKERS", "loopback:2")][..]),
     ] {
-        let cache = serve_and_index(dir.path(), name, &repo, &commit, env);
-        let stored = cache
-            .join("maps/local/identity")
-            .join(format!("{commit}.json"));
+        let stored = serve_and_index(dir.path(), name, &repo, &commit, env);
         let map = read(&stored);
         let document: serde_json::Value = serde_json::from_slice(&map).unwrap();
         let files = document["F"].as_array().map_or(0, Vec::len);

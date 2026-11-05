@@ -99,7 +99,18 @@ const RUST_REEXPORT_HOPS: usize = 4;
 /// Whether something is compiled for [`RUST_CFG_TARGET`]. Three-valued, as
 /// `go_build::GoBuild` is: `Unknown` where the answer depends on something
 /// the source does not settle.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub(crate) enum Cfg {
     #[default]
     In,
@@ -260,7 +271,9 @@ pub(crate) fn eval_cfg(token_tree: &str) -> Cfg {
 // Phase 1: one file's syntax
 // ---------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum ItemKind {
     /// struct, enum, union or type alias: may be followed by `::assoc`.
     Type,
@@ -272,7 +285,7 @@ pub(crate) enum ItemKind {
 
 /// A `mod` declaration. `scope` is the inline modules it sits in, from the
 /// file's root.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ModDecl {
     pub(crate) scope: Vec<String>,
     pub(crate) name: String,
@@ -281,7 +294,7 @@ pub(crate) struct ModDecl {
     pub(crate) cfg: Cfg,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ItemDecl {
     pub(crate) scope: Vec<String>,
     pub(crate) name: String,
@@ -290,7 +303,7 @@ pub(crate) struct ItemDecl {
 }
 
 /// One name a `use` declaration brings in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct UseLeaf {
     /// The name it binds; `None` for `as _` and for a glob.
     pub(crate) local: Option<String>,
@@ -298,7 +311,7 @@ pub(crate) struct UseLeaf {
     pub(crate) glob: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct UseDecl {
     pub(crate) scope: Vec<String>,
     /// Any visibility: `pub`, `pub(crate)`, `pub(super)`, `pub(in ..)`.
@@ -310,7 +323,7 @@ pub(crate) struct UseDecl {
 }
 
 /// An inherent `impl Type { .. }` (no trait): which methods it declares.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ImplDecl {
     pub(crate) scope: Vec<String>,
     pub(crate) self_path: Vec<String>,
@@ -319,7 +332,7 @@ pub(crate) struct ImplDecl {
 
 /// What resolution needs from one Rust file, captured while its tree is
 /// alive (see `FileRaw`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RustSyntax {
     pub(crate) mods: Vec<ModDecl>,
     pub(crate) items: Vec<ItemDecl>,
@@ -328,10 +341,12 @@ pub(crate) struct RustSyntax {
     /// Maximal qualified paths outside `use` declarations, attributes and
     /// `macro_rules!` bodies, by scope. Macro arguments are read token by
     /// token: `a::b::c` there is a path too.
+    #[serde(with = "crate::incremental::ordered_pairs")]
     pub(crate) paths: BTreeMap<Vec<String>, BTreeSet<Vec<String>>>,
     /// Identifiers that could name something a `use` brought in, by scope:
     /// every identifier outside `use` declarations and attributes that is
     /// not the last segment of a qualified path.
+    #[serde(with = "crate::incremental::ordered_pairs")]
     pub(crate) idents: BTreeMap<Vec<String>, BTreeSet<String>>,
 }
 

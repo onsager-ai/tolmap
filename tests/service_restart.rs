@@ -353,11 +353,19 @@ fn row(root: &Path, id: &str) -> tolmap::service::store::JobRow {
 }
 
 fn stored_map(root: &Path, name: &str, commit: &str) -> Vec<u8> {
-    let path = root
-        .join("cache/maps/local")
-        .join(name)
-        .join(format!("{commit}.json"));
-    std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+    let row = Store::open(&root.join("store.sqlite3"))
+        .unwrap()
+        .get(&format!("local/{name}"), commit)
+        .unwrap()
+        .unwrap_or_else(|| panic!("no registered map for local/{name} at {commit}"));
+    assert_eq!(row.commit, commit);
+    assert!(
+        row.map_path
+            .starts_with(root.join("cache/maps/local").join(name)),
+        "{row:?}"
+    );
+    std::fs::read(&row.map_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", row.map_path.display()))
 }
 
 /// §6 "worker host dies", with `loopback:2`: the agent running a job is

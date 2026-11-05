@@ -3,7 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { Page } from "./Page";
 import { NativeLocal } from "./NativeLocal";
 import { cases } from "./catalogue.mjs";
-import { installFixture, resolveRoute } from "./fixtures";
+import { failedFreshness, installFixture, resolveRoute } from "./fixtures";
 import { setHost } from "./host";
 import { applyThemeChoice } from "../src/lib/theme";
 
@@ -20,7 +20,7 @@ export const meta = {
   }],
   render: (args, context) => context.loaded.route.startsWith('local:')
     ? <NativeLocal key={`${args.visualCaseId}-${context.globals.theme}`} name={context.loaded.route.slice(6)} theme={context.globals.theme} />
-    : <Page key={`${args.visualCaseId}-${context.globals.host}-${context.globals.theme}`} route={context.loaded.route} />,
+    : <Page key={`${args.visualCaseId}-${context.globals.host}-${context.globals.theme}`} route={context.loaded.route} freshness={args.visualCaseId === "map-freshness" ? failedFreshness : undefined} />,
 } satisfies Meta<Args>;
 
 export function page(id: string): StoryObj<Args> {
@@ -133,6 +133,10 @@ export function page(id: string): StoryObj<Args> {
         await waitFor(() => expect(root.querySelector(`[data-overview-layer="${layer}"], [data-layer="${layer}"][aria-pressed="true"]`)).not.toBeNull());
       }
       if (id === 'map-detail-pending') await waitFor(() => expect(root.querySelector('[data-detail-status="pending"]')?.textContent).toContain('Classes and functions are still being read.'));
+      if (id === 'map-freshness') await waitFor(() => {
+        expect(root.querySelector('[data-snapshot-freshness-note] [data-snapshot-state="failed"]')).not.toBeNull();
+        expect(root.querySelector('[data-detail-status="pending"]')).not.toBeNull();
+      });
       await root.fonts.ready;
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       root.documentElement.dataset.visualReady = id;

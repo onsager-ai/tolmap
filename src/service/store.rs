@@ -13,10 +13,10 @@
 //! file straight back without going through the database or an extra
 //! deserialise/reserialise round trip. The database row is the index into
 //! that file, not a duplicate of its content -- `map_path` is the join key.
-//! The path is deterministic (`<cache_dir>/maps/<owner>/<repo>/<commit>.json`),
-//! so nothing but the row's existence is actually load-bearing; the column
-//! is there for the same reason a lockfile records paths rather than making
-//! the reader reconstruct them: fewer places that have to agree on the
+//! Each complete snapshot is published atomically in the immutable directory
+//! `<cache_dir>/maps/<owner>/<repo>/<commit>-<job_id>-<publication_id>/<commit>.json`.
+//! The row's `map_path` is load-bearing: readers follow the registered snapshot
+//! instead of reconstructing a path, so fewer places have to agree on the
 //! layout convention.
 
 use std::collections::BTreeMap;
@@ -704,6 +704,11 @@ impl Store {
         Ok(rows)
     }
 
+    pub(crate) fn latest_request(&self, slug: &str) -> Result<Option<JobRow>> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        conn.query_row("SELECT job_id, slug, commit_sha, spec_json, class, status, attempt, epoch, lease_holder, lease_deadline_ms, queue_order, snapshot_json FROM jobs WHERE slug = ?1 ORDER BY queue_order DESC LIMIT 1", [slug], row_to_job).optional_context()
+    }
+
     pub fn job(&self, job_id: &str) -> Result<Option<JobRow>> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         conn.query_row(
@@ -742,7 +747,38 @@ impl Store {
 
     pub fn insert(&self, row: &MapRow) -> Result<()> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
-        conn.execute(
+        insert_map(&conn, row)
+    }
+
+    /// The single visibility switch for an immutable, complete artifact set.
+    /// Names and the map pointer advance together; a cancelled/stale durable
+    /// attempt cannot replace the last complete snapshot.
+    pub(crate) fn publish(
+        &self,
+        row: &MapRow,
+        names: &NameCache,
+        fence: Option<(&str, u64)>,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
+        let tx = conn.transaction()?;
+        if let Some((job, epoch)) = fence {
+            let current: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE job_id = ?1 AND epoch = ?2 AND status IN ('leased', 'running'))",
+                params![job, i64::try_from(epoch)?], |row| row.get(0))?;
+            anyhow::ensure!(current, "stale_or_cancelled_attempt");
+        }
+        for (fingerprint, entry) in names {
+            tx.execute("INSERT OR REPLACE INTO district_names (slug, fingerprint, entry_json) VALUES (?1, ?2, ?3)",
+                params![row.slug, fingerprint, serde_json::to_string(entry)?])?;
+        }
+        insert_map(&tx, row)?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+fn insert_map(conn: &Connection, row: &MapRow) -> Result<()> {
+    conn.execute(
             "INSERT INTO maps (slug, owner, repo, commit_sha, branch, lang, files, districts, modularity, map_path, indexed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (slug, commit_sha) DO UPDATE SET
@@ -763,8 +799,7 @@ impl Store {
                 row.indexed_at,
             ],
         )?;
-        Ok(())
-    }
+    Ok(())
 }
 
 fn row_to_map(row: &rusqlite::Row) -> rusqlite::Result<MapRow> {
@@ -1076,6 +1111,211 @@ mod tests {
             map_path: map_path.to_owned(),
             indexed_at: indexed_at.to_owned(),
         }
+    }
+
+    #[test]
+    fn matching_running_epoch_publishes_complete_artifacts_and_names() {
+        let (dir, store) = temp_store();
+        let old_dir = dir.path().join("snapshots/old");
+        let old_map = old_dir.join("old.json");
+        std::fs::create_dir_all(old_map.with_extension("symbols")).unwrap();
+        std::fs::write(&old_map, b"old map").unwrap();
+        std::fs::write(old_map.with_extension("symbols.json"), b"old symbols").unwrap();
+        std::fs::write(old_dir.join("index.json"), b"old source revision").unwrap();
+        let old_names = NameCache::from([(
+            "old-fingerprint".into(),
+            CacheEntry {
+                name: "old district".into(),
+                district: 0,
+                size: 1,
+                namer: "idf".into(),
+                numbered: false,
+            },
+        )]);
+        store
+            .publish(&row("o/r", "old", "2026-01-01", &old_map), &old_names, None)
+            .unwrap();
+
+        let new_dir = dir.path().join("snapshots/new-complete");
+        let new_map = new_dir.join("new.json");
+        std::fs::create_dir_all(new_map.with_extension("symbols")).unwrap();
+        std::fs::write(&new_map, b"new map").unwrap();
+        std::fs::write(new_map.with_extension("symbols.json"), b"new symbols").unwrap();
+        std::fs::write(
+            new_map.with_extension("symbols").join("0.json"),
+            b"new district symbols",
+        )
+        .unwrap();
+        std::fs::write(new_dir.join("index.json"), b"new source revision").unwrap();
+        let new_names = NameCache::from([(
+            "new-fingerprint".into(),
+            CacheEntry {
+                name: "new district".into(),
+                district: 0,
+                size: 1,
+                namer: "idf".into(),
+                numbered: false,
+            },
+        )]);
+        let next = row("o/r", "new", "2026-01-02", &new_map);
+        let mut job = job_row("publish", 1);
+        job.slug = "o/r".into();
+        job.status = "running".into();
+        job.epoch = 7;
+        store.insert_job(&job).unwrap();
+
+        assert!(store.get("o/r", "new").unwrap().is_none());
+        assert_eq!(store.latest("o/r").unwrap().unwrap().commit, "old");
+        store
+            .publish(&next, &new_names, Some(("publish", 7)))
+            .unwrap();
+
+        let visible = store.get("o/r", "new").unwrap().expect("published map");
+        assert_eq!(visible.map_path, new_map);
+        assert_eq!(std::fs::read(&visible.map_path).unwrap(), b"new map");
+        assert_eq!(
+            std::fs::read(visible.map_path.with_extension("symbols.json")).unwrap(),
+            b"new symbols"
+        );
+        assert_eq!(
+            std::fs::read(visible.map_path.with_extension("symbols").join("0.json")).unwrap(),
+            b"new district symbols"
+        );
+        assert_eq!(
+            std::fs::read(visible.map_path.parent().unwrap().join("index.json")).unwrap(),
+            b"new source revision"
+        );
+        assert_eq!(store.latest("o/r").unwrap().unwrap().commit, "new");
+        assert_eq!(
+            store.load_names("o/r").unwrap()["new-fingerprint"].name,
+            "new district"
+        );
+        assert_eq!(std::fs::read(old_map).unwrap(), b"old map");
+        assert_eq!(
+            store.load_names("o/r").unwrap()["old-fingerprint"].name,
+            "old district"
+        );
+    }
+
+    #[test]
+    fn publication_fences_stale_and_cancelled_attempts_and_keeps_last_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("store.sqlite");
+        let store = Store::open(&db).unwrap();
+        let old_dir = dir.path().join("snapshots/old");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let old_path = old_dir.join("map.json");
+        std::fs::write(&old_path, b"old complete map").unwrap();
+        std::fs::write(old_dir.join("symbols.json"), b"old complete symbols").unwrap();
+        let old_source = dir.path().join("prepared/old/source-revision");
+        std::fs::create_dir_all(old_source.parent().unwrap()).unwrap();
+        std::fs::write(&old_source, b"old commit").unwrap();
+        let old = row("o/a", "old", "2026-01-01", &old_path);
+        let old_names = NameCache::from([(
+            "old-fingerprint".into(),
+            CacheEntry {
+                name: "old district".into(),
+                district: 0,
+                size: 1,
+                namer: "idf".into(),
+                numbered: false,
+            },
+        )]);
+        store.publish(&old, &old_names, None).unwrap();
+        let mut job = job_row("a", 1);
+        job.status = "running".into();
+        job.epoch = 2;
+        store.insert_job(&job).unwrap();
+        let staged_dir = dir.path().join("snapshots/new");
+        std::fs::create_dir_all(&staged_dir).unwrap();
+        let staged = staged_dir.join("map.json");
+        std::fs::write(&staged, b"new partial map").unwrap();
+        std::fs::write(staged_dir.join("symbols.json"), b"new partial symbols").unwrap();
+        let new_source = dir.path().join("prepared/new/source-revision");
+        std::fs::create_dir_all(new_source.parent().unwrap()).unwrap();
+        std::fs::write(&new_source, b"new commit").unwrap();
+        let next = row("o/a", "new", "2026-01-02", &staged);
+        let new_names = NameCache::from([(
+            "new-fingerprint".into(),
+            CacheEntry {
+                name: "new district".into(),
+                district: 0,
+                size: 1,
+                namer: "idf".into(),
+                numbered: false,
+            },
+        )]);
+        // Crash before the switch: staged bytes have no visible row.
+        assert!(store.get("o/a", "new").unwrap().is_none());
+        drop(store);
+        let restarted = Store::open(&db).unwrap();
+        assert_eq!(restarted.latest("o/a").unwrap().unwrap().commit, "old");
+        assert!(restarted
+            .publish(&next, &new_names, Some(("a", 1)))
+            .is_err());
+        restarted.finish_job("a", "failed", "{}").unwrap();
+        assert!(restarted
+            .publish(&next, &new_names, Some(("a", 2)))
+            .is_err());
+        drop(restarted);
+        let restored = Store::open(&db).unwrap();
+        let visible = restored.latest("o/a").unwrap().unwrap();
+        assert_eq!(visible.commit, "old");
+        assert_eq!(visible.map_path, old_path);
+        assert_eq!(
+            std::fs::read(&visible.map_path).unwrap(),
+            b"old complete map"
+        );
+        assert_eq!(
+            std::fs::read(old_dir.join("symbols.json")).unwrap(),
+            b"old complete symbols"
+        );
+        assert_eq!(std::fs::read(old_source).unwrap(), b"old commit");
+        let names = restored.load_names("o/a").unwrap();
+        assert!(names.contains_key("old-fingerprint"));
+        assert!(!names.contains_key("new-fingerprint"));
+    }
+
+    #[test]
+    fn warm_start_candidates_are_scoped_to_the_full_owner_repository_slug() {
+        let (dir, store) = temp_store();
+        let owner_a_path = dir.path().join("owner-a.json");
+        let owner_b_path = dir.path().join("owner-b.json");
+        std::fs::write(&owner_a_path, b"owner a").unwrap();
+        std::fs::write(&owner_b_path, b"owner b").unwrap();
+        let mut owner_a = row("owner-a/repo", "commit-a", "2026-01-01", &owner_a_path);
+        owner_a.owner = "owner-a".into();
+        owner_a.repo = "repo".into();
+        let mut owner_b = row("owner-b/repo", "commit-b", "2026-01-02", &owner_b_path);
+        owner_b.owner = "owner-b".into();
+        owner_b.repo = "repo".into();
+        store.insert(&owner_a).unwrap();
+        store.insert(&owner_b).unwrap();
+
+        assert_eq!(
+            store
+                .warm_start_source("owner-a/repo", Some("main"))
+                .unwrap()
+                .unwrap()
+                .commit,
+            "commit-a"
+        );
+        assert_eq!(
+            store
+                .warm_start_source("owner-b/repo", Some("main"))
+                .unwrap()
+                .unwrap()
+                .commit,
+            "commit-b"
+        );
+        assert_eq!(
+            store.warm_start_candidates("owner-a/repo").unwrap().len(),
+            1
+        );
+        assert_eq!(
+            store.warm_start_candidates("owner-b/repo").unwrap().len(),
+            1
+        );
     }
 
     #[test]

@@ -176,7 +176,7 @@ fn grammar_for_file(language: LanguageKind, file: &str) -> Language {
 /// files: 1,466 MB with source+tree retained per file vs. 71 MB with only
 /// `identifiers`, vs. 20 MB with nothing). See [`parse_files`] for where the
 /// tree is parsed, walked and dropped, one file at a time.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ParsedFile {
     loc: usize,
     code_lines: usize,
@@ -239,6 +239,7 @@ struct ParsedFile {
 /// what this file exports at top level and where from. With every file's
 /// exports in hand, phase 2 follows `import { x } from './index'` through
 /// the barrel's `export ... from` chain to the file that defines `x`.
+#[derive(Serialize, Deserialize)]
 enum FileRaw {
     Python {
         imports: Vec<PythonImport>,
@@ -263,7 +264,7 @@ enum FileRaw {
 
 /// What one Go import's local name is used for in the importing file
 /// (finding 50). A file's list is parallel to its `go_imports`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum GoImportUse {
     /// `import _ "p"` or `import . "p"`. A blank import is there for its
     /// side effects, and a dot import's names are used unqualified, so no
@@ -392,7 +393,7 @@ pub(crate) struct PythonImport {
 /// module-level statements count, including those inside a module-level
 /// `if`, `try` or `with`, never a function or class body: a name a function
 /// imports is not an attribute of the module.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PythonExports {
     /// Names the module defines itself: `def`, `class` and assignment
     /// targets.
@@ -407,7 +408,7 @@ pub(crate) struct PythonExports {
     pub(crate) all: PythonAll,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct PythonBinding {
     pub(crate) level: usize,
     pub(crate) module: String,
@@ -417,7 +418,7 @@ pub(crate) struct PythonBinding {
 }
 
 /// A module's `__all__`, which decides what `from module import *` binds.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) enum PythonAll {
     /// No `__all__`: a star import binds every public name.
     #[default]
@@ -640,6 +641,10 @@ fn build_multi_source_inner(
         .then(crate::symbols::SymbolSpool::new)
         .transpose()?;
     for (pkg, language) in &sorted_sources {
+        // The cache below stores only per-file parser and symbol records.
+        // RefsMode and InstallMode are consumed later, after raw parsing and
+        // source resolution, by apply_scip_references; they cannot affect
+        // these records and therefore stay out of their provenance keys.
         let (parsed, raw, collection_time, steps) =
             parse_files_inner(repo, pkg, *language, spool.as_mut(), progress)?;
         symbol_collection += collection_time;
@@ -700,6 +705,7 @@ fn build_multi_source_inner(
     let graph_started = Instant::now();
     let mut graph = finish_graph(repo, merged, history, progress)?;
     graph.references = references;
+    progress.log(format!("index_work {}", serde_json::json!({"files":graph.nodes.len(), "graph_edges":graph.edges.len(), "resolved_import_pairs":graph.imports.len()})));
     graph_time += graph_started.elapsed();
     let total = started.elapsed();
     // These three durations are disjoint so a build log can account for
@@ -727,6 +733,22 @@ fn build_multi_source_inner(
     Ok((graph, spool))
 }
 
+/// Computes the versioned source digest used by per-file extraction records.
+fn extractor_source_digest(lockfile: &str) -> String {
+    let mut inputs = concat!(
+        include_str!("extract.rs"),
+        include_str!("extract/rust.rs"),
+        include_str!("symbols.rs"),
+        include_str!("go_build.rs"),
+        include_str!("../Cargo.toml")
+    )
+    .as_bytes()
+    .to_vec();
+    inputs.extend_from_slice(b"\0Cargo.lock\0");
+    inputs.extend_from_slice(lockfile.as_bytes());
+    crate::incremental::digest(&inputs)
+}
+
 /// Parses every source file `source_files` finds for `(pkg, language)` under
 /// `repo` with tree-sitter, computing both the per-file metrics (`loc`,
 /// `complexity`, `identifiers`, `symbols`) that survive for the rest of the
@@ -741,7 +763,7 @@ fn build_multi_source_inner(
 /// the split is divided). Both walks that used to run against `parsed_file.
 /// tree` in a later pass (import extraction, and the selector/attribute walk
 /// behind `uses`) run here instead, against the same tree, before it is
-/// dropped.
+/// dropped. This wrapper exercises the parser without an incremental cache.
 #[cfg(test)]
 fn parse_files(
     repo: &Path,
@@ -772,6 +794,60 @@ fn parse_files_inner(
 )> {
     let files = source_files(repo, pkg, language)?;
     let parse_stage = progress.stage(crate::progress::StageId::Parse, Some(files.len() as u64));
+    let config = fs::read(repo.join(".tolmap/config.toml")).unwrap_or_default();
+    let mut provenance = crate::incremental::Provenance {
+        domain: progress
+            .cache
+            .as_ref()
+            .map(|c| c.domain.clone())
+            .unwrap_or_default(),
+        repository: progress
+            .cache
+            .as_ref()
+            .map(|c| c.repository.clone())
+            .unwrap_or_default(),
+        extractor: extractor_source_digest(include_str!("../Cargo.lock")),
+        schema: crate::incremental::digest(include_str!("schema.rs").as_bytes()),
+        resolver: "hand-resolver-v1".into(),
+        indexer: env!("CARGO_PKG_VERSION").into(),
+        config: crate::incremental::digest(&serde_json::to_vec(&(
+            pkg,
+            language.as_str(),
+            spool.is_some(),
+            config,
+        ))?),
+        history_revision: Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .unwrap_or_default(),
+        files: BTreeMap::new(),
+    };
+    let manifest_key = format!(
+        "manifest-{}",
+        crate::incremental::digest(&serde_json::to_vec(&(
+            pkg,
+            language.as_str(),
+            spool.is_some()
+        ))?)
+    );
+    let previous: Option<crate::incremental::Provenance> = progress
+        .cache
+        .as_ref()
+        .map(|cache| cache.read(&manifest_key))
+        .transpose()?
+        .flatten();
+    let compatible = previous
+        .as_ref()
+        .is_none_or(|old| provenance.compatible(old));
+    let context_key = provenance.cache_context_key();
+    let mut reused = 0usize;
+    let mut parsed_count = 0usize;
+
     let mut parser = Parser::new();
 
     let mut parsed = BTreeMap::new();
@@ -788,6 +864,28 @@ fn parse_files_inner(
             .set_language(&grammar_for_file(language, file))
             .context("initialize tree-sitter parser")?;
         let source = fs::read(repo.join(file)).with_context(|| format!("read {file}"))?;
+        let content_hash = crate::incremental::digest(&source);
+        provenance.files.insert(file.clone(), content_hash.clone());
+        let key = crate::incremental::cache_file_key(&context_key, file, &content_hash);
+        if compatible {
+            if let Some(cache) = &progress.cache {
+                if let Some((metrics, syntax, symbols)) =
+                    cache.read::<(ParsedFile, FileRaw, Option<crate::symbols::ParsedSymbols>)>(
+                        &key,
+                    )?
+                {
+                    if let (Some(spool), Some(record)) = (spool.as_deref_mut(), symbols.as_ref()) {
+                        spool.insert_timed(file, record, &mut collect_steps)?;
+                    }
+                    parsed.insert(file.clone(), metrics);
+                    raw.insert(file.clone(), syntax);
+                    reused += 1;
+                    parse_stage.advance(1);
+                    continue;
+                }
+            }
+        }
+        parsed_count += 1;
         let Some(tree) = parser.parse(&source, None) else {
             // Tree-sitter can return None on cancellation. Keep the file's
             // conservative metrics without inventing symbols or edges.
@@ -886,6 +984,7 @@ fn parse_files_inner(
             LanguageKind::Rust => FileRaw::Rust(rust::syntax(root, &source)),
         };
         let loc = source.iter().filter(|&&byte| byte == b'\n').count() + 1;
+        let mut cached_symbols = None;
         let code_lines = if let Some(spool) = spool.as_deref_mut() {
             // One syntax-leaf mask feeds both map C and symbol areas. This
             // keeps the two line counts identical without another tree walk.
@@ -896,6 +995,7 @@ fn parse_files_inner(
                 crate::symbols::collect_timed(root, &source, language, &flags, &mut collect_steps);
             spool.insert_timed(file, &record, &mut collect_steps)?;
             symbol_collection += started.elapsed();
+            cached_symbols = Some(record);
             count
         } else {
             count_code_lines(root, &source, language)
@@ -913,8 +1013,37 @@ fn parse_files_inner(
                 symbols,
             },
         );
+        if let Some(cache) = &progress.cache {
+            if let Err(error) = cache.write(
+                &key,
+                &(parsed.get(file).unwrap(), &file_raw, &cached_symbols),
+            ) {
+                if crate::incremental::authority_revoked(&error) {
+                    return Err(error.context("incremental cache authority revoked"));
+                }
+                progress.log(format!("index_cache_write_failed: {error:#}"));
+            }
+        }
         raw.insert(file.clone(), file_raw);
         parse_stage.advance(1);
+    }
+    let mut reasons = if progress.cache.is_some() {
+        provenance.reasons(previous.as_ref())
+    } else {
+        vec!["cache_disabled"]
+    };
+    progress.log(format!("index_reuse {}", serde_json::json!({
+        "source": pkg, "language": language.as_str(), "parsed": parsed_count, "reused": reused,
+        "reasons": reasons, "downstream": "recompute_all", "provenance": context_key,
+        "history": "recompute_at_requested_revision_4000_commit_window", "prior": "explicit_naming_and_membership_inputs"
+    })));
+    if let Some(cache) = &progress.cache {
+        if let Err(error) = cache.write(&manifest_key, &provenance) {
+            if crate::incremental::authority_revoked(&error) {
+                return Err(error.context("incremental cache authority revoked"));
+            }
+            progress.log(format!("index_cache_write_failed: {error:#}"));
+        }
     }
     parse_stage.finish();
     Ok((parsed, raw, symbol_collection, collect_steps))
@@ -5212,7 +5341,7 @@ fn typescript_import_statements(root: Node<'_>, source: &[u8]) -> Vec<(String, T
 
 /// What one TypeScript module specifier takes from its module (finding 51).
 /// A file's list is parallel to its `typescript_imports`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct TsImportUse {
     /// The names taken, by the name the module exports them under
     /// (`default` for a default import): `import { a as b }` takes `a`, and
@@ -5313,7 +5442,7 @@ fn typescript_statement_use(node: Node<'_>, source: &[u8]) -> TsImportUse {
 /// re-exported name comes from (finding 51). Read from top-level
 /// `export` statements only: an `export` inside `declare module 'x' {}`
 /// or `declare global {}` describes another module, not this file.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct TsExports {
     /// Names this file declares and exports itself, `default` included.
     defined: BTreeSet<String>,
@@ -6856,6 +6985,47 @@ pub(crate) fn round_to(value: f64, digits: i32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lockfile_change_misses_cache_with_extractor_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::incremental::Cache::local(dir.path().into(), "repo".into());
+        let make = |lockfile: &str| crate::incremental::Provenance {
+            domain: "local".into(),
+            repository: "repo".into(),
+            extractor: extractor_source_digest(lockfile),
+            schema: crate::incremental::digest(include_str!("schema.rs").as_bytes()),
+            resolver: "hand-resolver-v1".into(),
+            indexer: env!("CARGO_PKG_VERSION").into(),
+            config: crate::incremental::digest(
+                &serde_json::to_vec(&("pkg", "py", false, Vec::<u8>::new())).unwrap(),
+            ),
+            history_revision: "head".into(),
+            files: BTreeMap::from([("pkg/a.py".into(), "content".into())]),
+        };
+        let base = make("lockfile-v1");
+        let base_entry =
+            crate::incremental::cache_file_key(&base.cache_context_key(), "pkg/a.py", "content");
+        cache.write("manifest", &base).unwrap();
+        cache.write(&base_entry, &"parsed output").unwrap();
+
+        let lock_bump = make("lockfile-v2");
+        let previous: crate::incremental::Provenance =
+            cache.read("manifest").unwrap().expect("prior manifest");
+        assert!(!lock_bump.compatible(&previous));
+        assert!(lock_bump
+            .reasons(Some(&previous))
+            .contains(&"extractor_changed"));
+        assert_ne!(lock_bump.cache_context_key(), base.cache_context_key());
+        assert!(cache
+            .read::<String>(&crate::incremental::cache_file_key(
+                &lock_bump.cache_context_key(),
+                "pkg/a.py",
+                "content",
+            ))
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn nested_python_package_anchors_on_last_source_segment() {

@@ -210,9 +210,18 @@ fn a_job_whose_features_outgrow_the_small_class_is_rerouted_and_maps_byte_identi
         ("done", 1, 2, 1),
         "rerouted once to the large class, attempt not counted: {row:?}"
     );
-    let stored = root
-        .join("cache/maps/local/grows")
-        .join(format!("{commit}.json"));
+    let registered = store()
+        .get("local/grows", &commit)
+        .unwrap()
+        .expect("a registered map row");
+    assert_eq!(registered.commit, commit);
+    assert!(
+        registered
+            .map_path
+            .starts_with(root.join("cache/maps/local/grows")),
+        "{registered:?}"
+    );
+    let stored = registered.map_path;
     let map =
         std::fs::read(&stored).unwrap_or_else(|error| panic!("read {}: {error}", stored.display()));
     assert!(

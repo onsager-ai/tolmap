@@ -1,0 +1,1671 @@
+[
+  {
+    "repository": "flask",
+    "commit": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35",
+    "case": "full",
+    "wall_s": 0.29910483300000124,
+    "stages": [
+      {
+        "done": 24,
+        "duration_s": 0.088575592,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.001238203,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 3825,
+        "duration_s": 0.051800216,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.000188402,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.000448037,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 3,
+        "duration_s": 2.5758e-05,
+        "stage": "neighbourhoods",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.000178113,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.041467562,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.026778819,
+        "stage": "footprints",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 153561,
+        "duration_s": 0.000679951,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.003459944,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.075820812,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 188237,
+        "duration_s": 0.000841973,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 24,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "6c0e51ee82a6b6593047eb6499719bfd1a45e1e788a7d65e7c5e2d8ffefb708d",
+        "reasons": [
+          "cache_disabled"
+        ],
+        "reused": 0,
+        "source": "src/flask"
+      }
+    ],
+    "hashes": {
+      ".json": "491143ff7a12b569e58d12539a3cdfa08fb5450f6547e52def4a6d9006802cea",
+      ".symbols.json": "7a73ea02a9a3414af013403c8d13bf122275f52323bf74f23e4493785c121cfa"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "flask",
+    "commit": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35",
+    "case": "cold",
+    "wall_s": 0.3227969779999853,
+    "stages": [
+      {
+        "done": 24,
+        "duration_s": 0.109077162,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.001237302,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 3825,
+        "duration_s": 0.053540991,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.000215032,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.000476941,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 3,
+        "duration_s": 4.2359e-05,
+        "stage": "neighbourhoods",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.000202267,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.042347646,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.026803716,
+        "stage": "footprints",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 153561,
+        "duration_s": 0.000725014,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.003581601,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.075605591,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 188237,
+        "duration_s": 0.000913286,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 24,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "c9c8ddea714861d8d605c3f2da8c38b1deb15b41287d6d0d59cae96185de43d7",
+        "reasons": [
+          "cold_cache"
+        ],
+        "reused": 0,
+        "source": "src/flask"
+      }
+    ],
+    "hashes": {
+      ".json": "491143ff7a12b569e58d12539a3cdfa08fb5450f6547e52def4a6d9006802cea",
+      ".symbols.json": "7a73ea02a9a3414af013403c8d13bf122275f52323bf74f23e4493785c121cfa"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "flask",
+    "commit": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35",
+    "case": "unchanged",
+    "wall_s": 0.2221890580000263,
+    "stages": [
+      {
+        "done": 24,
+        "duration_s": 0.008688192,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.00115095,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 3825,
+        "duration_s": 0.054511472,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.000214491,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.000489324,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 3,
+        "duration_s": 4.1437e-05,
+        "stage": "neighbourhoods",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.000200264,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.041677484,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.027071136,
+        "stage": "footprints",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 153561,
+        "duration_s": 0.000665433,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.003597832,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.075060031,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 188237,
+        "duration_s": 0.000814422,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 0,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "c9c8ddea714861d8d605c3f2da8c38b1deb15b41287d6d0d59cae96185de43d7",
+        "reasons": [],
+        "reused": 24,
+        "source": "src/flask"
+      }
+    ],
+    "hashes": {
+      ".json": "491143ff7a12b569e58d12539a3cdfa08fb5450f6547e52def4a6d9006802cea",
+      ".symbols.json": "7a73ea02a9a3414af013403c8d13bf122275f52323bf74f23e4493785c121cfa"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "flask",
+    "commit": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35",
+    "case": "small-edit",
+    "wall_s": 0.2208842679999634,
+    "stages": [
+      {
+        "done": 24,
+        "duration_s": 0.009879838,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.001129851,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 3825,
+        "duration_s": 0.052542673,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.000205103,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.000439781,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 3,
+        "duration_s": 2.5969e-05,
+        "stage": "neighbourhoods",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.00017666,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.041619164,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.026781074,
+        "stage": "footprints",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 153563,
+        "duration_s": 0.000654653,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.003578476,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.075463144,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 188237,
+        "duration_s": 0.000806516,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 1,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "c9c8ddea714861d8d605c3f2da8c38b1deb15b41287d6d0d59cae96185de43d7",
+        "reasons": [
+          "content_changed"
+        ],
+        "reused": 23,
+        "source": "src/flask"
+      }
+    ],
+    "hashes": {
+      ".json": "88c3e842d25668983f45baeaf44579e8aad46ee00afa86177239da33e211e39c",
+      ".symbols.json": "7a73ea02a9a3414af013403c8d13bf122275f52323bf74f23e4493785c121cfa"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "flask",
+    "commit": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35",
+    "case": "small-edit-full",
+    "wall_s": 0.29981499999996686,
+    "stages": [
+      {
+        "done": 24,
+        "duration_s": 0.087607363,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.001202557,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 3825,
+        "duration_s": 0.052513449,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.000210182,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.000482501,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 3,
+        "duration_s": 4.0095e-05,
+        "stage": "neighbourhoods",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.000188282,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.041996841,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 3,
+        "duration_s": 0.026860912,
+        "stage": "footprints",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 153563,
+        "duration_s": 0.0007226,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.003657252,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 24,
+        "duration_s": 0.075479314,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 188237,
+        "duration_s": 0.000892648,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 24,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "6c0e51ee82a6b6593047eb6499719bfd1a45e1e788a7d65e7c5e2d8ffefb708d",
+        "reasons": [
+          "cache_disabled"
+        ],
+        "reused": 0,
+        "source": "src/flask"
+      }
+    ],
+    "hashes": {
+      ".json": "88c3e842d25668983f45baeaf44579e8aad46ee00afa86177239da33e211e39c",
+      ".symbols.json": "7a73ea02a9a3414af013403c8d13bf122275f52323bf74f23e4493785c121cfa"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "django",
+    "commit": "a3f0642f69277f01611d0d3e829fc3b85aded2ec",
+    "case": "full",
+    "wall_s": 2.6743101469999715,
+    "stages": [
+      {
+        "done": 851,
+        "duration_s": 1.850321326,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.035959037,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.187256137,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.004285124,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.024648385,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.001529671,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.359045027,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 584025,
+        "duration_s": 0.001838969,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.072602835,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 5.3e-06,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 1560474,
+        "duration_s": 0.011594523,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 851,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "7114e25b1a0decd6c3615f897c3a724146adf03e8da202525732dee5674106bc",
+        "reasons": [
+          "cache_disabled"
+        ],
+        "reused": 0,
+        "source": "django"
+      }
+    ],
+    "hashes": {
+      ".json": "13c7cd765b6b1fd608512cc8f6c16b4d96bd5ea4d3691baf95199e017624ab42",
+      ".symbols.json": "ab280e5143b3d2923f1f4a4aa693bf59d3fa34765107c4592759c0ea500fd31d"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "django",
+    "commit": "a3f0642f69277f01611d0d3e829fc3b85aded2ec",
+    "case": "cold",
+    "wall_s": 3.3146236280000494,
+    "stages": [
+      {
+        "done": 851,
+        "duration_s": 2.500675985,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.034118886,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.180482986,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.004243528,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.024581334,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.00151484,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.360076324,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 584025,
+        "duration_s": 0.001697171,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.07138708,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 1.9607e-05,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 1560474,
+        "duration_s": 0.011708705,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 851,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "4ce17df31bfb1936e2e04f9bdbb58cdb3d6b10c117e74309769cd5a2dfd3b5d3",
+        "reasons": [
+          "cold_cache"
+        ],
+        "reused": 0,
+        "source": "django"
+      }
+    ],
+    "hashes": {
+      ".json": "13c7cd765b6b1fd608512cc8f6c16b4d96bd5ea4d3691baf95199e017624ab42",
+      ".symbols.json": "ab280e5143b3d2923f1f4a4aa693bf59d3fa34765107c4592759c0ea500fd31d"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "django",
+    "commit": "a3f0642f69277f01611d0d3e829fc3b85aded2ec",
+    "case": "unchanged",
+    "wall_s": 0.9645318139999972,
+    "stages": [
+      {
+        "done": 851,
+        "duration_s": 0.142565118,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.028076655,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.197731202,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.004234841,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.024522074,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.001485335,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.360130216,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 584025,
+        "duration_s": 0.001742536,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.073284414,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 2.0949e-05,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 1560474,
+        "duration_s": 0.011761553,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 0,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "4ce17df31bfb1936e2e04f9bdbb58cdb3d6b10c117e74309769cd5a2dfd3b5d3",
+        "reasons": [],
+        "reused": 851,
+        "source": "django"
+      }
+    ],
+    "hashes": {
+      ".json": "13c7cd765b6b1fd608512cc8f6c16b4d96bd5ea4d3691baf95199e017624ab42",
+      ".symbols.json": "ab280e5143b3d2923f1f4a4aa693bf59d3fa34765107c4592759c0ea500fd31d"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "django",
+    "commit": "a3f0642f69277f01611d0d3e829fc3b85aded2ec",
+    "case": "small-edit",
+    "wall_s": 0.9540656640000407,
+    "stages": [
+      {
+        "done": 851,
+        "duration_s": 0.142385012,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.028212188,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.192857337,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.004053423,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.024193979,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.001469836,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.359481734,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 584025,
+        "duration_s": 0.001901052,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.072116752,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 1.2423e-05,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 1560474,
+        "duration_s": 0.011685923,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 1,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "4ce17df31bfb1936e2e04f9bdbb58cdb3d6b10c117e74309769cd5a2dfd3b5d3",
+        "reasons": [
+          "content_changed"
+        ],
+        "reused": 850,
+        "source": "django"
+      }
+    ],
+    "hashes": {
+      ".json": "e207697aa40047d42e66df8dd32c30c6966c96559b5322750beaa938f421cd88",
+      ".symbols.json": "ab280e5143b3d2923f1f4a4aa693bf59d3fa34765107c4592759c0ea500fd31d"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "django",
+    "commit": "a3f0642f69277f01611d0d3e829fc3b85aded2ec",
+    "case": "small-edit-full",
+    "wall_s": 2.6709188840000024,
+    "stages": [
+      {
+        "done": 851,
+        "duration_s": 1.843751047,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.032683825,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.192284306,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.00421726,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.024802881,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.001533374,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 12,
+        "duration_s": 0.358474444,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 584025,
+        "duration_s": 0.001807929,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 851,
+        "duration_s": 0.074159537,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 851,
+        "duration_s": 7.283e-06,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 1560474,
+        "duration_s": 0.012224901,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "py",
+        "parsed": 851,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "7114e25b1a0decd6c3615f897c3a724146adf03e8da202525732dee5674106bc",
+        "reasons": [
+          "cache_disabled"
+        ],
+        "reused": 0,
+        "source": "django"
+      }
+    ],
+    "hashes": {
+      ".json": "e207697aa40047d42e66df8dd32c30c6966c96559b5322750beaa938f421cd88",
+      ".symbols.json": "ab280e5143b3d2923f1f4a4aa693bf59d3fa34765107c4592759c0ea500fd31d"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "vue",
+    "commit": "4ab865a848a1da3d10fb674f857e5fff13094644",
+    "case": "full",
+    "wall_s": 0.954514574999962,
+    "stages": [
+      {
+        "done": 239,
+        "duration_s": 0.576925429,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.013026989,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.101849344,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.001813147,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.005357881,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.00044416,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.131500812,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 210565,
+        "duration_s": 0.000841011,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.021830648,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 1.2833e-05,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 420790,
+        "duration_s": 0.002552489,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "ts",
+        "parsed": 239,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "ff6d6dbbb627d8e59db975d4d44c081c0cb1e34f0a34c61e8d68e436f913355e",
+        "reasons": [
+          "cache_disabled"
+        ],
+        "reused": 0,
+        "source": "packages"
+      }
+    ],
+    "hashes": {
+      ".json": "487b4583e93356416c515c002c18496805f5d6b864f47394b6400563b5d9dbd5",
+      ".symbols.json": "3f98eb0441ce0b9f8190f956e78c1e5a1894759767232e0731ba569e1a141392"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "vue",
+    "commit": "4ab865a848a1da3d10fb674f857e5fff13094644",
+    "case": "cold",
+    "wall_s": 1.128794874999926,
+    "stages": [
+      {
+        "done": 239,
+        "duration_s": 0.762899667,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.015852518,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.086497598,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.001805814,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.005376415,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.00044971,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.131352565,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 210565,
+        "duration_s": 0.000814672,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.021650942,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 1.0119e-05,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 420790,
+        "duration_s": 0.002500842,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "ts",
+        "parsed": 239,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "e52837c151254e608f6cf21cff1929a04553e2602f959e817ba5a59c8ef70790",
+        "reasons": [
+          "cold_cache"
+        ],
+        "reused": 0,
+        "source": "packages"
+      }
+    ],
+    "hashes": {
+      ".json": "487b4583e93356416c515c002c18496805f5d6b864f47394b6400563b5d9dbd5",
+      ".symbols.json": "3f98eb0441ce0b9f8190f956e78c1e5a1894759767232e0731ba569e1a141392"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "vue",
+    "commit": "4ab865a848a1da3d10fb674f857e5fff13094644",
+    "case": "unchanged",
+    "wall_s": 0.4313176299999668,
+    "stages": [
+      {
+        "done": 239,
+        "duration_s": 0.043683567,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.012521815,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.10518243,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.002464955,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.005455723,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.000437437,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.13377972,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 210565,
+        "duration_s": 0.000771141,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.021958787,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 9.798e-06,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 420790,
+        "duration_s": 0.002490373,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "ts",
+        "parsed": 0,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "e52837c151254e608f6cf21cff1929a04553e2602f959e817ba5a59c8ef70790",
+        "reasons": [],
+        "reused": 239,
+        "source": "packages"
+      }
+    ],
+    "hashes": {
+      ".json": "487b4583e93356416c515c002c18496805f5d6b864f47394b6400563b5d9dbd5",
+      ".symbols.json": "3f98eb0441ce0b9f8190f956e78c1e5a1894759767232e0731ba569e1a141392"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "vue",
+    "commit": "4ab865a848a1da3d10fb674f857e5fff13094644",
+    "case": "small-edit",
+    "wall_s": 0.4623663279999164,
+    "stages": [
+      {
+        "done": 239,
+        "duration_s": 0.050303554,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.012802299,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.136667717,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.001767201,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.005436868,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.000462294,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.131610497,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 210568,
+        "duration_s": 0.000767754,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.02171949,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 9.789e-06,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 420790,
+        "duration_s": 0.002511633,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "ts",
+        "parsed": 1,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "e52837c151254e608f6cf21cff1929a04553e2602f959e817ba5a59c8ef70790",
+        "reasons": [
+          "content_changed"
+        ],
+        "reused": 238,
+        "source": "packages"
+      }
+    ],
+    "hashes": {
+      ".json": "cda541d36185c2df3fc41739dc0e23896c552b32012c2862ad509d73c4744aed",
+      ".symbols.json": "3f98eb0441ce0b9f8190f956e78c1e5a1894759767232e0731ba569e1a141392"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  },
+  {
+    "repository": "vue",
+    "commit": "4ab865a848a1da3d10fb674f857e5fff13094644",
+    "case": "small-edit-full",
+    "wall_s": 0.9423092099999621,
+    "stages": [
+      {
+        "done": 239,
+        "duration_s": 0.576404245,
+        "stage": "parse",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.013233395,
+        "stage": "resolve",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 4000,
+        "duration_s": 0.090275789,
+        "stage": "history",
+        "success": true,
+        "unit": "commits"
+      },
+      {
+        "done": 1,
+        "duration_s": 0.001797228,
+        "stage": "blend_prune",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 0,
+        "duration_s": 0.005390191,
+        "stage": "partition",
+        "success": true,
+        "unit": "steps"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.000430114,
+        "stage": "naming",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 7,
+        "duration_s": 0.132368422,
+        "stage": "regions",
+        "success": true,
+        "unit": "districts"
+      },
+      {
+        "done": 210568,
+        "duration_s": 0.000852683,
+        "stage": "write_map",
+        "success": true,
+        "unit": "bytes"
+      },
+      {
+        "done": 239,
+        "duration_s": 0.021643809,
+        "stage": "symbols",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 239,
+        "duration_s": 5.23e-06,
+        "stage": "symbol_cards",
+        "success": true,
+        "unit": "files"
+      },
+      {
+        "done": 420790,
+        "duration_s": 0.002550475,
+        "stage": "write",
+        "success": true,
+        "unit": "bytes"
+      }
+    ],
+    "reuse": [
+      {
+        "downstream": "recompute_all",
+        "history": "recompute_at_requested_revision_4000_commit_window",
+        "language": "ts",
+        "parsed": 239,
+        "prior": "explicit_naming_and_membership_inputs",
+        "provenance": "ff6d6dbbb627d8e59db975d4d44c081c0cb1e34f0a34c61e8d68e436f913355e",
+        "reasons": [
+          "cache_disabled"
+        ],
+        "reused": 0,
+        "source": "packages"
+      }
+    ],
+    "hashes": {
+      ".json": "cda541d36185c2df3fc41739dc0e23896c552b32012c2862ad509d73c4744aed",
+      ".symbols.json": "3f98eb0441ce0b9f8190f956e78c1e5a1894759767232e0731ba569e1a141392"
+    },
+    "seed": 7,
+    "naming": "empty idf cache",
+    "prior": null
+  }
+]

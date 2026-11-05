@@ -154,14 +154,23 @@ pub struct ProgressValue {
 
 #[derive(Clone)]
 pub struct Progress {
+    pub(crate) cache: Option<crate::incremental::Cache>,
+    observations: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     emit: Arc<dyn Fn(crate::worker::WorkerEvent) + Send + Sync>,
 }
 
 impl Progress {
     pub fn new(emit: impl Fn(crate::worker::WorkerEvent) + Send + Sync + 'static) -> Self {
         Self {
+            cache: None,
+            observations: Arc::new(std::sync::Mutex::new(Vec::new())),
             emit: Arc::new(emit),
         }
+    }
+
+    pub fn with_cache(mut self, cache: crate::incremental::Cache) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     pub fn silent() -> Self {
@@ -183,7 +192,18 @@ impl Progress {
         counter
     }
 
+    pub fn observations(&self) -> Vec<serde_json::Value> {
+        self.observations.lock().unwrap().clone()
+    }
+
     pub fn log(&self, message: impl Into<String>) {
+        let message = message.into();
+        if let Some(value) = message
+            .strip_prefix("index_reuse ")
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        {
+            self.observations.lock().unwrap().push(value);
+        }
         (self.emit)(crate::worker::WorkerEvent::Log {
             v: 1,
             message: message.into(),
@@ -253,6 +273,13 @@ impl StageCounter {
     pub fn finish(mut self) {
         self.emit_progress();
         self.finished = true;
+        self.progress.log(format!(
+            "index_timing {}",
+            serde_json::json!({
+                "stage": self.id, "duration_s": self.started.elapsed().as_secs_f64(),
+                "done": self.done.load(Ordering::Relaxed), "unit": self.id.unit(), "success": true
+            })
+        ));
         (self.progress.emit)(crate::worker::WorkerEvent::StageFinished {
             v: 1,
             stage: self.id,
