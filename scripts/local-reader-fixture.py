@@ -237,12 +237,12 @@ try:
     assert get(base+'/provenance')['commit']==a and b.encode() in req('/')[1]
 finally:a_offline.rename(a_git)
 assert get(base+'/source?path=shop/cart.py')['text']==original['text']
-snapshot_dir=root/'store/snapshots'/sid;snapshot_off=root/'store/snapshots'/(sid+'.offline');snapshot_dir.rename(snapshot_off)
+snapshot_dir=root/'store/snapshots'/sid;snapshot_off=root/'store'/('offline-'+sid);snapshot_dir.rename(snapshot_off)
 try:
     for suffix in ('/source?path=shop/cart.py','/provenance','/freshness','/artifact','/symbols?district=0'):
         code,body,_=req(base+suffix);assert code==400,(suffix,code,body[:200]);assert_unavailable(code,body)
     assert req('/api/maps/snapshot/'+'0'*8+'-0000-0000-0000-'+'0'*12+'/source?path=shop/cart.py')[0]==400
-    assert get(bbase+'/provenance')['commit']==b and a.encode() not in req('/')[1],'removed snapshot is still listed'
+    assert get(bbase+'/provenance')['commit']==b and b'/snapshot/'+sid.encode() not in req('/')[1],'removed snapshot is still listed'
 finally:snapshot_off.rename(snapshot_dir)
 store_off=root/'store.removed';(root/'store').rename(store_off)
 try:
