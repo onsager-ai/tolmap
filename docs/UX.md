@@ -460,6 +460,11 @@ structure, with no source text; treat them as private. A localhost link reaches
 only the same computer. A map export alone cannot retrieve source. Hub is an
 optional, separately explicit connection/audience choice; local analysis requires
 no login or upload and does not transition to Hub automatically.
+The native page states these reach limits in visible text: processing and
+storage stay on this computer; the page opens only the started checkout, and a
+browser or hosted tolmap URL cannot open a folder on the visitor's computer;
+nothing is sent to Hub from it; localhost links work only on this computer;
+exports carry structure and symbol names but no source and are private.
 
 | State | Recovery and retained context |
 | --- | --- |
@@ -483,7 +488,16 @@ attempt keeps the prepared scope available for retry. The production browser
 journey in `web/scripts/check-source-reader.mjs` drives the native pages through
 detect → confirm → index → map → file search → read, then separately checks
 history navigation and browser Back. This is fixture evidence for local mode,
-not hosted custody or physical Safari acceptance.
+not hosted custody or physical Safari acceptance. The same fixture also moves
+the checkout, then hides one snapshot's private objects, its snapshot directory
+and the whole store in turn: each answers with an actionable message that keeps
+the saved-snapshot list and never returns another commit's or snapshot's source;
+it asserts the #233 `failed` and `stale` freshness states, an exact key allowlist
+for the export and symbols responses, and no host path or source text in the
+provenance and symbols responses. The browser check asserts the visible
+disclosure text above and the private export link on every viewport. A hosted
+`repo` naming a bare path or `file://` URL is rejected by
+`tests/hosted_repo_requests.rs`.
 | Long line / grammar load failure | Readable plain text, selection/copy/search remain; grammar failure does not block source retrieval. |
 | Search miss | **No results** leaves source and range intact; change query or close Find, then return to map. |
 
