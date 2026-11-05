@@ -439,6 +439,32 @@ start reads the previous commit's district membership out of exactly this
 row, so a policy that could evict it would silently degrade the highest-
 leverage property the store has (see `service::store::Store::prune`).
 
+## Commit comparisons and source
+
+`GET /api/compare/{owner}/{repo}?base=<full-sha>&head=<full-sha>` returns the
+Rust-defined `Comparison` envelope. Optional `max_districts`, `max_dq` and
+`report_only` have the exact [check semantics](CHECK.md#comparison-resource-224).
+The public adapter uses retained clones and a stored base map; unavailable
+objects return 404 `comparison_unavailable`, invalid inputs 400
+`comparison_input`, internal check failures 500 `comparison_internal`, unsupported
+versions 409 `comparison_version`. Responses use `Cache-Control: no-store`.
+
+`GET /api/maps/{owner}/{repo}/provenance?commit=<full-sha>` returns source v1,
+repository identity and the verified commit. The sibling `/source` also requires
+`path=<relative-path>` and returns the existing inert source contract, including
+missing/expired/binary/large/unsupported states. Neither route falls back to a
+moving ref or a working tree. Clone eviction can make source unavailable even
+when a derived map remains retained.
+
+Standalone public and loopback-local use have no Hub dependency. Protected
+embedding adapters call `comparison::protected` with trusted #222 policy context
+for the source repository, before any cache hit and again before delivery. The
+public router is not a private hosting authorization adapter and accepts no
+principal headers or credentials. Local routes retain their existing loopback,
+same-origin and private-storage boundaries; `/api/compare/snapshot/{base-id}`
+requires retained base and head snapshots. Source routes on that base snapshot
+accept another explicitly retained commit to read the head without moving maps.
+
 ## Immutable source and local snapshot API (v1)
 
 `src/source.rs::read` returns `version`, stable `repository`, immutable
@@ -461,17 +487,21 @@ single-trust-domain routes. These handlers do not call `access::enforce`.
 | `GET /api/jobs/{job_id}` | `service::http::get_job` | Reads the in-memory or persisted job snapshot. |
 | `POST /api/jobs/{job_id}/cancel` | `service::http::post_cancel_job` | Resolves the job slug and invokes `jobs::cancel_job`. |
 | `GET /api/jobs/{job_id}/events` | `service::http::get_job_events` | Opens a snapshot SSE stream. There is no per-event policy hook or live revoke monitor. |
+| `GET /api/compare/{owner}/{repo}` | `service::compare::compare` | Compares two full SHAs against a stored base map and retained clones; `Cache-Control: no-store`. |
+| `GET /api/maps/{owner}/{repo}/provenance` | `service::compare::provenance` | Source v1 identity for a verified full-SHA commit; no moving-ref fallback. |
+| `GET /api/maps/{owner}/{repo}/source` | `service::compare::read_source` | Inert source contract for `commit` + `path` from a retained clone. |
 | `GET /api/maps` | `service::http::get_maps` | Lists the public service catalogue through `Store::list_latest`. |
 | `GET /api/maps/{owner}/{repo}` | `service::http::get_map` | Uses `Store::get`/`Store::latest`; may return the active job's early map, then reads the stored map. |
 | `GET /api/maps/{owner}/{repo}/symbols` | `service::http::get_symbols` | Uses the stored map identity and reads a district symbol file. |
 | `GET /api/healthz` | `service::http::get_healthz` | Health/build identity. |
 
-There is no standalone hosted `/api/maps/{owner}/{repo}/provenance`, `/source`,
-artifact/download or comparison route in this router. Unmatched `/api/*` paths
+The comparison, provenance and source routes above are public and serve
+retained clones without principal headers or credentials; there is no standalone
+hosted artifact/download route in this router. Unmatched `/api/*` paths
 return JSON 404 rather than falling through to static files
-(`tests/static_serving.rs::static_dir_set_api_404_is_never_html`). The hosted
-React reader requires an embedding consumer that supplies and protects those
-handlers.
+(`tests/static_serving.rs::static_dir_set_api_404_is_never_html`). Protected
+hosted use of the reader still requires an embedding consumer that supplies and
+protects the source handlers.
 `Read`, `Source`, `Admit`, `Cancel`, `Events`, `Artifact` and `Publish` remain
 opt-in policy operations; no route-level isolation is implied. See
 [ACCESS.md](ACCESS.md) for handler-by-handler consumer duties.

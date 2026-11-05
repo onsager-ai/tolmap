@@ -351,3 +351,40 @@ The check has no incremental build (HANDOFF.md item 3). It extracts both sides a
 On django (851 files, co-change over its last 4000 commits), the example above took 5.8 s wall time with a 55 MB peak RSS, on a standard GitHub-hosted runner. The stages were base graph 1.8 s, base map 0.5 s and head graph 1.8 s; the rest was git and the two worktrees. Against the pinned commit's parent, the same run took 3.7 s.
 
 The calibration replay (finding 60) timed 600 single-commit checks on the same runners: the median was 5.8 s on django, 5.3 s on prometheus (444 files) and 1.5 s on vuejs/core (239 files), and no check took longer than 6.4 s.
+
+## Comparison resource (#224)
+
+`GET /api/compare/{owner}/{repo}?base=<full-sha>&head=<full-sha>` runs the
+same `check::run` library function as the command, using the stored base map.
+Both sides are immutable commit IDs; working trees and moving branch names are
+refused. `max_districts`, `max_dq` and `report_only=true` follow the flag rules
+above without changing `delta_q` or the report. The response is `Comparison`:
+an unchanged `CheckReport` v1 plus `ComparisonProvenance` (Rust schema and
+generated bindings). The local equivalent is `/api/compare/snapshot/{base-id}`;
+both commits must have retained local snapshots. No account or Hub is required.
+
+Provenance records repository, commits, report version, effective thresholds and
+source, base-map SHA-256 and source (`stored`), base files/districts, indexed
+changes, changed-but-unindexed files, tolmap/build version, resolution, prune,
+reference mode and SEED. Creation time is Unix seconds outside the deterministic
+report. The cache key additionally pins the exact base-map bytes and build
+revision. Atomic no-clobber publication retains the first envelope and repeated
+requests return identical bytes. A stored base map and retained Git objects are
+required; this resource never silently substitutes a newer map or cold layout.
+An expired source/map yields `comparison_unavailable`; input failures (check exit
+2) yield `comparison_input`, internal failures (exit 3) `comparison_internal`.
+An unknown persisted report version yields `comparison_version` and is refused.
+Threshold failure (exit 1) remains a successful HTTP report, not a server error.
+
+The comparison uses the base partition and base-held co-change exactly as the
+command does. `outside_graph` lists diff paths omitted by CheckReport; they are
+outside the indexed graph, not changes with proven zero impact. Unplaced files
+are indexed changes with no assigned base district. Neither is guessed onto the
+map. Every structural number remains a lower bound; a pass is no proof of safety,
+and a verdict is never an authorization decision.
+
+Fixture examples in `tests/check_cli.rs`: changing a constant inside one package
+can touch its district without adding imports; adding an import to another
+package changes cross-district edges; a README-only commit leaves measured Δq at
+zero while appearing outside the graph. These are synthetic fixture observations,
+not claims about every repository or dynamic dependency.

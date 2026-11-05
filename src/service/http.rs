@@ -35,6 +35,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/jobs/{job_id}/cancel", post(post_cancel_job))
         .route("/api/jobs/{job_id}/events", get(get_job_events))
+        .route("/api/compare/{owner}/{repo}", get(super::compare::compare))
+        .route(
+            "/api/maps/{owner}/{repo}/provenance",
+            get(super::compare::provenance),
+        )
+        .route(
+            "/api/maps/{owner}/{repo}/source",
+            get(super::compare::read_source),
+        )
         .route("/api/maps", get(get_maps))
         .route("/api/maps/{owner}/{repo}", get(get_map))
         .route("/api/maps/{owner}/{repo}/symbols", get(get_symbols))

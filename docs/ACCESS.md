@@ -14,6 +14,8 @@ stable repository and immutable revision. Domain must be part of private cache
 keys, including previous-map/naming inputs. No reusable positive decision cache
 is provided. Revocation is checked on each call; stream adapters own a documented
 poll bound and must close on denial. Already-delivered bytes cannot be recalled.
+The protected comparison wrapper authorizes both commits as `Read`, regardless
+of the operation supplied by its caller.
 
 This is an opt-in library boundary, not authentication middleware. Standalone
 `tolmap serve` remains one trust domain. Its public catalogue/cache and loopback-
@@ -37,9 +39,9 @@ does not accept a `Policy` and none of these handlers calls `access::enforce`.
 | Public catalogue | `GET /api/maps` → `service::http::get_maps` | Lists latest public entries. This is not a private catalogue and has no tenant filter. |
 | Map / early map | `GET /api/maps/{owner}/{repo}` → `service::http::get_map` | Calls `Store::get`/`Store::latest`, may return the active job's early map, then reads the stored map. No `Read` hook; a protected adapter must check before every lookup and delivery. |
 | Symbols | `GET /api/maps/{owner}/{repo}/symbols` → `service::http::get_symbols` | Looks up a map and reads a district symbol file. No `Read` hook; consumer responsibility / contract-only (Hub evidence: tolmap-hub PR13). |
-| Hosted source / provenance | No route in `service::http::router` | `source::read` is a library function, not a hosted route. Unmatched `/api/*` paths return JSON 404 (`tests/static_serving.rs::static_dir_set_api_404_is_never_html`); no arbitrary path reaches a file handler. There is no standalone hosted source/provenance handler or `Source` hook. Consumer responsibility / contract-only (Hub evidence: tolmap-hub PR13). |
+| Hosted source / provenance | `service::compare::provenance`, `service::compare::read_source` in `service::http::router` | Public standalone routes read only a full-SHA commit from a retained clone, with no principal headers or credentials and no moving-ref fallback; they are not a protected private-hosting adapter and call no `Source` hook. Unmatched `/api/*` paths return JSON 404 (`tests/static_serving.rs::static_dir_set_api_404_is_never_html`). Protected embedding consumers must supply their own gate (Hub evidence: tolmap-hub PR13). |
 | Artifact / download | No standalone hosted artifact route | `local::dispatch` serves `/api/maps/snapshot/{id}/artifact` as a map-only local export. There is no hosted `Artifact` hook or storage adapter. Consumer responsibility / contract-only (Hub evidence: tolmap-hub PR13). |
-| Comparison | No comparison route or HTTP handler in `service::http::router` | `Read`, `Artifact` and `Publish` are contract operations for a future/embedding comparison flow. Consumer responsibility / contract-only (Hub evidence: tolmap-hub PR13). |
+| Comparison | `service::compare::compare` in `service::http::router`; `comparison::protected` for embedding | The public route is a no-credential standalone adapter over retained clones and a stored base map. Protected embedding adapters call `comparison::protected` with trusted #222 policy context, which authorizes both commits as `Read` before any cache hit and before delivery. `Artifact` and `Publish` remain contract operations (Hub evidence: tolmap-hub PR13). |
 | Local snapshot map/source/symbols | `local::handle` → `local::dispatch` in `src/local.rs` | `/api/maps/snapshot/{id}`, `/provenance`, `/source`, `/symbols?district=…`, and `/artifact` resolve through a saved local snapshot. This is the owner-local single-user service, not a protected tenant route. Source paths are Git-relative and bounded by `source::read`; the request cannot name an arbitrary host file. |
 | Result publication | No HTTP route; library boundary is `service::worker_result::adopt` | Embedders check `Publish` before atomic adoption. The standalone service does not call the opt-in policy. |
 

@@ -292,10 +292,13 @@ pub struct SymbolsDocument {
     /// absolute first point, then deltas, all in 1e-11 world units. Exterior
     /// and hole rings use even-odd fill when a card surrounds a sibling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "Array<Array<Array<number>> | null> | null")]
     pub symbol_rings: Option<Vec<Option<Vec<Vec<i64>>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ [key in number]: Array<Array<number>> } | null")]
     pub module_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ [key in number]: Array<Array<number>> } | null")]
     pub header_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
 }
 
@@ -313,10 +316,13 @@ pub struct DistrictSymbols {
     pub kinds: Vec<String>,
     pub module_code_lines: BTreeMap<usize, usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "Array<Array<Array<number>> | null> | null")]
     pub symbol_rings: Option<Vec<Option<Vec<Vec<i64>>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ [key in number]: Array<Array<number>> } | null")]
     pub module_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ [key in number]: Array<Array<number>> } | null")]
     pub header_rings: Option<BTreeMap<usize, Vec<Vec<i64>>>>,
 }
 
@@ -899,4 +905,34 @@ mod tests {
             2
         );
     }
+}
+
+// Comparison envelope adds provenance without changing CheckReport v1.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct Comparison {
+    pub id: String,
+    pub report: CheckReport,
+    pub provenance: ComparisonProvenance,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct ComparisonProvenance {
+    pub repository: String,
+    pub base: String,
+    pub head: String,
+    pub report_version: u32,
+    pub thresholds: CheckThresholds,
+    pub base_map_source: String,
+    pub base_map_sha256: String,
+    pub base_files: usize,
+    pub base_districts: usize,
+    pub indexed_changes: usize,
+    pub outside_graph: Vec<CheckFile>,
+    pub tolmap_version: String,
+    pub build_revision: String,
+    pub resolution: f64,
+    pub prune: String,
+    pub seed: u32,
+    pub refs: String,
+    pub created_at: String,
 }
