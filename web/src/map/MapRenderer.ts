@@ -192,6 +192,8 @@ function hollowTriangleGlyph(parent: [number, number], child: [number, number], 
 }
 
 export interface MapRenderState {
+  impactFiles?: readonly string[];
+  impactDistricts?: readonly number[];
   doc: MapDocument;
   geo: Geo;
   layer: Layer;
@@ -2133,6 +2135,24 @@ export class MapRenderer {
     // paint that already happened.
     if (this.HOVER && this.hoverKey) this.reapplyHover();
     this.applyOverviewDistrictHighlight();
+    // Comparison outlines only decorate geometry that passed the existing
+    // visibility gates. Pointer targets and symbol budgets remain untouched.
+    if (state.impactFiles?.length || state.impactDistricts?.length) {
+      const paths = new Set(state.impactFiles);
+      const districts = new Set(state.impactDistricts);
+      const outlines = el("g", { "pointer-events": "none", "data-comparison-outlines": "" });
+      for (const node of Array.from(g.querySelectorAll<SVGElement>("path[data-k],rect[data-k],circle[data-k]"))) {
+        const [kind, raw] = (node.getAttribute("data-k") ?? "").split(":");
+        if (!(kind === "f" && paths.has(doc.F[Number(raw)])) && !(kind === "d" && districts.has(Number(raw)))) continue;
+        const copy = node.cloneNode(false) as SVGElement;
+        copy.removeAttribute("data-k"); copy.removeAttribute("class");
+        copy.setAttribute("fill", "none"); copy.setAttribute("stroke", "var(--accent)");
+        copy.setAttribute("stroke-width", "2"); copy.setAttribute("stroke-dasharray", kind === "d" ? "6 4" : "none");
+        copy.setAttribute("pointer-events", "none"); copy.setAttribute("data-impact", kind);
+        outlines.appendChild(copy);
+      }
+      g.appendChild(outlines);
+    }
   }
 
   /** Even-odd point-in-polygon over a district's blob polygons, in world

@@ -1,12 +1,70 @@
 import { useEffect, useRef, useState } from "react";
-import { EditorState, Compartment } from "@codemirror/state";
+import { EditorSelection, EditorState, Compartment, type SelectionRange } from "@codemirror/state";
 import { EditorView, lineNumbers, keymap, highlightSpecialChars, drawSelection } from "@codemirror/view";
-import { defaultHighlightStyle, syntaxHighlighting, LanguageDescription } from "@codemirror/language";
+import { HighlightStyle, syntaxHighlighting, LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
-import { search, searchKeymap, openSearchPanel, getSearchQuery, setSearchQuery } from "@codemirror/search";
+import { tags } from "@lezer/highlight";
+import { search, searchKeymap, openSearchPanel, closeSearchPanel, highlightSelectionMatches, getSearchQuery, setSearchQuery } from "@codemirror/search";
 import { useEffectiveTheme } from "@/lib/theme";
 import { API_BASE } from "@/api/client";
+import { useVisualViewportBox } from "@/hooks/useVisualViewportBox";
 import "./reader.css";
+
+// Keep grammar tags while using a palette designed for both the editor surface
+// and the deeper selection tint. The browser CI checks every rendered token
+// against both backgrounds in light and dark themes.
+const readerHighlightStyle = HighlightStyle.define([
+  { tag: tags.keyword, color: "var(--reader-syntax-keyword)", fontWeight: "600" },
+  { tag: tags.string, color: "var(--reader-syntax-string)" },
+  { tag: tags.comment, color: "var(--reader-syntax-comment)", fontStyle: "italic" },
+  { tag: tags.number, color: "var(--reader-syntax-number)" },
+  { tag: tags.typeName, color: "var(--reader-syntax-type)" },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: "var(--reader-syntax-function)" },
+  { tag: [tags.definition(tags.variableName), tags.definition(tags.propertyName), tags.definition(tags.typeName)], fontWeight: "600" },
+  { tag: tags.variableName, color: "var(--reader-syntax-variable)" },
+  { tag: tags.operator, color: "var(--reader-syntax-operator)" },
+  { tag: tags.meta, color: "var(--reader-syntax-meta)" },
+  { tag: tags.invalid, color: "var(--reader-syntax-invalid)", textDecoration: "underline" },
+]);
+
+type ReaderMotion = (view: EditorView, range: SelectionRange) => SelectionRange;
+
+function moveReadOnlySelection(view: EditorView, motion: ReaderMotion, extend: boolean) {
+  const current = view.state.selection;
+  const ranges = current.ranges.map(range => {
+    const moved = motion(view, range);
+    return extend ? EditorSelection.range(range.anchor, moved.head, moved.goalColumn) : moved;
+  });
+  const selection = EditorSelection.create(ranges, current.mainIndex);
+  view.dispatch({ selection, effects: EditorView.scrollIntoView(selection.main.head) });
+  return true;
+}
+
+function readerMovement(key: string, motion: ReaderMotion, collapseForward?: boolean) {
+  return {
+    key,
+    run: (view: EditorView) => moveReadOnlySelection(view, (currentView, range) =>
+      !range.empty && collapseForward !== undefined
+        ? EditorSelection.cursor(collapseForward ? range.to : range.from)
+        : motion(currentView, range), false),
+    shift: (view: EditorView) => moveReadOnlySelection(view, motion, true),
+  };
+}
+
+const readOnlyNavigationKeymap = [
+  readerMovement("ArrowLeft", (view, range) => view.moveByChar(range, false), false),
+  readerMovement("ArrowRight", (view, range) => view.moveByChar(range, true), true),
+  readerMovement("ArrowUp", (view, range) => view.moveVertically(range, false)),
+  readerMovement("ArrowDown", (view, range) => view.moveVertically(range, true)),
+  readerMovement("Mod-ArrowLeft", (view, range) => view.moveByGroup(range, false), false),
+  readerMovement("Mod-ArrowRight", (view, range) => view.moveByGroup(range, true), true),
+  readerMovement("Home", (view, range) => view.moveToLineBoundary(range, false)),
+  readerMovement("End", (view, range) => view.moveToLineBoundary(range, true)),
+  readerMovement("Mod-Home", _view => EditorSelection.cursor(0)),
+  readerMovement("Mod-End", view => EditorSelection.cursor(view.state.doc.length)),
+  readerMovement("PageUp", (view, range) => view.moveVertically(range, false, view.scrollDOM.clientHeight)),
+  readerMovement("PageDown", (view, range) => view.moveVertically(range, true, view.scrollDOM.clientHeight)),
+];
 
 export interface Provenance { version: number; repository: string; commit: string }
 interface Source extends Provenance { path: string; status: string; text: string | null; bytes: number; long_line: boolean }
@@ -26,11 +84,13 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView | null>(null);
   const close = useRef<HTMLButtonElement>(null);
+  const find = useRef<HTMLButtonElement>(null);
   const [source, setSource] = useState<Source | null>(null);
   const [failure, setFailure] = useState(false);
   const [retry, setRetry] = useState(0);
   const [grammar, setGrammar] = useState("Plain text");
   const theme = useEffectiveTheme();
+  const viewport = useVisualViewportBox(modal);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     close.current?.focus({ preventScroll: true });
@@ -69,15 +129,15 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
       // its selection first. Make the committed line range available to copy
       // immediately, including keyboard focus after a deep-link reload.
       EditorView.domEventHandlers({ focus: (_event, focused) => { focused.focus(); return false; } }),
-      lineNumbers(), highlightSpecialChars(), drawSelection(), search({ top: true }), keymap.of([...searchKeymap, { key: "Mod-a", run: v => { v.dispatch({ selection: { anchor: 0, head: v.state.doc.length } }); return true; } }]),
+      lineNumbers(), highlightSpecialChars(), drawSelection(), search({ top: true }), highlightSelectionMatches(), keymap.of([...searchKeymap, ...readOnlyNavigationKeymap, { key: "Mod-a", run: v => { v.dispatch({ selection: { anchor: 0, head: v.state.doc.length } }); return true; } }]),
       EditorView.updateListener.of(update => {
         if (update.transactions.some(t => t.effects.some(e => e.is(setSearchQuery)))) {
           const q = getSearchQuery(update.state);
           setSearchStatus(!q.valid ? "Enter text to search" : q.getCursor(update.state).next().done ? "No results" : "Matches found");
         }
       }),
-      syntaxHighlighting(defaultHighlightStyle), language.of([]),
-      EditorView.theme({ "&": { height: "100%", color: "var(--on)", backgroundColor: "var(--chrome2)" }, ".cm-scroller": { overflow: "auto", fontFamily: '"IBM Plex Mono", monospace', overscrollBehavior: "contain" }, ".cm-gutters": { backgroundColor: "var(--chrome)", color: "var(--dim)", borderColor: "var(--rule)" }, ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--on)" }, "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "var(--chrome-key)" } }, { dark: theme === "dark" }),
+      syntaxHighlighting(readerHighlightStyle), language.of([]),
+      EditorView.theme({ "&": { height: "100%", color: "var(--on)", backgroundColor: "var(--chrome2)" }, ".cm-scroller": { overflow: "auto", fontFamily: '"IBM Plex Mono", monospace', overscrollBehavior: "contain" }, ".cm-gutters": { backgroundColor: "var(--chrome)", color: "var(--dim)", borderColor: "var(--rule)" }, ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--on)" }, "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "var(--reader-selection-bg)" } }, { dark: theme === "dark" }),
     ] }) });
     editor.current = view;
     const first = Math.max(1, Math.min(view.state.doc.lines, start));
@@ -88,7 +148,15 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
     if (description && !source.long_line) void description.load().then(support => { if (!disposed) view.dispatch({ effects: language.reconfigure(support) }); }).catch(() => { if (!disposed) setGrammar("Plain text · highlighting unavailable"); });
     return () => { disposed = true; editor.current = null; view.destroy(); };
   }, [source, path, start, end, theme]);
-  return <section ref={region} className="source-reader" data-source-reader role={modal ? "dialog" : "region"} aria-modal={modal || undefined} aria-label="Source reader" onKeyDown={e => {
+  return <section ref={region} style={modal && viewport ? { position: "fixed", top: viewport.top, height: viewport.height, bottom: "auto" } : undefined} className="source-reader" data-source-reader role={modal ? "dialog" : "region"} aria-modal={modal || undefined} aria-label="Source reader" onKeyDownCapture={e => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (region.current?.querySelector(".cm-search")) {
+      if (editor.current) closeSearchPanel(editor.current);
+      find.current?.focus({ preventScroll: true });
+    } else onClose();
+  }} onKeyDown={e => {
     e.stopPropagation();
     if (e.defaultPrevented) return;
     if (modal && e.key === "Tab") {
@@ -97,8 +165,8 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
     }
- if (e.key === "Escape" && !host.current?.querySelector(".cm-search")) { e.preventDefault(); onClose(); } }}>
-    <header><button ref={close} onClick={onClose}>Return to map</button><strong>{path}</strong><button onClick={() => { if (editor.current) openSearchPanel(editor.current); }} disabled={source?.status !== "ready"}>Find in file</button></header>
+  }}>
+    <header><button ref={close} onClick={onClose}>Return to map</button><strong>{path}</strong><button ref={find} onClick={() => { if (editor.current) openSearchPanel(editor.current); }} disabled={source?.status !== "ready"}>Find in file</button></header>
     <p className="source-provenance">{source ? `${source.repository} · ${source.commit}` : "Snapshot source"} · Read only</p>
     {!source && !failure && <p role="status">Loading committed source…</p>}
     {failure && <div role="alert"><p>Source unavailable. Check access or restore this snapshot. No current-branch fallback was used.</p><button onClick={() => setRetry(n => n + 1)}>Retry source</button></div>}

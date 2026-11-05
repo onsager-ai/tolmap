@@ -12,7 +12,7 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 source_dir="$work/corresponding-source"
 mkdir -p "$source_dir/tolmap" "$source_dir/native-archives" "$source_dir/ubuntu" "$source_dir/web-packages"
-git -C "$repo" archive "$sha" Cargo.toml Cargo.lock build.rs native src web scripts npm LICENSE README.md .github/workflows | tar -x -C "$source_dir/tolmap"
+git -C "$repo" archive "$sha" Cargo.toml Cargo.lock build.rs native src web scripts npm vendor LICENSE README.md .github/workflows | tar -x -C "$source_dir/tolmap"
 cp -a "${TOLMAP_NATIVE_SOURCE_DIR:?native archives required}"/. "$source_dir/native-archives/"
 # All crates, with their original license/copyright files and cargo checksums.
 (cd "$repo" && cargo vendor --locked "$source_dir/vendor") > "$source_dir/CARGO-CONFIG.toml"

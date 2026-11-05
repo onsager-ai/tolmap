@@ -7,6 +7,13 @@ import type { Geo, Layer } from "@/map/constants";
  * order; `sym` and `d` are indices because they are meaningless without the
  * `file` (or the district set) they index into. */
 export interface MapSearch {
+  compare?: boolean;
+  base?: string;
+  head?: string;
+  source_commit?: string;
+  max_districts?: number;
+  max_dq?: number;
+  report_only?: boolean;
   file?: string;
   sym?: number;
   /** Issue #82 C2: a GLOBAL hierarchical-symbol index into the district
@@ -66,7 +73,14 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const read = !!file && (search.read === true || search.read === "true");
   const line = Math.floor(Math.max(1, Math.min(10_000_000, Number(search.line) || 1)));
   const end = Math.floor(Math.max(line, Math.min(10_000_000, Number(search.end) || line)));
-  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, read, line, end };
+  const sha = (x: unknown) => typeof x === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(x) ? x : undefined;
+  const base = sha(search.base), head = sha(search.head), source_commit = sha(search.source_commit);
+  const compare = search.compare === true || search.compare === "true" || (!!base && !!head);
+  const md = Number(search.max_districts), mq = Number(search.max_dq);
+  const max_districts = search.max_districts != null && Number.isSafeInteger(md) && md >= 0 ? md : undefined;
+  const max_dq = search.max_dq != null && Number.isFinite(mq) && mq >= 0 ? mq : undefined;
+  const report_only = search.report_only === true || search.report_only === "true";
+  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, read, line, end, compare: compare || undefined, base, head, source_commit, max_districts, max_dq, report_only };
 }
 
 /** Search state for the /new progress route (see routes/IndexJobView.tsx).

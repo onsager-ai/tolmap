@@ -146,3 +146,15 @@ The MVP is the site, so the order below front-loads what the site needs and defe
 5. **Ship the site.** `<host>/<owner>/<repo>`, with reserved top-level names in place from the first route.
 
 Then, in whatever order demand dictates: incremental indexing, `tolmap check` for CI, the committed-layout mode, SCIP-precise references, private repos.
+
+## Persisted comparisons
+
+`comparison` wraps the existing check library with immutable provenance and
+atomic no-clobber storage. The service's public adapter and the local snapshot
+adapter supply trusted repository/map paths; protected embeddings enforce the
+same generic resource policy used for source access. Comparison cache identities
+include both commits, effective thresholds, implementation revision and exact
+base-map bytes. React owns comparison URL state and lists; the imperative
+renderer decorates existing visible geometry. The base map remains the frame
+while commit-specific source is read. No incremental pipeline or partitioning
+algorithm changes are involved. See [CHECK.md](CHECK.md#comparison-resource-224).

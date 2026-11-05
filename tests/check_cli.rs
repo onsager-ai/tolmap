@@ -722,3 +722,360 @@ fn the_check_leaves_no_worktree_behind() {
     );
     assert_eq!(git(&repo, &["status", "--porcelain"]), "");
 }
+
+/// The real HTTP resource must remain a transparent wrapper around the CLI
+/// for all path/status classes. This fixture has no network or Hub dependency.
+#[tokio::test]
+async fn comparison_endpoint_matches_cli_and_persists_provenance() {
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use std::sync::Arc;
+    use tolmap::{
+        access, comparison,
+        schema::{CheckFileStatus, Comparison},
+        service::{
+            self,
+            config::ServeConfig,
+            ratelimit::RateLimiter,
+            store::{MapRow, Store},
+        },
+    };
+    use tower::ServiceExt;
+    let (dir, old_repo, _fixture_base) = fixture();
+    let cache = dir.path().join("cache");
+    let repo = cache.join("repos/fixture/town");
+    std::fs::create_dir_all(repo.parent().unwrap()).unwrap();
+    std::fs::rename(old_repo, &repo).unwrap();
+    write(&repo, "README.md", "Documentation baseline\n");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-qm", "add unindexed documentation"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    let out = cache.join("maps/fixture/town");
+    let built = Command::new(TOLMAP)
+        .args(["build"])
+        .arg(&repo)
+        .args(["--name", &base, "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let map = out.join(format!("{base}.json"));
+    let mut config = ServeConfig::from_env();
+    config.cache_dir = cache.clone();
+    config.static_dir = None;
+    config.db_path = dir.path().join("compare.sqlite3");
+    let store = Store::open(&config.db_path).unwrap();
+    store
+        .insert(&MapRow {
+            slug: "fixture/town".into(),
+            owner: "fixture".into(),
+            repo: "town".into(),
+            commit: base.clone(),
+            branch: None,
+            lang: "py".into(),
+            files: 18,
+            districts: 3,
+            modularity: 0.0,
+            map_path: map.clone(),
+            indexed_at: "2026-10-25".into(),
+        })
+        .unwrap();
+    let state = Arc::new(service::AppState {
+        store,
+        config,
+        jobs: service::jobs::new_registry(),
+        rate_limiter: RateLimiter::new(),
+    });
+    let app = service::http::router(state);
+    let comparison_cache = cache.join("comparisons");
+    for case in [
+        "inside",
+        "cross-import",
+        "rename",
+        "delete",
+        "unplaced",
+        "outside",
+        "outside-rename",
+        "outside-delete",
+    ] {
+        git(&repo, &["reset", "--hard", &base]);
+        git(&repo, &["clean", "-fd"]);
+        match case {
+            "inside" => touch(&repo, "billing", 0),
+            "cross-import" => {
+                let p = "town/billing/invoice.py";
+                let text = std::fs::read_to_string(repo.join(p)).unwrap();
+                write(
+                    &repo,
+                    p,
+                    &format!("from town.people.account import Account\n{text}"),
+                );
+            }
+            "rename" => {
+                git(
+                    &repo,
+                    &["mv", "town/billing/audit.py", "town/billing/review.py"],
+                );
+            }
+            "delete" => {
+                git(&repo, &["rm", "town/billing/audit.py"]);
+            }
+            "unplaced" => write(&repo, "town/alone.py", "ISOLATED_CONSTANT = 10\n"),
+            "outside" => write(&repo, "README.md", "Documentation only\n"),
+            "outside-rename" => {
+                git(&repo, &["mv", "README.md", "README-renamed.md"]);
+            }
+            "outside-delete" => {
+                git(&repo, &["rm", "README.md"]);
+            }
+            _ => unreachable!(),
+        }
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", case]);
+        let head = git(&repo, &["rev-parse", "HEAD"]);
+        let direct = check(
+            &repo,
+            &[
+                "--base",
+                &base,
+                "--head",
+                &head,
+                "--base-map",
+                &map.to_string_lossy(),
+                "--format",
+                "json",
+            ],
+        );
+        assert!(matches!(direct.code, 0 | 1), "{}", direct.stderr);
+        let uri = format!("/api/compare/fixture/town?base={base}&head={head}");
+        let get = || Request::builder().uri(&uri).body(Body::empty()).unwrap();
+        let response = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{case}");
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let c: Comparison = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            serde_json::to_value(&c.report).unwrap(),
+            direct.json(),
+            "{case}"
+        );
+        assert_eq!(c.provenance.base, base);
+        assert_eq!(c.provenance.head, head);
+        assert_eq!(
+            c.provenance.outside_graph.len(),
+            usize::from(case.starts_with("outside"))
+        );
+        match case {
+            "outside" => assert_eq!(
+                c.provenance.outside_graph[0].status,
+                CheckFileStatus::Modified
+            ),
+            "outside-rename" => {
+                let changed = &c.provenance.outside_graph[0];
+                assert_eq!(changed.status, CheckFileStatus::Renamed);
+                assert_eq!(changed.path, "README-renamed.md");
+                assert_eq!(changed.base_path.as_deref(), Some("README.md"));
+            }
+            "outside-delete" => {
+                let changed = &c.provenance.outside_graph[0];
+                assert_eq!(changed.status, CheckFileStatus::Deleted);
+                assert_eq!(changed.path, "README.md");
+                assert_eq!(changed.base_path, None);
+            }
+            _ => assert!(c.provenance.outside_graph.is_empty()),
+        }
+        assert_eq!(c.provenance.thresholds, c.report.thresholds);
+        let response = app.clone().oneshot(get()).await.unwrap();
+        let again = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        assert_eq!(bytes, again, "immutable envelope {case}");
+
+        struct Grant<'a> {
+            allowed: bool,
+            domain: &'a str,
+        }
+        impl access::Policy for Grant<'_> {
+            fn check(&self, request: access::Request<'_>) -> Result<(), access::Denied> {
+                if self.allowed
+                    && request.principal == "owner"
+                    && request.resource.repository == "fixture/town"
+                    && request.resource.access_domain == self.domain
+                    && request.operation == access::Operation::Read
+                {
+                    Ok(())
+                } else {
+                    Err(access::Denied)
+                }
+            }
+        }
+        let query = comparison::CompareQuery {
+            base: base.clone(),
+            head: head.clone(),
+            max_districts: None,
+            max_dq: None,
+            report_only: false,
+        };
+        let inputs = || comparison::Inputs {
+            repository: "fixture/town",
+            repo: &repo,
+            base_map: &map,
+            cache: &comparison_cache,
+        };
+        let request = access::Request {
+            principal: "owner",
+            operation: access::Operation::Read,
+            resource: access::Resource {
+                access_domain: "private",
+                repository: "fixture/town",
+                revision: Some(&base),
+            },
+        };
+        assert_eq!(
+            comparison::protected(
+                inputs(),
+                query.clone(),
+                &Grant {
+                    allowed: false,
+                    domain: "private",
+                },
+                request,
+            )
+            .unwrap_err()
+            .status,
+            StatusCode::FORBIDDEN
+        );
+        let private_a = comparison::protected(
+            inputs(),
+            query.clone(),
+            &Grant {
+                allowed: true,
+                domain: "private",
+            },
+            request,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&private_a.report).unwrap(),
+            serde_json::to_value(&c.report).unwrap()
+        );
+
+        let mut source_request = request;
+        source_request.operation = access::Operation::Source;
+        let forced_read = comparison::protected(
+            inputs(),
+            query.clone(),
+            &Grant {
+                allowed: true,
+                domain: "private",
+            },
+            source_request,
+        )
+        .unwrap();
+        assert_eq!(forced_read.id, private_a.id);
+
+        let request_b = access::Request {
+            resource: access::Resource {
+                access_domain: "other-private",
+                repository: "fixture/town",
+                revision: Some(&base),
+            },
+            ..request
+        };
+        assert_eq!(
+            comparison::protected(
+                inputs(),
+                query.clone(),
+                &Grant {
+                    allowed: true,
+                    domain: "private",
+                },
+                request_b,
+            )
+            .unwrap_err()
+            .status,
+            StatusCode::FORBIDDEN,
+            "policy must reject a foreign access domain"
+        );
+        let private_b = comparison::protected(
+            inputs(),
+            query.clone(),
+            &Grant {
+                allowed: true,
+                domain: "other-private",
+            },
+            request_b,
+        )
+        .unwrap();
+        assert_ne!(
+            private_a.id, private_b.id,
+            "domains have separate cache keys"
+        );
+        assert!(comparison_cache
+            .join(format!("{}.json", private_a.id))
+            .is_file());
+        assert!(comparison_cache
+            .join(format!("{}.json", private_b.id))
+            .is_file());
+        assert_eq!(
+            comparison::protected(
+                inputs(),
+                query.clone(),
+                &Grant {
+                    allowed: false,
+                    domain: "private",
+                },
+                request,
+            )
+            .unwrap_err()
+            .status,
+            StatusCode::FORBIDDEN,
+            "a revoked principal is denied even when the comparison is cached"
+        );
+        let mut invalid = query.clone();
+        invalid.report_only = true;
+        invalid.max_dq = Some(0.1);
+        assert_eq!(
+            comparison::run(inputs(), invalid).unwrap_err().body.error,
+            "comparison_input"
+        );
+        let saved = comparison_cache.join(format!("{}.json", c.id));
+        let mut unknown = c;
+        unknown.report.version = 99;
+        std::fs::write(&saved, serde_json::to_vec(&unknown).unwrap()).unwrap();
+        assert_eq!(
+            comparison::run(inputs(), query).unwrap_err().body.error,
+            "comparison_version"
+        );
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/compare/fixture/town?base=HEAD&head=HEAD")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        response.status(),
+        StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND
+    ));
+    let absent = "f".repeat(40);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/compare/fixture/town?base={base}&head={absent}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

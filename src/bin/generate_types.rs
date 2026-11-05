@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use tolmap::schema::{CheckReport, DistrictSymbols, MapDocument, SymbolsDocument};
+use tolmap::schema::{CheckReport, Comparison, DistrictSymbols, MapDocument, SymbolsDocument};
 use tolmap::service::http::HealthzResponse;
 use tolmap::service::jobs::JobSnapshot;
 use tolmap::worker::{WorkerEvent, WorkerSpec};
@@ -59,6 +59,7 @@ fn export_to(directory: &Path) -> Result<()> {
     // that gate on it (docs/CHECK.md).
     CheckReport::export_all(&Config::default().with_out_dir(directory))?;
     tolmap::schema::SnapshotFreshness::export_all(&Config::default().with_out_dir(directory))?;
+    Comparison::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 

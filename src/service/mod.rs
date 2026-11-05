@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod clone;
+pub mod compare;
 pub mod config;
 pub mod error;
 pub mod eta;
