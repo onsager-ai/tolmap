@@ -928,7 +928,8 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
-  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : sel != null ? <button ref={sourceActionRef} className="source-action" onClick={openSource}>Read selected source</button> : null;
+  const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : null;
+  const sourceAction = !search.read && sel != null ? <button ref={sourceActionRef} className={`source-action${narrow ? " source-action-sheet" : ""}`} onClick={openSource}>Read selected source</button> : null;
   const mapCanvas = (
     <MapCanvas
       doc={doc}
@@ -968,6 +969,7 @@ export function MapView() {
           mapLeft={landscape && sideOpen ? `${SIDE_SHEET_WIDTH_PX}px + env(safe-area-inset-left, 0px)` : undefined}
         />
         <PhoneChrome
+          sourceAction={sourceAction}
           doc={doc}
           packageLayout={packageLayout}
           packageGrouping={packageGrouping}
@@ -1121,6 +1123,7 @@ export function MapView() {
     >
       {mapCanvas}
       {sourceReader}
+      {!narrow && sourceAction}
       <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow={false} />
       <DesktopChrome
         catalogue={catalogue}

@@ -332,6 +332,73 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  scanner-probe:
+    name: Python scanner mechanism and differential AST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: scanner-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - run: cargo fetch --locked
+      - run: python3 scripts/scanner-probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-scanner-evidence
+          path: scanner-evidence/
+          if-no-files-found: error
+
+  extraction-profile:
+    name: bounded reader extraction profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-tolmap-binary
+          path: bin
+          # This successful build has the identical pre-repair extraction
+          # source. Pin it so profiling need not wait for the full test gate.
+          run-id: 40181067573
+          github-token: ${{ github.token }}
+      - run: chmod +x bin/tolmap
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: reader-profile-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - uses: actions/cache@v4
+        id: profile-leiden
+        with:
+          path: ${{ env.LEIDEN_PREFIX }}
+          key: leiden-${{ runner.os }}-${{ hashFiles('scripts/install-leiden.sh') }}
+      - name: Build native Leiden if cache unavailable
+        if: steps.profile-leiden.outputs.cache-hit != 'true'
+        run: bash scripts/install-leiden.sh "${{ env.LEIDEN_PREFIX }}"
+      - name: Install debugger
+        run: sudo apt-get update && sudo apt-get install -y gdb
+      - name: Build identical release profile with line symbols
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+        run: cargo build --locked --release --bin tolmap
+      - name: Profile unchanged reader fixtures (30-second probe bound)
+        run: python3 scripts/profile-reader-extraction.py bin/tolmap target/release/tolmap
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reader-extraction-profile
+          path: extraction-profile/
+          if-no-files-found: error
+
   reader:
     name: local snapshot + production CM6 journey
     needs: [gate, web]
@@ -355,15 +422,32 @@ jobs:
       - run: pnpm --dir web install --frozen-lockfile
       - run: pnpm --dir web exec vite build
       - run: pnpm --dir web exec playwright install --with-deps chromium
+      - name: Install syscall trace for local no-upload qualification
+        run: sudo apt-get update && sudo apt-get install -y strace
+      - name: Public dependency boundary
+        run: python3 scripts/check-public-boundary.py
       - name: Real local API, process and private export
-        run: TOLMAP_BINARY=bin/tolmap python3 scripts/local-reader-fixture.py
+        run: TOLMAP_TEST_NETWORK_TRACE="$PWD/.local-reader/network.log" TOLMAP_BINARY=bin/tolmap python3 scripts/local-reader-fixture.py
       - name: Production reader behavior and candidate captures
         run: cd web && node scripts/check-source-reader.mjs
+      - name: Measured large-file and long-line costs, 14 settled lifecycle cycles
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: cd web && node scripts/measure-source-reader.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reader-evidence
           path: reader-evidence/
+          if-no-files-found: warn
+      - name: Upload focused reader visual review candidates
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tolmap-reader-visual-review
+          path: |
+            reader-evidence/browser.json
+            reader-evidence/reader-find-*.png
           if-no-files-found: warn
 
   # Issue #110 P1a: `tolmap build --refs scip` must be as deterministic as
