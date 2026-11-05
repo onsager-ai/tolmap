@@ -137,7 +137,11 @@ export function SourceReader({ owner, repo, path, commit, start = 1, end = start
         }
       }),
       syntaxHighlighting(readerHighlightStyle), language.of([]),
-      EditorView.theme({ "&": { height: "100%", color: "var(--on)", backgroundColor: "var(--chrome2)" }, ".cm-scroller": { overflow: "auto", fontFamily: '"IBM Plex Mono", monospace', overscrollBehavior: "contain" }, ".cm-gutters": { backgroundColor: "var(--chrome)", color: "var(--dim)", borderColor: "var(--rule)" }, ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--on)" }, "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "var(--reader-selection-bg)" } }, { dark: theme === "dark" }),
+      // The focused selector must match CodeMirror's base dark rule in
+      // specificity (&dark.cm-focused > .cm-scroller > .cm-selectionLayer ...);
+      // the shorter "&.cm-focused .cm-selectionBackground" lost to its #233
+      // tint once the editor held focus, failing the reader contrast check.
+      EditorView.theme({ "&": { height: "100%", color: "var(--on)", backgroundColor: "var(--chrome2)" }, ".cm-scroller": { overflow: "auto", fontFamily: '"IBM Plex Mono", monospace', overscrollBehavior: "contain" }, ".cm-gutters": { backgroundColor: "var(--chrome)", color: "var(--dim)", borderColor: "var(--rule)" }, ".cm-panels": { backgroundColor: "var(--chrome)", color: "var(--on)" }, "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "var(--reader-selection-bg)" } }, { dark: theme === "dark" }),
     ] }) });
     editor.current = view;
     const first = Math.max(1, Math.min(view.state.doc.lines, start));
