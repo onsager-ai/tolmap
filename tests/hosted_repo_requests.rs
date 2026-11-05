@@ -56,9 +56,9 @@ async fn post_index(state: Arc<AppState>, body: &str) -> (StatusCode, String) {
         .body(Body::from(body.to_owned()))
         .unwrap();
     // The peer address `into_make_service_with_connect_info` supplies.
-    request
-        .extensions_mut()
-        .insert(ConnectInfo("203.0.113.9:4000".parse::<SocketAddr>().unwrap()));
+    request.extensions_mut().insert(ConnectInfo(
+        "203.0.113.9:4000".parse::<SocketAddr>().unwrap(),
+    ));
     let response = http::router(state).oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
