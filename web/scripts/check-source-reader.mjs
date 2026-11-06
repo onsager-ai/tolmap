@@ -148,6 +148,9 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  await page.addInitScript(()=>{window.readerInitialHistoryLength=history.length;window.readerHistory=[{kind:'load',url:location.href,state:history.state}];for(const kind of ['pushState','replaceState']){const original=history[kind].bind(history);history[kind]=(...args)=>{original(...args);window.readerHistory.push({kind,url:location.href,state:history.state});};}addEventListener('popstate',()=>window.readerHistory.push({kind:'pop',url:location.href,state:history.state}));});
  await page.goto(`${browserOrigin}/`);await page.getByRole('heading',{name:'Your local repository'}).waitFor();
  if(width===320&&colorScheme==='light'){
+  assert(await page.locator('h1 svg[fill="currentColor"]').count()===1,'local heading must show the approved mark');
+  for(const [selector,mime] of [['link[rel="icon"][type="image/x-icon"]','image/x-icon'],['link[rel="icon"][type="image/svg+xml"]','image/svg+xml'],['link[rel="apple-touch-icon"]','image/png']]){const href=await page.locator(selector).getAttribute('href');const response=await page.request.get(new URL(href,browserOrigin).href);assert(response.ok()&&response.headers()['content-type']===mime,`local icon unavailable: ${href}`);}
+  for(const theme of ['light','dark'])assert(await page.locator(`meta[name="theme-color"][media="(prefers-color-scheme: ${theme})"]`).count()===1,`missing ${theme} theme color`);
   const homeText=await page.locator('[data-local-page]').innerText(),storagePath=homeText.match(/^Storage:\s*(.+)$/m)?.[1];assert(storagePath?.startsWith('/')&&/[\\/]store$/.test(storagePath),'owner-local storage path disclosure is missing');assert(homeText.includes('Only committed HEAD is analyzed'));
   await page.getByRole('button',{name:'Refresh from checkout HEAD'}).click();await page.getByRole('heading',{name:'Confirm analysis scope'}).waitFor();
   await page.getByRole('button',{name:'Index detected source'}).click();
