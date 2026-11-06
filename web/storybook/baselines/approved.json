@@ -4259,7 +4259,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-source-long-line-desktop-dark.png",
-      "sha256": "527ff14dd525b01c20d4bcc07401b68511097dbd19feb912bcf7a4162c782c31"
+      "sha256": "8ba66f328f106a4fc60fe56d51d410e790858df1b45fb6dde3d4f9c702740a10"
     },
     {
       "id": "source-long-line",
@@ -4267,7 +4267,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-source-long-line-desktop-light.png",
-      "sha256": "63049ef92d881d4372528cc259247ede6b1dd5764b0b6412c324b6153efd0bc3"
+      "sha256": "c8f68f50ab93de8159b6c2da5b7427b232d76ff26cc514e987e8d83ea30cfaa5"
     },
     {
       "id": "source-long-line",
@@ -4275,7 +4275,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-source-long-line-landscape-dark.png",
-      "sha256": "e2a5e7c9ac7cee0ae3653e475e0a1eb71f935e8b339d0b38909bd61e81b6eaad"
+      "sha256": "b13400cae15f8db7073aabde4f961cd30c0dafefafc896a0076d28202adf1578"
     },
     {
       "id": "source-long-line",
@@ -4283,7 +4283,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-source-long-line-landscape-light.png",
-      "sha256": "ed9b752bcf61e1c4bec9afc0bf8365eb8fb020ffe395cc66d44cf0f4329a7c06"
+      "sha256": "6f210dade8048d8b473f7177c15671cf8192986d18ddde6c3e490c92ce973b1d"
     },
     {
       "id": "source-long-line",
@@ -4291,7 +4291,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-source-long-line-phone-dark.png",
-      "sha256": "bf2b6965319a6affbed53c1940dc8ca07b8447bb3be8c62ce9cc8bd6be63c09e"
+      "sha256": "d5b15476440100b5e01e6ad41f90ce75009dfa7842d053f783b07db43e121b08"
     },
     {
       "id": "source-long-line",
@@ -4299,7 +4299,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-long-line-phone-light.png",
-      "sha256": "e31175a9a37fea2f8a0823d472a45b6a45aae1740766e194f8c1d51d41d22deb"
+      "sha256": "d7c6b0b2b99534341c52b2d62331c2da3f59b9c572df1c175a2023b1839bcdfc"
     },
     {
       "id": "source-long-line",
@@ -4307,7 +4307,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-source-long-line-tablet-dark.png",
-      "sha256": "6715f9eec83acbaf3238c73a0464e1e5b82848f8943f5d1152cb71e5df530254"
+      "sha256": "d602482cb164491f5d3e0c95f4a42d026f47c71194020963d760a22befc5976c"
     },
     {
       "id": "source-long-line",
@@ -4315,7 +4315,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-source-long-line-tablet-light.png",
-      "sha256": "f3ddb652bccf3a3cda52776ce96d01480f00b22e0b1a42ebccf89eb231b97a16"
+      "sha256": "ba5869ae67d4aa66dc9aee40fd36087da08e77e3681487b19b3415baaf76712a"
     },
     {
       "id": "source-missing",
@@ -4387,7 +4387,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-source-ready-desktop-dark.png",
-      "sha256": "6e0c098e941ffa64d6ad2e82a4aff15293c348ad287d735253df912cc627fd6a"
+      "sha256": "8f96986e3ccaa9d3b2b478d5f8281e416172f0737e590f6a4a2063a63267e697"
     },
     {
       "id": "source-ready",
@@ -4395,7 +4395,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-source-ready-desktop-light.png",
-      "sha256": "9a036865f1bc4b04890fe3406f6d949e3d16446f27dcf12e1b5a7cebfb760bf5"
+      "sha256": "7836c5e659e7ae30b92eb6e1807bf850d7e1664a4fc5a436f0e5e213c10e9b6d"
     },
     {
       "id": "source-ready",
@@ -4403,7 +4403,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-source-ready-landscape-dark.png",
-      "sha256": "b4979a6845e40db8f810c73480459dfbc743e45bcb871ddece399194a96f6251"
+      "sha256": "c54ddfd80b9c99007189e7ff1e36dffadc115587e02dbdf78bfeaa2075f76110"
     },
     {
       "id": "source-ready",
@@ -4411,7 +4411,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-source-ready-landscape-light.png",
-      "sha256": "272c0754162c8b499bc7b7c88a075ea860d9f42d4adee5928fc257087b23b9ae"
+      "sha256": "e289241309a01e6c843ebc2bf3c84ae22cbb48fa44b85547cd2c0bb3534e5736"
     },
     {
       "id": "source-ready",
@@ -4419,7 +4419,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-source-ready-phone-dark.png",
-      "sha256": "04ab0b2de4bc25b57bdc4b8e763ea5d8b032c409774be39d21b0238c8fbf86e3"
+      "sha256": "7f4bf43823def9c56f91e5270a31aa911357a2fea4ff219b4e5e664ac21526cc"
     },
     {
       "id": "source-ready",
@@ -4427,7 +4427,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-ready-phone-light.png",
-      "sha256": "fb740fe40ed8fc6b214055da42a429cae26722fc8449beeffca8dc5dd47fd978"
+      "sha256": "a025f07d7290e03c8bd992ce81901dff951c5adf299f787539da5a5a0dbcf2f6"
     },
     {
       "id": "source-ready",
@@ -4435,7 +4435,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-source-ready-tablet-dark.png",
-      "sha256": "3040b66fc527933076e46925b9570c588d0453c9dbc58e30c13d03a8835b558a"
+      "sha256": "6c3352f8d5f010f9902ecd333aec57e1b64a699643f998830c0338a68435fc38"
     },
     {
       "id": "source-ready",
@@ -4443,7 +4443,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-source-ready-tablet-light.png",
-      "sha256": "3e1754a8c529badc24476d1b6d8e1182fdc9b1d4833a959a87012fe3038fa048"
+      "sha256": "0af1e185489a164dbc8898f045d9a1b8c60a2782a8da4e4bc6083526c9b4fd35"
     },
     {
       "id": "source-search-empty",
@@ -4451,7 +4451,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-source-search-empty-desktop-dark.png",
-      "sha256": "733791537c2d17118fc87fb3faf8bc8acea7072bbb8a039bd78aa3d8507e5fdf"
+      "sha256": "d39a78184e53e4832d2efb7e6a0c69fb84ff83bc511a1e5a16807d5a3eb2467a"
     },
     {
       "id": "source-search-empty",
@@ -4459,7 +4459,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-source-search-empty-desktop-light.png",
-      "sha256": "6c4652e090b898bb7517b7c100a5752b0140d1bf83586838457754c22b49766b"
+      "sha256": "d69dddd879df13947ac3fbbad469dac1c778a96f23fb48af57b865fea89ecd6a"
     },
     {
       "id": "source-search-empty",
@@ -4467,7 +4467,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-source-search-empty-landscape-dark.png",
-      "sha256": "bfb56e6ad9a7897be04ae809c9ac2b87bd436480f6dd4accf1c4a08347eb54af"
+      "sha256": "78f1bc4eba6dfc18c343dd288a0d164aad7035cd7d8248ed3b359b9a78127f38"
     },
     {
       "id": "source-search-empty",
@@ -4475,7 +4475,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-source-search-empty-landscape-light.png",
-      "sha256": "11a008254318598ab84dba088bd14b337f99a620663173ed3615c1a6aecd8d2f"
+      "sha256": "70c0b8aeb1a99030854f84a0693ccef69eed9313ca36ce30912e861186136a5c"
     },
     {
       "id": "source-search-empty",
@@ -4483,7 +4483,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-source-search-empty-phone-dark.png",
-      "sha256": "1a49662968651575a11e067734205be3b58d0a7d77af178df1cab18943c5b30b"
+      "sha256": "06153fa22bea56473e50e3a3775f8d12e105124350acaf1b5b85fdfa0ec2b58e"
     },
     {
       "id": "source-search-empty",
@@ -4491,7 +4491,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-search-empty-phone-light.png",
-      "sha256": "0df41d8e5b297426a2146d33261e9d7f18c3670c76539177761de9b6957e5ea0"
+      "sha256": "d75b309486e16d4a37f31713694cff042cd4ad18270bdba45253111193704b1c"
     },
     {
       "id": "source-search-empty",
@@ -4499,7 +4499,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-source-search-empty-tablet-dark.png",
-      "sha256": "b4882118c16015d553507ff7e77a628f769f5e14b69e74f46ac35e2f8310ac01"
+      "sha256": "a24268161dc6ebd660b5d3812a58784354e6a8f4f7b152d8c9bae734ecf91e54"
     },
     {
       "id": "source-search-empty",
@@ -4507,7 +4507,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-source-search-empty-tablet-light.png",
-      "sha256": "63a843316390abf696d8a5f63f9ec66b1f1557ae60ff32127a941aef9a94c0c6"
+      "sha256": "9d1f9f1b7f24f289a54394c36cf31527b7e4ab9fbabd66379c6a54a631a6318c"
     },
     {
       "id": "source-search",
@@ -4515,7 +4515,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-source-search-desktop-dark.png",
-      "sha256": "900dc72cd7dc2ea30a45a51fef2880bf3ec79ac0f87d082431e39493c6f656a9"
+      "sha256": "b05f550e589662cabd89e8deea25492eaa16386b869a4964af3d37b97139460b"
     },
     {
       "id": "source-search",
@@ -4523,7 +4523,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-source-search-desktop-light.png",
-      "sha256": "6265a5de096f96b33b77aa1a93a3264735f67533500e699325d7103af7692bc7"
+      "sha256": "272cf67a6708ba74aacd991ee1f3d3c8cdcfeac87c61da738c4a8d6e70d78b23"
     },
     {
       "id": "source-search",
@@ -4531,7 +4531,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-source-search-landscape-dark.png",
-      "sha256": "8de546c610bad1d3dded148904a1582dd901b142369e4897e808dfd3d17b58e6"
+      "sha256": "c30007e942080835a5ab001a61a4ccf8137e9b3adefc16e5796163b14e3f27ab"
     },
     {
       "id": "source-search",
@@ -4539,7 +4539,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-source-search-landscape-light.png",
-      "sha256": "55b40b2e6652c277dff8d262722c52754dc1dbeaeb2faa9edae1e304fb0279c7"
+      "sha256": "1ce5523df770d7daa7179fb02422c6ab7c1b9d4327754db08431bbf82281f86b"
     },
     {
       "id": "source-search",
@@ -4547,7 +4547,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-source-search-phone-dark.png",
-      "sha256": "30e914fed1658e3374f85abeaa5261d47f1203b722146bb9a37fb295ada170b5"
+      "sha256": "f1d2622bcce5e88a83a3cd7e919647f1c3155645bebe697cfbc0468f580deebb"
     },
     {
       "id": "source-search",
@@ -4555,7 +4555,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-search-phone-light.png",
-      "sha256": "4fe5ddc473ebd9c92bef28b50ee235ea376fad959f8de874f8f799f42e785944"
+      "sha256": "e6581e8c2c5dc086c0dcc483d00348af497a9b7824c9eface146209e2b069187"
     },
     {
       "id": "source-search",
@@ -4563,7 +4563,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-source-search-tablet-dark.png",
-      "sha256": "5a441f15d2a160cdb1383693a412f4f3d09f85ad9f39e30066aaa3c61fa7b8da"
+      "sha256": "29c295cfe2d7ce8f100b22f17b43a2c09151d334dc22c7733279197bb1ea6fd0"
     },
     {
       "id": "source-search",
@@ -4571,7 +4571,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-source-search-tablet-light.png",
-      "sha256": "c9583eec7bce527cd07f52ea43805bc969fce0e6ef6201714250d9a9c61d51e9"
+      "sha256": "6fe0c8cb219751180d8e2c00359f5b56182a8308d6a33402592d677f51c5e42e"
     },
     {
       "id": "source-unavailable",
@@ -4703,13 +4703,13 @@
     }
   ],
   "recapture": {
-    "reason": "The first references were captured with timing- and paint-history-dependent pixels: before district symbols and CodeMirror measurement had settled, and with partial raster patches whose anti-aliased edges differ from a full raster. The harness now waits for a quiet page and rasterises whole tiles (web/scripts/check-storybook.mjs). The listed references were re-captured from that deterministic state; two independent runs produced byte-identical PNGs for all 580 captures.",
+    "reason": "The first references had timing- and paint-history-dependent pixels: they were captured before district symbols and CodeMirror measurement had settled, with partial-raster patches whose anti-aliased edges differ from a full raster, and with fractional-height CodeMirror lines whose glyph baselines flipped by one pixel between runs. The harness now waits for a quiet page, rasterises whole tiles and uses whole-pixel CodeMirror line boxes for source captures (web/scripts/check-storybook.mjs). The listed references were re-captured from that state; the 580 candidates of two earlier runs of the same code were byte-identical apart from the final fix.",
     "sourceRun": {
-      "id": "42179011506",
+      "id": "42184473939",
       "workflow": "storybook.yml",
       "artifact": "tolmap-visual-candidates",
-      "url": "https://github.com/onsager-ai/tolmap/actions/runs/42179011506",
-      "sourceSha": "8fe3020f4b947090917c3a985c1f62b530a8630c"
+      "url": "https://github.com/onsager-ai/tolmap/actions/runs/42184473939",
+      "sourceSha": "e0bf72a1aaf2179a00ee20f9bff354cade92e8d2"
     },
     "files": [
       "oss-map-district-tablet-dark.png",
@@ -4725,13 +4725,33 @@
       "oss-map-search-phone-dark.png",
       "oss-map-search-phone-light.png",
       "oss-map-symbol-tablet-dark.png",
+      "oss-source-long-line-desktop-dark.png",
+      "oss-source-long-line-desktop-light.png",
+      "oss-source-long-line-landscape-dark.png",
+      "oss-source-long-line-landscape-light.png",
+      "oss-source-long-line-phone-dark.png",
+      "oss-source-long-line-phone-light.png",
+      "oss-source-long-line-tablet-dark.png",
+      "oss-source-long-line-tablet-light.png",
+      "oss-source-ready-desktop-dark.png",
+      "oss-source-ready-desktop-light.png",
+      "oss-source-ready-landscape-dark.png",
+      "oss-source-ready-landscape-light.png",
+      "oss-source-ready-phone-dark.png",
+      "oss-source-ready-phone-light.png",
+      "oss-source-ready-tablet-dark.png",
+      "oss-source-ready-tablet-light.png",
       "oss-source-search-empty-desktop-dark.png",
       "oss-source-search-empty-desktop-light.png",
       "oss-source-search-empty-landscape-dark.png",
       "oss-source-search-empty-landscape-light.png",
+      "oss-source-search-empty-phone-dark.png",
       "oss-source-search-empty-phone-light.png",
+      "oss-source-search-empty-tablet-dark.png",
+      "oss-source-search-empty-tablet-light.png",
       "oss-source-search-desktop-dark.png",
       "oss-source-search-desktop-light.png",
+      "oss-source-search-landscape-dark.png",
       "oss-source-search-landscape-light.png",
       "oss-source-search-phone-dark.png",
       "oss-source-search-phone-light.png",
