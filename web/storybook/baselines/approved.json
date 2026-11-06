@@ -2931,7 +2931,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-path-landscape-dark.png",
-      "sha256": "6c92a9470b4502e52d3d049268db3feabbaf88c3b95791eb1e62099541123543"
+      "sha256": "2df8ec0f7889945efcaff76a1996113de6171a064bb10b3cc1dabd940907ada7"
     },
     {
       "id": "map-path",
@@ -3123,7 +3123,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-search-empty-landscape-dark.png",
-      "sha256": "4a519858dd052f334f93c0536f007458549f98191126fb6e1a8e59dbbc2e6ea9"
+      "sha256": "9bcd7a3fdcc5ad3ae9c0b7c7715be51aaead7b489042ef7559c06a2a637d915b"
     },
     {
       "id": "map-search-empty",
@@ -3131,7 +3131,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-search-empty-landscape-light.png",
-      "sha256": "f07cfe8895e2c5b73f1028b59797769892bb35ca85fee82149a921b1cf03f056"
+      "sha256": "14243f8ea7894cf02c7cefd733ce7ea3f3bd5d711ca104f588c28175c80c7f97"
     },
     {
       "id": "map-search-empty",
@@ -3187,7 +3187,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-search-landscape-dark.png",
-      "sha256": "64f998702ef8de5676bc8ba1663f302a868bfb9dcdf7a07661ba04555168f404"
+      "sha256": "1df417e818bcd5629a67b4848cf5ec72deb1f5b89745183600c0619437a142cf"
     },
     {
       "id": "map-search",
@@ -3195,7 +3195,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-search-landscape-light.png",
-      "sha256": "0c1b5283171343b0e497722871ed8a70e378c7d64593675760b437c80752dc19"
+      "sha256": "78a4a22893bb1ae5abe7dd992d419b1b1072020d67a41e230f251aa97f73cf0c"
     },
     {
       "id": "map-search",
@@ -3203,7 +3203,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-map-search-phone-dark.png",
-      "sha256": "cb9ff1a483485fe6b5bc886829153d4ce5d40b12b1e956de8b796cee06116909"
+      "sha256": "4ab01f717db7704b3c11be5b3ff41f07478a5eb2ae28039c76cd54a3e18fc569"
     },
     {
       "id": "map-search",
@@ -3211,7 +3211,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-map-search-phone-light.png",
-      "sha256": "9ec3c75238c56a622c15a08b9a8a6caec4e1c3a58af8173c1cae5b7c48f5aa5a"
+      "sha256": "b57bb9811b391d7f0710f5a628309d494c3c0b069fea3ea9dd4fc6d9518119fb"
     },
     {
       "id": "map-search",
@@ -4171,7 +4171,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-large-phone-light.png",
-      "sha256": "e631617d2f36883f1e84894cb8903ac372d9260ecc662a05d7e6863ee073b07f"
+      "sha256": "6e8c34d711d1054979f45661e793ceb9124a40b2c53aab8e25c8a8fb90cb650d"
     },
     {
       "id": "source-large",
@@ -4451,7 +4451,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-source-search-empty-desktop-dark.png",
-      "sha256": "d0b6632ac56cbc1ac66fcfe6caabf5d644654289241bb9e9990d005abc18e5bf"
+      "sha256": "733791537c2d17118fc87fb3faf8bc8acea7072bbb8a039bd78aa3d8507e5fdf"
     },
     {
       "id": "source-search-empty",
@@ -4459,7 +4459,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-source-search-empty-desktop-light.png",
-      "sha256": "22f33920737282f934611db0c857eaf24649ac287b0e60cf293de8b32a76d12c"
+      "sha256": "6c4652e090b898bb7517b7c100a5752b0140d1bf83586838457754c22b49766b"
     },
     {
       "id": "source-search-empty",
@@ -4467,7 +4467,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-source-search-empty-landscape-dark.png",
-      "sha256": "ac2ef9cdb8b64b84346f8f2676410be57633583482e664828357b20394209802"
+      "sha256": "bfb56e6ad9a7897be04ae809c9ac2b87bd436480f6dd4accf1c4a08347eb54af"
     },
     {
       "id": "source-search-empty",
@@ -4475,7 +4475,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-source-search-empty-landscape-light.png",
-      "sha256": "43391d0a240b06b9f383bf7211dc206eae1240058e0c979cd583bfe91a9f21c2"
+      "sha256": "11a008254318598ab84dba088bd14b337f99a620663173ed3615c1a6aecd8d2f"
     },
     {
       "id": "source-search-empty",
@@ -4483,7 +4483,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-source-search-empty-phone-dark.png",
-      "sha256": "32dbd310397ce89742228aabd76cd0678f04e1825444f5f3b7d4e52ad1ed7295"
+      "sha256": "1a49662968651575a11e067734205be3b58d0a7d77af178df1cab18943c5b30b"
     },
     {
       "id": "source-search-empty",
@@ -4491,7 +4491,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-search-empty-phone-light.png",
-      "sha256": "f615be2a10f027ca4c0d8a9ddb3d231d429f94967f5720ac36dcdc5857a30c1e"
+      "sha256": "0df41d8e5b297426a2146d33261e9d7f18c3670c76539177761de9b6957e5ea0"
     },
     {
       "id": "source-search-empty",
@@ -4499,7 +4499,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-source-search-empty-tablet-dark.png",
-      "sha256": "01f49c9cb68a239a3f4454cbff61e885a11a90c663342f55e2f2d870f5bff416"
+      "sha256": "b4882118c16015d553507ff7e77a628f769f5e14b69e74f46ac35e2f8310ac01"
     },
     {
       "id": "source-search-empty",
@@ -4515,7 +4515,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-source-search-desktop-dark.png",
-      "sha256": "d814c89f50be5b7af07c5976b652f11a6fda08e59b42eb3ef7f212fac0c466da"
+      "sha256": "900dc72cd7dc2ea30a45a51fef2880bf3ec79ac0f87d082431e39493c6f656a9"
     },
     {
       "id": "source-search",
@@ -4523,7 +4523,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-source-search-desktop-light.png",
-      "sha256": "bdeaf971837b9b12764c38d880d98bb359151134056794e24e89b6de67c200c5"
+      "sha256": "6265a5de096f96b33b77aa1a93a3264735f67533500e699325d7103af7692bc7"
     },
     {
       "id": "source-search",
@@ -4531,7 +4531,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-source-search-landscape-dark.png",
-      "sha256": "636d36840b0ce87f5713d6fc16d2428e62b6b8f6fcc1d13337580d51799837a4"
+      "sha256": "8de546c610bad1d3dded148904a1582dd901b142369e4897e808dfd3d17b58e6"
     },
     {
       "id": "source-search",
@@ -4547,7 +4547,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-source-search-phone-dark.png",
-      "sha256": "22e9e1980757dfa74a694e5b20f0e16875aab11f2773fa074646d811ad83354f"
+      "sha256": "30e914fed1658e3374f85abeaa5261d47f1203b722146bb9a37fb295ada170b5"
     },
     {
       "id": "source-search",
@@ -4555,7 +4555,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-search-phone-light.png",
-      "sha256": "05f1e9dfd31cdc7f22ee7cdcb52313a5fd383a6744034c9fadcb26f1b5ff1920"
+      "sha256": "4fe5ddc473ebd9c92bef28b50ee235ea376fad959f8de874f8f799f42e785944"
     },
     {
       "id": "source-search",
@@ -4563,7 +4563,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-source-search-tablet-dark.png",
-      "sha256": "64271db37b616c2ea438f859b1d413c4b05949947412b06cf28b88428b92edd3"
+      "sha256": "5a441f15d2a160cdb1383693a412f4f3d09f85ad9f39e30066aaa3c61fa7b8da"
     },
     {
       "id": "source-search",
@@ -4571,7 +4571,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-source-search-tablet-light.png",
-      "sha256": "a4d6c6c998bd8130ccbdfb758cb2e85e2923cede2cc74ee4a05168f5930dcb2d"
+      "sha256": "c9583eec7bce527cd07f52ea43805bc969fce0e6ef6201714250d9a9c61d51e9"
     },
     {
       "id": "source-unavailable",
@@ -4703,13 +4703,13 @@
     }
   ],
   "recapture": {
-    "reason": "The first references were captured before district symbols and CodeMirror line measurement had settled, so their pixels depended on timing. The harness now waits for a quiet page (settle in web/scripts/check-storybook.mjs) and these references were re-captured from that deterministic state.",
+    "reason": "The first references were captured with timing- and paint-history-dependent pixels: before district symbols and CodeMirror measurement had settled, and with partial raster patches whose anti-aliased edges differ from a full raster. The harness now waits for a quiet page and rasterises whole tiles (web/scripts/check-storybook.mjs). The listed references were re-captured from that deterministic state; two independent runs produced byte-identical PNGs for all 580 captures.",
     "sourceRun": {
-      "id": "42172536315",
+      "id": "42179011506",
       "workflow": "storybook.yml",
       "artifact": "tolmap-visual-candidates",
-      "url": "https://github.com/onsager-ai/tolmap/actions/runs/42172536315",
-      "sourceSha": "cd2aead4027ffb9639d546297382da9454a3bed1"
+      "url": "https://github.com/onsager-ai/tolmap/actions/runs/42179011506",
+      "sourceSha": "8fe3020f4b947090917c3a985c1f62b530a8630c"
     },
     "files": [
       "oss-map-district-tablet-dark.png",
@@ -4718,15 +4718,25 @@
       "oss-map-path-landscape-light.png",
       "oss-map-quality-tablet-dark.png",
       "oss-map-quality-tablet-light.png",
+      "oss-map-search-empty-landscape-dark.png",
+      "oss-map-search-empty-landscape-light.png",
       "oss-map-search-landscape-dark.png",
       "oss-map-search-landscape-light.png",
+      "oss-map-search-phone-dark.png",
+      "oss-map-search-phone-light.png",
       "oss-map-symbol-tablet-dark.png",
-      "oss-source-large-phone-light.png",
-      "oss-source-search-empty-phone-dark.png",
+      "oss-source-search-empty-desktop-dark.png",
+      "oss-source-search-empty-desktop-light.png",
+      "oss-source-search-empty-landscape-dark.png",
+      "oss-source-search-empty-landscape-light.png",
       "oss-source-search-empty-phone-light.png",
-      "oss-source-search-empty-tablet-dark.png",
-      "oss-source-search-landscape-dark.png",
-      "oss-source-search-landscape-light.png"
+      "oss-source-search-desktop-dark.png",
+      "oss-source-search-desktop-light.png",
+      "oss-source-search-landscape-light.png",
+      "oss-source-search-phone-dark.png",
+      "oss-source-search-phone-light.png",
+      "oss-source-search-tablet-dark.png",
+      "oss-source-search-tablet-light.png"
     ]
   }
 }

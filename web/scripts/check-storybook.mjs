@@ -29,7 +29,7 @@ assertRouteTreeContract(routeSource);
 // anti-aliased edges of that patch differ from a fresh full raster. Which
 // patches exist depends on how many frames landed between the clicks and
 // focus changes that precede a capture, so identical code gave different edge
-// pixels (gutter numerals, rounded button corners, a one-pixel caret column)
+// pixels (gutter numerals, rounded button corners, single glyph edges)
 // on different runs while every element's geometry was identical. Full-tile
 // raster removes that history dependence.
 const browser = await chromium.launch({ args: ['--disable-partial-raster'] });
