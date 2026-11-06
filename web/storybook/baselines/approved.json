@@ -2291,7 +2291,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-district-tablet-dark.png",
-      "sha256": "a4dcc925f8a7005d9324e955b777d47e54dc2927aac243fa2e313843d3c71d93"
+      "sha256": "5af1d52825ea4a342a1072481d40f5e0489b7fbdd017571ebc4bf62dceb96428"
     },
     {
       "id": "map-district",
@@ -2299,7 +2299,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-district-tablet-light.png",
-      "sha256": "596b8f829d2ec8d5404022a54e2f5fecbd217d235d2002466e324345e4f7959c"
+      "sha256": "e2c69acef8bcaf63556ea0b33bc69daf5a9651dcaa522edd6c72367fc8473505"
     },
     {
       "id": "map-file",
@@ -2931,7 +2931,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-path-landscape-dark.png",
-      "sha256": "d4480589100fc2dde2704600be0802c920673560e8872a263f092c6419c6cc07"
+      "sha256": "6c92a9470b4502e52d3d049268db3feabbaf88c3b95791eb1e62099541123543"
     },
     {
       "id": "map-path",
@@ -2939,7 +2939,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-path-landscape-light.png",
-      "sha256": "f34023398c88842667e8b623675e64098ece6cb3ce719a5a2681f60fb62e7acc"
+      "sha256": "871d967775638edac944ab83ba495f7a10fb7f2433c3afe52a11e6d03484a398"
     },
     {
       "id": "map-path",
@@ -3027,7 +3027,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-quality-tablet-dark.png",
-      "sha256": "3f25bd4c61b1751632bb3fb3afe8c0db7e8e3bd4f79d838eeb4ecfd87cddd071"
+      "sha256": "ede14755196ba24cfebef6864b7c74e6fdb6bdb71b94fa9bb1383fe4687c3ec8"
     },
     {
       "id": "map-quality",
@@ -3035,7 +3035,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-quality-tablet-light.png",
-      "sha256": "581d0564c996667929840a1d70ebcf3f68abd701007142d370b521981352c20f"
+      "sha256": "2a2001e9f195a1099b08befb449bd7f90e7f449f5847c51306c9464feebd1055"
     },
     {
       "id": "map-repositories",
@@ -3187,7 +3187,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-search-landscape-dark.png",
-      "sha256": "2d240bb8b0c9f12f72534e26662a9391bcb0a20789d6a1927cd1ae0d4e2781da"
+      "sha256": "64f998702ef8de5676bc8ba1663f302a868bfb9dcdf7a07661ba04555168f404"
     },
     {
       "id": "map-search",
@@ -3195,7 +3195,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-search-landscape-light.png",
-      "sha256": "fdf6354c8aa38c072a826c8d10271c5453eac14f7fed6dce5577f74cb7e71d09"
+      "sha256": "0c1b5283171343b0e497722871ed8a70e378c7d64593675760b437c80752dc19"
     },
     {
       "id": "map-search",
@@ -3283,7 +3283,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-symbol-tablet-dark.png",
-      "sha256": "1109a780d8aa648abdd67a8c477a39093a101652177b0837b88a841e0fbd176a"
+      "sha256": "667d553528e3bf6857af689a54760c636606887771d439790a359642e12f9a6d"
     },
     {
       "id": "map-symbol",
@@ -4171,7 +4171,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-large-phone-light.png",
-      "sha256": "6e8c34d711d1054979f45661e793ceb9124a40b2c53aab8e25c8a8fb90cb650d"
+      "sha256": "e631617d2f36883f1e84894cb8903ac372d9260ecc662a05d7e6863ee073b07f"
     },
     {
       "id": "source-large",
@@ -4483,7 +4483,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-source-search-empty-phone-dark.png",
-      "sha256": "1a49662968651575a11e067734205be3b58d0a7d77af178df1cab18943c5b30b"
+      "sha256": "32dbd310397ce89742228aabd76cd0678f04e1825444f5f3b7d4e52ad1ed7295"
     },
     {
       "id": "source-search-empty",
@@ -4491,7 +4491,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-source-search-empty-phone-light.png",
-      "sha256": "68c08663b13901a599698d582670e3dabfad6e1206c7c0955be9d59fed7c8165"
+      "sha256": "f615be2a10f027ca4c0d8a9ddb3d231d429f94967f5720ac36dcdc5857a30c1e"
     },
     {
       "id": "source-search-empty",
@@ -4499,7 +4499,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-source-search-empty-tablet-dark.png",
-      "sha256": "b4882118c16015d553507ff7e77a628f769f5e14b69e74f46ac35e2f8310ac01"
+      "sha256": "01f49c9cb68a239a3f4454cbff61e885a11a90c663342f55e2f2d870f5bff416"
     },
     {
       "id": "source-search-empty",
@@ -4531,7 +4531,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-source-search-landscape-dark.png",
-      "sha256": "8de546c610bad1d3dded148904a1582dd901b142369e4897e808dfd3d17b58e6"
+      "sha256": "636d36840b0ce87f5713d6fc16d2428e62b6b8f6fcc1d13337580d51799837a4"
     },
     {
       "id": "source-search",
@@ -4539,7 +4539,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-source-search-landscape-light.png",
-      "sha256": "68e98954fcadb0a1bb4a9f29ad639f537f288b0d99c03845fa0d6abdab0a5105"
+      "sha256": "55b40b2e6652c277dff8d262722c52754dc1dbeaeb2faa9edae1e304fb0279c7"
     },
     {
       "id": "source-search",
@@ -4701,5 +4701,32 @@
       "file": "oss-source-unsupported-tablet-light.png",
       "sha256": "9215cbe7be29cf4b016a1959f5222109c0ae6f3a59148ab685e04e2bedef2f75"
     }
-  ]
+  ],
+  "recapture": {
+    "reason": "The first references were captured before district symbols and CodeMirror line measurement had settled, so their pixels depended on timing. The harness now waits for a quiet page (settle in web/scripts/check-storybook.mjs) and these references were re-captured from that deterministic state.",
+    "sourceRun": {
+      "id": "42172536315",
+      "workflow": "storybook.yml",
+      "artifact": "tolmap-visual-candidates",
+      "url": "https://github.com/onsager-ai/tolmap/actions/runs/42172536315",
+      "sourceSha": "cd2aead4027ffb9639d546297382da9454a3bed1"
+    },
+    "files": [
+      "oss-map-district-tablet-dark.png",
+      "oss-map-district-tablet-light.png",
+      "oss-map-path-landscape-dark.png",
+      "oss-map-path-landscape-light.png",
+      "oss-map-quality-tablet-dark.png",
+      "oss-map-quality-tablet-light.png",
+      "oss-map-search-landscape-dark.png",
+      "oss-map-search-landscape-light.png",
+      "oss-map-symbol-tablet-dark.png",
+      "oss-source-large-phone-light.png",
+      "oss-source-search-empty-phone-dark.png",
+      "oss-source-search-empty-phone-light.png",
+      "oss-source-search-empty-tablet-dark.png",
+      "oss-source-search-landscape-dark.png",
+      "oss-source-search-landscape-light.png"
+    ]
+  }
 }
