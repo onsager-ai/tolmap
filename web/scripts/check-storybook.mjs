@@ -120,6 +120,7 @@ try {
           assert.equal(geometry.retryHit, true, 'retry indexing must be clickable beside the detail note');
         }
         if (item.id === 'source-ready') assert.equal(await page.locator('.cm-content').getAttribute('aria-readonly'), 'true');
+        if (/^(map|source)-/.test(item.id)) await settle(page, item.id);
         await page.screenshot({ path: path.join(output, row.file), animations: 'disabled' });
         assert.deepEqual(errors, [], `browser errors while rendering ${item.id}`);
         assert.deepEqual(external, [], `external requests while rendering ${item.id}`);
@@ -159,6 +160,47 @@ try {
 if (baselineError) throw baselineError;
 assert.equal(results.filter(row => row.result === 'failed').length, 0, 'Storybook candidates contain failures; inspect manifest.json');
 assert.ok(results.length > 0, 'No stories captured');
+
+// The play function marks a map or source story ready as soon as its first
+// paint exists, but work it cannot observe is still in flight: the map asks
+// for district symbols on a 200 ms debounce and repaints pins and labels when
+// they land, and CodeMirror re-measures line and gutter heights after the
+// search panel opens. Captures taken at that moment differed from run to run
+// (a missing pin layer, a one-pixel gutter shift) on identical code. Wait for
+// the page to hold still instead of for a fixed delay: the DOM, the geometry of
+// every element outside the map SVG and the scroll offsets must all be
+// unchanged across SETTLE_POLLS consecutive polls, which is longer than the
+// symbol debounce. A page that never holds still fails the capture; it is not
+// screenshotted anyway. This waits for a quiet page and compares nothing, so
+// it cannot mask a real difference from the reference.
+const SETTLE_POLLS = 8, SETTLE_INTERVAL_MS = 100, SETTLE_MAX_POLLS = 200;
+async function settle(page, id) {
+  const settled = await page.evaluate(async ({ polls, interval, maxPolls }) => {
+    await document.fonts.ready;
+    const signature = () => {
+      const svg = document.querySelector('.map-svg');
+      const parts = [document.body.innerHTML.length, svg ? svg.innerHTML.length : 0, scrollX, scrollY];
+      for (const element of document.body.querySelectorAll('*')) {
+        if (svg && svg.contains(element)) continue;
+        const box = element.getBoundingClientRect();
+        parts.push(box.x, box.y, box.width, box.height, element.scrollTop, element.scrollLeft);
+      }
+      let hash = 0;
+      for (const part of parts) hash = (Math.imul(hash, 31) + Math.round(part * 1000)) | 0;
+      return hash;
+    };
+    let last = signature(), still = 0;
+    for (let poll = 0; poll < maxPolls; poll++) {
+      await new Promise(resolve => setTimeout(resolve, interval));
+      const next = signature();
+      still = next === last ? still + 1 : 0;
+      last = next;
+      if (still >= polls) return true;
+    }
+    return false;
+  }, { polls: SETTLE_POLLS, interval: SETTLE_INTERVAL_MS, maxPolls: SETTLE_MAX_POLLS });
+  assert.equal(settled, true, `page did not settle: ${id}`);
+}
 
 function hashFile(file) {
   return new Promise((resolve, reject) => {
