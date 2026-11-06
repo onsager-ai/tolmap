@@ -206,6 +206,12 @@ enum Command {
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
     },
+    /// Lenses (issue #241, docs/API.md): named overlays of areas, paths and
+    /// notes kept in `.tolmap/lenses/<name>.toml`.
+    Lens {
+        #[command(subcommand)]
+        command: LensCommand,
+    },
     /// Step 2 of the polyglot union-extraction work (docs/FINDINGS.md
     /// finding 13): measures what `--all-sources` (or an explicit
     /// `--pkg`/`--lang` set) actually produces on a repository -- candidate
@@ -297,6 +303,23 @@ enum Command {
         repo: PathBuf,
         #[arg(last = true, required = true)]
         command: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum LensCommand {
+    /// Resolves a lens file against a stored map and prints the resolution
+    /// report. Exits 0 when everything resolved, 1 when anything is
+    /// unresolved (missing path, empty glob, unknown or ambiguous symbol,
+    /// unknown district, computed hop with no route), 2 when the lens or the
+    /// map cannot be read or the lens is invalid. The map is never changed.
+    Check {
+        lens: PathBuf,
+        /// A map JSON: a service store file or an exported map.
+        #[arg(long)]
+        map: PathBuf,
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
     },
 }
 
@@ -735,6 +758,9 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Lens {
+            command: LensCommand::Check { lens, map, format },
+        } => std::process::exit(tolmap::lens::run_check(&lens, &map, &format)),
         Command::Check {
             repo,
             base,

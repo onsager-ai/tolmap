@@ -12,6 +12,7 @@ pub mod eta;
 pub mod executor;
 pub mod http;
 pub mod jobs;
+pub mod lens;
 pub mod ratelimit;
 pub mod schedule;
 pub mod store;

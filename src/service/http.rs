@@ -44,6 +44,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/maps/{owner}/{repo}/source",
             get(super::compare::read_source),
         )
+        .route(
+            "/api/maps/{owner}/{repo}/lenses",
+            get(super::lens::list_lenses),
+        )
+        .route(
+            "/api/maps/{owner}/{repo}/lenses/{name}",
+            get(super::lens::get_lens),
+        )
         .route("/api/maps", get(get_maps))
         .route("/api/maps/{owner}/{repo}", get(get_map))
         .route("/api/maps/{owner}/{repo}/symbols", get(get_symbols))

@@ -1,0 +1,36 @@
+# Example lens for the pinned flask fixture (data/flask.json, built from
+# pallets/flask at d73fa1cdcbd8b1465c151db8924ba58b1dd14e35; see
+# data/fixtures.toml). In a real repository this file lives at
+# .tolmap/lenses/<name>.toml and is read at the commit being mapped.
+# tests/lens.rs resolves it against the fixture and expects no unresolved item.
+version = 1
+title = "Flask request handling"
+
+[[areas]]
+label = "Application core"
+color = "blue"
+members = ["src/flask/app.py", "src/flask/app.py#Flask", "src/flask/sansio/**"]
+
+[[areas]]
+label = "Request context"
+color = "teal"
+members = ["src/flask/globals.py", "src/flask/wrappers.py", "src/flask/ctx.py"]
+
+[[paths]]
+name = "request-to-template"
+stops = [
+  { at = "src/flask/app.py#Flask" },
+  { at = "src/flask/globals.py" },
+  { at = "src/flask/views.py" },
+  # No import carries this link: render_template reaches the Jinja
+  # environment through current_app at call time.
+  { at = "src/flask/templating.py", hop = "declared", reason = "render_template reads current_app.jinja_env at call time" },
+]
+
+[[notes]]
+anchor = "district:sansio"
+text = "The framework-independent half of the application and blueprint classes."
+
+[[notes]]
+anchor = "src/flask/wrappers.py#Request"
+text = "Request is the object current_request proxies to."
