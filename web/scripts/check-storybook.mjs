@@ -127,6 +127,14 @@ try {
           assert.equal(geometry.retryHit, true, 'retry indexing must be clickable beside the detail note');
         }
         if (item.id === 'source-ready') assert.equal(await page.locator('.cm-content').getAttribute('aria-readonly'), 'true');
+        // CodeMirror lines are 19.59375 px tall at the reader's font, so every
+        // gutter numeral and source line sits at a fractional y. Chromium
+        // rounds a glyph baseline to whole pixels, and with these offsets some
+        // baselines fall within float noise of a rounding boundary: the same
+        // layout (identical to the thousandth of a pixel across runs) painted
+        // the numerals of lines 2 and 4 one pixel apart in different runs.
+        // Whole-pixel line boxes remove the boundary, for capture only.
+        if (item.id.startsWith('source-')) await page.addStyleTag({ content: '.cm-line, .cm-gutterElement { line-height: 20px !important; }' });
         if (/^(map|source)-/.test(item.id)) await settle(page, item.id);
         await page.screenshot({ path: path.join(output, row.file), animations: 'disabled' });
         assert.deepEqual(errors, [], `browser errors while rendering ${item.id}`);
