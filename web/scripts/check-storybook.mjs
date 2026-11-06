@@ -121,6 +121,7 @@ try {
         }
         if (item.id === 'source-ready') assert.equal(await page.locator('.cm-content').getAttribute('aria-readonly'), 'true');
         if (/^(map|source)-/.test(item.id)) await settle(page, item.id);
+        if (/^(map|source)-/.test(item.id)) fs.writeFileSync(path.join(output, `${row.file}.layout.json`), JSON.stringify(await page.evaluate(() => { const svg = document.querySelector('.map-svg'); return { dpr: devicePixelRatio, vv: [visualViewport.offsetLeft, visualViewport.offsetTop, visualViewport.scale], els: [...document.body.querySelectorAll('*')].filter(e => !(svg && svg.contains(e))).map(e => { const b = e.getBoundingClientRect(); return [e.tagName, e.className && e.className.baseVal === undefined ? String(e.className).slice(0, 40) : '', b.x, b.y, b.width, b.height, e.scrollTop, e.scrollLeft]; }) }; })));
         await page.screenshot({ path: path.join(output, row.file), animations: 'disabled' });
         assert.deepEqual(errors, [], `browser errors while rendering ${item.id}`);
         assert.deepEqual(external, [], `external requests while rendering ${item.id}`);
