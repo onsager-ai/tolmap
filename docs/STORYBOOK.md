@@ -86,10 +86,12 @@ the viewer from its gitlink, the viewer revision identifies that immutable
 checkout while the tested revision identifies the Hub commit.
 The full page set is required; a failed story stays visible in the manifest.
 
-All captures are **unapproved candidates**. There is no approved image set in
-this change. `web/storybook/baselines/approved.json` starts with schema version
-1 and `status: "pending-review"`, with null source revision/review/provenance
-and an empty `images` array. In this state CI writes
+Captures are candidates until the owner approves them. The owner approved the
+set from run `42169568634` (source `fd1d6c5`) on 2026-11-06;
+`web/storybook/baselines/approved.json` records it with `status: "approved"`
+and CI compares exact pixels against those images. A registry with
+`status: "pending-review"`, null source revision/review/provenance and an empty
+`images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says
 that candidate pixels were not compared; no pixel-pass claim is made. The
 capture manifest includes every expected row, including `not-run` rows after
