@@ -25,7 +25,14 @@ const reservedSource = fs.readFileSync(new URL('../src/routes/reserved.ts', impo
 const routeSource = fs.readFileSync(new URL('../src/router.tsx', import.meta.url), 'utf8');
 assertStorybookCoverage(cases, await indexResponse.json(), parseReservedNames(reservedSource));
 assertRouteTreeContract(routeSource);
-const browser = await chromium.launch();
+// Partial raster re-rasterises only the invalidated part of a tile, and the
+// anti-aliased edges of that patch differ from a fresh full raster. Which
+// patches exist depends on how many frames landed between the clicks and
+// focus changes that precede a capture, so identical code gave different edge
+// pixels (gutter numerals, rounded button corners, a one-pixel caret column)
+// on different runs while every element's geometry was identical. Full-tile
+// raster removes that history dependence.
+const browser = await chromium.launch({ args: ['--disable-partial-raster'] });
 const browserVersion = browser.version();
 const resultMap = new Map();
 const applicable = (item, viewport) => captureApplies(item, viewport, host);
@@ -121,7 +128,6 @@ try {
         }
         if (item.id === 'source-ready') assert.equal(await page.locator('.cm-content').getAttribute('aria-readonly'), 'true');
         if (/^(map|source)-/.test(item.id)) await settle(page, item.id);
-        if (/^(map|source)-/.test(item.id)) fs.writeFileSync(path.join(output, `${row.file}.layout.json`), JSON.stringify(await page.evaluate(() => { const svg = document.querySelector('.map-svg'); return { dpr: devicePixelRatio, vv: [visualViewport.offsetLeft, visualViewport.offsetTop, visualViewport.scale], els: [...document.body.querySelectorAll('*')].filter(e => !(svg && svg.contains(e))).map(e => { const b = e.getBoundingClientRect(); return [e.tagName, e.className && e.className.baseVal === undefined ? String(e.className).slice(0, 40) : '', b.x, b.y, b.width, b.height, e.scrollTop, e.scrollLeft]; }) }; })));
         await page.screenshot({ path: path.join(output, row.file), animations: 'disabled' });
         assert.deepEqual(errors, [], `browser errors while rendering ${item.id}`);
         assert.deepEqual(external, [], `external requests while rendering ${item.id}`);
