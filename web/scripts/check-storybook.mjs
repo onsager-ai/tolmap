@@ -173,8 +173,8 @@ assert.ok(results.length > 0, 'No stories captured');
 // symbol debounce. A page that never holds still fails the capture; it is not
 // screenshotted anyway. This waits for a quiet page and compares nothing, so
 // it cannot mask a real difference from the reference.
-const SETTLE_POLLS = 8, SETTLE_INTERVAL_MS = 100, SETTLE_MAX_POLLS = 200;
 async function settle(page, id) {
+  const SETTLE_POLLS = 8, SETTLE_INTERVAL_MS = 100, SETTLE_MAX_POLLS = 200;
   const settled = await page.evaluate(async ({ polls, interval, maxPolls }) => {
     await document.fonts.ready;
     const signature = () => {
