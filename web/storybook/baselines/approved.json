@@ -3,19 +3,19 @@
   "status": "approved",
   "sourceRevision": "fd1d6c5559c5790135ab3d02950c6d596b4c8e20",
   "review": {
+    "date": "2026-11-06",
+    "decision": "approved",
+    "note": "Approval was given in chat on the repository owner's instruction (issue onsager-ai/tolmap#219) and recorded by an agent on that instruction.",
+    "observedDiff": "No prior approved references existed, so there was no pixel diff; every candidate in the run had status passed.",
     "reviewer": "tikazyq",
     "role": "repository owner",
-    "decision": "approved",
-    "date": "2026-11-06",
     "sourceRun": {
-      "id": "42169568634",
-      "workflow": "storybook.yml",
       "artifact": "tolmap-visual-candidates",
+      "id": "42169568634",
+      "sourceSha": "fd1d6c5559c5790135ab3d02950c6d596b4c8e20",
       "url": "https://github.com/onsager-ai/tolmap/actions/runs/42169568634",
-      "sourceSha": "fd1d6c5559c5790135ab3d02950c6d596b4c8e20"
-    },
-    "observedDiff": "No prior approved references existed, so there was no pixel diff; every candidate in the run had status passed.",
-    "note": "Approval was given in chat on the repository owner's instruction (issue onsager-ai/tolmap#219) and recorded by an agent on that instruction."
+      "workflow": "storybook.yml"
+    }
   },
   "provenance": {
     "browser": {
@@ -23,35 +23,35 @@
       "version": "153.0.8010.12"
     },
     "environment": {
-      "locale": "en-US",
-      "timezone": "UTC",
-      "scale": 1,
-      "reducedMotion": "reduce",
       "fixedClock": "2026-10-19T08:00:00Z",
+      "locale": "en-US",
+      "reducedMotion": "reduce",
+      "scale": 1,
+      "timezone": "UTC",
       "viewports": [
         {
-          "name": "phone",
-          "width": 390,
+          "hasTouch": true,
           "height": 844,
-          "hasTouch": true
+          "name": "phone",
+          "width": 390
         },
         {
-          "name": "landscape",
-          "width": 844,
+          "hasTouch": true,
           "height": 390,
-          "hasTouch": true
+          "name": "landscape",
+          "width": 844
         },
         {
-          "name": "tablet",
-          "width": 820,
+          "hasTouch": true,
           "height": 1180,
-          "hasTouch": true
+          "name": "tablet",
+          "width": 820
         },
         {
-          "name": "desktop",
-          "width": 1440,
+          "hasTouch": false,
           "height": 1000,
-          "hasTouch": false
+          "name": "desktop",
+          "width": 1440
         }
       ]
     },
@@ -1731,7 +1731,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-cancelling-desktop-dark.png",
-      "sha256": "2d570d27dfc5a5460c24ebc0b5643b7a2ce3bc98d74c54838228153ccc598638"
+      "sha256": "7baec7d444851a4101c7d62266e52d32eda188eb2c35e178b5853c2585cc4c06"
     },
     {
       "id": "local-cancelling",
@@ -1739,7 +1739,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-cancelling-desktop-light.png",
-      "sha256": "b218f9b2de1d300433dc75def3996d229436009f32a19a14e2f9022c562e34c8"
+      "sha256": "70eb79a76c7fdb5dc86ae65fb93b20c58da89fef5c58c6eb39d077237b72a2a9"
     },
     {
       "id": "local-cancelling",
@@ -1747,7 +1747,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-cancelling-landscape-dark.png",
-      "sha256": "5c51dfb6fc5330bee38c28c5e8f7df617e6efabe30c28889a1ab3becf3c8e6f3"
+      "sha256": "707be94d9c3096955a4ecbbfd2cd41694da90a7e33d1a7d3305bb05541f7deec"
     },
     {
       "id": "local-cancelling",
@@ -1755,7 +1755,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-cancelling-landscape-light.png",
-      "sha256": "ab8efa87ab562faa4f25bc385207cfe4bc77d848e487562ca6b4d158037372d4"
+      "sha256": "c563ba18552332cb5447e04c71bb2afe516dc876fb4836370e57e9fcbf3d51e2"
     },
     {
       "id": "local-cancelling",
@@ -1763,7 +1763,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-cancelling-phone-dark.png",
-      "sha256": "653321b6199e7856c4a1b881ce2d7dd78fbd9dd51c42155b23be86db807cca2a"
+      "sha256": "70a5b98016fa934967c0003a3829d13c05ad4045e946d86f9eb49aa1e23555af"
     },
     {
       "id": "local-cancelling",
@@ -1771,7 +1771,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-cancelling-phone-light.png",
-      "sha256": "073d553a8c3d3346e55a7f72a7c6986702053227eede872c7ef8b7cd6ad18fe2"
+      "sha256": "ea6191228da2fbf9d921d01b752d9afb5454bc0b73d6fd7924bdddcfc110f070"
     },
     {
       "id": "local-cancelling",
@@ -1779,7 +1779,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-cancelling-tablet-dark.png",
-      "sha256": "793b6fe0fa80b3f36176dc11f405b315542ddc41cc40ebff8d1b43b8a6caeee6"
+      "sha256": "6047858feb6583ea5e1fa2503c0c2a53c9ad942b063fe2a7df0f3e0ebb93ab06"
     },
     {
       "id": "local-cancelling",
@@ -1787,7 +1787,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-cancelling-tablet-light.png",
-      "sha256": "afa8256df3415d64fe0b25880c89ba6619d3e998b5b9719cf2cbea99ec2b99d1"
+      "sha256": "4ead07cdec8fcfa20730b63ba5c93ad1ca1d6befb9da15e7b05323628fa72d84"
     },
     {
       "id": "local-confirm",
@@ -1795,7 +1795,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-confirm-desktop-dark.png",
-      "sha256": "05966e43a56526b1a00d764f86518ad3fd3daa64f35e31a36f536ef1ddd6c1b6"
+      "sha256": "c767e748f7b574a05492f118ee5d5d01c9ab8a30872f1ae51b1e54170b00a53f"
     },
     {
       "id": "local-confirm",
@@ -1803,7 +1803,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-confirm-desktop-light.png",
-      "sha256": "7869ecaf85c7e60b351de4d749ff36f7c11fee893576d0d3a779709a11711d46"
+      "sha256": "e588989e69dbe31e8aaa6d71394b7898f07c311f58d4598cca98d66935f849e8"
     },
     {
       "id": "local-confirm",
@@ -1811,7 +1811,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-confirm-landscape-dark.png",
-      "sha256": "454201c1abfd6fea4904d081f89e7a431f2789082daebf8ce43e2f6f1d5a1460"
+      "sha256": "77559d3344c0ca58682544d6185a04347f81f2eab3bfd5163b7bf2da3a842ffe"
     },
     {
       "id": "local-confirm",
@@ -1819,7 +1819,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-confirm-landscape-light.png",
-      "sha256": "7c6fca69b2915b544f64016174d020e1b846b6b95bb22e6e2e38c6e5a3e454ca"
+      "sha256": "2b2c1ca0d506b314be0c5118ba0265b8d8e3ba359ad1e80c195ce5b3ce89ee5e"
     },
     {
       "id": "local-confirm",
@@ -1827,7 +1827,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-confirm-phone-dark.png",
-      "sha256": "984b2833276f771f083ee4784e50d0a6fd63d0d62f816936fec6b6140b9a7396"
+      "sha256": "dffaaeef572cbbaad09090831d0420818792bbee996c24b1a34f5f11ac22dc2c"
     },
     {
       "id": "local-confirm",
@@ -1835,7 +1835,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-confirm-phone-light.png",
-      "sha256": "58da190dfad543fa7a1f8e7499a7c263f3ca2cef60866e69ff5f802376b1f278"
+      "sha256": "6924476ee4189ff28c40d6273d80d62d4b07550e5d00fbc3dbe40784bbbc5ea3"
     },
     {
       "id": "local-confirm",
@@ -1843,7 +1843,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-confirm-tablet-dark.png",
-      "sha256": "0068ca24382db21da1de8b8acd78053e4622d019b0cfe37d9ea0c2e1076aba44"
+      "sha256": "fd2587d13f18994a771f18ea94b16b546646c09e0264f43ed198884c644d814e"
     },
     {
       "id": "local-confirm",
@@ -1851,7 +1851,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-confirm-tablet-light.png",
-      "sha256": "4c0385564ab1857f8b3a8823143df4278678ff61f920f22c74d07697177734f8"
+      "sha256": "324a8b1f54a3030b8005a183bd1efd9168b772b39bb1a2fae206de263a6de632"
     },
     {
       "id": "local-detection-failed",
@@ -1859,7 +1859,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-detection-failed-desktop-dark.png",
-      "sha256": "b4bdba8df86cc583ed957e3d7893d6b75e3c66bdf476ae4d31794dd9baf1379f"
+      "sha256": "2535251f9df0b7e1d9da817e0277335d746fcbbda825ac0a98d1e2921a7c2c7c"
     },
     {
       "id": "local-detection-failed",
@@ -1867,7 +1867,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-detection-failed-desktop-light.png",
-      "sha256": "49922924d577f22695309b0acdcd71f4108af30c2a35627b74f9a9b50c644b36"
+      "sha256": "22598180b776e5461113194c90e4a006dacd2bd4055e9311b9157026401857dd"
     },
     {
       "id": "local-detection-failed",
@@ -1875,7 +1875,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-detection-failed-landscape-dark.png",
-      "sha256": "b15f56514e05563eac98e5731db35e6ddb03ef4effcbc6b5f6475a69aa6240dd"
+      "sha256": "b8f140cf13ca5f4ede15b5e0057330ba0d1373b4185e639a5a465867596da0ee"
     },
     {
       "id": "local-detection-failed",
@@ -1883,7 +1883,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-detection-failed-landscape-light.png",
-      "sha256": "7ec49d64d010bb5d06b60a27a656d687106440912414da49cd4d7bfb23ff173b"
+      "sha256": "2118a40977ae037b7846b882bd4336920d84e7bdf7a8fceac5d64f15e4d49949"
     },
     {
       "id": "local-detection-failed",
@@ -1891,7 +1891,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-detection-failed-phone-dark.png",
-      "sha256": "6ad9571ac66ec3f89c18b3ff3153781a0a590654fa78ab448e97402b6ce8ffa5"
+      "sha256": "c2c910d57377a9068784ce92efb011a4e349e578a9d709f9c8cd463a9b7ad235"
     },
     {
       "id": "local-detection-failed",
@@ -1899,7 +1899,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-detection-failed-phone-light.png",
-      "sha256": "1bbf55b790626667eba5862cdda5fb2edacf68006634355509f75eb60b960ddf"
+      "sha256": "ff1223643e55fd1c6da3f58713a1ba1ca752a5b2b76bdf6037e05e6112b77781"
     },
     {
       "id": "local-detection-failed",
@@ -1907,7 +1907,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-detection-failed-tablet-dark.png",
-      "sha256": "f29a3fbf2e4ba352109fa41a2e326220d1a07f1afadaff8e07ba4e69fa7972e6"
+      "sha256": "158b46052f5fc3998f8f53df906a1625385de0693ecff36bfa415a873eee5e73"
     },
     {
       "id": "local-detection-failed",
@@ -1915,7 +1915,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-detection-failed-tablet-light.png",
-      "sha256": "4fe2381ef22f249bc8e1812ef0bbd2cb54e69baf5914ec77ab156f87c0e6964f"
+      "sha256": "7c4fcc24b9372eb1e6cdc8b2e24c2509d13797fbf487f8393bb250849437c2fc"
     },
     {
       "id": "local-index-failed",
@@ -1923,7 +1923,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-index-failed-desktop-dark.png",
-      "sha256": "fc6060f0ac184d7f754da4e6d349a6d0d0251512866d4193dc7932072f278f12"
+      "sha256": "53916a48049bfc3db2c79c3703fea9971c82ff2f4163eef1a868ba9568ba0c0a"
     },
     {
       "id": "local-index-failed",
@@ -1931,7 +1931,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-index-failed-desktop-light.png",
-      "sha256": "0fe463bc4e626e8590b55c70e76caa8def8fd1692b5854784053f0da38057a24"
+      "sha256": "6cc9a8e71cdea43278b2da1e2fcb222089fda04849b77fce249f2bd7b7e4f98b"
     },
     {
       "id": "local-index-failed",
@@ -1939,7 +1939,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-index-failed-landscape-dark.png",
-      "sha256": "2d967db9f10448704644746850443f9313180e62d0544c24c90b750c017540e3"
+      "sha256": "1ef8431520905f2213b4b761f81e1d0601f636a9bf8c8a61c65299de40c6dae2"
     },
     {
       "id": "local-index-failed",
@@ -1947,7 +1947,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-index-failed-landscape-light.png",
-      "sha256": "c50d95e388462314d8270570f369e9191f7d5193541082a047a27eaaff6affd3"
+      "sha256": "90f884ba18fb5b6af357aa49616157681e5e5fa0c01c5d5bda0572d435083968"
     },
     {
       "id": "local-index-failed",
@@ -1955,7 +1955,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-index-failed-phone-dark.png",
-      "sha256": "b5bdba0770573a59c4b2c4aa8b3ad9755d7ba84a53c0b5f61aff41125f588f7b"
+      "sha256": "5c0a6b8a84b40f88d8006858d86875540b043e165d75a28f341b94e42c1da47a"
     },
     {
       "id": "local-index-failed",
@@ -1963,7 +1963,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-index-failed-phone-light.png",
-      "sha256": "06805fad082f5483ca9f5ea51498d24d88ca5384dd4887371d1e2bcb2a1b13f9"
+      "sha256": "f85a6f87b8ba8ea478f71bbf333e20f3321d1a768e27674baf3ac2ebff1cabe7"
     },
     {
       "id": "local-index-failed",
@@ -1971,7 +1971,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-index-failed-tablet-dark.png",
-      "sha256": "854862bf42dd0d8f5136eff8a794075d3040c7164422f0037c9b6cb035c17936"
+      "sha256": "1110dd502ea7c8f06d8642d7b2e9c0f66b35837d19b8b8e8f26082858f5b5c17"
     },
     {
       "id": "local-index-failed",
@@ -1979,7 +1979,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-index-failed-tablet-light.png",
-      "sha256": "6f07ba71707bba0c1900ee0286741be28f84690aeebbad5a4bd00fedf19a6dba"
+      "sha256": "832c7a48beb3f50cc880528d64c433bf34ce0d85b4438eff6e3119178bc506f6"
     },
     {
       "id": "local-running",
@@ -1987,7 +1987,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-running-desktop-dark.png",
-      "sha256": "3be3d60f07da01b930f81e3ca6a0b8bf98e6132e4fd549a780019ae66f6dfcfa"
+      "sha256": "ca6d73b057ad57cf8b6fa7f08b7f089409c6249481aa0052580584160573f892"
     },
     {
       "id": "local-running",
@@ -1995,7 +1995,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-running-desktop-light.png",
-      "sha256": "b9f2284b4ebfdb98ed5b62f11cc94406e0f42756d11c6e88720c379e61ffd303"
+      "sha256": "cab53e5c8fc27aecceee19a0eeca82ec0e296c80a3cf54bd5edf82855e9dd965"
     },
     {
       "id": "local-running",
@@ -2003,7 +2003,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-running-landscape-dark.png",
-      "sha256": "e79267a314c71c32a02dead041f6f337c99203334fa684fb32c855dfd94356cc"
+      "sha256": "b78d7bc9c77f0b4273305a20f2e19a63af0a0302f9adae4f1eb0f845c84a094f"
     },
     {
       "id": "local-running",
@@ -2011,7 +2011,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-running-landscape-light.png",
-      "sha256": "226c0c3765d190069d4dffe4ec69dcd6e89d3d7948893f939c8aa3587044cdf9"
+      "sha256": "3f960a462d3b364b9de19be527ee4589f3f66d99ac4efd2d150fa2605b6bd489"
     },
     {
       "id": "local-running",
@@ -2019,7 +2019,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-running-phone-dark.png",
-      "sha256": "8b52523e4a717683ce398b8c50b20b08b334a42ba7a5c49b0082f05d216fb039"
+      "sha256": "052cd16120231cbf7fd9f45b1ffdeca3e25a90a6d10585839a6ebf0dbf3f070d"
     },
     {
       "id": "local-running",
@@ -2027,7 +2027,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-running-phone-light.png",
-      "sha256": "34da6bcc760afd716878b2d7e70f9fd1e81aa9d5e480b770b6d468602e4edfcf"
+      "sha256": "8122463ccad75b3e6efd4604be5b4babf21984503c8acf335b2225708c6281e0"
     },
     {
       "id": "local-running",
@@ -2035,7 +2035,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-running-tablet-dark.png",
-      "sha256": "d8370a1baa17e0d9e69ffc95f2e616561717f612cd834825ab15744cd5c33f86"
+      "sha256": "fd9db5e35fa0689cb36324c7eea7946e3f4db39c9bd4cd9b8b20eeb3283761d0"
     },
     {
       "id": "local-running",
@@ -2043,7 +2043,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-running-tablet-light.png",
-      "sha256": "3428eebde29270644daaf617eeb0954466a717566cc6e48a96e12a0a9fb1f479"
+      "sha256": "f580f12baf05e04b4f86a8f6ba45f7759d3223e9a6d2fd7c0e4235a49c874b14"
     },
     {
       "id": "local-saved",
@@ -2051,7 +2051,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-saved-desktop-dark.png",
-      "sha256": "23d317c37f6de8b324ad0187ef5e3d80476d1add577ecf7e5dd617973586bfe3"
+      "sha256": "45bb589a3e200e542bea6cbe4724bd464b72ec1e31ef0b8b8057ad19b12f8aa2"
     },
     {
       "id": "local-saved",
@@ -2059,7 +2059,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-saved-desktop-light.png",
-      "sha256": "52d603c38c7043afdf696df0a535d27524430dd0aba696c9c593acaea03ece22"
+      "sha256": "f206502e6234c2fe514c094064ca759e8b4ecd12183f69aff871d67cae0821b7"
     },
     {
       "id": "local-saved",
@@ -2067,7 +2067,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-saved-landscape-dark.png",
-      "sha256": "bcfb2be9d4fe49690b3ecabc837c94518099f394b2ef5e84a760224536d28e45"
+      "sha256": "c61e829d1b6b38f5da0b48ed97830663561e5608d8018d33e5c1377c2668dec0"
     },
     {
       "id": "local-saved",
@@ -2075,7 +2075,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-saved-landscape-light.png",
-      "sha256": "200de13613efc41ad4905fa3452aa768c54330e3145d7526ebbd01ceb6f9175c"
+      "sha256": "f75d929fc0d9e722d46158af6434c8e652a4a1de02e3c46b22ccad16287a551e"
     },
     {
       "id": "local-saved",
@@ -2083,7 +2083,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-saved-phone-dark.png",
-      "sha256": "d68e5117ff1bb251cfa81ed34e14e8557a695c79a6f0d85e254fd29f9e209da2"
+      "sha256": "df56333572b8d9bdd50c6e225702cf43e77ac5ccb06b95a6764e15be4c7428d4"
     },
     {
       "id": "local-saved",
@@ -2091,7 +2091,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-saved-phone-light.png",
-      "sha256": "8f3afce9d65d5c07d4b7390c3a37e9853d8dce53535692cce2059176675e2b00"
+      "sha256": "0460f859f174a2cbf5c8e261fdae1a2be26fa8f18be17ee86d48747d67722ceb"
     },
     {
       "id": "local-saved",
@@ -2099,7 +2099,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-saved-tablet-dark.png",
-      "sha256": "13e9bdf31e654224e688d0aec2d880a4e13e09e884e792a153da426a6f13662c"
+      "sha256": "da03859da9cfa69d0af63851b3dda25c94e752c4979c46fec56e5f9f97d1d234"
     },
     {
       "id": "local-saved",
@@ -2107,7 +2107,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-saved-tablet-light.png",
-      "sha256": "f7241d354621f88797cfacce5d203efbfb354e7f9dde6e66baa49b3e6526a1e9"
+      "sha256": "ce7504899ebf185e8271b6f9a8d7b9692fba620c14ed893e3a9be567fbe7d64d"
     },
     {
       "id": "local-start",
@@ -2115,7 +2115,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-start-desktop-dark.png",
-      "sha256": "2bdf527f8b24c5f569f63d28ffaf8f4612cfcc9e2485b461efdcc03d5c94819e"
+      "sha256": "c74b9c047bd8e065fa4f7524d2c032ffd8795bba9e67dd3bf9629b68587660b7"
     },
     {
       "id": "local-start",
@@ -2123,7 +2123,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-start-desktop-light.png",
-      "sha256": "8c4ecacf53e44e3d7501c6cf6c7c57b2c2be8e98484e50df2ed6ddea4333f8fe"
+      "sha256": "634577d517ac4e25645e5a916684a538cef10adb5fc2b0285f0b36a7d40e9495"
     },
     {
       "id": "local-start",
@@ -2131,7 +2131,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-start-landscape-dark.png",
-      "sha256": "8591da281adeba3503ce7c796eb1085430145bf63161607dce0c3960873fbdfb"
+      "sha256": "b0e012227f69e8e9ff72fab946691ff39d4af55a8025ee468204352da5b9f797"
     },
     {
       "id": "local-start",
@@ -2139,7 +2139,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-start-landscape-light.png",
-      "sha256": "a47fe1c19998dca5b015babd146cd4458db91ec056ea126ec44cfc2f7ccc9603"
+      "sha256": "9c6f7aabdffbada58c86ace84506dca182d02a509928230a141d73ad16ebdff4"
     },
     {
       "id": "local-start",
@@ -2147,7 +2147,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-start-phone-dark.png",
-      "sha256": "c797a31ea1449cd55c34050889ef9fd8b4abc47d43a5e9776caea92f666896bf"
+      "sha256": "222bef1313f386d11b1f538394f19516c61399ac8f8ad95601d9e35ffee99579"
     },
     {
       "id": "local-start",
@@ -2155,7 +2155,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-start-phone-light.png",
-      "sha256": "bd9703c6e80268b5a82d4474f9f9bd5f0dc98f8655a3c117e2f86089bcc64402"
+      "sha256": "c399b335c67eba7c8b673e63b2b554370c7049096b091889274666e4eebf8449"
     },
     {
       "id": "local-start",
@@ -2163,7 +2163,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-start-tablet-dark.png",
-      "sha256": "7ef28d847f63e25fb6cd475ca1e47a2f54a3707c35802e6d8f3eb45d35b99422"
+      "sha256": "426499c63077df3d5321fd94927b4b734e40f039bef57c81cce639169dcf6c34"
     },
     {
       "id": "local-start",
@@ -2171,7 +2171,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-start-tablet-light.png",
-      "sha256": "b527f53a5aecccd93fbb053b5f2dc25818855d689746d2705aa26fe8e1e92f55"
+      "sha256": "ee8844131d402cce007f405905c189b7ab47a1c0d142ce76db899305ea91b191"
     },
     {
       "id": "map-detail-pending",
@@ -4702,61 +4702,131 @@
       "sha256": "9215cbe7be29cf4b016a1959f5222109c0ae6f3a59148ab685e04e2bedef2f75"
     }
   ],
-  "recapture": {
-    "reason": "The first references had timing- and paint-history-dependent pixels: they were captured before district symbols and CodeMirror measurement had settled, with partial-raster patches whose anti-aliased edges differ from a full raster, and with fractional-height CodeMirror lines whose glyph baselines flipped by one pixel between runs. The harness now waits for a quiet page, rasterises whole tiles and uses whole-pixel CodeMirror line boxes for source captures (web/scripts/check-storybook.mjs). The listed references were re-captured from that state; the 580 candidates of two earlier runs of the same code were byte-identical apart from the final fix.",
-    "sourceRun": {
-      "id": "42184473939",
-      "workflow": "storybook.yml",
-      "artifact": "tolmap-visual-candidates",
-      "url": "https://github.com/onsager-ai/tolmap/actions/runs/42184473939",
-      "sourceSha": "e0bf72a1aaf2179a00ee20f9bff354cade92e8d2"
+  "recaptures": [
+    {
+      "files": [
+        "oss-map-district-tablet-dark.png",
+        "oss-map-district-tablet-light.png",
+        "oss-map-path-landscape-dark.png",
+        "oss-map-path-landscape-light.png",
+        "oss-map-quality-tablet-dark.png",
+        "oss-map-quality-tablet-light.png",
+        "oss-map-search-empty-landscape-dark.png",
+        "oss-map-search-empty-landscape-light.png",
+        "oss-map-search-landscape-dark.png",
+        "oss-map-search-landscape-light.png",
+        "oss-map-search-phone-dark.png",
+        "oss-map-search-phone-light.png",
+        "oss-map-symbol-tablet-dark.png",
+        "oss-source-long-line-desktop-dark.png",
+        "oss-source-long-line-desktop-light.png",
+        "oss-source-long-line-landscape-dark.png",
+        "oss-source-long-line-landscape-light.png",
+        "oss-source-long-line-phone-dark.png",
+        "oss-source-long-line-phone-light.png",
+        "oss-source-long-line-tablet-dark.png",
+        "oss-source-long-line-tablet-light.png",
+        "oss-source-ready-desktop-dark.png",
+        "oss-source-ready-desktop-light.png",
+        "oss-source-ready-landscape-dark.png",
+        "oss-source-ready-landscape-light.png",
+        "oss-source-ready-phone-dark.png",
+        "oss-source-ready-phone-light.png",
+        "oss-source-ready-tablet-dark.png",
+        "oss-source-ready-tablet-light.png",
+        "oss-source-search-empty-desktop-dark.png",
+        "oss-source-search-empty-desktop-light.png",
+        "oss-source-search-empty-landscape-dark.png",
+        "oss-source-search-empty-landscape-light.png",
+        "oss-source-search-empty-phone-dark.png",
+        "oss-source-search-empty-phone-light.png",
+        "oss-source-search-empty-tablet-dark.png",
+        "oss-source-search-empty-tablet-light.png",
+        "oss-source-search-desktop-dark.png",
+        "oss-source-search-desktop-light.png",
+        "oss-source-search-landscape-dark.png",
+        "oss-source-search-landscape-light.png",
+        "oss-source-search-phone-dark.png",
+        "oss-source-search-phone-light.png",
+        "oss-source-search-tablet-dark.png",
+        "oss-source-search-tablet-light.png"
+      ],
+      "reason": "The first references had timing- and paint-history-dependent pixels: they were captured before district symbols and CodeMirror measurement had settled, with partial-raster patches whose anti-aliased edges differ from a full raster, and with fractional-height CodeMirror lines whose glyph baselines flipped by one pixel between runs. The harness now waits for a quiet page, rasterises whole tiles and uses whole-pixel CodeMirror line boxes for source captures (web/scripts/check-storybook.mjs). The listed references were re-captured from that state; the 580 candidates of two earlier runs of the same code were byte-identical apart from the final fix.",
+      "sourceRun": {
+        "artifact": "tolmap-visual-candidates",
+        "id": "42184473939",
+        "sourceSha": "e0bf72a1aaf2179a00ee20f9bff354cade92e8d2",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42184473939",
+        "workflow": "storybook.yml"
+      }
     },
-    "files": [
-      "oss-map-district-tablet-dark.png",
-      "oss-map-district-tablet-light.png",
-      "oss-map-path-landscape-dark.png",
-      "oss-map-path-landscape-light.png",
-      "oss-map-quality-tablet-dark.png",
-      "oss-map-quality-tablet-light.png",
-      "oss-map-search-empty-landscape-dark.png",
-      "oss-map-search-empty-landscape-light.png",
-      "oss-map-search-landscape-dark.png",
-      "oss-map-search-landscape-light.png",
-      "oss-map-search-phone-dark.png",
-      "oss-map-search-phone-light.png",
-      "oss-map-symbol-tablet-dark.png",
-      "oss-source-long-line-desktop-dark.png",
-      "oss-source-long-line-desktop-light.png",
-      "oss-source-long-line-landscape-dark.png",
-      "oss-source-long-line-landscape-light.png",
-      "oss-source-long-line-phone-dark.png",
-      "oss-source-long-line-phone-light.png",
-      "oss-source-long-line-tablet-dark.png",
-      "oss-source-long-line-tablet-light.png",
-      "oss-source-ready-desktop-dark.png",
-      "oss-source-ready-desktop-light.png",
-      "oss-source-ready-landscape-dark.png",
-      "oss-source-ready-landscape-light.png",
-      "oss-source-ready-phone-dark.png",
-      "oss-source-ready-phone-light.png",
-      "oss-source-ready-tablet-dark.png",
-      "oss-source-ready-tablet-light.png",
-      "oss-source-search-empty-desktop-dark.png",
-      "oss-source-search-empty-desktop-light.png",
-      "oss-source-search-empty-landscape-dark.png",
-      "oss-source-search-empty-landscape-light.png",
-      "oss-source-search-empty-phone-dark.png",
-      "oss-source-search-empty-phone-light.png",
-      "oss-source-search-empty-tablet-dark.png",
-      "oss-source-search-empty-tablet-light.png",
-      "oss-source-search-desktop-dark.png",
-      "oss-source-search-desktop-light.png",
-      "oss-source-search-landscape-dark.png",
-      "oss-source-search-landscape-light.png",
-      "oss-source-search-phone-dark.png",
-      "oss-source-search-phone-light.png",
-      "oss-source-search-tablet-dark.png",
-      "oss-source-search-tablet-light.png"
-    ]
-  }
+    {
+      "files": [
+        "oss-local-cancelling-desktop-dark.png",
+        "oss-local-cancelling-desktop-light.png",
+        "oss-local-cancelling-landscape-dark.png",
+        "oss-local-cancelling-landscape-light.png",
+        "oss-local-cancelling-phone-dark.png",
+        "oss-local-cancelling-phone-light.png",
+        "oss-local-cancelling-tablet-dark.png",
+        "oss-local-cancelling-tablet-light.png",
+        "oss-local-confirm-desktop-dark.png",
+        "oss-local-confirm-desktop-light.png",
+        "oss-local-confirm-landscape-dark.png",
+        "oss-local-confirm-landscape-light.png",
+        "oss-local-confirm-phone-dark.png",
+        "oss-local-confirm-phone-light.png",
+        "oss-local-confirm-tablet-dark.png",
+        "oss-local-confirm-tablet-light.png",
+        "oss-local-detection-failed-desktop-dark.png",
+        "oss-local-detection-failed-desktop-light.png",
+        "oss-local-detection-failed-landscape-dark.png",
+        "oss-local-detection-failed-landscape-light.png",
+        "oss-local-detection-failed-phone-dark.png",
+        "oss-local-detection-failed-phone-light.png",
+        "oss-local-detection-failed-tablet-dark.png",
+        "oss-local-detection-failed-tablet-light.png",
+        "oss-local-index-failed-desktop-dark.png",
+        "oss-local-index-failed-desktop-light.png",
+        "oss-local-index-failed-landscape-dark.png",
+        "oss-local-index-failed-landscape-light.png",
+        "oss-local-index-failed-phone-dark.png",
+        "oss-local-index-failed-phone-light.png",
+        "oss-local-index-failed-tablet-dark.png",
+        "oss-local-index-failed-tablet-light.png",
+        "oss-local-running-desktop-dark.png",
+        "oss-local-running-desktop-light.png",
+        "oss-local-running-landscape-dark.png",
+        "oss-local-running-landscape-light.png",
+        "oss-local-running-phone-dark.png",
+        "oss-local-running-phone-light.png",
+        "oss-local-running-tablet-dark.png",
+        "oss-local-running-tablet-light.png",
+        "oss-local-saved-desktop-dark.png",
+        "oss-local-saved-desktop-light.png",
+        "oss-local-saved-landscape-dark.png",
+        "oss-local-saved-landscape-light.png",
+        "oss-local-saved-phone-dark.png",
+        "oss-local-saved-phone-light.png",
+        "oss-local-saved-tablet-dark.png",
+        "oss-local-saved-tablet-light.png",
+        "oss-local-start-desktop-dark.png",
+        "oss-local-start-desktop-light.png",
+        "oss-local-start-landscape-dark.png",
+        "oss-local-start-landscape-light.png",
+        "oss-local-start-phone-dark.png",
+        "oss-local-start-phone-light.png",
+        "oss-local-start-tablet-dark.png",
+        "oss-local-start-tablet-light.png"
+      ],
+      "reason": "PR #243 adds the approved Tolmap mark beside the tolmap local page heading, which changes every native local-page capture. Approved by the repository owner in chat (\"Merge\", 2026-11-06).",
+      "sourceRun": {
+        "artifact": "tolmap-visual-candidates",
+        "id": "42234704875",
+        "sourceSha": "d13213d9d309ea604b9f7155db2e1c52f27be4d5",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42234704875",
+        "workflow": "storybook.yml"
+      }
+    }
+  ]
 }

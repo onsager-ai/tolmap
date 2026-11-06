@@ -720,7 +720,10 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             .into_response());
     }
     ensure!(
-        path.starts_with("/assets/") || path.starts_with("/fonts/") || path == "/favicon.svg",
+        path.starts_with("/assets/")
+            || path.starts_with("/fonts/")
+            || path == "/favicon.svg"
+            || path == "/favicon.ico",
         "route"
     );
     ensure!(source::valid_path(path.trim_start_matches('/')), "path");
@@ -731,6 +734,8 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
         Some("css") => "text/css",
         Some("woff2") => "font/woff2",
         Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("png") => "image/png",
         _ => "application/octet-stream",
     };
     Ok(Response::builder()

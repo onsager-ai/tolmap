@@ -37,6 +37,7 @@ The directory ships with the web application at `/assets/brand/`.
 - `*-dark.svg` / `.png`: white artwork on transparency, for dark backgrounds.
 - `tolmap-{16,24,32,48,64,192,512,1024}.png`: transparent black mark exports.
 - `tolmap-app-icon.png`: white mark on Duhem's optional navy accent, `#1E3A5F`.
+- `tolmap-apple-touch-icon.png`: 180 px opaque export of the app icon, composited on `#1E3A5F` for iOS home-screen bookmarks.
 - `Inter-OFL.txt`: the wordmark font's license and copyright notice.
 
 The default identity is monochrome. Inline SVG uses `currentColor`, so the
