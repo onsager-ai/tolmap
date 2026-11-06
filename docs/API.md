@@ -44,6 +44,7 @@ a per-repository thing, not a deployment thing -- docs/ARCHITECTURE.md).
 |---|---|---|
 | `TOLMAP_PORT` | `8787` | listen port |
 | `TOLMAP_BIND_ADDR` | `127.0.0.1` | listen host -- loopback unless explicitly widened (2026-09-20) |
+| `TOLMAP_ALLOW_LOCAL_PATHS` | unset | `1` lets `POST /api/index` accept `{"path": ...}` (a directory on the server's disk) when bound off loopback. Off by default; a loopback bind always accepts it. Judged on the bind address, not the peer (a proxied or Docker-published peer is never loopback) |
 | `TOLMAP_STATIC_DIR` | unset | serve the built web bundle from this directory alongside the API when set (see above) |
 | `TOLMAP_PRUNE_VARIANT` | `node-relative` | blend/prune route: `absolute`, `percentile`, `node-relative`, or `pre-rescale`; unset or invalid uses `node-relative` |
 | `TOLMAP_REFS` | `hand` | reference graph for job maps: `hand` (tree-sitter resolver) or `scip` (issue #110: the SCIP indexers from the `TOLMAP_SCIP_*` rows below, with a per-language fallback to `hand` -- including when an indexer is not installed -- recorded in the map's `coverage.references`). The default is shared with `tolmap build --refs`; unset or invalid uses `hand` |
@@ -97,6 +98,12 @@ A request names a repository three ways:
 - `{"path": "<local path>"}` -- an already-checked-out local directory, used
   for tests and fixtures without hitting the network. Its `slug` is
   `local/<basename>`, so `/tmp/tolmap-fixtures/flask` becomes `local/flask`.
+  Accepted only when `tolmap serve` is bound to loopback (the default) or
+  `TOLMAP_ALLOW_LOCAL_PATHS=1` is set; otherwise it is rejected with 400
+  `invalid_request` before any filesystem access, job, clone or map.
+  **Behaviour change (2026-11-06):** a deployment that sets
+  `TOLMAP_BIND_ADDR` off loopback and sends `{"path": ...}` (for example a
+  Docker fixture job) must now also set `TOLMAP_ALLOW_LOCAL_PATHS=1`.
 
 Every repository has a canonical `slug` of the form `owner/repo`.
 An `owner` or `repo` of `.` or `..`, or one holding a `/` or `\`, is rejected with `invalid_request`.

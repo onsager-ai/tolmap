@@ -117,6 +117,18 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_BIND_ADDR`.
     pub bind: SocketAddr,
+    /// Accept `{"path": ...}` (index a directory on the server's disk) on
+    /// `POST /api/index` when `bind` is not loopback. Off by default: a
+    /// service reachable off-box must not read arbitrary server
+    /// directories named in a request body (issue #226). A loopback bind
+    /// always accepts it, so local development is unchanged. The
+    /// predicate is the bind address, not the peer: behind Docker port
+    /// publishing or a reverse proxy the peer is never loopback even for
+    /// the operator, while a loopback bind is reachable only from the
+    /// host itself.
+    ///
+    /// Env: `TOLMAP_ALLOW_LOCAL_PATHS=1`.
+    pub allow_local_paths: bool,
     pub db_path: PathBuf,
     pub cache_dir: PathBuf,
     /// Serve the built web bundle (and fall back unmatched non-`/api`
@@ -197,7 +209,7 @@ pub struct ServeConfig {
 impl ServeConfig {
     /// Reads overridable settings from the environment
     /// (`TOLMAP_PORT`, `TOLMAP_BIND_ADDR`, `TOLMAP_DB_PATH`,
-    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`,
+    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`, `TOLMAP_ALLOW_LOCAL_PATHS`,
     /// `TOLMAP_PRUNE_VARIANT`, `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus
     /// `Limits::from_env`'s
     /// `TOLMAP_CLONE_CACHE_BYTES`/queue/rate variables); anything left unset uses its
@@ -218,6 +230,13 @@ impl ServeConfig {
         // take the service down at startup (same handling as every
         // queue/rate variable).
         let bind_ip = env_var_or("TOLMAP_BIND_ADDR", IpAddr::V4(Ipv4Addr::LOCALHOST));
+        // Only an explicit `1` opts in; see the `allow_local_paths` field.
+        let allow_local_paths = matches!(
+            env::var("TOLMAP_ALLOW_LOCAL_PATHS")
+                .as_deref()
+                .map(str::trim),
+            Ok("1")
+        );
         let cache_dir = env::var("TOLMAP_CACHE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| env::temp_dir().join("tolmap-cache"));
@@ -250,6 +269,7 @@ impl ServeConfig {
         let worker_gid = env_var_or("TOLMAP_WORKER_GID", 10001u32);
         ServeConfig {
             bind: SocketAddr::new(bind_ip, port),
+            allow_local_paths,
             db_path,
             cache_dir,
             static_dir,
