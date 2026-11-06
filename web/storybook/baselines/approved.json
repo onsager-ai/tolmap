@@ -1,8 +1,4705 @@
 {
   "schemaVersion": 1,
-  "status": "pending-review",
-  "sourceRevision": null,
-  "review": null,
-  "provenance": null,
-  "images": []
+  "status": "approved",
+  "sourceRevision": "fd1d6c5559c5790135ab3d02950c6d596b4c8e20",
+  "review": {
+    "reviewer": "tikazyq",
+    "role": "repository owner",
+    "decision": "approved",
+    "date": "2026-11-06",
+    "sourceRun": {
+      "id": "42169568634",
+      "workflow": "storybook.yml",
+      "artifact": "tolmap-visual-candidates",
+      "url": "https://github.com/onsager-ai/tolmap/actions/runs/42169568634",
+      "sourceSha": "fd1d6c5559c5790135ab3d02950c6d596b4c8e20"
+    },
+    "observedDiff": "No prior approved references existed, so there was no pixel diff; every candidate in the run had status passed.",
+    "note": "Approval was given in chat on the repository owner's instruction (issue onsager-ai/tolmap#219) and recorded by an agent on that instruction."
+  },
+  "provenance": {
+    "browser": {
+      "name": "Chromium",
+      "version": "153.0.8010.12"
+    },
+    "environment": {
+      "locale": "en-US",
+      "timezone": "UTC",
+      "scale": 1,
+      "reducedMotion": "reduce",
+      "fixedClock": "2026-10-19T08:00:00Z",
+      "viewports": [
+        {
+          "name": "phone",
+          "width": 390,
+          "height": 844,
+          "hasTouch": true
+        },
+        {
+          "name": "landscape",
+          "width": 844,
+          "height": 390,
+          "hasTouch": true
+        },
+        {
+          "name": "tablet",
+          "width": 820,
+          "height": 1180,
+          "hasTouch": true
+        },
+        {
+          "name": "desktop",
+          "width": 1440,
+          "height": 1000,
+          "hasTouch": false
+        }
+      ]
+    },
+    "fixture": {
+      "path": "web/check-fixtures/onsager-ai__tolmap.json.gz",
+      "sha256": "a6799fe075290da3c7d0b841b52b3085e4998f17a8d7da42396704c51e83332f"
+    }
+  },
+  "images": [
+    {
+      "id": "failed-busy",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-busy-desktop-dark.png",
+      "sha256": "d5d1c5b1b4daadb8c9682afc7b0004c9921ae0fb448c4aee8362590ffa91a2f3"
+    },
+    {
+      "id": "failed-busy",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-busy-desktop-light.png",
+      "sha256": "006d0c6d8bd44e29cf633990c27743b432e2db9e08f27faa4ed8e05727c5b1c5"
+    },
+    {
+      "id": "failed-busy",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-busy-landscape-dark.png",
+      "sha256": "53ba91653d23dd56444085039c508e501e06268a8e464fbeaf5a401d698e97f0"
+    },
+    {
+      "id": "failed-busy",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-busy-landscape-light.png",
+      "sha256": "1858c754b516704d531254c9c32ed25015511e01256068142754dbfcb3a54c71"
+    },
+    {
+      "id": "failed-busy",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-busy-phone-dark.png",
+      "sha256": "18049622aa630f1b37d35cf854e510e91890487aae6c7142c56d0477d961545b"
+    },
+    {
+      "id": "failed-busy",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-busy-phone-light.png",
+      "sha256": "6a54995f2d25c081f84a69f6651a1eba53f9027dd4747a98f53b1d176ae4e436"
+    },
+    {
+      "id": "failed-busy",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-busy-tablet-dark.png",
+      "sha256": "2656c9594c5f20995ffdbe10914adf40b55e1029aabb3c9e55c73279d3b97992"
+    },
+    {
+      "id": "failed-busy",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-busy-tablet-light.png",
+      "sha256": "84eb7517d95b1a26c3b9d4dffcc8528666b86b0d90f8a11fa12b1fa2bade7ccc"
+    },
+    {
+      "id": "failed-cancelled",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-cancelled-desktop-dark.png",
+      "sha256": "090697825ec5fe648dbab942ad3480c6f171568c73e2429d837c3c8bca1a154f"
+    },
+    {
+      "id": "failed-cancelled",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-cancelled-desktop-light.png",
+      "sha256": "7ef61011cdde3e8ecd7b8282254442d248a9c1c2173c87b4eb4c7dbeb236fcdf"
+    },
+    {
+      "id": "failed-cancelled",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-cancelled-landscape-dark.png",
+      "sha256": "4e93d2ad258c54f9f66d957c18e97338b59a1577a172191176aa86152f6d8c9d"
+    },
+    {
+      "id": "failed-cancelled",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-cancelled-landscape-light.png",
+      "sha256": "88801201890282eb9122b8e74e3291d8a206876270cd38458bd28b6a03d8e72b"
+    },
+    {
+      "id": "failed-cancelled",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-cancelled-phone-dark.png",
+      "sha256": "2c91d77be95759a3f3b3ec142e86a0d339933d4870cae4bd4aa0986e9f79dd74"
+    },
+    {
+      "id": "failed-cancelled",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-cancelled-phone-light.png",
+      "sha256": "e67667e76562f756a8634dc6bbec4587eae17fa03b2256264a2d5aac6a38e0a4"
+    },
+    {
+      "id": "failed-cancelled",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-cancelled-tablet-dark.png",
+      "sha256": "97753c0c4618b670db401880463a235872b00ae5b43503040e6014ed46fa5547"
+    },
+    {
+      "id": "failed-cancelled",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-cancelled-tablet-light.png",
+      "sha256": "c9f846239198c6a1968de8061e1e55d0639f0b98b4149556d77290369db4d063"
+    },
+    {
+      "id": "failed-clone-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-clone-failed-desktop-dark.png",
+      "sha256": "1177bb9b3171c2e9c50c7fcfd2d2ee8433e9978476f0f8386567ae698892d179"
+    },
+    {
+      "id": "failed-clone-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-clone-failed-desktop-light.png",
+      "sha256": "409e8fd008f6cb48cb45773aacd2edd909bba5dbe759d1889976581afaee6620"
+    },
+    {
+      "id": "failed-clone-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-clone-failed-landscape-dark.png",
+      "sha256": "b2dbede4921f6a2f00be2ba722d54c4fe9d6b2b45e80c08da45810b996400361"
+    },
+    {
+      "id": "failed-clone-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-clone-failed-landscape-light.png",
+      "sha256": "3db0401f5fb19ff2352e33d1c82cb61dc91e06008aa230efdc546bdf65d38bec"
+    },
+    {
+      "id": "failed-clone-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-clone-failed-phone-dark.png",
+      "sha256": "107fbba47bd0c4b3b892f4237baf334a6ad3cdfa5162fe0c537a6df991a4c5c9"
+    },
+    {
+      "id": "failed-clone-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-clone-failed-phone-light.png",
+      "sha256": "afd5e245889b768e6171d1ca7d590ba5229a919612e421c895ffbb7f56f6de53"
+    },
+    {
+      "id": "failed-clone-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-clone-failed-tablet-dark.png",
+      "sha256": "d83c2e46f8189482ca3f51190d61bf4bb26996917cd3cf346da8b387ea8dc4fb"
+    },
+    {
+      "id": "failed-clone-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-clone-failed-tablet-light.png",
+      "sha256": "73edd2f4e3011c3c43e6994f0a4de8ef9d9addb79fc2c7b437a48859079f2194"
+    },
+    {
+      "id": "failed-detection-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-detection-failed-desktop-dark.png",
+      "sha256": "2c46750cc8c313a880acc89ddf841ed1bffa981643d8e04d0d89598399d0439d"
+    },
+    {
+      "id": "failed-detection-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-detection-failed-desktop-light.png",
+      "sha256": "cf783045d63b38fe51875475742b3d10dafb3ea282d29813dd454d702c6452d1"
+    },
+    {
+      "id": "failed-detection-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-detection-failed-landscape-dark.png",
+      "sha256": "325f2914d82ac8b75fd585a4a94d76de954d69bf4dabb8796eecbbd6273c9372"
+    },
+    {
+      "id": "failed-detection-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-detection-failed-landscape-light.png",
+      "sha256": "19e3311037cc7fe4894333613a666f66c34d5770fb869bffb216aeedcaed6c3c"
+    },
+    {
+      "id": "failed-detection-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-detection-failed-phone-dark.png",
+      "sha256": "347d612764ab3b360d1cd27b6a7126b338141acb46997366c40e19c362114144"
+    },
+    {
+      "id": "failed-detection-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-detection-failed-phone-light.png",
+      "sha256": "47ea3f0ecbc8c39aad70708bc0dfd7bfdc47f60ea05ed968136408cae1604c34"
+    },
+    {
+      "id": "failed-detection-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-detection-failed-tablet-dark.png",
+      "sha256": "95afb86da180dbac5d4edc9f52c338539a063baf5c19352649f60f9e35acec9f"
+    },
+    {
+      "id": "failed-detection-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-detection-failed-tablet-light.png",
+      "sha256": "f19741e7cae5c1b2c048aa63a8628fc99c3a458fbead60b4aa2311be4075d32d"
+    },
+    {
+      "id": "failed-detection-uncertain",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-detection-uncertain-desktop-dark.png",
+      "sha256": "1581a1bc41876168d4ba5280963ebb6ad980a63fe9ecda08edd4e7acd994a99e"
+    },
+    {
+      "id": "failed-detection-uncertain",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-detection-uncertain-desktop-light.png",
+      "sha256": "d7ec25903a54016e7d5d7ca6410957326f39d35c1d253b9c9f3746a8e47de9d5"
+    },
+    {
+      "id": "failed-detection-uncertain",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-detection-uncertain-landscape-dark.png",
+      "sha256": "da65afb7e2c4d4f5f6ff778fa0bacd07c4b6299b49f160ac28d3867d75cdd7ea"
+    },
+    {
+      "id": "failed-detection-uncertain",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-detection-uncertain-landscape-light.png",
+      "sha256": "f180a3a1ec4da4f2c5d1eec7d79cdc71826be63091cfcae1d0d397f2c294d3b9"
+    },
+    {
+      "id": "failed-detection-uncertain",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-detection-uncertain-phone-dark.png",
+      "sha256": "a28db67100c8359f66588cd72944a286106211803f7f197f3ca1354ff4f6aa86"
+    },
+    {
+      "id": "failed-detection-uncertain",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-detection-uncertain-phone-light.png",
+      "sha256": "b43139772c3fcca4140690c7eb2b075cfa3a3f71dc65a82bd46b2e3f35cc2593"
+    },
+    {
+      "id": "failed-detection-uncertain",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-detection-uncertain-tablet-dark.png",
+      "sha256": "abb5b0191502f5d6f3ed2edcbae5cf4729a073be7aeb486b7cb837b6766f4990"
+    },
+    {
+      "id": "failed-detection-uncertain",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-detection-uncertain-tablet-light.png",
+      "sha256": "0344d1d25c62620667381343e88992eeca64b04d05f68b5b4d341b5bd1f5341b"
+    },
+    {
+      "id": "failed-index-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-index-failed-desktop-dark.png",
+      "sha256": "c7b6ba822ebaaf67398d9f1afd21f36c30cb13a7a96e27df7f12f4c76dea6b70"
+    },
+    {
+      "id": "failed-index-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-index-failed-desktop-light.png",
+      "sha256": "46c6d4acaa81d9900bf6b8d646e5fb2f6883e010f22fb734a886bae6250898fa"
+    },
+    {
+      "id": "failed-index-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-index-failed-landscape-dark.png",
+      "sha256": "74322531ad09ecfdfaa6d04ad7f17fa0b81e0b8d3e70e5bb84c468e5a61f240f"
+    },
+    {
+      "id": "failed-index-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-index-failed-landscape-light.png",
+      "sha256": "c601dd32ede1d211a1473b21391a48ba5c1c0f065ff4584796effc024c062a91"
+    },
+    {
+      "id": "failed-index-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-index-failed-phone-dark.png",
+      "sha256": "e67384584e2c74af12a6fa27e3cec3cb04ced0311df3beb5d6503c1c2c7bcf4e"
+    },
+    {
+      "id": "failed-index-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-index-failed-phone-light.png",
+      "sha256": "6e46582c779130ba437bfeccda5cca8f55782bb9c341a2da3feb0818ef74a7db"
+    },
+    {
+      "id": "failed-index-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-index-failed-tablet-dark.png",
+      "sha256": "d4c3825ec7a2400bf5410293f55e8cc9cbffedadc5c965e88a55b5909f6e9afd"
+    },
+    {
+      "id": "failed-index-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-index-failed-tablet-light.png",
+      "sha256": "15323151819f4d6ef9f61cddec0a9626f6880cc792b775fe81ad5045d102404b"
+    },
+    {
+      "id": "failed-internal-error",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-internal-error-desktop-dark.png",
+      "sha256": "c7b6ba822ebaaf67398d9f1afd21f36c30cb13a7a96e27df7f12f4c76dea6b70"
+    },
+    {
+      "id": "failed-internal-error",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-internal-error-desktop-light.png",
+      "sha256": "46c6d4acaa81d9900bf6b8d646e5fb2f6883e010f22fb734a886bae6250898fa"
+    },
+    {
+      "id": "failed-internal-error",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-internal-error-landscape-dark.png",
+      "sha256": "74322531ad09ecfdfaa6d04ad7f17fa0b81e0b8d3e70e5bb84c468e5a61f240f"
+    },
+    {
+      "id": "failed-internal-error",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-internal-error-landscape-light.png",
+      "sha256": "c601dd32ede1d211a1473b21391a48ba5c1c0f065ff4584796effc024c062a91"
+    },
+    {
+      "id": "failed-internal-error",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-internal-error-phone-dark.png",
+      "sha256": "e67384584e2c74af12a6fa27e3cec3cb04ced0311df3beb5d6503c1c2c7bcf4e"
+    },
+    {
+      "id": "failed-internal-error",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-internal-error-phone-light.png",
+      "sha256": "6e46582c779130ba437bfeccda5cca8f55782bb9c341a2da3feb0818ef74a7db"
+    },
+    {
+      "id": "failed-internal-error",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-internal-error-tablet-dark.png",
+      "sha256": "d4c3825ec7a2400bf5410293f55e8cc9cbffedadc5c965e88a55b5909f6e9afd"
+    },
+    {
+      "id": "failed-internal-error",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-internal-error-tablet-light.png",
+      "sha256": "15323151819f4d6ef9f61cddec0a9626f6880cc792b775fe81ad5045d102404b"
+    },
+    {
+      "id": "failed-rate-limited",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-rate-limited-desktop-dark.png",
+      "sha256": "d5d1c5b1b4daadb8c9682afc7b0004c9921ae0fb448c4aee8362590ffa91a2f3"
+    },
+    {
+      "id": "failed-rate-limited",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-rate-limited-desktop-light.png",
+      "sha256": "006d0c6d8bd44e29cf633990c27743b432e2db9e08f27faa4ed8e05727c5b1c5"
+    },
+    {
+      "id": "failed-rate-limited",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-rate-limited-landscape-dark.png",
+      "sha256": "53ba91653d23dd56444085039c508e501e06268a8e464fbeaf5a401d698e97f0"
+    },
+    {
+      "id": "failed-rate-limited",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-rate-limited-landscape-light.png",
+      "sha256": "1858c754b516704d531254c9c32ed25015511e01256068142754dbfcb3a54c71"
+    },
+    {
+      "id": "failed-rate-limited",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-rate-limited-phone-dark.png",
+      "sha256": "18049622aa630f1b37d35cf854e510e91890487aae6c7142c56d0477d961545b"
+    },
+    {
+      "id": "failed-rate-limited",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-rate-limited-phone-light.png",
+      "sha256": "6a54995f2d25c081f84a69f6651a1eba53f9027dd4747a98f53b1d176ae4e436"
+    },
+    {
+      "id": "failed-rate-limited",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-rate-limited-tablet-dark.png",
+      "sha256": "2656c9594c5f20995ffdbe10914adf40b55e1029aabb3c9e55c73279d3b97992"
+    },
+    {
+      "id": "failed-rate-limited",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-rate-limited-tablet-light.png",
+      "sha256": "84eb7517d95b1a26c3b9d4dffcc8528666b86b0d90f8a11fa12b1fa2bade7ccc"
+    },
+    {
+      "id": "failed-server-stopping",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-server-stopping-desktop-dark.png",
+      "sha256": "885d2cb9abcd0e9904acf124b256ff0c89cd341de6e3168107c279e66e1d789a"
+    },
+    {
+      "id": "failed-server-stopping",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-server-stopping-desktop-light.png",
+      "sha256": "80d7648a24505b5d961ca9822826d334621d3efaf024c22fc6aa01a940352c4e"
+    },
+    {
+      "id": "failed-server-stopping",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-server-stopping-landscape-dark.png",
+      "sha256": "36097d18f1e98eef8a488cd089d2868541a0e9f9f29d155fe61bbaab6cc1fc74"
+    },
+    {
+      "id": "failed-server-stopping",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-server-stopping-landscape-light.png",
+      "sha256": "3a60668aaf8ba264556a60266429697fbbcd92144d7f9815b0c944e46427d1c4"
+    },
+    {
+      "id": "failed-server-stopping",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-server-stopping-phone-dark.png",
+      "sha256": "ea9ad0156262d62751726f9b4b1cd00d3e526c7af10fc1784282ae9c0d6bf5c8"
+    },
+    {
+      "id": "failed-server-stopping",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-server-stopping-phone-light.png",
+      "sha256": "de4119937cfc8ca2616b13771ded1b6b1c065502fab2a6b88faccdd31c3d7929"
+    },
+    {
+      "id": "failed-server-stopping",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-server-stopping-tablet-dark.png",
+      "sha256": "fc14ea782355a44397b409cd8ac1879fc14d1202fddcc371c546b10153cd72f6"
+    },
+    {
+      "id": "failed-server-stopping",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-server-stopping-tablet-light.png",
+      "sha256": "3fa1a1d9cc38e1ac03af54eb705bd8e673b0e915a1daf6b049a90e248510733a"
+    },
+    {
+      "id": "failed-unknown",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-unknown-desktop-dark.png",
+      "sha256": "c7b6ba822ebaaf67398d9f1afd21f36c30cb13a7a96e27df7f12f4c76dea6b70"
+    },
+    {
+      "id": "failed-unknown",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-unknown-desktop-light.png",
+      "sha256": "46c6d4acaa81d9900bf6b8d646e5fb2f6883e010f22fb734a886bae6250898fa"
+    },
+    {
+      "id": "failed-unknown",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-unknown-landscape-dark.png",
+      "sha256": "74322531ad09ecfdfaa6d04ad7f17fa0b81e0b8d3e70e5bb84c468e5a61f240f"
+    },
+    {
+      "id": "failed-unknown",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-unknown-landscape-light.png",
+      "sha256": "c601dd32ede1d211a1473b21391a48ba5c1c0f065ff4584796effc024c062a91"
+    },
+    {
+      "id": "failed-unknown",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-unknown-phone-dark.png",
+      "sha256": "e67384584e2c74af12a6fa27e3cec3cb04ced0311df3beb5d6503c1c2c7bcf4e"
+    },
+    {
+      "id": "failed-unknown",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-unknown-phone-light.png",
+      "sha256": "6e46582c779130ba437bfeccda5cca8f55782bb9c341a2da3feb0818ef74a7db"
+    },
+    {
+      "id": "failed-unknown",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-unknown-tablet-dark.png",
+      "sha256": "d4c3825ec7a2400bf5410293f55e8cc9cbffedadc5c965e88a55b5909f6e9afd"
+    },
+    {
+      "id": "failed-unknown",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-unknown-tablet-light.png",
+      "sha256": "15323151819f4d6ef9f61cddec0a9626f6880cc792b775fe81ad5045d102404b"
+    },
+    {
+      "id": "failed-worker-crashed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-failed-worker-crashed-desktop-dark.png",
+      "sha256": "ce791df65e70ef69cfde772f56d306fde7e8cde96023c2102354eaa65616a12e"
+    },
+    {
+      "id": "failed-worker-crashed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-failed-worker-crashed-desktop-light.png",
+      "sha256": "9ee184184afaca6cc0ef98f5a1e9e13b9afd4ca87b6a5758b39fa7fb252dcfdd"
+    },
+    {
+      "id": "failed-worker-crashed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-failed-worker-crashed-landscape-dark.png",
+      "sha256": "4041dfd7876948a0639c9c72d31704fe493d94a5e30569065c280be5ec683824"
+    },
+    {
+      "id": "failed-worker-crashed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-failed-worker-crashed-landscape-light.png",
+      "sha256": "0d148f5154e70845dc88600b1b27d33dab3eb6e4a15cffcb450a625749ec4eae"
+    },
+    {
+      "id": "failed-worker-crashed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-failed-worker-crashed-phone-dark.png",
+      "sha256": "9b6f84a132522681ffe21cfbba2cb71fa0bc8224ab618bc299ab0c553d3a3213"
+    },
+    {
+      "id": "failed-worker-crashed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-failed-worker-crashed-phone-light.png",
+      "sha256": "3001f6933600982af49f6f957fdf800e7f5751bfcef703340eba58bf132b47af"
+    },
+    {
+      "id": "failed-worker-crashed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-failed-worker-crashed-tablet-dark.png",
+      "sha256": "bce238aa831f2f654cc7e7d1884affa9389e0cd1acfd57abae87ee3eabb454c9"
+    },
+    {
+      "id": "failed-worker-crashed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-failed-worker-crashed-tablet-light.png",
+      "sha256": "ab3fcc58582f9927a0113fa0250b882486fda3bba13f9e702c7e1411ae478e8c"
+    },
+    {
+      "id": "freshness-complete",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-freshness-complete-desktop-dark.png",
+      "sha256": "a2fd65d9eb659514ef54642e2d22a56977440895f489a1018f8dbd80d52f178e"
+    },
+    {
+      "id": "freshness-complete",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-freshness-complete-desktop-light.png",
+      "sha256": "92df90a2b971008619698d79bc843bffd35ad569e696ee84b5bea3e761f92456"
+    },
+    {
+      "id": "freshness-complete",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-freshness-complete-landscape-dark.png",
+      "sha256": "27cafbd7c3fe6f3e7dbebe1957f3533388c60758b71cb2e88eee2be6edec8da5"
+    },
+    {
+      "id": "freshness-complete",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-freshness-complete-landscape-light.png",
+      "sha256": "183c09be8ddf3eab41a5b2d938f7a0ac7eb85f6019350c7c29b27f880912788d"
+    },
+    {
+      "id": "freshness-complete",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-freshness-complete-phone-dark.png",
+      "sha256": "437208918c6b01b8d152e4740c3b42dafead07d2c408a3db43044d8f300ccc31"
+    },
+    {
+      "id": "freshness-complete",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-freshness-complete-phone-light.png",
+      "sha256": "42ccfbb4ca097ccd5ea00e778c04adb0c76dcdb1d6416c7521eedf877dcad7ac"
+    },
+    {
+      "id": "freshness-complete",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-freshness-complete-tablet-dark.png",
+      "sha256": "b7b312b62eee2154f74277bd423e9e3cdfd1d97733f7aeca765e223a43b08182"
+    },
+    {
+      "id": "freshness-complete",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-freshness-complete-tablet-light.png",
+      "sha256": "3c05405a2b1c49edede6ed3350962f65e91136ffd5279844c90a17d265583642"
+    },
+    {
+      "id": "freshness-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-freshness-failed-desktop-dark.png",
+      "sha256": "ed5445eb673ea3b01ecc9292f5d421c9aa6a79f2860d46dbc27255aa566ce80b"
+    },
+    {
+      "id": "freshness-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-freshness-failed-desktop-light.png",
+      "sha256": "5420b3399055bcb22f3da01f1626dad46d9147a201aadaeb33f6e481d1cba0c5"
+    },
+    {
+      "id": "freshness-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-freshness-failed-landscape-dark.png",
+      "sha256": "6348df296051a25495932f04317a0c142cbf143daeaeed59d341d3573e3418da"
+    },
+    {
+      "id": "freshness-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-freshness-failed-landscape-light.png",
+      "sha256": "77fae0f854043a314815e219832b9c185b49e28b4eb51d432bdf5a9adab875b5"
+    },
+    {
+      "id": "freshness-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-freshness-failed-phone-dark.png",
+      "sha256": "ac29e2a8fdb64aa0a3d31e001586f2cb45bcabc424fa826c5db592da0bf45708"
+    },
+    {
+      "id": "freshness-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-freshness-failed-phone-light.png",
+      "sha256": "ac92ad96e71b6a04171f7f296788cf9c4596d143511e68ae0032bcd4822119e9"
+    },
+    {
+      "id": "freshness-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-freshness-failed-tablet-dark.png",
+      "sha256": "7985e638b42b21f4d421bd1a6af392a940a3e91bb7a6ba91880350a363921ed1"
+    },
+    {
+      "id": "freshness-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-freshness-failed-tablet-light.png",
+      "sha256": "25dd404d556213fb675dfcd082829e139470d488e3b1b51edb3cf09afab1c0a6"
+    },
+    {
+      "id": "freshness-indexing",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-freshness-indexing-desktop-dark.png",
+      "sha256": "fceb83b3078226e83cef860e058564c33fba5ab3dcb1293545eaafc533ca2344"
+    },
+    {
+      "id": "freshness-indexing",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-freshness-indexing-desktop-light.png",
+      "sha256": "c302d943d9d18e04870075021d7d6318b744d944f936461d4dc7e734465d5697"
+    },
+    {
+      "id": "freshness-indexing",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-freshness-indexing-landscape-dark.png",
+      "sha256": "f0da38e5d953a50abc89f2de0f8f4a1f95f1fc28858d7c86d71666fd9440e3a9"
+    },
+    {
+      "id": "freshness-indexing",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-freshness-indexing-landscape-light.png",
+      "sha256": "c41b0ee4def55c17c98870b7fe7f98287dfab5696dcd6d1c5416c5cc18051a5b"
+    },
+    {
+      "id": "freshness-indexing",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-freshness-indexing-phone-dark.png",
+      "sha256": "82d3735b5e5beec0695a4278106f7d52bc0975604ebc027090e56f14cdabd90e"
+    },
+    {
+      "id": "freshness-indexing",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-freshness-indexing-phone-light.png",
+      "sha256": "15dae54be38a0fe86a6a66fcd8f9017d636b819b333287c2418eb81cc845684b"
+    },
+    {
+      "id": "freshness-indexing",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-freshness-indexing-tablet-dark.png",
+      "sha256": "130f677a81f0021cba9f84a13018675ebdb8a51d4a3c56f9f370e6b6d0ca6f32"
+    },
+    {
+      "id": "freshness-indexing",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-freshness-indexing-tablet-light.png",
+      "sha256": "7e00e194d518f13a8977bde66d93d6fbc55102993402f402efc3f13c28d9e246"
+    },
+    {
+      "id": "freshness-queued",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-freshness-queued-desktop-dark.png",
+      "sha256": "7dc03ed99deb3d4a1a2ea2583d37991f34b14c77218be2a550e13b208d199498"
+    },
+    {
+      "id": "freshness-queued",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-freshness-queued-desktop-light.png",
+      "sha256": "7cc404902ca1e74f7de573e141270687033e6a83ca23dde7ea3e0e86ebbab759"
+    },
+    {
+      "id": "freshness-queued",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-freshness-queued-landscape-dark.png",
+      "sha256": "2df7533073c7e03fbde2a241486196071d6f62eaa9946e1a0c057f0ed945c0b2"
+    },
+    {
+      "id": "freshness-queued",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-freshness-queued-landscape-light.png",
+      "sha256": "bdbfdee793dceb2e32859f80787ed46bf865e95407439e47a35d887ffed57deb"
+    },
+    {
+      "id": "freshness-queued",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-freshness-queued-phone-dark.png",
+      "sha256": "4877b94b5dec28602a9da577c4fc4e2367f35a171bcca979ae41d01f0697d317"
+    },
+    {
+      "id": "freshness-queued",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-freshness-queued-phone-light.png",
+      "sha256": "83e63e31b6887b65c27ce3fbc8f0fde7878b5435e14cafc648da074786aa349f"
+    },
+    {
+      "id": "freshness-queued",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-freshness-queued-tablet-dark.png",
+      "sha256": "4cdfd120611d2823664fed4c0157186608bd41ec24edb56f311b0ef34946b5ce"
+    },
+    {
+      "id": "freshness-queued",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-freshness-queued-tablet-light.png",
+      "sha256": "bbdb3582b0cb4219eecaa8e945f57ec03f995910b8af913fb4b3c84aa64a6c92"
+    },
+    {
+      "id": "freshness-stale",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-freshness-stale-desktop-dark.png",
+      "sha256": "01f5f5d1f0ab08501135627ce4340ca4ef6f204ac1850487c6acf8133f58d4b1"
+    },
+    {
+      "id": "freshness-stale",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-freshness-stale-desktop-light.png",
+      "sha256": "5b60a8a20b6e2912fe42eaa0f9ced31a30b94fe59fbb8da0f2fbcbab767a932c"
+    },
+    {
+      "id": "freshness-stale",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-freshness-stale-landscape-dark.png",
+      "sha256": "26c39e0ab31e36cd16f98ba0030d909a6198b4d8e2dae773649643313b1fbcee"
+    },
+    {
+      "id": "freshness-stale",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-freshness-stale-landscape-light.png",
+      "sha256": "0ff1e84d55b71f7fc87c8529a85d214817d258c168a00026d2a27f5041a791a5"
+    },
+    {
+      "id": "freshness-stale",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-freshness-stale-phone-dark.png",
+      "sha256": "dd8c47c903c4dc7628351428d6ed1b23531ad77a759da23f4138ed4347bff86d"
+    },
+    {
+      "id": "freshness-stale",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-freshness-stale-phone-light.png",
+      "sha256": "a807888a19bbd73386db25399618cef4cca1fe2ecb9d0446abaea335581adabb"
+    },
+    {
+      "id": "freshness-stale",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-freshness-stale-tablet-dark.png",
+      "sha256": "48447c4bf3956f838bce16fab9e7804b730941fb39495347df64609e341d593e"
+    },
+    {
+      "id": "freshness-stale",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-freshness-stale-tablet-light.png",
+      "sha256": "e1a8e7cd7eef1271ad71ead0e400c5e78d1119c31e67e1859d4f521fe52709fe"
+    },
+    {
+      "id": "home-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-home-empty-desktop-dark.png",
+      "sha256": "57b81ccafa1110824eaab29539fc6e18736e0fc1ed7277ea65350ef6191debcf"
+    },
+    {
+      "id": "home-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-home-empty-desktop-light.png",
+      "sha256": "a7e4f17a3289e2704a2402227271a1753ab9d4acb155f66fd37db4cd52e275da"
+    },
+    {
+      "id": "home-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-home-empty-landscape-dark.png",
+      "sha256": "fad5564f0d6066c9ec4dc872bf428025814b9b556c4d35f89f1d4bf5cd7a75f2"
+    },
+    {
+      "id": "home-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-home-empty-landscape-light.png",
+      "sha256": "2cc86fc669b12f383b9e785a94be065b829d7e521d9dbe4186ed9152fd50232b"
+    },
+    {
+      "id": "home-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-home-empty-phone-dark.png",
+      "sha256": "191884d0e57af0999d6ce5463cc1d268fc79246e25d2c3eced1e11d156069f41"
+    },
+    {
+      "id": "home-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-home-empty-phone-light.png",
+      "sha256": "3c4d795cc7806c8f6cb0708a515071685a8bc02434b964eea185fcc741b41a62"
+    },
+    {
+      "id": "home-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-home-empty-tablet-dark.png",
+      "sha256": "308eaafdcd0c24b6c0080e3bb7f5dc1e801f886b69819a898ef8d2175014cc98"
+    },
+    {
+      "id": "home-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-home-empty-tablet-light.png",
+      "sha256": "4c95b330f2e45784c3ceaf4473435c5055ad821c362d228791c564f6e3dd4fff"
+    },
+    {
+      "id": "home-loading",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-home-loading-desktop-dark.png",
+      "sha256": "091b01877a6c42215f7410fc98880319de1601622bc372724981ced96a797721"
+    },
+    {
+      "id": "home-loading",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-home-loading-desktop-light.png",
+      "sha256": "dc6b6d8864b73fb91c04a468ec44dd7e5cd3e2a6468010c4ed4060a85766ad3b"
+    },
+    {
+      "id": "home-loading",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-home-loading-landscape-dark.png",
+      "sha256": "fad5564f0d6066c9ec4dc872bf428025814b9b556c4d35f89f1d4bf5cd7a75f2"
+    },
+    {
+      "id": "home-loading",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-home-loading-landscape-light.png",
+      "sha256": "2cc86fc669b12f383b9e785a94be065b829d7e521d9dbe4186ed9152fd50232b"
+    },
+    {
+      "id": "home-loading",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-home-loading-phone-dark.png",
+      "sha256": "4c28deda2c3e836643b3ec2ac0d5218b75ed2f6b4a5e8e7c19c37c3c482f9b4f"
+    },
+    {
+      "id": "home-loading",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-home-loading-phone-light.png",
+      "sha256": "354bf858387a24673d2dbc1ba82b56dba7b7576166a35666b4c83c48bdc867f1"
+    },
+    {
+      "id": "home-loading",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-home-loading-tablet-dark.png",
+      "sha256": "cb9fffa243e1b56e0c9050cbde3857c865e9ab83547d6fa6e5791f6680674b8c"
+    },
+    {
+      "id": "home-loading",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-home-loading-tablet-light.png",
+      "sha256": "8e5c0672ac1bc46e979f5994140f10d5ad21341650928dc19ebc17f51caf3ffe"
+    },
+    {
+      "id": "home-unavailable",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-home-unavailable-desktop-dark.png",
+      "sha256": "d991baf15f2129a57292853777e4db4b7424ed62f5e689be61886289e9943044"
+    },
+    {
+      "id": "home-unavailable",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-home-unavailable-desktop-light.png",
+      "sha256": "65671b4e0f09a1cfbdd29286b0ee90d1b586b594e0cf0863a63b92dc5321d485"
+    },
+    {
+      "id": "home-unavailable",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-home-unavailable-landscape-dark.png",
+      "sha256": "fad5564f0d6066c9ec4dc872bf428025814b9b556c4d35f89f1d4bf5cd7a75f2"
+    },
+    {
+      "id": "home-unavailable",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-home-unavailable-landscape-light.png",
+      "sha256": "2cc86fc669b12f383b9e785a94be065b829d7e521d9dbe4186ed9152fd50232b"
+    },
+    {
+      "id": "home-unavailable",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-home-unavailable-phone-dark.png",
+      "sha256": "74c0e82bec2ce0ec68046c3737cc7661b892922decece7514bbdcfcc91a5cbf4"
+    },
+    {
+      "id": "home-unavailable",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-home-unavailable-phone-light.png",
+      "sha256": "86d81ed84e335e5f648c098b7e537f3fb2e7208ba87e2a79877822da2cdcd5d5"
+    },
+    {
+      "id": "home-unavailable",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-home-unavailable-tablet-dark.png",
+      "sha256": "bdd3c2d9a2f5013dc14dcc07abba96ac5903a1e625850643a79fc0c49b763c86"
+    },
+    {
+      "id": "home-unavailable",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-home-unavailable-tablet-light.png",
+      "sha256": "f3ce729f9d5b474339798e557195b4e7c0cf9e40841e38ef8f81a14d70d86e1c"
+    },
+    {
+      "id": "home",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-home-desktop-dark.png",
+      "sha256": "0f2dc364320038b79a2edbd2105c752d80cbf24d246d1f6d61a2337177a28d98"
+    },
+    {
+      "id": "home",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-home-desktop-light.png",
+      "sha256": "30503b53194b30b5663b6da63c3eed61510d242a345d381606f07700c4dc39c9"
+    },
+    {
+      "id": "home",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-home-landscape-dark.png",
+      "sha256": "fad5564f0d6066c9ec4dc872bf428025814b9b556c4d35f89f1d4bf5cd7a75f2"
+    },
+    {
+      "id": "home",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-home-landscape-light.png",
+      "sha256": "2cc86fc669b12f383b9e785a94be065b829d7e521d9dbe4186ed9152fd50232b"
+    },
+    {
+      "id": "home",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-home-phone-dark.png",
+      "sha256": "7a201716d7a79e95526f6566dd3939e391ecfe5c1940589d971401ed9e721dc7"
+    },
+    {
+      "id": "home",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-home-phone-light.png",
+      "sha256": "bffd87c68d52f597d8e2137fbadb252e37b7a86657049e3a5a5f3b1770622b19"
+    },
+    {
+      "id": "home",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-home-tablet-dark.png",
+      "sha256": "99808fe4f88bf2bc2e1ab37f25286b980a3d81136624123fd6631e089ce0858f"
+    },
+    {
+      "id": "home",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-home-tablet-light.png",
+      "sha256": "678fe63e2158c059453bdb578f2f476b251b8f7b56db97f3c805ad88146d4e5f"
+    },
+    {
+      "id": "job-detail",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-job-detail-desktop-dark.png",
+      "sha256": "09290a71d013d4c841217bd1db55c784e51e691a57b47b3660b6275f768557db"
+    },
+    {
+      "id": "job-detail",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-job-detail-desktop-light.png",
+      "sha256": "c915d7dec2efd5ed5d9517249ae45d4cd601ec424fa7c0f0bd57585785ca6b06"
+    },
+    {
+      "id": "job-detail",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-job-detail-landscape-dark.png",
+      "sha256": "e321187cb92a311fc431fc76b47bc15aa21ffcf6f6af5cecf6e51122fb8ce5f6"
+    },
+    {
+      "id": "job-detail",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-job-detail-landscape-light.png",
+      "sha256": "74f612d33fd35bd827fa4bf3b0aaadd4e89229d2ed92605c6324819bb9be6f80"
+    },
+    {
+      "id": "job-detail",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-job-detail-phone-dark.png",
+      "sha256": "6e416e6855f234894539d68a4cbf0f82bf5ce42dfde84c09c0d47b1d07ccc933"
+    },
+    {
+      "id": "job-detail",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-job-detail-phone-light.png",
+      "sha256": "c8a709411c313d354fe88383ea7e600e1d92fd29243b25379b136466895cf6e1"
+    },
+    {
+      "id": "job-detail",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-job-detail-tablet-dark.png",
+      "sha256": "f48fe450604bc79f606aa8e93f52105bc0f9ebbfda59a849639e6f5f82a0e25f"
+    },
+    {
+      "id": "job-detail",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-job-detail-tablet-light.png",
+      "sha256": "469c4b7a2174aa0471ffc9e66e49736a5839f65717ab034804473fbbb8c4fdeb"
+    },
+    {
+      "id": "job-fetch",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-job-fetch-desktop-dark.png",
+      "sha256": "ce5c24dce18fe67ab7004e7b5be8111470a4847ff077d3dda4b8d1f333ffe2de"
+    },
+    {
+      "id": "job-fetch",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-job-fetch-desktop-light.png",
+      "sha256": "ec4898c3343c70c693d1e272724638ddc3a8b7b72deb156b514b55330b4fb137"
+    },
+    {
+      "id": "job-fetch",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-job-fetch-landscape-dark.png",
+      "sha256": "148117b37929dbcd6056cbacb304d7207d5e8cf909ed54ccecfc2ee158a990ab"
+    },
+    {
+      "id": "job-fetch",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-job-fetch-landscape-light.png",
+      "sha256": "f5be3eae1c20631b9f61e22d732c08cb96b0581efa741cede0cdcbad734d7418"
+    },
+    {
+      "id": "job-fetch",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-job-fetch-phone-dark.png",
+      "sha256": "a918b1aefd4114fa87022954a0cd03fce6d764d41c4875ab0a84b8b45b6ebeb3"
+    },
+    {
+      "id": "job-fetch",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-job-fetch-phone-light.png",
+      "sha256": "864578467aa3024cdad7e41364a941152ab98de1409345ada4a50ecd846e2e11"
+    },
+    {
+      "id": "job-fetch",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-job-fetch-tablet-dark.png",
+      "sha256": "0ebd1c94038c2ffcebd617f3d3fba270095d56aebc5dad1a6aecf6bdeec8e0ea"
+    },
+    {
+      "id": "job-fetch",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-job-fetch-tablet-light.png",
+      "sha256": "2a94cc043f5b9439f46ed0ed640fd5ec5cbd0552c0f796c35a440780bbbab994"
+    },
+    {
+      "id": "job-map",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-job-map-desktop-dark.png",
+      "sha256": "64014ad980c2104fed09e966c142124c03b4587f5b5d7fee70a93ed4ae0ec988"
+    },
+    {
+      "id": "job-map",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-job-map-desktop-light.png",
+      "sha256": "f500e341de68b15aeee54c0d2acd07eb2873de86bf679dc920b8e6132d474763"
+    },
+    {
+      "id": "job-map",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-job-map-landscape-dark.png",
+      "sha256": "cbc472beeda0995aae9b495afa5df7d898fa97968bb54f0f1a2c902d7e5c36a4"
+    },
+    {
+      "id": "job-map",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-job-map-landscape-light.png",
+      "sha256": "2cc22abf1c9c7c148d298e4d20b767575582b10ad7e3143d7ae8395891b326c6"
+    },
+    {
+      "id": "job-map",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-job-map-phone-dark.png",
+      "sha256": "d601b8b8543cd8a405292b9e9b01a7f2a6b23bee4459859c98a72eddff9bd565"
+    },
+    {
+      "id": "job-map",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-job-map-phone-light.png",
+      "sha256": "f6981cff8b99dbad4ab040b9a2ff20f5af910b65d3a671327195e838268512c6"
+    },
+    {
+      "id": "job-map",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-job-map-tablet-dark.png",
+      "sha256": "10266adbef9de600cecca80a4a507b0fa4908fa6e5742ab42719fad5e784db49"
+    },
+    {
+      "id": "job-map",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-job-map-tablet-light.png",
+      "sha256": "733e21cacc28fd9b996d44f8760337fe505f58a51391a9b4beaefc7e27b2880b"
+    },
+    {
+      "id": "job-missing",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-job-missing-desktop-dark.png",
+      "sha256": "32bbf85a727d23f39c1a382fee0285c227f76f2a9f310285f1afb7c3d41604d6"
+    },
+    {
+      "id": "job-missing",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-job-missing-desktop-light.png",
+      "sha256": "b5caaf36c98da0f22719911e239ae1e21b35f85c10dca4500081375614062b2d"
+    },
+    {
+      "id": "job-missing",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-job-missing-landscape-dark.png",
+      "sha256": "ea17d7607a39a6d65455ebf8a607501b7abbdba66e15454c0706a5d8926a9e35"
+    },
+    {
+      "id": "job-missing",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-job-missing-landscape-light.png",
+      "sha256": "61e2fd707f5353f07369a81e6857f2e9238d0e8cc226c09bbcca7ff6de5dc2f1"
+    },
+    {
+      "id": "job-missing",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-job-missing-phone-dark.png",
+      "sha256": "d40bcf96cf93099f398ec77c9f412599de9c2f25dcc6b73c8e97284d61f8afe0"
+    },
+    {
+      "id": "job-missing",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-job-missing-phone-light.png",
+      "sha256": "ae69b669a55941db2f7f44c327cd373b66d7f44fc0ebd8a6552aa6640a983aca"
+    },
+    {
+      "id": "job-missing",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-job-missing-tablet-dark.png",
+      "sha256": "a59f25c4e7e3feb16c145dcdef69a80c0dbb7ef4e3e558df5623ad85e0d4418a"
+    },
+    {
+      "id": "job-missing",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-job-missing-tablet-light.png",
+      "sha256": "762c2b604426b2594443ad61580f21aba78e7dfadb9c1920a3a5223ab6583dbb"
+    },
+    {
+      "id": "job-queued",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-job-queued-desktop-dark.png",
+      "sha256": "e4411a3405d259f7d6d1b308ed69df7a7bc8f47b21a636dfbe475e813663cb49"
+    },
+    {
+      "id": "job-queued",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-job-queued-desktop-light.png",
+      "sha256": "a87e177f917d931af77d94cb85a3249280ed66d100b6f75ed6dbc2266d3386a5"
+    },
+    {
+      "id": "job-queued",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-job-queued-landscape-dark.png",
+      "sha256": "6b9a3a14622c9c892b9077ae7262d8ec44850f7460606aeeb8cc6ac3015546c8"
+    },
+    {
+      "id": "job-queued",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-job-queued-landscape-light.png",
+      "sha256": "d5e5533917889a65124ee569efb6f79513839ace32c156cbf0fbc30eac0c2d87"
+    },
+    {
+      "id": "job-queued",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-job-queued-phone-dark.png",
+      "sha256": "2ef1a5f7ef9c5d4cf249ebc256d44d1a639b6c7307f1d4be4e8c277b9a8800fd"
+    },
+    {
+      "id": "job-queued",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-job-queued-phone-light.png",
+      "sha256": "195006ddac05219b15d1d9b1fb2ca2b60c57469d7dd11a913d7013083359be4d"
+    },
+    {
+      "id": "job-queued",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-job-queued-tablet-dark.png",
+      "sha256": "e52c09ab21e7d603218a6edb3ea0a85137b2bbd630ef9c120614ce40d60724f3"
+    },
+    {
+      "id": "job-queued",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-job-queued-tablet-light.png",
+      "sha256": "9bc8d34017e12ecf8a017d4498d596ffc6ef4ea22e3049aa72d9a5cd17bcf03d"
+    },
+    {
+      "id": "job-read",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-job-read-desktop-dark.png",
+      "sha256": "eecc2a19bbf2684a4f35b411fc9a6c5223b3d7c430b38c05d9bc6267f04abc05"
+    },
+    {
+      "id": "job-read",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-job-read-desktop-light.png",
+      "sha256": "1367a295561b19a7dc62dba795c200ad468e1980ae6ff82712e7f94ee3ba0787"
+    },
+    {
+      "id": "job-read",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-job-read-landscape-dark.png",
+      "sha256": "014a322580dcda385cea5bd3d894c27355823ed88e969ffa7e6fee8b0882c76b"
+    },
+    {
+      "id": "job-read",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-job-read-landscape-light.png",
+      "sha256": "5ac22dd17066d933e6b70af3f949749cbbbc20db8b1a32dd118a7585e95e8ca8"
+    },
+    {
+      "id": "job-read",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-job-read-phone-dark.png",
+      "sha256": "0409a9b3c52226306340f5ee868cfd186a0f8273ecc1a7e99152b5f09e5696ea"
+    },
+    {
+      "id": "job-read",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-job-read-phone-light.png",
+      "sha256": "b2ec8e0685de280733a2ed89317d9e1232aadd87c9a071e9c0ba0a2717a60cca"
+    },
+    {
+      "id": "job-read",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-job-read-tablet-dark.png",
+      "sha256": "f8e21c0d1f495ea531378365da3cf59a0ab4e88d0ff4d0fef06371f4e92895a3"
+    },
+    {
+      "id": "job-read",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-job-read-tablet-light.png",
+      "sha256": "04892bd892611a21c5dfb547e7a690ef52c196f1f0792ea313f760f75cbbfdb6"
+    },
+    {
+      "id": "local-cancelling",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-local-cancelling-desktop-dark.png",
+      "sha256": "2d570d27dfc5a5460c24ebc0b5643b7a2ce3bc98d74c54838228153ccc598638"
+    },
+    {
+      "id": "local-cancelling",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-local-cancelling-desktop-light.png",
+      "sha256": "b218f9b2de1d300433dc75def3996d229436009f32a19a14e2f9022c562e34c8"
+    },
+    {
+      "id": "local-cancelling",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-local-cancelling-landscape-dark.png",
+      "sha256": "5c51dfb6fc5330bee38c28c5e8f7df617e6efabe30c28889a1ab3becf3c8e6f3"
+    },
+    {
+      "id": "local-cancelling",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-local-cancelling-landscape-light.png",
+      "sha256": "ab8efa87ab562faa4f25bc385207cfe4bc77d848e487562ca6b4d158037372d4"
+    },
+    {
+      "id": "local-cancelling",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-local-cancelling-phone-dark.png",
+      "sha256": "653321b6199e7856c4a1b881ce2d7dd78fbd9dd51c42155b23be86db807cca2a"
+    },
+    {
+      "id": "local-cancelling",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-local-cancelling-phone-light.png",
+      "sha256": "073d553a8c3d3346e55a7f72a7c6986702053227eede872c7ef8b7cd6ad18fe2"
+    },
+    {
+      "id": "local-cancelling",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-local-cancelling-tablet-dark.png",
+      "sha256": "793b6fe0fa80b3f36176dc11f405b315542ddc41cc40ebff8d1b43b8a6caeee6"
+    },
+    {
+      "id": "local-cancelling",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-local-cancelling-tablet-light.png",
+      "sha256": "afa8256df3415d64fe0b25880c89ba6619d3e998b5b9719cf2cbea99ec2b99d1"
+    },
+    {
+      "id": "local-confirm",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-local-confirm-desktop-dark.png",
+      "sha256": "05966e43a56526b1a00d764f86518ad3fd3daa64f35e31a36f536ef1ddd6c1b6"
+    },
+    {
+      "id": "local-confirm",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-local-confirm-desktop-light.png",
+      "sha256": "7869ecaf85c7e60b351de4d749ff36f7c11fee893576d0d3a779709a11711d46"
+    },
+    {
+      "id": "local-confirm",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-local-confirm-landscape-dark.png",
+      "sha256": "454201c1abfd6fea4904d081f89e7a431f2789082daebf8ce43e2f6f1d5a1460"
+    },
+    {
+      "id": "local-confirm",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-local-confirm-landscape-light.png",
+      "sha256": "7c6fca69b2915b544f64016174d020e1b846b6b95bb22e6e2e38c6e5a3e454ca"
+    },
+    {
+      "id": "local-confirm",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-local-confirm-phone-dark.png",
+      "sha256": "984b2833276f771f083ee4784e50d0a6fd63d0d62f816936fec6b6140b9a7396"
+    },
+    {
+      "id": "local-confirm",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-local-confirm-phone-light.png",
+      "sha256": "58da190dfad543fa7a1f8e7499a7c263f3ca2cef60866e69ff5f802376b1f278"
+    },
+    {
+      "id": "local-confirm",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-local-confirm-tablet-dark.png",
+      "sha256": "0068ca24382db21da1de8b8acd78053e4622d019b0cfe37d9ea0c2e1076aba44"
+    },
+    {
+      "id": "local-confirm",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-local-confirm-tablet-light.png",
+      "sha256": "4c0385564ab1857f8b3a8823143df4278678ff61f920f22c74d07697177734f8"
+    },
+    {
+      "id": "local-detection-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-local-detection-failed-desktop-dark.png",
+      "sha256": "b4bdba8df86cc583ed957e3d7893d6b75e3c66bdf476ae4d31794dd9baf1379f"
+    },
+    {
+      "id": "local-detection-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-local-detection-failed-desktop-light.png",
+      "sha256": "49922924d577f22695309b0acdcd71f4108af30c2a35627b74f9a9b50c644b36"
+    },
+    {
+      "id": "local-detection-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-local-detection-failed-landscape-dark.png",
+      "sha256": "b15f56514e05563eac98e5731db35e6ddb03ef4effcbc6b5f6475a69aa6240dd"
+    },
+    {
+      "id": "local-detection-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-local-detection-failed-landscape-light.png",
+      "sha256": "7ec49d64d010bb5d06b60a27a656d687106440912414da49cd4d7bfb23ff173b"
+    },
+    {
+      "id": "local-detection-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-local-detection-failed-phone-dark.png",
+      "sha256": "6ad9571ac66ec3f89c18b3ff3153781a0a590654fa78ab448e97402b6ce8ffa5"
+    },
+    {
+      "id": "local-detection-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-local-detection-failed-phone-light.png",
+      "sha256": "1bbf55b790626667eba5862cdda5fb2edacf68006634355509f75eb60b960ddf"
+    },
+    {
+      "id": "local-detection-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-local-detection-failed-tablet-dark.png",
+      "sha256": "f29a3fbf2e4ba352109fa41a2e326220d1a07f1afadaff8e07ba4e69fa7972e6"
+    },
+    {
+      "id": "local-detection-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-local-detection-failed-tablet-light.png",
+      "sha256": "4fe2381ef22f249bc8e1812ef0bbd2cb54e69baf5914ec77ab156f87c0e6964f"
+    },
+    {
+      "id": "local-index-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-local-index-failed-desktop-dark.png",
+      "sha256": "fc6060f0ac184d7f754da4e6d349a6d0d0251512866d4193dc7932072f278f12"
+    },
+    {
+      "id": "local-index-failed",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-local-index-failed-desktop-light.png",
+      "sha256": "0fe463bc4e626e8590b55c70e76caa8def8fd1692b5854784053f0da38057a24"
+    },
+    {
+      "id": "local-index-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-local-index-failed-landscape-dark.png",
+      "sha256": "2d967db9f10448704644746850443f9313180e62d0544c24c90b750c017540e3"
+    },
+    {
+      "id": "local-index-failed",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-local-index-failed-landscape-light.png",
+      "sha256": "c50d95e388462314d8270570f369e9191f7d5193541082a047a27eaaff6affd3"
+    },
+    {
+      "id": "local-index-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-local-index-failed-phone-dark.png",
+      "sha256": "b5bdba0770573a59c4b2c4aa8b3ad9755d7ba84a53c0b5f61aff41125f588f7b"
+    },
+    {
+      "id": "local-index-failed",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-local-index-failed-phone-light.png",
+      "sha256": "06805fad082f5483ca9f5ea51498d24d88ca5384dd4887371d1e2bcb2a1b13f9"
+    },
+    {
+      "id": "local-index-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-local-index-failed-tablet-dark.png",
+      "sha256": "854862bf42dd0d8f5136eff8a794075d3040c7164422f0037c9b6cb035c17936"
+    },
+    {
+      "id": "local-index-failed",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-local-index-failed-tablet-light.png",
+      "sha256": "6f07ba71707bba0c1900ee0286741be28f84690aeebbad5a4bd00fedf19a6dba"
+    },
+    {
+      "id": "local-running",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-local-running-desktop-dark.png",
+      "sha256": "3be3d60f07da01b930f81e3ca6a0b8bf98e6132e4fd549a780019ae66f6dfcfa"
+    },
+    {
+      "id": "local-running",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-local-running-desktop-light.png",
+      "sha256": "b9f2284b4ebfdb98ed5b62f11cc94406e0f42756d11c6e88720c379e61ffd303"
+    },
+    {
+      "id": "local-running",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-local-running-landscape-dark.png",
+      "sha256": "e79267a314c71c32a02dead041f6f337c99203334fa684fb32c855dfd94356cc"
+    },
+    {
+      "id": "local-running",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-local-running-landscape-light.png",
+      "sha256": "226c0c3765d190069d4dffe4ec69dcd6e89d3d7948893f939c8aa3587044cdf9"
+    },
+    {
+      "id": "local-running",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-local-running-phone-dark.png",
+      "sha256": "8b52523e4a717683ce398b8c50b20b08b334a42ba7a5c49b0082f05d216fb039"
+    },
+    {
+      "id": "local-running",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-local-running-phone-light.png",
+      "sha256": "34da6bcc760afd716878b2d7e70f9fd1e81aa9d5e480b770b6d468602e4edfcf"
+    },
+    {
+      "id": "local-running",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-local-running-tablet-dark.png",
+      "sha256": "d8370a1baa17e0d9e69ffc95f2e616561717f612cd834825ab15744cd5c33f86"
+    },
+    {
+      "id": "local-running",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-local-running-tablet-light.png",
+      "sha256": "3428eebde29270644daaf617eeb0954466a717566cc6e48a96e12a0a9fb1f479"
+    },
+    {
+      "id": "local-saved",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-local-saved-desktop-dark.png",
+      "sha256": "23d317c37f6de8b324ad0187ef5e3d80476d1add577ecf7e5dd617973586bfe3"
+    },
+    {
+      "id": "local-saved",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-local-saved-desktop-light.png",
+      "sha256": "52d603c38c7043afdf696df0a535d27524430dd0aba696c9c593acaea03ece22"
+    },
+    {
+      "id": "local-saved",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-local-saved-landscape-dark.png",
+      "sha256": "bcfb2be9d4fe49690b3ecabc837c94518099f394b2ef5e84a760224536d28e45"
+    },
+    {
+      "id": "local-saved",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-local-saved-landscape-light.png",
+      "sha256": "200de13613efc41ad4905fa3452aa768c54330e3145d7526ebbd01ceb6f9175c"
+    },
+    {
+      "id": "local-saved",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-local-saved-phone-dark.png",
+      "sha256": "d68e5117ff1bb251cfa81ed34e14e8557a695c79a6f0d85e254fd29f9e209da2"
+    },
+    {
+      "id": "local-saved",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-local-saved-phone-light.png",
+      "sha256": "8f3afce9d65d5c07d4b7390c3a37e9853d8dce53535692cce2059176675e2b00"
+    },
+    {
+      "id": "local-saved",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-local-saved-tablet-dark.png",
+      "sha256": "13e9bdf31e654224e688d0aec2d880a4e13e09e884e792a153da426a6f13662c"
+    },
+    {
+      "id": "local-saved",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-local-saved-tablet-light.png",
+      "sha256": "f7241d354621f88797cfacce5d203efbfb354e7f9dde6e66baa49b3e6526a1e9"
+    },
+    {
+      "id": "local-start",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-local-start-desktop-dark.png",
+      "sha256": "2bdf527f8b24c5f569f63d28ffaf8f4612cfcc9e2485b461efdcc03d5c94819e"
+    },
+    {
+      "id": "local-start",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-local-start-desktop-light.png",
+      "sha256": "8c4ecacf53e44e3d7501c6cf6c7c57b2c2be8e98484e50df2ed6ddea4333f8fe"
+    },
+    {
+      "id": "local-start",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-local-start-landscape-dark.png",
+      "sha256": "8591da281adeba3503ce7c796eb1085430145bf63161607dce0c3960873fbdfb"
+    },
+    {
+      "id": "local-start",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-local-start-landscape-light.png",
+      "sha256": "a47fe1c19998dca5b015babd146cd4458db91ec056ea126ec44cfc2f7ccc9603"
+    },
+    {
+      "id": "local-start",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-local-start-phone-dark.png",
+      "sha256": "c797a31ea1449cd55c34050889ef9fd8b4abc47d43a5e9776caea92f666896bf"
+    },
+    {
+      "id": "local-start",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-local-start-phone-light.png",
+      "sha256": "bd9703c6e80268b5a82d4474f9f9bd5f0dc98f8655a3c117e2f86089bcc64402"
+    },
+    {
+      "id": "local-start",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-local-start-tablet-dark.png",
+      "sha256": "7ef28d847f63e25fb6cd475ca1e47a2f54a3707c35802e6d8f3eb45d35b99422"
+    },
+    {
+      "id": "local-start",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-local-start-tablet-light.png",
+      "sha256": "b527f53a5aecccd93fbb053b5f2dc25818855d689746d2705aa26fe8e1e92f55"
+    },
+    {
+      "id": "map-detail-pending",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-detail-pending-desktop-dark.png",
+      "sha256": "040fc8610d6ec16bd6322d184cb503ac27a229f368ecb077e3436608be52b311"
+    },
+    {
+      "id": "map-detail-pending",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-detail-pending-desktop-light.png",
+      "sha256": "926dde493a94c39935ab88723be9a9bb742b9329892c0d9182796d8c6bb2b411"
+    },
+    {
+      "id": "map-detail-pending",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-detail-pending-landscape-dark.png",
+      "sha256": "ed329a884c30112787cf4028d6a9c62af1cc2f15ed7c7a78bf9779abcbeedb70"
+    },
+    {
+      "id": "map-detail-pending",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-detail-pending-landscape-light.png",
+      "sha256": "e3aa25b1bee1f9c8e47cc7f75b44d167585cf44574a9976e8bcd32e0c96f63a1"
+    },
+    {
+      "id": "map-detail-pending",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-detail-pending-phone-dark.png",
+      "sha256": "c45b84d25e0e49f0b188c7c58a37c57cf2e6d9331e9e9aadfef6eae3d224619d"
+    },
+    {
+      "id": "map-detail-pending",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-detail-pending-phone-light.png",
+      "sha256": "2cabc0f6e1f321b44742c9474d71cc828e3461efaaa37b94f00b9a7971058df4"
+    },
+    {
+      "id": "map-detail-pending",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-detail-pending-tablet-dark.png",
+      "sha256": "961bd8a27965c516479c3190dc582a88239d5c285f7267838121b82fccaac435"
+    },
+    {
+      "id": "map-detail-pending",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-detail-pending-tablet-light.png",
+      "sha256": "291bca74a545f6d2abee8b974f66622b7a80ba7d63f523f91245982e15a2dcc2"
+    },
+    {
+      "id": "map-district",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-district-desktop-dark.png",
+      "sha256": "b590186f57e545960bcd071c4782e054246489ea0dd89085b4eb0d699bffb7ef"
+    },
+    {
+      "id": "map-district",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-district-desktop-light.png",
+      "sha256": "68bb16152c91304b0ea58a7e89818b8680c6ec146ee2e392557af775333fb100"
+    },
+    {
+      "id": "map-district",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-district-landscape-dark.png",
+      "sha256": "250a98704fb5b3702243a13b00fb897948a0db958fba1a0a9a84ac4ea05ea3e9"
+    },
+    {
+      "id": "map-district",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-district-landscape-light.png",
+      "sha256": "85b585fd0f92e26e2de0092e6374a9eca2e9d36baf96e0bb7f652934e9c956ce"
+    },
+    {
+      "id": "map-district",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-district-phone-dark.png",
+      "sha256": "4208e844e4ac028be99de1bf0ecabc51e95dccacc9e6a2d658e241c3e67be639"
+    },
+    {
+      "id": "map-district",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-district-phone-light.png",
+      "sha256": "cb5916a0442513c9f72f95acd4bd268177bcbf1fa86b3aea05f14a75b63b0351"
+    },
+    {
+      "id": "map-district",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-district-tablet-dark.png",
+      "sha256": "a4dcc925f8a7005d9324e955b777d47e54dc2927aac243fa2e313843d3c71d93"
+    },
+    {
+      "id": "map-district",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-district-tablet-light.png",
+      "sha256": "596b8f829d2ec8d5404022a54e2f5fecbd217d235d2002466e324345e4f7959c"
+    },
+    {
+      "id": "map-file",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-file-desktop-dark.png",
+      "sha256": "374a63c375ecf0363a622376a8ad4bafeb9b10f57a9a623abc794a37a5c6dd93"
+    },
+    {
+      "id": "map-file",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-file-desktop-light.png",
+      "sha256": "734a1ed08df0ad6beff36a3e8ec41f1e3345136f338b9f81d643023763484f2d"
+    },
+    {
+      "id": "map-file",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-file-landscape-dark.png",
+      "sha256": "e4a56a75008da54d3dea858770080dddc1e4fa83e4386031fd9fae21f8091713"
+    },
+    {
+      "id": "map-file",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-file-landscape-light.png",
+      "sha256": "f2043be1fb2b1bcc63cea338f5e12313f3ee218788de5b330bd958bfc90e8d99"
+    },
+    {
+      "id": "map-file",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-file-phone-dark.png",
+      "sha256": "1f518f1149f9cd331487dd87008485e0cbb21111c34518686046f6d5cde44c5e"
+    },
+    {
+      "id": "map-file",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-file-phone-light.png",
+      "sha256": "2b1d9f13389879a8342b8f671d26e90800890d99464ab60d0ec1f10a42bb31b8"
+    },
+    {
+      "id": "map-file",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-file-tablet-dark.png",
+      "sha256": "240c9c6bc7bf3dfc4f8152dddab60dbacae480cba3e602dcaf405f508b6eb450"
+    },
+    {
+      "id": "map-file",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-file-tablet-light.png",
+      "sha256": "ecbd058d09fecd4addd5e315e218162a4a21ee3efb616c20eb506508e14146cf"
+    },
+    {
+      "id": "map-folder",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-folder-desktop-dark.png",
+      "sha256": "16bad0b321d0d59a876fd29ea520c82e7153ff8039cf2be875f242e0891a1ea7"
+    },
+    {
+      "id": "map-folder",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-folder-desktop-light.png",
+      "sha256": "e6d736807a37dc5d6ac1b59bb37d02f01a5ee056b09ffebf5f4c672231bffb84"
+    },
+    {
+      "id": "map-folder",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-folder-landscape-dark.png",
+      "sha256": "31f9d6fba623fff0a5f748ef465ff874478787487f44315d1bc3bfc96ce3fed3"
+    },
+    {
+      "id": "map-folder",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-folder-landscape-light.png",
+      "sha256": "28db927021998f31eb8780fbd8a527dca510820db36134d26018f5eefdcf3650"
+    },
+    {
+      "id": "map-folder",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-folder-phone-dark.png",
+      "sha256": "165d4ec8a2c079f4b5d85944e508e76d092660cc7f9917bf3437a236d3a58f83"
+    },
+    {
+      "id": "map-folder",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-folder-phone-light.png",
+      "sha256": "88019ea4ae2338aa6bfe5ce315fc875876c2d0fb9ac5f0702c35a7706ff80dd3"
+    },
+    {
+      "id": "map-folder",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-folder-tablet-dark.png",
+      "sha256": "659776ed620aca76f34db040c4ba4e80ebe4a58c724b756f2cfa330e2e5e69ce"
+    },
+    {
+      "id": "map-folder",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-folder-tablet-light.png",
+      "sha256": "3be1e8aca961919e3b9d569d53cfb039ce715b7c5319cfb9f22722bdd08e6eba"
+    },
+    {
+      "id": "map-freshness",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-freshness-desktop-dark.png",
+      "sha256": "85025f19011b2fbd9a115e882e7d4e94e779f11b6b461db41ea4e1a3a1d0d34f"
+    },
+    {
+      "id": "map-freshness",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-freshness-desktop-light.png",
+      "sha256": "f73488e9eb16d082f4f5c811072c5352b0aaea801b0433360258a9c567ac610c"
+    },
+    {
+      "id": "map-freshness",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-freshness-landscape-dark.png",
+      "sha256": "10c1826fb88fa03c44d3d32b730cd93bd49d7130ea4a663c2acd3897bad00045"
+    },
+    {
+      "id": "map-freshness",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-freshness-landscape-light.png",
+      "sha256": "06b517030a2bd0e419e81d4e8e04feff8a45b1a3e5dd2e6188748f4eff92eb39"
+    },
+    {
+      "id": "map-freshness",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-freshness-phone-dark.png",
+      "sha256": "beef4fb6faeaf4067fb723534f319dd023f22a685ebd3c921bae973193312513"
+    },
+    {
+      "id": "map-freshness",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-freshness-phone-light.png",
+      "sha256": "5d258b07f354db623b2429ba20a55254aa014951edded9fa1a69952179f2fe5d"
+    },
+    {
+      "id": "map-freshness",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-freshness-tablet-dark.png",
+      "sha256": "807872f590275d4b26ba4fd2a6c304323b763aaacb12089802a620c7a646a6a5"
+    },
+    {
+      "id": "map-freshness",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-freshness-tablet-light.png",
+      "sha256": "4f70175135640c6712f8db887a8824aedd66d7eb1939a74681287f56232892a3"
+    },
+    {
+      "id": "map-keyboard",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-keyboard-desktop-dark.png",
+      "sha256": "8576b17cfe9696d33b89eaf6ce9b763f736d122d3e705badc215a2db23b2b141"
+    },
+    {
+      "id": "map-keyboard",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-keyboard-desktop-light.png",
+      "sha256": "d9fdc601f049ac7fc5a501d6155b543d99e08f86dbe36229250018ff9a377f99"
+    },
+    {
+      "id": "map-keyboard",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-keyboard-tablet-dark.png",
+      "sha256": "b7e96aab13c39aaed3e2da3508b351a28e729b530a150886f07223694d669f43"
+    },
+    {
+      "id": "map-keyboard",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-keyboard-tablet-light.png",
+      "sha256": "825a9dad470aa450cbdb7e33384dd000fef4d49ee9c36d8327d61b17a4a2f324"
+    },
+    {
+      "id": "map-layer-c",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-layer-c-desktop-dark.png",
+      "sha256": "330b6736048361ca91e1ddc96dd283953c060ab57a23d6b7604f480640248f03"
+    },
+    {
+      "id": "map-layer-c",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-layer-c-desktop-light.png",
+      "sha256": "22a512043950c39b394b7fe1d646f42d2d0012640fa75bddddbe83b7d596ec65"
+    },
+    {
+      "id": "map-layer-c",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-layer-c-landscape-dark.png",
+      "sha256": "fcbb7815b03698b3e8562ada66e06a91deb38e34152d7de433e41f338bacc260"
+    },
+    {
+      "id": "map-layer-c",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-layer-c-landscape-light.png",
+      "sha256": "ee2f7fa8494241ec8565d0f2081685280fbfea5447d4ace261367d7cddcbc6ea"
+    },
+    {
+      "id": "map-layer-c",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-layer-c-phone-dark.png",
+      "sha256": "d7586d305be63c9b6284f67c72ce83d3aa8ab918d41df53100b5a4c6c1ab5cf2"
+    },
+    {
+      "id": "map-layer-c",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-layer-c-phone-light.png",
+      "sha256": "f0bfd75b7fab758f569c526bc646b5600b254c64816c52c553f1d073714cb29e"
+    },
+    {
+      "id": "map-layer-c",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-layer-c-tablet-dark.png",
+      "sha256": "2edd69a53ada9db21dadeb8486b1169b08c3787fc8bd029511f18901c91339ff"
+    },
+    {
+      "id": "map-layer-c",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-layer-c-tablet-light.png",
+      "sha256": "ace09e16d43a61b8841d0592f5697773bfed680e92e8b3401a720bfd8ae0a2f8"
+    },
+    {
+      "id": "map-layer-p",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-layer-p-desktop-dark.png",
+      "sha256": "6437f495a02d8e516b2909b3e4705ef491b2781bfc918e2f57a989a30b119af5"
+    },
+    {
+      "id": "map-layer-p",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-layer-p-desktop-light.png",
+      "sha256": "39ba2e5a0221f51b4b2a5400d67c051cfa910028fdd30ff73f6b257069fe4fc9"
+    },
+    {
+      "id": "map-layer-p",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-layer-p-landscape-dark.png",
+      "sha256": "0a83ddf836ac303c40e62034a7a559a66d75807a3dca6b919d0b0bd5b23ffe54"
+    },
+    {
+      "id": "map-layer-p",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-layer-p-landscape-light.png",
+      "sha256": "84c29bdf1fd18249fd39d7589df5cc54319548f1470ace428328729ff2186584"
+    },
+    {
+      "id": "map-layer-p",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-layer-p-phone-dark.png",
+      "sha256": "3c4be727845cae36df657aaaf52d085dd44f218042b87621e54420e8bfed8c0f"
+    },
+    {
+      "id": "map-layer-p",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-layer-p-phone-light.png",
+      "sha256": "062cb9e2af9b7ad2c9e459458efbbfa75850cfde679dd480c09304586d7dc1e4"
+    },
+    {
+      "id": "map-layer-p",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-layer-p-tablet-dark.png",
+      "sha256": "f164a4d67af537631c5790ac02fea12e84e76a9278e2ca0d746127e300febc9c"
+    },
+    {
+      "id": "map-layer-p",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-layer-p-tablet-light.png",
+      "sha256": "a8f7b8d6ec1f6ec3abd86d2a4f25ed2340c7954a04229c627a090d8e4737c237"
+    },
+    {
+      "id": "map-layer-x",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-layer-x-desktop-dark.png",
+      "sha256": "043d0f0fb789a9af7940f0aec116bc3cad4a88ccc1b9d187d3919719bd644073"
+    },
+    {
+      "id": "map-layer-x",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-layer-x-desktop-light.png",
+      "sha256": "5cb83cc0169a98a75f6f68c48f4c0444bdb8da4700c36d5f401cb07e1aec235c"
+    },
+    {
+      "id": "map-layer-x",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-layer-x-landscape-dark.png",
+      "sha256": "4360c63d1d5b043b9a07b17d16fc682030160d59a472c286feed384ef888ed11"
+    },
+    {
+      "id": "map-layer-x",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-layer-x-landscape-light.png",
+      "sha256": "c68669f0b73a36803101cdf3dde836e6ed31a82f4e30fbbe176e2e943d2abef1"
+    },
+    {
+      "id": "map-layer-x",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-layer-x-phone-dark.png",
+      "sha256": "7e574cd0bfd84c0cee75732a54943cd98a2496272250c4257d5614371f61d877"
+    },
+    {
+      "id": "map-layer-x",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-layer-x-phone-light.png",
+      "sha256": "ebc91e77a28bf7904f86132ac4b90ee9985588298c33530fecf2c399d29cdc29"
+    },
+    {
+      "id": "map-layer-x",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-layer-x-tablet-dark.png",
+      "sha256": "592c34a486dfa751a92a112a114767eee2c012d352cf499ac26748b9a2f6954e"
+    },
+    {
+      "id": "map-layer-x",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-layer-x-tablet-light.png",
+      "sha256": "173dad8a609e55df9ec9efdabd0efca7c966eedf3259ebb2d60e4ea24896aa89"
+    },
+    {
+      "id": "map-layers",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-layers-desktop-dark.png",
+      "sha256": "80b5f84d4a216ab0dee89e90aae1ad57a893803dabf817c047baf95e2c9a9b74"
+    },
+    {
+      "id": "map-layers",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-layers-desktop-light.png",
+      "sha256": "e4ad22724e490b9421cede00e2b9c48c0ed9fb383b519ae49c9cd5f276490c8e"
+    },
+    {
+      "id": "map-layers",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-layers-landscape-dark.png",
+      "sha256": "f5e2f705c730a002c12acf6d1e1925c75b642010af1e93563c5bc13cb59dd21b"
+    },
+    {
+      "id": "map-layers",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-layers-landscape-light.png",
+      "sha256": "fc3aba8a50ea919f3ac2573be7763b064b64a03383743c8fa379f07c0c2e750a"
+    },
+    {
+      "id": "map-layers",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-layers-phone-dark.png",
+      "sha256": "214eb86f01568f720efdca02ba0f15b8b208c34c1edfb73c603d7fd480bdb03e"
+    },
+    {
+      "id": "map-layers",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-layers-phone-light.png",
+      "sha256": "82143ef29548a6dc4cf4a5946172f14d3f44b755f6bbf3e47858b18e3f39d930"
+    },
+    {
+      "id": "map-layers",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-layers-tablet-dark.png",
+      "sha256": "29800f3349862143f545662496266449a5a33d6a5e4651366706d381bb751bf3"
+    },
+    {
+      "id": "map-layers",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-layers-tablet-light.png",
+      "sha256": "6a39ae1a2cd3be11b8c9e75f2a66034539105562b7ebd2d0435113129c021638"
+    },
+    {
+      "id": "map-loading",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-loading-desktop-dark.png",
+      "sha256": "2af37b998c3a61c2d3db282e7aa2ad00e2a8933b90128ff670a678ac9e89c34e"
+    },
+    {
+      "id": "map-loading",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-loading-desktop-light.png",
+      "sha256": "5a9593a5ba80bf4f0f8fbe65e23278a0d9a0d92237bf475dc3706b86a2d55aa6"
+    },
+    {
+      "id": "map-loading",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-loading-landscape-dark.png",
+      "sha256": "5425748e97fc0f6826d6b0aac0b56df52246ee5bc07602327cfa5330052f09ed"
+    },
+    {
+      "id": "map-loading",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-loading-landscape-light.png",
+      "sha256": "a00bbd60441ccd84a80dc1acba7a2f788dfe55c0f8b3e7b42e80921a6eafa398"
+    },
+    {
+      "id": "map-loading",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-loading-phone-dark.png",
+      "sha256": "734a13791ba501b1c8e12a20ae1fc9837b49eca655e33bd040ed94dce20b6a38"
+    },
+    {
+      "id": "map-loading",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-loading-phone-light.png",
+      "sha256": "86718ff698aa20f653cd0754373cdbe33611c476f890c9548557b65495f34cd6"
+    },
+    {
+      "id": "map-loading",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-loading-tablet-dark.png",
+      "sha256": "3bda20cf180e2cd5664d41ff24ce29c8c5a5a9eb771dab7d488ebbd452da1b3a"
+    },
+    {
+      "id": "map-loading",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-loading-tablet-light.png",
+      "sha256": "b776f988388046a1cc5bee7ceb46bdaef3f76beafc7817ae4ae9f50d3add75af"
+    },
+    {
+      "id": "map-overview",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-overview-desktop-dark.png",
+      "sha256": "80b5f84d4a216ab0dee89e90aae1ad57a893803dabf817c047baf95e2c9a9b74"
+    },
+    {
+      "id": "map-overview",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-overview-desktop-light.png",
+      "sha256": "e4ad22724e490b9421cede00e2b9c48c0ed9fb383b519ae49c9cd5f276490c8e"
+    },
+    {
+      "id": "map-overview",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-overview-landscape-dark.png",
+      "sha256": "c0fdaa7c26b25091dd71e93936486628bd3d82769a03cdfc851e69b1544b1bd2"
+    },
+    {
+      "id": "map-overview",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-overview-landscape-light.png",
+      "sha256": "a3245d8dabf849bbadc92ee90cf519af87d9ac511fece9779c85d46333e0bf49"
+    },
+    {
+      "id": "map-overview",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-overview-phone-dark.png",
+      "sha256": "c9b9434631f066b0a86c920283192cd566a3f40b9a384667d4d7389d466066be"
+    },
+    {
+      "id": "map-overview",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-overview-phone-light.png",
+      "sha256": "b31517e64bbe368b8663448d30feb75bb5572333bc2a4225d7cded464dc908d3"
+    },
+    {
+      "id": "map-overview",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-overview-tablet-dark.png",
+      "sha256": "29800f3349862143f545662496266449a5a33d6a5e4651366706d381bb751bf3"
+    },
+    {
+      "id": "map-overview",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-overview-tablet-light.png",
+      "sha256": "6a39ae1a2cd3be11b8c9e75f2a66034539105562b7ebd2d0435113129c021638"
+    },
+    {
+      "id": "map-path",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-path-desktop-dark.png",
+      "sha256": "9d2503170706a2a75e58cbb6c16d4c603daaeef528ccb80f56c6e50e526c0f1e"
+    },
+    {
+      "id": "map-path",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-path-desktop-light.png",
+      "sha256": "5b6efcc9cb8f2dad5ca309756c99304a39e711d20f6342f21a0518c5144bb4c5"
+    },
+    {
+      "id": "map-path",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-path-landscape-dark.png",
+      "sha256": "d4480589100fc2dde2704600be0802c920673560e8872a263f092c6419c6cc07"
+    },
+    {
+      "id": "map-path",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-path-landscape-light.png",
+      "sha256": "f34023398c88842667e8b623675e64098ece6cb3ce719a5a2681f60fb62e7acc"
+    },
+    {
+      "id": "map-path",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-path-phone-dark.png",
+      "sha256": "ddf074d386e562491ea28b9c2554757564ac7ebc99b2374d4f50df101f597892"
+    },
+    {
+      "id": "map-path",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-path-phone-light.png",
+      "sha256": "32a06b51f984a476fa7376e651f5311ec517d00b094a1cdc5287e2a4587b8b47"
+    },
+    {
+      "id": "map-path",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-path-tablet-dark.png",
+      "sha256": "b1644badd8d1088b8f1a6341dd72fe0d4fb921dc09a01c196103a1fd03b2c144"
+    },
+    {
+      "id": "map-path",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-path-tablet-light.png",
+      "sha256": "853f1b5bb726e2260d0b605bf2a996dc21f1fe4bb38b345ae76b2e8d3a34327a"
+    },
+    {
+      "id": "map-quality",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-quality-desktop-dark.png",
+      "sha256": "b23926b2ee24b96cd558c3c0c3db5770b4b724923fd8c86690d904a06fc8df2f"
+    },
+    {
+      "id": "map-quality",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-quality-desktop-light.png",
+      "sha256": "c497035477e9edf954fae49cbf5a5e73671c6cad5f763566da9d5eb4a0efd43c"
+    },
+    {
+      "id": "map-quality",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-quality-landscape-dark.png",
+      "sha256": "42ea1c8b7dc690b0c252cb990b8ca65b6090327ba7fd24c40a6cf3c9946c066d"
+    },
+    {
+      "id": "map-quality",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-quality-landscape-light.png",
+      "sha256": "c28f857e1291d8f6e3447db3e531abf7d5a5c57ce7eed705c1df7d89e3ea6295"
+    },
+    {
+      "id": "map-quality",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-quality-phone-dark.png",
+      "sha256": "d750deef5fbbd6dee0d91efdb3efb0874daf135df23c8e9565756efcfa582ca5"
+    },
+    {
+      "id": "map-quality",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-quality-phone-light.png",
+      "sha256": "c5a04641c1259875022518d6fed94926da14d233e4f0c6b70291af64668990ef"
+    },
+    {
+      "id": "map-quality",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-quality-tablet-dark.png",
+      "sha256": "3f25bd4c61b1751632bb3fb3afe8c0db7e8e3bd4f79d838eeb4ecfd87cddd071"
+    },
+    {
+      "id": "map-quality",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-quality-tablet-light.png",
+      "sha256": "581d0564c996667929840a1d70ebcf3f68abd701007142d370b521981352c20f"
+    },
+    {
+      "id": "map-repositories",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-repositories-desktop-dark.png",
+      "sha256": "72e861b3e69f32260d0dea20b45a801dd371d27a5f59b0834947154c07444a96"
+    },
+    {
+      "id": "map-repositories",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-repositories-desktop-light.png",
+      "sha256": "8b1386fe0938742046455afc890f098d6c44cd766397ff07587af6dfce405142"
+    },
+    {
+      "id": "map-repositories",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-repositories-landscape-dark.png",
+      "sha256": "1f77091bd3fe75d52ce917d5e5a90b52de518d19ba072d178ccf7c05ef4e656c"
+    },
+    {
+      "id": "map-repositories",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-repositories-landscape-light.png",
+      "sha256": "75920717e852f9c9a50e922a50550def1b6e091f58b878f3c856b13181d1413c"
+    },
+    {
+      "id": "map-repositories",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-repositories-phone-dark.png",
+      "sha256": "f7b2476cba55c9ce49bf76521e22a0eaf63055eec19bf10f7dc71193ebe73376"
+    },
+    {
+      "id": "map-repositories",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-repositories-phone-light.png",
+      "sha256": "fddcd2f09dc9d8fbe60efe34654a929fe364b85a09c74486fdf0644fd0eac7a6"
+    },
+    {
+      "id": "map-repositories",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-repositories-tablet-dark.png",
+      "sha256": "1bf995579ba779b9644b9c3e1cc14aa316b18f3793d591de0ea8011d8928e5af"
+    },
+    {
+      "id": "map-repositories",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-repositories-tablet-light.png",
+      "sha256": "79485e435db365944f7869dd6d0bff76abc25857bd4d8f9a9bedae7720e1e93f"
+    },
+    {
+      "id": "map-search-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-search-empty-desktop-dark.png",
+      "sha256": "73756528946efe1c7b42cb8aad1cc178b380b1ac127bb5e680424d9afc140408"
+    },
+    {
+      "id": "map-search-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-search-empty-desktop-light.png",
+      "sha256": "1d23fbc03f16dde36c7d14880715031f84cef6ae091d05506b8c346aabe3f3e1"
+    },
+    {
+      "id": "map-search-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-search-empty-landscape-dark.png",
+      "sha256": "4a519858dd052f334f93c0536f007458549f98191126fb6e1a8e59dbbc2e6ea9"
+    },
+    {
+      "id": "map-search-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-search-empty-landscape-light.png",
+      "sha256": "f07cfe8895e2c5b73f1028b59797769892bb35ca85fee82149a921b1cf03f056"
+    },
+    {
+      "id": "map-search-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-search-empty-phone-dark.png",
+      "sha256": "4ee994e2e59ff092ec82e986eef30d40c80adcd723ad7a4ab8bd5328860d685e"
+    },
+    {
+      "id": "map-search-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-search-empty-phone-light.png",
+      "sha256": "e871e5f4c0fd976f5882e49505e924bab2ef8fae929ba5e50b86e274d7b36ebf"
+    },
+    {
+      "id": "map-search-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-search-empty-tablet-dark.png",
+      "sha256": "3c3bb5ed529fffa9ba443adcacad76114e58a87e288144e73d0a3af1db6dc6f7"
+    },
+    {
+      "id": "map-search-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-search-empty-tablet-light.png",
+      "sha256": "5497e97a613ce24ca930921aad2c8d2aa8b43465ca45ef4775d45045943f8799"
+    },
+    {
+      "id": "map-search",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-search-desktop-dark.png",
+      "sha256": "42eeb6807d232f8bbecb3421d6b081d76b0cedf1ca6295c77bd28d25d2089f19"
+    },
+    {
+      "id": "map-search",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-search-desktop-light.png",
+      "sha256": "b43eca681412d5a56a264c5a79bc52500ba4ad6a128f4bf32c1a20c846c53898"
+    },
+    {
+      "id": "map-search",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-search-landscape-dark.png",
+      "sha256": "2d240bb8b0c9f12f72534e26662a9391bcb0a20789d6a1927cd1ae0d4e2781da"
+    },
+    {
+      "id": "map-search",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-search-landscape-light.png",
+      "sha256": "fdf6354c8aa38c072a826c8d10271c5453eac14f7fed6dce5577f74cb7e71d09"
+    },
+    {
+      "id": "map-search",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-search-phone-dark.png",
+      "sha256": "cb9ff1a483485fe6b5bc886829153d4ce5d40b12b1e956de8b796cee06116909"
+    },
+    {
+      "id": "map-search",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-search-phone-light.png",
+      "sha256": "9ec3c75238c56a622c15a08b9a8a6caec4e1c3a58af8173c1cae5b7c48f5aa5a"
+    },
+    {
+      "id": "map-search",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-search-tablet-dark.png",
+      "sha256": "df669f3e11f7a803a55bff573db4af9a818838d927f1479c9cebd1b5da4c93fe"
+    },
+    {
+      "id": "map-search",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-search-tablet-light.png",
+      "sha256": "fe096e9897e213c8163ce947295ecc7003c7549049cac5da4afe86b16edcdf99"
+    },
+    {
+      "id": "map-symbol",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-symbol-desktop-dark.png",
+      "sha256": "84f53d417d118039627a4c0c0e5522b276d3d1e5afe9010b91790d064bb8cfff"
+    },
+    {
+      "id": "map-symbol",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-symbol-desktop-light.png",
+      "sha256": "ce46e4e70344e2239ddc32764fc6d6aca1a3cc0f75b3e2041d272f876de57a11"
+    },
+    {
+      "id": "map-symbol",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-symbol-landscape-dark.png",
+      "sha256": "3c4b8b1384493b153c3adb2ee53a5d761e03df76e2cc7f3afc07d5d0488c76f5"
+    },
+    {
+      "id": "map-symbol",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-symbol-landscape-light.png",
+      "sha256": "5b25fd09a783571d8801621d8209df5a4b76c144ad46bfd4389d27df3ab9c5a6"
+    },
+    {
+      "id": "map-symbol",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-symbol-phone-dark.png",
+      "sha256": "0c446a32d7184558fd6942f57f13236594e6ee32ee9d0b30ab465fcadffeaa58"
+    },
+    {
+      "id": "map-symbol",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-symbol-phone-light.png",
+      "sha256": "c23b140a4f2aec3e6f2a78922392a7c0d4fdeae8b05bf0d4073d42f44be3af59"
+    },
+    {
+      "id": "map-symbol",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-symbol-tablet-dark.png",
+      "sha256": "1109a780d8aa648abdd67a8c477a39093a101652177b0837b88a841e0fbd176a"
+    },
+    {
+      "id": "map-symbol",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-symbol-tablet-light.png",
+      "sha256": "105d0df6fcb183624d84a05bbb3a6db1353df497ae1ced7773e876a2fd3e8339"
+    },
+    {
+      "id": "map-unavailable",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-unavailable-desktop-dark.png",
+      "sha256": "3f856c7aeb4ce2f2b8d9488f5b9c7c42f9449b657f81c48e7db9ed68d3bb4edb"
+    },
+    {
+      "id": "map-unavailable",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-unavailable-desktop-light.png",
+      "sha256": "b23fdc1c0cc317140fdf15afcd26fdbc720193782e2bbb8ae36372d846303e6d"
+    },
+    {
+      "id": "map-unavailable",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-unavailable-landscape-dark.png",
+      "sha256": "fb2cbf706e3c4e21022f35de9d9a184cf1a7a286895002fbc3804f6e8446805b"
+    },
+    {
+      "id": "map-unavailable",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-unavailable-landscape-light.png",
+      "sha256": "d727d58d2d35af6c25294bb393f573ff21b1061d8c841cf117d1a670b1ccd468"
+    },
+    {
+      "id": "map-unavailable",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-unavailable-phone-dark.png",
+      "sha256": "9fd0882014ecb0b952c0935851486fd086af836430e1938698eabb9eaa063681"
+    },
+    {
+      "id": "map-unavailable",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-unavailable-phone-light.png",
+      "sha256": "2e6e7bf98a806ab01ddd03d1ae63eef855e9d6f36efbff0f43ce0b7c901b4630"
+    },
+    {
+      "id": "map-unavailable",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-unavailable-tablet-dark.png",
+      "sha256": "6d19007f79cc3d9775ffbb9a99d30f2142b027ae016885f0f2244f04e9ae5e6d"
+    },
+    {
+      "id": "map-unavailable",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-unavailable-tablet-light.png",
+      "sha256": "04b6f03152ed2970dc92f41b9abc339d07092bd8b773245d980d1feffb636551"
+    },
+    {
+      "id": "reserved-about",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-about-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-about",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-about-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-about",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-about-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-about",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-about-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-about",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-about-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-about",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-about-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-about",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-about-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-about",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-about-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-admin",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-admin-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-admin",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-admin-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-admin",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-admin-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-admin",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-admin-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-admin",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-admin-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-admin",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-admin-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-admin",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-admin-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-admin",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-admin-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-api",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-api-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-api",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-api-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-api",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-api-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-api",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-api-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-api",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-api-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-api",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-api-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-api",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-api-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-api",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-api-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-assets",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-assets-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-assets",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-assets-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-assets",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-assets-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-assets",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-assets-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-assets",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-assets-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-assets",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-assets-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-assets",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-assets-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-assets",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-assets-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-docs",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-docs-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-docs",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-docs-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-docs",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-docs-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-docs",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-docs-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-docs",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-docs-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-docs",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-docs-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-docs",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-docs-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-docs",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-docs-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-health",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-health-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-health",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-health-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-health",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-health-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-health",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-health-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-health",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-health-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-health",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-health-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-health",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-health-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-health",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-health-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-login",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-login-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-login",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-login-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-login",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-login-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-login",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-login-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-login",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-login-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-login",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-login-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-login",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-login-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-login",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-login-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-search",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-search-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-search",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-search-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-search",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-search-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-search",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-search-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-search",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-search-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-search",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-search-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-search",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-search-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-search",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-search-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-settings",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-settings-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-settings",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-settings-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-settings",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-settings-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-settings",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-settings-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-settings",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-settings-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-settings",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-settings-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-settings",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-settings-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-settings",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-settings-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "reserved-static",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-reserved-static-desktop-dark.png",
+      "sha256": "8b1e4e4f5e897ffa3acc92f10da533ad2a9397020768b33b54c80600d9ffdd38"
+    },
+    {
+      "id": "reserved-static",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-reserved-static-desktop-light.png",
+      "sha256": "288758cf31209dc9482a119eebd42777ab79aba18a3df38552350d320386b7ef"
+    },
+    {
+      "id": "reserved-static",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-reserved-static-landscape-dark.png",
+      "sha256": "b276c2c1501575b0800acf4265fd0b29417694381f9b0be547e792212e1a2881"
+    },
+    {
+      "id": "reserved-static",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-reserved-static-landscape-light.png",
+      "sha256": "f2bf68904fd085054847139e32a1ef743f2816cabd4512f4860426408c4efd0e"
+    },
+    {
+      "id": "reserved-static",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-reserved-static-phone-dark.png",
+      "sha256": "85c89d531ffc9c9ed9595e13f9947c427d10cbf85f163d9d6d207db15bb3be37"
+    },
+    {
+      "id": "reserved-static",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-reserved-static-phone-light.png",
+      "sha256": "dae0543c49efbcd419ef6ed058f5c91aabaa06622aa3fe14400d06e6191644e8"
+    },
+    {
+      "id": "reserved-static",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-reserved-static-tablet-dark.png",
+      "sha256": "cf3f95a69bc22aa0b8deb13ee8806da5e2784bf34f8823e537e3863dffdb9ac4"
+    },
+    {
+      "id": "reserved-static",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-reserved-static-tablet-light.png",
+      "sha256": "784b1c8392da29347efec080bea5ff18a0220100cf995aef7dcfdc3332a122bf"
+    },
+    {
+      "id": "source-binary",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-binary-desktop-dark.png",
+      "sha256": "4c81a7b71951f9ecc7bd49fce1a41e147134c39180de6090826f943a8da964ed"
+    },
+    {
+      "id": "source-binary",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-binary-desktop-light.png",
+      "sha256": "c3a0c7af4a6145faafa9b2aec9759a3ad6b6260a383baf4cb30feaffced8ec3b"
+    },
+    {
+      "id": "source-binary",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-binary-landscape-dark.png",
+      "sha256": "419b7446c41e35688085ff9c4227c09e52ae3716fd26075c6a5245a904b4d0c7"
+    },
+    {
+      "id": "source-binary",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-binary-landscape-light.png",
+      "sha256": "775af6dbd13a9bf524ce319d7ceb974b145771617f457843b29bd4f385d52132"
+    },
+    {
+      "id": "source-binary",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-binary-phone-dark.png",
+      "sha256": "5c0aeea434978b05ca8db220483abbc934a3994ccbfb4a0872271007a9fed80b"
+    },
+    {
+      "id": "source-binary",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-binary-phone-light.png",
+      "sha256": "5c5892fa5277550c7456919777aa5d586d6460602e5d7d937ee2bc7a57fee5fd"
+    },
+    {
+      "id": "source-binary",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-binary-tablet-dark.png",
+      "sha256": "473956fb8591ae5540b16983e7e4a3f7038ff881ee418a181720850f1c72e35a"
+    },
+    {
+      "id": "source-binary",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-binary-tablet-light.png",
+      "sha256": "95643d3ea0a1f726f32e5179a39a36777d7ba841cd5f28329f6dec3358277e1f"
+    },
+    {
+      "id": "source-expired",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-expired-desktop-dark.png",
+      "sha256": "0010a7b42a453afaa978fe16f446534d21c258b7f1ad86635a5deb98d1b2e540"
+    },
+    {
+      "id": "source-expired",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-expired-desktop-light.png",
+      "sha256": "9fd1b28a6e6d3fe2d781d7e4dd694c840dba8e5ac3b1211417c5a411e80b3c48"
+    },
+    {
+      "id": "source-expired",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-expired-landscape-dark.png",
+      "sha256": "0ee77e8adacacf9e4e75c96646dc2a324cebec7df0719c8d95146852e929696f"
+    },
+    {
+      "id": "source-expired",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-expired-landscape-light.png",
+      "sha256": "d571d3fb96681e3e19e82ceefdc6c094bcf6fa7fb3fbb5c2d8882a222f63cdf0"
+    },
+    {
+      "id": "source-expired",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-expired-phone-dark.png",
+      "sha256": "79dad974d4cf8e1aee0cf2ebbd3a2783fdd9be82d85c4f8a7c3fbbee4b9b4815"
+    },
+    {
+      "id": "source-expired",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-expired-phone-light.png",
+      "sha256": "2cb027e34f094069fa30322852f3cba63b46308e6a4a848487ab993193dab51a"
+    },
+    {
+      "id": "source-expired",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-expired-tablet-dark.png",
+      "sha256": "c6f1c8013bbad79f9063aa3affbc95486b4c8ac984f05fae32d706a930f11817"
+    },
+    {
+      "id": "source-expired",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-expired-tablet-light.png",
+      "sha256": "85464b2e6245382da5c798e888a1553c5221c2d28178b5e3cf1b23afd7f8d64c"
+    },
+    {
+      "id": "source-large",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-large-desktop-dark.png",
+      "sha256": "50709afd65f85a57f16ca1b2e72a75c14ee181a014c60efc282b15c1469656d7"
+    },
+    {
+      "id": "source-large",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-large-desktop-light.png",
+      "sha256": "13958007402f6b976ce65887f538ef9f22a5fec241f2dde178a651e302f45789"
+    },
+    {
+      "id": "source-large",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-large-landscape-dark.png",
+      "sha256": "10dd51d3297d1113d40601648e75c13ccf3321dc58e6152d096bd50eeabd83e3"
+    },
+    {
+      "id": "source-large",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-large-landscape-light.png",
+      "sha256": "0fa44a6a598637f384664eeb446cd783ff20a890721049921afed003020634a3"
+    },
+    {
+      "id": "source-large",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-large-phone-dark.png",
+      "sha256": "19472ea49785815b3eb41a242548a0e5412d3eb421e33a8c14c32b936e2e1cb8"
+    },
+    {
+      "id": "source-large",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-large-phone-light.png",
+      "sha256": "6e8c34d711d1054979f45661e793ceb9124a40b2c53aab8e25c8a8fb90cb650d"
+    },
+    {
+      "id": "source-large",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-large-tablet-dark.png",
+      "sha256": "5fa90932ad02ed6a08ba18fe7f69eb70449c7118f33163cea7cf8a1fa9c7483a"
+    },
+    {
+      "id": "source-large",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-large-tablet-light.png",
+      "sha256": "86924429b1d1d96d2b331539b71672a5cdcbf2df332388efa1b8e72c9bacca46"
+    },
+    {
+      "id": "source-loading",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-loading-desktop-dark.png",
+      "sha256": "82ca13ef7e32aefc62d722e4e4855578d91e22852e05ab6a5714934a15bb149d"
+    },
+    {
+      "id": "source-loading",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-loading-desktop-light.png",
+      "sha256": "88f41197944fb2e76f1f464f48fc4e0d53066af9dfe0aeece113debae9c2828d"
+    },
+    {
+      "id": "source-loading",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-loading-landscape-dark.png",
+      "sha256": "8a6d4a5d62058f1964f41e574ccc11043a2be36c0f4771254e33cf311bfe202d"
+    },
+    {
+      "id": "source-loading",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-loading-landscape-light.png",
+      "sha256": "c07c322b3e5e302178eb287a5a1fc64970da132fbe628d9e68e972450d098c98"
+    },
+    {
+      "id": "source-loading",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-loading-phone-dark.png",
+      "sha256": "048ad2a5a23d7a6a9a5078d87b25781044cf18b31bb11c3e5bd7e7a6d7605bcc"
+    },
+    {
+      "id": "source-loading",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-loading-phone-light.png",
+      "sha256": "a58811d64aae09fd0eb5ad2c9c4eb96dbe2a77515b4e27e31f6d67881e35bbcb"
+    },
+    {
+      "id": "source-loading",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-loading-tablet-dark.png",
+      "sha256": "51799600915c1b5301ea8593d451b0becab78198b67f69955f576759df335f0d"
+    },
+    {
+      "id": "source-loading",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-loading-tablet-light.png",
+      "sha256": "4edb9dc8efaca1ce3fdd612faa8591c9233d4cc810ff04315a1c8a3f9ec8bb3d"
+    },
+    {
+      "id": "source-long-line",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-long-line-desktop-dark.png",
+      "sha256": "527ff14dd525b01c20d4bcc07401b68511097dbd19feb912bcf7a4162c782c31"
+    },
+    {
+      "id": "source-long-line",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-long-line-desktop-light.png",
+      "sha256": "63049ef92d881d4372528cc259247ede6b1dd5764b0b6412c324b6153efd0bc3"
+    },
+    {
+      "id": "source-long-line",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-long-line-landscape-dark.png",
+      "sha256": "e2a5e7c9ac7cee0ae3653e475e0a1eb71f935e8b339d0b38909bd61e81b6eaad"
+    },
+    {
+      "id": "source-long-line",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-long-line-landscape-light.png",
+      "sha256": "ed9b752bcf61e1c4bec9afc0bf8365eb8fb020ffe395cc66d44cf0f4329a7c06"
+    },
+    {
+      "id": "source-long-line",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-long-line-phone-dark.png",
+      "sha256": "bf2b6965319a6affbed53c1940dc8ca07b8447bb3be8c62ce9cc8bd6be63c09e"
+    },
+    {
+      "id": "source-long-line",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-long-line-phone-light.png",
+      "sha256": "e31175a9a37fea2f8a0823d472a45b6a45aae1740766e194f8c1d51d41d22deb"
+    },
+    {
+      "id": "source-long-line",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-long-line-tablet-dark.png",
+      "sha256": "6715f9eec83acbaf3238c73a0464e1e5b82848f8943f5d1152cb71e5df530254"
+    },
+    {
+      "id": "source-long-line",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-long-line-tablet-light.png",
+      "sha256": "f3ddb652bccf3a3cda52776ce96d01480f00b22e0b1a42ebccf89eb231b97a16"
+    },
+    {
+      "id": "source-missing",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-missing-desktop-dark.png",
+      "sha256": "40fc8ac12ea81bca8c18ecb75cffda1a8ea77564aa3f8b285bac98a04a778cf4"
+    },
+    {
+      "id": "source-missing",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-missing-desktop-light.png",
+      "sha256": "acd0d8a6f6182503c27424f40b7c5658b073a0a0381c0b0849eda28d65827f12"
+    },
+    {
+      "id": "source-missing",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-missing-landscape-dark.png",
+      "sha256": "b6be0b51e974ad1f4075c393ae32fb98338897bd10596e9d27d01ee4381b15f8"
+    },
+    {
+      "id": "source-missing",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-missing-landscape-light.png",
+      "sha256": "c3bdd945c6247534e1c1f9c362d65d35a0f18a0dd7cea9310c17a0575813d7cb"
+    },
+    {
+      "id": "source-missing",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-missing-phone-dark.png",
+      "sha256": "0537313cb3f46faa54c5fb3faee702a6430361f554a64bc6c83018c9e11eb456"
+    },
+    {
+      "id": "source-missing",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-missing-phone-light.png",
+      "sha256": "04d8ae64b7b2e93d3b495e20e72656fad9a283e8b0c3b23daf5581ddb64159c4"
+    },
+    {
+      "id": "source-missing",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-missing-tablet-dark.png",
+      "sha256": "2df99f3b1f813fe6bef9356d9696508f15d701a0d7360553b7d353de27cfd838"
+    },
+    {
+      "id": "source-missing",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-missing-tablet-light.png",
+      "sha256": "2b98087c73d60e665e2d4546fff37435cf60ecf5089d7b420881848c74933dc7"
+    },
+    {
+      "id": "source-ready",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-ready-desktop-dark.png",
+      "sha256": "6e0c098e941ffa64d6ad2e82a4aff15293c348ad287d735253df912cc627fd6a"
+    },
+    {
+      "id": "source-ready",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-ready-desktop-light.png",
+      "sha256": "9a036865f1bc4b04890fe3406f6d949e3d16446f27dcf12e1b5a7cebfb760bf5"
+    },
+    {
+      "id": "source-ready",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-ready-landscape-dark.png",
+      "sha256": "b4979a6845e40db8f810c73480459dfbc743e45bcb871ddece399194a96f6251"
+    },
+    {
+      "id": "source-ready",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-ready-landscape-light.png",
+      "sha256": "272c0754162c8b499bc7b7c88a075ea860d9f42d4adee5928fc257087b23b9ae"
+    },
+    {
+      "id": "source-ready",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-ready-phone-dark.png",
+      "sha256": "04ab0b2de4bc25b57bdc4b8e763ea5d8b032c409774be39d21b0238c8fbf86e3"
+    },
+    {
+      "id": "source-ready",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-ready-phone-light.png",
+      "sha256": "fb740fe40ed8fc6b214055da42a429cae26722fc8449beeffca8dc5dd47fd978"
+    },
+    {
+      "id": "source-ready",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-ready-tablet-dark.png",
+      "sha256": "3040b66fc527933076e46925b9570c588d0453c9dbc58e30c13d03a8835b558a"
+    },
+    {
+      "id": "source-ready",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-ready-tablet-light.png",
+      "sha256": "3e1754a8c529badc24476d1b6d8e1182fdc9b1d4833a959a87012fe3038fa048"
+    },
+    {
+      "id": "source-search-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-search-empty-desktop-dark.png",
+      "sha256": "d0b6632ac56cbc1ac66fcfe6caabf5d644654289241bb9e9990d005abc18e5bf"
+    },
+    {
+      "id": "source-search-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-search-empty-desktop-light.png",
+      "sha256": "22f33920737282f934611db0c857eaf24649ac287b0e60cf293de8b32a76d12c"
+    },
+    {
+      "id": "source-search-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-search-empty-landscape-dark.png",
+      "sha256": "ac2ef9cdb8b64b84346f8f2676410be57633583482e664828357b20394209802"
+    },
+    {
+      "id": "source-search-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-search-empty-landscape-light.png",
+      "sha256": "43391d0a240b06b9f383bf7211dc206eae1240058e0c979cd583bfe91a9f21c2"
+    },
+    {
+      "id": "source-search-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-search-empty-phone-dark.png",
+      "sha256": "1a49662968651575a11e067734205be3b58d0a7d77af178df1cab18943c5b30b"
+    },
+    {
+      "id": "source-search-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-search-empty-phone-light.png",
+      "sha256": "68c08663b13901a599698d582670e3dabfad6e1206c7c0955be9d59fed7c8165"
+    },
+    {
+      "id": "source-search-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-search-empty-tablet-dark.png",
+      "sha256": "b4882118c16015d553507ff7e77a628f769f5e14b69e74f46ac35e2f8310ac01"
+    },
+    {
+      "id": "source-search-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-search-empty-tablet-light.png",
+      "sha256": "63a843316390abf696d8a5f63f9ec66b1f1557ae60ff32127a941aef9a94c0c6"
+    },
+    {
+      "id": "source-search",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-search-desktop-dark.png",
+      "sha256": "d814c89f50be5b7af07c5976b652f11a6fda08e59b42eb3ef7f212fac0c466da"
+    },
+    {
+      "id": "source-search",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-search-desktop-light.png",
+      "sha256": "bdeaf971837b9b12764c38d880d98bb359151134056794e24e89b6de67c200c5"
+    },
+    {
+      "id": "source-search",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-search-landscape-dark.png",
+      "sha256": "8de546c610bad1d3dded148904a1582dd901b142369e4897e808dfd3d17b58e6"
+    },
+    {
+      "id": "source-search",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-search-landscape-light.png",
+      "sha256": "68e98954fcadb0a1bb4a9f29ad639f537f288b0d99c03845fa0d6abdab0a5105"
+    },
+    {
+      "id": "source-search",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-search-phone-dark.png",
+      "sha256": "22e9e1980757dfa74a694e5b20f0e16875aab11f2773fa074646d811ad83354f"
+    },
+    {
+      "id": "source-search",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-search-phone-light.png",
+      "sha256": "05f1e9dfd31cdc7f22ee7cdcb52313a5fd383a6744034c9fadcb26f1b5ff1920"
+    },
+    {
+      "id": "source-search",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-search-tablet-dark.png",
+      "sha256": "64271db37b616c2ea438f859b1d413c4b05949947412b06cf28b88428b92edd3"
+    },
+    {
+      "id": "source-search",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-search-tablet-light.png",
+      "sha256": "a4d6c6c998bd8130ccbdfb758cb2e85e2923cede2cc74ee4a05168f5930dcb2d"
+    },
+    {
+      "id": "source-unavailable",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-unavailable-desktop-dark.png",
+      "sha256": "782a60faf5a407e8340c87cb1824953834cc5e7716c38a4681b784c95973c82b"
+    },
+    {
+      "id": "source-unavailable",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-unavailable-desktop-light.png",
+      "sha256": "583df3b0a83f03ab0cd238b4c4ef513f78f0fe903dea500647f3f9e7c0af2627"
+    },
+    {
+      "id": "source-unavailable",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-unavailable-landscape-dark.png",
+      "sha256": "be83c5136cd5e354bd1ccdb2fa43654f603c3ad2624e3d9cb70389d074507c21"
+    },
+    {
+      "id": "source-unavailable",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-unavailable-landscape-light.png",
+      "sha256": "6e29b652e1bbbbd36b8d275a74ddf3e553277fb19e2080bc4f61c8ff0dc34a15"
+    },
+    {
+      "id": "source-unavailable",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-unavailable-phone-dark.png",
+      "sha256": "8dc5030ffb1e7329fa349de35ff2288f21d63b42e50f2c008cdbdd1ce6dd168f"
+    },
+    {
+      "id": "source-unavailable",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-unavailable-phone-light.png",
+      "sha256": "b307047380815be0152aeece6a31d41ee0a9d41184e226c62ad0213b783fe409"
+    },
+    {
+      "id": "source-unavailable",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-unavailable-tablet-dark.png",
+      "sha256": "ae015721b50841cdf34fd1485d1ea47cdc76c3f2930fd714cdeae702425c6731"
+    },
+    {
+      "id": "source-unavailable",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-unavailable-tablet-light.png",
+      "sha256": "4b042f9539f2feaacbd8e87e48466d1d872ca22ee73d52892fddd0cda42bb9cb"
+    },
+    {
+      "id": "source-unsupported",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-source-unsupported-desktop-dark.png",
+      "sha256": "680f41e8af6c77f0ccdc610dfa5eff1f4d7abc3e31e8b2c9877e3db633831b80"
+    },
+    {
+      "id": "source-unsupported",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-source-unsupported-desktop-light.png",
+      "sha256": "8aff7cb6745d621fb2bfa834610570fa32b7150497f015d90ed4fb73bd884772"
+    },
+    {
+      "id": "source-unsupported",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-source-unsupported-landscape-dark.png",
+      "sha256": "51576837b37d3a0235b9bfde3c27e132b31e252a268f63265109898e0f7c12ab"
+    },
+    {
+      "id": "source-unsupported",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-source-unsupported-landscape-light.png",
+      "sha256": "e188c3954a8ea8a31a1c90b88f12a35f4b789017c8ffa737fe8a140196822403"
+    },
+    {
+      "id": "source-unsupported",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-source-unsupported-phone-dark.png",
+      "sha256": "28e55e0608133e25a87db01eb1696354e205acf9ad62b50eb91f4c2ff22b8dde"
+    },
+    {
+      "id": "source-unsupported",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-source-unsupported-phone-light.png",
+      "sha256": "f7bb495b34db389524bc2d670328f683c026dfc999d224737d1eb418f5d4f263"
+    },
+    {
+      "id": "source-unsupported",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-source-unsupported-tablet-dark.png",
+      "sha256": "75955550b9f952c596d260b88b1695570d212ebab9503f123760fc973e16e2c8"
+    },
+    {
+      "id": "source-unsupported",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-source-unsupported-tablet-light.png",
+      "sha256": "9215cbe7be29cf4b016a1959f5222109c0ae6f3a59148ab685e04e2bedef2f75"
+    }
+  ]
 }

@@ -1,7 +1,9 @@
 # Reader qualification and visual/device handoff — 2026-10-25
 
-Approval status: **pending human**. Physical iPhone/Safari: **not run**.
-No approved-baseline registry is changed by this work. CI candidates and physical
+Approval status: **Storybook references approved by the repository owner on
+2026-11-06** (run `42169568634`, source `fd1d6c5559c5790135ab3d02950c6d596b4c8e20`,
+recorded in `web/storybook/baselines/approved.json`). Physical iPhone/Safari: **not run**.
+This approval does not cover the items below. CI candidates and physical
 acceptance are separate evidence. This document is the Core #226/#221/#222 slice
 and the #219/#177 handoff; Hub/provider and #224/#225 feature delivery remain
 separate tasks.
@@ -68,9 +70,9 @@ The traced local acceptance journey and its polling bound remain in place.
 
 Review the exact new CI artifacts, not just green jobs. A reviewer must record
 source SHA, workflow/run ID, capture identity, image/hash, observed diff/reason,
-reviewer and decision before any approved baseline promotion. Approval remains
-pending until that explicit record exists; no approval has been requested or
-inferred by the worker.
+reviewer and decision before any approved baseline promotion. The 2026-11-06 record
+for the Storybook references is in `approved.json` (`review`); it was given in
+chat by the repository owner. No other approval is inferred.
 
 ## Revision-pinned iPhone/Safari checklist
 
