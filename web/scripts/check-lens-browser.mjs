@@ -72,6 +72,14 @@ try {
     assert.deepEqual(await cameraBoxes(page), before, 'activating a lens never moves the camera');
     assert.equal(new URL(page.url()).searchParams.get('lens'),'flask-request');
     assert.equal(await page.locator('[data-lens-stop]').count(),0,'overview hides all file and symbol stops');
+    assert.equal(await page.locator('[data-lens-note]').count(),0,'overview hides anchored note markers');
+    if (profile === 'phone') {
+      await openPanel();
+      await page.goBack();
+      await page.locator('[data-layers-sheet]').waitFor({state:'detached'});
+      assert.equal(new URL(page.url()).searchParams.get('lens'),'flask-request','Back closes Layers while retaining the lens');
+      assert.deepEqual(await cameraBoxes(page),before,'Back from Layers leaves the camera fixed');
+    }
     assert.equal(await page.locator('[data-lens-area]').count()>0,true);
     assert.equal(await page.locator('[data-lens-hop="declared"]').count(),1);
     assert.equal(await page.locator('[data-lens-hop="declared"]').getAttribute('stroke-dasharray'),'7 5');
@@ -105,8 +113,6 @@ try {
     // this camera operation itself. Every step waits for the production glide.
     for (let i=0; i<10 && await page.locator('[data-lens-stop]').count() === 0; i++) await zoomInSettled(page,1);
     assert.ok(await page.locator('[data-lens-stop]').count()>0,'zoomed-in stops become visible');
-    await shot('zoomed-stops');
-    console.log(`${profile}/${theme}: stops captured`);
     const stop = page.locator('[data-lens-stop]').first();
     const spec = await stop.getAttribute('data-lens-stop');
     // May be outside the viewport at a particular camera centre. The ordered
@@ -121,6 +127,8 @@ try {
     await mapStop.click();
     assert.equal(new URL(page.url()).searchParams.get('file'),spec.split('#')[0], 'a real map stop tap opens its card');
     if (spec.includes('#')) assert.ok(new URL(page.url()).searchParams.has('sym') || new URL(page.url()).searchParams.has('hsym'), 'symbol stop opens a symbol card');
+    await shot('zoomed-stops');
+    console.log(`${profile}/${theme}: visible stop and card captured`);
     await page.getByRole('button',{name:'Read selected source',exact:true}).click();
     await page.locator('[data-source-reader] .cm-content').waitFor();
     assert.equal(new URL(page.url()).searchParams.get('lens'),'flask-request');

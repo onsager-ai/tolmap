@@ -116,10 +116,13 @@ families accepted before the registry is changed. A green candidate capture
 gate establishes rendering/behavior only, not visual acceptance or
 physical-device gesture qualification. No existing thresholds are relaxed.
 
-Lens states introduced for #241 are candidates for owner review. The Flask
+Lens states introduced for #241 are candidates for owner review. Existing
+approved references stay unchanged: the strict pixel gate reports the 32 new
+lens identities as missing until the owner reviews the expanded matrix. A
+complete capture matrix is rendering evidence, not visual approval. The Flask
 viewer-check lane additionally uploads overview, zoomed stops, declared-hop
 explanations and unresolved reports for phone and desktop in both themes under
-`viewer-shots/lenses/`. Its map is `data/flask.json` unchanged; Rust resolves
+`lens-review-samples` (also included in `viewer-shots/lenses/`). Its map is `data/flask.json` unchanged; Rust resolves
 `data/lenses/flask-request.toml` and generates symbols from the fixture's pinned
 source. The unresolved sample intentionally adds a missing member and stop.
 Source-reader responses in that browser lane are explicitly synthetic; the
