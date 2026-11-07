@@ -1731,7 +1731,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-cancelling-desktop-dark.png",
-      "sha256": "7baec7d444851a4101c7d62266e52d32eda188eb2c35e178b5853c2585cc4c06"
+      "sha256": "f1c85704b61cd03b6a31964a7586a5a3ff57b1b23d65a34ac500dadb3c45229b"
     },
     {
       "id": "local-cancelling",
@@ -1739,7 +1739,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-cancelling-desktop-light.png",
-      "sha256": "70eb79a76c7fdb5dc86ae65fb93b20c58da89fef5c58c6eb39d077237b72a2a9"
+      "sha256": "66ca1e7eded42e8838d954ff4734ee5e736ca31e79f8c0b0879d65553f1e4140"
     },
     {
       "id": "local-cancelling",
@@ -1747,7 +1747,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-cancelling-landscape-dark.png",
-      "sha256": "707be94d9c3096955a4ecbbfd2cd41694da90a7e33d1a7d3305bb05541f7deec"
+      "sha256": "f4ddc91de360133bf96f60b844639463d1524e286acdeb9c9e8f1926aaa3fc42"
     },
     {
       "id": "local-cancelling",
@@ -1755,7 +1755,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-cancelling-landscape-light.png",
-      "sha256": "c563ba18552332cb5447e04c71bb2afe516dc876fb4836370e57e9fcbf3d51e2"
+      "sha256": "62657849df7423a5f3c522ae2ba10e3ed2ee6c84bd866e33e1bc46e825c97aaa"
     },
     {
       "id": "local-cancelling",
@@ -1763,7 +1763,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-cancelling-phone-dark.png",
-      "sha256": "70a5b98016fa934967c0003a3829d13c05ad4045e946d86f9eb49aa1e23555af"
+      "sha256": "6efc791ce4739d636891d94383c6eb8d1284e0c6e53b5f4d4decc6b62a4bad10"
     },
     {
       "id": "local-cancelling",
@@ -1771,7 +1771,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-cancelling-phone-light.png",
-      "sha256": "ea6191228da2fbf9d921d01b752d9afb5454bc0b73d6fd7924bdddcfc110f070"
+      "sha256": "95b32dc978c8a6ecf3e638c7d005bbd55d6f01055964b89c984c9f8516b37874"
     },
     {
       "id": "local-cancelling",
@@ -1779,7 +1779,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-cancelling-tablet-dark.png",
-      "sha256": "6047858feb6583ea5e1fa2503c0c2a53c9ad942b063fe2a7df0f3e0ebb93ab06"
+      "sha256": "9707eb60d2be6b11da505eb389a57c98e3eee7fa0e8dac7598a16a0785aaa896"
     },
     {
       "id": "local-cancelling",
@@ -1787,7 +1787,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-cancelling-tablet-light.png",
-      "sha256": "4ead07cdec8fcfa20730b63ba5c93ad1ca1d6befb9da15e7b05323628fa72d84"
+      "sha256": "7d1aa6cbad96c24dae77ac653c1d635234745b3b45d30402bd8bbef3f44561dd"
     },
     {
       "id": "local-confirm",
@@ -1795,7 +1795,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-confirm-desktop-dark.png",
-      "sha256": "c767e748f7b574a05492f118ee5d5d01c9ab8a30872f1ae51b1e54170b00a53f"
+      "sha256": "3cd708196c01f118ff7974ac5ab5e5bf6f94f9d8887808b63aa798f53780b91c"
     },
     {
       "id": "local-confirm",
@@ -1803,7 +1803,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-confirm-desktop-light.png",
-      "sha256": "e588989e69dbe31e8aaa6d71394b7898f07c311f58d4598cca98d66935f849e8"
+      "sha256": "f9d379f4cd45ae41657973a4fb45fa5fd99bc8d119e337f1199f15f98a403c54"
     },
     {
       "id": "local-confirm",
@@ -1811,7 +1811,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-confirm-landscape-dark.png",
-      "sha256": "77559d3344c0ca58682544d6185a04347f81f2eab3bfd5163b7bf2da3a842ffe"
+      "sha256": "f4ddc91de360133bf96f60b844639463d1524e286acdeb9c9e8f1926aaa3fc42"
     },
     {
       "id": "local-confirm",
@@ -1819,7 +1819,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-confirm-landscape-light.png",
-      "sha256": "2b2c1ca0d506b314be0c5118ba0265b8d8e3ba359ad1e80c195ce5b3ce89ee5e"
+      "sha256": "62657849df7423a5f3c522ae2ba10e3ed2ee6c84bd866e33e1bc46e825c97aaa"
     },
     {
       "id": "local-confirm",
@@ -1827,7 +1827,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-confirm-phone-dark.png",
-      "sha256": "dffaaeef572cbbaad09090831d0420818792bbee996c24b1a34f5f11ac22dc2c"
+      "sha256": "6a1b1cfca82c30729966c96ff93e29e2583d79d8f03a75750eb1cb91748d47ea"
     },
     {
       "id": "local-confirm",
@@ -1835,7 +1835,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-confirm-phone-light.png",
-      "sha256": "6924476ee4189ff28c40d6273d80d62d4b07550e5d00fbc3dbe40784bbbc5ea3"
+      "sha256": "b54e460442a1cc4da8e86ca551bb21eb2fcad016acb0f1221a57917f94d32420"
     },
     {
       "id": "local-confirm",
@@ -1843,7 +1843,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-confirm-tablet-dark.png",
-      "sha256": "fd2587d13f18994a771f18ea94b16b546646c09e0264f43ed198884c644d814e"
+      "sha256": "5c33a13e8c6437f2eaee06a9fd73c76ea8bc632e0234527e7c8bb443f3702e90"
     },
     {
       "id": "local-confirm",
@@ -1851,7 +1851,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-confirm-tablet-light.png",
-      "sha256": "324a8b1f54a3030b8005a183bd1efd9168b772b39bb1a2fae206de263a6de632"
+      "sha256": "897438786f9c6ac1b126b9610f555f331d205284190c164fb2b363f996a6db80"
     },
     {
       "id": "local-detection-failed",
@@ -1859,7 +1859,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-detection-failed-desktop-dark.png",
-      "sha256": "2535251f9df0b7e1d9da817e0277335d746fcbbda825ac0a98d1e2921a7c2c7c"
+      "sha256": "898d5ad1e1e5e3a8483badbf2b5f85f43107ce38d24a95628966a153b139607d"
     },
     {
       "id": "local-detection-failed",
@@ -1867,7 +1867,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-detection-failed-desktop-light.png",
-      "sha256": "22598180b776e5461113194c90e4a006dacd2bd4055e9311b9157026401857dd"
+      "sha256": "b4237fb4009dc2711ec37e6de3d99413fbcf30612adeae950a297744560300b6"
     },
     {
       "id": "local-detection-failed",
@@ -1875,7 +1875,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-detection-failed-landscape-dark.png",
-      "sha256": "b8f140cf13ca5f4ede15b5e0057330ba0d1373b4185e639a5a465867596da0ee"
+      "sha256": "f4ddc91de360133bf96f60b844639463d1524e286acdeb9c9e8f1926aaa3fc42"
     },
     {
       "id": "local-detection-failed",
@@ -1883,7 +1883,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-detection-failed-landscape-light.png",
-      "sha256": "2118a40977ae037b7846b882bd4336920d84e7bdf7a8fceac5d64f15e4d49949"
+      "sha256": "62657849df7423a5f3c522ae2ba10e3ed2ee6c84bd866e33e1bc46e825c97aaa"
     },
     {
       "id": "local-detection-failed",
@@ -1891,7 +1891,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-detection-failed-phone-dark.png",
-      "sha256": "c2c910d57377a9068784ce92efb011a4e349e578a9d709f9c8cd463a9b7ad235"
+      "sha256": "50b2ab1843c998edd1206d24782483371e519b5389adbdf6ecfbad191de54361"
     },
     {
       "id": "local-detection-failed",
@@ -1899,7 +1899,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-detection-failed-phone-light.png",
-      "sha256": "ff1223643e55fd1c6da3f58713a1ba1ca752a5b2b76bdf6037e05e6112b77781"
+      "sha256": "36a9b5d6208174e19fdced7bd77c3b93ab1c43b467d4aac239c7ec3ff4384c3a"
     },
     {
       "id": "local-detection-failed",
@@ -1907,7 +1907,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-detection-failed-tablet-dark.png",
-      "sha256": "158b46052f5fc3998f8f53df906a1625385de0693ecff36bfa415a873eee5e73"
+      "sha256": "fbacb2fd3dfdc04f70d9923f01ab5f56db52e69d8ed70a36a63d60bb6c5353e8"
     },
     {
       "id": "local-detection-failed",
@@ -1915,7 +1915,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-detection-failed-tablet-light.png",
-      "sha256": "7c4fcc24b9372eb1e6cdc8b2e24c2509d13797fbf487f8393bb250849437c2fc"
+      "sha256": "4be4eed4acd4c79d7086560fd3bf0ec9a42c12e0579ffb28d25582f119c9c246"
     },
     {
       "id": "local-index-failed",
@@ -1923,7 +1923,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-index-failed-desktop-dark.png",
-      "sha256": "53916a48049bfc3db2c79c3703fea9971c82ff2f4163eef1a868ba9568ba0c0a"
+      "sha256": "987fa92829768e934f8b2d6651f1ebbfa81ff7e2b53b6a5b13d1ebfc0ff5c62d"
     },
     {
       "id": "local-index-failed",
@@ -1931,7 +1931,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-index-failed-desktop-light.png",
-      "sha256": "6cc9a8e71cdea43278b2da1e2fcb222089fda04849b77fce249f2bd7b7e4f98b"
+      "sha256": "372c4113f597d721896ec8b7188c7eede19333e87f8ff0320b4441724e5b2240"
     },
     {
       "id": "local-index-failed",
@@ -1939,7 +1939,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-index-failed-landscape-dark.png",
-      "sha256": "1ef8431520905f2213b4b761f81e1d0601f636a9bf8c8a61c65299de40c6dae2"
+      "sha256": "f4ddc91de360133bf96f60b844639463d1524e286acdeb9c9e8f1926aaa3fc42"
     },
     {
       "id": "local-index-failed",
@@ -1947,7 +1947,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-index-failed-landscape-light.png",
-      "sha256": "90f884ba18fb5b6af357aa49616157681e5e5fa0c01c5d5bda0572d435083968"
+      "sha256": "62657849df7423a5f3c522ae2ba10e3ed2ee6c84bd866e33e1bc46e825c97aaa"
     },
     {
       "id": "local-index-failed",
@@ -1955,7 +1955,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-index-failed-phone-dark.png",
-      "sha256": "5c0a6b8a84b40f88d8006858d86875540b043e165d75a28f341b94e42c1da47a"
+      "sha256": "7a04d0df4786181edab780467849b1e601defe7dab3db30e602a6d2ed40d269c"
     },
     {
       "id": "local-index-failed",
@@ -1963,7 +1963,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-index-failed-phone-light.png",
-      "sha256": "f85a6f87b8ba8ea478f71bbf333e20f3321d1a768e27674baf3ac2ebff1cabe7"
+      "sha256": "e4e46ed12b10cb785f7e4e4ec37c735003f9bfbc74ca1da944e1da12e7af004b"
     },
     {
       "id": "local-index-failed",
@@ -1971,7 +1971,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-index-failed-tablet-dark.png",
-      "sha256": "1110dd502ea7c8f06d8642d7b2e9c0f66b35837d19b8b8e8f26082858f5b5c17"
+      "sha256": "558f8219a99668cdf8bfcf0b31343adb330753e1a11cd42a08251bc591b20580"
     },
     {
       "id": "local-index-failed",
@@ -1979,7 +1979,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-index-failed-tablet-light.png",
-      "sha256": "832c7a48beb3f50cc880528d64c433bf34ce0d85b4438eff6e3119178bc506f6"
+      "sha256": "1a302a5937fea2fc5fb00e243f2c1f36257d433cfe4e702ae4b02e0783432c93"
     },
     {
       "id": "local-running",
@@ -1987,7 +1987,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-running-desktop-dark.png",
-      "sha256": "ca6d73b057ad57cf8b6fa7f08b7f089409c6249481aa0052580584160573f892"
+      "sha256": "b4a69ab2b11a352377fe227ecb180298a61aa12056d6b1edc3b31ca084da527a"
     },
     {
       "id": "local-running",
@@ -1995,7 +1995,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-running-desktop-light.png",
-      "sha256": "cab53e5c8fc27aecceee19a0eeca82ec0e296c80a3cf54bd5edf82855e9dd965"
+      "sha256": "f02ba88c947f0a5a80535554c282a279d9dfbae68f7a15948f8a5b237a29f4cb"
     },
     {
       "id": "local-running",
@@ -2003,7 +2003,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-running-landscape-dark.png",
-      "sha256": "b78d7bc9c77f0b4273305a20f2e19a63af0a0302f9adae4f1eb0f845c84a094f"
+      "sha256": "f4ddc91de360133bf96f60b844639463d1524e286acdeb9c9e8f1926aaa3fc42"
     },
     {
       "id": "local-running",
@@ -2011,7 +2011,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-running-landscape-light.png",
-      "sha256": "3f960a462d3b364b9de19be527ee4589f3f66d99ac4efd2d150fa2605b6bd489"
+      "sha256": "62657849df7423a5f3c522ae2ba10e3ed2ee6c84bd866e33e1bc46e825c97aaa"
     },
     {
       "id": "local-running",
@@ -2019,7 +2019,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-running-phone-dark.png",
-      "sha256": "052cd16120231cbf7fd9f45b1ffdeca3e25a90a6d10585839a6ebf0dbf3f070d"
+      "sha256": "137db0b89c757d916e9b14c299799a1b2578146dcd5a896502dfbdce5ba57fe3"
     },
     {
       "id": "local-running",
@@ -2027,7 +2027,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-running-phone-light.png",
-      "sha256": "8122463ccad75b3e6efd4604be5b4babf21984503c8acf335b2225708c6281e0"
+      "sha256": "db22c3a1f1528eaff385f7c0dbd1a63b1b267412578c014c6857334a1575f566"
     },
     {
       "id": "local-running",
@@ -2035,7 +2035,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-running-tablet-dark.png",
-      "sha256": "fd9db5e35fa0689cb36324c7eea7946e3f4db39c9bd4cd9b8b20eeb3283761d0"
+      "sha256": "ec9e4d9e79476dcec91599e5f18cc2d27e53e5d1cd820753a616244dbf14dc14"
     },
     {
       "id": "local-running",
@@ -2043,7 +2043,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-running-tablet-light.png",
-      "sha256": "f580f12baf05e04b4f86a8f6ba45f7759d3223e9a6d2fd7c0e4235a49c874b14"
+      "sha256": "861c92965df6262c6faaf3b12bcb1c57215eb12cfb07a16ef437a23d2f9820dc"
     },
     {
       "id": "local-saved",
@@ -2051,7 +2051,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-saved-desktop-dark.png",
-      "sha256": "45bb589a3e200e542bea6cbe4724bd464b72ec1e31ef0b8b8057ad19b12f8aa2"
+      "sha256": "1c4a781a01516a6befa614d9f4b54f81f5cbff8a27dbdbf90a452c5ce79c6038"
     },
     {
       "id": "local-saved",
@@ -2059,7 +2059,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-saved-desktop-light.png",
-      "sha256": "f206502e6234c2fe514c094064ca759e8b4ecd12183f69aff871d67cae0821b7"
+      "sha256": "1434bd7e1582cbcc6120530efc94258d05852b0794f3442c47af6ee4760fd349"
     },
     {
       "id": "local-saved",
@@ -2067,7 +2067,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-saved-landscape-dark.png",
-      "sha256": "c61e829d1b6b38f5da0b48ed97830663561e5608d8018d33e5c1377c2668dec0"
+      "sha256": "f4ddc91de360133bf96f60b844639463d1524e286acdeb9c9e8f1926aaa3fc42"
     },
     {
       "id": "local-saved",
@@ -2075,7 +2075,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-saved-landscape-light.png",
-      "sha256": "f75d929fc0d9e722d46158af6434c8e652a4a1de02e3c46b22ccad16287a551e"
+      "sha256": "62657849df7423a5f3c522ae2ba10e3ed2ee6c84bd866e33e1bc46e825c97aaa"
     },
     {
       "id": "local-saved",
@@ -2083,7 +2083,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-saved-phone-dark.png",
-      "sha256": "df56333572b8d9bdd50c6e225702cf43e77ac5ccb06b95a6764e15be4c7428d4"
+      "sha256": "408297f1cb405af6ece8bfa718f1cf4b28fd17d25b79f1dc55d38d80a557e4c5"
     },
     {
       "id": "local-saved",
@@ -2091,7 +2091,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-saved-phone-light.png",
-      "sha256": "0460f859f174a2cbf5c8e261fdae1a2be26fa8f18be17ee86d48747d67722ceb"
+      "sha256": "2517a82f1589ac5dd1fba1c25111b5e710887ffb163897ae82f1f2e092af2caa"
     },
     {
       "id": "local-saved",
@@ -2099,7 +2099,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-saved-tablet-dark.png",
-      "sha256": "da03859da9cfa69d0af63851b3dda25c94e752c4979c46fec56e5f9f97d1d234"
+      "sha256": "d09a69a07f2b2f39163d8194d9180fbdc87cf0ba13ec7b2fdea3ad455e949334"
     },
     {
       "id": "local-saved",
@@ -2107,7 +2107,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-saved-tablet-light.png",
-      "sha256": "ce7504899ebf185e8271b6f9a8d7b9692fba620c14ed893e3a9be567fbe7d64d"
+      "sha256": "c3db5d63b2d7bfa4c1b745eb67d9cbcce4a32dd337417e1ea88d007f40da489c"
     },
     {
       "id": "local-start",
@@ -2115,7 +2115,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-local-start-desktop-dark.png",
-      "sha256": "c74b9c047bd8e065fa4f7524d2c032ffd8795bba9e67dd3bf9629b68587660b7"
+      "sha256": "2171daf32a3003004be82120e9032c05688de17f571e3ceef158d35db6643367"
     },
     {
       "id": "local-start",
@@ -2123,7 +2123,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-local-start-desktop-light.png",
-      "sha256": "634577d517ac4e25645e5a916684a538cef10adb5fc2b0285f0b36a7d40e9495"
+      "sha256": "36973c898d565a79aa442a6b1b2e35639a8450c36372dab29e7f30604daf8c8d"
     },
     {
       "id": "local-start",
@@ -2131,7 +2131,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-local-start-landscape-dark.png",
-      "sha256": "b0e012227f69e8e9ff72fab946691ff39d4af55a8025ee468204352da5b9f797"
+      "sha256": "f4ddc91de360133bf96f60b844639463d1524e286acdeb9c9e8f1926aaa3fc42"
     },
     {
       "id": "local-start",
@@ -2139,7 +2139,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-local-start-landscape-light.png",
-      "sha256": "9c6f7aabdffbada58c86ace84506dca182d02a509928230a141d73ad16ebdff4"
+      "sha256": "62657849df7423a5f3c522ae2ba10e3ed2ee6c84bd866e33e1bc46e825c97aaa"
     },
     {
       "id": "local-start",
@@ -2147,7 +2147,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-local-start-phone-dark.png",
-      "sha256": "222bef1313f386d11b1f538394f19516c61399ac8f8ad95601d9e35ffee99579"
+      "sha256": "9661ac3b3742fa9c7e15e76fd1fd25f45738c1661812397426cca2faba56ee5e"
     },
     {
       "id": "local-start",
@@ -2155,7 +2155,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-local-start-phone-light.png",
-      "sha256": "c399b335c67eba7c8b673e63b2b554370c7049096b091889274666e4eebf8449"
+      "sha256": "d72c97b89a2aa3fa6bdbdee08ae7049be77f4c914b59921f2e8006b487328f58"
     },
     {
       "id": "local-start",
@@ -2163,7 +2163,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-local-start-tablet-dark.png",
-      "sha256": "426499c63077df3d5321fd94927b4b734e40f039bef57c81cce639169dcf6c34"
+      "sha256": "eadbde0321d2f57e92d43e46cf73669d08afe8b06217f27ace65861f6999704f"
     },
     {
       "id": "local-start",
@@ -2171,7 +2171,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-local-start-tablet-light.png",
-      "sha256": "ee8844131d402cce007f405905c189b7ab47a1c0d142ce76db899305ea91b191"
+      "sha256": "de623f8782cdd799202f47f86edf0ce5efce7bf849f29386a7b67867acdcaf36"
     },
     {
       "id": "map-detail-pending",
@@ -4827,6 +4827,74 @@
         "url": "https://github.com/onsager-ai/tolmap/actions/runs/42234704875",
         "workflow": "storybook.yml"
       }
+    },
+    {
+      "reason": "PR #244 styles the tolmap local page (heading hierarchy, spacing, inline mark, themed controls, saved-link wrapping), changing every native local-page capture. Approved by the repository owner on 2026-11-07 after reviewing candidates.",
+      "sourceRun": {
+        "id": "42344710467",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42344710467",
+        "sourceSha": "21928c993147550c2affc9005533a1ddcb9caf88"
+      },
+      "files": [
+        "oss-local-cancelling-desktop-dark.png",
+        "oss-local-cancelling-desktop-light.png",
+        "oss-local-cancelling-landscape-dark.png",
+        "oss-local-cancelling-landscape-light.png",
+        "oss-local-cancelling-phone-dark.png",
+        "oss-local-cancelling-phone-light.png",
+        "oss-local-cancelling-tablet-dark.png",
+        "oss-local-cancelling-tablet-light.png",
+        "oss-local-confirm-desktop-dark.png",
+        "oss-local-confirm-desktop-light.png",
+        "oss-local-confirm-landscape-dark.png",
+        "oss-local-confirm-landscape-light.png",
+        "oss-local-confirm-phone-dark.png",
+        "oss-local-confirm-phone-light.png",
+        "oss-local-confirm-tablet-dark.png",
+        "oss-local-confirm-tablet-light.png",
+        "oss-local-detection-failed-desktop-dark.png",
+        "oss-local-detection-failed-desktop-light.png",
+        "oss-local-detection-failed-landscape-dark.png",
+        "oss-local-detection-failed-landscape-light.png",
+        "oss-local-detection-failed-phone-dark.png",
+        "oss-local-detection-failed-phone-light.png",
+        "oss-local-detection-failed-tablet-dark.png",
+        "oss-local-detection-failed-tablet-light.png",
+        "oss-local-index-failed-desktop-dark.png",
+        "oss-local-index-failed-desktop-light.png",
+        "oss-local-index-failed-landscape-dark.png",
+        "oss-local-index-failed-landscape-light.png",
+        "oss-local-index-failed-phone-dark.png",
+        "oss-local-index-failed-phone-light.png",
+        "oss-local-index-failed-tablet-dark.png",
+        "oss-local-index-failed-tablet-light.png",
+        "oss-local-running-desktop-dark.png",
+        "oss-local-running-desktop-light.png",
+        "oss-local-running-landscape-dark.png",
+        "oss-local-running-landscape-light.png",
+        "oss-local-running-phone-dark.png",
+        "oss-local-running-phone-light.png",
+        "oss-local-running-tablet-dark.png",
+        "oss-local-running-tablet-light.png",
+        "oss-local-saved-desktop-dark.png",
+        "oss-local-saved-desktop-light.png",
+        "oss-local-saved-landscape-dark.png",
+        "oss-local-saved-landscape-light.png",
+        "oss-local-saved-phone-dark.png",
+        "oss-local-saved-phone-light.png",
+        "oss-local-saved-tablet-dark.png",
+        "oss-local-saved-tablet-light.png",
+        "oss-local-start-desktop-dark.png",
+        "oss-local-start-desktop-light.png",
+        "oss-local-start-landscape-dark.png",
+        "oss-local-start-landscape-light.png",
+        "oss-local-start-phone-dark.png",
+        "oss-local-start-phone-light.png",
+        "oss-local-start-tablet-dark.png",
+        "oss-local-start-tablet-light.png"
+      ]
     }
   ]
 }
