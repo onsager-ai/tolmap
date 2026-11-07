@@ -11,7 +11,7 @@ body:has([data-local-page]) { margin: 0; background: var(--chrome); color: var(-
 [data-local-page] code { font-family: 'IBM Plex Mono', monospace; overflow-wrap: anywhere; }
 [data-local-page] button { min-height: 44px; max-width: 100%; margin: 0 0 8px; padding: 10px 16px; background: var(--chrome2); color: var(--on); border: 1px solid var(--rule); border-radius: 12px; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
 [data-local-page] button:focus-visible, [data-local-page] a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-[data-local-page] a { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); }
+[data-local-page] a { display: inline-block; max-width: 100%; min-height: 44px; color: var(--accent); overflow-wrap: normal; }
 @media (max-width: 600px) { [data-local-page] { margin: 12px auto; } }
 "#;
 pub struct Job {
