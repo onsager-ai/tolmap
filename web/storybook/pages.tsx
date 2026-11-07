@@ -75,6 +75,13 @@ export function page(id: string): StoryObj<Args> {
         if (root.querySelector("[data-phone-shell]")) { await click('[aria-label="Map layers"]'); await waitElement("[data-layers-sheet]"); }
         else await waitElement("[data-layer-segmented]");
       }
+      if (action === "lenses") {
+        if (root.querySelector("[data-phone-shell]")) { await click('[aria-label="Map layers"]'); await waitElement("[data-layers-sheet]"); }
+        else if (root.querySelector("[data-panel-tab]")) await click("[data-panel-tab]");
+        const panel = await waitElement("[data-lens-panel]");
+        if (!(panel as HTMLDetailsElement).open) await userEvent.click(panel.querySelector("summary")!);
+        await waitElement(`[data-lens-state="${id.slice('map-lens-'.length)}"]`);
+      }
       if (action === "repositories") { await click("[data-repo-switcher], [data-switch-repo]"); await waitElement("[data-repository-menu], [data-repo-sheet]"); }
       if (action === "quality") {
         // Tablet starts with the panel collapsed.

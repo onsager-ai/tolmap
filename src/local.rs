@@ -686,6 +686,30 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             )?;
             return Ok(axum::Json(text).into_response());
         }
+        if (parts.len() == 5 || parts.len() == 6) && parts[4] == "lenses" {
+            let source = s
+                .data
+                .join("prepared")
+                .join(snap.prepared.to_string())
+                .join("source.git");
+            let result = if parts.len() == 5 {
+                crate::service::lens::list_at(snap.repository, source, snap.commit)
+                    .map(|value| axum::Json(value).into_response())
+            } else {
+                crate::service::lens::resolve_at(
+                    snap.repository,
+                    source,
+                    snap.commit,
+                    dir.join("map.json"),
+                    parts[5].to_owned(),
+                )
+                .map(|value| axum::Json(value).into_response())
+            };
+            return Ok(match result {
+                Ok(response) => ([(header::CACHE_CONTROL, "no-store")], response).into_response(),
+                Err(error) => error.into_response(),
+            });
+        }
         let file = if parts.len() == 5 && parts[4] == "symbols" {
             let d = params
                 .get("district")
@@ -1030,6 +1054,12 @@ mod tests {
             "from .module import VALUE\n",
         )
         .unwrap();
+        std::fs::create_dir_all(checkout.join(".tolmap/lenses")).unwrap();
+        std::fs::write(
+            checkout.join(".tolmap/lenses/flow.toml"),
+            "version = 1\ntitle = \"Base lens\"\n",
+        )
+        .unwrap();
         test_git(&checkout, &["add", "-A"]);
         test_git(&checkout, &["commit", "-qm", "base"]);
         let base = test_git(&checkout, &["rev-parse", "HEAD"]);
@@ -1063,6 +1093,11 @@ mod tests {
         clone_bare(&checkout, &base_prepared_dir.join("source.git"));
 
         std::fs::write(checkout.join("src/module.py"), "VALUE = 2\n").unwrap();
+        std::fs::write(
+            checkout.join(".tolmap/lenses/flow.toml"),
+            "version = 1\ntitle = \"Head lens\"\n",
+        )
+        .unwrap();
         test_git(&checkout, &["add", "-A"]);
         test_git(&checkout, &["commit", "-qm", "head"]);
         let head = test_git(&checkout, &["rev-parse", "HEAD"]);
@@ -1093,6 +1128,26 @@ mod tests {
                 .join("map.json"),
         )
         .unwrap();
+
+        std::fs::write(
+            checkout.join(".tolmap/lenses/flow.toml"),
+            "invalid working tree",
+        )
+        .unwrap();
+        let uri: Uri = format!("/api/maps/snapshot/{base_id}/lenses?commit={base}")
+            .parse()
+            .unwrap();
+        let (_, body) = json_response(dispatch(&local, &Method::GET, &uri).unwrap()).await;
+        assert_eq!(body["names"], json!(["flow"]));
+        let uri: Uri = format!("/api/maps/snapshot/{base_id}/lenses/flow?commit={base}")
+            .parse()
+            .unwrap();
+        let response = dispatch(&local, &Method::GET, &uri).unwrap();
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let (status, body) = json_response(response).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["report"]["title"], "Base lens");
+        assert_eq!(body["commit"], base);
 
         for (commit, expected) in [(&base, "VALUE = 1\n"), (&head, "VALUE = 2\n")] {
             let path =

@@ -466,6 +466,9 @@ function send(res, status, body) {
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
+  if (req.method === "GET" && url.pathname.endsWith("/lenses")) {
+    return send(res, 200, {repository: "fixture", commit: "0".repeat(40), names: []});
+  }
   if (req.method === "GET" && url.pathname === "/api/healthz") {
     return send(res, 200, { status: "ok" });
   }

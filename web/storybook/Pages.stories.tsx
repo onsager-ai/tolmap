@@ -68,3 +68,8 @@ export const ReservedHealth = { ...page('reserved-health') };
 export const ReservedLogin = { ...page('reserved-login') };
 export const ReservedAdmin = { ...page('reserved-admin') };
 export const ReservedSearch = { ...page('reserved-search') };
+
+export const MapLensLoaded = { ...page("map-lens-loaded") };
+export const MapLensUnresolved = { ...page("map-lens-unresolved") };
+export const MapLensEmpty = { ...page("map-lens-empty") };
+export const MapLensError = { ...page("map-lens-error") };
