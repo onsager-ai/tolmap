@@ -1379,16 +1379,6 @@ export class MapRenderer {
     if (layer === "x") return ramp(Math.min(1, CX_(doc, i) / (this.maxCx || 1)));
     return packageGrouping.fileColors[i];
   }
-  // ---------- draw ----------
-  // Issue #51: performance.mark/measure around paint(), so
-  // web/scripts/perf-bench.mjs can read draw() cost straight off the
-  // Performance timeline via performance.getEntriesByName("tolmap:draw").
-  // Gated behind window.__TOLMAP_PERF__ (set by the bench via
-  // page.addInitScript, before any app code runs): the User Timing buffer
-  // has no eviction, so leaving this unconditional would leak one
-  // "tolmap:draw" measure per frame for the life of a real session -- a
-  // slow, silent memory leak in every visitor's tab for a number only the
-  // bench ever reads.
   /** Lenses only project saved targets through the current camera. No layout,
    * seed, document mutation, fit or camera operation belongs in these passes. */
   private drawLensAreas(g: SVGGElement) {
@@ -1413,7 +1403,7 @@ export class MapRenderer {
     if (detail) {
       if (target.symbol) {
         const raw = this.state!.districtSymbols.get(target.district);
-        const local = raw?.symbols.findIndex(row => row[0] === target.file && row[1] === target.symbol!.name && row[3] === target.symbol!.start) ?? -1;
+        const local = raw?.symbols.findIndex(row => row[0] === target.file && (row[1] === target.symbol!.name || target.symbol!.name.endsWith(`.${row[1]}`)) && row[3] === target.symbol!.start) ?? -1;
         const global = raw && local >= 0 ? raw.symbol_indices[local] : undefined;
         const anchor = global == null ? undefined : this.symScreenAnchor.get(global);
         if (anchor) return anchor;
@@ -1431,7 +1421,7 @@ export class MapRenderer {
     if (zf <= 1 || area == null || !fileCrossesSymbolGate(area, this.k, false)) return false;
     if (!target.symbol) return true;
     const raw = this.state!.districtSymbols.get(target.district);
-    const local = raw?.symbols.findIndex(row => row[0] === target.file && row[1] === target.symbol!.name && row[3] === target.symbol!.start) ?? -1;
+    const local = raw?.symbols.findIndex(row => row[0] === target.file && (row[1] === target.symbol!.name || target.symbol!.name.endsWith(`.${row[1]}`)) && row[3] === target.symbol!.start) ?? -1;
     if (!raw || local < 0 || !this.symVisible.has(raw.symbol_indices[local])) return false;
     // The ordinary selection can expand its ancestors below 110px. A lens
     // does not inherit that exception: every containing card must qualify.
@@ -1465,7 +1455,17 @@ export class MapRenderer {
         // loop keeps an intra-district declared hop available to tap there.
         const unique = points.filter((point, i) => i === 0 || point[0] !== points[i - 1][0] || point[1] !== points[i - 1][1]);
         const [x, y] = unique[0];
-        const d = unique.length === 1 ? `M${x} ${y}c-28 -32 28 -32 0 0` : "M" + unique.map(point => point.join(" ")).join("L");
+        // Different fixed bends keep an out-and-back path's computed and
+        // declared hops independently visible and tappable at district LOD.
+        const d = unique.length === 1
+          ? `M${x} ${y}c-28 -32 28 -32 0 0`
+          : "M" + unique[0].join(" ") + unique.slice(1).map((point, index) => {
+              const previous = unique[index];
+              const dx = point[0] - previous[0], dy = point[1] - previous[1];
+              const length = Math.hypot(dx, dy);
+              const bend = hop.source === "declared" ? 30 : 12;
+              return `Q${(previous[0] + point[0]) / 2 - dy / length * bend} ${(previous[1] + point[1]) / 2 + dx / length * bend} ${point.join(" ")}`;
+            }).join("");
         const key = `lh:${pathIndex}:${hopIndex}`;
         const stroke = hop.source === "declared" ? "var(--lens-declared)" : "var(--lens-computed)";
         overlay.appendChild(el("path", { d, fill: "none", stroke: "var(--canvas)", "stroke-width": 6, "pointer-events": "none" }));
@@ -1494,6 +1494,16 @@ export class MapRenderer {
     });
   }
 
+  // ---------- draw ----------
+  // Issue #51: performance.mark/measure around paint(), so
+  // web/scripts/perf-bench.mjs can read draw() cost straight off the
+  // Performance timeline via performance.getEntriesByName("tolmap:draw").
+  // Gated behind window.__TOLMAP_PERF__ (set by the bench via
+  // page.addInitScript, before any app code runs): the User Timing buffer
+  // has no eviction, so leaving this unconditional would leak one
+  // "tolmap:draw" measure per frame for the life of a real session -- a
+  // slow, silent memory leak in every visitor's tab for a number only the
+  // bench ever reads.
   private draw() {
     if (!window.__TOLMAP_PERF__) {
       this.paint();

@@ -117,6 +117,12 @@ jobs:
           path: web/lens-fixtures
       - name: Lens overlay checks and screenshots (Flask, desktop and phone, both themes)
         run: node scripts/check-lens-browser.mjs http://127.0.0.1:5176
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lens-review-samples
+          path: web/shots/lenses/
+          if-no-files-found: error
       - name: Comparison protocol browser checks (desktop and phone)
         run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176
       - name: Vite log on comparison failure

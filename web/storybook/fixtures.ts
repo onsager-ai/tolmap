@@ -93,6 +93,7 @@ export async function installFixture(state: string) {
     }
     if (path.startsWith("/api/maps/") || /^\/maps\/.+\.json$/.test(path)) {
       if (state === "map-loading") { await delay("infinite"); }
+      if (state.startsWith("lens-")) return new HttpResponse(JSON.stringify(map), { headers: { "Content-Type": "application/json", "x-tolmap-commit": commit } });
       return state === "map-unavailable" ? json({ error: "not_found" }, 404) : json(map);
     }
     return json({ error: "unhandled_fixture_request", path }, 500);

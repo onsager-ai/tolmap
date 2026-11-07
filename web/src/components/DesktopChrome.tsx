@@ -716,7 +716,7 @@ export function DesktopPanel(p: DesktopPanelProps) {
           </button>
         </div>
         <div key={`${top.type}-${JSON.stringify(top)}`} data-panel-content data-selection-panel={top.type === "overview" ? undefined : ""} className="min-h-0 overflow-y-auto px-4 pb-4 pt-1 [overscroll-behavior:contain] panel-enter" style={{ scrollbarWidth: "thin" }}>
-          {p.lenses}
+          {top.type === "overview" && p.lenses}
           {top.type === "overview" ? (
             <>
               {p.layer === "d" ? (
