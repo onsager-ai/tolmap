@@ -39,6 +39,8 @@ function bfs(from: number, to: number, graph: AdjMap): number[] | null {
   return null;
 }
 
+// Lenses resolve computed hops with a Rust port of this (src/lens.rs `Routes`);
+// change one and change the other (tests/lens.rs pins the shared cases).
 export type RouteKind = "imports" | "imported-by" | "undirected";
 export interface Route {
   path: number[];

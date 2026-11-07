@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use tolmap::lens::{Lens, LensList, LensReport, LensResponse};
 use tolmap::schema::{CheckReport, Comparison, DistrictSymbols, MapDocument, SymbolsDocument};
 use tolmap::service::http::HealthzResponse;
 use tolmap::service::jobs::JobSnapshot;
@@ -60,6 +61,11 @@ fn export_to(directory: &Path) -> Result<()> {
     CheckReport::export_all(&Config::default().with_out_dir(directory))?;
     tolmap::schema::SnapshotFreshness::export_all(&Config::default().with_out_dir(directory))?;
     Comparison::export_all(&Config::default().with_out_dir(directory))?;
+    // Issue #241: lens file form and its resolved report/resources.
+    Lens::export_all(&Config::default().with_out_dir(directory))?;
+    LensReport::export_all(&Config::default().with_out_dir(directory))?;
+    LensResponse::export_all(&Config::default().with_out_dir(directory))?;
+    LensList::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 

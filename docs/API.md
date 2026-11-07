@@ -369,6 +369,44 @@ job at that exact commit whose snapshot says `map_ready` serves its
 unverified early map (see `GET /api/jobs/{job_id}`); without `?commit=`
 the latest registered map is served as before.
 
+### `GET /api/maps/{owner}/{repo}/lenses/{name}[?commit=<full-sha>]`
+
+Resolves the lens `.tolmap/lenses/{name}.toml` against an indexed snapshot
+(issue #241; the file format is `src/lens.rs`). The lens is read from the git
+objects of the **same commit as the snapshot**, never from a working tree or a
+moving ref, and the response carries `repository`, `commit`, `name` and a
+`report` (`LensResponse`, `bindings/LensResponse.ts`). Without `?commit=` the
+latest indexed snapshot is used and named in the response. `Cache-Control:
+no-store`.
+
+`name` must match `[a-z0-9][a-z0-9_-]{0,63}`; anything else is `400
+invalid_request`, so no name can leave the lens directory. The resolution is a
+pure function of the lens and the stored map; the map is not changed.
+
+The `report` lists resolved area `members`, path `stops` and `hops`, and
+`notes`, each with its provenance. A hop is `computed` (with `edge_kind`
+`imports`, `imported-by`, `undirected` or `same-file`, the same route the
+viewer's path mode finds, and `via`, the files it passes through) or `declared`
+(with its `reason`; never given an `edge_kind`). Computed hops are file-level
+lower bounds over the map's edges: a symbol stop is routed through its file, and
+"no route" means none was found, not that none exists. Anything that did not
+resolve is in `unresolved` with a distinct `kind` (`missing_path`,
+`empty_glob`, `unknown_symbol`, `ambiguous`, `unknown_district`, `no_route`), a
+`location` in the lens, the `spec` and a `detail`; nothing is dropped silently.
+An unresolved item is still a `200`: the lens was read and resolved.
+
+Member and stop strings are `path`, `path#symbol` or `path#symbol@startline`
+(a symbol name as in the map's `S` rows; add `@line` when the name repeats in
+the file); area members may also be globs (`*` and `?` within a segment, `**`
+across segments), and a note anchor may be `district:<name>`. `tolmap lens
+check <lens.toml> --map <map.json>` runs the same resolution offline and exits
+non-zero (1) on unresolved items, 2 on an unreadable or invalid lens.
+
+### `GET /api/maps/{owner}/{repo}/lenses[?commit=<full-sha>]`
+
+`LensList`: the valid lens names (regular files `*.toml` in
+`.tolmap/lenses/`) at the snapshot's commit, sorted.
+
 ### `GET /api/healthz`
 
 ```
@@ -409,6 +447,10 @@ Every non-2xx response is JSON:
 |---|---|---|
 | 400 | `invalid_request` | body does not match the contract above |
 | 404 | `not_found` | unknown job id, or unknown slug/commit for `GET /api/maps/{owner}/{repo}` |
+| 404 | `snapshot_not_indexed` | lens resources: that slug/commit has no indexed map |
+| 404 | `lens_not_found` | no `.tolmap/lenses/{name}.toml` at the commit |
+| 404 | `lens_source_unavailable` | the commit is no longer retained in the clone; no other revision is read |
+| 422 | `lens_parse_error` / `lens_invalid` | the lens file is not valid TOML of the lens shape / breaks a lens rule (version, undeclared reason, unsafe path) |
 | 429 | `rate_limited` | per-IP or per-repo rate limit tripped -- `message` says which |
 | 503 | `busy` | all workers and pending queue slots are occupied; `Retry-After: 30` seconds |
 | 503 | `server_stopping` | the service received a shutdown signal and is not accepting new jobs (see "Graceful shutdown" above); no `Retry-After` |
@@ -499,6 +541,7 @@ single-trust-domain routes. These handlers do not call `access::enforce`.
 | `GET /api/maps/{owner}/{repo}/source` | `service::compare::read_source` | Inert source contract for `commit` + `path` from a retained clone. |
 | `GET /api/maps` | `service::http::get_maps` | Lists the public service catalogue through `Store::list_latest`. |
 | `GET /api/maps/{owner}/{repo}` | `service::http::get_map` | Uses `Store::get`/`Store::latest`; may return the active job's early map, then reads the stored map. |
+| `GET /api/maps/{owner}/{repo}/lenses[/{name}]` | `service::lens::list_lenses`, `get_lens` | Stored map by `commit`; the lens is read from that commit's git objects in the retained clone; `Cache-Control: no-store`. |
 | `GET /api/maps/{owner}/{repo}/symbols` | `service::http::get_symbols` | Uses the stored map identity and reads a district symbol file. |
 | `GET /api/healthz` | `service::http::get_healthz` | Health/build identity. |
 
