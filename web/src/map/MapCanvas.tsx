@@ -1,3 +1,4 @@
+import type { LensReport } from "@bindings/LensReport";
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { DistrictSymbols, MapDocument } from "@/types";
 import { MapRenderer, type FrameInsets, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
@@ -35,6 +36,7 @@ export interface MapCanvasHandle {
 
 interface MapCanvasProps {
   doc: MapDocument;
+  lens?: LensReport;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];
   geo: Geo;
@@ -68,6 +70,7 @@ interface MapCanvasProps {
  * pan frame is the thing this split avoids. */
 export function MapCanvas({
   doc,
+  lens,
   impactFiles,
   impactDistricts,
   geo,
@@ -100,6 +103,7 @@ export function MapCanvas({
   useLayoutEffect(() => {
     if (!svgRef.current) return;
     const stableCallbacks: MapRendererCallbacks = {
+      onSelectLensStop: (target) => callbacksRef.current.onSelectLensStop?.(target),
       onSelectDistrict: (d) => callbacksRef.current.onSelectDistrict(d),
       onSelectFile: (i) => callbacksRef.current.onSelectFile(i),
       onSelectSymbol: (i, s) => callbacksRef.current.onSelectSymbol(i, s),
@@ -174,6 +178,7 @@ export function MapCanvas({
     renderer.setInsets(insetsRef.current);
     const state: MapRenderState = {
       doc,
+      lens,
       impactFiles,
       impactDistricts,
       geo,
@@ -216,6 +221,7 @@ export function MapCanvas({
     }
     const state: MapRenderState = {
       doc,
+      lens,
       impactFiles,
       impactDistricts,
       geo,
@@ -234,7 +240,7 @@ export function MapCanvas({
       selHSym,
     };
     renderer.render(state);
-  }, [doc, impactFiles, impactDistricts, geo, layer, sel, selSym, selD, route, packageGrouping, districtPaths, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
+  }, [doc, lens, impactFiles, impactDistricts, geo, layer, sel, selSym, selD, route, packageGrouping, districtPaths, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
 
   // docs/UX.md §3.3: new chrome insets (a sheet detent, a resize) reach the
   // renderer without moving the camera -- MapView decides when a move is

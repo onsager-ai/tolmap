@@ -18,6 +18,7 @@ import { OverviewCard, SelectionCard, type PathPick, type StructureCardState } f
 
 export interface PhoneChromeProps {
   sourceAction?: ReactNode;
+  lenses?: ReactNode;
   doc: MapDocument;
   packageLayout: PackageLayout;
   packageGrouping: PackageGrouping;
@@ -289,6 +290,7 @@ export function PhoneChrome(p: PhoneChromeProps) {
       {/* §4.6: the Layers sheet, modal over the map sheet. */}
       {p.layersOpen && (
         <ModalSheet kind="layers" label="Map layers and display" title="Map layer" closeLabel="Close layers" landscape={p.landscape} onClose={p.onCloseLayers}>
+          {p.lenses}
           <div role="radiogroup" aria-label="Map layer" className="mt-1.5 overflow-hidden rounded-[14px] border border-[var(--rule)]">
             {LAYERS.map((l) => {
               const on = p.layer === l.id;

@@ -28,7 +28,7 @@ Only use this on a host whose local policy permits browser/rendering work.
 | Local checkout | Detect, scope/all-source confirmation, indexing/cancel, detection/index failure, saved history/export | LOCAL.md and production native template; preserve |
 | Indexing | No job, queue, Fetch/Read/Map/Detail, every failure class | UX §6; preserve |
 | Map | Overview, district/file/symbol/folder, four layers, early detail, loading/error | UX §§3–5, 7, 9; preserve |
-| Overlays | Search/results/empty, layers, repository menu, quality, keyboard, path picking | UX §§4–5; preserve |
+| Overlays | Search/results/empty, layers, repository menu, quality, keyboard, path picking, lenses loaded/unresolved/empty/error | UX §§4–5; preserve |
 | Source | Read-only, loading, access error, missing/expired/binary/large/unsupported, long-line fallback, find/miss | UX §13; preserve |
 | Reserved routes | Every reserved route except the separately covered `/new` | Existing placeholder implementation; preserve |
 
@@ -115,3 +115,12 @@ must happen outside capture CI and must identify the source revision and
 families accepted before the registry is changed. A green candidate capture
 gate establishes rendering/behavior only, not visual acceptance or
 physical-device gesture qualification. No existing thresholds are relaxed.
+
+Lens states introduced for #241 are candidates for owner review. The Flask
+viewer-check lane additionally uploads overview, zoomed stops, declared-hop
+explanations and unresolved reports for phone and desktop in both themes under
+`viewer-shots/lenses/`. Its map is `data/flask.json` unchanged; Rust resolves
+`data/lenses/flask-request.toml` and generates symbols from the fixture's pinned
+source. The unresolved sample intentionally adds a missing member and stop.
+Source-reader responses in that browser lane are explicitly synthetic; the
+native local/hosted service tests own git-object pinning evidence.

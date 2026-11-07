@@ -1,3 +1,4 @@
+import type { LensReport } from "../../bindings/LensReport";
 import { http, HttpResponse, delay } from "msw";
 import { setupWorker } from "msw/browser";
 import type { JobSnapshot, MapDocument } from "../src/types";
@@ -65,6 +66,18 @@ export async function installFixture(state: string) {
     }
     if (path.startsWith("/api/jobs/")) return json(job);
     if (path === "/api/index") return json({ job_id: "fixture", slug, status: "queued" }, 202);
+    if (path.endsWith("/lenses")) return json({ repository: slug, commit, names: state === "lens-empty" || !state.startsWith("lens-") ? [] : ["overview"] });
+    if (path.includes("/lenses/")) {
+      if (state === "lens-error") return json({ error: "lens_source_unavailable", message: "Committed lens source unavailable. No newer lens was substituted." }, 404);
+      const symbolFile = Number(Object.keys(map.S).find(file => map.S[file]?.length) ?? 0);
+      const target = (file: number) => ({ file, path: map.F[file], district: map.N[file][0], symbol: null });
+      const report: LensReport = { version: 1, lens_version: 1, repo: map.repo, title: "Request flow (synthetic lens)", lower_bound: true,
+        areas: [{ label: "Entry points", color: "blue", members: [{ spec: map.F[symbolFile], target: target(symbolFile) }] }],
+        paths: [{ name: "request-flow", stops: [{ spec: map.F[symbolFile], target: target(symbolFile) }, { spec: state === "lens-unresolved" ? "missing.rs" : map.F[1], target: state === "lens-unresolved" ? null : target(1) }], hops: [{ from: 0, to: 1, source: "declared", edge_kind: null, via: [], reason: "Synthetic queue boundary", resolved: state !== "lens-unresolved" }] }],
+        notes: [{ anchor: map.F[symbolFile], text: "Synthetic fixture note.", target: target(symbolFile), district: null }],
+        unresolved: state === "lens-unresolved" ? [{ kind: "missing_path", location: "paths[0].stops[1]", spec: "missing.rs", detail: "File missing at this snapshot." }] : [] };
+      return json({ repository: slug, commit, name: "overview", report });
+    }
     if (path.endsWith("/provenance")) {
       if (state === "source-loading") { await delay("infinite"); }
       return state === "source-unavailable" ? json({}, 403) : json({ version: 1, repository: slug, commit });

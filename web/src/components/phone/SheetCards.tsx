@@ -846,7 +846,7 @@ export function StructureSheetCard({
   onSelectDistrict(d: number): void;
 }) {
   const { detail, lines } = card;
-  const eyebrow = detail.kind === "road" ? "Road" : detail.kind === "street" ? "Street" : "Neighborhood";
+  const eyebrow = detail.kind === "lens" ? "Lens" : detail.kind === "road" ? "Road" : detail.kind === "street" ? "Street" : "Neighborhood";
   const name = (i: number) => doc.F[i].split("/").pop();
   return (
     <div data-sheet-card="structure" data-structure-card={detail.kind}>
@@ -868,13 +868,13 @@ export function StructureSheetCard({
             </p>
           ) : (
             <p className="mt-1 text-small text-[var(--dim)]" data-structure-summary>
-              {lines[1]}
+              {lines.slice(1).join(" · ")}
             </p>
           )}
         </div>
         <CloseButton label="Close" onClick={onClose} />
       </div>
-      {detail.kind === "neighborhood" ? (
+      {detail.kind === "lens" ? null : detail.kind === "neighborhood" ? (
         <>
           <Section title={`${detail.files.length} files`} />
           <FileRows doc={doc} files={detail.files.slice(0, 80)} onSelectFile={onSelectFile} />
