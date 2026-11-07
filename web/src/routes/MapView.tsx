@@ -945,6 +945,7 @@ export function MapView() {
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
   function pickLensStop(target: LensTarget) {
+    if (!doc) return;
     if (narrow && layersOpen) closeLayers();
     const symbol = target.symbol ? doc.S[String(target.file)]?.findIndex(row => row[0] === target.symbol!.name && row[2] === target.symbol!.start) : undefined;
     selectFile(target.file, { symbol: symbol != null && symbol >= 0 ? symbol : undefined });
