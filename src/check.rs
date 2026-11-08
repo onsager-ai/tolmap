@@ -55,7 +55,7 @@ use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
 use crate::schema::{
     CheckDistrict, CheckEdge, CheckFile, CheckFileStatus, CheckLandmark, CheckReport,
-    CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument,
+    CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument, NodeRow,
 };
 
 /// `CheckReport::version`. Bumped on any change to a field's meaning or

@@ -12,6 +12,8 @@ const loaded = JSON.parse(await readFile('lens-fixtures/loaded.json', 'utf8'));
 const unresolved = JSON.parse(await readFile('lens-fixtures/unresolved.json', 'utf8'));
 assert.deepEqual(await readFile('lens-fixtures/flask.json'), await readFile('../data/flask.json'), 'fixture map bytes stay unchanged');
 assert.equal(loaded.unresolved.length, 0);
+const comparison = JSON.parse(await readFile('lens-fixtures/comparison.json', 'utf8'));
+const overlap = JSON.parse(await readFile('lens-fixtures/overlap.json', 'utf8'));
 const screenshots = [];
 let activePage;
 await mkdir('shots/lenses', {recursive:true});
@@ -33,7 +35,8 @@ try {
       else if (path === '/api/maps/pallets/flask') return route.fulfill({json:map, headers:{'x-tolmap-commit':commit}});
       else if (path.endsWith('/symbols')) json = JSON.parse(await readFile(`lens-fixtures/flask.symbols/${Number(url.searchParams.get('district'))}.json`, 'utf8'));
       else if (path.endsWith('/freshness')) return route.fulfill({status:404,json:{error:'not_found'}});
-      else if (path.endsWith('/lenses')) { assert.equal(url.searchParams.get('commit'),commit); json = {repository:'pallets/flask',commit,names:['flask-request','unresolved']}; }
+      else if (path.startsWith('/api/compare/') && path.endsWith('/lenses')) { json = url.searchParams.has('other') ? overlap : comparison; }
+      else if (path.endsWith('/lenses')) { assert.equal(url.searchParams.get('commit'),commit); json = {repository:'pallets/flask',commit,names:['flask-request','overlap','unresolved']}; }
       else if (path.includes('/lenses/')) { assert.equal(url.searchParams.get('commit'),commit); const name = path.split('/').pop(); json = {repository:'pallets/flask',commit,name,report:name === 'unresolved' ? unresolved : loaded}; }
       else if (path.endsWith('/provenance')) json = {version:1,repository:'pallets/flask',commit};
       else if (path.endsWith('/source')) { assert.equal(url.searchParams.get('commit'),commit); json = {version:1,repository:'pallets/flask',commit,path:url.searchParams.get('path'),status:'ready',text:'# Synthetic source response for viewer interaction qualification.\nclass Flask:\n    pass\n',bytes:84,long_line:false}; }
@@ -160,6 +163,37 @@ try {
     assert.match(await panel.textContent(),/Unresolved stop/);
     assert.match(await panel.textContent(),/Unresolved hop/);
     await shot('unresolved');
+    // Comparison scenarios are Rust-generated controlled edits of the pinned
+    // Flask map, with the same actual symbol geometry. No head layout exists.
+    await page.goto(`${url}&lens=flask-request`);
+    await panel.locator('[data-lens-state="loaded"]').waitFor();
+    await openPanel();
+    await panel.getByRole('button',{name:'Compare this lens',exact:true}).click();
+    const comparePanel = page.locator('[data-lens-comparison]');
+    await comparePanel.getByRole('textbox',{name:'Lens head commit',exact:true}).fill(comparison.head);
+    await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
+    await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+    assert.equal(await page.locator('[data-lens-comparison-stop]').count(),0,'comparison overview hides stops');
+    for (const status of ['added','removed','broken','renamed']) assert.ok(await comparePanel.locator(`[data-lens-delta="${status}"]`).count()>0,`comparison reports ${status}`);
+    assert.ok(await page.locator('[data-lens-change="broken"]').count()>0,'broken hop retains base projection');
+    await shot('comparison-commits');
+    for (let i=0; i<10 && await page.locator('[data-lens-comparison-stop]').count()===0; i++) await zoomInSettled(page,1);
+    assert.ok(await page.locator('[data-lens-comparison-stop]').count()>0,'comparison stops follow normal zoom gates');
+    await shot('comparison-zoomed');
+    await comparePanel.getByRole('combobox',{name:'Compare with lens'}).selectOption('overlap');
+    await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
+    await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+    assert.ok(await comparePanel.locator('[data-lens-delta="shared"]').count()>0);
+    await shot('comparison-overlap');
+    await page.reload();
+    await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('other_lens'),'overlap','comparison survives deep link reload');
+    // A stale response must be explicit and must remove all comparison paint.
+    await page.route('**/api/compare/**/lenses?*', route => route.fulfill({json:{...overlap,base:'3'.repeat(40)}}));
+    await page.reload();
+    await comparePanel.locator('[data-lens-comparison-state="error"]').waitFor();
+    assert.equal(await page.locator('[data-lens-comparison-overlay]').count(),0);
+    await shot('comparison-stale');
     assert.deepEqual(errors,[],`${profile}/${theme} browser errors`);
     await context.close();
   }

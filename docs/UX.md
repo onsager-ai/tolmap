@@ -172,7 +172,26 @@ Lenses reuse §3.4's history: opening Layers pushes one overlay entry; choosing
 a saved lens replaces the URL and dismisses that overlay. Back closes an open
 Layers sheet, then collapses Half/Full to Peek before clearing a selection. The
 source reader closes before its underlying card. A deep link restores the lens
-at Peek without restoring a modal sheet. Lens comparison is a separate feature.
+at Peek without restoring a modal sheet.
+
+**Compare this lens** opens the existing base-map comparison frame. The commit
+comparison panel also offers **Compare active lens**. Choose a head commit for
+the same lens, or another saved lens at the base commit. Share
+`?lens=<name>&lens_compare=true&compare=true&base=<sha>&head=<sha>`; add
+`other_lens=<name>` with equal base/head commits for overlap and difference.
+The map remains the stored base snapshot. New files have district placement
+only, with no invented footprint. The panel lists area membership growth and
+shrinkage, shared/differing stops and hops, moved stops, broken hops and renamed
+files. Renames remain explicit unresolved items until the lens is edited.
+
+Comparison marks use labels and stroke patterns as well as theme tokens:
+added (+, solid), removed (−, dashed), broken (×, dotted), renamed (↗,
+dash-dot), moved (↔, short dash) and shared (=, muted). Overview retains only
+district areas and routes; stop marks use the same 40 px file and 110 px
+class-member gates. Existing base cards remain available through the list.
+Loading/revalidation hides previous paint; stale identities, unavailable source
+and mismatched snapshots show an explicit error. Return to lens keeps the base
+commit pinned. Physical-device and owner visual acceptance remain separate.
 
 ### 4.8 Search (artboard "Search active")
 

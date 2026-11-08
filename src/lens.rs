@@ -953,6 +953,7 @@ fn route_name(kind: RouteKind) -> &'static str {
 fn kind_name(kind: UnresolvedKind) -> &'static str {
     match kind {
         UnresolvedKind::MissingPath => "missing_path",
+        UnresolvedKind::RenamedFile => "renamed_file",
         UnresolvedKind::EmptyGlob => "empty_glob",
         UnresolvedKind::UnknownSymbol => "unknown_symbol",
         UnresolvedKind::Ambiguous => "ambiguous",

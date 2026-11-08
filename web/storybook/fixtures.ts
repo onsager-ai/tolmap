@@ -66,6 +66,14 @@ export async function installFixture(state: string) {
     }
     if (path.startsWith("/api/jobs/")) return json(job);
     if (path === "/api/index") return json({ job_id: "fixture", slug, status: "queued" }, 202);
+    if (path.startsWith("/api/compare/") && path.endsWith("/lenses")) {
+      if (state === "lens-compare-loading") { await delay("infinite"); }
+      if (state === "lens-compare-error") return json({ message: "Committed comparison source unavailable. No newer snapshot was substituted." }, 404);
+      const target = (file: number) => ({ file, path: map.F[file], district: map.N[file][0], symbol: null });
+      const report: LensReport = { version: 1, lens_version: 1, repo: map.repo, title: "Synthetic comparison", lower_bound: true, areas: [], paths: [], notes: [], unresolved: [] };
+      return json({ version: 1, repository: slug, base: state === "lens-compare-stale" ? "3".repeat(40) : commit, head: url.searchParams.get("head"), lens: "overview", other: url.searchParams.get("other") ?? "overview", base_map_sha256: "synthetic-fixture", lower_bound: true, before: report, after: report,
+        changes: ["added", "removed", "broken", "renamed", "shared"].map((status, i) => ({ kind: i === 2 ? "hop" : i === 3 ? "stop" : "area", label: "Synthetic request flow", status, before: [map.F[i]], after: status === "removed" ? [] : [map.F[i]], targets: i === 2 ? [target(0), target(1)] : [target(i)], districts: [map.N[i][0]] })) });
+    }
     if (path.endsWith("/lenses")) return json({ repository: slug, commit, names: state === "lens-empty" || !state.startsWith("lens-") ? [] : ["overview"] });
     if (path.includes("/lenses/")) {
       if (state === "lens-error") return json({ error: "lens_source_unavailable", message: "Committed lens source unavailable. No newer lens was substituted." }, 404);

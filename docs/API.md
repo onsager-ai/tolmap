@@ -391,7 +391,7 @@ viewer's path mode finds, and `via`, the files it passes through) or `declared`
 lower bounds over the map's edges: a symbol stop is routed through its file, and
 "no route" means none was found, not that none exists. Anything that did not
 resolve is in `unresolved` with a distinct `kind` (`missing_path`,
-`empty_glob`, `unknown_symbol`, `ambiguous`, `unknown_district`, `no_route`), a
+`renamed_file`, `empty_glob`, `unknown_symbol`, `ambiguous`, `unknown_district`, `no_route`), a
 `location` in the lens, the `spec` and a `detail`; nothing is dropped silently.
 An unresolved item is still a `200`: the lens was read and resolved.
 
@@ -401,6 +401,12 @@ the file); area members may also be globs (`*` and `?` within a segment, `**`
 across segments), and a note anchor may be `district:<name>`. `tolmap lens
 check <lens.toml> --map <map.json>` runs the same resolution offline and exits
 non-zero (1) on unresolved items, 2 on an unreadable or invalid lens.
+The offline `--map` form has no git history and reports absent paths as
+`missing_path`. Git-backed service resolution checks deterministic 50% rename
+detection from the lens file's last change to the snapshot. `renamed_file`
+includes `renamed: { from, to, commit }`; `commit` names the comparison endpoint
+where the rename is observed. A renamed member/stop stays unresolved; the
+resolver never silently substitutes its destination.
 
 ### `GET /api/maps/{owner}/{repo}/lenses[?commit=<full-sha>]`
 
@@ -418,6 +424,34 @@ cannot replace a saved snapshot's lens. Both resources return
 The viewer selects a resource with `?lens=<name>`, pins requests to the loaded
 map's commit and rejects a resolution naming another commit. The static map
 collection alone does not provide these git-backed lens resources.
+
+### `GET /api/compare/{owner}/{repo}/lenses?base=<sha>&head=<sha>&lens=<name>[&other=<name>]`
+
+`LensComparison` (Rust `src/lens_comparison.rs`, generated bindings) resolves
+one lens at base/head or two lenses at one commit (`other`, equal base/head).
+Full immutable commits and an indexed base map are required. It reads both lens
+files from retained git objects. Cross-commit mode reuses `check`'s base
+partition and import-weight placement; it extracts head content without
+partitioning or laying out a head map. Git renames between base and head are
+reported explicitly. Local snapshots expose the same shape at
+`/api/compare/snapshot/{base-id}/lenses` with saved base/head commits.
+
+The deterministic envelope contains version 1, repository, base/head, lens/other,
+`base_map_sha256`, `lower_bound`, complete before/after resolution reports and
+sorted `changes`. Each delta names its `kind` (area membership, stop, hop),
+`status` (`shared`, `added`, `removed`, `broken`, `renamed`, `moved`), before/after
+specifications, projected **base** targets and district placements. New files
+have no base target/footprint; unplaced ones have no districts either. Stops
+match by specification (with explicit git rename identity); hops match ordered
+endpoints, and area overlap matches resolved members across labels. Broken
+hops retain their last known base endpoints. Computed routes remain lower
+bounds from extracted imports. Notes remain in the side reports.
+
+The map bytes are never changed. Responses are `no-store`; unavailable source
+or maps and invalid lens/input use the existing explicit error resources.
+Viewers must reject mismatched repository/commit/lens identities and hide old
+results during revalidation. Deep links retain `lens`, `lens_compare`, `base`,
+`head` and optional `other_lens` alongside the existing comparison parameters.
 
 ### `GET /api/healthz`
 
