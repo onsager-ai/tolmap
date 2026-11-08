@@ -180,6 +180,16 @@ try {
     for (let i=0; i<10 && await page.locator('[data-lens-comparison-stop]').count()===0; i++) await zoomInSettled(page,1);
     assert.ok(await page.locator('[data-lens-comparison-stop]').count()>0,'comparison stops follow normal zoom gates');
     await shot('comparison-zoomed');
+    const comparisonStop = page.locator('[data-lens-comparison-stop]').first();
+    const comparisonPath = await comparisonStop.getAttribute('data-lens-comparison-stop');
+    // Use the list to pan the same base target into view, then tap its mark.
+    await comparePanel.getByRole('button',{name:comparisonPath,exact:true}).first().click();
+    if (profile === 'phone') {
+      for (let i=0; i<3 && await page.locator('[data-phone-sheet]').getAttribute('data-detent') !== 'peek'; i++) await page.locator('[data-sheet-grabber]').click();
+    }
+    await settleCamera(page);
+    await page.locator(`[data-lens-comparison-stop="${comparisonPath}"]`).first().click();
+    assert.equal(new URL(page.url()).searchParams.get('file'),comparisonPath,'comparison stop opens its base card');
     await comparePanel.getByRole('combobox',{name:'Compare with lens'}).selectOption('overlap');
     await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
     await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
@@ -189,7 +199,7 @@ try {
     await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
     assert.equal(new URL(page.url()).searchParams.get('other_lens'),'overlap','comparison survives deep link reload');
     // A stale response must be explicit and must remove all comparison paint.
-    await page.route('**/api/compare/**/lenses?*', route => route.fulfill({json:{...overlap,base:'3'.repeat(40)}}));
+    await page.route('**/api/compare/**/lenses?*', route => route.fulfill({json:{...overlap,base:'c'.repeat(40)}}));
     await page.reload();
     await comparePanel.locator('[data-lens-comparison-state="error"]').waitFor();
     assert.equal(await page.locator('[data-lens-comparison-overlay]').count(),0);

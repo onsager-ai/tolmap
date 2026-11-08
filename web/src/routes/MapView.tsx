@@ -964,12 +964,12 @@ export function MapView() {
       changeDetent("peek");
     }
   }
-  const compareLens = () => { if (narrow && layersOpen) closeLayers(); updateSearch({ lens_compare: true, compare: true, base: search.base ?? indexedCommit, head: search.head }); };
+  const compareLens = () => { if (narrow) { if (layersOpen) closeLayers(); changeDetent("peek"); } updateSearch({ lens_compare: true, compare: true, base: search.base ?? indexedCommit, head: search.head }); };
   const lensPanel = <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode={narrow ? "picker" : "full"} />;
   const activeLens = search.lens ? <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
 
   const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : null;
-  const sourceAction = !search.read && sel != null && !search.compare ? <button ref={sourceActionRef} className={`source-action${narrow ? " source-action-sheet" : ""}`} onClick={openSource}>Read selected source</button> : null;
+  const sourceAction = !search.read && sel != null && (!search.compare || search.lens_compare) ? <button ref={sourceActionRef} className={`source-action${narrow ? " source-action-sheet" : ""}`} onClick={openSource}>Read selected source</button> : null;
 
   const mapInsets = search.compare
     ? {

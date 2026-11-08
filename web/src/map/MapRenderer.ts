@@ -1500,18 +1500,25 @@ export class MapRenderer {
     g.appendChild(markers);
   }
 
-  private drawLensComparison(g: SVGGElement, zf: number) {
+  private drawLensComparison(g: SVGGElement, zf: number, districtLabels: SVGGElement) {
     const { doc, lensComparison } = this.state!;
     if (!lensComparison) return;
     const overlay = el("g", { "data-lens-comparison-overlay": "" });
+    const markers = el("g", { "data-lens-comparison-markers": "" });
     g.appendChild(overlay);
-    const marks = { added: ["+", "none", "var(--lens-teal)"], removed: ["−", "8 5", "var(--lens-orange)"], broken: ["×", "2 5", "var(--lens-red)"], renamed: ["↗", "10 3 2 3", "var(--lens-purple)"], moved: ["↔", "5 3", "var(--lens-declared)"], shared: ["=", "none", "var(--dim)"] } as const;
+    const marks = { added: ["+", "none", "var(--lens-teal)"], removed: ["−", "8 5", "var(--lens-orange)"], broken: ["×", "2 5", "var(--lens-orange)"], renamed: ["↗", "10 3 2 3", "var(--lens-blue)"], moved: ["↔", "5 3", "var(--lens-blue)"], shared: ["=", "none", "var(--dim)"] } as const;
+    const paintedAreas = new Set<string>();
     lensComparison.changes.forEach((change, changeIndex) => {
       const [symbol, dash, stroke] = marks[change.status];
       const title = `${change.status} ${change.kind} · ${change.label}: ${change.before.join(" → ")} → ${change.after.join(" → ")}`;
-      const put = (node: SVGElement) => { const tip = el("title", {}); tip.textContent = title; node.appendChild(tip); overlay.appendChild(node); };
+      const put = (node: SVGElement) => { const tip = el("title", {}); tip.textContent = title; node.appendChild(tip); (change.kind === "stop" ? markers : overlay).appendChild(node); };
       if (change.kind === "area") {
-        for (const district of change.districts) for (const poly of doc.districts[String(district)]?.blob ?? []) put(el("path", { d: "M" + poly.map(q => `${this.X(q[0])} ${this.Y(q[1])}`).join("L") + "Z", fill: stroke, "fill-opacity": change.status === "shared" ? 0.04 : 0.1, stroke, "stroke-width": 2, "stroke-dasharray": dash, "pointer-events": "none", "data-lens-change": change.status }));
+        for (const district of change.districts) {
+          const areaKey = `${district}:${change.status}`;
+          if (paintedAreas.has(areaKey)) continue;
+          paintedAreas.add(areaKey);
+          for (const poly of doc.districts[String(district)]?.blob ?? []) put(el("path", { d: "M" + poly.map(q => `${this.X(q[0])} ${this.Y(q[1])}`).join("L") + "Z", fill: stroke, "fill-opacity": change.status === "shared" ? 0.04 : 0.1, stroke, "stroke-width": 2, "stroke-dasharray": dash, "pointer-events": "none", "data-lens-change": change.status }));
+        }
       } else if (change.kind === "hop") {
         const detailed = change.targets.length >= 2 && change.targets.every(target => this.lensTargetVisible(target, zf));
         const points = change.targets.length >= 2 ? change.targets.slice(0,2).map(target => this.lensPoint(target, detailed)) : change.districts.map(district => this.lensPoint({ file: 0, path: "", symbol: null, district }, false));
@@ -1530,6 +1537,8 @@ export class MapRenderer {
         });
       }
     });
+    g.appendChild(districtLabels);
+    g.appendChild(markers);
   }
 
   // ---------- draw ----------
@@ -2261,9 +2270,8 @@ export class MapRenderer {
     g.appendChild(this.gSymRefs);
     this.renderSymbolRefs(state.selHSym);
 
-    this.drawLensComparison(g, zf0);
+    this.drawLensComparison(g, zf0, districtLabelLayer);
     this.drawLens(g, zf0, districtLabelLayer);
-    if (this.state!.lensComparison) g.appendChild(districtLabelLayer);
 
     // key -> every element carrying it, rebuilt fresh this paint (one
     // querySelectorAll over exactly what was just drawn, one loop -- see

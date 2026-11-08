@@ -2438,7 +2438,7 @@ mod tests {
         let renames = vec![crate::lens::FileRename {
             from: "src/flask/globals.py".into(),
             to: "src/flask/renamed_globals.py".into(),
-            commit: "2".repeat(40),
+            commit: "b".repeat(40),
         }];
         let mut after = crate::lens::resolve(&lens, &head);
         crate::lens::report_renames(&mut after, &renames);
@@ -2447,7 +2447,7 @@ mod tests {
             version: 1,
             repository: "pallets/flask".into(),
             base: "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35".into(),
-            head: "2".repeat(40),
+            head: "b".repeat(40),
             lens: "flask-request".into(),
             other: "flask-request".into(),
             base_map_sha256: {

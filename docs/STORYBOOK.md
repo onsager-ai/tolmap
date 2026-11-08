@@ -134,5 +134,13 @@ explanations and unresolved reports for phone and desktop in both themes under
 `lens-review-samples` (also included in `viewer-shots/lenses/`). Its map is `data/flask.json` unchanged; Rust resolves
 `data/lenses/flask-request.toml` and generates symbols from the fixture's pinned
 source. The unresolved sample intentionally adds a missing member and stop.
+Lens comparison states add 80 candidate identities (five states × two hosts ×
+four viewports × two themes). The existing loaded/unresolved lens captures
+also change where the comparison action is visible. These require owner review;
+this change does not update approved.json or approved PNGs. The Flask browser
+lane includes commit comparison, zoomed comparison stops, overlap and stale
+snapshot captures in both themes on phone and desktop. Those comparison edits
+are explicitly synthetic resolver scenarios over the unchanged pinned Flask
+map, not a fabricated Flask commit pair.
 Source-reader responses in that browser lane are explicitly synthetic; the
 native local/hosted service tests own git-object pinning evidence.

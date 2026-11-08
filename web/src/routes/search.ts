@@ -75,7 +75,7 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const commit = typeof search.commit === "string" && /^[a-f0-9]{40,64}$/.test(search.commit) ? search.commit : undefined;
   const lens = typeof search.lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.lens) ? search.lens : undefined;
   const other_lens = typeof search.other_lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.other_lens) ? search.other_lens : undefined;
-  const lens_compare = !!lens && (search.lens_compare === true || search.lens_compare === "true" || !!other_lens);
+  const lens_compare = !!lens && (search.lens_compare === true || search.lens_compare === "true" || !!other_lens || (!!search.base && !!search.head && search.lens_compare !== false && search.lens_compare !== "false"));
   const read = !!file && (search.read === true || search.read === "true");
   const line = Math.floor(Math.max(1, Math.min(10_000_000, Number(search.line) || 1)));
   const end = Math.floor(Math.max(line, Math.min(10_000_000, Number(search.end) || line)));

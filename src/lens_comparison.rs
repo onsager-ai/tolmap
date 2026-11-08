@@ -50,6 +50,7 @@ struct Item {
     targets: Vec<LensTarget>,
     resolved: bool,
     order: usize,
+    route: Vec<String>,
 }
 
 fn identity(spec: &str, renames: &[FileRename]) -> String {
@@ -85,6 +86,7 @@ fn items(report: &LensReport, renames: &[FileRename]) -> BTreeMap<(String, Strin
                     targets: vec![target.clone()],
                     resolved: true,
                     order: 0,
+                    route: Vec::new(),
                 },
             );
         }
@@ -100,6 +102,7 @@ fn items(report: &LensReport, renames: &[FileRename]) -> BTreeMap<(String, Strin
                 targets: stop.target.iter().cloned().collect(),
                 resolved: stop.target.is_some(),
                 order: i,
+                route: Vec::new(),
             });
         }
         for hop in &path.hops {
@@ -119,6 +122,12 @@ fn items(report: &LensReport, renames: &[FileRename]) -> BTreeMap<(String, Strin
                 targets: a.target.iter().chain(b.target.iter()).cloned().collect(),
                 resolved: hop.resolved,
                 order: hop.from,
+                route: std::iter::once(format!(
+                    "{:?}:{:?}:{:?}",
+                    hop.source, hop.edge_kind, hop.reason
+                ))
+                .chain(hop.via.iter().map(|path| identity(path, renames)))
+                .collect(),
             });
         }
     }
@@ -140,35 +149,46 @@ pub fn changes(
         .map(|key| {
             let a = left.get(&key);
             let b = right.get(&key);
-            let status = match (a, b) {
-                (Some(_), Some(b))
-                    if key.0 == "stop"
-                        && b.specs.iter().any(|spec| {
-                            after
-                                .unresolved
+            let status =
+                match (a, b) {
+                    (Some(_), Some(b))
+                        if key.0 == "stop"
+                            && b.specs.iter().any(|spec| {
+                                after.unresolved.iter().any(|u| {
+                                    u.spec == *spec && u.kind == UnresolvedKind::RenamedFile
+                                })
+                            }) =>
+                    {
+                        LensChange::Renamed
+                    }
+                    (Some(a), Some(b)) if !b.resolved && a.resolved => LensChange::Broken,
+                    (Some(a), Some(b)) if a.specs != b.specs => LensChange::Renamed,
+                    (Some(a), Some(b))
+                        if a.order != b.order
+                            || a.route != b.route
+                            || a.targets
                                 .iter()
-                                .any(|u| u.spec == *spec && u.kind == UnresolvedKind::RenamedFile)
-                        }) =>
-                {
-                    LensChange::Renamed
-                }
-                (Some(a), Some(b)) if !b.resolved && a.resolved => LensChange::Broken,
-                (Some(a), Some(b)) if a.specs != b.specs => LensChange::Renamed,
-                (Some(a), Some(b))
-                    if a.order != b.order
-                        || a.targets
-                            .iter()
-                            .map(|t| &t.symbol)
-                            .ne(b.targets.iter().map(|t| &t.symbol)) =>
-                {
-                    LensChange::Moved
-                }
-                (Some(_), Some(_)) => LensChange::Shared,
-                (Some(_), None) => LensChange::Removed,
-                (None, Some(b)) if !b.resolved => LensChange::Broken,
-                (None, Some(_)) => LensChange::Added,
-                _ => unreachable!(),
-            };
+                                .map(|t| &t.symbol)
+                                .ne(b.targets.iter().map(|t| &t.symbol)) =>
+                    {
+                        LensChange::Moved
+                    }
+                    (Some(_), Some(_)) => LensChange::Shared,
+                    (Some(a), None)
+                        if key.0 == "area"
+                            && a.specs.iter().any(|spec| {
+                                after.unresolved.iter().any(|u| {
+                                    u.spec == *spec && u.kind == UnresolvedKind::RenamedFile
+                                })
+                            }) =>
+                    {
+                        LensChange::Renamed
+                    }
+                    (Some(_), None) => LensChange::Removed,
+                    (None, Some(b)) if !b.resolved => LensChange::Broken,
+                    (None, Some(_)) => LensChange::Added,
+                    _ => unreachable!(),
+                };
             let item = b.or(a).unwrap();
             let mut targets = Vec::new();
             let mut districts = BTreeSet::new();
@@ -188,13 +208,51 @@ pub fn changes(
                         file,
                         path: frame.files[file].clone(),
                         district,
-                        symbol: target.symbol.clone(),
+                        symbol: target.symbol.as_ref().and_then(|symbol| {
+                            frame
+                                .symbols
+                                .get(&file.to_string())
+                                .and_then(|rows| rows.iter().find(|row| row.0 .0 == symbol.name))
+                                .map(|row| SymbolTarget {
+                                    name: row.0 .0.clone(),
+                                    kind: row.0 .1,
+                                    start: row.0 .2,
+                                    end: row.0 .3,
+                                })
+                        }),
                     };
                     if !targets.contains(&projected) {
                         targets.push(projected);
                     }
                 } else if frame.districts.contains_key(&target.district.to_string()) {
                     districts.insert(target.district);
+                }
+            }
+            if key.0 == "hop" {
+                // Keep endpoint order, including an identical endpoint for a
+                // same-file hop. Mixing old/new endpoint sets would connect
+                // the wrong pair when one endpoint is a newly added file.
+                let endpoints = a
+                    .filter(|item| item.targets.len() == 2)
+                    .or_else(|| b.filter(|item| item.targets.len() == 2));
+                if let Some(endpoints) = endpoints {
+                    targets = endpoints
+                        .targets
+                        .iter()
+                        .filter_map(|target| {
+                            let path = renames
+                                .iter()
+                                .find(|r| r.to == target.path)
+                                .map_or(target.path.as_str(), |r| r.from.as_str());
+                            let file = frame.files.iter().position(|p| p == path)?;
+                            Some(LensTarget {
+                                file,
+                                path: frame.files[file].clone(),
+                                district: frame.nodes[file].district(),
+                                symbol: target.symbol.clone(),
+                            })
+                        })
+                        .collect();
                 }
             }
             // A broken hop retains its last known base endpoints, so deletion
