@@ -116,10 +116,11 @@ families accepted before the registry is changed. A green candidate capture
 gate establishes rendering/behavior only, not visual acceptance or
 physical-device gesture qualification. No existing thresholds are relaxed.
 
-Lens states introduced for #241 are candidates for owner review. Existing
-approved references stay unchanged: the strict pixel gate reports the 32 new
-lens identities as missing until the owner reviews the expanded matrix. A
-complete capture matrix is rendering evidence, not visual approval. The Flask
+Lens states introduced for #241 (32 identities) and the 29 existing captures
+that the Lenses entry changed were approved by the owner on 2026-11-08 from run
+`42441604311` (source `1704e0f`); `approved.json` records them under
+`recaptures`. A complete capture matrix is rendering evidence, not visual
+approval. The Flask
 viewer-check lane additionally uploads overview, zoomed stops, declared-hop
 explanations and unresolved reports for phone and desktop in both themes under
 `lens-review-samples` (also included in `viewer-shots/lenses/`). Its map is `data/flask.json` unchanged; Rust resolves

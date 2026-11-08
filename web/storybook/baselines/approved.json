@@ -2179,7 +2179,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-detail-pending-desktop-dark.png",
-      "sha256": "040fc8610d6ec16bd6322d184cb503ac27a229f368ecb077e3436608be52b311"
+      "sha256": "29ff480d056349a258220dd777c37e62f9b16120bf3f49d4a8d288bba2f37d46"
     },
     {
       "id": "map-detail-pending",
@@ -2187,7 +2187,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-detail-pending-desktop-light.png",
-      "sha256": "926dde493a94c39935ab88723be9a9bb742b9329892c0d9182796d8c6bb2b411"
+      "sha256": "329060c8ebae0e67d5f42be2fdf3d0cff82eccc2deb36b15c22a78c2a5f150e3"
     },
     {
       "id": "map-detail-pending",
@@ -2371,7 +2371,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-folder-desktop-dark.png",
-      "sha256": "16bad0b321d0d59a876fd29ea520c82e7153ff8039cf2be875f242e0891a1ea7"
+      "sha256": "ee9f81e44a8f189c574bc61a119dfdac9d01ff021db54c9b752ca8d63211924f"
     },
     {
       "id": "map-folder",
@@ -2379,7 +2379,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-folder-desktop-light.png",
-      "sha256": "e6d736807a37dc5d6ac1b59bb37d02f01a5ee056b09ffebf5f4c672231bffb84"
+      "sha256": "4827a74322a8a715cd4df246295a346b78ab9a5ece4e505cda62ad5db460a00b"
     },
     {
       "id": "map-folder",
@@ -2435,7 +2435,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-freshness-desktop-dark.png",
-      "sha256": "85025f19011b2fbd9a115e882e7d4e94e779f11b6b461db41ea4e1a3a1d0d34f"
+      "sha256": "037c8713fd78e7468c02543281d4871131578db7ad50de47b2ac97d6830da2d0"
     },
     {
       "id": "map-freshness",
@@ -2443,7 +2443,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-freshness-desktop-light.png",
-      "sha256": "f73488e9eb16d082f4f5c811072c5352b0aaea801b0433360258a9c567ac610c"
+      "sha256": "4ca97a36b68d66768c0499bb29440c1274d7ba4567761c8a95e86af1bd63d377"
     },
     {
       "id": "map-freshness",
@@ -2499,7 +2499,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-keyboard-desktop-dark.png",
-      "sha256": "8576b17cfe9696d33b89eaf6ce9b763f736d122d3e705badc215a2db23b2b141"
+      "sha256": "ae76e0892d3ea34a8e000f1b3dad26a5bd1e8b716bc9700d4ec14624566369a0"
     },
     {
       "id": "map-keyboard",
@@ -2507,7 +2507,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-keyboard-desktop-light.png",
-      "sha256": "d9fdc601f049ac7fc5a501d6155b543d99e08f86dbe36229250018ff9a377f99"
+      "sha256": "e446d1a4f77014d24a907222e8917af880a8fa4da6d3dfd7593982a6cc10f134"
     },
     {
       "id": "map-keyboard",
@@ -2531,7 +2531,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-layer-c-desktop-dark.png",
-      "sha256": "330b6736048361ca91e1ddc96dd283953c060ab57a23d6b7604f480640248f03"
+      "sha256": "86d5b01c7161b2006d46ac14c8d24f8ef183fbb85c021839e5b849b49fd3e52e"
     },
     {
       "id": "map-layer-c",
@@ -2539,7 +2539,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-layer-c-desktop-light.png",
-      "sha256": "22a512043950c39b394b7fe1d646f42d2d0012640fa75bddddbe83b7d596ec65"
+      "sha256": "7cb7def4ffc20d67e8c0e63b1e2aa985215f68b7becdbe91705f70b08371f743"
     },
     {
       "id": "map-layer-c",
@@ -2595,7 +2595,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-layer-p-desktop-dark.png",
-      "sha256": "6437f495a02d8e516b2909b3e4705ef491b2781bfc918e2f57a989a30b119af5"
+      "sha256": "d0f34ac9cbf9fc5a69973cf0dc37faa00aadd63ba7b938cc22df768945edb7ce"
     },
     {
       "id": "map-layer-p",
@@ -2603,7 +2603,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-layer-p-desktop-light.png",
-      "sha256": "39ba2e5a0221f51b4b2a5400d67c051cfa910028fdd30ff73f6b257069fe4fc9"
+      "sha256": "1a5cb626b222f803aefc002f564e0429c2d53836028fc12992ec6af58844df97"
     },
     {
       "id": "map-layer-p",
@@ -2659,7 +2659,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-layer-x-desktop-dark.png",
-      "sha256": "043d0f0fb789a9af7940f0aec116bc3cad4a88ccc1b9d187d3919719bd644073"
+      "sha256": "cce421b785df659a5cca0e14a53242b28f03784534fe30e098e66396a1258c5d"
     },
     {
       "id": "map-layer-x",
@@ -2667,7 +2667,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-layer-x-desktop-light.png",
-      "sha256": "5cb83cc0169a98a75f6f68c48f4c0444bdb8da4700c36d5f401cb07e1aec235c"
+      "sha256": "71220d70c7782a2dc53947810bb12d518d967316c7229af89fc02d918bf20995"
     },
     {
       "id": "map-layer-x",
@@ -2723,7 +2723,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-layers-desktop-dark.png",
-      "sha256": "80b5f84d4a216ab0dee89e90aae1ad57a893803dabf817c047baf95e2c9a9b74"
+      "sha256": "ea0b4f9bb9bf13b2d3951079b5071e38c6dfc40fcbdedda4e088dcceb99de9a3"
     },
     {
       "id": "map-layers",
@@ -2731,7 +2731,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-layers-desktop-light.png",
-      "sha256": "e4ad22724e490b9421cede00e2b9c48c0ed9fb383b519ae49c9cd5f276490c8e"
+      "sha256": "fda18266674cf5cc1317872485f57b8d0c41e7f5fcfac121095500088f2a8ae5"
     },
     {
       "id": "map-layers",
@@ -2739,7 +2739,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-layers-landscape-dark.png",
-      "sha256": "f5e2f705c730a002c12acf6d1e1925c75b642010af1e93563c5bc13cb59dd21b"
+      "sha256": "b69e2ceae43bbe0a17ae32a3f104bc53e88d8b15e52fee6d967e6839a7e74904"
     },
     {
       "id": "map-layers",
@@ -2747,7 +2747,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-layers-landscape-light.png",
-      "sha256": "fc3aba8a50ea919f3ac2573be7763b064b64a03383743c8fa379f07c0c2e750a"
+      "sha256": "ab752817a677f580c74277d26d55aeda09eeac4af3f4becab71836179af76ead"
     },
     {
       "id": "map-layers",
@@ -2755,7 +2755,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-map-layers-phone-dark.png",
-      "sha256": "214eb86f01568f720efdca02ba0f15b8b208c34c1edfb73c603d7fd480bdb03e"
+      "sha256": "cf99e22f90ec9932f88e147e17b156490fd2ae94e5bc49f2a4f45b3a3af81d38"
     },
     {
       "id": "map-layers",
@@ -2763,7 +2763,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-map-layers-phone-light.png",
-      "sha256": "82143ef29548a6dc4cf4a5946172f14d3f44b755f6bbf3e47858b18e3f39d930"
+      "sha256": "d91358c8efc34b6dfeccf981e29680a4da0bb79a1d6c2a88297c81b84560d9cc"
     },
     {
       "id": "map-layers",
@@ -2851,7 +2851,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-overview-desktop-dark.png",
-      "sha256": "80b5f84d4a216ab0dee89e90aae1ad57a893803dabf817c047baf95e2c9a9b74"
+      "sha256": "ea0b4f9bb9bf13b2d3951079b5071e38c6dfc40fcbdedda4e088dcceb99de9a3"
     },
     {
       "id": "map-overview",
@@ -2859,7 +2859,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-overview-desktop-light.png",
-      "sha256": "e4ad22724e490b9421cede00e2b9c48c0ed9fb383b519ae49c9cd5f276490c8e"
+      "sha256": "fda18266674cf5cc1317872485f57b8d0c41e7f5fcfac121095500088f2a8ae5"
     },
     {
       "id": "map-overview",
@@ -3043,7 +3043,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-repositories-desktop-dark.png",
-      "sha256": "72e861b3e69f32260d0dea20b45a801dd371d27a5f59b0834947154c07444a96"
+      "sha256": "6390e7f4d6103c4bd4ac64fe9d17354bf12311defcaa3e424c0e4673746d3678"
     },
     {
       "id": "map-repositories",
@@ -3051,7 +3051,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-repositories-desktop-light.png",
-      "sha256": "8b1386fe0938742046455afc890f098d6c44cd766397ff07587af6dfce405142"
+      "sha256": "f70d221d49c6dd3b36ab04797551bad3ad35824a521779c1cbc3b55f36ef692d"
     },
     {
       "id": "map-repositories",
@@ -3107,7 +3107,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-search-empty-desktop-dark.png",
-      "sha256": "73756528946efe1c7b42cb8aad1cc178b380b1ac127bb5e680424d9afc140408"
+      "sha256": "033067015a4d7fe4c2eb477566a4ded9a88c1902c557457b2199c34fae842b55"
     },
     {
       "id": "map-search-empty",
@@ -3115,7 +3115,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-search-empty-desktop-light.png",
-      "sha256": "1d23fbc03f16dde36c7d14880715031f84cef6ae091d05506b8c346aabe3f3e1"
+      "sha256": "07be03e4370c7abd3ad106cec5588665a75458b4404cb257dbaf7296d8fc37b0"
     },
     {
       "id": "map-search-empty",
@@ -3171,7 +3171,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-search-desktop-dark.png",
-      "sha256": "42eeb6807d232f8bbecb3421d6b081d76b0cedf1ca6295c77bd28d25d2089f19"
+      "sha256": "baf34e417d07941ff765b8de03421b850f15457f1e7ebf9edf0be0984394a257"
     },
     {
       "id": "map-search",
@@ -3179,7 +3179,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-search-desktop-light.png",
-      "sha256": "b43eca681412d5a56a264c5a79bc52500ba4ad6a128f4bf32c1a20c846c53898"
+      "sha256": "0df132b2f7b6cb591bc4d89374050b24a4d1ece2f6975167d85df463c666cc7c"
     },
     {
       "id": "map-search",
@@ -4443,7 +4443,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-source-ready-tablet-light.png",
-      "sha256": "0af1e185489a164dbc8898f045d9a1b8c60a2782a8da4e4bc6083526c9b4fd35"
+      "sha256": "ba3426a764721fa4aebf662586873dbfc2e06ad54654f7b7e09c036e6c26ff68"
     },
     {
       "id": "source-search-empty",
@@ -4700,6 +4700,262 @@
       "theme": "light",
       "file": "oss-source-unsupported-tablet-light.png",
       "sha256": "9215cbe7be29cf4b016a1959f5222109c0ae6f3a59148ab685e04e2bedef2f75"
+    },
+    {
+      "id": "map-lens-loaded",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-lens-loaded-phone-light.png",
+      "sha256": "8930cb51a45e8bae455fc000f154a1bc314d61b53e3687bd82bd94110e990520"
+    },
+    {
+      "id": "map-lens-loaded",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-lens-loaded-phone-dark.png",
+      "sha256": "6fe7b4d460600a56c3e95ecb33e79df102ff406f88366b0d762f484ec5e7bc4f"
+    },
+    {
+      "id": "map-lens-unresolved",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-lens-unresolved-phone-light.png",
+      "sha256": "9d8056ac2e8211eb48b3224bd5c3064529fa839d3c13822c511fc72bb892a29a"
+    },
+    {
+      "id": "map-lens-unresolved",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-lens-unresolved-phone-dark.png",
+      "sha256": "22f10463eb4843d7b948c746fc4bd253ecfc2850d7650b165431565b9097d246"
+    },
+    {
+      "id": "map-lens-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-lens-empty-phone-light.png",
+      "sha256": "1e78be417cbeeccb37e740a5df23ea2c0fec47f9b0f2699cece6d1e73ad0accf"
+    },
+    {
+      "id": "map-lens-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-lens-empty-phone-dark.png",
+      "sha256": "07028378018049387c8203e6a2988905288d94a05af47731e7219ca96a3c174b"
+    },
+    {
+      "id": "map-lens-error",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-lens-error-phone-light.png",
+      "sha256": "e72328373f361253af5430718f06fe1ad5fba59f8017659fed8eddf1d3aa8eb0"
+    },
+    {
+      "id": "map-lens-error",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-lens-error-phone-dark.png",
+      "sha256": "3f55710091d157af566a7a045c9de4c98e2b67e1b8d31032ce5990f92be8df15"
+    },
+    {
+      "id": "map-lens-loaded",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-lens-loaded-landscape-light.png",
+      "sha256": "2fd3447a4cb1c9de2845573fed9375092c8c78e722e63eeb6afb9014e5d5f79c"
+    },
+    {
+      "id": "map-lens-loaded",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-lens-loaded-landscape-dark.png",
+      "sha256": "ebd9e17280d5790f6186102fcbc58276691c91a63e6f6f948d6a0edf2aee0ae5"
+    },
+    {
+      "id": "map-lens-unresolved",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-lens-unresolved-landscape-light.png",
+      "sha256": "f9047089bcd2d578c94948223902e747028702ea251379b9ae175df2240d0680"
+    },
+    {
+      "id": "map-lens-unresolved",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-lens-unresolved-landscape-dark.png",
+      "sha256": "e2037dd5335d12a01e886463b4efb589553a8ff45b6d64c3832322c057e3cc9d"
+    },
+    {
+      "id": "map-lens-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-lens-empty-landscape-light.png",
+      "sha256": "049baf8de4ad05a682cb032b2fe543c9553a6f0f4ea10286c22a1c960783e8d2"
+    },
+    {
+      "id": "map-lens-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-lens-empty-landscape-dark.png",
+      "sha256": "afa74613898257e7dfbf82197338f24e10cd7f35b93ea9e88c569a192334b7be"
+    },
+    {
+      "id": "map-lens-error",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-lens-error-landscape-light.png",
+      "sha256": "21ba5d7f531b84082efb95ee60502cfa90be9489c415b98432070c29783f4e6b"
+    },
+    {
+      "id": "map-lens-error",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-lens-error-landscape-dark.png",
+      "sha256": "1313e1c9ce60440515772f378bbaad777c28136740200f67e46757bf9953007c"
+    },
+    {
+      "id": "map-lens-loaded",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-lens-loaded-tablet-light.png",
+      "sha256": "914cb2ec7ad380c182c55af849326e899564b887fe2ac043fc4dae1029aacc07"
+    },
+    {
+      "id": "map-lens-loaded",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-lens-loaded-tablet-dark.png",
+      "sha256": "7bb7a4f95cb9f69b8212824a649b25703b916dface990e5e6c3b0339425ac131"
+    },
+    {
+      "id": "map-lens-unresolved",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-lens-unresolved-tablet-light.png",
+      "sha256": "2bf504ec3c91e2144a94d331b7ee649fa8920f3d56f82613b70fc8208a08358a"
+    },
+    {
+      "id": "map-lens-unresolved",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-lens-unresolved-tablet-dark.png",
+      "sha256": "07c00d25750860af73dde1ac9d24f1695c86db9ed4f6694e70dcd60bac2a9b81"
+    },
+    {
+      "id": "map-lens-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-lens-empty-tablet-light.png",
+      "sha256": "9227507a76776ead26ab677c8392145cac05447b6ec0b9c0e9873e1b2519b47d"
+    },
+    {
+      "id": "map-lens-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-lens-empty-tablet-dark.png",
+      "sha256": "11552439cd57052f00f42c637e47a436fe1d14fc7b4a12a9e2d2eeb8e44bae3d"
+    },
+    {
+      "id": "map-lens-error",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-lens-error-tablet-light.png",
+      "sha256": "88b2ed01c016956698d2831ed309724620ac18178372631ef225e1a48c7ca076"
+    },
+    {
+      "id": "map-lens-error",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-lens-error-tablet-dark.png",
+      "sha256": "5540decea3bd83c203e3d2523581922374311a4c38128ea7b6d5b4ba43c78fde"
+    },
+    {
+      "id": "map-lens-loaded",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-lens-loaded-desktop-light.png",
+      "sha256": "d6451ee90418134c67198d4cd3db61a5fdfec9ab6ba05fe4125726c17a33eb53"
+    },
+    {
+      "id": "map-lens-loaded",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-lens-loaded-desktop-dark.png",
+      "sha256": "c6dd344c7698e93ff13ca9b16e292f7d36e8edd15f893d4e4227e83d0094db87"
+    },
+    {
+      "id": "map-lens-unresolved",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-lens-unresolved-desktop-light.png",
+      "sha256": "9599967241fbf0ce9abc0cf0d2be565124a2ffea6803e8027439460fb56a9159"
+    },
+    {
+      "id": "map-lens-unresolved",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-lens-unresolved-desktop-dark.png",
+      "sha256": "49291629173e69991bb916e62f7f164f5728206f634c9bdb5a7307ebe1fd56f5"
+    },
+    {
+      "id": "map-lens-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-lens-empty-desktop-light.png",
+      "sha256": "4a6ac53b1405a820aafda38b7c5bb906a5bb7d7a837322d717d985d9561a6022"
+    },
+    {
+      "id": "map-lens-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-lens-empty-desktop-dark.png",
+      "sha256": "e5683369c217189f351da79600de9491a2e8e9d9ad9b152ead7de299eaa753aa"
+    },
+    {
+      "id": "map-lens-error",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-lens-error-desktop-light.png",
+      "sha256": "cb78b31b5ec742f2b01d6bf48f46377a88556e01bbfee479da613f05d849a11d"
+    },
+    {
+      "id": "map-lens-error",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-lens-error-desktop-dark.png",
+      "sha256": "7b433ea5cf1d9be853b60c5995424e246d6ed9fa3029b85574960e7c5009892b"
     }
   ],
   "recaptures": [
@@ -4894,6 +5150,79 @@
         "oss-local-start-phone-light.png",
         "oss-local-start-tablet-dark.png",
         "oss-local-start-tablet-light.png"
+      ]
+    },
+    {
+      "reason": "PR #245 adds lens states for #241 (loaded, unresolved, empty, error at every viewport and theme: 32 new identities) and a collapsed Lenses row in the map inspector and Layers sheet, which changes 28 existing map captures; one source-reader capture (source-ready tablet light) changes its selected-range highlight. Approved by the repository owner in chat on 2026-11-08 after reviewing the candidates and the semon/Flask lens renders.",
+      "sourceRun": {
+        "id": "42441604311",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42441604311",
+        "sourceSha": "1704e0f783852101d476caa9831e7651a85e3c2e"
+      },
+      "files": [
+        "oss-map-detail-pending-desktop-dark.png",
+        "oss-map-detail-pending-desktop-light.png",
+        "oss-map-folder-desktop-dark.png",
+        "oss-map-folder-desktop-light.png",
+        "oss-map-freshness-desktop-dark.png",
+        "oss-map-freshness-desktop-light.png",
+        "oss-map-keyboard-desktop-dark.png",
+        "oss-map-keyboard-desktop-light.png",
+        "oss-map-layer-c-desktop-dark.png",
+        "oss-map-layer-c-desktop-light.png",
+        "oss-map-layer-p-desktop-dark.png",
+        "oss-map-layer-p-desktop-light.png",
+        "oss-map-layer-x-desktop-dark.png",
+        "oss-map-layer-x-desktop-light.png",
+        "oss-map-layers-desktop-dark.png",
+        "oss-map-layers-desktop-light.png",
+        "oss-map-layers-landscape-dark.png",
+        "oss-map-layers-landscape-light.png",
+        "oss-map-layers-phone-dark.png",
+        "oss-map-layers-phone-light.png",
+        "oss-map-lens-empty-desktop-dark.png",
+        "oss-map-lens-empty-desktop-light.png",
+        "oss-map-lens-empty-landscape-dark.png",
+        "oss-map-lens-empty-landscape-light.png",
+        "oss-map-lens-empty-phone-dark.png",
+        "oss-map-lens-empty-phone-light.png",
+        "oss-map-lens-empty-tablet-dark.png",
+        "oss-map-lens-empty-tablet-light.png",
+        "oss-map-lens-error-desktop-dark.png",
+        "oss-map-lens-error-desktop-light.png",
+        "oss-map-lens-error-landscape-dark.png",
+        "oss-map-lens-error-landscape-light.png",
+        "oss-map-lens-error-phone-dark.png",
+        "oss-map-lens-error-phone-light.png",
+        "oss-map-lens-error-tablet-dark.png",
+        "oss-map-lens-error-tablet-light.png",
+        "oss-map-lens-loaded-desktop-dark.png",
+        "oss-map-lens-loaded-desktop-light.png",
+        "oss-map-lens-loaded-landscape-dark.png",
+        "oss-map-lens-loaded-landscape-light.png",
+        "oss-map-lens-loaded-phone-dark.png",
+        "oss-map-lens-loaded-phone-light.png",
+        "oss-map-lens-loaded-tablet-dark.png",
+        "oss-map-lens-loaded-tablet-light.png",
+        "oss-map-lens-unresolved-desktop-dark.png",
+        "oss-map-lens-unresolved-desktop-light.png",
+        "oss-map-lens-unresolved-landscape-dark.png",
+        "oss-map-lens-unresolved-landscape-light.png",
+        "oss-map-lens-unresolved-phone-dark.png",
+        "oss-map-lens-unresolved-phone-light.png",
+        "oss-map-lens-unresolved-tablet-dark.png",
+        "oss-map-lens-unresolved-tablet-light.png",
+        "oss-map-overview-desktop-dark.png",
+        "oss-map-overview-desktop-light.png",
+        "oss-map-repositories-desktop-dark.png",
+        "oss-map-repositories-desktop-light.png",
+        "oss-map-search-desktop-dark.png",
+        "oss-map-search-desktop-light.png",
+        "oss-map-search-empty-desktop-dark.png",
+        "oss-map-search-empty-desktop-light.png",
+        "oss-source-ready-tablet-light.png"
       ]
     }
   ]
