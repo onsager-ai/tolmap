@@ -36,7 +36,7 @@ function statusLabel(change: LensDelta, data: LensComparison) {
 
 function ChangeRow({ change, data, pick }: { change: LensDelta; data: LensComparison; pick(target: LensTarget): void }) {
   const specs = [...new Set([...change.before, ...change.after])];
-  const renames = data.after.unresolved.flatMap(item => item.renamed && change.before.some(spec => spec.split("#")[0] === item.renamed!.from) ? [item.renamed] : []);
+  const renames = [...new Map(data.after.unresolved.flatMap(item => item.renamed && change.before.some(spec => spec.split("#")[0] === item.renamed!.from) ? [[item.renamed.from, item.renamed] as const] : [])).values()];
   return <li data-lens-delta={change.status}>
     <strong>{statusLabel(change, data)}</strong><small>{change.label}</small>
     <div className="lens-delta-paths">{specs.map((spec, index) => {
@@ -59,12 +59,12 @@ export function LensComparisonPanel({ search, result, list, update, pick, embedd
     const items = changes.filter(change => change.kind === kind);
     return items.length > 0 && <section key={kind}><h3>{kind === "area" ? "Area membership" : kind === "stop" ? "Stops" : "Hops"} · {items.length}</h3><ul>{items.map((change, index) => <ChangeRow key={index} change={change} data={data!} pick={pick} />)}</ul></section>;
   });
-  return <aside className={`comparison-panel lens-comparison-panel${embedded ? " lens-comparison-sheet" : ""}`} aria-label="Lens comparison" data-lens-comparison style={embedded ? { maxHeight: height } : undefined}>
+  return <aside className={`comparison-panel lens-comparison-panel${embedded ? " lens-comparison-sheet" : ""}`} aria-label="Lens comparison" data-lens-comparison style={embedded && height != null ? { height } : undefined}>
     <header><h2>Lens comparison</h2><button onClick={() => update({ lens_compare: undefined, other_lens: undefined, compare: undefined, head: undefined, commit: search.base })}>Return to lens</button></header>
     <div className="lens-comparison-summary" data-lens-comparison-summary data-lens-comparison-state={!expanded && data ? "loaded" : undefined}>
       {expanded && <p>{overlap ? `${search.lens} ∩ ${search.other_lens}` : search.lens} · {search.base?.slice(0, 8)}{!overlap && search.head ? ` → ${search.head.slice(0, 8)}` : ""}</p>}
       {data && <p>{embedded && !expanded ? <button aria-label="View changes" onClick={onExpand}>{overlap ? `${changed.length} differing · ${unchanged.length} in both` : `${changed.length} changes · ${unchanged.length} unchanged`}</button> : overlap ? `${changed.length} differing · ${unchanged.length} in both` : `${changed.length} changes · ${unchanged.length} unchanged`}</p>}
-      {embedded && !expanded && !data && <button onClick={onExpand}>Set up comparison</button>}
+      {embedded && !expanded && !data && <button onClick={onExpand}>{result.error ? "Stale or unavailable · View details" : "Set up comparison"}</button>}
     </div>
     {expanded && <>
       <div className="lens-comparison-edit"><button aria-expanded={showForm} onClick={() => setEditing(value => !value)}>Edit comparison</button>
@@ -87,6 +87,6 @@ export function LensComparisonPanel({ search, result, list, update, pick, embedd
       </div>
     </>}
     {!search.base || !search.head ? <p>Choose two commits, or another lens at the base commit.</p> : result.isPending || result.isFetching ? <p role="status" data-lens-comparison-state="loading">{result.isFetching && result.data ? "Revalidating; previous lens comparison is stale." : "Computing lens comparison…"}</p> : null}
-    {result.error && <p role="alert" data-lens-comparison-state="error">{result.error.message} <button onClick={() => { void result.refetch(); }}>Retry</button></p>}
+    {result.error && (expanded ? <p role="alert" data-lens-comparison-state="error">{result.error.message} <button onClick={() => { void result.refetch(); }}>Retry</button></p> : <span role="alert" className="sr-only" data-lens-comparison-state="error">{result.error.message}</span>)}
   </aside>;
 }
