@@ -137,6 +137,43 @@ Opened from the control column. A radio list (District, Churn, Complexity, Packa
 
 "Path from here" puts the sheet into path mode (Peek: "From `a.py` · pick a destination", with Cancel); the next file tap sets the destination and the sheet shows the path. This replaces RouteBox, which sat under the drawer on phones (reference used `bottom: calc(58px + safe)`; the port lost it).
 
+### Lenses
+
+A saved lens highlights areas, ordered paths and anchored notes over the current
+map. Open **Lenses** in the phone's Layers sheet or the desktop inspector. Choose
+a lens from `.tolmap/lenses/` at the indexed commit, or share
+`/<owner>/<repo>?lens=<name>` (add `commit=<full-sha>` to pin the snapshot).
+Opt-in local snapshots use the same controls and their own retained commit.
+Selecting or clearing a lens changes neither the camera nor the map layout.
+
+At overview, areas tint their districts and paths join district anchors. File
+stops require their existing 40 px footprint gate; symbol stops additionally
+require a visible symbol card, including the 110 px class-member gate. Notes use
+their district, file or symbol anchor after zooming beyond overview, with file
+and symbol notes sharing those gates. Selecting a lens never bypasses a gate.
+Solid blue paths are computed from available map edges (a lower bound); dashed
+paths are declared links. Tap or hover a hop for its provenance and declared
+reason. On phones this explanation lives in the normal map sheet.
+
+The lens panel lists areas and their members, each path's stops in order, notes,
+and every unresolved resolver item with its location, kind and explanation.
+Missing stops and broken hops remain in that list. A stop on the map or in the
+list opens its file/symbol card; **Read selected source** opens the existing
+commit-pinned reader. Empty snapshots and unavailable lenses have explicit
+states. A mismatched snapshot cannot paint an overlay.
+
+On phones, Layers contains the saved-lens picker. Choosing a lens closes Layers
+and shows its title and ordered path in the normal map sheet at Peek, leaving
+the map visible. Details raises it to Half; the existing Full detent permits
+scrolling through long reports. File/symbol and hop cards replace this report
+while selected; clearing them returns to the active lens.
+
+Lenses reuse §3.4's history: opening Layers pushes one overlay entry; choosing
+a saved lens replaces the URL and dismisses that overlay. Back closes an open
+Layers sheet, then collapses Half/Full to Peek before clearing a selection. The
+source reader closes before its underlying card. A deep link restores the lens
+at Peek without restoring a modal sheet. Lens comparison is a separate feature.
+
 ### 4.8 Search (artboard "Search active")
 
 - Tapping the pill turns the screen into search: back button, a 16 px input (anything under 16 px makes iPhone Safari zoom the page on focus and stay zoomed), a clear button, and results grouped by kind: District, Files, Symbols. Rows are ≥ 56 px, the match is bold, file rows show the directory in mono beneath the name.

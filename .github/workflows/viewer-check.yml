@@ -18,7 +18,41 @@ on:
   workflow_dispatch:
 
 jobs:
+  lens-fixtures:
+    name: pinned Flask lens fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LEIDEN_PREFIX: ${{ github.workspace }}/.native/leiden
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - uses: actions/cache@v4
+        id: leiden
+        with:
+          path: ${{ env.LEIDEN_PREFIX }}
+          key: leiden-${{ runner.os }}-${{ hashFiles('scripts/install-leiden.sh') }}
+      - if: steps.leiden.outputs.cache-hit != 'true'
+        run: bash scripts/install-leiden.sh "$LEIDEN_PREFIX"
+      - name: Pinned source and Rust lens resolution
+        run: |
+          git clone --filter=blob:none https://github.com/pallets/flask.git /tmp/lens-flask
+          git -C /tmp/lens-flask checkout --detach d73fa1cdcbd8b1465c151db8924ba58b1dd14e35
+          TOLMAP_LENS_FIXTURE_REPO=/tmp/lens-flask TOLMAP_LENS_FIXTURE_OUT="$PWD/web/lens-fixtures" cargo test --locked --release --lib symbols::tests::export_lens_viewer_fixture -- --ignored --exact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lens-fixtures
+          path: web/lens-fixtures/
   view:
+    needs: lens-fixtures
     name: check:view + screenshots
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -77,6 +111,18 @@ jobs:
           nohup pnpm exec vite --host 127.0.0.1 --port 5176 --strictPort > vite.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:5176/ >/dev/null && exit 0; sleep 1; done
           cat vite.log; exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: lens-fixtures
+          path: web/lens-fixtures
+      - name: Lens overlay checks and screenshots (Flask, desktop and phone, both themes)
+        run: node scripts/check-lens-browser.mjs http://127.0.0.1:5176
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lens-review-samples
+          path: web/shots/lenses/
+          if-no-files-found: error
       - name: Comparison protocol browser checks (desktop and phone)
         run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176
       - name: Vite log on comparison failure

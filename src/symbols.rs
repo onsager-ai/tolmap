@@ -2387,6 +2387,64 @@ impl SymbolsDocument {
 
 #[cfg(test)]
 mod tests {
+
+    // CI-only fixture exporter: reuse the pinned acceptance map verbatim and
+    // attach actual source symbols to its existing footprints. No re-layout.
+    #[test]
+    #[ignore = "requires the pinned Flask checkout; viewer-check CI supplies it"]
+    fn export_lens_viewer_fixture() {
+        let repo = std::path::PathBuf::from(std::env::var_os("TOLMAP_LENS_FIXTURE_REPO").unwrap());
+        let out = std::path::PathBuf::from(std::env::var_os("TOLMAP_LENS_FIXTURE_OUT").unwrap());
+        std::fs::create_dir_all(&out).unwrap();
+        let map_bytes = include_bytes!("../data/flask.json");
+        let map: MapDocument = serde_json::from_slice(map_bytes).unwrap();
+        let (graph, spool) = crate::extract::build_with_symbols_progress(
+            &repo,
+            "src/flask",
+            LanguageKind::Python,
+            crate::extract::RefsMode::Hand,
+            &crate::extract::InstallMode::Off,
+            &crate::progress::Progress::silent(),
+        )
+        .unwrap();
+        let map_path = out.join("flask.json");
+        std::fs::write(&map_path, map_bytes).unwrap();
+        write_sibling(&repo, &graph.nodes, &map_path, spool).unwrap();
+        let lens =
+            crate::lens::Lens::parse(include_str!("../data/lenses/flask-request.toml")).unwrap();
+        let report = crate::lens::resolve(&lens, &map);
+        assert!(report.unresolved.is_empty());
+        std::fs::write(
+            out.join("loaded.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        let mut broken = lens;
+        broken.areas[0].members.push("src/flask/missing.py".into());
+        broken.paths.push(crate::lens::LensPath {
+            name: "missing-stop".into(),
+            stops: vec![
+                crate::lens::LensStop {
+                    at: "src/flask/app.py".into(),
+                    hop: crate::lens::HopMode::Computed,
+                    reason: None,
+                },
+                crate::lens::LensStop {
+                    at: "src/flask/missing.py".into(),
+                    hop: crate::lens::HopMode::Computed,
+                    reason: None,
+                },
+            ],
+        });
+        let report = crate::lens::resolve(&broken, &map);
+        assert!(report.unresolved.len() >= 2);
+        std::fs::write(
+            out.join("unresolved.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(map_path).unwrap(), map_bytes);
+    }
     use super::*;
     use tree_sitter::Parser;
 

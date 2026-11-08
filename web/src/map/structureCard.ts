@@ -8,7 +8,7 @@ import { D_ } from "./geometry";
 // street aggregates, a neighborhood's files. Pure, keyed by the map's own
 // `data-k` strings, so it can never disagree with what was tapped.
 
-export type StructureKind = "road" | "street" | "neighborhood";
+export type StructureKind = "road" | "street" | "neighborhood" | "lens";
 
 export interface StructureDetail {
   kind: StructureKind;

@@ -407,6 +407,18 @@ non-zero (1) on unresolved items, 2 on an unreadable or invalid lens.
 `LensList`: the valid lens names (regular files `*.toml` in
 `.tolmap/lenses/`) at the snapshot's commit, sorted.
 
+Local repository mode exposes the same response shapes at
+`GET /api/maps/snapshot/{id}/lenses[/{name}]?commit=<full-sha>`. The commit,
+when supplied, must match that saved snapshot. The service reads
+`.tolmap/lenses/` through the snapshot's retained `source.git`, using the same
+loader and resolver as hosted maps. Uncommitted lens edits and newer commits
+cannot replace a saved snapshot's lens. Both resources return
+`Cache-Control: no-store`.
+
+The viewer selects a resource with `?lens=<name>`, pins requests to the loaded
+map's commit and rejects a resolution naming another commit. The static map
+collection alone does not provide these git-backed lens resources.
+
 ### `GET /api/healthz`
 
 ```

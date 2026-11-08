@@ -1,3 +1,5 @@
+import { LensPanel, useLenses } from "@/lens/LensPanel";
+import type { LensTarget } from "@bindings/LensTarget";
 import { ComparisonPanel, useComparison } from "@/comparison/ComparisonPanel";
 import { SourceReader } from "@/reader/SourceReader";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -71,6 +73,8 @@ export function MapView() {
     commit: search.base ?? search.commit ?? early.commit,
     wait: early.waiting,
   });
+
+  const lenses = useLenses(owner, repo, indexedCommit ?? search.base ?? search.commit ?? early.commit, search.lens, !!doc && !early.waiting);
 
   // Issue #82 C2 scope item 1: districts whose symbols the map/sidebar
   // currently want. Two sources add to this set and it only ever grows for
@@ -900,7 +904,7 @@ export function MapView() {
     // a tap pins (hover stays as it is, §5).
     onTapStructure: (key, lines) => {
       if (!narrow || !doc) return false;
-      const detail = structureDetail(doc, key);
+      const detail = structureDetail(doc, key) ?? (key.startsWith("lh:") || key.startsWith("ln:") ? { kind: "lens" as const, pairs: [], pairTotal: 0, files: [], district: null } : null);
       if (!detail) return false;
       setStructure({ key, lines, detail });
       changeDetent("peek");
@@ -940,6 +944,27 @@ export function MapView() {
   const folderFiles = highlightedPath ? (packageLayout.filesByDirectory.get(highlightedPath) ?? null) : null;
   const folderOnlyIslands = highlightedPath ? packageLayout.islandOnlyDirectories.has(highlightedPath) : false;
 
+  function pickLensStop(target: LensTarget) {
+    if (!doc) return;
+    if (narrow && layersOpen) closeLayers();
+    const symbol = target.symbol ? doc.S[String(target.file)]?.findIndex(row => row[0] === target.symbol!.name && row[2] === target.symbol!.start) : undefined;
+    selectFile(target.file, { symbol: symbol != null && symbol >= 0 ? symbol : undefined });
+    if (target.symbol && (symbol == null || symbol < 0)) {
+      const raw = districtSymbolsMap.get(target.district);
+      const local = raw?.symbols.findIndex(row => row[0] === target.file && row[1] === target.symbol!.name && row[3] === target.symbol!.start) ?? -1;
+      if (raw && local >= 0) selectHierSymbol(raw.symbol_indices[local]);
+    }
+  }
+  function chooseLens(lens?: string) {
+    updateSearch({ lens });
+    if (narrow) {
+      closeLayers();
+      changeDetent("peek");
+    }
+  }
+  const lensPanel = <LensPanel lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode={narrow ? "picker" : "full"} />;
+  const activeLens = search.lens ? <LensPanel lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
+
   const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : null;
   const sourceAction = !search.read && sel != null && !search.compare ? <button ref={sourceActionRef} className={`source-action${narrow ? " source-action-sheet" : ""}`} onClick={openSource}>Read selected source</button> : null;
 
@@ -969,6 +994,7 @@ export function MapView() {
       selSym={selSym}
       selD={selD}
       route={route}
+      lens={lenses.data?.report}
       packageGrouping={packageGrouping}
       districtPaths={packageLayout.districtPaths}
       folderFiles={folderFiles}
@@ -978,7 +1004,7 @@ export function MapView() {
       districtSymbols={districtSymbolsMap}
       selHSym={selHSym}
       insets={mapInsets}
-      callbacks={rendererCallbacks}
+      callbacks={{ ...rendererCallbacks, onSelectLensStop: pickLensStop }}
       handleRef={canvasRef}
     />
   );
@@ -1001,6 +1027,8 @@ export function MapView() {
         </div>
         {comparisonChrome}
         <PhoneChrome
+          lenses={lensPanel}
+          activeLens={activeLens}
           sourceAction={sourceAction}
           doc={doc}
           packageLayout={packageLayout}
@@ -1198,6 +1226,7 @@ export function MapView() {
         onToggleFullscreen={toggleFullscreen}
       />
       <DesktopPanel
+        lenses={lensPanel}
         doc={doc}
         repoSlug={`${owner}/${repo}`}
         packageLayout={packageLayout}

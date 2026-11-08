@@ -1,3 +1,5 @@
+import type { LensReport } from "@bindings/LensReport";
+import type { LensTarget } from "@bindings/LensTarget";
 // Imperative SVG renderer, ported from the <script> block of
 // viewer/template.html. This is the ONE piece of the app that is not React:
 // see docs/ARCHITECTURE.md, "Rendering: do not put nodes in the React tree".
@@ -192,6 +194,7 @@ function hollowTriangleGlyph(parent: [number, number], child: [number, number], 
 }
 
 export interface MapRenderState {
+  lens?: LensReport;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];
   doc: MapDocument;
@@ -221,6 +224,7 @@ export interface MapRenderState {
 }
 
 export interface MapRendererCallbacks {
+  onSelectLensStop?(target: LensTarget): void;
   onSelectDistrict(d: number): void;
   onSelectFile(i: number): void;
   onSelectSymbol(i: number, s: number): void;
@@ -1375,6 +1379,125 @@ export class MapRenderer {
     if (layer === "x") return ramp(Math.min(1, CX_(doc, i) / (this.maxCx || 1)));
     return packageGrouping.fileColors[i];
   }
+  /** Lenses only project saved targets through the current camera. No layout,
+   * seed, document mutation, fit or camera operation belongs in these passes. */
+  private drawLensAreas(g: SVGGElement) {
+    const { doc, lens } = this.state!;
+    if (!lens) return;
+    lens.areas.forEach((area, index) => {
+      const districts = new Set(area.members.map(member => member.target.district));
+      for (const district of districts) for (const poly of doc.districts[String(district)]?.blob ?? []) {
+        g.appendChild(el("path", {
+          d: "M" + poly.map(q => `${this.X(q[0])} ${this.Y(q[1])}`).join("L") + "Z",
+          fill: `var(--lens-${area.color})`, "fill-opacity": 0.22,
+          stroke: `var(--lens-${area.color})`, "stroke-width": 2,
+          "stroke-dasharray": index % 2 ? "6 3" : "none",
+          "pointer-events": "none", "data-lens-area": area.label,
+        }));
+      }
+    });
+  }
+
+  private lensPoint(target: LensTarget, detail: boolean): [number, number] {
+    const { doc } = this.state!;
+    if (detail) {
+      if (target.symbol) {
+        const raw = this.state!.districtSymbols.get(target.district);
+        const local = raw?.symbols.findIndex(row => row[0] === target.file && (row[1] === target.symbol!.name || target.symbol!.name.endsWith(`.${row[1]}`)) && row[3] === target.symbol!.start) ?? -1;
+        const global = raw && local >= 0 ? raw.symbol_indices[local] : undefined;
+        const anchor = global == null ? undefined : this.symScreenAnchor.get(global);
+        if (anchor) return anchor;
+      }
+      const p = this.anchor(target.file);
+      return [this.X(p[0]), this.Y(p[1])];
+    }
+    const [x0, y0, x1, y1] = blobBox(doc.districts[String(target.district)].blob);
+    return [this.X((x0 + x1) / 2), this.Y((y0 + y1) / 2)];
+  }
+
+  private lensTargetVisible(target: LensTarget, zf: number): boolean {
+    // No selected-file escape hatch for a lens: overview stays district-only.
+    const area = this.fileFootprintArea.get(target.file);
+    if (zf <= 1 || area == null || !fileCrossesSymbolGate(area, this.k, false)) return false;
+    if (!target.symbol) return true;
+    const raw = this.state!.districtSymbols.get(target.district);
+    const local = raw?.symbols.findIndex(row => row[0] === target.file && (row[1] === target.symbol!.name || target.symbol!.name.endsWith(`.${row[1]}`)) && row[3] === target.symbol!.start) ?? -1;
+    if (!raw || local < 0 || !this.symVisible.has(raw.symbol_indices[local])) return false;
+    // The ordinary selection can expand its ancestors below 110px. A lens
+    // does not inherit that exception: every containing card must qualify.
+    const decoded = this.symDecodedByDistrict.get(target.district);
+    if (!decoded) return false;
+    for (const ancestor of ancestorsOf(decoded, local)) {
+      const rings = decoded.cardRings[ancestor];
+      if (!rings?.length) return false;
+      const [x0, y0, x1, y1] = ringBounds(rings[0]);
+      if (Math.min(Math.abs(x1 - x0), Math.abs(y1 - y0)) * this.k < 110) return false;
+    }
+    return true;
+  }
+
+  private drawLens(g: SVGGElement, zf: number, districtLabels: SVGGElement) {
+    const { doc, lens } = this.state!;
+    if (!lens) return;
+    const overlay = el("g", { "data-lens-overlay": "", "data-lens-zoom": zf });
+    const markers = el("g", { "data-lens-markers": "" });
+    g.appendChild(overlay);
+    lens.paths.forEach((path, pathIndex) => {
+      path.hops.forEach((hop, hopIndex) => {
+        if (!hop.resolved) return; // The full unresolved report stays in React.
+        const from = path.stops[hop.from]?.target, to = path.stops[hop.to]?.target;
+        if (!from || !to) return;
+        const detailed = this.lensTargetVisible(from, zf) && this.lensTargetVisible(to, zf);
+        const files = hop.source === "declared" ? [from.file, to.file] : hop.via.map(file => doc.F.indexOf(file));
+        const points: [number, number][] = detailed
+          ? files.map(file => { const p = this.anchor(file); return [this.X(p[0]), this.Y(p[1])]; })
+          : files.map(file => this.lensPoint({ ...from, file, district: D_(doc, file), symbol: null }, false));
+        // Consecutive files within one district collapse at overview. A small
+        // loop keeps an intra-district declared hop available to tap there.
+        const unique = points.filter((point, i) => i === 0 || point[0] !== points[i - 1][0] || point[1] !== points[i - 1][1]);
+        const [x, y] = unique[0];
+        // Different fixed bends keep an out-and-back path's computed and
+        // declared hops independently visible and tappable at district LOD.
+        const d = unique.length === 1
+          ? `M${x} ${y}c-28 -32 28 -32 0 0`
+          : "M" + unique[0].join(" ") + unique.slice(1).map((point, index) => {
+              const previous = unique[index];
+              const dx = point[0] - previous[0], dy = point[1] - previous[1];
+              const length = Math.hypot(dx, dy);
+              const bend = (hop.source === "declared" ? 30 : 14) + (hopIndex + pathIndex) * 8;
+              return `Q${(previous[0] + point[0]) / 2 - dy / length * bend} ${(previous[1] + point[1]) / 2 + dx / length * bend} ${point.join(" ")}`;
+            }).join("");
+        const key = `lh:${pathIndex}:${hopIndex}`;
+        const stroke = hop.source === "declared" ? "var(--lens-declared)" : "var(--lens-computed)";
+        overlay.appendChild(el("path", { d, fill: "none", stroke: "var(--canvas)", "stroke-width": 6, "pointer-events": "none" }));
+        overlay.appendChild(el("path", { d, fill: "none", stroke, "stroke-width": 2.5, "stroke-linecap": "round", "stroke-linejoin": "round", "stroke-dasharray": hop.source === "declared" ? "7 5" : "none", "pointer-events": "none", "data-lens-hop": hop.source }));
+        overlay.appendChild(el("path", { d, fill: "none", stroke: "transparent", "stroke-width": 16, "pointer-events": "stroke", "data-k": key, "data-lens-hop-hit": hop.source }));
+      });
+      path.stops.forEach((stop, index) => {
+        if (!stop.target || !this.lensTargetVisible(stop.target, zf)) return;
+        const [x, y] = this.lensPoint(stop.target, true);
+        const mark = el("g", { "data-k": `ls:${pathIndex}:${index}`, "data-lens-stop": stop.spec });
+        mark.appendChild(el("circle", { cx: x, cy: y, r: 13, fill: "var(--chrome)", stroke: "var(--lens-computed)", "stroke-width": 2, "pointer-events": "all" }));
+        const text = el("text", { x, y: y + 4, "text-anchor": "middle", "font-size": 12, fill: "var(--on)", "pointer-events": "none" });
+        text.textContent = String(index + 1); mark.appendChild(text); markers.appendChild(mark);
+      });
+    });
+    lens.notes.forEach((note, index) => {
+      if (zf <= 1) return;
+      const district = note.district;
+      if (note.target ? !this.lensTargetVisible(note.target, zf) : district == null) return;
+      const target = note.target ?? { file: 0, path: "", district: district!, symbol: null };
+      const [x, y] = this.lensPoint(target, !!note.target);
+      const mark = el("g", { "data-k": `ln:${index}`, "data-lens-note": note.anchor });
+      mark.appendChild(el("rect", { x: x + 16, y: y - 12, width: 24, height: 24, rx: 5, fill: "var(--chrome)", stroke: "var(--dim)", "pointer-events": "all" }));
+      const text = el("text", { x: x + 28, y: y + 4, "text-anchor": "middle", "font-size": 12, fill: "var(--on)", "pointer-events": "none" });
+      text.textContent = "N"; mark.appendChild(text); markers.appendChild(mark);
+    });
+    // Names mask route strokes, while stop/note controls remain tappable.
+    g.appendChild(districtLabels);
+    g.appendChild(markers);
+  }
+
   // ---------- draw ----------
   // Issue #51: performance.mark/measure around paint(), so
   // web/scripts/perf-bench.mjs can read draw() cost straight off the
@@ -1563,6 +1686,7 @@ export class MapRenderer {
           g.appendChild(path);
         });
       }
+      this.drawLensAreas(g);
       // A3 (import roads, issue #82): drawn after every district polygon so
       // a ribbon crossing a district's fill is on top of it -- see
       // drawRoads's own doc comment for the full z-order argument.
@@ -2102,6 +2226,8 @@ export class MapRenderer {
     this.gSymRefs = el("g", {});
     g.appendChild(this.gSymRefs);
     this.renderSymbolRefs(state.selHSym);
+
+    this.drawLens(g, zf0, districtLabelLayer);
 
     // key -> every element carrying it, rebuilt fresh this paint (one
     // querySelectorAll over exactly what was just drawn, one loop -- see
@@ -4627,6 +4753,19 @@ export class MapRenderer {
   private hoverContent(key: string): HoverCardContent | null {
     const { doc } = this.state!;
     const parts = key.split(":");
+    if (parts[0] === "lh") {
+      const path = this.state!.lens?.paths[+parts[1]];
+      const hop = path?.hops[+parts[2]];
+      return hop && path ? plainCard([path.name, hop.source === "declared" ? "Declared hop" : `Computed · ${hop.source} · ${hop.edge_kind}`, hop.reason ?? "Lower bound from available map edges"]) : null;
+    }
+    if (parts[0] === "ln") {
+      const note = this.state!.lens?.notes[+parts[1]];
+      return note ? plainCard([note.anchor, note.text]) : null;
+    }
+    if (parts[0] === "ls") {
+      const stop = this.state!.lens?.paths[+parts[1]]?.stops[+parts[2]];
+      return stop ? plainCard([stop.spec, "Open stop card · Read selected source"], true) : null;
+    }
     if (parts[0] === "d") {
       const d = +parts[1];
       const district = doc.districts[String(d)];
@@ -4843,6 +4982,10 @@ export class MapRenderer {
     const origin = host ? host.getBoundingClientRect() : this.svg.getBoundingClientRect();
     const width = host?.clientWidth ?? origin.width;
     const height = host?.clientHeight ?? origin.height;
+    const inspector = host?.closest("[data-desktop-shell]")?.querySelector<HTMLElement>('[data-desktop-panel][aria-hidden="false"]');
+    const inspectorBox = inspector?.getBoundingClientRect();
+    const leftEdge = inspectorBox ? Math.max(8, inspectorBox.right - origin.left + 8) : 8;
+    this.hoverCard.style.maxWidth = `${Math.min(300, width - leftEdge - 8)}px`;
     const cardW = this.hoverCard.offsetWidth;
     const cardH = this.hoverCard.offsetHeight;
     const px = clientX - origin.left;
@@ -4871,25 +5014,25 @@ export class MapRenderer {
     const candidates: [number, number][] = [
       [tr + gap, Math.max(margin, Math.min(height - cardH - margin, py - cardH / 2))],
       [tx - gap - cardW, Math.max(margin, Math.min(height - cardH - margin, py - cardH / 2))],
-      [Math.max(margin, Math.min(width - cardW - margin, px - cardW / 2)), tb + gap],
-      [Math.max(margin, Math.min(width - cardW - margin, px - cardW / 2)), ty - gap - cardH],
+      [Math.max(leftEdge, Math.min(width - cardW - margin, px - cardW / 2)), tb + gap],
+      [Math.max(leftEdge, Math.min(width - cardW - margin, px - cardW / 2)), ty - gap - cardH],
       [px + gap, py + gap],
       [px - gap - cardW, py + gap],
       [px + gap, py - gap - cardH],
       [px - gap - cardW, py - gap - cardH],
     ];
-    const fits = (x: number, y: number) => x >= margin && y >= margin && x + cardW <= width - margin && y + cardH <= height - margin;
+    const fits = (x: number, y: number) => x >= leftEdge && y >= margin && x + cardW <= width - margin && y + cardH <= height - margin;
     const clearOfPointer = (x: number, y: number) => !(px >= x && px <= x + cardW && py >= y && py <= y + cardH);
     const clearOfTarget = (x: number, y: number) => x + cardW <= tx || x >= tr || y + cardH <= ty || y >= tb;
     let [x, y] = candidates.find(([cx, cy]) => fits(cx, cy) && clearOfPointer(cx, cy) && clearOfTarget(cx, cy))
       ?? candidates.find(([cx, cy]) => fits(cx, cy) && clearOfPointer(cx, cy))
       ?? candidates[0];
-    x = Math.max(margin, Math.min(width - cardW - margin, x));
+    x = Math.max(leftEdge, Math.min(width - cardW - margin, x));
     y = Math.max(margin, Math.min(height - cardH - margin, y));
     if (!clearOfPointer(x, y)) {
       const left = px - gap - cardW;
       const right = px + gap;
-      if (left >= margin) x = left;
+      if (left >= leftEdge) x = left;
       else if (right + cardW <= width - margin) x = right;
       const above = py - gap - cardH;
       const below = py + gap;
@@ -5227,7 +5370,7 @@ export class MapRenderer {
     // selection state for (a neighbourhood is not one of MapView's URL-
     // addressable selection kinds -- district/file/symbol only), so both
     // behave like a road tap: show the card, touch nothing else.
-    if (parts[0] === "r" || parts[0] === "st" || parts[0] === "n") {
+    if (parts[0] === "r" || parts[0] === "st" || parts[0] === "n" || parts[0] === "lh" || parts[0] === "ln") {
       const content = this.hoverContent(kk);
       // docs/UX.md §3.2: on a phone the explanation is sheet content, not a
       // card floating over the map (§3 "nothing else floats over the map").
@@ -5242,7 +5385,11 @@ export class MapRenderer {
       return;
     }
     this.hideCard();
-    if (parts[0] === "d") this.callbacks.onSelectDistrict(+parts[1]);
+    if (parts[0] === "ls") {
+      const target = this.state!.lens?.paths[+parts[1]]?.stops[+parts[2]]?.target;
+      if (target) this.callbacks.onSelectLensStop?.(target);
+    }
+    else if (parts[0] === "d") this.callbacks.onSelectDistrict(+parts[1]);
     else if (parts[0] === "f") this.selectFileTwoStep(+parts[1]);
     else if (parts[0] === "s") this.callbacks.onSelectSymbol(+parts[1], +parts[2]);
     // Issue #82 C2 scope item 3: a symbol card always selects the symbol
