@@ -2432,6 +2432,12 @@ mod tests {
             .iter()
             .position(|p| p == "src/flask/views.py")
             .unwrap();
+        let removed_member = head
+            .files
+            .iter()
+            .position(|p| p == "src/flask/wrappers.py")
+            .unwrap();
+        head.files[removed_member] = "src/flask/outside_lens.py".into();
         head.files[renamed] = "src/flask/renamed_globals.py".into();
         head.files[deleted] = "src/flask/sansio/new.py".into();
         head.edges.clear();
