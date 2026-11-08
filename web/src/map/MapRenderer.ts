@@ -1508,10 +1508,18 @@ export class MapRenderer {
     g.appendChild(overlay);
     const marks = { added: ["+", "none", "var(--lens-teal)"], removed: ["−", "8 5", "var(--lens-orange)"], broken: ["×", "2 5", "var(--lens-orange)"], renamed: ["↗", "10 3 2 3", "var(--lens-blue)"], moved: ["↔", "5 3", "var(--lens-blue)"], shared: ["=", "none", "var(--dim)"] } as const;
     const paintedAreas = new Set<string>();
-    lensComparison.changes.forEach((change, changeIndex) => {
+    const districtStatuses = new Map<number, Set<string>>();
+    const ordered = lensComparison.changes.map((change, changeIndex) => ({ change, changeIndex })).sort((a, b) => Number(a.change.status !== "shared") - Number(b.change.status !== "shared"));
+    ordered.forEach(({ change, changeIndex }) => {
       const [symbol, dash, stroke] = marks[change.status];
+      const opacity = change.status === "shared" ? 0.22 : 1;
+      if (change.status !== "shared") for (const district of change.districts) {
+        const statuses = districtStatuses.get(district) ?? new Set<string>();
+        statuses.add(change.status);
+        districtStatuses.set(district, statuses);
+      }
       const title = `${change.status} ${change.kind} · ${change.label}: ${change.before.join(" → ")} → ${change.after.join(" → ")}`;
-      const put = (node: SVGElement) => { const tip = el("title", {}); tip.textContent = title; node.appendChild(tip); (change.kind === "stop" ? markers : overlay).appendChild(node); };
+      const put = (node: SVGElement) => { node.setAttribute("opacity", String(opacity)); const tip = el("title", {}); tip.textContent = title; node.appendChild(tip); (change.kind === "stop" ? markers : overlay).appendChild(node); };
       if (change.kind === "area") {
         for (const district of change.districts) {
           const areaKey = `${district}:${change.status}`;
@@ -1538,6 +1546,22 @@ export class MapRenderer {
       }
     });
     g.appendChild(districtLabels);
+    // At overview these are district status badges, never file symbols. Keep
+    // every status visible even when several kinds changed in one district.
+    for (const [district, statuses] of districtStatuses) {
+      const [x, y] = this.lensPoint({ file: 0, path: "", symbol: null, district }, false);
+      const entries = [...statuses].sort() as (keyof typeof marks)[];
+      const badge = el("g", { "data-lens-district-status": district, "pointer-events": "none" });
+      entries.forEach((status, index) => {
+        const [symbol, , stroke] = marks[status];
+        const bx = x + (index - (entries.length - 1) / 2) * 22;
+        badge.appendChild(el("circle", { cx: bx, cy: y - 23, r: 10, fill: "var(--chrome)", stroke, "stroke-width": 2 }));
+        const text = el("text", { x: bx, y: y - 19, "text-anchor": "middle", "font-size": 13, fill: "var(--on)" });
+        text.textContent = symbol;
+        badge.appendChild(text);
+      });
+      markers.appendChild(badge);
+    }
     g.appendChild(markers);
   }
 

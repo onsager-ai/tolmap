@@ -174,6 +174,13 @@ try {
     await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
     await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
     assert.equal(await page.locator('[data-lens-comparison-stop]').count(),0,'comparison overview hides stops');
+    assert.equal(await page.evaluate(() => window.scrollY),0,'comparison never scrolls the page');
+    assert.equal(await comparePanel.getByRole('button',{name:'Return to lens',exact:true}).isVisible(),true,'comparison controls remain visible');
+    assert.equal(await comparePanel.locator('[data-lens-unchanged]').evaluate(element => element.open),false,'unchanged items start collapsed');
+    assert.ok(await page.locator('[data-lens-district-status]').count()>0,'changed districts have overview status badges');
+    const renamedText = await comparePanel.locator('[data-lens-delta="renamed"]').first().textContent();
+    assert.match(renamedText,/renamed_globals\.py/);
+    assert.doesNotMatch(renamedText,/removed/i);
     for (const status of ['added','removed','broken','renamed']) assert.ok(await comparePanel.locator(`[data-lens-delta="${status}"]`).count()>0,`comparison reports ${status}`);
     assert.ok(await page.locator('[data-lens-change="broken"]').count()>0,'broken hop retains base projection');
     await shot('comparison-commits');
@@ -183,16 +190,28 @@ try {
     const comparisonStop = page.locator('[data-lens-comparison-stop]').first();
     const comparisonPath = await comparisonStop.getAttribute('data-lens-comparison-stop');
     // Use the list to pan the same base target into view, then tap its mark.
-    await comparePanel.getByRole('button',{name:comparisonPath,exact:true}).first().click();
+    const comparisonButton = comparePanel.getByRole('button',{name:comparisonPath,exact:true}).first();
+    if (!await comparisonButton.isVisible()) await comparePanel.locator('[data-lens-unchanged] > summary').click();
+    await comparisonButton.click();
     if (profile === 'phone') {
       for (let i=0; i<3 && await page.locator('[data-phone-sheet]').getAttribute('data-detent') !== 'peek'; i++) await page.locator('[data-sheet-grabber]').click();
     }
     await settleCamera(page);
-    await page.locator(`[data-lens-comparison-stop="${comparisonPath}"]`).first().click();
+    const visibleComparisonStop = page.locator(`[data-lens-comparison-stop="${comparisonPath}"]`).first();
+    await visibleComparisonStop.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      if (box.bottom > innerHeight - 156) throw new Error('Comparison stop hidden by Peek sheet');
+    });
+    await visibleComparisonStop.click();
     assert.equal(new URL(page.url()).searchParams.get('file'),comparisonPath,'comparison stop opens its base card');
+    if (profile === 'phone') await comparePanel.getByRole('button',{name:'View changes',exact:true}).click();
+    await comparePanel.getByText('Edit comparison',{exact:true}).click();
     await comparePanel.getByRole('combobox',{name:'Compare with lens'}).selectOption('overlap');
     await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
     await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+    assert.match(await comparePanel.textContent(),/Only in flask-request/);
+    assert.match(await comparePanel.textContent(),/Only in overlap/);
+    assert.doesNotMatch(await comparePanel.locator('.lens-legend').textContent(),/Removed/);
     assert.ok(await comparePanel.locator('[data-lens-delta="shared"]').count()>0);
     await shot('comparison-overlap');
     await page.reload();

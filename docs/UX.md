@@ -182,12 +182,20 @@ the same lens, or another saved lens at the base commit. Share
 The map remains the stored base snapshot. New files have district placement
 only, with no invented footprint. The panel lists area membership growth and
 shrinkage, shared/differing stops and hops, moved stops, broken hops and renamed
-files. Renames remain explicit unresolved items until the lens is edited.
+files. Changes are grouped by area, stop and hop; unchanged items collapse into
+one expandable count. Paths appear once as tappable base targets. Renames show
+old and new paths plus the detection commit; an unchanged lens names the new
+path as unresolved at head until explicitly edited. Two-lens mode labels
+membership as "only in <lens>", or "in both", rather than commit deletions.
+The edit form collapses after a result loads, keeping Return to lens and summary
+counts visible. On phones comparison occupies the existing sheet: Peek shows
+counts, Half/Full show the changes, and the top map chrome stays visible.
 
 Comparison marks use labels and stroke patterns as well as theme tokens:
 added (+, solid), removed (−, dashed), broken (×, dotted), renamed (↗,
 dash-dot), moved (↔, short dash) and shared (=, muted). Overview retains only
-district areas and routes; stop marks use the same 40 px file and 110 px
+district areas, routes and district status badges; unchanged paint is dimmed.
+Stop marks use the same 40 px file and 110 px
 class-member gates. Existing base cards remain available through the list.
 Loading/revalidation hides previous paint; stale identities, unavailable source
 and mismatched snapshots show an explicit error. Return to lens keeps the base

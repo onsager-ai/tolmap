@@ -53,6 +53,13 @@ fn deletion_breaks_hop_rename_stays_explicit_and_growth_uses_base_frame() {
     assert!(result
         .iter()
         .any(|d| d.kind == "hop" && d.status == LensChange::Broken && d.targets.len() == 2));
+    for renamed in result
+        .iter()
+        .filter(|delta| delta.status == LensChange::Renamed)
+    {
+        assert_eq!(renamed.before, ["src/flask/app.py"]);
+        assert_eq!(renamed.after, ["src/flask/renamed.py"]);
+    }
     assert!(result
         .iter()
         .any(|d| d.kind == "stop" && d.status == LensChange::Renamed));

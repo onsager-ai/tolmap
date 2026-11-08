@@ -255,6 +255,32 @@ pub fn changes(
                         .collect();
                 }
             }
+            // Report the detected destination even when the saved lens still
+            // names the old path. This is metadata, never a resolved target.
+            let after_specs = if status == LensChange::Renamed {
+                a.or(b)
+                    .unwrap()
+                    .specs
+                    .iter()
+                    .map(|spec| {
+                        let (path, symbol) = spec
+                            .split_once('#')
+                            .map_or((spec.as_str(), None), |(p, s)| (p, Some(s)));
+                        renames
+                            .iter()
+                            .find(|rename| rename.from == path)
+                            .map_or_else(
+                                || spec.clone(),
+                                |rename| match symbol {
+                                    Some(symbol) => format!("{}#{symbol}", rename.to),
+                                    None => rename.to.clone(),
+                                },
+                            )
+                    })
+                    .collect()
+            } else {
+                b.map_or_else(Vec::new, |item| item.specs.clone())
+            };
             // A broken hop retains its last known base endpoints, so deletion
             // remains visible instead of dropping the route silently.
             LensDelta {
@@ -262,7 +288,7 @@ pub fn changes(
                 label: item.label.clone(),
                 status,
                 before: a.map_or_else(Vec::new, |item| item.specs.clone()),
-                after: b.map_or_else(Vec::new, |item| item.specs.clone()),
+                after: after_specs,
                 targets,
                 districts: districts.into_iter().collect(),
             }

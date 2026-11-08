@@ -917,7 +917,7 @@ export function MapView() {
     onNeedSymbols: (d) => onNeedSymbols(d),
   };
 
-  const comparisonChrome = search.lens_compare ? <LensComparisonPanel search={search} result={lensComparison} list={lenses.list.data} update={updateSearch} pick={pickLensStop} /> : search.compare ? <ComparisonPanel search={search} data={comparison.data} pending={comparison.isPending} refreshing={comparison.isFetching && !!comparison.data} error={comparison.error} retry={() => { void comparison.refetch(); }} update={updateSearch} read={(file, commit) => { if (narrow) { pushOverlay("reader"); updateSearch({file, source_commit: commit, read: true, line: 1, end: 1}); } else { desktopReaderEntry.current = true; navigate({to: ".", search: (prev: Record<string, unknown>) => ({...prev, file, source_commit: commit, read: true, line: 1, end: 1}), state: true}); } }} pick={(file, d) => { updateSearch({file, d, read: undefined, source_commit: undefined}); if (d != null) canvasRef.current?.panToDistrict(d); else if (file) { const i = doc?.F.indexOf(file) ?? -1; if (i >= 0) canvasRef.current?.panTo(i); } }} /> : <button className="impact-launch" onClick={() => updateSearch({compare: true})}>Compare commits</button>;
+  const comparisonChrome = search.lens_compare ? <LensComparisonPanel search={search} result={lensComparison} list={lenses.list.data} update={updateSearch} pick={pickLensStop} embedded={narrow} expanded={!narrow || landscape || detent !== "peek"} onExpand={() => changeDetent("half")} height={narrow && !landscape ? heights[detent] - 50 : undefined} /> : search.compare ? <ComparisonPanel search={search} data={comparison.data} pending={comparison.isPending} refreshing={comparison.isFetching && !!comparison.data} error={comparison.error} retry={() => { void comparison.refetch(); }} update={updateSearch} read={(file, commit) => { if (narrow) { pushOverlay("reader"); updateSearch({file, source_commit: commit, read: true, line: 1, end: 1}); } else { desktopReaderEntry.current = true; navigate({to: ".", search: (prev: Record<string, unknown>) => ({...prev, file, source_commit: commit, read: true, line: 1, end: 1}), state: true}); } }} pick={(file, d) => { updateSearch({file, d, read: undefined, source_commit: undefined}); if (d != null) canvasRef.current?.panToDistrict(d); else if (file) { const i = doc?.F.indexOf(file) ?? -1; if (i >= 0) canvasRef.current?.panTo(i); } }} /> : <button className="impact-launch" onClick={() => updateSearch({compare: true})}>Compare commits</button>;
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center bg-[var(--chrome)] text-small text-[var(--dim)]">
@@ -964,7 +964,7 @@ export function MapView() {
       changeDetent("peek");
     }
   }
-  const compareLens = () => { if (narrow) { if (layersOpen) closeLayers(); changeDetent("peek"); } updateSearch({ lens_compare: true, compare: true, base: search.base ?? indexedCommit, head: search.head }); };
+  const compareLens = () => { if (narrow) { if (layersOpen) closeLayers(); changeDetent("half"); } updateSearch({ lens_compare: true, compare: true, base: search.base ?? indexedCommit, head: search.head }); };
   const lensPanel = <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode={narrow ? "picker" : "full"} />;
   const activeLens = search.lens ? <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
 
@@ -1029,8 +1029,9 @@ export function MapView() {
           <DetailStatusNote pending={early.detailPending} failed={early.detailFailed} narrow mapLeft={mapLeft} inline />
           <SnapshotFreshnessNote owner={owner} repo={repo} commit={indexedCommit} narrow mapLeft={mapLeft} inline />
         </div>
-        {comparisonChrome}
+        {!search.lens_compare && comparisonChrome}
         <PhoneChrome
+          comparison={search.lens_compare ? comparisonChrome : undefined}
           lenses={lensPanel}
           activeLens={activeLens}
           sourceAction={sourceAction}
