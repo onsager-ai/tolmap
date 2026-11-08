@@ -26,9 +26,14 @@ export function useLensComparison(owner: string, repo: string, search: MapSearch
 
 export function LensComparisonPanel({ search, result, list, update, pick }: { search: MapSearch; result: ReturnType<typeof useLensComparison>; list?: LensList; update(patch: Partial<MapSearch>): void; pick(target: LensTarget): void }) {
   const data = !result.isFetching && !result.error ? result.data : undefined;
+  const panelRef = useRef<HTMLElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (data || result.error) resultRef.current?.scrollIntoView({ block: "start" }); }, [data, result.error]);
-  return <aside className="comparison-panel lens-comparison-panel" aria-label="Lens comparison" data-lens-comparison>
+  // Scroll only the panel: scrollIntoView also scrolled the phone page and pushed the top chrome off screen.
+  useEffect(() => {
+    const panel = panelRef.current, target = resultRef.current;
+    if ((data || result.error) && panel && target) panel.scrollTop += target.getBoundingClientRect().top - panel.getBoundingClientRect().top;
+  }, [data, result.error]);
+  return <aside ref={panelRef} className="comparison-panel lens-comparison-panel" aria-label="Lens comparison" data-lens-comparison>
     <header><h2>Lens comparison</h2><button onClick={() => update({ lens_compare: undefined, other_lens: undefined, compare: undefined, head: undefined, commit: search.base })}>Return to lens</button></header>
     <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); const other = String(values.get("other") ?? ""); const base = String(values.get("base")); update({ lens_compare: true, compare: true, base, head: other ? base : String(values.get("head")), other_lens: other || undefined }); }}>
       <label>Base commit<input aria-label="Lens base commit" name="base" required pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.base ?? search.commit} /></label>
