@@ -4443,7 +4443,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-source-ready-tablet-light.png",
-      "sha256": "ba3426a764721fa4aebf662586873dbfc2e06ad54654f7b7e09c036e6c26ff68"
+      "sha256": "0af1e185489a164dbc8898f045d9a1b8c60a2782a8da4e4bc6083526c9b4fd35"
     },
     {
       "id": "source-search-empty",
@@ -5153,7 +5153,7 @@
       ]
     },
     {
-      "reason": "PR #245 adds lens states for #241 (loaded, unresolved, empty, error at every viewport and theme: 32 new identities) and a collapsed Lenses row in the map inspector and Layers sheet, which changes 28 existing map captures; one source-reader capture (source-ready tablet light) changes its selected-range highlight. Approved by the repository owner in chat on 2026-11-08 after reviewing the candidates and the semon/Flask lens renders.",
+      "reason": "PR #245 adds lens states for #241 (loaded, unresolved, empty, error at every viewport and theme: 32 new identities) and a collapsed Lenses row in the map inspector and Layers sheet, which changes 28 existing map captures. Approved by the repository owner in chat on 2026-11-08 after reviewing the candidates and the semon/Flask lens renders.",
       "sourceRun": {
         "id": "42441604311",
         "workflow": "storybook.yml",
@@ -5221,8 +5221,7 @@
         "oss-map-search-desktop-dark.png",
         "oss-map-search-desktop-light.png",
         "oss-map-search-empty-desktop-dark.png",
-        "oss-map-search-empty-desktop-light.png",
-        "oss-source-ready-tablet-light.png"
+        "oss-map-search-empty-desktop-light.png"
       ]
     }
   ]

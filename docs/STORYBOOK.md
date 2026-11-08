@@ -116,7 +116,7 @@ families accepted before the registry is changed. A green candidate capture
 gate establishes rendering/behavior only, not visual acceptance or
 physical-device gesture qualification. No existing thresholds are relaxed.
 
-Lens states introduced for #241 (32 identities) and the 29 existing captures
+Lens states introduced for #241 (32 identities) and the 28 existing captures
 that the Lenses entry changed were approved by the owner on 2026-11-08 from run
 `42441604311` (source `1704e0f`); `approved.json` records them under
 `recaptures`. A complete capture matrix is rendering evidence, not visual
