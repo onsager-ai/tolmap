@@ -162,11 +162,17 @@ list opens its file/symbol card; **Read selected source** opens the existing
 commit-pinned reader. Empty snapshots and unavailable lenses have explicit
 states. A mismatched snapshot cannot paint an overlay.
 
-Lenses reuse §3.4's history: opening Layers pushes one overlay entry; selection
-of a saved lens replaces the URL while retaining that marker. Back closes
-Layers before collapsing the map sheet or clearing selection. The source reader
-closes before its underlying card. A deep link restores the lens without
-restoring a modal sheet. Lens comparison is a separate feature.
+On phones, Layers contains the saved-lens picker. Choosing a lens closes Layers
+and shows its title and ordered path in the normal map sheet at Peek, leaving
+the map visible. Details raises it to Half; the existing Full detent permits
+scrolling through long reports. File/symbol and hop cards replace this report
+while selected; clearing them returns to the active lens.
+
+Lenses reuse §3.4's history: opening Layers pushes one overlay entry; choosing
+a saved lens replaces the URL and dismisses that overlay. Back closes an open
+Layers sheet, then collapses Half/Full to Peek before clearing a selection. The
+source reader closes before its underlying card. A deep link restores the lens
+at Peek without restoring a modal sheet. Lens comparison is a separate feature.
 
 ### 4.8 Search (artboard "Search active")
 

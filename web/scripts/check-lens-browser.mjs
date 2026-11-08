@@ -48,33 +48,40 @@ try {
       await page.screenshot({path:`shots/lenses/${file}`,animations:'disabled'});
       screenshots.push({profile,theme,state,file,commit,lens:'data/lenses/flask-request.toml'});
     };
-    const panel = page.locator('[data-lens-panel]');
+    const panel = page.locator(profile === 'phone' ? '[data-lens-sheet]' : '[data-lens-panel]');
     const openPanel = async () => {
-      if (profile === 'phone') await page.getByRole('button',{name:'Map layers',exact:true}).click();
-      if (!await panel.evaluate(element => element.open)) await panel.locator(':scope > summary').click();
-    };
-    const closePanel = async () => {
       if (profile === 'phone') {
-        const close = page.getByRole('button',{name:'Close layers',exact:true});
-        await close.scrollIntoViewIfNeeded();
-        await close.click();
-      }
+        // The active report belongs to the normal detented sheet; Full is
+        // only needed to scroll to a particular stop or unresolved item.
+        for (let i=0; i<3 && await page.locator('[data-phone-sheet]').getAttribute('data-detent') !== 'full'; i++) await page.locator('[data-sheet-grabber]').click();
+      } else if (!await panel.evaluate(element => element.open)) await panel.locator(':scope > summary').click();
     };
     await page.goto(url);
     await page.locator('.map-svg path.hit[data-k^="d:"]').first().waitFor();
     await settleCamera(page);
     const before = await cameraBoxes(page);
     console.log(`${profile}/${theme}: map ready`);
-    await openPanel();
-    await panel.getByRole('combobox',{name:'Saved lens'}).selectOption('flask-request');
-    await page.locator('[data-lens-state="loaded"]').waitFor();
-    await closePanel();
+    if (profile === 'phone') await page.getByRole('button',{name:'Map layers',exact:true}).click();
+    const picker = page.locator(profile === 'phone' ? '[data-layers-sheet] [data-lens-panel]' : '[data-lens-panel]');
+    if (!await picker.evaluate(element => element.open)) await picker.locator(':scope > summary').click();
+    await picker.getByRole('combobox',{name:'Saved lens'}).selectOption('flask-request');
+    await panel.locator('[data-lens-state="loaded"]').waitFor();
+    assert.doesNotMatch(await panel.textContent(), /Computed · computed/);
+    if (profile === 'phone') {
+      await page.locator('[data-layers-sheet]').waitFor({state:'detached'});
+      assert.equal(await page.locator('[data-phone-sheet]').getAttribute('data-detent'),'peek');
+      assert.ok((await page.locator('[data-phone-sheet]').boundingBox()).y > 500,'lens leaves the map visible');
+    }
     assert.deepEqual(await cameraBoxes(page), before, 'activating a lens never moves the camera');
     assert.equal(new URL(page.url()).searchParams.get('lens'),'flask-request');
     assert.equal(await page.locator('[data-lens-stop]').count(),0,'overview hides all file and symbol stops');
     assert.equal(await page.locator('[data-lens-note]').count(),0,'overview hides anchored note markers');
     if (profile === 'phone') {
-      await openPanel();
+      await panel.getByRole('button',{name:'Details',exact:true}).click();
+      assert.equal(await page.locator('[data-phone-sheet]').getAttribute('data-detent'),'half');
+      await page.goBack();
+      await page.waitForFunction(() => document.querySelector('[data-phone-sheet]')?.getAttribute('data-detent') === 'peek');
+      await page.getByRole('button',{name:'Map layers',exact:true}).click();
       await page.goBack();
       await page.locator('[data-layers-sheet]').waitFor({state:'detached'});
       assert.equal(new URL(page.url()).searchParams.get('lens'),'flask-request','Back closes Layers while retaining the lens');
@@ -83,6 +90,11 @@ try {
     assert.equal(await page.locator('[data-lens-area]').count()>0,true);
     assert.equal(await page.locator('[data-lens-hop="declared"]').count(),1);
     assert.equal(await page.locator('[data-lens-hop="declared"]').getAttribute('stroke-dasharray'),'7 5');
+    assert.equal(await page.locator('[data-lens-hop="computed"]').evaluateAll(paths => paths.every(path => /[Qc]/.test(path.getAttribute('d')))),true,'computed hops bend');
+    assert.equal(await page.locator('[data-lens-overlay]').evaluate(overlay => {
+      const label = [...overlay.parentElement.querySelectorAll('text[data-k^="d:"]')].find(text => text.textContent.trim());
+      return !!label && !!(overlay.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }),true,'district labels draw above lens routes');
     await shot('overview');
     console.log(`${profile}/${theme}: overview captured`);
     const declared = page.locator('[data-lens-hop-hit="declared"]');
@@ -102,7 +114,11 @@ try {
       await page.locator('[data-structure-card="lens"]').waitFor();
       assert.match(await page.locator('[data-structure-summary]').textContent(),/render_template reads current_app/);
     } else {
-      await page.locator('.tolmap-hover-card').filter({hasText:'Declared hop'}).waitFor();
+      const tooltip = page.locator('.tolmap-hover-card').filter({hasText:'Declared hop'});
+      await tooltip.waitFor();
+      const tooltipBox = await tooltip.boundingBox(), inspectorBox = await page.locator('[data-desktop-panel]').boundingBox();
+      assert.ok(tooltipBox.x >= inspectorBox.x + inspectorBox.width + 7,'hop reason stays outside inspector');
+      assert.ok(tooltipBox.x + tooltipBox.width <= 1440 && tooltipBox.y >= 0 && tooltipBox.y + tooltipBox.height <= 900,'hop tooltip stays in map');
     }
     await shot('declared-hop');
     console.log(`${profile}/${theme}: declared hop captured`);

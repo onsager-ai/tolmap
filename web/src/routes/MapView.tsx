@@ -955,7 +955,15 @@ export function MapView() {
       if (raw && local >= 0) selectHierSymbol(raw.symbol_indices[local]);
     }
   }
-  const lensPanel = <LensPanel lenses={lenses} name={search.lens} select={lens => updateSearch({ lens })} pick={pickLensStop} />;
+  function chooseLens(lens?: string) {
+    updateSearch({ lens });
+    if (narrow) {
+      closeLayers();
+      changeDetent("peek");
+    }
+  }
+  const lensPanel = <LensPanel lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode={narrow ? "picker" : "full"} />;
+  const activeLens = search.lens ? <LensPanel lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
 
   const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : null;
   const sourceAction = !search.read && sel != null && !search.compare ? <button ref={sourceActionRef} className={`source-action${narrow ? " source-action-sheet" : ""}`} onClick={openSource}>Read selected source</button> : null;
@@ -1020,6 +1028,7 @@ export function MapView() {
         {comparisonChrome}
         <PhoneChrome
           lenses={lensPanel}
+          activeLens={activeLens}
           sourceAction={sourceAction}
           doc={doc}
           packageLayout={packageLayout}

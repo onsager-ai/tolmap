@@ -1463,7 +1463,7 @@ export class MapRenderer {
               const previous = unique[index];
               const dx = point[0] - previous[0], dy = point[1] - previous[1];
               const length = Math.hypot(dx, dy);
-              const bend = hop.source === "declared" ? 30 : 12;
+              const bend = (hop.source === "declared" ? 30 : 14) + (hopIndex + pathIndex) * 8;
               return `Q${(previous[0] + point[0]) / 2 - dy / length * bend} ${(previous[1] + point[1]) / 2 + dx / length * bend} ${point.join(" ")}`;
             }).join("");
         const key = `lh:${pathIndex}:${hopIndex}`;
@@ -2224,6 +2224,8 @@ export class MapRenderer {
     this.renderSymbolRefs(state.selHSym);
 
     this.drawLens(g, zf0);
+    // District names and their canvas halos stay legible above lens routes.
+    g.appendChild(districtLabelLayer);
 
     // key -> every element carrying it, rebuilt fresh this paint (one
     // querySelectorAll over exactly what was just drawn, one loop -- see
@@ -4978,6 +4980,10 @@ export class MapRenderer {
     const origin = host ? host.getBoundingClientRect() : this.svg.getBoundingClientRect();
     const width = host?.clientWidth ?? origin.width;
     const height = host?.clientHeight ?? origin.height;
+    const inspector = host?.closest("[data-desktop-shell]")?.querySelector<HTMLElement>('[data-desktop-panel][aria-hidden="false"]');
+    const inspectorBox = inspector?.getBoundingClientRect();
+    const leftEdge = inspectorBox ? Math.max(8, inspectorBox.right - origin.left + 8) : 8;
+    this.hoverCard.style.maxWidth = `${Math.min(300, width - leftEdge - 8)}px`;
     const cardW = this.hoverCard.offsetWidth;
     const cardH = this.hoverCard.offsetHeight;
     const px = clientX - origin.left;
@@ -5006,25 +5012,25 @@ export class MapRenderer {
     const candidates: [number, number][] = [
       [tr + gap, Math.max(margin, Math.min(height - cardH - margin, py - cardH / 2))],
       [tx - gap - cardW, Math.max(margin, Math.min(height - cardH - margin, py - cardH / 2))],
-      [Math.max(margin, Math.min(width - cardW - margin, px - cardW / 2)), tb + gap],
-      [Math.max(margin, Math.min(width - cardW - margin, px - cardW / 2)), ty - gap - cardH],
+      [Math.max(leftEdge, Math.min(width - cardW - margin, px - cardW / 2)), tb + gap],
+      [Math.max(leftEdge, Math.min(width - cardW - margin, px - cardW / 2)), ty - gap - cardH],
       [px + gap, py + gap],
       [px - gap - cardW, py + gap],
       [px + gap, py - gap - cardH],
       [px - gap - cardW, py - gap - cardH],
     ];
-    const fits = (x: number, y: number) => x >= margin && y >= margin && x + cardW <= width - margin && y + cardH <= height - margin;
+    const fits = (x: number, y: number) => x >= leftEdge && y >= margin && x + cardW <= width - margin && y + cardH <= height - margin;
     const clearOfPointer = (x: number, y: number) => !(px >= x && px <= x + cardW && py >= y && py <= y + cardH);
     const clearOfTarget = (x: number, y: number) => x + cardW <= tx || x >= tr || y + cardH <= ty || y >= tb;
     let [x, y] = candidates.find(([cx, cy]) => fits(cx, cy) && clearOfPointer(cx, cy) && clearOfTarget(cx, cy))
       ?? candidates.find(([cx, cy]) => fits(cx, cy) && clearOfPointer(cx, cy))
       ?? candidates[0];
-    x = Math.max(margin, Math.min(width - cardW - margin, x));
+    x = Math.max(leftEdge, Math.min(width - cardW - margin, x));
     y = Math.max(margin, Math.min(height - cardH - margin, y));
     if (!clearOfPointer(x, y)) {
       const left = px - gap - cardW;
       const right = px + gap;
-      if (left >= margin) x = left;
+      if (left >= leftEdge) x = left;
       else if (right + cardW <= width - margin) x = right;
       const above = py - gap - cardH;
       const below = py + gap;
