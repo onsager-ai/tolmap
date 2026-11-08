@@ -165,6 +165,8 @@ export function MapView() {
   }, [metrics.width]);
   const heights = detentHeights(metrics);
   const [detent, setDetentState] = useState<Detent>("peek");
+  const comparisonDetentRef = useRef<Detent>("half");
+  const restoreComparisonRef = useRef(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [reposOpen, setReposOpen] = useState(false);
@@ -759,7 +761,12 @@ export function MapView() {
     if (!changed) return;
     setQuality(false);
     setStructure(null);
-    changeDetent("peek");
+    if (restoreComparisonRef.current) {
+      restoreComparisonRef.current = false;
+      changeDetent(comparisonDetentRef.current);
+    } else {
+      changeDetent("peek");
+    }
     if (sel != null || selD != null) setSideOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selKey, doc]);
@@ -949,6 +956,7 @@ export function MapView() {
   function pickLensStop(target: LensTarget) {
     if (!doc) return;
     if (narrow && layersOpen) closeLayers();
+    if (narrow && search.lens_compare && (detent === "half" || detent === "full")) comparisonDetentRef.current = detent;
     const symbol = target.symbol ? doc.S[String(target.file)]?.findIndex(row => row[0] === target.symbol!.name && row[2] === target.symbol!.start) : undefined;
     selectFile(target.file, { symbol: symbol != null && symbol >= 0 ? symbol : undefined });
     if (target.symbol && (symbol == null || symbol < 0)) {
@@ -1107,9 +1115,9 @@ export function MapView() {
           onLayer={(l) => updateSearch({ layer: l })}
           onDepth={(depth) => updateSearch({ depth: depth === packageLayout.autoDepth ? undefined : depth })}
           onClearSelection={() => {
+            if (search.lens_compare) restoreComparisonRef.current = true;
             clearPath();
             clearAll();
-            if (search.lens_compare) changeDetent("half");
           }}
           onSelectFile={(i) => selectFile(i)}
           onSelectSymbol={(i, s) => selectFile(i, { symbol: s })}

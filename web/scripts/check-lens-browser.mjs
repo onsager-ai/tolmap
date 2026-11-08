@@ -204,7 +204,10 @@ try {
     });
     await visibleComparisonStop.click();
     assert.equal(new URL(page.url()).searchParams.get('file'),comparisonPath,'comparison stop opens its base card');
-    if (profile === 'phone') await page.getByRole('button',{name:'Back to comparison',exact:true}).click();
+    if (profile === 'phone') {
+      await page.getByRole('button',{name:'Back to comparison',exact:true}).click();
+      assert.equal(await page.locator('[data-phone-sheet]').getAttribute('data-detent'),'half','Back restores the comparison detent');
+    }
     await comparePanel.getByText('Edit comparison',{exact:true}).click();
     await comparePanel.getByRole('combobox',{name:'Compare with lens'}).selectOption('overlap');
     await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
