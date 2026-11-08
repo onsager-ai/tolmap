@@ -2461,7 +2461,13 @@ mod tests {
                 format!("{:x}", Sha256::digest(map_bytes))
             },
             lower_bound: true,
-            changes: crate::lens_comparison::changes(&before, &after, &map, &renames),
+            changes: crate::lens_comparison::changes(
+                &before,
+                &after,
+                &map,
+                &renames,
+                crate::lens_comparison::ComparisonMode::Commits,
+            ),
             before: before.clone(),
             after,
         };
@@ -2478,7 +2484,13 @@ mod tests {
         let overlap = crate::lens_comparison::LensComparison {
             head: compare.base.clone(),
             other: "overlap".into(),
-            changes: crate::lens_comparison::changes(&before, &after, &map, &[]),
+            changes: crate::lens_comparison::changes(
+                &before,
+                &after,
+                &map,
+                &[],
+                crate::lens_comparison::ComparisonMode::Membership,
+            ),
             before,
             after,
             ..compare
