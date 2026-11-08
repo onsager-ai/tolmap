@@ -356,11 +356,13 @@ async fn polyglot_comparison_uses_both_snapshot_file_sets_and_places_new_files()
         r#"{"name":"fixture","version":"1.0.0"}"#,
     )
     .unwrap();
+    // The base needs at least one edge: check::compare refuses to blend an empty graph.
     fs::write(
         f.repo.join("ui/stable.ts"),
-        "export function stable() { return 1; }\n",
+        "import { one } from './helper';\nexport function stable() { return one; }\n",
     )
     .unwrap();
+    fs::write(f.repo.join("ui/helper.ts"), "export const one = 1;\n").unwrap();
     fs::write(
         f.repo.join("ui/excluded.ts"),
         "export const excluded = 1;\n",
@@ -382,8 +384,8 @@ async fn polyglot_comparison_uses_both_snapshot_file_sets_and_places_new_files()
     let mut row = f.state.store.get("local/example", &f.a).unwrap().unwrap();
     let node = |d: usize| json!([d, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     let map = json!({"repo":"example","q":0.0,"names":{"0":"core"},
-        "districts":{"0":{"size":2,"c":[0.0,0.0],"blob":[]}},
-        "F":["src/lib.rs","ui/stable.ts"],"N":[node(0),node(0)],
+        "districts":{"0":{"size":3,"c":[0.0,0.0],"blob":[]}},
+        "F":["src/lib.rs","ui/helper.ts","ui/stable.ts"],"N":[node(0),node(0),node(0)],
         "E":[],"L":[],"S":{},"U":{},"roads":[],"lang":"rs"});
     let mut head_map = map.clone();
     head_map["F"]
@@ -391,7 +393,7 @@ async fn polyglot_comparison_uses_both_snapshot_file_sets_and_places_new_files()
         .unwrap()
         .push(json!("ui/new.ts"));
     // Head geometry is deliberately incompatible. Only its file scope is read.
-    head_map["N"] = json!([node(99), node(99), node(99)]);
+    head_map["N"] = json!([node(99), node(99), node(99), node(99)]);
     for (commit, document) in [(&base, &map), (&head, &head_map)] {
         row.commit = commit.clone();
         row.map_path = f._dir.path().join(format!("{commit}.json"));
