@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LensComparison } from "@bindings/LensComparison";
 import type { LensDelta } from "@bindings/LensDelta";
@@ -48,9 +48,18 @@ function ChangeRow({ change, data, pick }: { change: LensDelta; data: LensCompar
   </li>;
 }
 
-export function LensComparisonPanel({ search, result, list, update, pick, embedded = false, expanded = true, onExpand, height }: { search: MapSearch; result: ReturnType<typeof useLensComparison>; list?: LensList; update(patch: Partial<MapSearch>): void; pick(target: LensTarget): void; embedded?: boolean; expanded?: boolean; onExpand?(): void; height?: number }) {
+export function LensComparisonPanel({ search, result, list, update, pick, embedded = false, expanded = true, onExpand }: { search: MapSearch; result: ReturnType<typeof useLensComparison>; list?: LensList; update(patch: Partial<MapSearch>): void; pick(target: LensTarget): void; embedded?: boolean; expanded?: boolean; onExpand?(): void }) {
   const data = !result.isFetching && !result.error ? result.data : undefined;
   const [editing, setEditing] = useState(false);
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!data) return;
+    // Scroll only the owning viewport. scrollIntoView can move every
+    // ancestor and used to push the phone's search pill off screen.
+    const panel = panelRef.current;
+    const scroller = embedded ? panel?.closest<HTMLElement>("[data-sheet-body]") : panel?.querySelector<HTMLElement>(".lens-comparison-results");
+    scroller?.scrollTo({ top: 0 });
+  }, [data, embedded]);
   const overlap = data ? data.lens !== data.other : !!search.other_lens;
   const changed = data?.changes.filter(change => change.status !== "shared") ?? [];
   const unchanged = data?.changes.filter(change => change.status === "shared") ?? [];
@@ -59,7 +68,7 @@ export function LensComparisonPanel({ search, result, list, update, pick, embedd
     const items = changes.filter(change => change.kind === kind);
     return items.length > 0 && <section key={kind}><h3>{kind === "area" ? "Area membership" : kind === "stop" ? "Stops" : "Hops"} · {items.length}</h3><ul>{items.map((change, index) => <ChangeRow key={index} change={change} data={data!} pick={pick} />)}</ul></section>;
   });
-  return <aside className={`comparison-panel lens-comparison-panel${embedded ? " lens-comparison-sheet" : ""}`} aria-label="Lens comparison" data-lens-comparison style={embedded && height != null ? { height } : undefined}>
+  return <aside ref={panelRef} className={`comparison-panel lens-comparison-panel${embedded ? " lens-comparison-sheet" : ""}`} aria-label="Lens comparison" data-lens-comparison>
     <header><h2>Lens comparison</h2><button onClick={() => update({ lens_compare: undefined, other_lens: undefined, compare: undefined, head: undefined, commit: search.base })}>Return to lens</button></header>
     <div className="lens-comparison-summary" data-lens-comparison-summary data-lens-comparison-state={!expanded && data ? "loaded" : undefined}>
       {expanded && <p>{overlap ? `${search.lens} ∩ ${search.other_lens}` : search.lens} · {search.base?.slice(0, 8)}{!overlap && search.head ? ` → ${search.head.slice(0, 8)}` : ""}</p>}

@@ -37,8 +37,7 @@ interface Gesture {
 }
 
 /** The scroll state under the finger: every scroller from the touched
- * element up to the sheet body. At Peek and Half the body is clipped
- * (overflow hidden), so nothing there counts as a scroller. */
+ * element up to the sheet body, at every detent. */
 function scrollStateAt(target: Element, body: HTMLElement | null): { scrollTop: number; canScroll: boolean } {
   let scrollTop = 0;
   let canScroll = false;
@@ -59,27 +58,28 @@ function scrollStateAt(target: Element, body: HTMLElement | null): { scrollTop: 
 
 /** docs/UX.md §3.1: the phone's one bottom sheet, three detents.
  *
- * The sheet is always laid out at its Full height and translated down so
- * only the current detent's height shows -- so dragging only changes a
- * transform, and the content never re-lays out mid-drag. Heights come from
- * the caller (map/phoneShell.ts's detentHeights, measured from
- * visualViewport), never from `vh`.
+ * The sheet and its scroll body are sized to the visible detent, including
+ * during a drag. A Full-height body translated below the viewport leaves
+ * its last controls unreachable: its scroll range ends below the screen,
+ * and overflow: clip on the phone shell correctly prevents scrolling that
+ * ancestor to compensate. Heights come from the caller
+ * (map/phoneShell.ts's detentHeights, measured from visualViewport), never
+ * from `vh`. The body's bottom padding includes the safe-area inset.
  *
  * Drag, flick and grabber tap follow the approved prototype: a drag starts
  * after SHEET_DRAG_SLOP_PX of travel (so a tap on a row is still a tap, and
  * the click that ends a drag is swallowed); release snaps by position and
  * velocity (phoneShell.ts's snapDetent); the grabber is a real button that
- * cycles peek -> half -> full -> peek. At Peek and Half the body is clipped
- * and every vertical drag moves the sheet. At Full the body scrolls, and
- * who owns a drag is phoneShell.ts's dragOwner (the standard bottom-sheet
+ * cycles peek -> half -> full -> peek. The body scrolls at every detent.
+ * Who owns a drag is phoneShell.ts's dragOwner (the standard bottom-sheet
  * rule; owner, 2026-09-28): the grabber and the card header (any element
  * marked `data-sheet-dragzone`) always move the sheet; a downward drag that
  * starts with the content at its top moves the sheet; one that starts
- * mid-scroll scrolls; an upward drag scrolls. Dragging below Peek springs
- * back (§3.5).
+ * mid-scroll scrolls; an upward drag scrolls when content can scroll.
+ * Dragging below Peek springs back (§3.5).
  *
  * How the sheet takes a drag from a native scroller: the body keeps
- * `touch-action: pan-y` at Full, so scrolling stays native (momentum, the
+ * `touch-action: pan-y` at every detent, so scrolling stays native (momentum, the
  * edge bounce) and `overscroll-behavior: contain` keeps it from chaining to
  * the page. Pointer events alone cannot stop a native scroll -- the browser
  * decides at the first touchmove, and once it scrolls it sends
@@ -96,12 +96,12 @@ export function BottomSheet({ detent, heights, onDetent, children }: Props) {
   const sheetRef = useRef<HTMLElement>(null);
   const detentRef = useRef(detent);
   detentRef.current = detent;
-  const full = heights.full;
   const shown = dragH ?? heights[detent];
 
-  // Back at Peek the content starts from its top again.
+  // Back at Peek the summary starts from its top again. Half remains a
+  // scrollable detail view, so changing between Half and Full keeps place.
   useEffect(() => {
-    if (detent !== "full" && bodyRef.current) bodyRef.current.scrollTop = 0;
+    if (detent === "peek" && bodyRef.current) bodyRef.current.scrollTop = 0;
   }, [detent]);
 
   /** Decides the drag's owner once it has moved far enough vertically;
@@ -194,8 +194,8 @@ export function BottomSheet({ detent, heights, onDetent, children }: Props) {
           e.preventDefault();
         }
       }}
-      className={`absolute inset-x-0 bottom-0 z-30 flex flex-col rounded-t-[20px] border-t border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-[0_-8px_24px_rgba(0,0,0,.3)] ${dragH == null ? "transition-transform duration-300 ease-[cubic-bezier(.2,.8,.2,1)] motion-reduce:transition-none" : ""}`}
-      style={{ height: full, transform: `translateY(${full - shown}px)`, touchAction: detent === "full" ? "auto" : "none" }}
+      className={`absolute inset-x-0 bottom-0 z-30 flex flex-col rounded-t-[20px] border-t border-[var(--rule)] bg-[var(--chrome)] text-[var(--on)] shadow-[0_-8px_24px_rgba(0,0,0,.3)] ${dragH == null ? "transition-[height] duration-300 ease-[cubic-bezier(.2,.8,.2,1)] motion-reduce:transition-none" : ""}`}
+      style={{ height: shown, touchAction: "auto" }}
     >
       <button
         type="button"
@@ -217,10 +217,10 @@ export function BottomSheet({ detent, heights, onDetent, children }: Props) {
       <div
         ref={bodyRef}
         data-sheet-body
-        className={`min-h-0 flex-1 px-5 pt-7 ${detent === "full" ? "overflow-y-auto" : "overflow-hidden"}`}
+        className="min-h-0 flex-1 overflow-y-auto px-5 pt-7"
         style={{
           paddingBottom: "calc(20px + env(safe-area-inset-bottom, 0px))",
-          touchAction: detent === "full" ? "pan-y" : "none",
+          touchAction: "pan-y",
           overscrollBehavior: "contain",
         }}
       >

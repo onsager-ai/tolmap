@@ -63,6 +63,9 @@ try {
         else return fulfillApi(route,{status:404,json:{error:'not_found'}});
         return fulfillApi(route,{json});
       });
+      const assertShell = async () => {
+        if (profile === 'phone') assert.equal(await page.locator('[data-phone-shell]').evaluate(el => el.scrollTop), 0, 'comparison never scrolls the phone shell');
+      };
       const url = `${baseUrl}/fixture/town?compare=true&base=${base}&head=${head}`;
       await page.goto(url);
       const panel = page.getByRole('complementary', {name:'Change impact'});
@@ -81,15 +84,21 @@ try {
         const districtRow = sheet.locator(`[data-district-index-row="${d}"] button`).first();
         await districtRow.tap();
         await sheet.locator('[data-sheet-card="district"]').waitFor();
+        await assertShell();
+        await page.screenshot({path:'shots/comparison/phone-district-card.png'});
         await sheet.locator('[data-district-files-toggle]').tap();
         const fileRow = sheet.locator('[data-district-key-file]').first();
         await fileRow.waitFor();
+        await page.screenshot({path:'shots/comparison/phone-district-files.png'});
         await fileRow.tap();
         await sheet.locator('[data-sheet-card="file"]').waitFor();
         const symbolRow = sheet.locator('button[data-outline-row]').first();
         await symbolRow.waitFor();
         await symbolRow.tap();
         await sheet.locator('[data-sheet-card="symbol"]').waitFor();
+        await assertShell();
+        assert.ok(await sheet.locator('[data-sheet-body]').evaluate(el => el.getBoundingClientRect().bottom <= innerHeight + 1 && getComputedStyle(el).overflowY === 'auto'), 'card scroller fits the visible detent');
+        await page.screenshot({path:'shots/comparison/phone-symbol-card.png'});
         assert.equal(new URL(page.url()).searchParams.get('compare'), 'true');
         await sheet.locator('[data-sheet-grabber]').click();
       }
@@ -124,6 +133,7 @@ try {
       assert.equal(mapUrl.searchParams.get('base'),base,'returning keeps the comparison base pinned');
       assert.equal(mapUrl.searchParams.has('compare'),false,'returning closes comparison');
       await page.getByRole('button',{name:'Compare commits',exact:true}).waitFor();
+      await assertShell();
     } catch (error) {
       console.error(`[comparison-browser:${profile}] ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
       console.error(`[comparison-browser:${profile}] diagnostics: ${JSON.stringify(diagnostics)}`);

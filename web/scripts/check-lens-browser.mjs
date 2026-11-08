@@ -44,7 +44,14 @@ try {
       await route.fulfill({json});
     });
     const url = `${base}/pallets/flask?commit=${commit}`;
+    const assertPhoneShell = async () => {
+      if (profile !== 'phone') return;
+      assert.equal(await page.locator('[data-phone-shell]').evaluate(el => el.scrollTop), 0, 'lens flows never scroll the phone shell');
+      const chrome = await page.locator('[data-search-pill]').boundingBox();
+      assert.ok(chrome && Math.abs(chrome.y - 12) < 1, `phone search pill stays at its normal top, got ${chrome?.y}`);
+    };
     const shot = async state => {
+      await assertPhoneShell();
       await page.evaluate(() => document.fonts.ready);
       await settleCamera(page);
       const file = `${profile}-${theme}-${state}.png`;
@@ -54,8 +61,8 @@ try {
     const panel = page.locator(profile === 'phone' ? '[data-lens-sheet]' : '[data-lens-panel]');
     const openPanel = async () => {
       if (profile === 'phone') {
-        // The active report belongs to the normal detented sheet; Full is
-        // only needed to scroll to a particular stop or unresolved item.
+        // Use Full for the report review images; each detent also owns a
+        // scroll viewport for reaching stops and unresolved items.
         for (let i=0; i<3 && await page.locator('[data-phone-sheet]').getAttribute('data-detent') !== 'full'; i++) await page.locator('[data-sheet-grabber]').click();
       } else if (!await panel.evaluate(element => element.open)) await panel.locator(':scope > summary').click();
     };
@@ -89,6 +96,20 @@ try {
       await page.locator('[data-layers-sheet]').waitFor({state:'detached'});
       assert.equal(new URL(page.url()).searchParams.get('lens'),'flask-request','Back closes Layers while retaining the lens');
       assert.deepEqual(await cameraBoxes(page),before,'Back from Layers leaves the camera fixed');
+    }
+    if (profile === 'phone') {
+      const body = page.locator('[data-sheet-body]');
+      for (const detent of ['peek', 'half', 'full']) {
+        for (let i=0; i<3 && await page.locator('[data-phone-sheet]').getAttribute('data-detent') !== detent; i++) await page.locator('[data-sheet-grabber]').click();
+        const geometry = await body.evaluate(el => {
+          el.scrollTop = el.scrollHeight;
+          return { bottom:el.getBoundingClientRect().bottom, top:el.scrollTop, max:el.scrollHeight-el.clientHeight, overflow:getComputedStyle(el).overflowY };
+        });
+        assert.equal(geometry.overflow,'auto',`${detent} is a real sheet scroller`);
+        assert.ok(geometry.bottom <= 845 && Math.abs(geometry.top-geometry.max) <= 1,`${detent} can reach the end within the screen`);
+        await assertPhoneShell();
+      }
+      await page.locator('[data-sheet-grabber]').click();
     }
     assert.equal(await page.locator('[data-lens-area]').count()>0,true);
     assert.equal(await page.locator('[data-lens-hop="declared"]').count(),1);
@@ -230,6 +251,23 @@ try {
       assert.deepEqual(scrolledAncestors, [], 'only the sheet and comparison lists may scroll');
     }
     await shot('comparison-overlap');
+    if (profile === 'phone') {
+      await page.setViewportSize({width:844,height:390});
+      await page.locator('[data-side-sheet]').waitFor();
+      await comparePanel.getByRole('button',{name:'Edit comparison',exact:true}).click();
+      const controls = comparePanel.locator('form input, form select, form button');
+      assert.ok(await controls.evaluateAll(elements => elements.every(el => el.getBoundingClientRect().height >= 44)), 'landscape edit controls are at least 44 px tall');
+      await comparePanel.getByRole('textbox',{name:'Lens base commit',exact:true}).click();
+      await shot('landscape-edit-start');
+      await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).scrollIntoViewIfNeeded();
+      const submitBox = await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).boundingBox();
+      assert.ok(submitBox && submitBox.y >= 0 && submitBox.y + submitBox.height <= 391, 'landscape submit is reachable inside the panel');
+      assert.ok(await page.locator('[data-sheet-body]').evaluate(el => el.scrollTop > 0), 'landscape form scrolls the sheet body');
+      await shot('landscape-edit-end');
+      await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
+      await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+      await page.setViewportSize({width:390,height:844});
+    }
     await page.reload();
     await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
     assert.equal(new URL(page.url()).searchParams.get('other_lens'),'overlap','comparison survives deep link reload');
