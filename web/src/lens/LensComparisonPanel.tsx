@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LensComparison } from "@bindings/LensComparison";
 import type { LensList } from "@bindings/LensList";
@@ -25,6 +26,8 @@ export function useLensComparison(owner: string, repo: string, search: MapSearch
 
 export function LensComparisonPanel({ search, result, list, update, pick }: { search: MapSearch; result: ReturnType<typeof useLensComparison>; list?: LensList; update(patch: Partial<MapSearch>): void; pick(target: LensTarget): void }) {
   const data = !result.isFetching && !result.error ? result.data : undefined;
+  const resultRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (data || result.error) resultRef.current?.scrollIntoView({ block: "start" }); }, [data, result.error]);
   return <aside className="comparison-panel lens-comparison-panel" aria-label="Lens comparison" data-lens-comparison>
     <header><h2>Lens comparison</h2><button onClick={() => update({ lens_compare: undefined, other_lens: undefined, compare: undefined, head: undefined, commit: search.base })}>Return to lens</button></header>
     <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); const other = String(values.get("other") ?? ""); const base = String(values.get("base")); update({ lens_compare: true, compare: true, base, head: other ? base : String(values.get("head")), other_lens: other || undefined }); }}>
@@ -34,6 +37,7 @@ export function LensComparisonPanel({ search, result, list, update, pick }: { se
       <button>Compare lenses</button>
     </form>
     {!search.base || !search.head ? <p>Choose two commits, or another lens at the base commit.</p> : result.isPending || result.isFetching ? <p role="status" data-lens-comparison-state="loading">{result.isFetching && result.data ? "Revalidating; previous lens comparison is stale." : "Computing lens comparison…"}</p> : null}
+    <div ref={resultRef}>
     {result.error && <p role="alert" data-lens-comparison-state="error">{result.error.message} <button onClick={() => { void result.refetch(); }}>Retry</button></p>}
     {data && <div data-lens-comparison-state="loaded">
       <p>{data.lens} → {data.other} · {data.base.slice(0,12)} → {data.head.slice(0,12)}</p>
@@ -42,5 +46,6 @@ export function LensComparisonPanel({ search, result, list, update, pick }: { se
       {(["area", "stop", "hop"] as const).map(kind => <section key={kind}><h3>{kind === "area" ? "Area membership" : kind === "stop" ? "Stops" : "Hops"}</h3><ul>{data.changes.filter(change => change.kind === kind).map((change, index) => <li key={index} data-lens-delta={change.status}><strong>{change.status}</strong> · {change.label}<p>{change.before.join(" → ")}{change.before.join() !== change.after.join() ? ` → ${change.after.join(" → ") || "removed"}` : ""}</p>{change.targets.map((target, i) => <button key={i} onClick={() => pick(target)}>{target.path}</button>)}{!change.targets.length && <small>No base footprint{change.districts.length ? ` · districts ${change.districts.join(", ")}` : " · unplaced"}</small>}</li>)}</ul></section>)}
       {(["before", "after"] as const).map(side => <section key={side}><h3>{side} unresolved</h3><ul>{data[side].unresolved.map((item,index) => <li key={index}><strong>{item.kind}</strong> · {item.location}<p>{item.spec}: {item.detail}</p></li>)}</ul></section>)}
     </div>}
+    </div>
   </aside>;
 }

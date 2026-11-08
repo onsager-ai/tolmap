@@ -87,7 +87,7 @@ export async function installFixture(state: string) {
         paths: [{ name: "request-flow", stops: [{ spec: map.F[symbolFile], target: target(symbolFile) }, { spec: state === "lens-unresolved" ? "missing.rs" : map.F[1], target: state === "lens-unresolved" ? null : target(1) }], hops: [{ from: 0, to: 1, source: "declared", edge_kind: null, via: [], reason: "Synthetic queue boundary", resolved: state !== "lens-unresolved" }] }],
         notes: [{ anchor: map.F[symbolFile], text: "Synthetic fixture note.", target: target(symbolFile), district: null }],
         unresolved: state === "lens-unresolved" ? [{ kind: "missing_path", location: "paths[0].stops[1]", spec: "missing.rs", detail: "File missing at this snapshot." }] : [] };
-      return json({ repository: slug, commit, name: "overview", report });
+      return json({ repository: slug, commit: snapshotCommit, name: "overview", report });
     }
     if (path.endsWith("/provenance")) {
       if (state === "source-loading") { await delay("infinite"); }
