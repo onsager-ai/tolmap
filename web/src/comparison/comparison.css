@@ -23,13 +23,13 @@
 .lens-comparison-results li { padding:8px 0; }
 .lens-delta-paths button { color:var(--on); text-decoration:underline; overflow-wrap:anywhere; }
 .lens-comparison-sheet { position:static; width:auto; height:auto; min-height:0; border:0; padding:0; background:transparent; }
-.lens-comparison-sheet .lens-comparison-edit { flex-shrink:1; }
+.lens-comparison-sheet .lens-comparison-edit.is-open { flex-shrink:1; }
 .impact-sides { display:flex; gap:18px; }
 .impact-launch { position:absolute; z-index:40; right:12px; top:72px; min-height:44px; padding:8px 12px; border-radius:8px; background:var(--chrome); color:var(--on); border:1px solid var(--rule); }
 @media (max-width:600px), (max-height:500px) { .comparison-panel { z-index:24; top:calc(68px + env(safe-area-inset-top, 0px)); bottom:auto; left:12px; right:68px; width:auto; height:min(28vh, 236px); padding-bottom:calc(16px + env(safe-area-inset-bottom)); border-radius:12px; } }
 @media (max-width:600px), (max-height:500px) { .lens-comparison-sheet { position:static; width:auto; height:auto; padding:0; } }
 @media (max-height:500px) and (min-width:601px) { .comparison-panel { left:calc(360px + env(safe-area-inset-left, 0px) + 12px); right:68px; height:min(36vh, 150px); } }
-@media (max-height:500px) { .lens-comparison-sheet .lens-comparison-edit.is-open { flex:1 1 auto; min-height:0; max-height:none; } }
+@media (max-height:500px) { .lens-comparison-sheet .lens-comparison-edit { flex-shrink:0; } .lens-comparison-sheet .lens-comparison-edit.is-open { flex:1 1 auto; min-height:0; max-height:none; } }
 /* Keep the existing zoom/layer control column available. */
 @media (min-width:601px) and (min-height:501px) { .comparison-panel { right:72px; } }
 @media (max-width:600px), (max-height:500px) { .impact-launch { left:12px; right:auto; top:calc(68px + env(safe-area-inset-top, 0px)); } }
