@@ -68,6 +68,24 @@ test('one changed pixel fails and emits actual, reference and diff PNGs', async 
   assert.ok(report.results[0].diffEvidence);
 });
 
+test('advisory pixels report mismatches with evidence but still fail hard errors', async () => {
+  const dirs = await scenario();
+  await makeApproved(dirs);
+  await writeSinglePixel(dirs.evidenceDir, 'home.png');
+  const report = await verifyVisualBaselines({ browser, captures: [capture], ...dirs, provenance, sourceRevision: 'candidate-revision', advisoryPixels: true });
+  assert.equal(report.status, 'mismatched');
+  assert.equal(report.pixelMode, 'advisory');
+  assert.equal(report.results[0].status, 'mismatched');
+  assert.equal(report.results[0].differingPixels, 1);
+  assert.ok(report.results[0].diffEvidence);
+  const written = JSON.parse(await fs.readFile(path.join(dirs.evidenceDir, 'visual-regression.json'), 'utf8'));
+  assert.equal(written.status, 'mismatched');
+  await assert.rejects(verifyVisualBaselines({ browser, captures: [{ ...capture, status: 'failed', result: 'failed' }], ...dirs, provenance, advisoryPixels: true }), /Visual baselines failed/);
+  await assert.rejects(verifyVisualBaselines({ browser, captures: [], ...dirs, provenance, advisoryPixels: true }), /matrix mismatch/);
+  await fs.rm(path.join(dirs.baselineDir, 'home.png'));
+  await assert.rejects(verifyVisualBaselines({ browser, captures: [capture], ...dirs, provenance, advisoryPixels: true }), /Visual baselines failed/);
+});
+
 test('dimension changes fail with a diff image', async () => {
   const dirs = await scenario();
   await makeApproved(dirs);

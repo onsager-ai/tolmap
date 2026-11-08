@@ -61,7 +61,12 @@ async function compare(browser, actualUrl, referenceUrl) {
   } finally { await page.close(); }
 }
 
-async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, baselineDir, provenance, sourceRevision }) {
+// Exact pixel comparison failed most PR runs on rendering nondeterminism (#219)
+// rather than on product changes, so CI can run it as advisory: a pixel or
+// dimension mismatch is reported as 'mismatched' with its evidence, while
+// capture failures, missing or invalid references, matrix and provenance
+// changes still fail.
+async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, baselineDir, provenance, sourceRevision, advisoryPixels = false }) {
   await fs.mkdir(evidenceDir, { recursive: true });
   const manifestPath = path.join(baselineDir, REGISTRY);
   let registry;
@@ -95,7 +100,7 @@ async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, basel
   if (missing.length || extra.length) throw new Error(`Approved reference matrix mismatch: missing=[${missing.join(', ')}], extra=[${extra.join(', ')}]`);
   if (!isDeepStrictEqual(provenance, registry.provenance)) throw new Error('Capture provenance does not match approved references');
 
-  let failed = false;
+  let failed = false, mismatched = false;
   for (const row of captures) {
     const result = { ...identity(row), status: 'failed', file: row.file };
     try {
@@ -107,7 +112,7 @@ async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, basel
       Object.assign(result, comparison);
       result.referenceFile = reference.file;
       if (!comparison.equal) {
-        failed = true;
+        if (advisoryPixels) { mismatched = true; result.status = 'mismatched'; } else failed = true;
         const stem = `${row.host}-${row.id}-${row.viewport}-${row.theme}`;
         await fs.copyFile(within(evidenceDir, row.file), path.join(evidenceDir, `${stem}.actual.png`));
         await fs.copyFile(within(baselineDir, reference.file), path.join(evidenceDir, `${stem}.reference.png`));
@@ -117,7 +122,8 @@ async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, basel
     } catch (error) { failed = true; result.error = error.message; }
     report.results.push(result);
   }
-  report.status = failed ? 'failed' : 'passed';
+  report.status = failed ? 'failed' : mismatched ? 'mismatched' : 'passed';
+  if (advisoryPixels) report.pixelMode = 'advisory';
   await fs.writeFile(path.join(evidenceDir, REPORT), JSON.stringify(report, null, 2));
   if (failed) throw new Error(`Visual baselines failed; see ${REPORT}`);
   return report;
