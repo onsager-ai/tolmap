@@ -1147,13 +1147,13 @@ mod tests {
         std::fs::create_dir_all(data.join("snapshots")).unwrap();
         save_snapshot(&local, base_id, base_prepared, &base, 1);
         save_snapshot(&local, head_id, head_prepared, &head, 2);
-        std::fs::copy(
-            base_map,
-            data.join("snapshots")
-                .join(base_id.to_string())
-                .join("map.json"),
-        )
-        .unwrap();
+        for id in [base_id, head_id] {
+            std::fs::copy(
+                &base_map,
+                data.join("snapshots").join(id.to_string()).join("map.json"),
+            )
+            .unwrap();
+        }
 
         std::fs::write(
             checkout.join(".tolmap/lenses/flow.toml"),
