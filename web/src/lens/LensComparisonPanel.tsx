@@ -17,7 +17,7 @@ export function useLensComparison(owner: string, repo: string, search: MapSearch
       if (!response.ok) throw new Error(value.message ?? "Lens comparison unavailable");
       const result = value as LensComparison;
       if (result.version !== 1 || !result.lower_bound) throw new Error("Unsupported lens comparison version");
-      if (!mapSha256 || result.base_map_sha256 !== mapSha256 || commit !== search.base || result.repository !== `${owner}/${repo}` || result.base !== search.base || result.head !== search.head || result.lens !== search.lens || result.other !== (search.other_lens ?? search.lens)) throw new Error("Stale or mismatched lens comparison snapshot. Reload the base map.");
+      if (!mapSha256 || result.base_map_sha256 !== mapSha256 || commit !== search.base || (owner !== "snapshot" && result.repository !== `${owner}/${repo}`) || result.base !== search.base || result.head !== search.head || result.lens !== search.lens || result.other !== (search.other_lens ?? search.lens)) throw new Error("Stale or mismatched lens comparison snapshot. Reload the base map.");
       return result;
     },
   });
