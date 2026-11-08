@@ -1109,6 +1109,7 @@ export function MapView() {
           onClearSelection={() => {
             clearPath();
             clearAll();
+            if (search.lens_compare) changeDetent("half");
           }}
           onSelectFile={(i) => selectFile(i)}
           onSelectSymbol={(i, s) => selectFile(i, { symbol: s })}

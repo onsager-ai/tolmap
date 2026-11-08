@@ -16,7 +16,9 @@
 .lens-comparison-panel > header h2 { font-size:17px; }
 .lens-comparison-summary p { margin:4px 0; }
 .lens-comparison-edit { max-height:48%; overflow:auto; }
-.lens-comparison-results { min-height:0; overflow:auto; overscroll-behavior:contain; }
+.lens-comparison-results { min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; }
+.lens-delta-paths { min-width:0; overflow-wrap:anywhere; }
+.lens-delta-paths button { max-width:100%; white-space:normal; }
 .lens-comparison-results h3 { margin-top:12px; }
 .lens-comparison-results li { padding:8px 0; }
 .lens-delta-paths button { color:var(--on); text-decoration:underline; overflow-wrap:anywhere; }

@@ -204,7 +204,7 @@ try {
     });
     await visibleComparisonStop.click();
     assert.equal(new URL(page.url()).searchParams.get('file'),comparisonPath,'comparison stop opens its base card');
-    if (profile === 'phone') await comparePanel.getByRole('button',{name:'View changes',exact:true}).click();
+    if (profile === 'phone') await page.getByRole('button',{name:'Back to comparison',exact:true}).click();
     await comparePanel.getByText('Edit comparison',{exact:true}).click();
     await comparePanel.getByRole('combobox',{name:'Compare with lens'}).selectOption('overlap');
     await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
@@ -213,6 +213,7 @@ try {
     assert.match(await comparePanel.textContent(),/Only in overlap/);
     assert.doesNotMatch(await comparePanel.locator('.lens-legend').textContent(),/Removed/);
     assert.ok(await comparePanel.locator('[data-lens-delta="shared"]').count()>0);
+    assert.equal(await page.evaluate(() => window.scrollY),0,'overlap never scrolls the outer page');
     await shot('comparison-overlap');
     await page.reload();
     await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
