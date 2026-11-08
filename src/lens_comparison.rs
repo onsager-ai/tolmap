@@ -49,8 +49,8 @@ struct Item {
     specs: Vec<String>,
     targets: Vec<LensTarget>,
     resolved: bool,
-    order: usize,
-    route: Vec<String>,
+    positions: BTreeSet<(usize, usize)>,
+    districts: Vec<usize>,
 }
 
 fn identity(spec: &str, renames: &[FileRename]) -> String {
@@ -69,7 +69,39 @@ fn identity(spec: &str, renames: &[FileRename]) -> String {
     }
 }
 
-fn items(report: &LensReport, renames: &[FileRename]) -> BTreeMap<(String, String), Item> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ComparisonMode {
+    Commits,
+    Membership,
+}
+
+fn target_identity(
+    spec: &str,
+    target: Option<&LensTarget>,
+    renames: &[FileRename],
+    mode: ComparisonMode,
+) -> String {
+    let Some(target) = target else {
+        return identity(spec, renames);
+    };
+    let spec = target.symbol.as_ref().map_or_else(
+        || target.path.clone(),
+        |symbol| {
+            if mode == ComparisonMode::Membership || spec.rsplit_once('@').is_some() {
+                format!("{}#{}@{}", target.path, symbol.name, symbol.start)
+            } else {
+                format!("{}#{}", target.path, symbol.name)
+            }
+        },
+    );
+    identity(&spec, renames)
+}
+
+fn items(
+    report: &LensReport,
+    renames: &[FileRename],
+    mode: ComparisonMode,
+) -> BTreeMap<(String, String), Item> {
     let mut result = BTreeMap::new();
     for area in &report.areas {
         for member in &area.members {
@@ -79,31 +111,41 @@ fn items(report: &LensReport, renames: &[FileRename]) -> BTreeMap<(String, Strin
                 |symbol| format!("{}#{}", target.path, symbol.name),
             );
             result.insert(
-                ("area".into(), identity(&spec, renames)),
+                (
+                    "area".into(),
+                    target_identity(&member.spec, Some(target), renames, mode),
+                ),
                 Item {
                     label: area.label.clone(),
                     specs: vec![spec],
                     targets: vec![target.clone()],
                     resolved: true,
-                    order: 0,
-                    route: Vec::new(),
+                    positions: BTreeSet::new(),
+                    districts: vec![target.district],
                 },
             );
         }
     }
-    for path in &report.paths {
+    for (path_index, path) in report.paths.iter().enumerate() {
         for (i, stop) in path.stops.iter().enumerate() {
             // Stop/hop identity is independent of path names, allowing two
             // lenses to share a stop or hop while naming their paths differently.
-            let key = ("stop".into(), identity(&stop.spec, renames));
-            result.entry(key).or_insert_with(|| Item {
-                label: path.name.clone(),
-                specs: vec![stop.spec.clone()],
-                targets: stop.target.iter().cloned().collect(),
-                resolved: stop.target.is_some(),
-                order: i,
-                route: Vec::new(),
-            });
+            let key = (
+                "stop".into(),
+                target_identity(&stop.spec, stop.target.as_ref(), renames, mode),
+            );
+            result
+                .entry(key)
+                .or_insert_with(|| Item {
+                    label: path.name.clone(),
+                    specs: vec![stop.spec.clone()],
+                    targets: stop.target.iter().cloned().collect(),
+                    resolved: stop.target.is_some(),
+                    positions: BTreeSet::new(),
+                    districts: stop.target.iter().map(|t| t.district).collect(),
+                })
+                .positions
+                .insert((path_index, i));
         }
         for hop in &path.hops {
             let a = &path.stops[hop.from];
@@ -112,8 +154,8 @@ fn items(report: &LensReport, renames: &[FileRename]) -> BTreeMap<(String, Strin
                 "hop".into(),
                 format!(
                     "{} → {}",
-                    identity(&a.spec, renames),
-                    identity(&b.spec, renames)
+                    target_identity(&a.spec, a.target.as_ref(), renames, mode),
+                    target_identity(&b.spec, b.target.as_ref(), renames, mode)
                 ),
             );
             result.entry(key).or_insert_with(|| Item {
@@ -121,13 +163,13 @@ fn items(report: &LensReport, renames: &[FileRename]) -> BTreeMap<(String, Strin
                 specs: vec![a.spec.clone(), b.spec.clone()],
                 targets: a.target.iter().chain(b.target.iter()).cloned().collect(),
                 resolved: hop.resolved,
-                order: hop.from,
-                route: std::iter::once(format!(
-                    "{:?}:{:?}:{:?}",
-                    hop.source, hop.edge_kind, hop.reason
-                ))
-                .chain(hop.via.iter().map(|path| identity(path, renames)))
-                .collect(),
+                positions: BTreeSet::new(),
+                districts: a
+                    .target
+                    .iter()
+                    .chain(b.target.iter())
+                    .map(|t| t.district)
+                    .collect(),
             });
         }
     }
@@ -141,9 +183,10 @@ pub fn changes(
     after: &LensReport,
     frame: &MapDocument,
     renames: &[FileRename],
+    mode: ComparisonMode,
 ) -> Vec<LensDelta> {
-    let left = items(before, &[]);
-    let right = items(after, renames);
+    let left = items(before, &[], mode);
+    let right = items(after, renames, mode);
     let keys: BTreeSet<_> = left.keys().chain(right.keys()).cloned().collect();
     keys.into_iter()
         .map(|key| {
@@ -151,6 +194,8 @@ pub fn changes(
             let b = right.get(&key);
             let status =
                 match (a, b) {
+                    (Some(_), Some(_)) if mode == ComparisonMode::Membership => LensChange::Shared,
+                    (Some(a), Some(b)) if !a.resolved && b.resolved => LensChange::Added,
                     (Some(_), Some(b))
                         if key.0 == "stop"
                             && b.specs.iter().any(|spec| {
@@ -162,14 +207,20 @@ pub fn changes(
                         LensChange::Renamed
                     }
                     (Some(a), Some(b)) if !b.resolved && a.resolved => LensChange::Broken,
-                    (Some(a), Some(b)) if a.specs != b.specs => LensChange::Renamed,
                     (Some(a), Some(b))
-                        if a.order != b.order
-                            || a.route != b.route
-                            || a.targets
-                                .iter()
-                                .map(|t| &t.symbol)
-                                .ne(b.targets.iter().map(|t| &t.symbol)) =>
+                        if a.specs != b.specs
+                            && a.specs.iter().any(|spec| {
+                                let path = spec.split('#').next().unwrap();
+                                renames.iter().any(|r| r.from == path)
+                            }) =>
+                    {
+                        LensChange::Renamed
+                    }
+                    (Some(a), Some(b))
+                        if a.resolved
+                            && b.resolved
+                            && key.0 == "stop"
+                            && (a.positions != b.positions || a.districts != b.districts) =>
                     {
                         LensChange::Moved
                     }
@@ -185,7 +236,9 @@ pub fn changes(
                         LensChange::Renamed
                     }
                     (Some(_), None) => LensChange::Removed,
-                    (None, Some(b)) if !b.resolved => LensChange::Broken,
+                    (None, Some(b)) if !b.resolved && mode == ComparisonMode::Commits => {
+                        LensChange::Broken
+                    }
                     (None, Some(_)) => LensChange::Added,
                     _ => unreachable!(),
                 };

@@ -188,9 +188,10 @@ pub async fn compare_lenses(
     Query(query): Query<LensCompareQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let (repository, source, row) = snapshot(&state, &owner, &repo, Some(query.base.clone()))?;
-    let cache = state.config.cache_dir.join("comparisons");
+    let (_, _, head) = snapshot(&state, &owner, &repo, Some(query.head.clone()))?;
     let value =
-        blocking(move || compare_at(repository, source, row.map_path, cache, query)).await?;
+        blocking(move || compare_at(repository, source, row.map_path, head.map_path, query))
+            .await?;
     Ok(([("cache-control", "no-store")], Json(value)))
 }
 
@@ -240,7 +241,7 @@ pub(crate) fn compare_at(
     repository: String,
     repo: PathBuf,
     map_path: PathBuf,
-    cache: PathBuf,
+    head_map_path: PathBuf,
     query: LensCompareQuery,
 ) -> Result<crate::lens_comparison::LensComparison, ApiError> {
     use sha2::{Digest, Sha256};
@@ -268,27 +269,20 @@ pub(crate) fn compare_at(
     let head_map = if query.base == query.head {
         frame.clone()
     } else {
-        let comparison = comparison::run(
-            comparison::Inputs {
-                repository: &repository,
-                repo: &repo,
-                base_map: &map_path,
-                cache: &cache,
-            },
-            comparison::CompareQuery {
-                base: query.base.clone(),
-                head: query.head.clone(),
-                max_districts: None,
-                max_dq: None,
-                report_only: true,
-            },
-        )?;
-        crate::check::lens_head_map(&repo, &query.base, &query.head, &frame, &comparison.report)
+        let head_bytes = std::fs::read(head_map_path).map_err(|_| comparison::unavailable())?;
+        let snapshot: MapDocument =
+            serde_json::from_slice(&head_bytes).map_err(|e| ApiError::internal(e.to_string()))?;
+        crate::check::lens_head_map(&repo, &query.base, &query.head, &frame, &snapshot)
             .map_err(|e| ApiError::internal(e.to_string()))?
     };
     let mut after = lens::resolve(&head_lens, &head_map);
     lens::report_renames(&mut after, &renames);
-    let changes = crate::lens_comparison::changes(&before, &after, &frame, &renames);
+    let mode = if other == query.lens {
+        crate::lens_comparison::ComparisonMode::Commits
+    } else {
+        crate::lens_comparison::ComparisonMode::Membership
+    };
+    let changes = crate::lens_comparison::changes(&before, &after, &frame, &renames, mode);
     Ok(crate::lens_comparison::LensComparison {
         version: 1,
         repository,

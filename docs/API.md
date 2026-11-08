@@ -429,10 +429,13 @@ collection alone does not provide these git-backed lens resources.
 
 `LensComparison` (Rust `src/lens_comparison.rs`, generated bindings) resolves
 one lens at base/head or two lenses at one commit (`other`, equal base/head).
-Full immutable commits and an indexed base map are required. It reads both lens
-files from retained git objects. Cross-commit mode reuses `check`'s base
-partition and import-weight placement; it extracts head content without
-partitioning or laying out a head map. Git renames between base and head are
+Full immutable commits and indexed base and head snapshots are required. It
+reads both lens files from retained git objects. Each snapshot's recorded file
+set constrains extraction exactly, including every indexed language; detection
+only supplies module roots and never selects membership. Cross-commit mode
+reuses `check`'s base partition and import-weight placement. The head snapshot
+supplies file scope only: its district IDs and geometry are never compared or
+rendered. Head content is extracted without partitioning or laying out a map. Git renames between base and head are
 reported explicitly. Local snapshots expose the same shape at
 `/api/compare/snapshot/{base-id}/lenses` with saved base/head commits.
 
@@ -442,10 +445,42 @@ sorted `changes`. Each delta names its `kind` (area membership, stop, hop),
 `status` (`shared`, `added`, `removed`, `broken`, `renamed`, `moved`), before/after
 specifications, projected **base** targets and district placements. New files
 have no base target/footprint; unplaced ones have no districts either. Stops
-match by specification (with explicit git rename identity); hops match ordered
-endpoints, and area overlap matches resolved members across labels. Broken
-hops retain their last known base endpoints. Computed routes remain lower
-bounds from extracted imports. Notes remain in the side reports.
+match by file or symbol identity (with explicit git rename identity); hops match
+ordered endpoint pairs, and areas match resolved members across labels. In
+two-lens mode, `shared` means **in both**, `removed` means **only in A**, and
+`added` means **only in B**. Path names, labels, stop positions, routing evidence
+and symbol-spec spelling do not affect membership. Resolved symbols match by
+file, name and start line, so `file#name` and `file#name@line` match when they
+resolve to the same symbol. Unresolved stops retain their literal specification
+as identity; their diagnostics remain in the side reports.
+
+In same-lens commit mode, unqualified symbols match by file and name across line
+edits; explicitly qualified repeated names retain their `@line` disambiguator.
+`moved` applies only to a stop resolved on both sides when its district or its
+set of `(path ordinal, stop ordinal)` positions changes. Renaming a path or
+editing symbol spans or hop routing evidence alone is not movement. Renames
+and resolution transitions take precedence over movement:
+
+| Base item | Head item | Rename evidence / lens update | Status |
+| --- | --- | --- | --- |
+| unresolved | resolved | absent, or lens updated to detected destination | `added` (now resolves) |
+| resolved | unresolved | no detected rename, or updated destination still unresolved | `broken` |
+| unresolved | unresolved | no detected rename | `shared` (still unresolved) |
+| resolved | resolved | detected rename and lens updated | `renamed` |
+| unresolved | unresolved | detected rename and lens updated | `renamed` |
+| either | unresolved old path | detected rename, lens still names old path | `renamed` (destination metadata only) |
+| resolved | resolved | no rename; stop district or position set changed | `moved` |
+| resolved | resolved | no rename; otherwise | `shared` |
+| absent | present | either resolution state | `added` if resolved; otherwise `broken` |
+| present | absent | no rename | `removed` |
+| area member | absent | detected rename of its literal specification | `renamed` |
+
+Area members are resolved by definition; an unresolved area specification is
+reported in the side report rather than counted as a member. A hop is resolved
+only when its endpoints and route resolve; the same transition rules apply,
+except hops never receive `moved`. Broken hops retain their last known base
+endpoints. Computed routes remain lower bounds from extracted imports. Notes
+remain in the side reports.
 
 The map bytes are never changed. Responses are `no-store`; unavailable source
 or maps and invalid lens/input use the existing explicit error resources.

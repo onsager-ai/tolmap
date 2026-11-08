@@ -1189,11 +1189,10 @@ pub(crate) fn lens_head_map(
     base: &str,
     head: &str,
     base_map: &MapDocument,
-    report: &CheckReport,
+    head_snapshot: &MapDocument,
 ) -> Result<MapDocument, CheckError> {
     let mut scratch = Scratch::new(repo)?;
     let base_dir = scratch.worktree(base, "base")?;
-    let source = detect_source(&base_dir)?;
     let head_dir = scratch.worktree(head, "head")?;
     let changes = diff(repo, base, Some(head))?;
     let history = CochangeHistory {
@@ -1206,7 +1205,30 @@ pub(crate) fn lens_head_map(
             })
             .collect(),
     };
-    let graph = extract_head_graph(&head_dir, &source, &history)?;
+    let base_graph = extract::build_snapshot_graph(
+        &base_dir,
+        &base_map.files,
+        &CochangeHistory {
+            revision: base.into(),
+            renames: BTreeMap::new(),
+        },
+    )
+    .map_err(internal)?;
+    let graph = extract::build_snapshot_graph(&head_dir, &head_snapshot.files, &history)
+        .map_err(internal)?;
+    let report = compare(
+        base.into(),
+        Some(head.into()),
+        &changes,
+        base_map,
+        base_graph,
+        graph.clone(),
+        CheckThresholds {
+            max_districts: None,
+            max_dq: None,
+            source: CheckThresholdSource::ReportOnly,
+        },
+    )?;
     let mut result = base_map.clone();
     result.files = graph.nodes.iter().map(|node| node.file.clone()).collect();
     result.nodes = graph

@@ -612,6 +612,77 @@ fn build_multi_source_inner(
     history: Option<&CochangeHistory>,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
+    build_selected_sources(
+        repo,
+        sources,
+        collect_symbols,
+        refs,
+        install,
+        history,
+        progress,
+        None,
+    )
+}
+
+/// Resolve exactly the indexed snapshot's files. Detection supplies module
+/// roots only; it cannot add or remove files from this extraction.
+pub(crate) fn build_snapshot_graph(
+    repo: &Path,
+    files: &[String],
+    history: &CochangeHistory,
+) -> Result<GraphData> {
+    let mut selected = BTreeMap::<String, Vec<String>>::new();
+    for file in files {
+        let language = match file.rsplit('.').next() {
+            Some("py") => LanguageKind::Python,
+            Some("go") => LanguageKind::Go,
+            Some("rs") => LanguageKind::Rust,
+            Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") => LanguageKind::TypeScript,
+            _ => bail!("unsupported indexed source file {file:?}"),
+        };
+        selected
+            .entry(language.as_str().into())
+            .or_default()
+            .push(file.clone());
+    }
+    let mut sources = Vec::new();
+    for (language, files) in &mut selected {
+        files.sort();
+        files.dedup();
+        let language = LanguageKind::parse(language)?;
+        let root = crate::detect::detect_language(repo, language)?
+            .filter(|candidate| {
+                candidate.pkg == "."
+                    || files
+                        .iter()
+                        .all(|file| file.starts_with(&format!("{}/", candidate.pkg)))
+            })
+            .map_or_else(|| ".".into(), |candidate| candidate.pkg);
+        sources.push((root, language));
+    }
+    Ok(build_selected_sources(
+        repo,
+        &sources,
+        false,
+        RefsMode::Hand,
+        &InstallMode::Off,
+        Some(history),
+        &crate::progress::Progress::silent(),
+        Some(&selected),
+    )?
+    .0)
+}
+
+fn build_selected_sources(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    collect_symbols: bool,
+    refs: RefsMode,
+    install: &InstallMode,
+    history: Option<&CochangeHistory>,
+    progress: &crate::progress::Progress,
+    selected: Option<&BTreeMap<String, Vec<String>>>,
+) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
     let started = Instant::now();
     let mut symbol_collection = Duration::ZERO;
     let mut collect_steps = crate::symbols::CollectTimings::default();
@@ -645,8 +716,17 @@ fn build_multi_source_inner(
         // RefsMode and InstallMode are consumed later, after raw parsing and
         // source resolution, by apply_scip_references; they cannot affect
         // these records and therefore stay out of their provenance keys.
-        let (parsed, raw, collection_time, steps) =
-            parse_files_inner(repo, pkg, *language, spool.as_mut(), progress)?;
+        let (parsed, raw, collection_time, steps) = match selected {
+            Some(files) => parse_selected_files(
+                repo,
+                pkg,
+                *language,
+                files[language.as_str()].clone(),
+                spool.as_mut(),
+                progress,
+            )?,
+            None => parse_files_inner(repo, pkg, *language, spool.as_mut(), progress)?,
+        };
         symbol_collection += collection_time;
         collect_steps.add(&steps);
         let graph_started = Instant::now();
@@ -784,7 +864,7 @@ fn parse_files_inner(
     repo: &Path,
     pkg: &str,
     language: LanguageKind,
-    mut spool: Option<&mut crate::symbols::SymbolSpool>,
+    spool: Option<&mut crate::symbols::SymbolSpool>,
     progress: &crate::progress::Progress,
 ) -> Result<(
     BTreeMap<String, ParsedFile>,
@@ -793,6 +873,22 @@ fn parse_files_inner(
     crate::symbols::CollectTimings,
 )> {
     let files = source_files(repo, pkg, language)?;
+    parse_selected_files(repo, pkg, language, files, spool, progress)
+}
+
+fn parse_selected_files(
+    repo: &Path,
+    pkg: &str,
+    language: LanguageKind,
+    files: Vec<String>,
+    mut spool: Option<&mut crate::symbols::SymbolSpool>,
+    progress: &crate::progress::Progress,
+) -> Result<(
+    BTreeMap<String, ParsedFile>,
+    BTreeMap<String, FileRaw>,
+    Duration,
+    crate::symbols::CollectTimings,
+)> {
     let parse_stage = progress.stage(crate::progress::StageId::Parse, Some(files.len() as u64));
     let config = fs::read(repo.join(".tolmap/config.toml")).unwrap_or_default();
     let mut provenance = crate::incremental::Provenance {

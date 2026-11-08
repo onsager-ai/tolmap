@@ -617,7 +617,10 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                 s.repository.clone(),
                 preview.path.clone(),
                 map,
-                cache,
+                s.data
+                    .join("snapshots")
+                    .join(head.id.to_string())
+                    .join("map.json"),
                 crate::service::lens::LensCompareQuery {
                     base: query.base,
                     head: query.head,
