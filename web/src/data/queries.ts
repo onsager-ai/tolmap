@@ -184,6 +184,7 @@ export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin 
   return {
     data: doc,
     indexedCommit: serviceQuery.data?.indexedCommit,
+    mapSha256: serviceQuery.data?.mapSha256,
     isLoading,
     isError,
     error: staticQuery.error ?? serviceQuery.error,

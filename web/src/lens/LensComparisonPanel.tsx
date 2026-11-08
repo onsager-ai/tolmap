@@ -6,10 +6,10 @@ import { API_BASE } from "@/api/client";
 import type { MapSearch } from "@/routes/search";
 import "@/comparison/comparison.css";
 
-export function useLensComparison(owner: string, repo: string, search: MapSearch, commit?: string) {
+export function useLensComparison(owner: string, repo: string, search: MapSearch, commit?: string, mapSha256?: string) {
   const query = new URLSearchParams({ base: search.base ?? "", head: search.head ?? "", lens: search.lens ?? "" });
   if (search.other_lens) query.set("other", search.other_lens);
-  return useQuery({ queryKey: ["lens-comparison", owner, repo, query.toString(), commit], enabled: !!search.lens_compare && !!search.base && !!search.head && !!search.lens && !!commit,
+  return useQuery({ queryKey: ["lens-comparison", owner, repo, query.toString(), commit, mapSha256], enabled: !!search.lens_compare && !!search.base && !!search.head && !!search.lens && !!commit && !!mapSha256,
     retry: false, staleTime: 0, gcTime: 0,
     queryFn: async ({ signal }) => {
       const response = await fetch(`${API_BASE}/compare/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/lenses?${query}`, { signal, cache: "no-store" });
@@ -17,7 +17,7 @@ export function useLensComparison(owner: string, repo: string, search: MapSearch
       if (!response.ok) throw new Error(value.message ?? "Lens comparison unavailable");
       const result = value as LensComparison;
       if (result.version !== 1 || !result.lower_bound) throw new Error("Unsupported lens comparison version");
-      if (commit !== search.base || result.repository !== `${owner}/${repo}` || result.base !== search.base || result.head !== search.head || result.lens !== search.lens || result.other !== (search.other_lens ?? search.lens)) throw new Error("Stale or mismatched lens comparison snapshot. Reload the base map.");
+      if (!mapSha256 || result.base_map_sha256 !== mapSha256 || commit !== search.base || result.repository !== `${owner}/${repo}` || result.base !== search.base || result.head !== search.head || result.lens !== search.lens || result.other !== (search.other_lens ?? search.lens)) throw new Error("Stale or mismatched lens comparison snapshot. Reload the base map.");
       return result;
     },
   });
@@ -30,7 +30,7 @@ export function LensComparisonPanel({ search, result, list, update, pick }: { se
     <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); const other = String(values.get("other") ?? ""); const base = String(values.get("base")); update({ lens_compare: true, compare: true, base, head: other ? base : String(values.get("head")), other_lens: other || undefined }); }}>
       <label>Base commit<input aria-label="Lens base commit" name="base" required pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.base ?? search.commit} /></label>
       <label>Head commit<input aria-label="Lens head commit" name="head" pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.head} placeholder="Same lens at another commit" /></label>
-      <label>Compare with lens at base<select name="other" aria-label="Compare with lens" defaultValue={search.other_lens ?? ""}><option value="">Same lens across commits</option>{list?.names.filter(name => name !== search.lens).map(name => <option key={name}>{name}</option>)}</select></label>
+      <label>Compare with lens at base<select name="other" aria-label="Compare with lens" defaultValue={search.other_lens ?? ""}><option value="">Same lens across commits</option>{search.other_lens && !list?.names.includes(search.other_lens) && <option value={search.other_lens}>{search.other_lens}</option>}{list?.names.filter(name => name !== search.lens).map(name => <option key={name}>{name}</option>)}</select></label>
       <button>Compare lenses</button>
     </form>
     {!search.base || !search.head ? <p>Choose two commits, or another lens at the base commit.</p> : result.isPending || result.isFetching ? <p role="status" data-lens-comparison-state="loading">{result.isFetching && result.data ? "Revalidating; previous lens comparison is stale." : "Computing lens comparison…"}</p> : null}

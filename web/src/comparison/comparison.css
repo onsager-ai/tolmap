@@ -5,6 +5,7 @@
 .comparison-panel p { margin:10px 0; }
 .comparison-panel label { display:block; margin:8px 0; }
 .comparison-panel input:not([type=checkbox]) { display:block; width:100%; background:var(--chrome2); border:1px solid var(--rule); padding:8px; font-size:16px; }
+.lens-comparison-panel select { display:block; width:100%; min-height:44px; font-size:16px; background:var(--chrome2); color:var(--on); border:1px solid var(--rule); border-radius:6px; }
 .comparison-panel button,.comparison-panel a,.comparison-panel summary { min-height:44px; padding:8px 4px; text-align:left; }
 .comparison-panel a { display:inline-flex; align-items:center; text-decoration:underline; color:var(--accent); }
 .comparison-panel li { border-bottom:1px solid var(--rule); padding:6px 0; }

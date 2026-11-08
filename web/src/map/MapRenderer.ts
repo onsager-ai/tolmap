@@ -1506,7 +1506,7 @@ export class MapRenderer {
     const overlay = el("g", { "data-lens-comparison-overlay": "" });
     g.appendChild(overlay);
     const marks = { added: ["+", "none", "var(--lens-teal)"], removed: ["−", "8 5", "var(--lens-orange)"], broken: ["×", "2 5", "var(--lens-red)"], renamed: ["↗", "10 3 2 3", "var(--lens-purple)"], moved: ["↔", "5 3", "var(--lens-declared)"], shared: ["=", "none", "var(--dim)"] } as const;
-    lensComparison.changes.forEach(change => {
+    lensComparison.changes.forEach((change, changeIndex) => {
       const [symbol, dash, stroke] = marks[change.status];
       const title = `${change.status} ${change.kind} · ${change.label}: ${change.before.join(" → ")} → ${change.after.join(" → ")}`;
       const put = (node: SVGElement) => { const tip = el("title", {}); tip.textContent = title; node.appendChild(tip); overlay.appendChild(node); };
@@ -1521,11 +1521,11 @@ export class MapRenderer {
         put(el("path", { d, fill: "none", stroke: "var(--canvas)", "stroke-width": 6, "pointer-events": "none" }));
         put(el("path", { d, fill: "none", stroke, "stroke-width": 2.5, "stroke-dasharray": dash, "pointer-events": "none", "data-lens-change": change.status }));
       } else {
-        change.targets.forEach(target => {
+        change.targets.forEach((target, targetIndex) => {
           if (!this.lensTargetVisible(target, zf)) return;
           const [x,y] = this.lensPoint(target, true);
-          const mark = el("g", { "data-lens-change": change.status, "data-lens-comparison-stop": target.path });
-          mark.appendChild(el("circle", { cx:x, cy:y, r:13, fill:"var(--chrome)", stroke, "stroke-width":2, "stroke-dasharray":dash, "pointer-events":"none" }));
+          const mark = el("g", { "data-k": `lc:${changeIndex}:${targetIndex}`, "data-lens-change": change.status, "data-lens-comparison-stop": target.path });
+          mark.appendChild(el("circle", { cx:x, cy:y, r:13, fill:"var(--chrome)", stroke, "stroke-width":2, "stroke-dasharray":dash, "pointer-events":"all" }));
           const label = el("text", { x, y:y+4, "text-anchor":"middle", "font-size":12, fill:"var(--on)", "pointer-events":"none" }); label.textContent = symbol; mark.appendChild(label); put(mark);
         });
       }
@@ -4789,6 +4789,10 @@ export class MapRenderer {
   private hoverContent(key: string): HoverCardContent | null {
     const { doc } = this.state!;
     const parts = key.split(":");
+    if (parts[0] === "lc") {
+      const change = this.state!.lensComparison?.changes[+parts[1]];
+      return change ? plainCard([`${change.status} ${change.kind}`, change.before.join(" → "), change.after.join(" → "), "Open base stop card"], true) : null;
+    }
     if (parts[0] === "lh") {
       const path = this.state!.lens?.paths[+parts[1]];
       const hop = path?.hops[+parts[2]];
@@ -5421,7 +5425,11 @@ export class MapRenderer {
       return;
     }
     this.hideCard();
-    if (parts[0] === "ls") {
+    if (parts[0] === "lc") {
+      const target = this.state!.lensComparison?.changes[+parts[1]]?.targets[+parts[2]];
+      if (target) this.callbacks.onSelectLensStop?.(target);
+    }
+    else if (parts[0] === "ls") {
       const target = this.state!.lens?.paths[+parts[1]]?.stops[+parts[2]]?.target;
       if (target) this.callbacks.onSelectLensStop?.(target);
     }

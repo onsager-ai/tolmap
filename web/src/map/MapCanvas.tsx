@@ -182,7 +182,7 @@ export function MapCanvas({
     const state: MapRenderState = {
       doc,
       lens,
-  lensComparison,
+      lensComparison,
       impactFiles,
       impactDistricts,
       geo,
@@ -226,7 +226,7 @@ export function MapCanvas({
     const state: MapRenderState = {
       doc,
       lens,
-  lensComparison,
+      lensComparison,
       impactFiles,
       impactDistricts,
       geo,

@@ -1191,6 +1191,21 @@ mod tests {
         assert_eq!(body["report"]["base"], base.as_str());
         assert_eq!(body["report"]["head"], head.as_str());
 
+        let lens_uri: Uri =
+            format!("/api/compare/snapshot/{base_id}/lenses?base={base}&head={head}&lens=flow")
+                .parse()
+                .unwrap();
+        let response = dispatch(&local, &Method::GET, &lens_uri).unwrap();
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let (status, compared) = json_response(response).await;
+        assert_eq!(status, StatusCode::OK, "{compared}");
+        assert_eq!(compared["before"]["title"], "Base lens");
+        assert_eq!(compared["after"]["title"], "Head lens");
+        assert_eq!(compared["base"], base);
+        assert_eq!(compared["head"], head);
+        let (_, repeated) = json_response(dispatch(&local, &Method::GET, &lens_uri).unwrap()).await;
+        assert_eq!(compared, repeated);
+
         let unrelated = directory.path().join("unrelated");
         std::fs::create_dir_all(&unrelated).unwrap();
         test_git(&unrelated, &["init", "-q"]);

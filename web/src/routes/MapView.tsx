@@ -70,13 +70,13 @@ export function MapView() {
   // (`?job=`) is pinned to that job's commit, and asks for symbols only once
   // the job is done.
   const early = useEarlyMapJob(search.job);
-  const { data: doc, isLoading, isError, error, source, indexedCommit } = useMapDocument(owner, repo, {
+  const { data: doc, isLoading, isError, error, source, indexedCommit, mapSha256 } = useMapDocument(owner, repo, {
     commit: search.base ?? search.commit ?? early.commit,
     wait: early.waiting,
   });
 
   const lenses = useLenses(owner, repo, indexedCommit ?? search.base ?? search.commit ?? early.commit, search.lens, !!doc && !early.waiting);
-  const lensComparison = useLensComparison(owner, repo, search, indexedCommit);
+  const lensComparison = useLensComparison(owner, repo, search, indexedCommit, mapSha256);
 
   // Issue #82 C2 scope item 1: districts whose symbols the map/sidebar
   // currently want. Two sources add to this set and it only ever grows for

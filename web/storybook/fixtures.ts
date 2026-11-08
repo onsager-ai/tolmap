@@ -40,6 +40,8 @@ const json = (value: unknown, status = 200) => new HttpResponse(JSON.stringify(v
 
 export async function installFixture(state: string) {
   if (!map) map = await (await nativeFetch(asset("map.json"))).json() as MapDocument;
+  const mapDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(map)));
+  const mapSha256 = Array.from(new Uint8Array(mapDigest), byte => byte.toString(16).padStart(2, "0")).join("");
   let job = snapshot(state === "freshness-in-map" ? "early" : state);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const emit = () => new TextEncoder().encode(`data: ${JSON.stringify(job, (_key, value) => typeof value === "bigint" ? Number(value) : value)}\n\n`);
@@ -71,7 +73,7 @@ export async function installFixture(state: string) {
       if (state === "lens-compare-error") return json({ message: "Committed comparison source unavailable. No newer snapshot was substituted." }, 404);
       const target = (file: number) => ({ file, path: map.F[file], district: map.N[file][0], symbol: null });
       const report: LensReport = { version: 1, lens_version: 1, repo: map.repo, title: "Synthetic comparison", lower_bound: true, areas: [], paths: [], notes: [], unresolved: [] };
-      return json({ version: 1, repository: slug, base: state === "lens-compare-stale" ? "3".repeat(40) : commit, head: url.searchParams.get("head"), lens: "overview", other: url.searchParams.get("other") ?? "overview", base_map_sha256: "synthetic-fixture", lower_bound: true, before: report, after: report,
+      return json({ version: 1, repository: slug, base: state === "lens-compare-stale" ? "3".repeat(40) : commit, head: url.searchParams.get("head"), lens: "overview", other: url.searchParams.get("other") ?? "overview", base_map_sha256: mapSha256, lower_bound: true, before: report, after: report,
         changes: ["added", "removed", "broken", "renamed", "shared"].map((status, i) => ({ kind: i === 2 ? "hop" : i === 3 ? "stop" : "area", label: "Synthetic request flow", status, before: [map.F[i]], after: status === "removed" ? [] : [map.F[i]], targets: i === 2 ? [target(0), target(1)] : [target(i)], districts: [map.N[i][0]] })) });
     }
     if (path.endsWith("/lenses")) return json({ repository: slug, commit, names: state === "lens-empty" || !state.startsWith("lens-") ? [] : ["overview"] });

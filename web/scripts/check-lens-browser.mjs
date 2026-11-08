@@ -32,7 +32,7 @@ try {
       let json;
       if (path === '/api/healthz') json = {status:'ok'};
       else if (path === '/api/maps') json = [];
-      else if (path === '/api/maps/pallets/flask') return route.fulfill({json:map, headers:{'x-tolmap-commit':commit}});
+      else if (path === '/api/maps/pallets/flask') return route.fulfill({body:await readFile('lens-fixtures/flask.json'), contentType:'application/json', headers:{'x-tolmap-commit':commit}});
       else if (path.endsWith('/symbols')) json = JSON.parse(await readFile(`lens-fixtures/flask.symbols/${Number(url.searchParams.get('district'))}.json`, 'utf8'));
       else if (path.endsWith('/freshness')) return route.fulfill({status:404,json:{error:'not_found'}});
       else if (path.startsWith('/api/compare/') && path.endsWith('/lenses')) { json = url.searchParams.has('other') ? overlap : comparison; }

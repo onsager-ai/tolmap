@@ -1234,8 +1234,6 @@ pub(crate) fn lens_head_map(
         .iter()
         .map(|&(a, b, _)| [a as usize, b as usize])
         .collect();
-    result.edges.sort();
-    result.edges.dedup();
     result.symbols = result
         .files
         .iter()
