@@ -53,13 +53,13 @@ export function LensComparisonPanel({ search, result, list, update, pick, embedd
   const [editing, setEditing] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (!data) return;
+    if (!data || editing) return;
     // Scroll only the owning viewport. scrollIntoView can move every
     // ancestor and used to push the phone's search pill off screen.
     const panel = panelRef.current;
     const scroller = embedded ? panel?.closest<HTMLElement>("[data-sheet-body]") : panel?.querySelector<HTMLElement>(".lens-comparison-results");
     scroller?.scrollTo({ top: 0 });
-  }, [data, embedded]);
+  }, [data, editing, embedded]);
   const overlap = data ? data.lens !== data.other : !!search.other_lens;
   const changed = data?.changes.filter(change => change.status !== "shared") ?? [];
   const unchanged = data?.changes.filter(change => change.status === "shared") ?? [];

@@ -6167,11 +6167,14 @@ async function checkPhoneSheetDragFromContent(browser, base, profile) {
   for (const detent of ["half", "peek"]) {
     await setSheetDetent(page, detent);
     await page.waitForTimeout(500);
-    await body.evaluate((el) => (el.scrollTop = 0));
+    // At Peek the card header can fill the visible area; move into the
+    // content so this tests content scrolling rather than the drag zone.
+    await body.evaluate((el, start) => (el.scrollTop = start), detent === "peek" ? 200 : 0);
+    const start = await scroll();
     const box = await body.boundingBox();
     await touchDragVertical(page, cdp, x, Math.min(H - 35, box.y + box.height - 35), -70);
     const state = { detent: await sheetDetent(page), scroll: await scroll() };
-    report(state.detent === detent && state.scroll.top > 0, `${label}: at ${detent} an upward content drag scrolls within the visible sheet`, JSON.stringify(state));
+    report(state.detent === detent && state.scroll.top > start.top, `${label}: at ${detent} an upward content drag scrolls within the visible sheet`, JSON.stringify(state));
     const geometry = await body.evaluate((el) => ({ bottom: el.getBoundingClientRect().bottom, height: el.clientHeight, shellTop: el.closest("[data-phone-shell]").scrollTop }));
     report(geometry.bottom <= H + 1 && geometry.shellTop === 0, `${label}: at ${detent} the scroll viewport ends on screen and the shell never scrolls`, JSON.stringify(geometry));
   }
