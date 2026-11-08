@@ -1436,10 +1436,11 @@ export class MapRenderer {
     return true;
   }
 
-  private drawLens(g: SVGGElement, zf: number) {
+  private drawLens(g: SVGGElement, zf: number, districtLabels: SVGGElement) {
     const { doc, lens } = this.state!;
     if (!lens) return;
     const overlay = el("g", { "data-lens-overlay": "", "data-lens-zoom": zf });
+    const markers = el("g", { "data-lens-markers": "" });
     g.appendChild(overlay);
     lens.paths.forEach((path, pathIndex) => {
       path.hops.forEach((hop, hopIndex) => {
@@ -1478,7 +1479,7 @@ export class MapRenderer {
         const mark = el("g", { "data-k": `ls:${pathIndex}:${index}`, "data-lens-stop": stop.spec });
         mark.appendChild(el("circle", { cx: x, cy: y, r: 13, fill: "var(--chrome)", stroke: "var(--lens-computed)", "stroke-width": 2, "pointer-events": "all" }));
         const text = el("text", { x, y: y + 4, "text-anchor": "middle", "font-size": 12, fill: "var(--on)", "pointer-events": "none" });
-        text.textContent = String(index + 1); mark.appendChild(text); overlay.appendChild(mark);
+        text.textContent = String(index + 1); mark.appendChild(text); markers.appendChild(mark);
       });
     });
     lens.notes.forEach((note, index) => {
@@ -1490,8 +1491,11 @@ export class MapRenderer {
       const mark = el("g", { "data-k": `ln:${index}`, "data-lens-note": note.anchor });
       mark.appendChild(el("rect", { x: x + 16, y: y - 12, width: 24, height: 24, rx: 5, fill: "var(--chrome)", stroke: "var(--dim)", "pointer-events": "all" }));
       const text = el("text", { x: x + 28, y: y + 4, "text-anchor": "middle", "font-size": 12, fill: "var(--on)", "pointer-events": "none" });
-      text.textContent = "N"; mark.appendChild(text); overlay.appendChild(mark);
+      text.textContent = "N"; mark.appendChild(text); markers.appendChild(mark);
     });
+    // Names mask route strokes, while stop/note controls remain tappable.
+    g.appendChild(districtLabels);
+    g.appendChild(markers);
   }
 
   // ---------- draw ----------
@@ -2223,9 +2227,7 @@ export class MapRenderer {
     g.appendChild(this.gSymRefs);
     this.renderSymbolRefs(state.selHSym);
 
-    this.drawLens(g, zf0);
-    // District names and their canvas halos stay legible above lens routes.
-    g.appendChild(districtLabelLayer);
+    this.drawLens(g, zf0, districtLabelLayer);
 
     // key -> every element carrying it, rebuilt fresh this paint (one
     // querySelectorAll over exactly what was just drawn, one loop -- see

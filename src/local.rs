@@ -563,35 +563,7 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
         return Ok(axum::Json(json!({"status":"ok","mode":"local"})).into_response());
     }
     if path == "/api/maps" || path == "/maps/index.json" {
-        let label = s
-            .checkout
-            .file_name()
-            .context("checkout name")?
-            .to_string_lossy();
-        let entries = snapshots(s)?
-            .into_iter()
-            .map(|snap| -> Result<_> {
-                let map: crate::schema::MapDocument = serde_json::from_slice(&std::fs::read(
-                    s.data
-                        .join("snapshots")
-                        .join(snap.id.to_string())
-                        .join("map.json"),
-                )?)?;
-                Ok(json!({
-                    "slug": format!("snapshot/{}", snap.id),
-                    "label": label,
-                    "owner": "snapshot",
-                    "repo": snap.id.to_string(),
-                    "lang": map.lang,
-                    "files": map.files.len(),
-                    "districts": map.districts.len(),
-                    "modularity": map.q,
-                    "commit": snap.commit,
-                    "indexed_at": ""
-                }))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        return Ok(axum::Json(entries).into_response());
+        return Ok(axum::Json(json!([])).into_response());
     }
     let parts: Vec<_> = path.trim_matches('/').split('/').collect();
     if parts.len() == 4 && parts[..3] == ["api", "compare", "snapshot"] {
