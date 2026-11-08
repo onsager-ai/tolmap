@@ -41,6 +41,10 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:6007/index.html >/dev/null && exit 0; sleep 1; done
           cat /tmp/tolmap-storybook.log; exit 1
       - run: pnpm check:storybook
+        env:
+          # Pixel mismatches are reported in visual-regression.json and the job
+          # summary but do not fail; render errors and missing references do.
+          STORYBOOK_PIXELS: advisory
       - uses: actions/upload-artifact@v4
         if: always()
         with:

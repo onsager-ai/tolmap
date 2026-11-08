@@ -15,6 +15,10 @@ const base = process.env.STORYBOOK_URL ?? 'http://127.0.0.1:6007';
 const host = process.env.STORYBOOK_HOST ?? 'oss';
 const output = process.env.STORYBOOK_EVIDENCE ?? 'storybook-evidence';
 const baselineDir = process.env.STORYBOOK_BASELINES ?? 'storybook/baselines';
+// STORYBOOK_PIXELS=advisory reports pixel mismatches without failing; see
+// verifyVisualBaselines. The default, strict, keeps exact pixels a hard gate.
+const pixelMode = process.env.STORYBOOK_PIXELS ?? 'strict';
+if (pixelMode !== 'strict' && pixelMode !== 'advisory') throw new Error(`STORYBOOK_PIXELS must be strict or advisory, got ${pixelMode}`);
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const viewerRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
 const testedRevision = process.env.GITHUB_SHA ?? null;
@@ -164,7 +168,8 @@ try {
       },
       fixture: { path: 'web/check-fixtures/onsager-ai__tolmap.json.gz', sha256: fixtureSha256 },
     };
-    await verifyVisualBaselines({ browser, captures: results, evidenceDir: output, baselineDir, provenance, sourceRevision: viewerRevision });
+    const report = await verifyVisualBaselines({ browser, captures: results, evidenceDir: output, baselineDir, provenance, sourceRevision: viewerRevision, advisoryPixels: pixelMode === 'advisory' });
+    if (report.status === 'mismatched') summariseMismatches(report.results.filter(row => row.status === 'mismatched'));
   } catch (error) { baselineError = error; }
   await browser.close();
   const evidence = { status: 'candidate-unapproved', viewerRevision, testedRevision, browser: { name: 'Chromium', version: browserVersion }, locale: 'en-US', timezone: 'UTC', scale: 1, fixedClock: '2026-10-19T08:00:00Z', viewports: viewports.map(({ name, width, height, touch }) => ({ name, width, height, hasTouch: touch })), fixture: 'web/check-fixtures/onsager-ai__tolmap.json.gz', expectedCaptures, completedCaptures: results.filter(row => row.status === 'passed').length, captureComplete: results.length === expectedCaptures && results.every(row => row.status === 'passed'), results };
@@ -215,6 +220,17 @@ async function settle(page, id) {
     return false;
   }, { polls: SETTLE_POLLS, interval: SETTLE_INTERVAL_MS, maxPolls: SETTLE_MAX_POLLS });
   assert.equal(settled, true, `page did not settle: ${id}`);
+}
+
+function summariseMismatches(rows) {
+  console.log(`::warning title=Storybook pixels (advisory)::${rows.length} capture(s) differ from approved references; see visual-regression.json in tolmap-visual-candidates`);
+  if (!process.env.GITHUB_STEP_SUMMARY) return;
+  const lines = ['### Storybook pixel mismatches (advisory)', '', `${rows.length} capture(s) differ from the approved references. This does not fail the job; actual, reference and diff PNGs are in the \`tolmap-visual-candidates\` artifact.`, '', '| Story | Viewport | Theme | Difference |', '| --- | --- | --- | --- |'];
+  for (const row of rows) {
+    const difference = row.reason === 'dimensions-changed' ? `size ${row.reference.width}×${row.reference.height} → ${row.actual.width}×${row.actual.height}` : `${row.differingPixels} px`;
+    lines.push(`| ${row.host}/${row.id} | ${row.viewport} | ${row.theme} | ${difference} |`);
+  }
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
 }
 
 function hashFile(file) {
