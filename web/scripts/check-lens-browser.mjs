@@ -217,6 +217,18 @@ try {
     assert.doesNotMatch(await comparePanel.locator('.lens-legend').textContent(),/Removed/);
     assert.ok(await comparePanel.locator('[data-lens-delta="shared"]').count()>0);
     assert.equal(await page.evaluate(() => window.scrollY),0,'overlap never scrolls the outer page');
+    if (profile === 'phone') {
+      const chrome = await page.locator('[data-search-pill]').boundingBox();
+      assert.ok(chrome && Math.abs(chrome.y - 12) < 1, `phone search pill stays at its normal top, got ${chrome?.y}`);
+      const scrolledAncestors = await comparePanel.evaluate(panel => {
+        const scrolled = [];
+        for (let element = panel.parentElement; element; element = element.parentElement) {
+          if (!element.matches('[data-sheet-body]') && element.scrollTop !== 0) scrolled.push(`${element.tagName}.${element.className}: ${element.scrollTop}`);
+        }
+        return scrolled;
+      });
+      assert.deepEqual(scrolledAncestors, [], 'only the sheet and comparison lists may scroll');
+    }
     await shot('comparison-overlap');
     await page.reload();
     await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();

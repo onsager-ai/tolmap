@@ -1026,7 +1026,7 @@ export function MapView() {
     // docs/UX.md §3: the map is full screen; everything else floats over it
     // or lives in the one sheet. No fullscreen mode on phones (§3).
     return (
-      <div className="relative h-full overflow-hidden bg-[var(--canvas)]" data-phone-shell data-profile={profile} data-touch="">
+      <div className="relative h-full overflow-clip bg-[var(--canvas)]" data-phone-shell data-profile={profile} data-touch="">
         <div ref={mapAreaRef} className="absolute inset-0">
           {mapCanvas}
         </div>

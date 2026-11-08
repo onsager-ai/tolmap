@@ -67,7 +67,7 @@ export function LensComparisonPanel({ search, result, list, update, pick, embedd
       {embedded && !expanded && !data && <button onClick={onExpand}>{result.error ? "Stale or unavailable · View details" : "Set up comparison"}</button>}
     </div>
     {expanded && <>
-      <div className="lens-comparison-edit"><button aria-expanded={showForm} onClick={() => setEditing(value => !value)}>Edit comparison</button>
+      <div className={`lens-comparison-edit${showForm ? " is-open" : ""}`}><button aria-expanded={showForm} onClick={() => setEditing(value => !value)}>Edit comparison</button>
         {showForm && <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); const other = String(values.get("other") ?? ""); const base = String(values.get("base")); setEditing(false); update({ lens_compare: true, compare: true, base, head: other ? base : String(values.get("head")), other_lens: other || undefined }); }}>
           <label>Base commit<input aria-label="Lens base commit" name="base" required pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.base ?? search.commit} /></label>
           <label>Head commit<input aria-label="Lens head commit" name="head" pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.head} placeholder="Same lens at another commit" /></label>

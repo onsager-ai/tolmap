@@ -4,7 +4,7 @@
 .comparison-panel h3 { font-weight:600; margin-top:20px; }
 .comparison-panel p { margin:10px 0; }
 .comparison-panel label { display:block; margin:8px 0; }
-.comparison-panel input:not([type=checkbox]) { display:block; width:100%; background:var(--chrome2); border:1px solid var(--rule); padding:8px; font-size:16px; }
+.comparison-panel input:not([type=checkbox]) { display:block; width:100%; min-height:44px; background:var(--chrome2); border:1px solid var(--rule); padding:8px; font-size:16px; }
 .lens-comparison-panel select { display:block; width:100%; min-height:44px; font-size:16px; background:var(--chrome2); color:var(--on); border:1px solid var(--rule); border-radius:6px; }
 .comparison-panel button,.comparison-panel a,.comparison-panel summary { min-height:44px; padding:8px 4px; text-align:left; }
 .comparison-panel a { display:inline-flex; align-items:center; text-decoration:underline; color:var(--accent); }
@@ -29,6 +29,7 @@
 @media (max-width:600px), (max-height:500px) { .comparison-panel { z-index:24; top:calc(68px + env(safe-area-inset-top, 0px)); bottom:auto; left:12px; right:68px; width:auto; height:min(28vh, 236px); padding-bottom:calc(16px + env(safe-area-inset-bottom)); border-radius:12px; } }
 @media (max-width:600px), (max-height:500px) { .lens-comparison-sheet { position:static; width:auto; height:auto; padding:0; } }
 @media (max-height:500px) and (min-width:601px) { .comparison-panel { left:calc(360px + env(safe-area-inset-left, 0px) + 12px); right:68px; height:min(36vh, 150px); } }
+@media (max-height:500px) { .lens-comparison-sheet .lens-comparison-edit.is-open { flex:1 1 auto; min-height:0; max-height:none; } }
 /* Keep the existing zoom/layer control column available. */
 @media (min-width:601px) and (min-height:501px) { .comparison-panel { right:72px; } }
 @media (max-width:600px), (max-height:500px) { .impact-launch { left:12px; right:auto; top:calc(68px + env(safe-area-inset-top, 0px)); } }
