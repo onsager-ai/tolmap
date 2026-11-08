@@ -100,6 +100,40 @@ pub(crate) fn resolve_at(
     if !lens::valid_lens_name(&name) {
         return Err(ApiError::invalid_request("invalid lens name"));
     }
+    let (parsed, file) = read_lens(&repository, &repo_path, &commit, &name)?;
+    let bytes = std::fs::read(&map_path)
+        .map_err(|e| ApiError::internal(format!("read {}: {e}", map_path.display())))?;
+    let map: MapDocument = serde_json::from_slice(&bytes)
+        .map_err(|e| ApiError::internal(format!("parse {}: {e}", map_path.display())))?;
+    let mut report = lens::resolve(&parsed, &map);
+    let changed = source::git(&repo_path)
+        .args(["log", "-1", "--format=%H", &commit, "--", &file])
+        .output()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if !changed.status.success() {
+        return Err(ApiError::internal("lens history unavailable"));
+    }
+    let since = String::from_utf8_lossy(&changed.stdout).trim().to_owned();
+    if !since.is_empty() && since != commit {
+        lens::report_renames(&mut report, &renames(&repo_path, &since, &commit)?);
+    }
+    Ok(LensResponse {
+        repository,
+        commit,
+        name,
+        report,
+    })
+}
+
+fn read_lens(
+    repository: &str,
+    repo_path: &std::path::Path,
+    commit: &str,
+    name: &str,
+) -> Result<(Lens, String), ApiError> {
+    if !lens::valid_lens_name(name) {
+        return Err(ApiError::invalid_request("invalid lens name"));
+    }
     let file = format!("{DIR}/{name}.toml");
     let read = source::read(&repo_path, &repository, &commit, &file)
         .map_err(|e| ApiError::internal(e.to_string()))?;
@@ -137,15 +171,136 @@ pub(crate) fn resolve_at(
             e.to_string(),
         )
     })?;
-    let bytes = std::fs::read(&map_path)
-        .map_err(|e| ApiError::internal(format!("read {}: {e}", map_path.display())))?;
-    let map: MapDocument = serde_json::from_slice(&bytes)
-        .map_err(|e| ApiError::internal(format!("parse {}: {e}", map_path.display())))?;
-    Ok(LensResponse {
+    Ok((parsed, file))
+}
+
+#[derive(Clone, Deserialize)]
+pub struct LensCompareQuery {
+    pub base: String,
+    pub head: String,
+    pub lens: String,
+    pub other: Option<String>,
+}
+
+pub async fn compare_lenses(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    Query(query): Query<LensCompareQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (repository, source, row) = snapshot(&state, &owner, &repo, Some(query.base.clone()))?;
+    let cache = state.config.cache_dir.join("comparisons");
+    let value =
+        blocking(move || compare_at(repository, source, row.map_path, cache, query)).await?;
+    Ok(([("cache-control", "no-store")], Json(value)))
+}
+
+pub(crate) fn renames(
+    repo: &std::path::Path,
+    base: &str,
+    head: &str,
+) -> Result<Vec<lens::FileRename>, ApiError> {
+    comparison::resolve(repo, base)?;
+    comparison::resolve(repo, head)?;
+    let out = source::git(repo)
+        .args([
+            "-c",
+            "diff.renameLimit=0",
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames=50%",
+            "--diff-algorithm=myers",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            base,
+            head,
+            "--",
+        ])
+        .output()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if !out.status.success() {
+        return Err(ApiError::internal("rename detection failed"));
+    }
+    Ok(crate::check::parse_name_status(&out.stdout)
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .into_iter()
+        .filter_map(|change| match change {
+            crate::check::Change::Renamed { from, to } => Some(lens::FileRename {
+                from,
+                to,
+                commit: head.into(),
+            }),
+            _ => None,
+        })
+        .collect())
+}
+
+pub(crate) fn compare_at(
+    repository: String,
+    repo: PathBuf,
+    map_path: PathBuf,
+    cache: PathBuf,
+    query: LensCompareQuery,
+) -> Result<crate::lens_comparison::LensComparison, ApiError> {
+    use sha2::{Digest, Sha256};
+    comparison::resolve(&repo, &query.base)?;
+    comparison::resolve(&repo, &query.head)?;
+    let other = query.other.as_deref().unwrap_or(&query.lens);
+    if other != query.lens && query.base != query.head {
+        return Err(ApiError::invalid_request(
+            "two lenses must use the same commit",
+        ));
+    }
+    let bytes = std::fs::read(&map_path).map_err(|_| comparison::unavailable())?;
+    let frame: MapDocument =
+        serde_json::from_slice(&bytes).map_err(|e| ApiError::internal(e.to_string()))?;
+    let before = resolve_at(
+        repository.clone(),
+        repo.clone(),
+        query.base.clone(),
+        map_path.clone(),
+        query.lens.clone(),
+    )?
+    .report;
+    let (head_lens, _) = read_lens(&repository, &repo, &query.head, other)?;
+    let renames = renames(&repo, &query.base, &query.head)?;
+    let head_map = if query.base == query.head {
+        frame.clone()
+    } else {
+        let comparison = comparison::run(
+            comparison::Inputs {
+                repository: &repository,
+                repo: &repo,
+                base_map: &map_path,
+                cache: &cache,
+            },
+            comparison::CompareQuery {
+                base: query.base.clone(),
+                head: query.head.clone(),
+                max_districts: None,
+                max_dq: None,
+                report_only: true,
+            },
+        )?;
+        crate::check::lens_head_map(&repo, &query.base, &query.head, &frame, &comparison.report)
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    };
+    let mut after = lens::resolve(&head_lens, &head_map);
+    lens::report_renames(&mut after, &renames);
+    let changes = crate::lens_comparison::changes(&before, &after, &frame, &renames);
+    Ok(crate::lens_comparison::LensComparison {
+        version: 1,
         repository,
-        commit,
-        name,
-        report: lens::resolve(&parsed, &map),
+        base: query.base,
+        head: query.head,
+        lens: query.lens.clone(),
+        other: other.into(),
+        base_map_sha256: format!("{:x}", Sha256::digest(bytes)),
+        lower_bound: true,
+        before,
+        after,
+        changes,
     })
 }
 

@@ -10,6 +10,7 @@ pub(crate) mod go_build;
 pub mod incremental;
 pub mod indexers;
 pub mod lens;
+pub mod lens_comparison;
 pub mod local;
 pub mod local_pages;
 pub mod naming;

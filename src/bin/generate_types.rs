@@ -66,6 +66,9 @@ fn export_to(directory: &Path) -> Result<()> {
     LensReport::export_all(&Config::default().with_out_dir(directory))?;
     LensResponse::export_all(&Config::default().with_out_dir(directory))?;
     LensList::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::lens_comparison::LensComparison::export_all(
+        &Config::default().with_out_dir(directory),
+    )?;
     Ok(())
 }
 

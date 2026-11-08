@@ -566,7 +566,9 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
         return Ok(axum::Json(json!([])).into_response());
     }
     let parts: Vec<_> = path.trim_matches('/').split('/').collect();
-    if parts.len() == 4 && parts[..3] == ["api", "compare", "snapshot"] {
+    if (parts.len() == 4 || (parts.len() == 5 && parts[4] == "lenses"))
+        && parts[..3] == ["api", "compare", "snapshot"]
+    {
         let id = Uuid::parse_str(parts[3])?;
         let all = snapshots(s)?;
         let Some(snap) = all.iter().find(|x| x.id == id) else {
@@ -610,6 +612,27 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             .join(base.id.to_string())
             .join("map.json");
         let cache = s.data.join("comparisons");
+        if parts.len() == 5 {
+            let result = crate::service::lens::compare_at(
+                s.repository.clone(),
+                preview.path.clone(),
+                map,
+                cache,
+                crate::service::lens::LensCompareQuery {
+                    base: query.base,
+                    head: query.head,
+                    lens: params.get("lens").context("lens")?.clone(),
+                    other: params.get("other").cloned(),
+                },
+            );
+            drop(preview);
+            return Ok(match result {
+                Ok(value) => {
+                    ([(header::CACHE_CONTROL, "no-store")], axum::Json(value)).into_response()
+                }
+                Err(error) => error.into_response(),
+            });
+        }
         let result = crate::comparison::run(
             crate::comparison::Inputs {
                 repository: &s.repository,

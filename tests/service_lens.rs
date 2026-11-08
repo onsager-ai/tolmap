@@ -177,6 +177,72 @@ async fn resolves_the_lens_at_the_pinned_commit() {
 }
 
 #[tokio::test]
+async fn rename_history_reports_the_old_stop_without_substitution() {
+    let f = fixture();
+    // The lens is last changed at B; the rename happens at C.
+    git(&f.repo, &["mv", "a.py", "renamed.py"]);
+    git(&f.repo, &["commit", "-m", "rename source"]);
+    let c = git(&f.repo, &["rev-parse", "HEAD"]);
+    let mut row = f.state.store.get("local/example", &f.b).unwrap().unwrap();
+    let bytes = fs::read(&row.map_path).unwrap();
+    let mut map: Value = serde_json::from_slice(&bytes).unwrap();
+    map["F"][0] = json!("renamed.py");
+    row.map_path = f._dir.path().join("renamed-map.json");
+    fs::write(&row.map_path, serde_json::to_vec(&map).unwrap()).unwrap();
+    row.commit = c.clone();
+    f.state.store.insert(&row).unwrap();
+    let (status, body) = get(
+        &f,
+        &format!("/api/maps/local/example/lenses/flow?commit={c}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let unresolved = body["report"]["unresolved"].as_array().unwrap();
+    let rename = unresolved
+        .iter()
+        .find(|u| u["kind"] == "renamed_file")
+        .unwrap();
+    assert_eq!(
+        rename["renamed"],
+        json!({"from":"a.py","to":"renamed.py","commit":c})
+    );
+    assert!(body["report"]["paths"][0]["stops"][0]["target"].is_null());
+    let (_, again) = get(
+        &f,
+        &format!("/api/maps/local/example/lenses/flow?commit={c}"),
+    )
+    .await;
+    assert_eq!(body, again);
+}
+
+#[tokio::test]
+async fn same_commit_lens_comparison_is_pinned_and_repeatable() {
+    let f = fixture();
+    let path = format!(
+        "/api/compare/local/example/lenses?base={}&head={}&lens=flow",
+        f.a, f.a
+    );
+    let (status, value) = get(&f, &path).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["base"], f.a);
+    assert!(value["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|d| d["status"] == "shared"));
+    assert_eq!(get(&f, &path).await.1, value);
+    let (status, _) = get(
+        &f,
+        &format!(
+            "/api/compare/local/example/lenses?base={}&head={}&lens=flow&other=broken",
+            f.a, f.b
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn lists_lens_names_at_the_commit() {
     let f = fixture();
     let (status, body) = get(

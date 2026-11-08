@@ -1,3 +1,4 @@
+import type { LensComparison } from "@bindings/LensComparison";
 import type { LensReport } from "@bindings/LensReport";
 import type { LensTarget } from "@bindings/LensTarget";
 // Imperative SVG renderer, ported from the <script> block of
@@ -195,6 +196,7 @@ function hollowTriangleGlyph(parent: [number, number], child: [number, number], 
 
 export interface MapRenderState {
   lens?: LensReport;
+  lensComparison?: LensComparison;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];
   doc: MapDocument;
@@ -1498,6 +1500,38 @@ export class MapRenderer {
     g.appendChild(markers);
   }
 
+  private drawLensComparison(g: SVGGElement, zf: number) {
+    const { doc, lensComparison } = this.state!;
+    if (!lensComparison) return;
+    const overlay = el("g", { "data-lens-comparison-overlay": "" });
+    g.appendChild(overlay);
+    const marks = { added: ["+", "none", "var(--lens-teal)"], removed: ["−", "8 5", "var(--lens-orange)"], broken: ["×", "2 5", "var(--lens-red)"], renamed: ["↗", "10 3 2 3", "var(--lens-purple)"], moved: ["↔", "5 3", "var(--lens-declared)"], shared: ["=", "none", "var(--dim)"] } as const;
+    lensComparison.changes.forEach(change => {
+      const [symbol, dash, stroke] = marks[change.status];
+      const title = `${change.status} ${change.kind} · ${change.label}: ${change.before.join(" → ")} → ${change.after.join(" → ")}`;
+      const put = (node: SVGElement) => { const tip = el("title", {}); tip.textContent = title; node.appendChild(tip); overlay.appendChild(node); };
+      if (change.kind === "area") {
+        for (const district of change.districts) for (const poly of doc.districts[String(district)]?.blob ?? []) put(el("path", { d: "M" + poly.map(q => `${this.X(q[0])} ${this.Y(q[1])}`).join("L") + "Z", fill: stroke, "fill-opacity": change.status === "shared" ? 0.04 : 0.1, stroke, "stroke-width": 2, "stroke-dasharray": dash, "pointer-events": "none", "data-lens-change": change.status }));
+      } else if (change.kind === "hop") {
+        const detailed = change.targets.length >= 2 && change.targets.every(target => this.lensTargetVisible(target, zf));
+        const points = change.targets.length >= 2 ? change.targets.slice(0,2).map(target => this.lensPoint(target, detailed)) : change.districts.map(district => this.lensPoint({ file: 0, path: "", symbol: null, district }, false));
+        if (points.length < 1) return;
+        const [x,y] = points[0], [a,b] = points[1] ?? points[0];
+        const d = x === a && y === b ? `M${x} ${y}c-30 -36 30 -36 0 0` : `M${x} ${y}Q${(x+a)/2+22} ${(y+b)/2-22} ${a} ${b}`;
+        put(el("path", { d, fill: "none", stroke: "var(--canvas)", "stroke-width": 6, "pointer-events": "none" }));
+        put(el("path", { d, fill: "none", stroke, "stroke-width": 2.5, "stroke-dasharray": dash, "pointer-events": "none", "data-lens-change": change.status }));
+      } else {
+        change.targets.forEach(target => {
+          if (!this.lensTargetVisible(target, zf)) return;
+          const [x,y] = this.lensPoint(target, true);
+          const mark = el("g", { "data-lens-change": change.status, "data-lens-comparison-stop": target.path });
+          mark.appendChild(el("circle", { cx:x, cy:y, r:13, fill:"var(--chrome)", stroke, "stroke-width":2, "stroke-dasharray":dash, "pointer-events":"none" }));
+          const label = el("text", { x, y:y+4, "text-anchor":"middle", "font-size":12, fill:"var(--on)", "pointer-events":"none" }); label.textContent = symbol; mark.appendChild(label); put(mark);
+        });
+      }
+    });
+  }
+
   // ---------- draw ----------
   // Issue #51: performance.mark/measure around paint(), so
   // web/scripts/perf-bench.mjs can read draw() cost straight off the
@@ -2227,7 +2261,9 @@ export class MapRenderer {
     g.appendChild(this.gSymRefs);
     this.renderSymbolRefs(state.selHSym);
 
+    this.drawLensComparison(g, zf0);
     this.drawLens(g, zf0, districtLabelLayer);
+    if (this.state!.lensComparison) g.appendChild(districtLabelLayer);
 
     // key -> every element carrying it, rebuilt fresh this paint (one
     // querySelectorAll over exactly what was just drawn, one loop -- see

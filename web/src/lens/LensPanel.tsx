@@ -26,9 +26,9 @@ export function useLenses(owner: string, repo: string, commit: string | undefine
   return { list, resolved, data: mismatch ? undefined : resolved.data, error: ready && !commit ? new Error("Lenses require a map with a pinned service snapshot.") : mismatch ? new Error("Lens snapshot does not match this map.") : list.error ?? resolved.error };
 }
 
-export function LensPanel({ lenses, name, select, pick, mode = "full", details }: {
+export function LensPanel({ lenses, name, select, pick, mode = "full", details, compare }: {
   lenses: ReturnType<typeof useLenses>; name?: string; select(name?: string): void; pick(target: LensTarget): void;
-  mode?: "full" | "picker" | "sheet"; details?(): void;
+  mode?: "full" | "picker" | "sheet"; details?(): void; compare?(): void;
 }) {
   const { list, resolved, data, error } = lenses;
   const body = <div className="lens-body">
@@ -38,6 +38,7 @@ export function LensPanel({ lenses, name, select, pick, mode = "full", details }
       {list.data?.names.map(item => <option key={item} value={item}>{item}</option>)}
     </select></label>}
     {error ? <p role="alert" data-lens-state="error">{error.message}</p> : list.isPending || (name && resolved.isPending) ? <p role="status">Loading lenses…</p> : !list.data?.names.length && !data ? <p data-lens-state="empty">No lenses at this snapshot.</p> : null}
+    {data && compare && <button onClick={compare}>Compare this lens</button>}
     {data && mode !== "picker" && <div data-lens-state={data.report.unresolved.length ? "unresolved" : "loaded"}>
       {data.report.paths.map(path => <section key={path.name}><h3>{path.name}</h3><ol>{path.stops.map((stop, index) => {
         const hop = path.hops.find(item => item.to === index);

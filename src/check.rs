@@ -1181,6 +1181,75 @@ fn extract_graph(dir: &Path, source: &(String, LanguageKind)) -> Result<GraphDat
         .map_err(|error| internal(error.context(format!("extract {}", dir.display()))))
 }
 
+// Lens comparison resolves head content in the existing check frame. This is
+// a resolver-only document: no partition/layout is built and no geometry from
+// it is delivered to the viewer. Unplaced files keep an explicit sentinel.
+pub(crate) fn lens_head_map(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    base_map: &MapDocument,
+    report: &CheckReport,
+) -> Result<MapDocument, CheckError> {
+    let mut scratch = Scratch::new(repo)?;
+    let base_dir = scratch.worktree(base, "base")?;
+    let source = detect_source(&base_dir)?;
+    let head_dir = scratch.worktree(head, "head")?;
+    let changes = diff(repo, base, Some(head))?;
+    let history = CochangeHistory {
+        revision: base.to_owned(),
+        renames: changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Renamed { from, to } => Some((from.clone(), to.clone())),
+                _ => None,
+            })
+            .collect(),
+    };
+    let graph = extract_head_graph(&head_dir, &source, &history)?;
+    let mut result = base_map.clone();
+    result.files = graph.nodes.iter().map(|node| node.file.clone()).collect();
+    result.nodes = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            let district = report
+                .files
+                .iter()
+                .find(|file| file.path == node.file)
+                .and_then(|file| file.district)
+                .or_else(|| {
+                    base_map
+                        .files
+                        .iter()
+                        .position(|file| file == &node.file)
+                        .map(|i| base_map.nodes[i].district())
+                })
+                .unwrap_or(usize::MAX);
+            NodeRow((district, 0.0, 0.0, node.loc, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        })
+        .collect();
+    result.edges = graph
+        .imports
+        .iter()
+        .map(|&(a, b, _)| [a as usize, b as usize])
+        .collect();
+    result.edges.sort();
+    result.edges.dedup();
+    result.symbols = result
+        .files
+        .iter()
+        .enumerate()
+        .filter_map(|(i, path)| {
+            graph
+                .symbols
+                .get(path)
+                .map(|rows| (i.to_string(), rows.clone()))
+        })
+        .collect();
+    Ok(result)
+}
+
 /// Builds the base map the way `tolmap build` would, cold, into scratch.
 /// Parcels are skipped: they are drawn after the partition and never change
 /// membership, names or landmarks, which is all the check reads.

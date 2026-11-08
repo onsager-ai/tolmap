@@ -1,3 +1,4 @@
+import { LensComparisonPanel, useLensComparison } from "@/lens/LensComparisonPanel";
 import { LensPanel, useLenses } from "@/lens/LensPanel";
 import type { LensTarget } from "@bindings/LensTarget";
 import { ComparisonPanel, useComparison } from "@/comparison/ComparisonPanel";
@@ -56,7 +57,7 @@ export function MapView() {
   const { owner, repo } = useParams({ strict: false }) as { owner: string; repo: string };
   const search = useSearch({ strict: false }) as MapSearch;
   const navigate = useNavigate();
-  const comparison = useComparison(owner, repo, search);
+  const comparison = useComparison(owner, repo, { ...search, compare: search.compare && !search.lens_compare });
   const sourceActionRef = useRef<HTMLButtonElement>(null);
   const sourceWasOpen = useRef(!!search.read);
   useEffect(() => {
@@ -75,6 +76,7 @@ export function MapView() {
   });
 
   const lenses = useLenses(owner, repo, indexedCommit ?? search.base ?? search.commit ?? early.commit, search.lens, !!doc && !early.waiting);
+  const lensComparison = useLensComparison(owner, repo, search, indexedCommit);
 
   // Issue #82 C2 scope item 1: districts whose symbols the map/sidebar
   // currently want. Two sources add to this set and it only ever grows for
@@ -915,7 +917,7 @@ export function MapView() {
     onNeedSymbols: (d) => onNeedSymbols(d),
   };
 
-  const comparisonChrome = search.compare ? <ComparisonPanel search={search} data={comparison.data} pending={comparison.isPending} refreshing={comparison.isFetching && !!comparison.data} error={comparison.error} retry={() => { void comparison.refetch(); }} update={updateSearch} read={(file, commit) => { if (narrow) { pushOverlay("reader"); updateSearch({file, source_commit: commit, read: true, line: 1, end: 1}); } else { desktopReaderEntry.current = true; navigate({to: ".", search: (prev: Record<string, unknown>) => ({...prev, file, source_commit: commit, read: true, line: 1, end: 1}), state: true}); } }} pick={(file, d) => { updateSearch({file, d, read: undefined, source_commit: undefined}); if (d != null) canvasRef.current?.panToDistrict(d); else if (file) { const i = doc?.F.indexOf(file) ?? -1; if (i >= 0) canvasRef.current?.panTo(i); } }} /> : <button className="impact-launch" onClick={() => updateSearch({compare: true})}>Compare commits</button>;
+  const comparisonChrome = search.lens_compare ? <LensComparisonPanel search={search} result={lensComparison} list={lenses.list.data} update={updateSearch} pick={pickLensStop} /> : search.compare ? <ComparisonPanel search={search} data={comparison.data} pending={comparison.isPending} refreshing={comparison.isFetching && !!comparison.data} error={comparison.error} retry={() => { void comparison.refetch(); }} update={updateSearch} read={(file, commit) => { if (narrow) { pushOverlay("reader"); updateSearch({file, source_commit: commit, read: true, line: 1, end: 1}); } else { desktopReaderEntry.current = true; navigate({to: ".", search: (prev: Record<string, unknown>) => ({...prev, file, source_commit: commit, read: true, line: 1, end: 1}), state: true}); } }} pick={(file, d) => { updateSearch({file, d, read: undefined, source_commit: undefined}); if (d != null) canvasRef.current?.panToDistrict(d); else if (file) { const i = doc?.F.indexOf(file) ?? -1; if (i >= 0) canvasRef.current?.panTo(i); } }} /> : <button className="impact-launch" onClick={() => updateSearch({compare: true})}>Compare commits</button>;
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center bg-[var(--chrome)] text-small text-[var(--dim)]">
@@ -956,14 +958,15 @@ export function MapView() {
     }
   }
   function chooseLens(lens?: string) {
-    updateSearch({ lens });
+    updateSearch({ lens, lens_compare: undefined, other_lens: undefined });
     if (narrow) {
       closeLayers();
       changeDetent("peek");
     }
   }
-  const lensPanel = <LensPanel lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode={narrow ? "picker" : "full"} />;
-  const activeLens = search.lens ? <LensPanel lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
+  const compareLens = () => { if (narrow && layersOpen) closeLayers(); updateSearch({ lens_compare: true, compare: true, base: search.base ?? indexedCommit, head: search.head }); };
+  const lensPanel = <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode={narrow ? "picker" : "full"} />;
+  const activeLens = search.lens ? <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
 
   const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : null;
   const sourceAction = !search.read && sel != null && !search.compare ? <button ref={sourceActionRef} className={`source-action${narrow ? " source-action-sheet" : ""}`} onClick={openSource}>Read selected source</button> : null;
@@ -994,7 +997,8 @@ export function MapView() {
       selSym={selSym}
       selD={selD}
       route={route}
-      lens={lenses.data?.report}
+      lens={search.lens_compare ? undefined : lenses.data?.report}
+      lensComparison={!lensComparison.isFetching && !lensComparison.error ? lensComparison.data : undefined}
       packageGrouping={packageGrouping}
       districtPaths={packageLayout.districtPaths}
       folderFiles={folderFiles}
