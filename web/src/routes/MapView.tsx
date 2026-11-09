@@ -309,6 +309,18 @@ export function MapView() {
   // clears `sym` (selectHierSymbol below), so the two never compete for
   // what the breadcrumb/sidebar actually show.
   const selHSym = sel != null && search.hsym != null ? search.hsym : null;
+  // A walkthrough can select a flat symbol before its district symbols load.
+  // Once they arrive, use the matching hierarchical selection for rendering
+  // without changing the selected card, URL, or camera.
+  const walkStop = !search.lens_compare ? walkthroughStep(lenses.data?.report, search.path, search.step)?.stop.target : undefined;
+  const flatSymbol = sel != null && selSym != null ? doc?.S[String(sel)]?.[selSym] : undefined;
+  const walkSymbols = walkStop && walkStop.file === sel && flatSymbol && walkStop.symbol
+    && flatSymbol[0] === walkStop.symbol.name && flatSymbol[2] === walkStop.symbol.start
+    ? districtSymbolsMap.get(walkStop.district) : undefined;
+  const walkLocal = walkSymbols?.symbols.findIndex(row => row[0] === walkStop!.file
+    && (row[1] === walkStop!.symbol!.name || walkStop!.symbol!.name.endsWith(`.${row[1]}`))
+    && row[3] === walkStop!.symbol!.start) ?? -1;
+  const renderHSym = selHSym ?? (walkSymbols && walkLocal >= 0 ? walkSymbols.symbol_indices[walkLocal] : null);
   const desktopReaderEntry = useRef(false);
   function sourceRange(file: number, symbol?: number | null, hierarchical?: number | null) {
     const h = doc && hierarchical != null ? districtSymbolsMap.get(D_(doc, file)) : undefined;
@@ -1057,7 +1069,7 @@ export function MapView() {
       folderLabels={packageLayout.folderLabels}
       activeDirectory={activeDirectory}
       districtSymbols={districtSymbolsMap}
-      selHSym={selHSym}
+      selHSym={renderHSym}
       insets={mapInsets}
       callbacks={{ ...rendererCallbacks, onSelectLensStop: pickLensStop }}
       handleRef={canvasRef}
