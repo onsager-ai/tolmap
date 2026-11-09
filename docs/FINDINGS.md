@@ -3301,7 +3301,11 @@ The decision uses [CI run 42606484561](https://github.com/onsager-ai/tolmap/acti
 
 The largest inline raw increase is rich at +1.83%; the smallest is django at +0.08%. At the 0.00 cutoff, the inline carrier would add +5.1% raw overall (up to +14% for scrapy), so the 0.35 cutoff is a meaningful containment boundary. The same carrier reserves room for #258's Rust `mod` pairs; the measurement found 30 of those, but this change does not emit them. The evidence script is `eval/cochange_carrier_size.py`.
 
-The fixture refresh was not a `D`-only byte change. No fixture removed a top-level key. The exact top-level-key diff from the pre-refresh documents is:
+Fixtures are unchanged in this PR: the sidecar is optional, and those older maps correctly report hidden coupling as **not measured**. A follow-up must regenerate fixtures through the `data/fixtures.toml` procedure, including seeded naming caches, before it can add the new evidence to committed maps. The carrier is covered here by unit tests and by the CI carrier measurement above; this change does not need `eval/batch_stability.py` because it changes none of blend, clustering or layout.
+
+### Regeneration without seeded naming caches (not committed)
+
+An attempted unseeded regeneration produced drift and was reverted. No fixture removed a top-level key. Its exact top-level-key diff from the committed documents was:
 
 | Fixture | Added | Changed existing value |
 |---|---|---|
@@ -3316,9 +3320,9 @@ The fixture refresh was not a `D`-only byte change. No fixture removed a top-lev
 | tolmap | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | — |
 | vue | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | `names`: `test runtime` → `runtime-test` |
 
-Those additions reflect the current fixture generator, not an input to blend, clustering, or layout: each fixture retained the previously measured file count, district count, and modularity (Δq = 0.0000).
+The unseeded output retained the previously measured file count, district count, and modularity for all ten fixtures (Δq = 0.0000), but the key and district-name drift means that is not sufficient acceptance evidence.
 
-The new debt finding produces one `hidden coupling` area containing every pair's files. The report keeps every pair, but the lens renders declared paths only for the first 20 in report order (cross-district first, then weight) and notes how many of the full `tolmap debt` report are shown. Paths are not roads: their reason says `co-changed N times; no static edge found`. This change does not need `eval/batch_stability.py` because it changes none of blend, clustering or layout.
+The new debt finding produces one `hidden coupling` area containing every pair's files. The report keeps every pair, but the lens renders declared paths only for the first 20 in report order (cross-district first, then weight) and notes how many of the full `tolmap debt` report are shown. Paths are not roads: their reason says `co-changed N times; no static edge found`.
 
 ### Not verified
 - **The semon debt lens was not rendered.** Its 53 notes and five overlapping per-kind tints on a 233-file map were measured through the API, not checked in a browser.

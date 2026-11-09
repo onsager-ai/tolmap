@@ -4290,21 +4290,16 @@ async function checkDesktopZoomCameraAgreement(browser, base) {
   }
 }
 
-// 9(f): construct a legacy map without footprint fields from the current
-// committed fixture. Footprint mode is opt-in per document, never forced.
+// 9(f): an old map with no `P` at all (any committed data/ fixture the
+// catalogue still serves) renders dots, unchanged -- footprint mode is opt-in
+// per document, never forced.
 async function checkLegacyMapWithoutFootprints(browser, base) {
   const label = "map without P still renders dots (encode/httpx) / desktop";
   console.log(`\n${label}`);
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
   const page = await context.newPage();
   const doc = await (await context.request.get(`${base}/maps/encode/httpx.json`)).json();
-  const legacy = structuredClone(doc);
-  delete legacy.P;
-  delete legacy.footprint_centroids;
-  delete legacy.file_neighbourhoods;
-  delete legacy.neighbourhoods;
-  report(!legacy.P, `${label}: fixture has no P (setup)`, JSON.stringify(Object.keys(legacy)));
-  await page.route("**/maps/encode/httpx.json", (route) => route.fulfill({ json: legacy }));
+  report(!doc.P, `${label}: fixture has no P (setup)`, JSON.stringify(Object.keys(doc)));
   await page.goto(`${base}/encode/httpx`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("svg.map-svg path.hit");
   await page.waitForTimeout(700);

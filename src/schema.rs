@@ -819,7 +819,6 @@ mod tests {
     fn old_map_with_terrain_deserializes_and_drops_removed_field() {
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../data/flask.json")).unwrap();
-        value.as_object_mut().unwrap().remove("C");
         value["terrain"] = serde_json::json!({
             "0": {
                 "arterials": [{"file": 0, "stranded": 2, "links": [1]}],

@@ -1535,31 +1535,3 @@ jobs:
             echo "UNEXPECTED failure(s), beyond the known sqlalchemy gap: $failed"
             exit 1
           fi
-
-      # The Flask suggestion headers include the map digest, so every map-byte
-      # change regenerates them with this CI-built binary. The suggestion body
-      # remains an independent review signal and is compared before commit.
-      - name: Regenerate Flask suggested lenses
-        if: always()
-        run: |
-          set -euo pipefail
-          mkdir -p flask-suggest
-          ./target/release/tolmap lens suggest --map full-out/flask.json --out flask-suggest
-
-      # Fixture regeneration runs only here (never on a maintainer laptop).
-      # Keep it even when parity fails so the implementation branch can carry
-      # the exact candidate maps and the failure remains visible in the job.
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: full-fixtures
-          path: full-out/*.json
-          if-no-files-found: error
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: flask-suggest
-          path: flask-suggest/*.toml
-          if-no-files-found: error
-          retention-days: 7
