@@ -9,8 +9,18 @@ import type { MisplacedFile } from "./MisplacedFile";
 import type { UndeclaredRustFile } from "./UndeclaredRustFile";
 import type { UnreachedFile } from "./UnreachedFile";
 
-export type DebtReport = { version: number, repo: string, lower_bound: boolean, files: number, edges: number, thresholds: DebtThresholds, coverage: CoverageReport | null, cycles: Array<DistrictCycle>, misplaced: Array<MisplacedFile>, god_files: Array<GodFile>, hotspots: Array<Hotspot>, unreached: Array<UnreachedFile>, 
+export type DebtReport = { version: number, repo: string, lower_bound: boolean, files: number, edges: number, thresholds: DebtThresholds, coverage: CoverageReport | null, cycles: Array<DistrictCycle>, misplaced: Array<MisplacedFile>, god_files: Array<GodFile>, hotspots: Array<Hotspot>, 
+/**
+ * Test files use the same path rule as no-inbound entry files and are
+ * excluded from production hotspot ranking.
+ */
+test_hotspot_files_excluded: number, unreached: Array<UnreachedFile>, 
 /**
  * False for maps built before the Rust declaration sidecar existed.
  */
-rust_mod_reachability_measured: boolean, undeclared_rust: Array<UndeclaredRustFile>, hidden_coupling_measured: boolean, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };
+rust_mod_reachability_measured: boolean, undeclared_rust: Array<UndeclaredRustFile>, 
+/**
+ * False for maps built before statically readable bundler entries were
+ * retained in the debt sidecar.
+ */
+build_entry_measurement: boolean, build_entry_files: number, hidden_coupling_measured: boolean, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };

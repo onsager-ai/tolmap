@@ -99,6 +99,7 @@ pub struct DebtThresholds {
     pub hotspot_top_fraction: f64,
     pub hotspot_min_count: usize,
     pub hotspot_min_score: Option<usize>,
+    pub test_hotspot_files_excluded: usize,
     pub hidden_coupling_min_count: usize,
     pub hidden_coupling_min_weight: f64,
     pub entry_stems: Vec<String>,
@@ -238,10 +239,17 @@ pub struct DebtReport {
     pub misplaced: Vec<MisplacedFile>,
     pub god_files: Vec<GodFile>,
     pub hotspots: Vec<Hotspot>,
+    /// Test files use the same path rule as no-inbound entry files and are
+    /// excluded from production hotspot ranking.
+    pub test_hotspot_files_excluded: usize,
     pub unreached: Vec<UnreachedFile>,
     /// False for maps built before the Rust declaration sidecar existed.
     pub rust_mod_reachability_measured: bool,
     pub undeclared_rust: Vec<UndeclaredRustFile>,
+    /// False for maps built before statically readable bundler entries were
+    /// retained in the debt sidecar.
+    pub build_entry_measurement: bool,
+    pub build_entry_files: usize,
     pub hidden_coupling_measured: bool,
     pub hidden_coupling: Vec<HiddenCoupling>,
     // Files the entry rule excludes from `unreached`, and files with no edge
@@ -271,6 +279,24 @@ pub fn is_entry_path(path: &str) -> bool {
         || ENTRY_MARKERS.iter().any(|m| name.contains(m))
         || ENTRY_STEM_PREFIXES.iter().any(|p| stem.starts_with(p))
         || ENTRY_STEM_SUFFIXES.iter().any(|s| stem.ends_with(s))
+}
+
+fn is_test_path(path: &str) -> bool {
+    let (dirs, name) = path.rsplit_once('/').unwrap_or(("", path));
+    if dirs
+        .split('/')
+        .any(|dir| matches!(dir, "test" | "tests" | "__tests__" | "spec" | "e2e"))
+    {
+        return true;
+    }
+    let stem = name.split('.').next().unwrap_or(name);
+    stem == "tests"
+        || [".test.", ".spec.", ".stories."]
+            .iter()
+            .any(|marker| name.contains(marker))
+        || stem.starts_with("test_")
+        || stem.ends_with("_test")
+        || stem.ends_with("_spec")
 }
 
 fn is_rust_target_path(path: &str) -> bool {
@@ -580,9 +606,19 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         .iter()
         .map(|r| r.churn() * r.complexity())
         .collect();
-    let hotspot_min_score = top_cut(&score, HOTSPOT_TOP_FRACTION, HOTSPOT_MIN_COUNT);
+    // Tests churn with production work, but they are not production change
+    // hotspots. This is the test subset of the same path rule that exempts
+    // test entries from no-inbound findings.
+    let test_hotspot_files_excluded = (0..n).filter(|&f| is_test_path(&map.files[f])).count();
+    let production_scores = (0..n)
+        .filter(|&f| !is_test_path(&map.files[f]))
+        .map(|f| score[f])
+        .collect::<Vec<_>>();
+    let hotspot_min_score = top_cut(&production_scores, HOTSPOT_TOP_FRACTION, HOTSPOT_MIN_COUNT);
     let mut hot: Vec<usize> = match hotspot_min_score {
-        Some(cut) => (0..n).filter(|&f| score[f] >= cut).collect(),
+        Some(cut) => (0..n)
+            .filter(|&f| !is_test_path(&map.files[f]) && score[f] >= cut)
+            .collect(),
         None => vec![],
     };
     // Stable: ties keep map order, as `pipeline::landmarks` orders hazards.
@@ -606,7 +642,20 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         .filter(|l| l.0 .1 == "entry")
         .map(|l| l.0 .0)
         .collect();
-    let entry = |f: usize| landmark_entries.contains(&f) || is_entry_path(&map.files[f]);
+    let build_entries = map
+        .debt
+        .as_ref()
+        .and_then(|debt| debt.build_entries.as_ref());
+    let build_entry_measurement = build_entries.is_some();
+    let build_entry_files = build_entries.map_or(0, |entries| entries.files.len());
+    let configured_entries = build_entries
+        .map(|entries| entries.files.iter().copied().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let entry = |f: usize| {
+        landmark_entries.contains(&f)
+            || configured_entries.contains(&f)
+            || is_entry_path(&map.files[f])
+    };
     let entry_files = (0..n).filter(|&f| entry(f)).count();
     let isolated_files = (0..n)
         .filter(|&f| inbound[f] == 0 && outbound[f] == 0)
@@ -657,6 +706,17 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         })
         .unwrap_or_default();
 
+    let declared_rust_pairs = rust_mod
+        .map(|tree| {
+            tree.pairs
+                .iter()
+                .map(|pair| {
+                    let (left, right) = pair.0;
+                    (left.min(right), left.max(right))
+                })
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     let hidden_coupling = map
         .debt
         .as_ref()
@@ -670,6 +730,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                     if cochanges < COCHANGE_MIN_COUNT
                         || weight < SHARE_COCHANGE
                         || linked.contains(&(left.min(right), left.max(right)))
+                        || declared_rust_pairs.contains(&(left.min(right), left.max(right)))
                     {
                         return None;
                     }
@@ -713,6 +774,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             hotspot_top_fraction: HOTSPOT_TOP_FRACTION,
             hotspot_min_count: HOTSPOT_MIN_COUNT,
             hotspot_min_score,
+            test_hotspot_files_excluded,
             hidden_coupling_min_count: COCHANGE_MIN_COUNT,
             hidden_coupling_min_weight: SHARE_COCHANGE,
             entry_stems: strings(ENTRY_STEMS),
@@ -726,9 +788,12 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         misplaced,
         god_files,
         hotspots,
+        test_hotspot_files_excluded,
         unreached,
         rust_mod_reachability_measured,
         undeclared_rust,
+        build_entry_measurement,
+        build_entry_files,
         hidden_coupling_measured,
         hidden_coupling,
         entry_files,
@@ -1094,7 +1159,7 @@ pub fn render_text(report: &DebtReport) -> String {
     }
     let _ = writeln!(
         out,
-        "{} district cycles; {} misplaced files (>= {} edges, > {} to one other district); {} god files (top {} by fan-in and complexity); {} hotspots (top {} by churn x complexity, at least {}); {} files with no inbound edge found ({} entry files and {} files with no edge excluded)",
+        "{} district cycles; {} misplaced files (>= {} edges, > {} to one other district); {} god files (top {} by fan-in and complexity); {} production hotspots (top {} by churn x complexity, at least {}; {} test files excluded); {} files with no inbound edge found ({} entry files and {} files with no edge excluded)",
         report.cycles.len(),
         report.misplaced.len(),
         t.misplaced_min_edges,
@@ -1104,6 +1169,7 @@ pub fn render_text(report: &DebtReport) -> String {
         report.hotspots.len(),
         pct(t.hotspot_top_fraction),
         t.hotspot_min_count,
+        report.test_hotspot_files_excluded,
         report.unreached.len(),
         report.entry_files,
         report.isolated_files,
@@ -1116,6 +1182,15 @@ pub fn render_text(report: &DebtReport) -> String {
         );
     } else {
         out.push_str("Rust mod reachability not measured (map has no Rust mod sidecar)\n");
+    }
+    if report.build_entry_measurement {
+        let _ = writeln!(
+            out,
+            "{} entry files found by statically readable build config",
+            report.build_entry_files,
+        );
+    } else {
+        out.push_str("build-config entries not measured (map has no build-entry sidecar)\n");
     }
     if report.hidden_coupling_measured {
         let _ = writeln!(
@@ -1341,6 +1416,48 @@ mod tests {
     }
 
     #[test]
+    fn build_config_entries_are_entries_and_old_maps_are_unmeasured() {
+        let configured = findings(&map(Some(json!({"build_entries": {"files": [0]}}))));
+        assert!(configured.build_entry_measurement);
+        assert_eq!(configured.build_entry_files, 1);
+        assert!(
+            configured.unreached.is_empty(),
+            "configured a.rs is an entry"
+        );
+        assert!(render_text(&configured)
+            .contains("1 entry files found by statically readable build config"));
+
+        let old = findings(&map(None));
+        assert!(!old.build_entry_measurement);
+        assert!(render_text(&old).contains("build-config entries not measured"));
+    }
+
+    #[test]
+    fn test_files_do_not_rank_as_production_hotspots() {
+        let map: MapDocument = serde_json::from_value(json!({
+            "repo": "hotspots", "q": 0.0, "names": {"0": "only"}, "districts": {},
+            "F": ["src/model/tests.rs", "src/model.rs", "src/query.rs"],
+            "N": [
+                [0, 0.0, 0.0, 1, 100, 100, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 1.0, 0.0, 1, 20, 20, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 2.0, 0.0, 1, 10, 10, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": [], "L": [], "S": {}, "U": {}, "roads": [], "lang": "rs"
+        }))
+        .unwrap();
+        let report = findings(&map);
+        assert_eq!(report.test_hotspot_files_excluded, 1);
+        assert_eq!(
+            report
+                .hotspots
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/model.rs", "src/query.rs"]
+        );
+    }
+
+    #[test]
     fn old_maps_say_hidden_coupling_was_not_measured() {
         let report = findings(&map(None));
         assert!(!report.hidden_coupling_measured);
@@ -1475,6 +1592,25 @@ mod tests {
             area.label == KIND_HIDDEN_COUPLING
                 && area.members.len() == 2 * (HIDDEN_COUPLING_LENS_PATHS + 1)
         }));
+    }
+
+    #[test]
+    fn hidden_coupling_excludes_declared_rust_module_pairs() {
+        let report = findings(&map(Some(json!({
+            "cochange": {
+                "commits": 12,
+                "window": COCHANGE_HISTORY_WINDOW,
+                "min_count": COCHANGE_MIN_COUNT,
+                "min_weight": SHARE_COCHANGE,
+                "pairs": [[0, 1, 4, 0.5]]
+            },
+            "rust_mod": {"roots": [0], "pairs": [[1, 0]]}
+        }))));
+        assert!(report.hidden_coupling_measured);
+        assert!(
+            report.hidden_coupling.is_empty(),
+            "a declared mod pair is not hidden"
+        );
     }
 
     #[test]

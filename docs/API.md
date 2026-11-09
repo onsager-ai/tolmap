@@ -533,7 +533,8 @@ god files, hotspots (churn × complexity; the top two include the map's
 `hazard` landmarks), files with **no inbound edge found**, which excludes
 entry files, and **hidden coupling**: a pair retained in the optional,
 index-aligned map sidecar with at least three co-changes and weight ≥ 0.35 but
-no file edge `E` or reference edge `U`. The sidecar records pair indices,
+no file edge `E`, reference edge `U`, or declared Rust `mod` parent/child
+pair. The sidecar records pair indices,
 co-change counts and weights rounded to two decimals from the indexer's 4,000
 non-merge-commit history window. It is absent from older maps; those reports
 state `hidden_coupling_measured: false` (and text output says "hidden coupling
@@ -543,8 +544,12 @@ module is not reported as no-inbound, while a non-target Rust source file no
 root reaches is an **undeclared Rust file** (`no \`mod\` declares it; likely not
 compiled`). `#[path]` targets are retained; macro-generated declarations may
 be missed, so this too is a lower bound. Older maps report
-`rust_mod_reachability_measured: false`, never an empty Rust result. Files with
-no edge at all are coverage gaps: they are counted in `isolated_files`, not listed. Every report
+`rust_mod_reachability_measured: false`, never an empty Rust result. Statically
+readable build configurations retain literal bundler entries in the same sidecar;
+older or dynamically configured maps report that entry evidence as unmeasured.
+Test paths use the no-inbound test rule and are excluded from production hotspot
+ranking, with the count reported. Files with no edge at all are coverage gaps:
+they are counted in `isolated_files`, not listed. Every report
 states its thresholds (named constants in `src/debt.rs`, plus the cuts they
 give on this map) and echoes the map's `coverage`; every count is a lower
 bound over the map's edges and history. Dynamic imports, reflection and
