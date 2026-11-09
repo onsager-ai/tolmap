@@ -145,5 +145,9 @@ lane includes commit comparison, zoomed comparison stops, overlap and stale
 snapshot captures in both themes on phone and desktop. Those comparison edits
 are explicitly synthetic resolver scenarios over the unchanged pinned Flask
 map, not a fabricated Flask commit pair.
+Lens walkthrough states for #248 (first, middle, unresolved and last steps,
+restored from `?lens=overview&path=request-flow&step=<n>`) are candidates
+awaiting owner review; the Flask browser lane uploads stepped captures under
+`lens-walkthrough-samples`.
 Source-reader responses in that browser lane are explicitly synthetic; the
 native local/hosted service tests own git-object pinning evidence.

@@ -463,6 +463,8 @@ export class MapRenderer {
   private renderGate = new RenderGate<MapRenderState>();
   private quietTimer: ReturnType<typeof setTimeout> | null = null;
   private animId: number | null = null;
+  /** Issue #248: a symbol step framed before its district symbols arrived. */
+  private pendingLensStep: { target: LensTarget; hop: readonly LensTarget[]; camera: [number, number, number] } | null = null;
 
   // Issue #51: transform-during-gesture state -- what preview()/
   // driftExceeded()/gestureFrame() further down actually read and write;
@@ -984,6 +986,14 @@ export class MapRenderer {
     // later against a state this paint() has already superseded.
     this.cancelPendingGestureWork();
     this.draw();
+    const pending = this.pendingLensStep;
+    if (pending && state.districtSymbols.has(pending.target.district)) {
+      this.pendingLensStep = null;
+      const [k, tx, ty] = pending.camera;
+      // Refine the step only while its own camera move stands.
+      const still = this.animId != null || (Math.abs(this.k - k) <= 1e-9 * k && Math.abs(this.tx - tx) < 0.5 && Math.abs(this.ty - ty) < 0.5);
+      if (still) this.frameLensStep(pending.target, pending.hop);
+    }
   }
 
   // ---------- viewport ----------
@@ -1436,6 +1446,76 @@ export class MapRenderer {
       if (Math.min(Math.abs(x1 - x0), Math.abs(y1 - y0)) * this.k < 110) return false;
     }
     return true;
+  }
+
+  /** Issue #248: frame one lens walkthrough step -- the stop, and when it
+   * fits, the hop arriving at it (`hop`: the previous stop and any computed
+   * route files). Called only on an explicit step, never on lens selection.
+   * It never bypasses a gate: the zoom rises to the lowest k at which the
+   * stop passes lensTargetVisible's geometric gates (40 px file footprint,
+   * 110 px short side for every containing class card), and is kept where it
+   * already is when the stop passes there. A symbol stop whose district
+   * symbols have not arrived is framed on its file now and refined once,
+   * when they do, unless the camera has moved since. */
+  frameLensStep(target: LensTarget, hop: readonly LensTarget[], anim = true) {
+    if (!this.state) return;
+    this.pendingLensStep = null;
+    const geometry = this.lensStepGeometry(target);
+    const fs = this.fitScale();
+    // Overview (zf <= 1) is district-only; any stop needs a zoom beyond it.
+    let gate = fs;
+    const area = this.fileFootprintArea.get(target.file);
+    if (area != null && area > 0) gate = Math.max(gate, 40 / Math.sqrt(area));
+    for (const side of geometry.sides) if (side > 0) gate = Math.max(gate, 110 / side);
+    // A small margin keeps rounding from leaving the stop exactly on its gate.
+    gate *= 1.04;
+    const safe = this.viewInsets(this.insets.safe);
+    const [left, top, right, bottom] = fitViewport(this.VW, this.VH, safe);
+    const bounds: [number, number, number, number] = [geometry.point[0], geometry.point[1], geometry.point[0], geometry.point[1]];
+    for (const end of hop) {
+      const [x, y] = this.lensStepGeometry(end).point;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      bounds[0] = Math.min(bounds[0], x); bounds[1] = Math.min(bounds[1], y);
+      bounds[2] = Math.max(bounds[2], x); bounds[3] = Math.max(bounds[3], y);
+    }
+    const spread = bounds[2] > bounds[0] || bounds[3] > bounds[1];
+    // Frame the hop at 80% of the safe rectangle so its ends are not on the edge.
+    const hopFit = spread ? 0.8 * Math.min((right - left) / Math.max(bounds[2] - bounds[0], 1e-9), (bottom - top) / Math.max(bounds[3] - bounds[1], 1e-9)) : Infinity;
+    const nk = this.clampK(Math.max(gate, Math.min(this.k, hopFit)));
+    const fitsHop = spread && nk <= hopFit / 0.8;
+    const [cx, cy] = fitsHop ? [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2] : geometry.point;
+    const nx = (left + right) / 2 - cx * nk;
+    const ny = (top + bottom) / 2 - cy * nk;
+    if (anim) this.glide(nk, nx, ny);
+    else {
+      this.cancelPendingGestureWork();
+      if (this.animId != null) cancelAnimationFrame(this.animId);
+      this.animId = null;
+      this.k = nk; this.tx = nx; this.ty = ny;
+      this.draw();
+    }
+    if (geometry.pending) this.pendingLensStep = { target, hop, camera: [nk, nx, ny] };
+  }
+
+  /** World point and containing class-card short sides of a lens target. */
+  private lensStepGeometry(target: LensTarget): { point: [number, number]; sides: number[]; pending: boolean } {
+    const file = this.anchor(target.file);
+    if (!target.symbol) return { point: file, sides: [], pending: false };
+    const raw = this.state!.districtSymbols.get(target.district);
+    if (!raw) return { point: file, sides: [], pending: true };
+    const decoded = this.symDecoded.get(raw) ?? decodeDistrictSymbols(raw);
+    this.symDecoded.set(raw, decoded);
+    const local = raw.symbols.findIndex(row => row[0] === target.file && (row[1] === target.symbol!.name || target.symbol!.name.endsWith(`.${row[1]}`)) && row[3] === target.symbol!.start);
+    const rings = local >= 0 ? decoded.cardRings[local] : null;
+    if (!rings?.length) return { point: file, sides: [], pending: false };
+    const [x0, y0, x1, y1] = ringBounds(rings[0]);
+    const sides = ancestorsOf(decoded, local).map(ancestor => {
+      const ring = decoded.cardRings[ancestor]?.[0];
+      if (!ring) return 0;
+      const [a0, b0, a1, b1] = ringBounds(ring);
+      return Math.min(Math.abs(a1 - a0), Math.abs(b1 - b0));
+    });
+    return { point: [(x0 + x1) / 2, (y0 + y1) / 2], sides, pending: false };
   }
 
   private drawLens(g: SVGGElement, zf: number, districtLabels: SVGGElement) {
