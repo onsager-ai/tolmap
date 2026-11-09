@@ -614,6 +614,7 @@ pub struct RustModTree {
     pub pairs: BTreeSet<(FileId, FileId)>,
 }
 
+#[derive(Clone, Debug)]
 pub struct GraphData {
     pub repo: String,
     pub pkg: String,
