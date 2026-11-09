@@ -3301,7 +3301,22 @@ The decision uses [CI run 42606484561](https://github.com/onsager-ai/tolmap/acti
 
 The largest inline raw increase is rich at +1.83%; the smallest is django at +0.08%. At the 0.00 cutoff, the inline carrier would add +5.1% raw overall (up to +14% for scrapy), so the 0.35 cutoff is a meaningful containment boundary. The same carrier reserves room for #258's Rust `mod` pairs; the measurement found 30 of those, but this change does not emit them. The evidence script is `eval/cochange_carrier_size.py`.
 
-The fixture refresh was not a `D`-only byte change. Every fixture added `C`, `D`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, and `neighbourhoods`; `celery`, `django`, `httpx`, `prometheus`, `rich`, `scrapy`, `tolmap`, and `vue` also added `P`, while `flask` and `sqlalchemy` did not. No fixture removed a top-level key. `names` changed for `httpx` (`transports` → `_transports`), `prometheus` (`internal tools` → `tools`), `rich` (`unicode tables` → `_unicode_data`), and `vue` (`test runtime` → `runtime-test`); no existing top-level value changed for the other six fixtures. Those additions reflect the current fixture generator, not an input to blend, clustering, or layout: each fixture retained the previously measured file count, district count, and modularity (Δq = 0.0000).
+The fixture refresh was not a `D`-only byte change. No fixture removed a top-level key. The exact top-level-key diff from the pre-refresh documents is:
+
+| Fixture | Added | Changed existing value |
+|---|---|---|
+| celery | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | — |
+| django | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | — |
+| flask | `C`, `D`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | — |
+| httpx | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | `names`: `transports` → `_transports` |
+| prometheus | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | `names`: `internal tools` → `tools` |
+| rich | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | `names`: `unicode tables` → `_unicode_data` |
+| scrapy | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | — |
+| sqlalchemy | `C`, `D`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | — |
+| tolmap | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | — |
+| vue | `C`, `D`, `P`, `coverage`, `file_neighbourhoods`, `footprint_centroids`, `neighbourhoods` | `names`: `test runtime` → `runtime-test` |
+
+Those additions reflect the current fixture generator, not an input to blend, clustering, or layout: each fixture retained the previously measured file count, district count, and modularity (Δq = 0.0000).
 
 The new debt finding produces one `hidden coupling` area containing every pair's files. The report keeps every pair, but the lens renders declared paths only for the first 20 in report order (cross-district first, then weight) and notes how many of the full `tolmap debt` report are shown. Paths are not roads: their reason says `co-changed N times; no static edge found`. This change does not need `eval/batch_stability.py` because it changes none of blend, clustering or layout.
 
