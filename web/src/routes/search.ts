@@ -1,4 +1,5 @@
 import type { Geo, Layer } from "@/map/constants";
+import { DEBT_LENS } from "@/lens/debt";
 
 /** Everything selectable on a map view, mirrored into the query string —
  * this closes the "the map cannot be linked to" gap HANDOFF.md lists against
@@ -77,8 +78,9 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const depth = Number.isInteger(depthRaw) && depthRaw > 0 ? depthRaw : undefined;
   const job = typeof search.job === "string" && search.job.length > 0 ? search.job : undefined;
   const commit = typeof search.commit === "string" && /^[a-f0-9]{40,64}$/.test(search.commit) ? search.commit : undefined;
-  const lens = typeof search.lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.lens) ? search.lens : undefined;
-  const other_lens = typeof search.other_lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.other_lens) ? search.other_lens : undefined;
+  const lens = typeof search.lens === "string" && (search.lens === DEBT_LENS || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.lens)) ? search.lens : undefined;
+  // The built-in debt lens compares across commits only.
+  const other_lens = lens !== DEBT_LENS && typeof search.other_lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.other_lens) ? search.other_lens : undefined;
   const lens_compare = !!lens && (search.lens_compare === true || search.lens_compare === "true" || !!other_lens || (!!search.base && !!search.head && search.lens_compare !== false && search.lens_compare !== "false"));
   // The router parses JSON-like values, so a numeric path name arrives as a number.
   const pathRaw = typeof search.path === "number" ? String(search.path) : search.path;

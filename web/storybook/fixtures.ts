@@ -1,3 +1,4 @@
+import type { LensColor } from "../../bindings/LensColor";
 import type { LensReport } from "../../bindings/LensReport";
 import { http, HttpResponse, delay } from "msw";
 import { setupWorker } from "msw/browser";
@@ -40,7 +41,7 @@ const json = (value: unknown, status = 200) => new HttpResponse(JSON.stringify(v
 
 export async function installFixture(state: string) {
   if (!map) map = await (await nativeFetch(asset("map.json"))).json() as MapDocument;
-  const snapshotCommit = state.startsWith("lens-compare-") ? "a".repeat(40) : commit;
+  const snapshotCommit = state.startsWith("lens-compare-") || state === "debt-compare" ? "a".repeat(40) : commit;
   const mapDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(map)));
   const mapSha256 = Array.from(new Uint8Array(mapDigest), byte => byte.toString(16).padStart(2, "0")).join("");
   let job = snapshot(state === "freshness-in-map" ? "early" : state);
@@ -69,6 +70,30 @@ export async function installFixture(state: string) {
     }
     if (path.startsWith("/api/jobs/")) return json(job);
     if (path === "/api/index") return json({ job_id: "fixture", slug, status: "queued" }, 202);
+    if (path.endsWith("/debt")) {
+      // Synthetic findings shaped like `tolmap debt --format lens`: one area
+      // per finding kind, labelled by the kind; measured values only in notes.
+      const target = (file: number) => ({ file, path: map.F[file], district: map.N[file][0], symbol: null });
+      const other = Math.max(1, map.N.findIndex(row => row[0] !== map.N[0][0]));
+      const area = (kind: string, color: LensColor, files: number[]) => ({ label: kind, color, members: files.map(file => ({ spec: map.F[file], target: target(file) })) });
+      const findings: LensReport = { version: 1, lens_version: 1, repo: map.repo, title: "Debt findings (lower bounds)", lower_bound: true,
+        areas: [area("district cycle", "red", [0, other]), area("misplaced file", "amber", [4]), area("god file", "purple", [2]), area("hotspot", "orange", [2, 5]), area("no inbound edge found", "grey", [3])],
+        paths: [{ name: "cycle-synthetic", stops: [{ spec: map.F[0], target: target(0) }, { spec: map.F[other], target: target(other) }, { spec: map.F[0], target: target(0) }],
+          hops: [{ from: 0, to: 1, source: "computed", edge_kind: "imports", via: [map.F[0], map.F[other]], reason: null, resolved: true },
+            { from: 1, to: 2, source: "declared", edge_kind: null, via: [], reason: "no edge claimed: synthetic fixture", resolved: true }] }],
+        notes: [{ anchor: map.F[2], text: "Synthetic fixture: god file, fan-in and complexity in the top 5%.", target: target(2), district: null }],
+        unresolved: [] };
+      if (path.startsWith("/api/compare/")) {
+        return json({ version: 1, repository: slug, base: snapshotCommit, head: url.searchParams.get("head"), lens: "@debt", other: "@debt", base_map_sha256: mapSha256, lower_bound: true, before: findings, after: findings,
+          changes: [
+            { kind: "area", label: "district cycle", status: "removed", before: [map.F[other]], after: [], targets: [target(other)], districts: [map.N[other][0]] },
+            { kind: "area", label: "god file", status: "added", before: [], after: [map.F[1]], targets: [target(1)], districts: [map.N[1][0]] },
+            { kind: "area", label: "hotspot", status: "shared", before: [map.F[2]], after: [map.F[2]], targets: [target(2)], districts: [map.N[2][0]] },
+          ] });
+      }
+      if (state === "debt-error") return json({ error: "snapshot_not_indexed", message: "No indexed map at this commit. No newer snapshot was substituted." }, 404);
+      return json({ repository: slug, commit: snapshotCommit, name: "@debt", report: state === "debt-empty" ? { ...findings, areas: [], paths: [], notes: [] } : findings });
+    }
     if (path.startsWith("/api/compare/") && path.endsWith("/lenses")) {
       if (state === "lens-compare-loading") { await delay("infinite"); }
       if (state === "lens-compare-error") return json({ message: "Committed comparison source unavailable. No newer snapshot was substituted." }, 404);
@@ -119,7 +144,7 @@ export async function installFixture(state: string) {
     }
     if (path.startsWith("/api/maps/") || /^\/maps\/.+\.json$/.test(path)) {
       if (state === "map-loading") { await delay("infinite"); }
-      if (state.startsWith("lens-")) return new HttpResponse(JSON.stringify(map), { headers: { "Content-Type": "application/json", "x-tolmap-commit": snapshotCommit } });
+      if (state.startsWith("lens-") || state.startsWith("debt-")) return new HttpResponse(JSON.stringify(map), { headers: { "Content-Type": "application/json", "x-tolmap-commit": snapshotCommit } });
       return state === "map-unavailable" ? json({ error: "not_found" }, 404) : json(map);
     }
     return json({ error: "unhandled_fixture_request", path }, 500);

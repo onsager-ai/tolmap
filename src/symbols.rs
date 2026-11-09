@@ -2524,6 +2524,57 @@ mod tests {
             serde_json::to_vec(&report).unwrap(),
         )
         .unwrap();
+        // Issue #250: the built-in debt lens on the same frame, and a
+        // controlled debt comparison over a synthetic head: the file with the
+        // lowest fan-in becomes the top file by fan-in and complexity (a new
+        // god file), and the closing edges of the first district cycle are
+        // removed. These are synthetic edits, not Flask history.
+        let debt = crate::debt::lens_report(&map);
+        assert!(debt.unresolved.is_empty());
+        std::fs::write(out.join("debt.json"), serde_json::to_vec(&debt).unwrap()).unwrap();
+        let mut head = map.clone();
+        let quiet = (0..head.nodes.len())
+            .min_by(|&a, &b| head.nodes[a].fanin().total_cmp(&head.nodes[b].fanin()))
+            .unwrap();
+        let top_complexity = head.nodes.iter().map(|r| r.complexity()).max().unwrap();
+        let top_fanin = head.nodes.iter().map(|r| r.fanin()).fold(0.0, f64::max);
+        head.nodes[quiet].0 .4 = top_complexity + 1;
+        head.nodes[quiet].0 .6 = top_fanin + 1.0;
+        if let Some(cycle) = crate::debt::findings(&map).cycles.first() {
+            let closing: Vec<(&str, &str)> = cycle
+                .closing_edges
+                .iter()
+                .map(|e| (e.from.as_str(), e.to.as_str()))
+                .collect();
+            head.edges.retain(|&[a, b]| {
+                !closing.contains(&(map.files[a].as_str(), map.files[b].as_str()))
+            });
+        }
+        let (before, after, changes) = crate::debt::compare(&map, &head, &head, &[]);
+        assert!(changes
+            .iter()
+            .any(|d| d.status == crate::lens_comparison::LensChange::Added));
+        let debt_comparison = crate::lens_comparison::LensComparison {
+            version: 1,
+            repository: "pallets/flask".into(),
+            base: "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35".into(),
+            head: "b".repeat(40),
+            lens: crate::debt::LENS_NAME.into(),
+            other: crate::debt::LENS_NAME.into(),
+            base_map_sha256: {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(map_bytes))
+            },
+            lower_bound: true,
+            before,
+            after,
+            changes,
+        };
+        std::fs::write(
+            out.join("debt-comparison.json"),
+            serde_json::to_vec(&debt_comparison).unwrap(),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(map_path).unwrap(), map_bytes);
     }
     use super::*;
