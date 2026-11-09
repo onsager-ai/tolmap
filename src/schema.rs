@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
@@ -385,7 +385,8 @@ pub struct MapDocument {
     pub neighbourhoods: Option<BTreeMap<String, Neighbourhood>>,
     // Optional index-aligned debt evidence. Its absence means this map
     // predates the measurement, rather than that no evidence was found.
-    // Future evidence (such as Rust `mod` pairs) belongs beside `cochange`.
+    // Rust `mod` declarations ride beside co-change, rather than becoming
+    // graph edges: they describe compilation reachability, not name use.
     #[serde(rename = "D", default, skip_serializing_if = "Option::is_none")]
     pub debt: Option<DebtSidecar>,
 }
@@ -395,6 +396,7 @@ pub struct MapDocument {
 #[ts(export)]
 pub struct DebtSidecar {
     pub cochange: Option<CochangeSidecar>,
+    pub rust_mod: Option<RustModSidecar>,
 }
 
 /// Co-change evidence retained for hidden-coupling findings. `pairs` rows are
@@ -413,6 +415,20 @@ pub struct CochangeSidecar {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(type = "[number, number, number, number]")]
 pub struct CochangePair(pub (usize, usize, usize, f64));
+
+/// Rust module-declaration evidence retained for debt reachability. Every
+/// index is into `MapDocument::files`; `roots` are crate targets and `pairs`
+/// are `[declaring file, declared file]` rows for resolved `mod` declarations.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RustModSidecar {
+    pub roots: Vec<usize>,
+    pub pairs: Vec<RustModPair>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(type = "[number, number]")]
+pub struct RustModPair(pub (usize, usize));
 
 // `tolmap check`'s report (issue #170, docs/CHECK.md). A consumer (CI,
 // Ostrom, Duhem) depends only on the exit code and on `version`; any change
@@ -593,6 +609,11 @@ pub struct CochangeSignal {
 pub type FileId = u32;
 
 #[derive(Clone, Debug)]
+pub struct RustModTree {
+    pub roots: BTreeSet<FileId>,
+    pub pairs: BTreeSet<(FileId, FileId)>,
+}
+
 pub struct GraphData {
     pub repo: String,
     pub pkg: String,
@@ -621,6 +642,9 @@ pub struct GraphData {
     // history evidence. `Some(empty)` means history was measured and yielded
     // no qualifying pair.
     pub cochange: Option<BTreeMap<(FileId, FileId), CochangeSignal>>,
+    /// Rust's resolved declaration tree. It stays out of graph JSON and the
+    /// blend/partition inputs, then becomes the optional compact debt sidecar.
+    pub rust_mod: Option<RustModTree>,
     pub nodes: Vec<SourceNode>,
     pub edges: Vec<SignalEdge>,
     /// `--refs scip` only: the per-language reference paths, carried to the
@@ -789,6 +813,7 @@ impl<'de> Deserialize<'de> for GraphData {
             uses,
             commits_scanned: wire.commits_scanned,
             cochange: None,
+            rust_mod: None,
             nodes: wire.nodes,
             edges: wire.edges,
             references: wire.references,
@@ -849,6 +874,7 @@ mod tests {
             uses: vec![(0, 1, "Target".to_owned())],
             commits_scanned: 0,
             cochange: None,
+            rust_mod: None,
             nodes: ["a.go", "pkg/b.go"]
                 .into_iter()
                 .map(|file| SourceNode {
@@ -903,6 +929,7 @@ mod tests {
             uses: Vec::new(),
             commits_scanned: 0,
             cochange: None,
+            rust_mod: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,
@@ -933,6 +960,7 @@ mod tests {
             uses: Vec::new(),
             commits_scanned: 0,
             cochange: None,
+            rust_mod: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,

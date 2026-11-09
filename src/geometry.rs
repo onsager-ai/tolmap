@@ -13,7 +13,8 @@ use crate::partition::LeidenFfi;
 use crate::pipeline::{self, LayoutDistrict, SHARE_COCHANGE};
 use crate::schema::{
     CochangePair, CochangeSidecar, CoverageLanguage, CoverageReport, DebtSidecar, District,
-    DistrictClass, FileId, GraphData, LandmarkRow, MapDocument, NodeRow, SymbolRow,
+    DistrictClass, FileId, GraphData, LandmarkRow, MapDocument, NodeRow, RustModPair,
+    RustModSidecar, SymbolRow,
 };
 #[derive(Clone, Debug)]
 pub struct BuildFeatures {
@@ -792,8 +793,8 @@ fn compact(
                 .map(move |&user| (target.min(user), target.max(user)))
         }))
         .collect::<BTreeSet<_>>();
-    let debt = layout.weighted.cochange.as_ref().map(|signals| {
-        let cochange = signals
+    let cochange = layout.weighted.cochange.as_ref().map(|signals| {
+        let pairs = signals
             .iter()
             .filter_map(|(&(a, b), signal)| {
                 let pair = (a as usize, b as usize);
@@ -803,16 +804,28 @@ fn compact(
                 .then(|| CochangePair((pair.0, pair.1, signal.count, round_to(signal.weight, 2))))
             })
             .collect::<Vec<_>>();
-        DebtSidecar {
-            cochange: Some(CochangeSidecar {
-                commits: layout.weighted.commits_scanned,
-                window: COCHANGE_HISTORY_WINDOW,
-                min_count: COCHANGE_MIN_COUNT,
-                min_weight: SHARE_COCHANGE,
-                pairs: cochange,
-            }),
+        CochangeSidecar {
+            commits: layout.weighted.commits_scanned,
+            window: COCHANGE_HISTORY_WINDOW,
+            min_count: COCHANGE_MIN_COUNT,
+            min_weight: SHARE_COCHANGE,
+            pairs,
         }
     });
+    let rust_mod = layout
+        .weighted
+        .rust_mod
+        .as_ref()
+        .map(|tree| RustModSidecar {
+            roots: tree.roots.iter().map(|&root| root as usize).collect(),
+            pairs: tree
+                .pairs
+                .iter()
+                .map(|&(parent, child)| RustModPair((parent as usize, child as usize)))
+                .collect(),
+        });
+    let debt =
+        (cochange.is_some() || rust_mod.is_some()).then_some(DebtSidecar { cochange, rust_mod });
     let mut groups = BTreeMap::<usize, Vec<usize>>::new();
     for (index, &district) in layout.membership.iter().enumerate() {
         groups.entry(district).or_default().push(index);

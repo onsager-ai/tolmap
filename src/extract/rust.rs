@@ -2226,6 +2226,7 @@ pub(crate) fn resolve(
         })
         .collect();
 
+    let rust_mod = resolver.mod_tree();
     Ok(SourceIntermediate {
         pkg: pkg.to_owned(),
         language: LanguageKind::Rust,
@@ -2236,6 +2237,14 @@ pub(crate) fn resolve(
         fanin,
         uses,
         module_for,
+        rust_mod: Some(crate::schema::RustModTree {
+            roots: rust_mod.roots.into_iter().map(|root| ids[&root]).collect(),
+            pairs: rust_mod
+                .declared
+                .into_iter()
+                .map(|(parent, child)| (ids[&parent], ids[&child]))
+                .collect(),
+        }),
         build_output_mirror: 0,
         python_cross_project: 0,
     })
