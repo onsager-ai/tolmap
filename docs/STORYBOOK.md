@@ -128,7 +128,7 @@ Lens states introduced for #241 (32 identities) and the 28 existing captures
 that the Lenses entry changed were approved by the owner on 2026-11-08 from run
 `42441604311` (source `1704e0f`); `approved.json` records them under
 `recaptures`. A complete capture matrix is rendering evidence, not visual
-approval. The Flask
+approval. The owner approved the 32 lens walkthrough captures and re-approved the 12 map-lens-loaded/unresolved captures (Start control) on 2026-11-09 from run `42583567170` (source `710f94a`). The Flask
 viewer-check lane additionally uploads overview, zoomed stops, declared-hop
 explanations and unresolved reports for phone and desktop in both themes under
 `lens-review-samples` (also included in `viewer-shots/lenses/`). Its map is `data/flask.json` unchanged; Rust resolves
