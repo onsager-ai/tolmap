@@ -71,25 +71,24 @@ export async function installFixture(state: string) {
     if (path.startsWith("/api/jobs/")) return json(job);
     if (path === "/api/index") return json({ job_id: "fixture", slug, status: "queued" }, 202);
     if (path.endsWith("/debt")) {
-      // Synthetic findings shaped like `tolmap debt --format lens`: labels are
-      // the kind and sorted file paths, measured values only in notes.
+      // Synthetic findings shaped like `tolmap debt --format lens`: one area
+      // per finding kind, labelled by the kind; measured values only in notes.
       const target = (file: number) => ({ file, path: map.F[file], district: map.N[file][0], symbol: null });
       const other = Math.max(1, map.N.findIndex(row => row[0] !== map.N[0][0]));
-      const area = (kind: string, color: LensColor, files: number[]) => ({ label: `${kind}: ${files.map(file => map.F[file]).sort().join(", ")}`, color, members: files.map(file => ({ spec: map.F[file], target: target(file) })) });
+      const area = (kind: string, color: LensColor, files: number[]) => ({ label: kind, color, members: files.map(file => ({ spec: map.F[file], target: target(file) })) });
       const findings: LensReport = { version: 1, lens_version: 1, repo: map.repo, title: "Debt findings (lower bounds)", lower_bound: true,
-        areas: [area("district cycle", "red", [0, other]), area("god file", "purple", [2]), area("hotspot", "orange", [2]), area("no inbound edge found", "grey", [3])],
+        areas: [area("district cycle", "red", [0, other]), area("misplaced file", "amber", [4]), area("god file", "purple", [2]), area("hotspot", "orange", [2, 5]), area("no inbound edge found", "grey", [3])],
         paths: [{ name: "cycle-synthetic", stops: [{ spec: map.F[0], target: target(0) }, { spec: map.F[other], target: target(other) }, { spec: map.F[0], target: target(0) }],
           hops: [{ from: 0, to: 1, source: "computed", edge_kind: "imports", via: [map.F[0], map.F[other]], reason: null, resolved: true },
             { from: 1, to: 2, source: "declared", edge_kind: null, via: [], reason: "no edge claimed: synthetic fixture", resolved: true }] }],
         notes: [{ anchor: map.F[2], text: "Synthetic fixture: god file, fan-in and complexity in the top 5%.", target: target(2), district: null }],
         unresolved: [] };
       if (path.startsWith("/api/compare/")) {
-        const cycle = findings.areas[0].label;
         return json({ version: 1, repository: slug, base: snapshotCommit, head: url.searchParams.get("head"), lens: "@debt", other: "@debt", base_map_sha256: mapSha256, lower_bound: true, before: findings, after: findings,
           changes: [
-            { kind: "area", label: cycle, status: "removed", before: [map.F[other]], after: [], targets: [target(other)], districts: [map.N[other][0]] },
-            { kind: "area", label: `god file: ${map.F[1]}`, status: "added", before: [], after: [map.F[1]], targets: [target(1)], districts: [map.N[1][0]] },
-            { kind: "area", label: `hotspot: ${map.F[2]}`, status: "shared", before: [map.F[2]], after: [map.F[2]], targets: [target(2)], districts: [map.N[2][0]] },
+            { kind: "area", label: "district cycle", status: "removed", before: [map.F[other]], after: [], targets: [target(other)], districts: [map.N[other][0]] },
+            { kind: "area", label: "god file", status: "added", before: [], after: [map.F[1]], targets: [target(1)], districts: [map.N[1][0]] },
+            { kind: "area", label: "hotspot", status: "shared", before: [map.F[2]], after: [map.F[2]], targets: [target(2)], districts: [map.N[2][0]] },
           ] });
       }
       if (state === "debt-error") return json({ error: "snapshot_not_indexed", message: "No indexed map at this commit. No newer snapshot was substituted." }, 404);

@@ -563,21 +563,16 @@ pub fn findings(map: &MapDocument) -> DebtReport {
 
 // ---- lens ------------------------------------------------------------------
 
-// Kind names, used as label prefixes. A finding's label is its kind and its
-// sorted file paths, nothing measured: lens comparison (#246) matches items
-// by label, so a value in it would turn every metric change into removed +
-// added. A cycle is labelled by the files of its closing edges, never by
-// district names, which are not stable across commits. Values go in notes.
+// Kind names, used as area labels. The lens has one area per finding kind
+// (owner decision, 2026-11-09): an area tints every district of its members,
+// so one area per finding stacked tints wherever findings shared a district.
+// Labels carry nothing measured and no district name; values, district names
+// and per-district edge counts go in notes anchored to each file.
 pub const KIND_CYCLE: &str = "district cycle";
 pub const KIND_MISPLACED: &str = "misplaced file";
 pub const KIND_GOD: &str = "god file";
 pub const KIND_HOTSPOT: &str = "hotspot";
 pub const KIND_UNREACHED: &str = "no inbound edge found";
-
-fn label(kind: &str, paths: &BTreeSet<&str>) -> String {
-    let paths: Vec<&str> = paths.iter().copied().collect();
-    format!("{kind}: {}", paths.join(", "))
-}
 
 fn cycle_files(cycle: &DistrictCycle) -> BTreeSet<&str> {
     cycle
@@ -588,7 +583,8 @@ fn cycle_files(cycle: &DistrictCycle) -> BTreeSet<&str> {
 }
 
 // A path name ([a-z0-9_-]) derived from the cycle's files, not its position
-// in the list, for the same identity reason as labels. FNV-1a, 64 bits.
+// in the list, so the same cycle keeps its name across commits. FNV-1a, 64
+// bits.
 fn cycle_path_name(files: &BTreeSet<&str>) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in files.iter().flat_map(|f| f.bytes().chain([0])) {
@@ -602,24 +598,32 @@ fn pct(share: f64) -> String {
     format!("{}%", round4(share * 100.0))
 }
 
-// The lens equivalent of a report: one area per finding, one path per
-// cycle and notes carrying the measured values. A cycle path's closing
+// The lens equivalent of a report: at most one area per finding kind (in
+// `KINDS` order, members sorted), one path per cycle and notes carrying the
+// measured values. A cycle path's closing
 // edges are computed hops. Consecutive closing edges inside one district
 // are joined by a declared hop only because a lens path needs one: no route
 // between those two files is guaranteed, and the reason says that no edge
 // is claimed, since the viewer draws a declared hop as a link.
 pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
     let t = &report.thresholds;
-    let mut areas = vec![];
+    let mut kinds = [
+        (KIND_CYCLE, LensColor::Red, BTreeSet::new()),
+        (KIND_MISPLACED, LensColor::Amber, BTreeSet::new()),
+        (KIND_GOD, LensColor::Purple, BTreeSet::new()),
+        (KIND_HOTSPOT, LensColor::Orange, BTreeSet::new()),
+        (KIND_UNREACHED, LensColor::Grey, BTreeSet::new()),
+    ];
+    fn add<'a>(
+        kinds: &mut [(&str, LensColor, BTreeSet<&'a str>)],
+        kind: &str,
+        files: impl IntoIterator<Item = &'a str>,
+    ) {
+        let entry = kinds.iter_mut().find(|k| k.0 == kind).unwrap();
+        entry.2.extend(files);
+    }
     let mut paths = vec![];
     let mut notes = vec![];
-    let mut area = |kind: &str, color: LensColor, files: BTreeSet<&str>| {
-        areas.push(LensArea {
-            label: label(kind, &files),
-            color,
-            members: files.into_iter().map(str::to_owned).collect(),
-        });
-    };
     let mut note = |anchor: &str, text: String| {
         notes.push(LensNote {
             anchor: anchor.to_owned(),
@@ -681,7 +685,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
             name: cycle_path_name(&files),
             stops,
         });
-        area(KIND_CYCLE, LensColor::Red, files);
+        add(&mut kinds, KIND_CYCLE, files);
     }
     for m in &report.misplaced {
         let own = m
@@ -707,11 +711,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 pct(t.misplaced_min_share)
             ),
         );
-        area(
-            KIND_MISPLACED,
-            LensColor::Amber,
-            BTreeSet::from([m.path.as_str()]),
-        );
+        add(&mut kinds, KIND_MISPLACED, [m.path.as_str()]);
     }
     for g in &report.god_files {
         note(
@@ -727,11 +727,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 t.god_min_complexity.unwrap_or_default()
             ),
         );
-        area(
-            KIND_GOD,
-            LensColor::Purple,
-            BTreeSet::from([g.path.as_str()]),
-        );
+        add(&mut kinds, KIND_GOD, [g.path.as_str()]);
     }
     for h in &report.hotspots {
         note(
@@ -747,11 +743,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 t.hotspot_min_score.unwrap_or_default()
             ),
         );
-        area(
-            KIND_HOTSPOT,
-            LensColor::Orange,
-            BTreeSet::from([h.path.as_str()]),
-        );
+        add(&mut kinds, KIND_HOTSPOT, [h.path.as_str()]);
     }
     for u in &report.unreached {
         note(
@@ -761,12 +753,17 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 u.out_edges
             ),
         );
-        area(
-            KIND_UNREACHED,
-            LensColor::Grey,
-            BTreeSet::from([u.path.as_str()]),
-        );
+        add(&mut kinds, KIND_UNREACHED, [u.path.as_str()]);
     }
+    let areas = kinds
+        .into_iter()
+        .filter(|(_, _, files)| !files.is_empty())
+        .map(|(kind, color, files)| LensArea {
+            label: kind.to_owned(),
+            color,
+            members: files.into_iter().map(str::to_owned).collect(),
+        })
+        .collect();
     Lens {
         version: LENS_VERSION,
         title: Some("Debt findings (lower bounds)".into()),
@@ -918,12 +915,11 @@ pub fn lens_report(map: &MapDocument) -> LensReport {
 // (`check::lens_head_map`), so only base geometry is ever drawn.
 //
 // `lens_comparison::changes` keys an area item by its member file alone, so
-// areas match across labels. One file is often several findings at once (a
+// areas match across labels. One file is often in several kinds at once (a
 // god file is usually a hotspot too), and one comparison over the whole lens
 // would then read a new god file as `shared`. Comparing each kind on its own
-// keeps every file to at most one item per comparison: within a kind a file
-// is in at most one finding (cycles are disjoint district sets). The
-// statuses are `changes`' own; none is added.
+// keeps every file to at most one area item per comparison, since each kind
+// has one area. The statuses are `changes`' own; none is added.
 pub fn compare(
     base: &MapDocument,
     head: &MapDocument,
@@ -937,11 +933,7 @@ pub fn compare(
         areas: report
             .areas
             .iter()
-            .filter(|a| {
-                a.label
-                    .strip_prefix(kind)
-                    .is_some_and(|rest| rest.starts_with(": "))
-            })
+            .filter(|a| a.label == kind)
             .cloned()
             .collect(),
         paths: if kind == KIND_CYCLE {

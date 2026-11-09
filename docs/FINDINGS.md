@@ -3230,11 +3230,11 @@ Issue [#250](https://github.com/onsager-ai/tolmap/issues/250). `tolmap debt` on 
 - **The hotspots are the `hazard` landmarks.** `app.py` is also an `entry` landmark, so the map's single `hazard` row is `cli.py`. Both are in the top two hotspots, as the generalisation requires.
 - **No god file.** The top two by fan-in and the top two by complexity do not overlap: `app.py` has the highest complexity but not a top-two fan-in. At this size the rule is strict by design; a larger map gives the 5% cut more files.
 - **`views.py` is a lower bound, not dead code.** Flask's class-based views are imported by users of the package, not by Flask itself, and the map only sees in-repository edges.
-- **Determinism and the map.** Two runs of `--format json` were byte-identical, `data/flask.json`'s SHA-256 was unchanged, and the `--format lens` output passed `tolmap lens check` with exit 0 (6 areas, 8 members, 1 path, 6 notes, nothing unresolved).
+- **Determinism and the map.** Two runs of `--format json` were byte-identical, `data/flask.json`'s SHA-256 was unchanged, and the `--format lens` output passed `tolmap lens check` with exit 0 (4 areas, one per kind found, 8 members, 1 path, 6 notes, nothing unresolved).
 
 **The viewer.** `web/scripts/check-lens-browser.mjs` loads the Rust-resolved Flask debt lens (exported by `symbols::tests::export_lens_viewer_fixture`) on phone and desktop in both themes: overview tints districts only, file findings appear past the 40 px gate, a finding opens its card and the commit-pinned reader, and a controlled debt comparison reports added and removed findings. That comparison's head is a synthetic edit of the same map, not Flask history.
 
 ### Not verified
 - **semon is not measured.** No indexed semon map was available to this change, and indexing it locally is outside the host's thermal limits. Its numbers remain to be recorded from a stored semon snapshot.
 - One small library. The default fractions were not tuned on any corpus; whether 5% and five edges separate signal from noise on agent-maintained repositories is unmeasured.
-- Overlapping tints: every finding tints its whole district, so a district with several findings is drawn darker. On Flask the deepest overlap is three areas; a large repository was not rendered.
+- Overlapping tints: the lens has one area per kind (owner decision, 2026-11-09), so a district is tinted at most five times, once per kind, however many findings it holds. Before that decision each finding was its own area, and on Flask two districts carried three overlapping tints. A large repository was not rendered.

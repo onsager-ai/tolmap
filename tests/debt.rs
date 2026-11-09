@@ -231,18 +231,31 @@ fn lens_resolves_fully_with_stable_labels() {
 
     let map = synthetic();
     let lens = Lens::parse(&outputs(&map).2).unwrap();
+    // One area per kind, labelled by the kind alone: a district is tinted at
+    // most once per kind.
     let labels: Vec<&str> = lens.areas.iter().map(|a| a.label.as_str()).collect();
     assert_eq!(
         labels,
         [
-            "district cycle: src/a/core.py, src/a/util.py, src/b/one.py, src/b/two.py, src/c/x.py, src/c/y.py",
-            "misplaced file: src/d/misplaced.py",
-            "god file: src/b/god.py",
-            "hotspot: src/c/hot.py",
-            "hotspot: src/b/god.py",
-            "no inbound edge found: src/d/orphan.py",
+            "district cycle",
+            "misplaced file",
+            "god file",
+            "hotspot",
+            "no inbound edge found",
         ]
     );
+    let members = |kind: &str| -> Vec<&str> {
+        lens.areas
+            .iter()
+            .find(|a| a.label == kind)
+            .unwrap()
+            .members
+            .iter()
+            .map(String::as_str)
+            .collect()
+    };
+    assert_eq!(members("hotspot"), ["src/b/god.py", "src/c/hot.py"]);
+    assert_eq!(members("district cycle").len(), 6);
     // The cycle path: closing edges computed, joined by declared hops.
     let stops: Vec<_> = lens.paths[0]
         .stops
@@ -330,12 +343,12 @@ fn debt_cli_formats_and_exit_codes() {
 }
 
 // Issue #250's comparison test: compared on the base map, a cycle broken by
-// a removed edge is `removed`, a new god file is `added` even though the file
-// was already in another finding, and a metric change on an unchanged
-// finding is `shared`, not removed + added.
+// a removed edge loses its members and path, a new god file is an added
+// member of the god area even though the file was already in the cycle, and
+// a metric change on an unchanged finding is `shared`, not removed + added.
 #[test]
 fn comparison_reads_findings_by_identity() {
-    use tolmap::lens_comparison::{LensChange, LensDelta};
+    use tolmap::lens_comparison::LensChange::{self, Added, Removed, Shared};
     let base = synthetic();
     let mut head = synthetic();
     head.edges.retain(|e| *e != [6, 2]); // breaks the a -> b -> c -> a cycle
@@ -344,40 +357,35 @@ fn comparison_reads_findings_by_identity() {
     head.nodes[12].0 .5 = 40; // hot.py: churn up, still a hotspot
     let (before, after, changes) = debt::compare(&base, &head, &head, &[]);
     assert!(before.unresolved.is_empty() && after.unresolved.is_empty());
-    let status = |label: &str, kind: &str| -> Vec<LensChange> {
+    // An area item is one member file of one kind's area.
+    let status = |kind: &str, file: &str| -> Vec<LensChange> {
         changes
             .iter()
-            .filter(|d: &&LensDelta| d.label == label && d.kind == kind)
+            .filter(|d| d.kind == "area" && d.label == kind)
+            .filter(|d| d.before.iter().chain(&d.after).any(|s| s == file))
             .map(|d| d.status)
             .collect()
     };
-    let cycle = &before.areas[0].label;
-    assert!(cycle.starts_with("district cycle: "));
-    assert_eq!(status(cycle, "area"), [LensChange::Removed; 6]);
+    for file in [
+        "src/a/core.py",
+        "src/a/util.py",
+        "src/b/one.py",
+        "src/b/two.py",
+        "src/c/x.py",
+        "src/c/y.py",
+    ] {
+        assert_eq!(status("district cycle", file), [Removed], "{file}");
+    }
+    let cycle_path = &before.paths[0].name;
     assert!(changes
         .iter()
         .filter(|d| d.kind != "area")
-        .all(|d| d.status == LensChange::Removed));
-    assert_eq!(
-        status("god file: src/a/core.py", "area"),
-        [LensChange::Added]
-    );
-    assert_eq!(
-        status("god file: src/b/god.py", "area"),
-        [LensChange::Removed]
-    );
-    assert_eq!(
-        status("hotspot: src/c/hot.py", "area"),
-        [LensChange::Shared]
-    );
-    // core.py was in the cycle area at base; it is still a new god file.
-    assert_eq!(
-        changes
-            .iter()
-            .filter(|d| d.status == LensChange::Added)
-            .count(),
-        1
-    );
+        .all(|d| d.status == Removed && d.label == *cycle_path));
+    assert_eq!(status("god file", "src/a/core.py"), [Added]);
+    assert_eq!(status("god file", "src/b/god.py"), [Removed]);
+    assert_eq!(status("hotspot", "src/c/hot.py"), [Shared]);
+    assert_eq!(status("hotspot", "src/b/god.py"), [Shared]);
+    assert_eq!(changes.iter().filter(|d| d.status == Added).count(), 1);
     // Same inputs, same output.
     let again = debt::compare(&base, &head, &head, &[]);
     assert_eq!(

@@ -505,14 +505,17 @@ edges. Dynamic imports, reflection and declared connections are invisible to
 the map, so a file with no inbound edge found is not shown to be dead.
 
 `lens` prints the equivalent lens TOML (format v1), which `tolmap lens check`
-resolves fully: one area per finding, one path per cycle (closing edges as
-computed hops; consecutive ones inside a district are joined by declared hops
-whose reason states that no edge is claimed) and notes with the
-measured values. A finding's area label is its kind and its sorted file paths;
-for a cycle, the files of its closing edges. Labels carry no measured value and
-no district name, so lens comparison does not read a metric change or a
-renamed district as a removed and an added finding. Exit 0, or 2 when the map
-cannot be read.
+resolves fully: at most one area per finding kind, labelled by the kind alone
+(`district cycle`, `misplaced file`, `god file`, `hotspot`, `no inbound edge
+found`) and holding every file in a finding of that kind, so a district is
+tinted at most once per kind; one path per cycle, named from the files of its
+closing edges (closing edges as computed hops; consecutive ones inside a
+district are joined by declared hops whose reason states that no edge is
+claimed); and notes anchored to each file with the measured values, the
+misplaced file's per-district edge counts and the cycle's district names.
+Labels and path names carry no measured value and no district name, so lens
+comparison does not read a metric change or a renamed district as a removed
+and an added finding. Exit 0, or 2 when the map cannot be read.
 
 ### `GET /api/maps/{owner}/{repo}/debt[?commit=<full-sha>]`
 
@@ -534,10 +537,11 @@ onto the base partition (as for `/lenses` comparisons), so only base geometry is
 drawn and files new at head have district placement only. Renames are detected
 as for lens comparisons. The changes are `lens_comparison::changes` in commit
 mode with its existing statuses, run once per finding kind: an area item is
-keyed by its member file, and one file is often several findings at once (a god
-file is usually also a hotspot), so per-kind comparison keeps a new god file
-`added` when the file was already a hotspot. Finding labels name files, never
-measured values, so a metric change on an unchanged finding is `shared`.
+keyed by its member file, and one file is often in several kinds at once (a god
+file is usually also a hotspot), so per-kind comparison keeps a new god file an
+`added` member of the god area when the file was already a hotspot. A broken
+cycle's members and path are `removed`. Labels never carry measured values, so
+a metric change on an unchanged finding is `shared`.
 Local snapshots expose it at `/api/compare/snapshot/{base-id}/debt`.
 
 ### `GET /api/healthz`

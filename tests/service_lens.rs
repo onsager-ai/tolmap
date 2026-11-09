@@ -443,7 +443,7 @@ async fn debt_lens_is_built_in_and_pinned() {
         .iter()
         .map(|a| a["label"].as_str().unwrap())
         .collect();
-    assert_eq!(labels, ["no inbound edge found: a.py"]);
+    assert_eq!(labels, ["no inbound edge found"]);
     assert!(body["report"]["unresolved"].as_array().unwrap().is_empty());
     assert_eq!(
         get(&f, &format!("/api/maps/local/example/debt?commit={}", f.a))

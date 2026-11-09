@@ -208,9 +208,11 @@ from the repository's saved lenses (*Repository*). It is computed from the
 stored map, never read from `.tolmap/lenses/`, so a repository lens can never
 replace it; share it as `?lens=%40debt` (`@debt` is outside the repository lens
 name charset). It shows the five structural findings (docs/GLOSSARY.md) through
-the unchanged lens overlay: one tinted area per finding (district cycles red,
-misplaced files amber, god files purple, hotspots orange, files with no inbound
-edge found grey), one path per district cycle, and notes carrying the measured
+the unchanged lens overlay: one tinted area per finding kind (district cycles
+red, misplaced files amber, god files purple, hotspots orange, files with no
+inbound edge found grey), so a district is tinted at most once per kind
+whatever its number of findings (owner decision, 2026-11-09); one path per
+district cycle; and notes, anchored to each file, carrying the measured
 values. Overview tints districts only; file findings follow the 40 px gate. A
 cycle's closing edges are solid computed hops; the dashed declared hops between
 them only join two files of one district and claim no edge. A snapshot with no
@@ -223,9 +225,9 @@ map (`?lens=%40debt&lens_compare=true&compare=true&base=<sha>&head=<sha>`).
 Debt compares commits only: there is no second lens to choose. Head findings
 come from the head snapshot, projected onto the base map, so a finding on a
 file new at head tints only its district. A finding that disappears is
-*Removed*, a new one *Added*, a cycle or area that grows shows *Added* members,
-and a finding whose measured values changed stays *Unchanged*: labels name
-files, never values.
+*Removed*, a new one *Added* (a member of its kind's area), a cycle that grows
+shows *Added* members, and a finding whose measured values changed stays
+*Unchanged*: labels name the kind, never values.
 
 ### 4.8 Search (artboard "Search active")
 
