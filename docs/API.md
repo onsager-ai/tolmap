@@ -514,6 +514,32 @@ no district name, so lens comparison does not read a metric change or a
 renamed district as a removed and an added finding. Exit 0, or 2 when the map
 cannot be read.
 
+### `GET /api/maps/{owner}/{repo}/debt[?commit=<full-sha>]`
+
+The built-in debt lens (issue #250) for an indexed snapshot, in the same
+`LensResponse` shape as a repository lens, with `name` `"@debt"`. It is
+`tolmap debt --format lens` resolved against the stored map: computed from that
+map alone, never read from `.tolmap/lenses/`, and the map is not changed. `@debt`
+is outside the repository lens name charset, so it can never name a repository
+lens. Without `?commit=` the latest indexed snapshot is used and named in the
+response. `Cache-Control: no-store`. Local snapshots expose it at
+`GET /api/maps/snapshot/{id}/debt[?commit=<full-sha>]`.
+
+### `GET /api/compare/{owner}/{repo}/debt?base=<sha>&head=<sha>`
+
+A `LensComparison` (`lens` and `other` are `"@debt"`) of the debt lens at two
+indexed commits. Base findings come from the stored base map; head findings
+from the stored head map, with the head lens resolved on the head projected
+onto the base partition (as for `/lenses` comparisons), so only base geometry is
+drawn and files new at head have district placement only. Renames are detected
+as for lens comparisons. The changes are `lens_comparison::changes` in commit
+mode with its existing statuses, run once per finding kind: an area item is
+keyed by its member file, and one file is often several findings at once (a god
+file is usually also a hotspot), so per-kind comparison keeps a new god file
+`added` when the file was already a hotspot. Finding labels name files, never
+measured values, so a metric change on an unchanged finding is `shared`.
+Local snapshots expose it at `/api/compare/snapshot/{base-id}/debt`.
+
 ### `GET /api/healthz`
 
 ```

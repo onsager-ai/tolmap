@@ -88,6 +88,14 @@ export function page(id: string): StoryObj<Args> {
         if (panel instanceof HTMLDetailsElement && !panel.open) await userEvent.click(panel.querySelector("summary")!);
         await waitElement(`[data-lens-state="${id.slice('map-lens-'.length)}"]`);
       }
+      if (action === "debt") {
+        // The built-in debt lens opens the same panel and sheet as a repository lens.
+        const phone = !!root.querySelector("[data-phone-shell]");
+        if (!phone && root.querySelector("[data-panel-tab]")) await click("[data-panel-tab]");
+        const panel = await waitElement(phone ? "[data-lens-sheet]" : "[data-lens-panel]");
+        if (panel instanceof HTMLDetailsElement && !panel.open) await userEvent.click(panel.querySelector("summary")!);
+        await waitElement(`[data-lens-state="${id.slice('map-debt-'.length)}"]`);
+      }
       if (action === "repositories") { await click("[data-repo-switcher], [data-switch-repo]"); await waitElement("[data-repository-menu], [data-repo-sheet]"); }
       if (action === "quality") {
         // Tablet starts with the panel collapsed.

@@ -328,3 +328,60 @@ fn debt_cli_formats_and_exit_codes() {
         2
     );
 }
+
+// Issue #250's comparison test: compared on the base map, a cycle broken by
+// a removed edge is `removed`, a new god file is `added` even though the file
+// was already in another finding, and a metric change on an unchanged
+// finding is `shared`, not removed + added.
+#[test]
+fn comparison_reads_findings_by_identity() {
+    use tolmap::lens_comparison::{LensChange, LensDelta};
+    let base = synthetic();
+    let mut head = synthetic();
+    head.edges.retain(|e| *e != [6, 2]); // breaks the a -> b -> c -> a cycle
+    head.nodes[1].0 .4 = 60; // core.py: now top complexity...
+    head.nodes[1].0 .6 = 20.0; // ...and top fan-in, so a god file
+    head.nodes[12].0 .5 = 40; // hot.py: churn up, still a hotspot
+    let (before, after, changes) = debt::compare(&base, &head, &head, &[]);
+    assert!(before.unresolved.is_empty() && after.unresolved.is_empty());
+    let status = |label: &str, kind: &str| -> Vec<LensChange> {
+        changes
+            .iter()
+            .filter(|d: &&LensDelta| d.label == label && d.kind == kind)
+            .map(|d| d.status)
+            .collect()
+    };
+    let cycle = &before.areas[0].label;
+    assert!(cycle.starts_with("district cycle: "));
+    assert_eq!(status(cycle, "area"), [LensChange::Removed; 6]);
+    assert!(changes
+        .iter()
+        .filter(|d| d.kind != "area")
+        .all(|d| d.status == LensChange::Removed));
+    assert_eq!(
+        status("god file: src/a/core.py", "area"),
+        [LensChange::Added]
+    );
+    assert_eq!(
+        status("god file: src/b/god.py", "area"),
+        [LensChange::Removed]
+    );
+    assert_eq!(
+        status("hotspot: src/c/hot.py", "area"),
+        [LensChange::Shared]
+    );
+    // core.py was in the cycle area at base; it is still a new god file.
+    assert_eq!(
+        changes
+            .iter()
+            .filter(|d| d.status == LensChange::Added)
+            .count(),
+        1
+    );
+    // Same inputs, same output.
+    let again = debt::compare(&base, &head, &head, &[]);
+    assert_eq!(
+        serde_json::to_string(&again.2).unwrap(),
+        serde_json::to_string(&changes).unwrap()
+    );
+}

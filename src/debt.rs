@@ -11,7 +11,11 @@
 //!
 //! Plain `//` comments on exported types, not doc comments: ts-rs copies doc
 //! comments into the bindings.
-use crate::lens::{HopMode, Lens, LensArea, LensColor, LensNote, LensPath, LensStop, LENS_VERSION};
+use crate::lens::{
+    self, FileRename, HopMode, Lens, LensArea, LensColor, LensNote, LensPath, LensReport, LensStop,
+    LENS_VERSION,
+};
+use crate::lens_comparison::{self, ComparisonMode, LensDelta};
 use crate::schema::{CoverageReport, MapDocument};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -886,4 +890,78 @@ pub fn run(map: &std::path::Path, format: &str) -> i32 {
     };
     print!("{rendered}");
     0
+}
+
+// ---- built-in lens and comparison (issue #250 items 3-4) -------------------
+
+// The built-in debt lens's name in `LensResponse`/`LensComparison` and the
+// viewer's `?lens=`. Repository lens names start with [a-z0-9], so this can
+// never collide with `.tolmap/lenses/<name>.toml`.
+pub const LENS_NAME: &str = "@debt";
+
+const KINDS: [&str; 5] = [
+    KIND_CYCLE,
+    KIND_MISPLACED,
+    KIND_GOD,
+    KIND_HOTSPOT,
+    KIND_UNREACHED,
+];
+
+// The debt lens resolved against the map it was generated from.
+pub fn lens_report(map: &MapDocument) -> LensReport {
+    lens::resolve(&to_lens(&findings(map), map), map)
+}
+
+// Debt at base and at head, compared on the base map. Head findings come
+// from the head snapshot's own map (its own partition); the head lens is
+// resolved on `head_frame`, the head projected onto the base partition
+// (`check::lens_head_map`), so only base geometry is ever drawn.
+//
+// `lens_comparison::changes` keys an area item by its member file alone, so
+// areas match across labels. One file is often several findings at once (a
+// god file is usually a hotspot too), and one comparison over the whole lens
+// would then read a new god file as `shared`. Comparing each kind on its own
+// keeps every file to at most one item per comparison: within a kind a file
+// is in at most one finding (cycles are disjoint district sets). The
+// statuses are `changes`' own; none is added.
+pub fn compare(
+    base: &MapDocument,
+    head: &MapDocument,
+    head_frame: &MapDocument,
+    renames: &[FileRename],
+) -> (LensReport, LensReport, Vec<LensDelta>) {
+    let before = lens_report(base);
+    let mut after = lens::resolve(&to_lens(&findings(head), head), head_frame);
+    lens::report_renames(&mut after, renames);
+    let only = |report: &LensReport, kind: &str| LensReport {
+        areas: report
+            .areas
+            .iter()
+            .filter(|a| {
+                a.label
+                    .strip_prefix(kind)
+                    .is_some_and(|rest| rest.starts_with(": "))
+            })
+            .cloned()
+            .collect(),
+        paths: if kind == KIND_CYCLE {
+            report.paths.clone()
+        } else {
+            vec![]
+        },
+        ..report.clone()
+    };
+    let changes = KINDS
+        .iter()
+        .flat_map(|kind| {
+            lens_comparison::changes(
+                &only(&before, kind),
+                &only(&after, kind),
+                base,
+                renames,
+                ComparisonMode::Commits,
+            )
+        })
+        .collect();
+    (before, after, changes)
 }

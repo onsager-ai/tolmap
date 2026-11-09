@@ -26,7 +26,7 @@ pub struct LensQuery {
     pub commit: Option<String>,
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {
     tokio::task::spawn_blocking(f)
@@ -36,7 +36,7 @@ async fn blocking<T: Send + 'static>(
 
 // The indexed snapshot a lens resolves against. Without `commit` the latest
 // indexed one, reported in the response so the caller can pin it.
-fn snapshot(
+pub(super) fn snapshot(
     state: &AppState,
     owner: &str,
     repo: &str,

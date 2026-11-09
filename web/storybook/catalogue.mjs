@@ -11,6 +11,9 @@ export const cases = [
   ['map-overview', 'Map overview', '/onsager-ai/tolmap', 'map-ready'],
   ...['loaded', 'unresolved', 'empty', 'error'].map(state => [`map-lens-${state}`, `Lenses · ${state}`, `/onsager-ai/tolmap${state === 'empty' ? '' : '?lens=overview'}`, `lens-${state}`, 'lenses']),
   ...['commits', 'overlap', 'loading', 'stale', 'error'].map(state => [`map-lens-compare-${state}`, `Lens comparison · ${state}`, `/onsager-ai/tolmap?lens=overview&lens_compare=true&compare=true&base=${'a'.repeat(40)}&head=${state === 'overlap' ? 'a'.repeat(40) : 'b'.repeat(40)}${state === 'overlap' ? '&other_lens=other' : ''}`, `lens-compare-${state}`, 'lens-comparison']),
+  // Issue #250: the built-in debt lens (`?lens=@debt`) and its comparison.
+  ...['loaded', 'empty', 'error'].map(state => [`map-debt-${state}`, `Debt lens · ${state}`, '/onsager-ai/tolmap?lens=%40debt', `debt-${state}`, 'debt']),
+  ['map-debt-compare', 'Debt comparison', `/onsager-ai/tolmap?lens=%40debt&lens_compare=true&compare=true&base=${'a'.repeat(40)}&head=${'b'.repeat(40)}`, 'debt-compare', 'lens-comparison'],
   ['map-freshness', 'Snapshot freshness on the map', '/onsager-ai/tolmap?job=fixture', 'freshness-in-map'],
   ['map-loading', 'Map loading', '/onsager-ai/tolmap', 'map-loading'],
   ['map-unavailable', 'Map unavailable', '/onsager-ai/tolmap', 'map-unavailable'],

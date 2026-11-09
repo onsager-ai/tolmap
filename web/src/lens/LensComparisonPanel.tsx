@@ -5,6 +5,7 @@ import type { LensDelta } from "@bindings/LensDelta";
 import type { LensList } from "@bindings/LensList";
 import type { LensTarget } from "@bindings/LensTarget";
 import { API_BASE } from "@/api/client";
+import { isDebtLens, lensDisplayName } from "./debt";
 import type { MapSearch } from "@/routes/search";
 import "@/comparison/comparison.css";
 
@@ -14,7 +15,9 @@ export function useLensComparison(owner: string, repo: string, search: MapSearch
   return useQuery({ queryKey: ["lens-comparison", owner, repo, query.toString(), commit, mapSha256], enabled: !!search.lens_compare && !!search.base && !!search.head && !!search.lens && !!commit && !!mapSha256,
     retry: false, staleTime: 0, gcTime: 0,
     queryFn: async ({ signal }) => {
-      const response = await fetch(`${API_BASE}/compare/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/lenses?${query}`, { signal, cache: "no-store" });
+      // The built-in debt lens has its own route and compares commits only.
+      const resource = isDebtLens(search.lens) ? `debt?${new URLSearchParams({ base: search.base ?? "", head: search.head ?? "" })}` : `lenses?${query}`;
+      const response = await fetch(`${API_BASE}/compare/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${resource}`, { signal, cache: "no-store" });
       const value = await response.json();
       if (!response.ok) throw new Error(value.message ?? "Lens comparison unavailable");
       const result = value as LensComparison;
@@ -71,7 +74,7 @@ export function LensComparisonPanel({ search, result, list, update, pick, embedd
   return <aside ref={panelRef} className={`comparison-panel lens-comparison-panel${embedded ? " lens-comparison-sheet" : ""}`} aria-label="Lens comparison" data-lens-comparison>
     <header><h2>Lens comparison</h2><button onClick={() => update({ lens_compare: undefined, other_lens: undefined, compare: undefined, head: undefined, commit: search.base })}>Return to lens</button></header>
     <div className="lens-comparison-summary" data-lens-comparison-summary data-lens-comparison-state={!expanded && data ? "loaded" : undefined}>
-      {expanded && <p>{overlap ? `${search.lens} ∩ ${search.other_lens}` : search.lens} · {search.base?.slice(0, 8)}{!overlap && search.head ? ` → ${search.head.slice(0, 8)}` : ""}</p>}
+      {expanded && <p>{overlap ? `${search.lens} ∩ ${search.other_lens}` : search.lens && lensDisplayName(search.lens)} · {search.base?.slice(0, 8)}{!overlap && search.head ? ` → ${search.head.slice(0, 8)}` : ""}</p>}
       {data && <p>{embedded && !expanded ? <button aria-label="View changes" onClick={onExpand}>{overlap ? `${changed.length} differing · ${unchanged.length} in both` : `${changed.length} changes · ${unchanged.length} unchanged`}</button> : overlap ? `${changed.length} differing · ${unchanged.length} in both` : `${changed.length} changes · ${unchanged.length} unchanged`}</p>}
       {embedded && !expanded && !data && <button onClick={onExpand}>{result.error ? "Stale or unavailable · View details" : "Set up comparison"}</button>}
     </div>
@@ -80,7 +83,7 @@ export function LensComparisonPanel({ search, result, list, update, pick, embedd
         {showForm && <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); const other = String(values.get("other") ?? ""); const base = String(values.get("base")); setEditing(false); update({ lens_compare: true, compare: true, base, head: other ? base : String(values.get("head")), other_lens: other || undefined }); }}>
           <label>Base commit<input aria-label="Lens base commit" name="base" required pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.base ?? search.commit} /></label>
           <label>Head commit<input aria-label="Lens head commit" name="head" pattern="[a-f0-9]{40}|[a-f0-9]{64}" defaultValue={search.head} placeholder="Same lens at another commit" /></label>
-          <label>Compare with lens at base<select name="other" aria-label="Compare with lens" defaultValue={search.other_lens ?? ""}><option value="">Same lens across commits</option>{search.other_lens && !list?.names.includes(search.other_lens) && <option value={search.other_lens}>{search.other_lens}</option>}{list?.names.filter(name => name !== search.lens).map(name => <option key={name}>{name}</option>)}</select></label>
+          {!isDebtLens(search.lens) && <label>Compare with lens at base<select name="other" aria-label="Compare with lens" defaultValue={search.other_lens ?? ""}><option value="">Same lens across commits</option>{search.other_lens && !list?.names.includes(search.other_lens) && <option value={search.other_lens}>{search.other_lens}</option>}{list?.names.filter(name => name !== search.lens).map(name => <option key={name}>{name}</option>)}</select></label>}
           <button>Compare lenses</button>
         </form>}
       </div>

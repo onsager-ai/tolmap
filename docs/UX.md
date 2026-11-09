@@ -201,6 +201,32 @@ Loading/revalidation hides previous paint; stale identities, unavailable source
 and mismatched snapshots show an explicit error. Return to lens keeps the base
 commit pinned. Physical-device and owner visual acceptance remain separate.
 
+#### Debt lens
+
+**Debt** is a built-in entry in the same picker, under *Built-in*, separate
+from the repository's saved lenses (*Repository*). It is computed from the
+stored map, never read from `.tolmap/lenses/`, so a repository lens can never
+replace it; share it as `?lens=%40debt` (`@debt` is outside the repository lens
+name charset). It shows the five structural findings (docs/GLOSSARY.md) through
+the unchanged lens overlay: one tinted area per finding (district cycles red,
+misplaced files amber, god files purple, hotspots orange, files with no inbound
+edge found grey), one path per district cycle, and notes carrying the measured
+values. Overview tints districts only; file findings follow the 40 px gate. A
+cycle's closing edges are solid computed hops; the dashed declared hops between
+them only join two files of one district and claim no edge. A snapshot with no
+findings shows an explicit empty state, never an empty overlay. Every count is
+a lower bound over the map's edges; a file with no inbound edge found is never
+called dead.
+
+**Compare this lens** on Debt compares the findings at two commits on the base
+map (`?lens=%40debt&lens_compare=true&compare=true&base=<sha>&head=<sha>`).
+Debt compares commits only: there is no second lens to choose. Head findings
+come from the head snapshot, projected onto the base map, so a finding on a
+file new at head tints only its district. A finding that disappears is
+*Removed*, a new one *Added*, a cycle or area that grows shows *Added* members,
+and a finding whose measured values changed stays *Unchanged*: labels name
+files, never values.
+
 ### 4.8 Search (artboard "Search active")
 
 - Tapping the pill turns the screen into search: back button, a 16 px input (anything under 16 px makes iPhone Safari zoom the page on focus and stay zoomed), a clear button, and results grouped by kind: District, Files, Symbols. Rows are ≥ 56 px, the match is bold, file rows show the directory in mono beneath the name.
