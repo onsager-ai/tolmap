@@ -10120,7 +10120,6 @@ mod tests {
             .into_iter()
             .collect(),
             rust_mod: None,
-            build_entries: None,
             build_output_mirror: 0,
             python_cross_project: 0,
         };
@@ -10140,7 +10139,6 @@ mod tests {
                 .into_iter()
                 .collect(),
             rust_mod: None,
-            build_entries: None,
             build_output_mirror: 0,
             python_cross_project: 0,
         };

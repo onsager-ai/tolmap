@@ -61,18 +61,38 @@ pub const CYCLE_LENS_PATHS: usize = 20;
 //   `#[cfg(test)] mod tests;` child: nothing `use`s it, and its parent's `mod`
 //   gives no inbound edge on the map, so on semon 04aeb54 9 of the 26 files
 //   with no inbound edge found were `tests.rs` (docs/FINDINGS.md, finding 63);
+const TEST_STEMS: &[&str] = &["tests"];
+const TEST_DIRS: &[&str] = &["test", "tests", "__tests__", "spec", "e2e"];
+const TEST_MARKERS: &[&str] = &[".test.", ".spec.", ".stories."];
+const TEST_STEM_PREFIXES: &[&str] = &["test_"];
+const TEST_STEM_SUFFIXES: &[&str] = &["_test", "_spec"];
+
 pub const ENTRY_STEMS: &[&str] = &[
-    "main", "__main__", "__init__", "index", "lib", "mod", "build", "app", "cli", "server",
-    "setup", "conftest", "manage", "wsgi", "asgi", "tests",
+    "main",
+    "__main__",
+    "__init__",
+    "index",
+    "lib",
+    "mod",
+    "build",
+    "app",
+    "cli",
+    "server",
+    "setup",
+    "conftest",
+    "manage",
+    "wsgi",
+    "asgi",
+    TEST_STEMS[0],
 ];
 // - a directory on its path is one of these (tests, tools and examples are
 //   run, not imported);
 pub const ENTRY_DIRS: &[&str] = &[
-    "test",
-    "tests",
-    "__tests__",
-    "spec",
-    "e2e",
+    TEST_DIRS[0],
+    TEST_DIRS[1],
+    TEST_DIRS[2],
+    TEST_DIRS[3],
+    TEST_DIRS[4],
     "bin",
     "scripts",
     "examples",
@@ -80,10 +100,16 @@ pub const ENTRY_DIRS: &[&str] = &[
 ];
 // - its base name contains one of these (test, story, tool config and
 //   ambient declaration files);
-pub const ENTRY_MARKERS: &[&str] = &[".test.", ".spec.", ".stories.", ".config.", ".d."];
+pub const ENTRY_MARKERS: &[&str] = &[
+    TEST_MARKERS[0],
+    TEST_MARKERS[1],
+    TEST_MARKERS[2],
+    ".config.",
+    ".d.",
+];
 // - or its stem starts `test_` or ends `_test` / `_spec` (Python, Go, Ruby).
-pub const ENTRY_STEM_PREFIXES: &[&str] = &["test_"];
-pub const ENTRY_STEM_SUFFIXES: &[&str] = &["_test", "_spec"];
+pub const ENTRY_STEM_PREFIXES: &[&str] = &[TEST_STEM_PREFIXES[0]];
+pub const ENTRY_STEM_SUFFIXES: &[&str] = &[TEST_STEM_SUFFIXES[0], TEST_STEM_SUFFIXES[1]];
 
 // ---- report ----------------------------------------------------------------
 
@@ -283,20 +309,14 @@ pub fn is_entry_path(path: &str) -> bool {
 
 fn is_test_path(path: &str) -> bool {
     let (dirs, name) = path.rsplit_once('/').unwrap_or(("", path));
-    if dirs
-        .split('/')
-        .any(|dir| matches!(dir, "test" | "tests" | "__tests__" | "spec" | "e2e"))
-    {
+    if dirs.split('/').any(|dir| TEST_DIRS.contains(&dir)) {
         return true;
     }
     let stem = name.split('.').next().unwrap_or(name);
-    stem == "tests"
-        || [".test.", ".spec.", ".stories."]
-            .iter()
-            .any(|marker| name.contains(marker))
-        || stem.starts_with("test_")
-        || stem.ends_with("_test")
-        || stem.ends_with("_spec")
+    TEST_STEMS.contains(&stem)
+        || TEST_MARKERS.iter().any(|marker| name.contains(marker))
+        || TEST_STEM_PREFIXES.iter().any(|prefix| stem.starts_with(prefix))
+        || TEST_STEM_SUFFIXES.iter().any(|suffix| stem.ends_with(suffix))
 }
 
 fn is_rust_target_path(path: &str) -> bool {
