@@ -39,7 +39,7 @@ import subprocess
 import sys
 
 MAX_COMMITS = 4000
-THRESHOLDS = [(2, 0.0), (3, 0.5), (5, 0.5), (5, 0.7), (10, 0.5)]
+THRESHOLDS = [(2, 0.0), (3, 0.35), (3, 0.5), (5, 0.5), (5, 0.7), (10, 0.5)]
 
 
 def history(clone, files):
