@@ -1,5 +1,6 @@
 import { LensComparisonPanel, useLensComparison } from "@/lens/LensComparisonPanel";
 import { LensPanel, useLenses } from "@/lens/LensPanel";
+import { LensWalkthrough, walkthroughHop, walkthroughStep } from "@/lens/LensWalkthrough";
 import type { LensTarget } from "@bindings/LensTarget";
 import { ComparisonPanel, useComparison } from "@/comparison/ComparisonPanel";
 import { SourceReader } from "@/reader/SourceReader";
@@ -77,6 +78,17 @@ export function MapView() {
 
   const lenses = useLenses(owner, repo, indexedCommit ?? search.base ?? search.commit ?? early.commit, search.lens, !!doc && !early.waiting);
   const lensComparison = useLensComparison(owner, repo, search, indexedCommit, mapSha256);
+  // Issue #248: walkthrough steps. `walkRef` is this render's step function
+  // (set below, after the map is known); the keyboard and the one deep-link
+  // restore call it, so neither moves the camera on lens selection alone.
+  const walkRef = useRef<((name: string, step: number, anim?: boolean) => void) | null>(null);
+  const walkRestored = useRef(false);
+  useEffect(() => {
+    if (walkRestored.current || !lenses.data) return;
+    walkRestored.current = true;
+    if (search.path && search.step && !search.lens_compare) walkRef.current?.(search.path, search.step, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lenses.data]);
 
   // Issue #82 C2 scope item 1: districts whose symbols the map/sidebar
   // currently want. Two sources add to this set and it only ever grows for
@@ -297,6 +309,18 @@ export function MapView() {
   // clears `sym` (selectHierSymbol below), so the two never compete for
   // what the breadcrumb/sidebar actually show.
   const selHSym = sel != null && search.hsym != null ? search.hsym : null;
+  // A walkthrough can select a flat symbol before its district symbols load.
+  // Once they arrive, use the matching hierarchical selection for rendering
+  // without changing the selected card, URL, or camera.
+  const walkStop = !search.lens_compare ? walkthroughStep(lenses.data?.report, search.path, search.step)?.stop.target : undefined;
+  const flatSymbol = sel != null && selSym != null ? doc?.S[String(sel)]?.[selSym] : undefined;
+  const walkSymbols = walkStop && walkStop.file === sel && flatSymbol && walkStop.symbol
+    && flatSymbol[0] === walkStop.symbol.name && flatSymbol[2] === walkStop.symbol.start
+    ? districtSymbolsMap.get(walkStop.district) : undefined;
+  const walkLocal = walkSymbols?.symbols.findIndex(row => row[0] === walkStop!.file
+    && (row[1] === walkStop!.symbol!.name || walkStop!.symbol!.name.endsWith(`.${row[1]}`))
+    && row[3] === walkStop!.symbol!.start) ?? -1;
+  const renderHSym = selHSym ?? (walkSymbols && walkLocal >= 0 ? walkSymbols.symbol_indices[walkLocal] : null);
   const desktopReaderEntry = useRef(false);
   function sourceRange(file: number, symbol?: number | null, hierarchical?: number | null) {
     const h = doc && hierarchical != null ? districtSymbolsMap.get(D_(doc, file)) : undefined;
@@ -662,13 +686,15 @@ export function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrow, owner, repo]);
   // A selection (a deep link included) is one entry: back clears it before
-  // it leaves the map.
+  // it leaves the map. Walkthrough steps replace the current entry instead
+  // of pushing a selection entry for the card opened by the first step.
+  const phoneWalkthrough = !!search.lens && !!search.path && !!search.step && !search.lens_compare;
   useEffect(() => {
     if (!narrow || skippingRef.current) return;
-    if (phoneHistorySelection) pushOverlay("sel");
-    else dropOverlay("sel");
+    if (!phoneHistorySelection) dropOverlay("sel");
+    else if (!phoneWalkthrough) pushOverlay("sel");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phoneHistorySelection, narrow]);
+  }, [phoneHistorySelection, phoneWalkthrough, narrow]);
   // Establish the selected map entry before reading, including slow deep links.
   useEffect(() => {
     if (narrow && search.read && !skippingRef.current) pushOverlay("reader");
@@ -843,6 +869,7 @@ export function MapView() {
   }
   // docs/UX.md §5.2: one pure dispatcher routes page shortcuts; fields,
   // menus and dialogs keep their own keyboard behaviour.
+  const walkKeys = !search.lens_compare && !!search.path && !!search.step && !!lenses.data;
   useEffect(() => {
     if (narrow) return;
     function onKey(e: KeyboardEvent) {
@@ -866,6 +893,7 @@ export function MapView() {
         altKey: e.altKey,
         shiftKey: e.shiftKey,
         overviewOpen: desktopPanelOpen && desktopViews.at(-1)?.type === "overview",
+        walkthrough: walkKeys,
       });
       if (action.type === "none" || action.type === "search") return; // SearchChrome owns focus capture.
       e.preventDefault();
@@ -881,6 +909,11 @@ export function MapView() {
       else if (action.type === "keyboard-list") setKeyboardOpen(true);
       else if (action.type === "overview-move") moveDesktopOverviewIndex(action.direction);
       else if (action.type === "overview-activate") activateDesktopOverviewIndex();
+      else if (action.type === "walk-step") {
+        const stops = lenses.data?.report.paths.find((path) => path.name === search.path)?.stops.length ?? 0;
+        const next = search.step! + action.direction;
+        if (next >= 1 && next <= stops) walkRef.current?.(search.path!, next);
+      }
       else if (action.type === "escape") {
         if (desktopSearchOpen) setDesktopSearchOpen(false);
         else if (keyboardOpen) setKeyboardOpen(false);
@@ -889,7 +922,7 @@ export function MapView() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [narrow, desktopPanelOpen, desktopViews, desktopSearchOpen, keyboardOpen, isFullscreen, selD, sel, doc, themeChoice, search.read]);
+  }, [narrow, desktopPanelOpen, desktopViews, desktopSearchOpen, keyboardOpen, isFullscreen, selD, sel, doc, themeChoice, search.read, walkKeys, search.path, search.step, lenses.data]);
 
   const rendererCallbacks: MapRendererCallbacks = {
     onSelectFile: (i) => (pathPick && !pathEnds ? completePath(i) : selectFile(i)),
@@ -957,24 +990,48 @@ export function MapView() {
     if (!doc) return;
     if (narrow && layersOpen) closeLayers();
     if (narrow && search.lens_compare && (detent === "half" || detent === "full")) comparisonDetentRef.current = detent;
+    if (target.symbol) {
+      const raw = districtSymbolsMap.get(target.district);
+      const local = raw?.symbols.findIndex(row => row[0] === target.file
+        && (row[1] === target.symbol!.name || target.symbol!.name.endsWith(`.${row[1]}`))
+        && row[3] === target.symbol!.start) ?? -1;
+      // A walkthrough symbol needs the same hierarchical selection the
+      // renderer's card pass uses. The legacy per-file `sym` selection opens
+      // its sidebar card but leaves the lens marker subject to label culling.
+      if (raw && local >= 0) { selectHierSymbol(raw.symbol_indices[local]); return; }
+    }
     const symbol = target.symbol ? doc.S[String(target.file)]?.findIndex(row => row[0] === target.symbol!.name && row[2] === target.symbol!.start) : undefined;
     selectFile(target.file, { symbol: symbol != null && symbol >= 0 ? symbol : undefined });
-    if (target.symbol && (symbol == null || symbol < 0)) {
-      const raw = districtSymbolsMap.get(target.district);
-      const local = raw?.symbols.findIndex(row => row[0] === target.file && row[1] === target.symbol!.name && row[3] === target.symbol!.start) ?? -1;
-      if (raw && local >= 0) selectHierSymbol(raw.symbol_indices[local]);
-    }
   }
   function chooseLens(lens?: string) {
-    updateSearch({ lens, lens_compare: undefined, other_lens: undefined });
+    updateSearch({ lens, lens_compare: undefined, other_lens: undefined, path: undefined, step: undefined });
     if (narrow) {
       closeLayers();
       changeDetent("peek");
     }
   }
   const compareLens = () => { if (narrow) { if (layersOpen) closeLayers(); changeDetent("half"); } updateSearch({ lens_compare: true, compare: true, base: search.base ?? indexedCommit, head: search.head }); };
-  const lensPanel = <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode={narrow ? "picker" : "full"} />;
-  const activeLens = search.lens ? <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
+  /** Issue #248: one explicit walkthrough step. It opens the stop's card and
+   * frames the stop and its arriving hop under the stop gates; an unresolved
+   * stop clears the card and leaves the camera where it is. The URL is
+   * replaced, so Back never walks back through steps (docs/UX.md §3.4). */
+  function goStep(name: string, step: number, anim = true) {
+    const current = walkthroughStep(lenses.data?.report, name, step);
+    if (!doc || !current) return;
+    const { path, index, stop } = current;
+    if (stop.target) {
+      pickLensStop(stop.target);
+      if (districtClass(doc.districts[String(stop.target.district)]) !== "unconnected") {
+        canvasRef.current?.frameLensStep(stop.target, walkthroughHop(path, index, doc.F, (file) => D_(doc, file)), anim);
+      }
+    } else if (sel != null || selD != null || search.dir) clearAll();
+    updateSearch({ path: name, step: index + 1 });
+  }
+  walkRef.current = goStep;
+  const walk = !search.lens_compare && search.path && search.step && lenses.data ? { name: search.path, step: search.step } : null;
+  const walkthrough = walk && lenses.data ? <LensWalkthrough report={lenses.data.report} name={walk.name} step={walk.step} go={(step) => goStep(walk.name, step)} exit={() => updateSearch({ path: undefined, step: undefined })} keyboard={!narrow && !touch} /> : null;
+  const lensPanel = <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} walk={narrow || search.lens_compare ? undefined : (path) => goStep(path, 1)} mode={narrow ? "picker" : "full"} />;
+  const activeLens = search.lens ? <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} walk={search.lens_compare ? undefined : (path) => goStep(path, 1)} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
 
   const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : null;
   const sourceAction = !search.read && sel != null && (!search.compare || search.lens_compare) ? <button ref={sourceActionRef} className={`source-action${narrow ? " source-action-sheet" : ""}`} onClick={openSource}>Read selected source</button> : null;
@@ -1014,7 +1071,7 @@ export function MapView() {
       folderLabels={packageLayout.folderLabels}
       activeDirectory={activeDirectory}
       districtSymbols={districtSymbolsMap}
-      selHSym={selHSym}
+      selHSym={renderHSym}
       insets={mapInsets}
       callbacks={{ ...rendererCallbacks, onSelectLensStop: pickLensStop }}
       handleRef={canvasRef}
@@ -1040,6 +1097,7 @@ export function MapView() {
         {!search.lens_compare && comparisonChrome}
         <PhoneChrome
           comparison={search.lens_compare ? comparisonChrome : undefined}
+          walkthrough={walkthrough}
           lenses={lensPanel}
           activeLens={activeLens}
           sourceAction={sourceAction}
@@ -1240,6 +1298,7 @@ export function MapView() {
         onToggleFullscreen={toggleFullscreen}
       />
       <DesktopPanel
+        walkthrough={walkthrough}
         lenses={lensPanel}
         doc={doc}
         repoSlug={`${owner}/${repo}`}

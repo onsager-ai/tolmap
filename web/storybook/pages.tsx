@@ -75,6 +75,14 @@ export function page(id: string): StoryObj<Args> {
         if (root.querySelector("[data-phone-shell]")) { await click('[aria-label="Map layers"]'); await waitElement("[data-layers-sheet]"); }
         else await waitElement("[data-layer-segmented]");
       }
+      if (action === "lens-walk") {
+        // Issue #248: a deep link restores the step, its card and its frame.
+        const state = id.slice("map-lens-walk-".length);
+        if (!root.querySelector("[data-phone-shell]") && root.querySelector("[data-panel-tab]")) await click("[data-panel-tab]");
+        await waitElement(`[data-lens-walkthrough][data-lens-walk-state="${state}"]`);
+        if (state !== "unresolved") await waitElement('[data-sheet-card="file"], [data-sheet-card="symbol"]');
+        await waitElement("[data-lens-overlay]");
+      }
       if (action === "lens-comparison") {
         const state = id.endsWith("loading") ? "loading" : id.endsWith("stale") || id.endsWith("error") ? "error" : "loaded";
         await waitElement(`[data-lens-comparison-state="${state}"]`);

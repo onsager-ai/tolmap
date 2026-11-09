@@ -1,5 +1,6 @@
 import type { LensComparison } from "@bindings/LensComparison";
 import type { LensReport } from "@bindings/LensReport";
+import type { LensTarget } from "@bindings/LensTarget";
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { DistrictSymbols, MapDocument } from "@/types";
 import { MapRenderer, type FrameInsets, type MapRenderState, type MapRendererCallbacks } from "./MapRenderer";
@@ -17,6 +18,8 @@ export interface MapCanvasHandle {
   panToDistrict(d: number, anim?: boolean): void;
   /** Frame several districts together (Package overview row). */
   frameDistricts(districts: readonly number[]): void;
+  /** Issue #248: frame one lens walkthrough step under the stop gates. */
+  frameLensStep(target: LensTarget, hop: readonly LensTarget[], anim?: boolean): void;
   /** Apply the panel's transient multi-district hover through the renderer. */
   highlightDistricts(districts: readonly number[] | null): void;
   /** Still a real zoom -- the one thing selecting is still allowed to do,
@@ -134,6 +137,7 @@ export function MapCanvas({
       panTo: (i, anim = true) => rendererRef.current?.panTo(i, anim),
       panToDistrict: (d, anim = true) => rendererRef.current?.panToDistrict(d, anim),
       frameDistricts: (districts) => rendererRef.current?.frameDistricts(districts),
+      frameLensStep: (target, hop, anim = true) => rendererRef.current?.frameLensStep(target, hop, anim),
       highlightDistricts: (districts) => rendererRef.current?.highlightDistricts(districts),
       zoomDistrict: (d) => rendererRef.current?.zoomDistrict(d),
       zoomBy: (f) => rendererRef.current?.zoomBy(f),

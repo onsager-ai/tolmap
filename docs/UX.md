@@ -174,6 +174,24 @@ Layers sheet, then collapses Half/Full to Peek before clearing a selection. The
 source reader closes before its underlying card. A deep link restores the lens
 at Peek without restoring a modal sheet.
 
+**Start walkthrough** on any path, in the desktop inspector or the phone's lens
+sheet, steps through its stops in order. A walkthrough card above the stop's
+card shows the step (n of m), Previous, Next and End, the hop arriving at the
+stop (computed, with its edge kind and route files, or declared, with its
+reason, in the dashed declared style) and the notes anchored to that stop. On
+desktop, ← and → also step. Only an explicit step moves the camera: it opens
+the stop's file or symbol card and frames the stop with its arriving hop when
+both fit. If the stop would be under its gate at that zoom (the 40 px file
+footprint, or 110 px short side for every containing class card), the step
+zooms just far enough to pass it; it never draws a stop under the gate. A
+step whose symbol detail has not loaded frames the file, then refines once
+the symbols arrive unless the camera has moved. An unresolved stop remains a
+step: it shows its resolver kind and explanation, clears the card and leaves
+the camera where it is. Share `?lens=<name>&path=<path>&step=<n>` (n is
+1-based); a deep link restores that step. Each step replaces the URL, so Back
+follows §3.4 and never walks back through steps. Choosing another lens ends
+the walkthrough. Neither the layout nor the map document changes.
+
 **Compare this lens** opens the existing base-map comparison frame. The commit
 comparison panel also offers **Compare active lens**. Choose a head commit for
 the same lens, or another saved lens at the base commit. Share

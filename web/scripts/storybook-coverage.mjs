@@ -8,6 +8,7 @@ export const REQUIRED_STORIES = [
   'map-lens-compare-commits', 'map-lens-compare-overlap', 'map-lens-compare-loading', 'map-lens-compare-stale', 'map-lens-compare-error',
   'map-debt-loaded', 'map-debt-empty', 'map-debt-error', 'map-debt-compare',
   'map-search', 'map-search-empty', 'map-layers', 'map-repositories', 'map-quality', 'map-keyboard', 'map-path',
+  'map-lens-walk-first', 'map-lens-walk-middle', 'map-lens-walk-last', 'map-lens-walk-unresolved',
   'source-ready', 'source-loading', 'source-unavailable', 'source-missing', 'source-expired', 'source-binary', 'source-large', 'source-unsupported', 'source-long-line', 'source-search', 'source-search-empty',
   'freshness-queued', 'freshness-indexing', 'freshness-failed', 'freshness-stale', 'freshness-complete', 'map-freshness',
   'reserved-about', 'reserved-docs', 'reserved-api', 'reserved-settings', 'reserved-assets', 'reserved-static', 'reserved-health', 'reserved-login', 'reserved-admin', 'reserved-search',

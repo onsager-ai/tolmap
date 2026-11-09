@@ -225,6 +225,13 @@ enum Command {
         #[command(subcommand)]
         command: LensCommand,
     },
+    /// Organization maps (issue #255, docs/API.md): several repositories,
+    /// each pinned to a full commit in a `<name>.org.toml` manifest, read
+    /// as one system through their declared dependencies.
+    Org {
+        #[command(subcommand)]
+        command: OrgCommand,
+    },
     /// Step 2 of the polyglot union-extraction work (docs/FINDINGS.md
     /// finding 13): measures what `--all-sources` (or an explicit
     /// `--pkg`/`--lang` set) actually produces on a repository -- candidate
@@ -347,6 +354,34 @@ enum LensCommand {
         #[arg(long)]
         map: PathBuf,
         /// Directory to write the lens files into; created if absent.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OrgCommand {
+    /// Validates an organization manifest: known keys only, `owner/repo`
+    /// members listed once, each pinned to a full commit. Exits 0 when
+    /// valid, 2 otherwise.
+    Check { manifest: PathBuf },
+    /// Builds the organization document: members with their map digests,
+    /// repository edges from declared Cargo, npm/pnpm, Go and Python
+    /// dependencies, pin skew, external and unresolved dependencies. Each
+    /// member is read from a temporary worktree of its local clone at its
+    /// commit; member maps are read or built, never changed. Exits 0, 2 on
+    /// an invalid manifest or missing input, 3 on an internal error.
+    Build {
+        manifest: PathBuf,
+        /// `<DIR>/<owner>/<repo>` is a local clone of each member that
+        /// gives no `path` in the manifest.
+        #[arg(long)]
+        clones: Option<PathBuf>,
+        /// `<DIR>/<owner>/<repo>/<commit>.json` is a stored map of a
+        /// member; a member without one has its map built from its commit.
+        #[arg(long)]
+        maps: Option<PathBuf>,
+        /// Write the document here instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -794,6 +829,22 @@ fn main() -> Result<()> {
         Command::Lens {
             command: LensCommand::Suggest { map, out },
         } => std::process::exit(tolmap::lens_suggest::run(&map, out.as_deref())),
+        Command::Org {
+            command: OrgCommand::Check { manifest },
+        } => std::process::exit(tolmap::org::run_check(&manifest)),
+        Command::Org {
+            command:
+                OrgCommand::Build {
+                    manifest,
+                    clones,
+                    maps,
+                    out,
+                },
+        } => std::process::exit(tolmap::org::run_build(
+            &manifest,
+            &tolmap::org::BuildOptions { clones, maps },
+            out.as_deref(),
+        )),
         Command::Check {
             repo,
             base,

@@ -4829,7 +4829,11 @@ fn segment_matches(pattern: &str, text: &str) -> bool {
 }
 
 fn go_module_line(path: &Path) -> Option<String> {
-    let contents = fs::read_to_string(path).ok()?;
+    go_module_in(&fs::read_to_string(path).ok()?)
+}
+
+/// The module path a `go.mod`'s text declares.
+pub(crate) fn go_module_in(contents: &str) -> Option<String> {
     contents
         .lines()
         .find_map(|line| line.strip_prefix("module "))

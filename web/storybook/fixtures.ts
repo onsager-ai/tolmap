@@ -112,6 +112,21 @@ export async function installFixture(state: string) {
         paths: [{ name: "request-flow", stops: [{ spec: map.F[symbolFile], target: target(symbolFile) }, { spec: state === "lens-unresolved" ? "missing.rs" : map.F[1], target: state === "lens-unresolved" ? null : target(1) }], hops: [{ from: 0, to: 1, source: "declared", edge_kind: null, via: [], reason: "Synthetic queue boundary", resolved: state !== "lens-unresolved" }] }],
         notes: [{ anchor: map.F[symbolFile], text: "Synthetic fixture note.", target: target(symbolFile), district: null }],
         unresolved: state === "lens-unresolved" ? [{ kind: "missing_path", location: "paths[0].stops[1]", spec: "missing.rs", detail: "File missing at this snapshot." }] : [] };
+      if (state === "lens-walk") {
+        // Issue #248: first, middle, unresolved and last steps. Stop 4's hop
+        // is unresolved because the stop before it is.
+        const via = [map.F[symbolFile], map.F[1]];
+        report.paths = [{ name: "request-flow", stops: [
+          { spec: map.F[symbolFile], target: target(symbolFile) }, { spec: map.F[1], target: target(1) },
+          { spec: "missing.rs", target: null }, { spec: map.F[2], target: target(2) }, { spec: map.F[3], target: target(3) },
+        ], hops: [
+          { from: 0, to: 1, source: "computed", edge_kind: "imports", via, reason: null, resolved: true },
+          { from: 1, to: 2, source: "computed", edge_kind: null, via: [], reason: null, resolved: false },
+          { from: 2, to: 3, source: "computed", edge_kind: null, via: [], reason: null, resolved: false },
+          { from: 3, to: 4, source: "declared", edge_kind: null, via: [], reason: "Synthetic queue boundary", resolved: true },
+        ] }];
+        report.unresolved = [{ kind: "missing_path", location: "paths.request-flow.stops[2]", spec: "missing.rs", detail: "File missing at this snapshot." }];
+      }
       return json({ repository: slug, commit: snapshotCommit, name: "overview", report });
     }
     if (path.endsWith("/provenance")) {

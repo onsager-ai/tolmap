@@ -28,9 +28,9 @@ export function useLenses(owner: string, repo: string, commit: string | undefine
   return { list, resolved, data: mismatch ? undefined : resolved.data, error: ready && !commit ? new Error("Lenses require a map with a pinned service snapshot.") : mismatch ? new Error("Lens snapshot does not match this map.") : list.error ?? resolved.error };
 }
 
-export function LensPanel({ lenses, name, select, pick, mode = "full", details, compare }: {
+export function LensPanel({ lenses, name, select, pick, mode = "full", details, compare, walk }: {
   lenses: ReturnType<typeof useLenses>; name?: string; select(name?: string): void; pick(target: LensTarget): void;
-  mode?: "full" | "picker" | "sheet"; details?(): void; compare?(): void;
+  mode?: "full" | "picker" | "sheet"; details?(): void; compare?(): void; walk?(path: string): void;
 }) {
   const { list, resolved, data, error } = lenses;
   const body = <div className="lens-body">
@@ -47,7 +47,7 @@ export function LensPanel({ lenses, name, select, pick, mode = "full", details, 
     {data && mode !== "picker" && isDebtLens(name) && !data.report.areas.length && <p data-lens-state="empty">No debt findings at this snapshot. Findings are lower bounds over the map's edges.</p>}
     {data && mode !== "picker" && !(isDebtLens(name) && !data.report.areas.length) && <div data-lens-state={data.report.unresolved.length ? "unresolved" : "loaded"}>
       {isDebtLens(name) && <p className="lens-meta" data-debt-summary>Debt findings are lower bounds over the map's edges: district cycles, misplaced files, god files, hotspots and files with no inbound edge found. Measured values are in the notes.</p>}
-      {data.report.paths.map(path => <section key={path.name}><h3>{path.name}</h3><ol>{path.stops.map((stop, index) => {
+      {data.report.paths.map(path => <section key={path.name}><h3>{path.name}</h3>{walk && path.stops.length > 0 && <button data-lens-walk-start={path.name} onClick={() => walk(path.name)}>Start walkthrough</button>}<ol>{path.stops.map((stop, index) => {
         const hop = path.hops.find(item => item.to === index);
         return <li key={index} data-lens-stop-row={index}>
           {hop && <p className="lens-meta">{hop.resolved ? hop.source === "declared" ? "Declared" : `Computed · ${hop.edge_kind}` : "Unresolved hop"}{hop.reason ? ` — ${hop.reason}` : ""}</p>}
