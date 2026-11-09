@@ -112,9 +112,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 /** Same non-2xx handling as `request`, but for the two big documents
  * (map, district symbols) that are worth streaming + parsing off the main
  * thread instead of one `res.json()` (src/api/streaming.ts). */
-async function requestTracked<T>(path: string, progressKey: string, observe?: (response: Response) => void): Promise<T> {
+async function requestTracked<T>(path: string, progressKey: string, observe?: (response: Response) => void | Promise<void>): Promise<T> {
   return fetchJsonTracked<T>(`${API_BASE}${path}`, progressKey, async (res) => {
-    observe?.(res);
+    await observe?.(res);
     if (!res.ok) {
       const body = await parseErrorBody(res);
       throw new ApiRequestError(res.status, body, `${path}: ${res.status} ${res.statusText}`);
@@ -201,12 +201,19 @@ export function jobEventsUrl(jobId: string): string {
 
 export async function getServiceMapSnapshot(owner: string, repo: string, commit?: string) {
   let indexedCommit = commit;
+  let mapSha256: string | undefined;
   const qs = commit ? `?commit=${encodeURIComponent(commit)}` : "";
   const document = await requestTracked<MapDocument>(
     `/maps/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${qs}`, `map:${owner}/${repo}`,
-    (response) => { indexedCommit = response.headers.get("x-tolmap-commit") ?? commit; },
+    async (response) => {
+      indexedCommit = response.headers.get("x-tolmap-commit") ?? commit;
+      if (response.ok) {
+        const digest = await crypto.subtle.digest("SHA-256", await response.clone().arrayBuffer());
+        mapSha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+      }
+    },
   );
-  return { document, indexedCommit };
+  return { document, indexedCommit, mapSha256 };
 }
 
 export function getSnapshotFreshness(owner: string, repo: string, commit: string) {

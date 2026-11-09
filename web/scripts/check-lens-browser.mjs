@@ -12,6 +12,8 @@ const loaded = JSON.parse(await readFile('lens-fixtures/loaded.json', 'utf8'));
 const unresolved = JSON.parse(await readFile('lens-fixtures/unresolved.json', 'utf8'));
 assert.deepEqual(await readFile('lens-fixtures/flask.json'), await readFile('../data/flask.json'), 'fixture map bytes stay unchanged');
 assert.equal(loaded.unresolved.length, 0);
+const comparison = JSON.parse(await readFile('lens-fixtures/comparison.json', 'utf8'));
+const overlap = JSON.parse(await readFile('lens-fixtures/overlap.json', 'utf8'));
 const screenshots = [];
 let activePage;
 await mkdir('shots/lenses', {recursive:true});
@@ -30,10 +32,11 @@ try {
       let json;
       if (path === '/api/healthz') json = {status:'ok'};
       else if (path === '/api/maps') json = [];
-      else if (path === '/api/maps/pallets/flask') return route.fulfill({json:map, headers:{'x-tolmap-commit':commit}});
+      else if (path === '/api/maps/pallets/flask') return route.fulfill({body:await readFile('lens-fixtures/flask.json'), contentType:'application/json', headers:{'x-tolmap-commit':commit}});
       else if (path.endsWith('/symbols')) json = JSON.parse(await readFile(`lens-fixtures/flask.symbols/${Number(url.searchParams.get('district'))}.json`, 'utf8'));
       else if (path.endsWith('/freshness')) return route.fulfill({status:404,json:{error:'not_found'}});
-      else if (path.endsWith('/lenses')) { assert.equal(url.searchParams.get('commit'),commit); json = {repository:'pallets/flask',commit,names:['flask-request','unresolved']}; }
+      else if (path.startsWith('/api/compare/') && path.endsWith('/lenses')) { json = url.searchParams.has('other') ? overlap : comparison; }
+      else if (path.endsWith('/lenses')) { assert.equal(url.searchParams.get('commit'),commit); json = {repository:'pallets/flask',commit,names:['flask-request','overlap','unresolved']}; }
       else if (path.includes('/lenses/')) { assert.equal(url.searchParams.get('commit'),commit); const name = path.split('/').pop(); json = {repository:'pallets/flask',commit,name,report:name === 'unresolved' ? unresolved : loaded}; }
       else if (path.endsWith('/provenance')) json = {version:1,repository:'pallets/flask',commit};
       else if (path.endsWith('/source')) { assert.equal(url.searchParams.get('commit'),commit); json = {version:1,repository:'pallets/flask',commit,path:url.searchParams.get('path'),status:'ready',text:'# Synthetic source response for viewer interaction qualification.\nclass Flask:\n    pass\n',bytes:84,long_line:false}; }
@@ -41,7 +44,14 @@ try {
       await route.fulfill({json});
     });
     const url = `${base}/pallets/flask?commit=${commit}`;
+    const assertPhoneShell = async () => {
+      if (profile !== 'phone') return;
+      assert.equal(await page.locator('[data-phone-shell]').evaluate(el => el.scrollTop), 0, 'lens flows never scroll the phone shell');
+      const chrome = await page.locator('[data-search-pill]').boundingBox();
+      assert.ok(chrome && Math.abs(chrome.y - 12) < 1, `phone search pill stays at its normal top, got ${chrome?.y}`);
+    };
     const shot = async state => {
+      await assertPhoneShell();
       await page.evaluate(() => document.fonts.ready);
       await settleCamera(page);
       const file = `${profile}-${theme}-${state}.png`;
@@ -51,8 +61,8 @@ try {
     const panel = page.locator(profile === 'phone' ? '[data-lens-sheet]' : '[data-lens-panel]');
     const openPanel = async () => {
       if (profile === 'phone') {
-        // The active report belongs to the normal detented sheet; Full is
-        // only needed to scroll to a particular stop or unresolved item.
+        // Use Full for the report review images; each detent also owns a
+        // scroll viewport for reaching stops and unresolved items.
         for (let i=0; i<3 && await page.locator('[data-phone-sheet]').getAttribute('data-detent') !== 'full'; i++) await page.locator('[data-sheet-grabber]').click();
       } else if (!await panel.evaluate(element => element.open)) await panel.locator(':scope > summary').click();
     };
@@ -86,6 +96,20 @@ try {
       await page.locator('[data-layers-sheet]').waitFor({state:'detached'});
       assert.equal(new URL(page.url()).searchParams.get('lens'),'flask-request','Back closes Layers while retaining the lens');
       assert.deepEqual(await cameraBoxes(page),before,'Back from Layers leaves the camera fixed');
+    }
+    if (profile === 'phone') {
+      const body = page.locator('[data-sheet-body]');
+      for (const detent of ['peek', 'half', 'full']) {
+        for (let i=0; i<3 && await page.locator('[data-phone-sheet]').getAttribute('data-detent') !== detent; i++) await page.locator('[data-sheet-grabber]').click();
+        const geometry = await body.evaluate(el => {
+          el.scrollTop = el.scrollHeight;
+          return { bottom:el.getBoundingClientRect().bottom, top:el.scrollTop, max:el.scrollHeight-el.clientHeight, overflow:getComputedStyle(el).overflowY };
+        });
+        assert.equal(geometry.overflow,'auto',`${detent} is a real sheet scroller`);
+        assert.ok(geometry.bottom <= 845 && Math.abs(geometry.top-geometry.max) <= 1,`${detent} can reach the end within the screen`);
+        await assertPhoneShell();
+      }
+      await page.locator('[data-sheet-grabber]').click();
     }
     assert.equal(await page.locator('[data-lens-area]').count()>0,true);
     assert.equal(await page.locator('[data-lens-hop="declared"]').count(),1);
@@ -129,7 +153,18 @@ try {
     // this camera operation itself. Every step waits for the production glide.
     for (let i=0; i<10 && await page.locator('[data-lens-stop]').count() === 0; i++) await zoomInSettled(page,1);
     assert.ok(await page.locator('[data-lens-stop]').count()>0,'zoomed-in stops become visible');
-    const stop = page.locator('[data-lens-stop]').first();
+    // Every flask stop has a resolved hop. A visible stop marker must be a
+    // route end; whole-hop LOD once sent lines to district centres instead.
+    const detached = await page.evaluate(() => {
+      const ends = [...document.querySelectorAll('[data-lens-hop]')].flatMap(path => {
+        const d = path.getAttribute('d'), n = d.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g).map(Number);
+        return /c/.test(d) ? [n.slice(0,2)] : [n.slice(0,2), n.slice(-2)];
+      });
+      return [...document.querySelectorAll('[data-lens-stop] circle')].map(c => [+c.getAttribute('cx'), +c.getAttribute('cy')])
+        .filter(([x,y]) => !ends.some(([a,b]) => Math.hypot(a-x,b-y) < 0.5));
+    });
+    assert.deepEqual(detached,[],'hop lines end on visible stop markers');
+    const stop =page.locator('[data-lens-stop]').first();
     const spec = await stop.getAttribute('data-lens-stop');
     // May be outside the viewport at a particular camera centre. The ordered
     // list uses the same stop action and pans without changing zoom.
@@ -160,6 +195,99 @@ try {
     assert.match(await panel.textContent(),/Unresolved stop/);
     assert.match(await panel.textContent(),/Unresolved hop/);
     await shot('unresolved');
+    // Comparison scenarios are Rust-generated controlled edits of the pinned
+    // Flask map, with the same actual symbol geometry. No head layout exists.
+    await page.goto(`${url}&lens=flask-request`);
+    await panel.locator('[data-lens-state="loaded"]').waitFor();
+    await openPanel();
+    await panel.getByRole('button',{name:'Compare this lens',exact:true}).click();
+    const comparePanel = page.locator('[data-lens-comparison]');
+    await comparePanel.getByRole('textbox',{name:'Lens head commit',exact:true}).fill(comparison.head);
+    await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
+    await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+    assert.equal(await page.locator('[data-lens-comparison-stop]').count(),0,'comparison overview hides stops');
+    assert.equal(await page.evaluate(() => window.scrollY),0,'comparison never scrolls the page');
+    assert.equal(await comparePanel.getByRole('button',{name:'Return to lens',exact:true}).isVisible(),true,'comparison controls remain visible');
+    assert.equal(await comparePanel.locator('[data-lens-unchanged]').evaluate(element => element.open),false,'unchanged items start collapsed');
+    assert.ok(await page.locator('[data-lens-district-status]').count()>0,'changed districts have overview status badges');
+    const renamedText = await comparePanel.locator('[data-lens-delta="renamed"]').first().textContent();
+    assert.match(renamedText,/renamed_globals\.py/);
+    assert.doesNotMatch(renamedText,/removed/i);
+    for (const status of ['added','removed','broken','renamed']) assert.ok(await comparePanel.locator(`[data-lens-delta="${status}"]`).count()>0,`comparison reports ${status}`);
+    assert.ok(await page.locator('[data-lens-change="broken"]').count()>0,'broken hop retains base projection');
+    await shot('comparison-commits');
+    for (let i=0; i<10 && await page.locator('[data-lens-comparison-stop]').count()===0; i++) await zoomInSettled(page,1);
+    assert.ok(await page.locator('[data-lens-comparison-stop]').count()>0,'comparison stops follow normal zoom gates');
+    await shot('comparison-zoomed');
+    const comparisonStop = page.locator('[data-lens-comparison-stop]').first();
+    const comparisonPath = await comparisonStop.getAttribute('data-lens-comparison-stop');
+    // Use the list to pan the same base target into view, then tap its mark.
+    const comparisonButton = comparePanel.getByRole('button',{name:comparisonPath,exact:true}).first();
+    if (!await comparisonButton.isVisible()) await comparePanel.locator('[data-lens-unchanged] > summary').click();
+    await comparisonButton.click();
+    if (profile === 'phone') {
+      for (let i=0; i<3 && await page.locator('[data-phone-sheet]').getAttribute('data-detent') !== 'peek'; i++) await page.locator('[data-sheet-grabber]').click();
+    }
+    await settleCamera(page);
+    const visibleComparisonStop = page.locator(`[data-lens-comparison-stop="${comparisonPath}"]`).first();
+    await visibleComparisonStop.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      if (box.bottom > innerHeight - 156) throw new Error('Comparison stop hidden by Peek sheet');
+    });
+    await visibleComparisonStop.click();
+    assert.equal(new URL(page.url()).searchParams.get('file'),comparisonPath,'comparison stop opens its base card');
+    if (profile === 'phone') {
+      await page.getByRole('button',{name:'Back to comparison',exact:true}).click();
+      await page.waitForFunction(() => document.querySelector('[data-phone-sheet]')?.getAttribute('data-detent') === 'half');
+    }
+    await comparePanel.getByText('Edit comparison',{exact:true}).click();
+    await comparePanel.getByRole('combobox',{name:'Compare with lens'}).selectOption('overlap');
+    await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
+    await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+    assert.match(await comparePanel.textContent(),/Only in flask-request/);
+    assert.match(await comparePanel.textContent(),/Only in overlap/);
+    assert.doesNotMatch(await comparePanel.locator('.lens-legend').textContent(),/Removed/);
+    assert.ok(await comparePanel.locator('[data-lens-delta="shared"]').count()>0);
+    assert.equal(await page.evaluate(() => window.scrollY),0,'overlap never scrolls the outer page');
+    if (profile === 'phone') {
+      const chrome = await page.locator('[data-search-pill]').boundingBox();
+      assert.ok(chrome && Math.abs(chrome.y - 12) < 1, `phone search pill stays at its normal top, got ${chrome?.y}`);
+      const scrolledAncestors = await comparePanel.evaluate(panel => {
+        const scrolled = [];
+        for (let element = panel.parentElement; element; element = element.parentElement) {
+          if (!element.matches('[data-sheet-body]') && element.scrollTop !== 0) scrolled.push(`${element.tagName}.${element.className}: ${element.scrollTop}`);
+        }
+        return scrolled;
+      });
+      assert.deepEqual(scrolledAncestors, [], 'only the sheet and comparison lists may scroll');
+    }
+    await shot('comparison-overlap');
+    if (profile === 'phone') {
+      await page.setViewportSize({width:844,height:390});
+      await page.locator('[data-side-sheet]').waitFor();
+      await comparePanel.getByRole('button',{name:'Edit comparison',exact:true}).click();
+      const controls = comparePanel.locator('form input, form select, form button');
+      assert.ok(await controls.evaluateAll(elements => elements.every(el => el.getBoundingClientRect().height >= 44)), 'landscape edit controls are at least 44 px tall');
+      await comparePanel.getByRole('textbox',{name:'Lens base commit',exact:true}).click();
+      await shot('landscape-edit-start');
+      await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).scrollIntoViewIfNeeded();
+      const submitBox = await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).boundingBox();
+      assert.ok(submitBox && submitBox.y >= 0 && submitBox.y + submitBox.height <= 391, 'landscape submit is reachable inside the panel');
+      assert.ok(await page.locator('[data-sheet-body]').evaluate(el => el.scrollTop > 0), 'landscape form scrolls the sheet body');
+      await shot('landscape-edit-end');
+      await comparePanel.getByRole('button',{name:'Compare lenses',exact:true}).click();
+      await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+      await page.setViewportSize({width:390,height:844});
+    }
+    await page.reload();
+    await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('other_lens'),'overlap','comparison survives deep link reload');
+    // A stale response must be explicit and must remove all comparison paint.
+    await page.route('**/api/compare/**/lenses?*', route => route.fulfill({json:{...overlap,base:'c'.repeat(40)}}));
+    await page.reload();
+    await comparePanel.locator('[data-lens-comparison-state="error"]').waitFor();
+    assert.equal(await page.locator('[data-lens-comparison-overlay]').count(),0);
+    await shot('comparison-stale');
     assert.deepEqual(errors,[],`${profile}/${theme} browser errors`);
     await context.close();
   }

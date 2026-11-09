@@ -2419,6 +2419,87 @@ mod tests {
             serde_json::to_vec(&report).unwrap(),
         )
         .unwrap();
+        // Controlled resolver scenarios over the pinned Flask frame. These
+        // are synthetic changes, not claims about Flask's commit history.
+        let mut head = map.clone();
+        let renamed = head
+            .files
+            .iter()
+            .position(|p| p == "src/flask/globals.py")
+            .unwrap();
+        let deleted = head
+            .files
+            .iter()
+            .position(|p| p == "src/flask/views.py")
+            .unwrap();
+        let removed_member = head
+            .files
+            .iter()
+            .position(|p| p == "src/flask/wrappers.py")
+            .unwrap();
+        head.files[removed_member] = "src/flask/outside_lens.py".into();
+        head.files[renamed] = "src/flask/renamed_globals.py".into();
+        head.files[deleted] = "src/flask/sansio/new.py".into();
+        head.edges.clear();
+        let renames = vec![crate::lens::FileRename {
+            from: "src/flask/globals.py".into(),
+            to: "src/flask/renamed_globals.py".into(),
+            commit: "b".repeat(40),
+        }];
+        let mut after = crate::lens::resolve(&lens, &head);
+        crate::lens::report_renames(&mut after, &renames);
+        let before = crate::lens::resolve(&lens, &map);
+        let compare = crate::lens_comparison::LensComparison {
+            version: 1,
+            repository: "pallets/flask".into(),
+            base: "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35".into(),
+            head: "b".repeat(40),
+            lens: "flask-request".into(),
+            other: "flask-request".into(),
+            base_map_sha256: {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(map_bytes))
+            },
+            lower_bound: true,
+            changes: crate::lens_comparison::changes(
+                &before,
+                &after,
+                &map,
+                &renames,
+                crate::lens_comparison::ComparisonMode::Commits,
+            ),
+            before: before.clone(),
+            after,
+        };
+        std::fs::write(
+            out.join("comparison.json"),
+            serde_json::to_vec(&compare).unwrap(),
+        )
+        .unwrap();
+        let mut other = lens.clone();
+        other.areas.truncate(1);
+        other.areas[0].members = vec!["src/flask/app.py".into(), "src/flask/views.py".into()];
+        other.paths[0].stops.truncate(2);
+        let after = crate::lens::resolve(&other, &map);
+        let overlap = crate::lens_comparison::LensComparison {
+            head: compare.base.clone(),
+            other: "overlap".into(),
+            changes: crate::lens_comparison::changes(
+                &before,
+                &after,
+                &map,
+                &[],
+                crate::lens_comparison::ComparisonMode::Membership,
+            ),
+            before,
+            after,
+            ..compare
+        };
+        std::fs::write(
+            out.join("overlap.json"),
+            serde_json::to_vec(&overlap).unwrap(),
+        )
+        .unwrap();
         let mut broken = lens;
         broken.areas[0].members.push("src/flask/missing.py".into());
         broken.paths.push(crate::lens::LensPath {

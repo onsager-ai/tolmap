@@ -5,6 +5,7 @@ export const REQUIRED_STORIES = [
   'failed-detection-uncertain', 'failed-detection-failed', 'failed-cancelled', 'failed-clone-failed', 'failed-worker-crashed', 'failed-busy', 'failed-server-stopping', 'failed-rate-limited', 'failed-index-failed', 'failed-internal-error', 'failed-unknown',
   'map-overview', 'map-loading', 'map-unavailable', 'map-district', 'map-file', 'map-symbol', 'map-folder', 'map-layer-c', 'map-layer-x', 'map-layer-p', 'map-detail-pending',
   'map-lens-loaded', 'map-lens-unresolved', 'map-lens-empty', 'map-lens-error',
+  'map-lens-compare-commits', 'map-lens-compare-overlap', 'map-lens-compare-loading', 'map-lens-compare-stale', 'map-lens-compare-error',
   'map-search', 'map-search-empty', 'map-layers', 'map-repositories', 'map-quality', 'map-keyboard', 'map-path',
   'source-ready', 'source-loading', 'source-unavailable', 'source-missing', 'source-expired', 'source-binary', 'source-large', 'source-unsupported', 'source-long-line', 'source-search', 'source-search-empty',
   'freshness-queued', 'freshness-indexing', 'freshness-failed', 'freshness-stale', 'freshness-complete', 'map-freshness',

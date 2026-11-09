@@ -391,7 +391,7 @@ viewer's path mode finds, and `via`, the files it passes through) or `declared`
 lower bounds over the map's edges: a symbol stop is routed through its file, and
 "no route" means none was found, not that none exists. Anything that did not
 resolve is in `unresolved` with a distinct `kind` (`missing_path`,
-`empty_glob`, `unknown_symbol`, `ambiguous`, `unknown_district`, `no_route`), a
+`renamed_file`, `empty_glob`, `unknown_symbol`, `ambiguous`, `unknown_district`, `no_route`), a
 `location` in the lens, the `spec` and a `detail`; nothing is dropped silently.
 An unresolved item is still a `200`: the lens was read and resolved.
 
@@ -401,6 +401,12 @@ the file); area members may also be globs (`*` and `?` within a segment, `**`
 across segments), and a note anchor may be `district:<name>`. `tolmap lens
 check <lens.toml> --map <map.json>` runs the same resolution offline and exits
 non-zero (1) on unresolved items, 2 on an unreadable or invalid lens.
+The offline `--map` form has no git history and reports absent paths as
+`missing_path`. Git-backed service resolution checks deterministic 50% rename
+detection from the lens file's last change to the snapshot. `renamed_file`
+includes `renamed: { from, to, commit }`; `commit` names the comparison endpoint
+where the rename is observed. A renamed member/stop stays unresolved; the
+resolver never silently substitutes its destination.
 
 ### `GET /api/maps/{owner}/{repo}/lenses[?commit=<full-sha>]`
 
@@ -418,6 +424,69 @@ cannot replace a saved snapshot's lens. Both resources return
 The viewer selects a resource with `?lens=<name>`, pins requests to the loaded
 map's commit and rejects a resolution naming another commit. The static map
 collection alone does not provide these git-backed lens resources.
+
+### `GET /api/compare/{owner}/{repo}/lenses?base=<sha>&head=<sha>&lens=<name>[&other=<name>]`
+
+`LensComparison` (Rust `src/lens_comparison.rs`, generated bindings) resolves
+one lens at base/head or two lenses at one commit (`other`, equal base/head).
+Full immutable commits and indexed base and head snapshots are required. It
+reads both lens files from retained git objects. Each snapshot's recorded file
+set constrains extraction exactly, including every indexed language; detection
+only supplies module roots and never selects membership. Cross-commit mode
+reuses `check`'s base partition and import-weight placement. The head snapshot
+supplies file scope only: its district IDs and geometry are never compared or
+rendered. Head content is extracted without partitioning or laying out a map. Git renames between base and head are
+reported explicitly. Local snapshots expose the same shape at
+`/api/compare/snapshot/{base-id}/lenses` with saved base/head commits.
+
+The deterministic envelope contains version 1, repository, base/head, lens/other,
+`base_map_sha256`, `lower_bound`, complete before/after resolution reports and
+sorted `changes`. Each delta names its `kind` (area membership, stop, hop),
+`status` (`shared`, `added`, `removed`, `broken`, `renamed`, `moved`), before/after
+specifications, projected **base** targets and district placements. New files
+have no base target/footprint; unplaced ones have no districts either. Stops
+match by file or symbol identity (with explicit git rename identity); hops match
+ordered endpoint pairs, and areas match resolved members across labels. In
+two-lens mode, `shared` means **in both**, `removed` means **only in A**, and
+`added` means **only in B**. Path names, labels, stop positions, routing evidence
+and symbol-spec spelling do not affect membership. Resolved symbols match by
+file, name and start line, so `file#name` and `file#name@line` match when they
+resolve to the same symbol. Unresolved stops retain their literal specification
+as identity; their diagnostics remain in the side reports.
+
+In same-lens commit mode, unqualified symbols match by file and name across line
+edits; explicitly qualified repeated names retain their `@line` disambiguator.
+`moved` applies only to a stop resolved on both sides when its district or its
+set of `(path ordinal, stop ordinal)` positions changes. Renaming a path or
+editing symbol spans or hop routing evidence alone is not movement. Renames
+and resolution transitions take precedence over movement:
+
+| Base item | Head item | Rename evidence / lens update | Status |
+| --- | --- | --- | --- |
+| unresolved | resolved | absent, or lens updated to detected destination | `added` (now resolves) |
+| resolved | unresolved | no detected rename, or updated destination still unresolved | `broken` |
+| unresolved | unresolved | no detected rename | `shared` (still unresolved) |
+| resolved | resolved | detected rename and lens updated | `renamed` |
+| unresolved | unresolved | detected rename and lens updated | `renamed` |
+| either | unresolved old path | detected rename, lens still names old path | `renamed` (destination metadata only) |
+| resolved | resolved | no rename; stop district or position set changed | `moved` |
+| resolved | resolved | no rename; otherwise | `shared` |
+| absent | present | either resolution state | `added` if resolved; otherwise `broken` |
+| present | absent | no rename | `removed` |
+| area member | absent | detected rename of its literal specification | `renamed` |
+
+Area members are resolved by definition; an unresolved area specification is
+reported in the side report rather than counted as a member. A hop is resolved
+only when its endpoints and route resolve; the same transition rules apply,
+except hops never receive `moved`. Broken hops retain their last known base
+endpoints. Computed routes remain lower bounds from extracted imports. Notes
+remain in the side reports.
+
+The map bytes are never changed. Responses are `no-store`; unavailable source
+or maps and invalid lens/input use the existing explicit error resources.
+Viewers must reject mismatched repository/commit/lens identities and hide old
+results during revalidation. Deep links retain `lens`, `lens_compare`, `base`,
+`head` and optional `other_lens` alongside the existing comparison parameters.
 
 ### `tolmap debt --map <map.json> [--format text|json|lens]`
 

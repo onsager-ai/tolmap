@@ -1,3 +1,4 @@
+import type { LensComparison } from "@bindings/LensComparison";
 import type { LensReport } from "@bindings/LensReport";
 import type { LensTarget } from "@bindings/LensTarget";
 // Imperative SVG renderer, ported from the <script> block of
@@ -195,6 +196,7 @@ function hollowTriangleGlyph(parent: [number, number], child: [number, number], 
 
 export interface MapRenderState {
   lens?: LensReport;
+  lensComparison?: LensComparison;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];
   doc: MapDocument;
@@ -1447,11 +1449,14 @@ export class MapRenderer {
         if (!hop.resolved) return; // The full unresolved report stays in React.
         const from = path.stops[hop.from]?.target, to = path.stops[hop.to]?.target;
         if (!from || !to) return;
-        const detailed = this.lensTargetVisible(from, zf) && this.lensTargetVisible(to, zf);
         const files = hop.source === "declared" ? [from.file, to.file] : hop.via.map(file => doc.F.indexOf(file));
-        const points: [number, number][] = detailed
-          ? files.map(file => { const p = this.anchor(file); return [this.X(p[0]), this.Y(p[1])]; })
-          : files.map(file => this.lensPoint({ ...from, file, district: D_(doc, file), symbol: null }, false));
+        // Each point takes its own LOD, and endpoints use the stop target, so
+        // a route ends on its drawn stop marker. A whole-hop LOD switch sent
+        // lines to district centres while one visible stop sat on its file.
+        const points = files.map((file, i): [number, number] => {
+          const target = i === 0 ? from : i === files.length - 1 ? to : { ...from, file, district: D_(doc, file), symbol: null };
+          return this.lensPoint(target, this.lensTargetVisible(target, zf));
+        });
         // Consecutive files within one district collapse at overview. A small
         // loop keeps an intra-district declared hop available to tap there.
         const unique = points.filter((point, i) => i === 0 || point[0] !== points[i - 1][0] || point[1] !== points[i - 1][1]);
@@ -1495,6 +1500,72 @@ export class MapRenderer {
     });
     // Names mask route strokes, while stop/note controls remain tappable.
     g.appendChild(districtLabels);
+    g.appendChild(markers);
+  }
+
+  private drawLensComparison(g: SVGGElement, zf: number, districtLabels: SVGGElement) {
+    const { doc, lensComparison } = this.state!;
+    if (!lensComparison) return;
+    const overlay = el("g", { "data-lens-comparison-overlay": "" });
+    const markers = el("g", { "data-lens-comparison-markers": "" });
+    g.appendChild(overlay);
+    const marks = { added: ["+", "none", "var(--lens-teal)"], removed: ["−", "8 5", "var(--lens-orange)"], broken: ["×", "2 5", "var(--lens-orange)"], renamed: ["↗", "10 3 2 3", "var(--lens-blue)"], moved: ["↔", "5 3", "var(--lens-blue)"], shared: ["=", "none", "var(--dim)"] } as const;
+    const paintedAreas = new Set<string>();
+    const districtStatuses = new Map<number, Set<string>>();
+    const ordered = lensComparison.changes.map((change, changeIndex) => ({ change, changeIndex })).sort((a, b) => Number(a.change.status !== "shared") - Number(b.change.status !== "shared"));
+    ordered.forEach(({ change, changeIndex }) => {
+      const [symbol, dash, stroke] = marks[change.status];
+      const opacity = change.status === "shared" ? 0.22 : 1;
+      if (change.status !== "shared") for (const district of change.districts) {
+        const statuses = districtStatuses.get(district) ?? new Set<string>();
+        statuses.add(change.status);
+        districtStatuses.set(district, statuses);
+      }
+      const title = `${change.status} ${change.kind} · ${change.label}: ${change.before.join(" → ")} → ${change.after.join(" → ")}`;
+      const put = (node: SVGElement) => { node.setAttribute("opacity", String(opacity)); const tip = el("title", {}); tip.textContent = title; node.appendChild(tip); (change.kind === "stop" ? markers : overlay).appendChild(node); };
+      if (change.kind === "area") {
+        for (const district of change.districts) {
+          const areaKey = `${district}:${change.status}`;
+          if (paintedAreas.has(areaKey)) continue;
+          paintedAreas.add(areaKey);
+          for (const poly of doc.districts[String(district)]?.blob ?? []) put(el("path", { d: "M" + poly.map(q => `${this.X(q[0])} ${this.Y(q[1])}`).join("L") + "Z", fill: stroke, "fill-opacity": change.status === "shared" ? 0.04 : 0.1, stroke, "stroke-width": 2, "stroke-dasharray": dash, "pointer-events": "none", "data-lens-change": change.status }));
+        }
+      } else if (change.kind === "hop") {
+        // Per-endpoint LOD, as in drawLens: a visible stop marker is the line's end.
+        const points = change.targets.length >= 2 ? change.targets.slice(0,2).map(target => this.lensPoint(target, this.lensTargetVisible(target, zf))) : change.districts.map(district => this.lensPoint({ file: 0, path: "", symbol: null, district }, false));
+        if (points.length < 1) return;
+        const [x,y] = points[0], [a,b] = points[1] ?? points[0];
+        const d = x === a && y === b ? `M${x} ${y}c-30 -36 30 -36 0 0` : `M${x} ${y}Q${(x+a)/2+22} ${(y+b)/2-22} ${a} ${b}`;
+        put(el("path", { d, fill: "none", stroke: "var(--canvas)", "stroke-width": 6, "pointer-events": "none" }));
+        put(el("path", { d, fill: "none", stroke, "stroke-width": 2.5, "stroke-dasharray": dash, "pointer-events": "none", "data-lens-change": change.status }));
+      } else {
+        change.targets.forEach((target, targetIndex) => {
+          if (!this.lensTargetVisible(target, zf)) return;
+          const [x,y] = this.lensPoint(target, true);
+          const mark = el("g", { "data-k": `lc:${changeIndex}:${targetIndex}`, "data-lens-change": change.status, "data-lens-comparison-stop": target.path });
+          mark.appendChild(el("circle", { cx:x, cy:y, r:13, fill:"var(--chrome)", stroke, "stroke-width":2, "stroke-dasharray":dash, "pointer-events":"all" }));
+          const label = el("text", { x, y:y+4, "text-anchor":"middle", "font-size":12, fill:"var(--on)", "pointer-events":"none" }); label.textContent = symbol; mark.appendChild(label); put(mark);
+        });
+      }
+    });
+    g.appendChild(districtLabels);
+    // At overview these are district status badges, never file symbols. Keep
+    // every status visible even when several kinds changed in one district.
+    // Badges sit on the district point where overview hop lines end.
+    for (const [district, statuses] of districtStatuses) {
+      const [x, y] = this.lensPoint({ file: 0, path: "", symbol: null, district }, false);
+      const entries = [...statuses].sort() as (keyof typeof marks)[];
+      const badge = el("g", { "data-lens-district-status": district, "pointer-events": "none" });
+      entries.forEach((status, index) => {
+        const [symbol, , stroke] = marks[status];
+        const bx = x + (index - (entries.length - 1) / 2) * 22;
+        badge.appendChild(el("circle", { cx: bx, cy: y, r: 10, fill: "var(--chrome)", stroke, "stroke-width": 2 }));
+        const text = el("text", { x: bx, y: y + 4, "text-anchor": "middle", "font-size": 13, fill: "var(--on)" });
+        text.textContent = symbol;
+        badge.appendChild(text);
+      });
+      markers.appendChild(badge);
+    }
     g.appendChild(markers);
   }
 
@@ -2227,6 +2298,7 @@ export class MapRenderer {
     g.appendChild(this.gSymRefs);
     this.renderSymbolRefs(state.selHSym);
 
+    this.drawLensComparison(g, zf0, districtLabelLayer);
     this.drawLens(g, zf0, districtLabelLayer);
 
     // key -> every element carrying it, rebuilt fresh this paint (one
@@ -4753,6 +4825,10 @@ export class MapRenderer {
   private hoverContent(key: string): HoverCardContent | null {
     const { doc } = this.state!;
     const parts = key.split(":");
+    if (parts[0] === "lc") {
+      const change = this.state!.lensComparison?.changes[+parts[1]];
+      return change ? plainCard([`${change.status} ${change.kind}`, change.before.join(" → "), change.after.join(" → "), "Open base stop card"], true) : null;
+    }
     if (parts[0] === "lh") {
       const path = this.state!.lens?.paths[+parts[1]];
       const hop = path?.hops[+parts[2]];
@@ -5385,7 +5461,11 @@ export class MapRenderer {
       return;
     }
     this.hideCard();
-    if (parts[0] === "ls") {
+    if (parts[0] === "lc") {
+      const target = this.state!.lensComparison?.changes[+parts[1]]?.targets[+parts[2]];
+      if (target) this.callbacks.onSelectLensStop?.(target);
+    }
+    else if (parts[0] === "ls") {
       const target = this.state!.lens?.paths[+parts[1]]?.stops[+parts[2]]?.target;
       if (target) this.callbacks.onSelectLensStop?.(target);
     }

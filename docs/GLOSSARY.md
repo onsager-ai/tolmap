@@ -46,7 +46,7 @@ Only UI text and docs change in this round; code and schema field names stay as 
 | 主岛 / 离岛 | Mainland / Island | existing product terms: connected body / unconnected districts | — |
 | 航线 | Route | aggregated dependency between repositories (future) | — |
 | 世界视图 | World view | a view of several repos at once; a view name, not a noun for repos (future) | 星球 / 大陆（弃用） |
-| 透镜 | Lens | a named, versioned overlay of areas, paths and notes drawn over a map without changing it; a TOML file in the analysed repository (`.tolmap/lenses/<name>.toml`). Its *areas*, *paths* (ordered stops, each hop *computed* from map edges or *declared* with a reason) and *notes* are lens terms, not map terms; the viewer's "Path from / to" is a different, one-off thing | — |
+| 透镜 | Lens | a named, versioned overlay of areas, paths and notes drawn over a map without changing it; a TOML file in the analysed repository (`.tolmap/lenses/<name>.toml`). Its *areas*, *paths* (ordered stops, each hop *computed* from map edges or *declared* with a reason) and *notes* are lens terms, not map terms; the viewer's "Path from / to" is a different, one-off thing. A lens comparison resolves one lens across commits or two lenses at one commit on the immutable base partition; overlap means shared resolved members, stops or ordered hops | — |
 
 ## 3. Internal geometry and method terms (docs only, not UI) / 内部用语
 

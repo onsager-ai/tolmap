@@ -86,6 +86,20 @@ test('advisory pixels report mismatches with evidence but still fail hard errors
   await assert.rejects(verifyVisualBaselines({ browser, captures: [capture], ...dirs, provenance, advisoryPixels: true }), /Visual baselines failed/);
 });
 
+test('new identities fail the matrix gate while existing pixel diffs remain reviewable', async () => {
+  const dirs = await scenario();
+  await makeApproved(dirs);
+  await writeSinglePixel(dirs.evidenceDir, 'home.png');
+  const added = { ...capture, id: 'new-story' };
+  await assert.rejects(verifyVisualBaselines({ browser, captures: [capture, added], ...dirs, provenance, advisoryPixels: true }), /matrix mismatch/);
+  const report = JSON.parse(await fs.readFile(path.join(dirs.evidenceDir, 'visual-regression.json'), 'utf8'));
+  assert.equal(report.status, 'failed');
+  assert.deepEqual(report.missingReferences, [{ id: added.id, host: added.host, viewport: added.viewport, theme: added.theme }]);
+  assert.equal(report.results[0].status, 'mismatched');
+  assert.equal(report.results[0].differingPixels, 1);
+  assert.equal(report.results[1].status, 'missing-reference');
+});
+
 test('dimension changes fail with a diff image', async () => {
   const dirs = await scenario();
   await makeApproved(dirs);

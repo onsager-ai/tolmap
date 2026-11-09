@@ -64,7 +64,7 @@ Frame: 390 × 844 is the design size; §8 gives the other sizes.
 | Half | 480 px, or 57% of the visible height if smaller | lists and file detail |
 | Full | visible height − (search pill bottom + 8 px) | long lists, all symbols, folders |
 
-Heights are computed from `window.visualViewport.height` and `env(safe-area-inset-*)`, never from `vh` (iOS `vh` measures the large viewport, which put the old 58vh sheet over the lower zoom buttons). The sheet drags between detents with a grabber (a real button: tapping it cycles peek → half → full → peek) and by dragging its header. Content scrolls only at Full; at Peek and Half, a vertical drag on the sheet body moves the sheet, not the content, so there is no scroll-inside-scroll (the old folder list at max-height 300 px inside a 44vh body). At Full the standard bottom-sheet rule decides who owns a drag (owner, 2026-09-28: "when details opened, unable to drag down to collapse because of scrolling"; `dragOwner` in `web/src/map/phoneShell.ts`): the grabber and the header always move the sheet; a downward drag that starts with the content at its top moves the sheet; one that starts mid-scroll scrolls the content, and the next drag moves the sheet; an upward drag scrolls the content. Below Full an upward drag raises the sheet first.
+Heights are computed from `window.visualViewport.height` and `env(safe-area-inset-*)`, never from `vh` (iOS `vh` measures the large viewport, which put the old 58vh sheet over the lower zoom buttons). The sheet drags between detents with a grabber (a real button: tapping it cycles peek → half → full → peek) and by dragging its header. The sheet body is sized to the visible detent area and scrolls at **every detent**, with bottom padding for the safe-area inset. All card controls and lists must be reachable within that scroller; content must not retain a Full-height scroll viewport translated below the screen. The phone shell uses `overflow: clip` and never scrolls, including on focus or programmatic navigation. Embedded lens comparison forms and results use the sheet body's scroll range rather than nested, independently sized viewports. Programmatic result navigation scrolls the sheet body directly; restored focus uses `preventScroll`. At every detent the standard bottom-sheet rule decides who owns a drag (owner, 2026-09-28: "when details opened, unable to drag down to collapse because of scrolling"; `dragOwner` in `web/src/map/phoneShell.ts`): the grabber and the header always move the sheet; a downward drag that starts with the content at its top moves the sheet; one that starts mid-scroll scrolls the content, and the next drag moves the sheet; an upward drag scrolls the content. An upward drag scrolls overflowing content at Peek, Half and Full; use the grabber or header to raise the sheet.
 
 ### 3.2 Sheet content by state
 
@@ -164,15 +164,42 @@ states. A mismatched snapshot cannot paint an overlay.
 
 On phones, Layers contains the saved-lens picker. Choosing a lens closes Layers
 and shows its title and ordered path in the normal map sheet at Peek, leaving
-the map visible. Details raises it to Half; the existing Full detent permits
-scrolling through long reports. File/symbol and hop cards replace this report
+the map visible. Details raises it to Half; long reports scroll within the
+visible sheet body at every detent. File/symbol and hop cards replace this report
 while selected; clearing them returns to the active lens.
 
 Lenses reuse §3.4's history: opening Layers pushes one overlay entry; choosing
 a saved lens replaces the URL and dismisses that overlay. Back closes an open
 Layers sheet, then collapses Half/Full to Peek before clearing a selection. The
 source reader closes before its underlying card. A deep link restores the lens
-at Peek without restoring a modal sheet. Lens comparison is a separate feature.
+at Peek without restoring a modal sheet.
+
+**Compare this lens** opens the existing base-map comparison frame. The commit
+comparison panel also offers **Compare active lens**. Choose a head commit for
+the same lens, or another saved lens at the base commit. Share
+`?lens=<name>&lens_compare=true&compare=true&base=<sha>&head=<sha>`; add
+`other_lens=<name>` with equal base/head commits for overlap and difference.
+The map remains the stored base snapshot. New files have district placement
+only, with no invented footprint. The panel lists area membership growth and
+shrinkage, shared/differing stops and hops, moved stops, broken hops and renamed
+files. Changes are grouped by area, stop and hop; unchanged items collapse into
+one expandable count. Paths appear once as tappable base targets. Renames show
+old and new paths plus the detection commit; an unchanged lens names the new
+path as unresolved at head until explicitly edited. Two-lens mode labels
+membership as "only in <lens>", or "in both", rather than commit deletions.
+The edit form collapses after a result loads, keeping Return to lens and summary
+counts visible. On phones comparison occupies the existing sheet: Peek shows
+counts, Half/Full show the changes, and the top map chrome stays visible.
+
+Comparison marks use labels and stroke patterns as well as theme tokens:
+added (+, solid), removed (−, dashed), broken (×, dotted), renamed (↗,
+dash-dot), moved (↔, short dash) and shared (=, muted). Overview retains only
+district areas, routes and district status badges; unchanged paint is dimmed.
+Stop marks use the same 40 px file and 110 px
+class-member gates. Existing base cards remain available through the list.
+Loading/revalidation hides previous paint; stale identities, unavailable source
+and mismatched snapshots show an explicit error. Return to lens keeps the base
+commit pinned. Physical-device and owner visual acceptance remain separate.
 
 ### 4.8 Search (artboard "Search active")
 

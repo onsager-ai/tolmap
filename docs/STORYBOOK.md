@@ -28,7 +28,7 @@ Only use this on a host whose local policy permits browser/rendering work.
 | Local checkout | Detect, scope/all-source confirmation, indexing/cancel, detection/index failure, saved history/export | LOCAL.md and production native template; preserve |
 | Indexing | No job, queue, Fetch/Read/Map/Detail, every failure class | UX §6; preserve |
 | Map | Overview, district/file/symbol/folder, four layers, early detail, loading/error | UX §§3–5, 7, 9; preserve |
-| Overlays | Search/results/empty, layers, repository menu, quality, keyboard, path picking, lenses loaded/unresolved/empty/error | UX §§4–5; preserve |
+| Overlays | Search/results/empty, layers, repository menu, quality, keyboard, path picking, lenses loaded/unresolved/empty/error, lens comparison commits/overlap/loading/stale/error | UX §§4–5; preserve |
 | Source | Read-only, loading, access error, missing/expired/binary/large/unsupported, long-line fallback, find/miss | UX §13; preserve |
 | Reserved routes | Every reserved route except the separately covered `/new` | Existing placeholder implementation; preserve |
 
@@ -134,5 +134,16 @@ explanations and unresolved reports for phone and desktop in both themes under
 `lens-review-samples` (also included in `viewer-shots/lenses/`). Its map is `data/flask.json` unchanged; Rust resolves
 `data/lenses/flask-request.toml` and generates symbols from the fixture's pinned
 source. The unresolved sample intentionally adds a missing member and stop.
+Lens comparison states (40 identities: five states × four viewports × two
+themes, OSS host), the 16 loaded/unresolved lens captures that gained the
+comparison action and phone `map-path` (light and dark, changed by bottom-sheet
+sizing) were approved by the owner on 2026-11-09 from run `42491269339`
+(source `d5470c7`). The 16 commit/overlap comparison captures were re-approved
+from run `42549386311` (source `9c012e7`) after route lines and district badges
+were moved onto their stop markers; `approved.json` records both under `recaptures`. The Flask browser
+lane includes commit comparison, zoomed comparison stops, overlap and stale
+snapshot captures in both themes on phone and desktop. Those comparison edits
+are explicitly synthetic resolver scenarios over the unchanged pinned Flask
+map, not a fabricated Flask commit pair.
 Source-reader responses in that browser lane are explicitly synthetic; the
 native local/hosted service tests own git-object pinning evidence.

@@ -263,10 +263,9 @@ console.log("\nwho owns a drag on the sheet (dragOwner)");
 {
   const expected = (s: DragStart): "sheet" | "content" => {
     if (s.zone === "handle") return "sheet"; // the grabber and header never scroll
-    if (s.detent === "peek") return "sheet"; // Peek never scrolls (§3.1)
     if (!s.canScroll) return "sheet"; // nothing to scroll
     if (s.direction === "down") return s.scrollTop <= 0 ? "sheet" : "content";
-    return s.detent === "full" ? "content" : "sheet"; // up: raise the sheet first
+    return "content"; // every detent's visible body scrolls (§3.1)
   };
   let all = 0;
   let agree = 0;
@@ -291,10 +290,11 @@ console.log("\nwho owns a drag on the sheet (dragOwner)");
   report(at("full", 1, "down") === "content", "Full, content scrolled even 1 px, drag down: the content scrolls toward its top");
   report(at("full", 400, "down") === "content", "Full, content mid-scroll, drag down: the content scrolls (the next drag moves the sheet)");
   report(at("full", 0, "up") === "content" && at("full", 400, "up") === "content", "Full, drag up: the content scrolls, from the top or mid-scroll");
-  report(at("half", 0, "up") === "sheet" && at("half", 120, "up") === "sheet", "below Full, drag up: the sheet rises first, whatever the scroll");
+  report(at("half", 0, "up") === "content" && at("half", 120, "up") === "content", "Half, drag up: the visible body scrolls from its top or mid-scroll");
   report(at("half", 0, "down") === "sheet", "Half, content at its top, drag down: the sheet lowers");
   report(at("half", 120, "down") === "content", "Half, a scroller under the finger mid-scroll, drag down: it scrolls");
-  report(at("peek", 120, "up") === "sheet" && at("peek", 120, "down") === "sheet", "Peek: every drag moves the sheet");
+  report(at("peek", 120, "up") === "content" && at("peek", 120, "down") === "content", "Peek, mid-scroll: the visible body scrolls in either direction");
+  report(at("peek", 0, "down") === "sheet", "Peek, content at its top: dragging down moves the sheet and springs back");
   report(
     at("full", 400, "down", "handle") === "sheet" && at("full", 400, "up", "handle") === "sheet" && at("half", 0, "up", "handle") === "sheet",
     "the grabber and the card header always move the sheet, never scroll",

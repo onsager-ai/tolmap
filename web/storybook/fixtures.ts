@@ -40,6 +40,9 @@ const json = (value: unknown, status = 200) => new HttpResponse(JSON.stringify(v
 
 export async function installFixture(state: string) {
   if (!map) map = await (await nativeFetch(asset("map.json"))).json() as MapDocument;
+  const snapshotCommit = state.startsWith("lens-compare-") ? "a".repeat(40) : commit;
+  const mapDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(map)));
+  const mapSha256 = Array.from(new Uint8Array(mapDigest), byte => byte.toString(16).padStart(2, "0")).join("");
   let job = snapshot(state === "freshness-in-map" ? "early" : state);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const emit = () => new TextEncoder().encode(`data: ${JSON.stringify(job, (_key, value) => typeof value === "bigint" ? Number(value) : value)}\n\n`);
@@ -66,6 +69,14 @@ export async function installFixture(state: string) {
     }
     if (path.startsWith("/api/jobs/")) return json(job);
     if (path === "/api/index") return json({ job_id: "fixture", slug, status: "queued" }, 202);
+    if (path.startsWith("/api/compare/") && path.endsWith("/lenses")) {
+      if (state === "lens-compare-loading") { await delay("infinite"); }
+      if (state === "lens-compare-error") return json({ message: "Committed comparison source unavailable. No newer snapshot was substituted." }, 404);
+      const target = (file: number) => ({ file, path: map.F[file], district: map.N[file][0], symbol: null });
+      const report: LensReport = { version: 1, lens_version: 1, repo: map.repo, title: "Synthetic comparison", lower_bound: true, areas: [], paths: [], notes: [], unresolved: [] };
+      return json({ version: 1, repository: slug, base: state === "lens-compare-stale" ? "c".repeat(40) : snapshotCommit, head: url.searchParams.get("head"), lens: "overview", other: url.searchParams.get("other") ?? "overview", base_map_sha256: mapSha256, lower_bound: true, before: report, after: report,
+        changes: ["added", "removed", "broken", "renamed", "shared"].map((status, i) => ({ kind: i === 2 ? "hop" : i === 3 ? "stop" : "area", label: "Synthetic request flow", status, before: [map.F[i]], after: status === "removed" ? [] : [map.F[i]], targets: i === 2 ? [target(0), target(1)] : [target(i)], districts: [map.N[i][0]] })) });
+    }
     if (path.endsWith("/lenses")) return json({ repository: slug, commit, names: state === "lens-empty" || !state.startsWith("lens-") ? [] : ["overview"] });
     if (path.includes("/lenses/")) {
       if (state === "lens-error") return json({ error: "lens_source_unavailable", message: "Committed lens source unavailable. No newer lens was substituted." }, 404);
@@ -76,7 +87,7 @@ export async function installFixture(state: string) {
         paths: [{ name: "request-flow", stops: [{ spec: map.F[symbolFile], target: target(symbolFile) }, { spec: state === "lens-unresolved" ? "missing.rs" : map.F[1], target: state === "lens-unresolved" ? null : target(1) }], hops: [{ from: 0, to: 1, source: "declared", edge_kind: null, via: [], reason: "Synthetic queue boundary", resolved: state !== "lens-unresolved" }] }],
         notes: [{ anchor: map.F[symbolFile], text: "Synthetic fixture note.", target: target(symbolFile), district: null }],
         unresolved: state === "lens-unresolved" ? [{ kind: "missing_path", location: "paths[0].stops[1]", spec: "missing.rs", detail: "File missing at this snapshot." }] : [] };
-      return json({ repository: slug, commit, name: "overview", report });
+      return json({ repository: slug, commit: snapshotCommit, name: "overview", report });
     }
     if (path.endsWith("/provenance")) {
       if (state === "source-loading") { await delay("infinite"); }
@@ -93,7 +104,7 @@ export async function installFixture(state: string) {
     }
     if (path.startsWith("/api/maps/") || /^\/maps\/.+\.json$/.test(path)) {
       if (state === "map-loading") { await delay("infinite"); }
-      if (state.startsWith("lens-")) return new HttpResponse(JSON.stringify(map), { headers: { "Content-Type": "application/json", "x-tolmap-commit": commit } });
+      if (state.startsWith("lens-")) return new HttpResponse(JSON.stringify(map), { headers: { "Content-Type": "application/json", "x-tolmap-commit": snapshotCommit } });
       return state === "map-unavailable" ? json({ error: "not_found" }, 404) : json(map);
     }
     return json({ error: "unhandled_fixture_request", path }, 500);

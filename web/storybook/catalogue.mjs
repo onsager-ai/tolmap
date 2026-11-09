@@ -10,6 +10,7 @@ export const cases = [
   ...['detection_uncertain', 'detection_failed', 'cancelled', 'clone_failed', 'worker_crashed', 'busy', 'server_stopping', 'rate_limited', 'index_failed', 'internal_error', 'unknown'].map(code => [`failed-${code.replaceAll('_', '-')}`, `Failure · ${code}`, '/new?job=fixture&slug=onsager-ai/tolmap', code]),
   ['map-overview', 'Map overview', '/onsager-ai/tolmap', 'map-ready'],
   ...['loaded', 'unresolved', 'empty', 'error'].map(state => [`map-lens-${state}`, `Lenses · ${state}`, `/onsager-ai/tolmap${state === 'empty' ? '' : '?lens=overview'}`, `lens-${state}`, 'lenses']),
+  ...['commits', 'overlap', 'loading', 'stale', 'error'].map(state => [`map-lens-compare-${state}`, `Lens comparison · ${state}`, `/onsager-ai/tolmap?lens=overview&lens_compare=true&compare=true&base=${'a'.repeat(40)}&head=${state === 'overlap' ? 'a'.repeat(40) : 'b'.repeat(40)}${state === 'overlap' ? '&other_lens=other' : ''}`, `lens-compare-${state}`, 'lens-comparison']),
   ['map-freshness', 'Snapshot freshness on the map', '/onsager-ai/tolmap?job=fixture', 'freshness-in-map'],
   ['map-loading', 'Map loading', '/onsager-ai/tolmap', 'map-loading'],
   ['map-unavailable', 'Map unavailable', '/onsager-ai/tolmap', 'map-unavailable'],

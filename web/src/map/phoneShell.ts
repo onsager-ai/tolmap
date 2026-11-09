@@ -154,7 +154,7 @@ export interface DragStart {
  * was scrolled only the 44 px grabber could lower the sheet.
  *
  * - The grabber and the header always move the sheet.
- * - At Peek, and wherever nothing can scroll, the sheet moves.
+ * - Wherever nothing can scroll, the sheet moves.
  * - Down: the sheet moves if the content is at its top, else the content
  *   scrolls. A drag that starts mid-scroll stays a scroll for the whole
  *   gesture: once the browser has begun a native scroll it cancels the
@@ -162,15 +162,13 @@ export interface DragStart {
  *   happens on the next drag. (Doing it within one gesture would mean
  *   replacing native scrolling -- its momentum and edge bounce -- with a
  *   scripted one.)
- * - Up: below Full the sheet rises first; at Full the content scrolls.
- *
- * The content scrolls only at Full (§3.1: at Peek and Half the body is
- * clipped, not a scroller), so at Half `canScroll` is false in practice;
- * the rule does not depend on that. */
+ * - Up: the content scrolls at every detent. The grabber and header still
+ *   raise the sheet, while controls below the visible detent remain reachable
+ *   without changing detents (§3.1). */
 export function dragOwner(s: DragStart): DragOwner {
-  if (s.zone === "handle" || s.detent === "peek" || !s.canScroll) return "sheet";
+  if (s.zone === "handle" || !s.canScroll) return "sheet";
   if (s.direction === "down") return s.scrollTop <= 0 ? "sheet" : "content";
-  return s.detent === "full" ? "content" : "sheet";
+  return "content";
 }
 
 /** How far (CSS px) the finger must travel before the drag's direction, and
