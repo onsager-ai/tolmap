@@ -4,7 +4,10 @@ import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { cameraBoxes, settleCamera, zoomInSettled } from './camera-settle.mjs';
-const base = process.argv[2] ?? 'http://127.0.0.1:5176';
+const base = process.argv.find((arg) => arg.startsWith('http://') || arg.startsWith('https://')) ?? 'http://127.0.0.1:5176';
+const profileArg = process.argv.indexOf('--profile');
+const profiles = profileArg < 0 ? ['desktop', 'phone'] : [process.argv[profileArg + 1]];
+if (profiles.some((profile) => !['desktop', 'phone'].includes(profile))) throw new Error('--profile must be desktop or phone');
 const origin = new URL(base).origin;
 const commit = 'd73fa1cdcbd8b1465c151db8924ba58b1dd14e35';
 const map = JSON.parse(await readFile('lens-fixtures/flask.json', 'utf8'));
@@ -14,12 +17,17 @@ assert.deepEqual(await readFile('lens-fixtures/flask.json'), await readFile('../
 assert.equal(loaded.unresolved.length, 0);
 const comparison = JSON.parse(await readFile('lens-fixtures/comparison.json', 'utf8'));
 const overlap = JSON.parse(await readFile('lens-fixtures/overlap.json', 'utf8'));
+// Issue #250: Rust's debt lens on the same Flask frame, and a controlled comparison.
+const debt = JSON.parse(await readFile('lens-fixtures/debt.json', 'utf8'));
+const debtComparison = JSON.parse(await readFile('lens-fixtures/debt-comparison.json', 'utf8'));
+assert.equal(debt.unresolved.length, 0);
+assert.ok(debt.areas.length > 0 && debt.notes.length > 0, 'the Flask debt lens has findings');
 const screenshots = [];
 let activePage;
 await mkdir('shots/lenses', {recursive:true});
 const browser = await chromium.launch({headless:true});
 try {
-  for (const profile of ['desktop', 'phone']) for (const theme of ['light', 'dark']) {
+  for (const profile of profiles) for (const theme of ['light', 'dark']) {
     const context = await browser.newContext({ viewport: profile === 'phone' ? {width:390,height:844} : {width:1440,height:900}, hasTouch:profile === 'phone', isMobile:profile === 'phone', colorScheme:theme, reducedMotion:'reduce' });
     const page = await context.newPage();
     activePage = page;
@@ -32,6 +40,8 @@ try {
       let json;
       if (path === '/api/healthz') json = {status:'ok'};
       else if (path === '/api/maps') json = [];
+      else if (path === '/api/maps/pallets/flask/debt') { assert.equal(url.searchParams.get('commit'),commit); json = {repository:'pallets/flask',commit,name:'@debt',report:debt}; }
+      else if (path === '/api/compare/pallets/flask/debt') json = debtComparison;
       else if (path === '/api/maps/pallets/flask') return route.fulfill({body:await readFile('lens-fixtures/flask.json'), contentType:'application/json', headers:{'x-tolmap-commit':commit}});
       else if (path.endsWith('/symbols')) json = JSON.parse(await readFile(`lens-fixtures/flask.symbols/${Number(url.searchParams.get('district'))}.json`, 'utf8'));
       else if (path.endsWith('/freshness')) return route.fulfill({status:404,json:{error:'not_found'}});
@@ -288,6 +298,47 @@ try {
     await comparePanel.locator('[data-lens-comparison-state="error"]').waitFor();
     assert.equal(await page.locator('[data-lens-comparison-overlay]').count(),0);
     await shot('comparison-stale');
+    // Issue #250: the built-in Debt lens through the same picker, overlay,
+    // cards, reader and comparison panel.
+    await page.goto(url);
+    await page.locator('.map-svg path.hit[data-k^="d:"]').first().waitFor();
+    await settleCamera(page);
+    const debtCamera = await cameraBoxes(page);
+    if (profile === 'phone') await page.getByRole('button',{name:'Map layers',exact:true}).click();
+    if (!await picker.evaluate(element => element.open)) await picker.locator(':scope > summary').click();
+    await picker.getByRole('combobox',{name:'Saved lens'}).selectOption('@debt');
+    await panel.locator('[data-lens-state="loaded"]').waitFor();
+    if (profile === 'phone') await page.locator('[data-layers-sheet]').waitFor({state:'detached'});
+    assert.equal(new URL(page.url()).searchParams.get('lens'),'@debt');
+    assert.deepEqual(await cameraBoxes(page),debtCamera,'Debt never moves the camera');
+    assert.ok(await page.locator('[data-lens-area]').count()>0,'Debt tints districts at overview');
+    assert.equal(await page.locator('[data-lens-stop]').count(),0,'overview hides debt file stops');
+    assert.equal(await page.locator('[data-lens-note]').count(),0,'overview hides debt file findings');
+    await shot('debt-overview');
+    for (let i=0; i<10 && await page.locator('[data-lens-note]').count() === 0; i++) await zoomInSettled(page,1);
+    assert.ok(await page.locator('[data-lens-note]').count()>0,'file findings appear past the 40 px gate');
+    await shot('debt-zoomed');
+    await openPanel();
+    const finding = debt.notes[0].anchor;
+    await panel.getByRole('button',{name:finding,exact:true}).first().click();
+    if (profile === 'phone') await page.locator('[data-phone-sheet] [data-sheet-card="file"]').waitFor();
+    else await page.locator('[data-selection-panel]').waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('file'),finding,'a finding opens its file card');
+    await page.getByRole('button',{name:'Read selected source',exact:true}).click();
+    await page.locator('[data-source-reader] .cm-content').waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('lens'),'@debt');
+    await shot('debt-reader');
+    await page.goBack();
+    await page.locator('[data-source-reader]').waitFor({state:'detached'});
+    await page.goto(`${url}&lens=%40debt&lens_compare=true&compare=true&base=${commit}&head=${debtComparison.head}`);
+    await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
+    // A phone deep link opens at Peek with counts only; View changes raises it.
+    if (profile === 'phone') await comparePanel.getByRole('button',{name:'View changes',exact:true}).click();
+    await comparePanel.locator('[data-lens-delta]').first().waitFor();
+    for (const status of ['added','removed']) assert.ok(await comparePanel.locator(`[data-lens-delta="${status}"]`).count()>0,`debt comparison reports ${status}`);
+    await shot('debt-comparison');
+    await comparePanel.getByRole('button',{name:'Edit comparison',exact:true}).click();
+    assert.equal(await comparePanel.getByRole('combobox',{name:'Compare with lens'}).count(),0,'Debt compares commits only');
     assert.deepEqual(errors,[],`${profile}/${theme} browser errors`);
     await context.close();
   }

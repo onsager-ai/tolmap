@@ -10,6 +10,8 @@ export interface DesktopKeyInput {
   altKey?: boolean;
   shiftKey?: boolean;
   overviewOpen?: boolean;
+  /** Issue #248: a lens walkthrough is active. */
+  walkthrough?: boolean;
 }
 
 export type DesktopKeyAction =
@@ -25,6 +27,7 @@ export type DesktopKeyAction =
   | { type: "keyboard-list" }
   | { type: "overview-move"; direction: -1 | 1 }
   | { type: "overview-activate" }
+  | { type: "walk-step"; direction: -1 | 1 }
   | { type: "none" };
 
 const NONE: DesktopKeyAction = { type: "none" };
@@ -53,6 +56,7 @@ export function dispatchDesktopKey(input: DesktopKeyInput): DesktopKeyAction {
   if (key.toLowerCase() === "f") return { type: "fit" };
   if (key.toLowerCase() === "z") return { type: "zoom-selection" };
   if (key.toLowerCase() === "t") return { type: "cycle-theme" };
+  if (input.walkthrough && (key === "ArrowLeft" || key === "ArrowRight")) return { type: "walk-step", direction: key === "ArrowLeft" ? -1 : 1 };
   if (input.overviewOpen) {
     if (key === "ArrowDown") return { type: "overview-move", direction: 1 };
     if (key === "ArrowUp") return { type: "overview-move", direction: -1 };

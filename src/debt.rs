@@ -1,5 +1,6 @@
-//! Structural debt findings (issue #250): district cycles, misplaced files,
-//! god files, hotspots and unreached files, computed from a map document
+//! Structural debt findings (issues #250, #251): district cycles, misplaced
+//! files, god files, hotspots, unreached files and hidden coupling, computed
+//! from a map document
 //! alone. `findings` is a pure function of `&MapDocument`: it never changes
 //! the map, and the same map always gives a byte-identical report and lens.
 //!
@@ -11,7 +12,13 @@
 //!
 //! Plain `//` comments on exported types, not doc comments: ts-rs copies doc
 //! comments into the bindings.
-use crate::lens::{HopMode, Lens, LensArea, LensColor, LensNote, LensPath, LensStop, LENS_VERSION};
+use crate::extract::COCHANGE_MIN_COUNT;
+use crate::lens::{
+    self, FileRename, HopMode, Lens, LensArea, LensColor, LensNote, LensPath, LensReport, LensStop,
+    LENS_VERSION,
+};
+use crate::lens_comparison::{self, ComparisonMode, LensDelta};
+use crate::pipeline::SHARE_COCHANGE;
 use crate::schema::{CoverageReport, MapDocument};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -40,13 +47,19 @@ pub const HOTSPOT_TOP_FRACTION: f64 = 0.05;
 // ...but never fewer than two, so the list always covers the map's two
 // `hazard` landmarks, which it generalises.
 pub const HOTSPOT_MIN_COUNT: usize = 2;
+// Hidden coupling uses the evidence retained in the optional map sidecar.
+// The count and cutoff are the extraction/pipeline constants that wrote it.
+pub const HIDDEN_COUPLING_LENS_PATHS: usize = 20;
 
 // Unreached file exclusions. Entry points have no importer by design, so a
 // file is an entry when the map marks it an `entry` landmark, or by name:
-// - its base name, up to the first `.`, is one of these;
+// - its base name, up to the first `.`, is one of these. `tests` is a Rust
+//   `#[cfg(test)] mod tests;` child: nothing `use`s it, and its parent's `mod`
+//   gives no inbound edge on the map, so on semon 04aeb54 9 of the 26 files
+//   with no inbound edge found were `tests.rs` (docs/FINDINGS.md, finding 63);
 pub const ENTRY_STEMS: &[&str] = &[
     "main", "__main__", "__init__", "index", "lib", "mod", "build", "app", "cli", "server",
-    "setup", "conftest", "manage", "wsgi", "asgi",
+    "setup", "conftest", "manage", "wsgi", "asgi", "tests",
 ];
 // - a directory on its path is one of these (tests, tools and examples are
 //   run, not imported);
@@ -82,6 +95,8 @@ pub struct DebtThresholds {
     pub hotspot_top_fraction: f64,
     pub hotspot_min_count: usize,
     pub hotspot_min_score: Option<usize>,
+    pub hidden_coupling_min_count: usize,
+    pub hidden_coupling_min_weight: f64,
     pub entry_stems: Vec<String>,
     pub entry_dirs: Vec<String>,
     pub entry_markers: Vec<String>,
@@ -168,6 +183,19 @@ pub struct UnreachedFile {
     pub out_edges: usize,
 }
 
+// A co-change pair without any file edge in `E` or reference edge in `U`.
+// The sidecar itself is optional, so `hidden_coupling_measured` distinguishes
+// an old map from one where the measured lower bound is zero.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct HiddenCoupling {
+    pub left: String,
+    pub right: String,
+    pub left_district: usize,
+    pub right_district: usize,
+    pub cochanges: usize,
+    pub weight: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DebtReport {
@@ -185,6 +213,8 @@ pub struct DebtReport {
     pub god_files: Vec<GodFile>,
     pub hotspots: Vec<Hotspot>,
     pub unreached: Vec<UnreachedFile>,
+    pub hidden_coupling_measured: bool,
+    pub hidden_coupling: Vec<HiddenCoupling>,
     // Files the entry rule excludes from `unreached`, and files with no edge
     // at all. The latter are not reported as unreached: a file the extractor
     // saw no import in or out of is a coverage gap before it is a finding.
@@ -398,6 +428,23 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
 pub fn findings(map: &MapDocument) -> DebtReport {
     let n = map.files.len();
     let district = |f: usize| map.nodes[f].district();
+    let linked = map
+        .edges
+        .iter()
+        .map(|&[left, right]| (left.min(right), left.max(right)))
+        .chain(map.uses.iter().flat_map(|(key, users)| {
+            let Some((target, _)) = key.split_once(':') else {
+                return Vec::new();
+            };
+            let Ok(target) = target.parse::<usize>() else {
+                return Vec::new();
+            };
+            users
+                .iter()
+                .map(|&user| (target.min(user), target.max(user)))
+                .collect()
+        }))
+        .collect::<BTreeSet<_>>();
     let mut inbound = vec![0usize; n];
     let mut outbound = vec![0usize; n];
     let mut by_district: Vec<BTreeMap<usize, usize>> = vec![BTreeMap::new(); n];
@@ -524,6 +571,46 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         })
         .collect();
 
+    let hidden_coupling = map
+        .debt
+        .as_ref()
+        .and_then(|debt| debt.cochange.as_ref())
+        .map(|cochange| {
+            cochange
+                .pairs
+                .iter()
+                .filter_map(|pair| {
+                    let (left, right, cochanges, weight) = pair.0;
+                    if cochanges < COCHANGE_MIN_COUNT
+                        || weight < SHARE_COCHANGE
+                        || linked.contains(&(left.min(right), left.max(right)))
+                    {
+                        return None;
+                    }
+                    Some(HiddenCoupling {
+                        left: map.files.get(left)?.clone(),
+                        right: map.files.get(right)?.clone(),
+                        left_district: map.nodes.get(left)?.district(),
+                        right_district: map.nodes.get(right)?.district(),
+                        cochanges,
+                        weight,
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+    let hidden_coupling_measured = hidden_coupling.is_some();
+    let mut hidden_coupling = hidden_coupling.unwrap_or_default();
+    // Cross-district pairs rank first, then the strongest evidence, then
+    // file order. The sidecar itself is already index/path deterministic.
+    hidden_coupling.sort_by(|a, b| {
+        (a.left_district == a.right_district)
+            .cmp(&(b.left_district == b.right_district))
+            .then(b.weight.total_cmp(&a.weight))
+            .then(b.cochanges.cmp(&a.cochanges))
+            .then(a.left.cmp(&b.left))
+            .then(a.right.cmp(&b.right))
+    });
+
     let strings = |s: &[&str]| -> Vec<String> { s.iter().map(|x| (*x).to_owned()).collect() };
     DebtReport {
         version: DEBT_REPORT_VERSION,
@@ -540,6 +627,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             hotspot_top_fraction: HOTSPOT_TOP_FRACTION,
             hotspot_min_count: HOTSPOT_MIN_COUNT,
             hotspot_min_score,
+            hidden_coupling_min_count: COCHANGE_MIN_COUNT,
+            hidden_coupling_min_weight: SHARE_COCHANGE,
             entry_stems: strings(ENTRY_STEMS),
             entry_dirs: strings(ENTRY_DIRS),
             entry_markers: strings(ENTRY_MARKERS),
@@ -552,6 +641,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         god_files,
         hotspots,
         unreached,
+        hidden_coupling_measured,
+        hidden_coupling,
         entry_files,
         isolated_files,
     }
@@ -559,21 +650,17 @@ pub fn findings(map: &MapDocument) -> DebtReport {
 
 // ---- lens ------------------------------------------------------------------
 
-// Kind names, used as label prefixes. A finding's label is its kind and its
-// sorted file paths, nothing measured: lens comparison (#246) matches items
-// by label, so a value in it would turn every metric change into removed +
-// added. A cycle is labelled by the files of its closing edges, never by
-// district names, which are not stable across commits. Values go in notes.
+// Kind names, used as area labels. The lens has one area per finding kind
+// (owner decision, 2026-11-09): an area tints every district of its members,
+// so one area per finding stacked tints wherever findings shared a district.
+// Labels carry nothing measured and no district name; values, district names
+// and per-district edge counts go in notes anchored to each file.
 pub const KIND_CYCLE: &str = "district cycle";
 pub const KIND_MISPLACED: &str = "misplaced file";
 pub const KIND_GOD: &str = "god file";
 pub const KIND_HOTSPOT: &str = "hotspot";
 pub const KIND_UNREACHED: &str = "no inbound edge found";
-
-fn label(kind: &str, paths: &BTreeSet<&str>) -> String {
-    let paths: Vec<&str> = paths.iter().copied().collect();
-    format!("{kind}: {}", paths.join(", "))
-}
+pub const KIND_HIDDEN_COUPLING: &str = "hidden coupling";
 
 fn cycle_files(cycle: &DistrictCycle) -> BTreeSet<&str> {
     cycle
@@ -584,38 +671,59 @@ fn cycle_files(cycle: &DistrictCycle) -> BTreeSet<&str> {
 }
 
 // A path name ([a-z0-9_-]) derived from the cycle's files, not its position
-// in the list, for the same identity reason as labels. FNV-1a, 64 bits.
-fn cycle_path_name(files: &BTreeSet<&str>) -> String {
+// in the list, so the same cycle keeps its name across commits. FNV-1a, 64
+// bits.
+fn path_hash<'a>(files: impl IntoIterator<Item = &'a str>) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in files.iter().flat_map(|f| f.bytes().chain([0])) {
+    for byte in files.into_iter().flat_map(|file| file.bytes().chain([0])) {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("cycle-{hash:016x}")
+    hash
+}
+
+fn cycle_path_name(files: &BTreeSet<&str>) -> String {
+    format!("cycle-{:016x}", path_hash(files.iter().copied()))
+}
+
+fn hidden_coupling_path_name(coupling: &HiddenCoupling) -> String {
+    format!(
+        "hidden-coupling-{:016x}",
+        path_hash([coupling.left.as_str(), coupling.right.as_str()])
+    )
 }
 
 fn pct(share: f64) -> String {
     format!("{}%", round4(share * 100.0))
 }
 
-// The lens equivalent of a report: one area per finding, one path per
-// cycle and notes carrying the measured values. A cycle path's closing
+// The lens equivalent of a report: at most one area per finding kind (in
+// `KINDS` order, members sorted), one path per cycle and notes carrying the
+// measured values. A cycle path's closing
 // edges are computed hops. Consecutive closing edges inside one district
 // are joined by a declared hop only because a lens path needs one: no route
 // between those two files is guaranteed, and the reason says that no edge
 // is claimed, since the viewer draws a declared hop as a link.
 pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
     let t = &report.thresholds;
-    let mut areas = vec![];
+    let mut kinds = [
+        (KIND_CYCLE, LensColor::Red, BTreeSet::new()),
+        (KIND_MISPLACED, LensColor::Amber, BTreeSet::new()),
+        (KIND_GOD, LensColor::Purple, BTreeSet::new()),
+        (KIND_HOTSPOT, LensColor::Orange, BTreeSet::new()),
+        (KIND_UNREACHED, LensColor::Grey, BTreeSet::new()),
+        (KIND_HIDDEN_COUPLING, LensColor::Teal, BTreeSet::new()),
+    ];
+    fn add<'a>(
+        kinds: &mut [(&str, LensColor, BTreeSet<&'a str>)],
+        kind: &str,
+        files: impl IntoIterator<Item = &'a str>,
+    ) {
+        let entry = kinds.iter_mut().find(|k| k.0 == kind).unwrap();
+        entry.2.extend(files);
+    }
     let mut paths = vec![];
     let mut notes = vec![];
-    let mut area = |kind: &str, color: LensColor, files: BTreeSet<&str>| {
-        areas.push(LensArea {
-            label: label(kind, &files),
-            color,
-            members: files.into_iter().map(str::to_owned).collect(),
-        });
-    };
     let mut note = |anchor: &str, text: String| {
         notes.push(LensNote {
             anchor: anchor.to_owned(),
@@ -677,7 +785,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
             name: cycle_path_name(&files),
             stops,
         });
-        area(KIND_CYCLE, LensColor::Red, files);
+        add(&mut kinds, KIND_CYCLE, files);
     }
     for m in &report.misplaced {
         let own = m
@@ -703,11 +811,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 pct(t.misplaced_min_share)
             ),
         );
-        area(
-            KIND_MISPLACED,
-            LensColor::Amber,
-            BTreeSet::from([m.path.as_str()]),
-        );
+        add(&mut kinds, KIND_MISPLACED, [m.path.as_str()]);
     }
     for g in &report.god_files {
         note(
@@ -723,11 +827,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 t.god_min_complexity.unwrap_or_default()
             ),
         );
-        area(
-            KIND_GOD,
-            LensColor::Purple,
-            BTreeSet::from([g.path.as_str()]),
-        );
+        add(&mut kinds, KIND_GOD, [g.path.as_str()]);
     }
     for h in &report.hotspots {
         note(
@@ -743,11 +843,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 t.hotspot_min_score.unwrap_or_default()
             ),
         );
-        area(
-            KIND_HOTSPOT,
-            LensColor::Orange,
-            BTreeSet::from([h.path.as_str()]),
-        );
+        add(&mut kinds, KIND_HOTSPOT, [h.path.as_str()]);
     }
     for u in &report.unreached {
         note(
@@ -757,12 +853,66 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 u.out_edges
             ),
         );
-        area(
-            KIND_UNREACHED,
-            LensColor::Grey,
-            BTreeSet::from([u.path.as_str()]),
-        );
+        add(&mut kinds, KIND_UNREACHED, [u.path.as_str()]);
     }
+    if !report.hidden_coupling.is_empty() {
+        add(
+            &mut kinds,
+            KIND_HIDDEN_COUPLING,
+            report
+                .hidden_coupling
+                .iter()
+                .flat_map(|coupling| [coupling.left.as_str(), coupling.right.as_str()]),
+        );
+        let shown = report.hidden_coupling.len().min(HIDDEN_COUPLING_LENS_PATHS);
+        note(
+            &report.hidden_coupling[0].left,
+            format!(
+                "{shown} of {} hidden-coupling pairs shown as paths; all are in `tolmap debt`",
+                report.hidden_coupling.len()
+            ),
+        );
+        for coupling in report
+            .hidden_coupling
+            .iter()
+            .take(HIDDEN_COUPLING_LENS_PATHS)
+        {
+            note(
+                &coupling.left,
+                format!(
+                    "hidden coupling: co-changed {} times (weight {:.2}); no static or reference edge found (lower bound)",
+                    coupling.cochanges, coupling.weight
+                ),
+            );
+            paths.push(LensPath {
+                name: hidden_coupling_path_name(coupling),
+                stops: vec![
+                    LensStop {
+                        at: coupling.left.clone(),
+                        hop: HopMode::Computed,
+                        reason: None,
+                    },
+                    LensStop {
+                        at: coupling.right.clone(),
+                        hop: HopMode::Declared,
+                        reason: Some(format!(
+                            "co-changed {} times; no static edge found",
+                            coupling.cochanges
+                        )),
+                    },
+                ],
+            });
+        }
+    }
+    let areas = kinds
+        .into_iter()
+        .filter(|(_, _, files)| !files.is_empty())
+        .map(|(kind, color, files)| LensArea {
+            label: kind.to_owned(),
+            color,
+            members: files.into_iter().map(str::to_owned).collect(),
+        })
+        .collect();
     Lens {
         version: LENS_VERSION,
         title: Some("Debt findings (lower bounds)".into()),
@@ -815,6 +965,17 @@ pub fn render_text(report: &DebtReport) -> String {
         report.entry_files,
         report.isolated_files,
     );
+    if report.hidden_coupling_measured {
+        let _ = writeln!(
+            out,
+            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found)",
+            report.hidden_coupling.len(),
+            t.hidden_coupling_min_count,
+            t.hidden_coupling_min_weight,
+        );
+    } else {
+        out.push_str("hidden coupling not measured (map has no co-change sidecar)\n");
+    }
     for c in &report.cycles {
         let ids: Vec<String> = c.route.iter().map(usize::to_string).collect();
         let _ = writeln!(
@@ -858,6 +1019,13 @@ pub fn render_text(report: &DebtReport) -> String {
             u.path, u.out_edges
         );
     }
+    for coupling in &report.hidden_coupling {
+        let _ = writeln!(
+            out,
+            "hidden coupling {} <-> {}: {} co-changes, weight {:.2}",
+            coupling.left, coupling.right, coupling.cochanges, coupling.weight
+        );
+    }
     out
 }
 
@@ -886,4 +1054,203 @@ pub fn run(map: &std::path::Path, format: &str) -> i32 {
     };
     print!("{rendered}");
     0
+}
+
+// ---- built-in lens and comparison (issue #250 items 3-4) -------------------
+
+// The built-in debt lens's name in `LensResponse`/`LensComparison` and the
+// viewer's `?lens=`. Repository lens names start with [a-z0-9], so this can
+// never collide with `.tolmap/lenses/<name>.toml`.
+pub const LENS_NAME: &str = "@debt";
+
+const KINDS: [&str; 6] = [
+    KIND_CYCLE,
+    KIND_MISPLACED,
+    KIND_GOD,
+    KIND_HOTSPOT,
+    KIND_UNREACHED,
+    KIND_HIDDEN_COUPLING,
+];
+
+// The debt lens resolved against the map it was generated from.
+pub fn lens_report(map: &MapDocument) -> LensReport {
+    lens::resolve(&to_lens(&findings(map), map), map)
+}
+
+// Debt at base and at head, compared on the base map. Head findings come
+// from the head snapshot's own map (its own partition); the head lens is
+// resolved on `head_frame`, the head projected onto the base partition
+// (`check::lens_head_map`), so only base geometry is ever drawn.
+//
+// `lens_comparison::changes` keys an area item by its member file alone, so
+// areas match across labels. One file is often in several kinds at once (a
+// god file is usually a hotspot too), and one comparison over the whole lens
+// would then read a new god file as `shared`. Comparing each kind on its own
+// keeps every file to at most one area item per comparison, since each kind
+// has one area. The statuses are `changes`' own; none is added.
+pub fn compare(
+    base: &MapDocument,
+    head: &MapDocument,
+    head_frame: &MapDocument,
+    renames: &[FileRename],
+) -> (LensReport, LensReport, Vec<LensDelta>) {
+    let before = lens_report(base);
+    let mut after = lens::resolve(&to_lens(&findings(head), head), head_frame);
+    lens::report_renames(&mut after, renames);
+    let only = |report: &LensReport, kind: &str| LensReport {
+        areas: report
+            .areas
+            .iter()
+            .filter(|a| a.label == kind)
+            .cloned()
+            .collect(),
+        paths: if kind == KIND_CYCLE || kind == KIND_HIDDEN_COUPLING {
+            report
+                .paths
+                .iter()
+                .filter(|path| {
+                    (kind == KIND_CYCLE && path.name.starts_with("cycle-"))
+                        || (kind == KIND_HIDDEN_COUPLING
+                            && path.name.starts_with("hidden-coupling-"))
+                })
+                .cloned()
+                .collect()
+        } else {
+            vec![]
+        },
+        ..report.clone()
+    };
+    let changes = KINDS
+        .iter()
+        .flat_map(|kind| {
+            lens_comparison::changes(
+                &only(&before, kind),
+                &only(&after, kind),
+                base,
+                renames,
+                ComparisonMode::Commits,
+            )
+        })
+        .collect();
+    (before, after, changes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extract::{COCHANGE_HISTORY_WINDOW, COCHANGE_MIN_COUNT};
+    use crate::pipeline::SHARE_COCHANGE;
+    use crate::schema::MapDocument;
+    use serde_json::json;
+
+    fn map(debt: Option<serde_json::Value>) -> MapDocument {
+        let mut value = json!({
+            "repo": "fixture",
+            "q": 0.0,
+            "names": {"0": "left", "1": "right"},
+            "districts": {},
+            "F": ["a.rs", "b.rs", "c.rs"],
+            "N": [[0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0], [1, 1.0, 0.0, 1, 0, 0, 0.0, 1.0, 0.0, 1.0, 1.0], [1, 2.0, 0.0, 1, 0, 0, 0.0, 2.0, 0.0, 1.0, 1.0]],
+            "E": [[0, 2]],
+            "L": [],
+            "S": {},
+            "U": {"2:0": [1]},
+            "roads": [],
+            "lang": "rs"
+        });
+        if let Some(debt) = debt {
+            value["D"] = debt;
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn old_maps_say_hidden_coupling_was_not_measured() {
+        let report = findings(&map(None));
+        assert!(!report.hidden_coupling_measured);
+        assert!(report.hidden_coupling.is_empty());
+        assert!(render_text(&report).contains("hidden coupling not measured"));
+    }
+
+    #[test]
+    fn hidden_coupling_lens_caps_paths_but_keeps_all_area_members() {
+        let mut report = findings(&map(Some(json!({
+            "cochange": {
+                "commits": 12,
+                "window": COCHANGE_HISTORY_WINDOW,
+                "min_count": COCHANGE_MIN_COUNT,
+                "min_weight": SHARE_COCHANGE,
+                "pairs": [[0, 1, 4, 0.5]]
+            }
+        }))));
+        report.hidden_coupling = (0..=HIDDEN_COUPLING_LENS_PATHS)
+            .map(|index| HiddenCoupling {
+                left: format!("left-{index}.rs"),
+                right: format!("right-{index}.rs"),
+                left_district: 0,
+                right_district: 1,
+                cochanges: index + COCHANGE_MIN_COUNT,
+                weight: 0.5,
+            })
+            .collect();
+        let lens = to_lens(&report, &map(None));
+        assert_eq!(
+            lens.paths
+                .iter()
+                .filter(|path| path.name.starts_with("hidden-coupling-"))
+                .count(),
+            HIDDEN_COUPLING_LENS_PATHS
+        );
+        assert!(lens.notes.iter().any(|note| {
+            note.text.contains(&format!(
+                "{HIDDEN_COUPLING_LENS_PATHS} of {} hidden-coupling pairs shown as paths",
+                HIDDEN_COUPLING_LENS_PATHS + 1
+            ))
+        }));
+        assert!(lens.areas.iter().any(|area| {
+            area.label == KIND_HIDDEN_COUPLING
+                && area.members.len() == 2 * (HIDDEN_COUPLING_LENS_PATHS + 1)
+        }));
+    }
+
+    #[test]
+    fn hidden_coupling_uses_sidecar_and_emits_declared_path() {
+        let report = findings(&map(Some(json!({
+            "cochange": {
+                "commits": 12,
+                "window": COCHANGE_HISTORY_WINDOW,
+                "min_count": COCHANGE_MIN_COUNT,
+                "min_weight": SHARE_COCHANGE,
+                "pairs": [[0, 1, 4, 0.5], [1, 2, 3, 0.35]]
+            }
+        }))));
+        assert!(report.hidden_coupling_measured);
+        assert_eq!(report.hidden_coupling.len(), 1);
+        assert_eq!(report.hidden_coupling[0].left, "a.rs");
+        assert_eq!(report.hidden_coupling[0].right, "b.rs");
+        let lens = to_lens(
+            &report,
+            &map(Some(json!({
+                "cochange": {
+                    "commits": 12,
+                    "window": COCHANGE_HISTORY_WINDOW,
+                    "min_count": COCHANGE_MIN_COUNT,
+                    "min_weight": SHARE_COCHANGE,
+                    "pairs": [[0, 1, 4, 0.5], [1, 2, 3, 0.35]]
+                }
+            }))),
+        );
+        assert!(lens
+            .areas
+            .iter()
+            .any(|area| area.label == KIND_HIDDEN_COUPLING));
+        assert!(lens.paths.iter().all(|path| {
+            path.name.starts_with("hidden-coupling-")
+                && path.stops[1].hop == HopMode::Declared
+                && path.stops[1]
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("co-changed"))
+        }));
+    }
 }

@@ -29,6 +29,8 @@ report(eq(dispatchDesktopKey({ key: "ArrowDown", overviewOpen: true }), { type: 
 report(eq(dispatchDesktopKey({ key: "ArrowUp", overviewOpen: true }), { type: "overview-move", direction: -1 }), "Up moves through the open overview index");
 report(eq(dispatchDesktopKey({ key: "Enter", overviewOpen: true }), { type: "overview-activate" }), "Enter opens the focused overview row");
 report(eq(dispatchDesktopKey({ key: "Enter", overviewOpen: false }), { type: "none" }), "Enter is not captured outside the overview");
+report(eq(dispatchDesktopKey({ key: "ArrowRight", walkthrough: true }), { type: "walk-step", direction: 1 }) && eq(dispatchDesktopKey({ key: "ArrowLeft", walkthrough: true }), { type: "walk-step", direction: -1 }), "Left and Right step a lens walkthrough");
+report(eq(dispatchDesktopKey({ key: "ArrowRight" }), { type: "none" }) && eq(dispatchDesktopKey({ key: "ArrowRight", walkthrough: true, focus: "text" }), { type: "none" }), "Left and Right are not captured outside a walkthrough or in text fields");
 report(eq(dispatchDesktopKey({ key: "Escape" }), { type: "escape" }), "Esc steps back when no dialog owns it");
 report(eq(dispatchDesktopKey({ key: "+" }), { type: "zoom-in" }) && eq(dispatchDesktopKey({ key: "-" }), { type: "zoom-out" }), "+ and - zoom");
 report(eq(dispatchDesktopKey({ key: "F" }), { type: "fit" }) && eq(dispatchDesktopKey({ key: "Z" }), { type: "zoom-selection" }) && eq(dispatchDesktopKey({ key: "T" }), { type: "cycle-theme" }), "F, Z and T are case-insensitive");

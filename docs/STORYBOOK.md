@@ -89,7 +89,8 @@ The full page set is required; a failed story stays visible in the manifest.
 Captures are candidates until the owner approves them. The owner approved the
 set from run `42169568634` (source `fd1d6c5`) on 2026-11-06;
 `web/storybook/baselines/approved.json` records it with `status: "approved"`
-and CI compares exact pixels against those images. A registry with
+and CI compares exact pixels against those images. The owner approved the 32
+Debt lens captures on 2026-11-09 from run `42577358027` (source `15d06e2`). A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
 `images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says
@@ -128,10 +129,10 @@ Lens states introduced for #241 (32 identities) and the 28 existing captures
 that the Lenses entry changed were approved by the owner on 2026-11-08 from run
 `42441604311` (source `1704e0f`); `approved.json` records them under
 `recaptures`. A complete capture matrix is rendering evidence, not visual
-approval. The Flask
+approval. The owner approved the 32 lens walkthrough captures and re-approved the 12 map-lens-loaded/unresolved captures (Start control) on 2026-11-09 from run `42583567170` (source `710f94a`). The Flask
 viewer-check lane additionally uploads overview, zoomed stops, declared-hop
 explanations and unresolved reports for phone and desktop in both themes under
-`lens-review-samples` (also included in `viewer-shots/lenses/`). Its map is `data/flask.json` unchanged; Rust resolves
+`lens-review-samples-desktop` and `lens-review-samples-phone`. Its map is `data/flask.json` unchanged; Rust resolves
 `data/lenses/flask-request.toml` and generates symbols from the fixture's pinned
 source. The unresolved sample intentionally adds a missing member and stop.
 Lens comparison states (40 identities: five states × four viewports × two
@@ -145,5 +146,9 @@ lane includes commit comparison, zoomed comparison stops, overlap and stale
 snapshot captures in both themes on phone and desktop. Those comparison edits
 are explicitly synthetic resolver scenarios over the unchanged pinned Flask
 map, not a fabricated Flask commit pair.
+Lens walkthrough states for #248 (first, middle, unresolved and last steps,
+restored from `?lens=overview&path=request-flow&step=<n>`) are candidates
+awaiting owner review; the Flask browser lane uploads stepped captures under
+`lens-walkthrough-samples-desktop` and `lens-walkthrough-samples-phone`.
 Source-reader responses in that browser lane are explicitly synthetic; the
 native local/hosted service tests own git-object pinning evidence.

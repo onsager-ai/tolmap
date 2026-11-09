@@ -921,7 +921,7 @@ fn verdict_line(report: &CheckReport) -> String {
 // Inputs: git, detection, extraction, the base map
 // ---------------------------------------------------------------------
 
-fn git_output(dir: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
+pub(crate) fn git_output(dir: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
     Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -1097,16 +1097,16 @@ pub fn parse_name_status(bytes: &[u8]) -> Result<Vec<Change>, CheckError> {
 /// Temporary worktrees, and the directory that holds them and the built base
 /// map. Removed on drop, including on an error or a panic, so the user's
 /// repository is left with no stray worktree.
-struct Scratch {
+pub(crate) struct Scratch {
     top: PathBuf,
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     worktrees: Vec<PathBuf>,
 }
 
 static SCRATCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 impl Scratch {
-    fn new(top: &Path) -> Result<Self, CheckError> {
+    pub(crate) fn new(top: &Path) -> Result<Self, CheckError> {
         let root = std::env::temp_dir().join(format!(
             "tolmap-check-{}-{}",
             std::process::id(),
@@ -1127,7 +1127,7 @@ impl Scratch {
     /// Checks `commit` out into a new detached worktree. Hooks are off: a
     /// repository's post-checkout hook has no business running inside a
     /// read-only check.
-    fn worktree(&mut self, commit: &str, label: &str) -> Result<PathBuf, CheckError> {
+    pub(crate) fn worktree(&mut self, commit: &str, label: &str) -> Result<PathBuf, CheckError> {
         let path = self.root.join(label);
         let path_arg = path.to_string_lossy().into_owned();
         git_stdout(
@@ -1167,7 +1167,7 @@ impl Drop for Scratch {
 /// choice, refused at low confidence exactly as the service refuses it
 /// (`worker::run`'s `detection_uncertain`). The same source is extracted on
 /// both sides, so the two graphs describe one codebase.
-fn detect_source(dir: &Path) -> Result<(String, LanguageKind), CheckError> {
+pub(crate) fn detect_source(dir: &Path) -> Result<(String, LanguageKind), CheckError> {
     let detection = detect::detect(dir)
         .map_err(|error| input(format!("detection failed at base: {error:#}")))?;
     let chosen = detection.chosen;

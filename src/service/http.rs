@@ -41,6 +41,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(super::lens::compare_lenses),
         )
         .route(
+            "/api/compare/{owner}/{repo}/debt",
+            get(super::debt::compare_debt),
+        )
+        .route(
             "/api/maps/{owner}/{repo}/provenance",
             get(super::compare::provenance),
         )
@@ -56,6 +60,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/maps/{owner}/{repo}/lenses/{name}",
             get(super::lens::get_lens),
         )
+        .route("/api/maps/{owner}/{repo}/debt", get(super::debt::get_debt))
         .route("/api/maps", get(get_maps))
         .route("/api/maps/{owner}/{repo}", get(get_map))
         .route("/api/maps/{owner}/{repo}/symbols", get(get_symbols))

@@ -408,6 +408,38 @@ includes `renamed: { from, to, commit }`; `commit` names the comparison endpoint
 where the rename is observed. A renamed member/stop stays unresolved; the
 resolver never silently substitutes its destination.
 
+### `tolmap lens suggest --map <map.json> [--out <dir>]`
+
+Starting lenses proposed from a stored map's landmarks and edges (issue #249;
+`src/lens_suggest.rs`), for a reader who does not yet know which paths matter.
+They are ordinary lens files (format v1) to review, edit and commit to
+`.tolmap/lenses/`; the viewer lists a committed one in its Lenses picker. Up to
+three files, each `<name>.toml`:
+
+- `entry-routes`: from each `entry` landmark, a walk of at most 4 hops through
+  the highest-fan-in files it imports, directly or not, ending in another
+  district where one is reachable; a note on each entry;
+- `district-tour`: one area per district (largest first), with its `capital`
+  landmark as a note anchor;
+- `crossings`: each `bridge` landmark between its highest-fan-in importer and
+  import (other districts preferred), and for each of the 3 heaviest
+  cross-district roads the file edge whose ends carry the most fan-in.
+
+Every hop is `computed`, never `declared` (suggest cannot know a reason), and
+each stop is reachable from the previous one by imports, so `tolmap lens check`
+resolves every suggestion with no unresolved item and every hop as `imports`.
+Routes are lower bounds over the map's edges. Each file starts with a comment
+header saying it was generated, from which map (its file name and SHA-256) and
+that its routes are lower bounds; titles say "generated". Nothing is
+randomised: ties break by fan-in, then path, and the same map gives
+byte-identical files. With `--out` the files are written there (the directory
+is created); without it they are printed to stdout and nothing is written, so
+suggest never writes into an analysed repository unasked. A lens with nothing
+to suggest is not written, and a message on stderr says why (a map with no
+`entry` landmark: `no entry landmark in the map: entry-routes not written`).
+Exit 0, or 2 when the map cannot be read or a file cannot be written.
+`data/lenses/flask-suggest/` holds the suggestions for the pinned flask fixture.
+
 ### `GET /api/maps/{owner}/{repo}/lenses[?commit=<full-sha>]`
 
 `LensList`: the valid lens names (regular files `*.toml` in
@@ -496,23 +528,130 @@ output. `json` prints a `DebtReport` (`bindings/DebtReport.ts`): district
 cycles (strongly connected district sets in the district graph built from
 `E`, each with one shortest route and the file edges that close it), misplaced
 files, god files, hotspots (churn × complexity; the top two include the map's
-`hazard` landmarks) and files with **no inbound edge found**, which excludes
-entry files. Files with no edge at all are coverage gaps: they are counted in
-`isolated_files`, not listed. Every report states its thresholds
-(named constants in `src/debt.rs`, plus the cuts they give on this map) and
-echoes the map's `coverage`; every count is a lower bound over the map's
-edges. Dynamic imports, reflection and declared connections are invisible to
-the map, so a file with no inbound edge found is not shown to be dead.
+`hazard` landmarks), files with **no inbound edge found**, which excludes
+entry files, and **hidden coupling**: a pair retained in the optional,
+index-aligned map sidecar with at least three co-changes and weight ≥ 0.35 but
+no file edge `E` or reference edge `U`. The sidecar records pair indices,
+co-change counts and weights rounded to two decimals from the indexer's 4,000
+non-merge-commit history window. It is absent from older maps; those reports
+state `hidden_coupling_measured: false` (and text output says "hidden coupling
+not measured"), never that no pair was found. Files with no edge at all are
+coverage gaps: they are counted in `isolated_files`, not listed. Every report
+states its thresholds (named constants in `src/debt.rs`, plus the cuts they
+give on this map) and echoes the map's `coverage`; every count is a lower
+bound over the map's edges and history. Dynamic imports, reflection and
+declared connections are invisible to the map, so a file with no inbound edge
+found is not shown to be dead.
 
 `lens` prints the equivalent lens TOML (format v1), which `tolmap lens check`
-resolves fully: one area per finding, one path per cycle (closing edges as
-computed hops; consecutive ones inside a district are joined by declared hops
-whose reason states that no edge is claimed) and notes with the
-measured values. A finding's area label is its kind and its sorted file paths;
-for a cycle, the files of its closing edges. Labels carry no measured value and
-no district name, so lens comparison does not read a metric change or a
-renamed district as a removed and an added finding. Exit 0, or 2 when the map
-cannot be read.
+resolves fully: at most one area per finding kind, labelled by the kind alone
+(`district cycle`, `misplaced file`, `god file`, `hotspot`, `no inbound edge
+found`, `hidden coupling`) and holding every file in a finding of that kind,
+so a district is tinted at most once per kind. It emits one path per cycle,
+named from the files of its closing edges (closing edges as computed hops;
+consecutive ones inside a district are joined by declared hops whose reason
+states that no edge is claimed), and declared paths for the first 20
+hidden-coupling pairs in report order (cross-district first, then weight). The
+hidden-coupling area still contains every pair's files, while a note states how
+many of the full `tolmap debt` report are shown as paths; each path's reason is
+`co-changed N times; no static edge found`. Notes carry the measured values,
+the misplaced file's per-district edge counts and the cycle's district names.
+Labels and path names carry no measured value and no district name, so lens
+comparison does not read a metric change or a renamed district as a removed
+and an added finding. Exit 0, or 2 when the map cannot be read.
+
+### `GET /api/maps/{owner}/{repo}/debt[?commit=<full-sha>]`
+
+The built-in debt lens (issue #250) for an indexed snapshot, in the same
+`LensResponse` shape as a repository lens, with `name` `"@debt"`. It is
+`tolmap debt --format lens` resolved against the stored map: computed from that
+map alone, never read from `.tolmap/lenses/`, and the map is not changed. `@debt`
+is outside the repository lens name charset, so it can never name a repository
+lens. Without `?commit=` the latest indexed snapshot is used and named in the
+response. `Cache-Control: no-store`. Local snapshots expose it at
+`GET /api/maps/snapshot/{id}/debt[?commit=<full-sha>]`.
+
+### `GET /api/compare/{owner}/{repo}/debt?base=<sha>&head=<sha>`
+
+A `LensComparison` (`lens` and `other` are `"@debt"`) of the debt lens at two
+indexed commits. Base findings come from the stored base map; head findings
+from the stored head map, with the head lens resolved on the head projected
+onto the base partition (as for `/lenses` comparisons), so only base geometry is
+drawn and files new at head have district placement only. Renames are detected
+as for lens comparisons. The changes are `lens_comparison::changes` in commit
+mode with its existing statuses, run once per finding kind: an area item is
+keyed by its member file, and one file is often in several kinds at once (a god
+file is usually also a hotspot), so per-kind comparison keeps a new god file an
+`added` member of the god area when the file was already a hotspot. A broken
+cycle's members and path are `removed`. Labels never carry measured values, so
+a metric change on an unchanged finding is `shared`.
+Local snapshots expose it at `/api/compare/snapshot/{base-id}/debt`.
+
+### `tolmap org check <name.org.toml>` and `tolmap org build <name.org.toml> [--clones <dir>] [--maps <dir>] [--out <file>]`
+
+Organization maps (issue #255; `src/org.rs`), CLI only. The organization
+manifest is passed to the CLI and never written into a member repository.
+Schema (`bindings/OrganizationManifest.ts`):
+
+```toml
+version = 1
+name = "semon"                       # [a-z0-9][a-z0-9._-]{0,63}
+
+[[members]]
+repo = "onsager-ai/semon"            # owner/repo, listed once
+commit = "<full 40-character sha>"   # always required
+
+[[members]]
+repo = "onsager-ai/semon-hub"
+commit = "<full 40-character sha>"
+path = "../semon-hub"                # optional local clone, relative to the manifest
+```
+
+`org check` exits 0 when the manifest is valid and 2 otherwise, with a distinct
+error for an unknown key, a duplicate member (case-insensitive), an abbreviated
+commit, a non-hex commit, a repository that is not `owner/repo`, and an empty
+or absolute `path`.
+
+`org build` reads no network. Each member's source is its commit checked out
+into a detached temporary worktree of its local clone (`path`, else
+`<clones>/<owner>/<repo>`), never a working tree; the build fails with exit 2
+when the clone or the commit is missing. A member's map is the stored
+`<maps>/<owner>/<repo>/<commit>.json` when present, otherwise it is built from
+the worktree as `tolmap build` builds it with detection, the offline IDF namer
+and SEED 7. Member maps are only read or built: never changed, re-clustered or
+laid out again. The `OrganizationDocument` (`bindings/OrganizationDocument.ts`)
+is pretty JSON on stdout or `--out`, byte-identical for the same manifest and
+member commits (members sorted by repository, every list sorted):
+
+- `members`: repository, commit, `path` as written in the manifest, `map`
+  (`stored` or `built`), `map_digest` (`sha256:` of the map bytes), file and
+  district counts from the member map, and the packages the member provides.
+  No modularity is computed or combined across repositories; a member's own
+  `q` stays in its map.
+- `edges`: consumer → provider repository, each with its evidence: the
+  consumer's package, manifest file and section, the provider package, the pin
+  (`commit`, `tag`, `branch`, `ref`, `version`, `path`, `workspace` or `none`)
+  and its status: `match`, `skew`, or `unjudged` with a reason (a branch, a
+  path, a range this reader does not evaluate).
+- `pin_skew`: every dependency pinning a different commit (a git rev, a tag or
+  a Go pseudo-version naming another commit) or a version requirement that
+  excludes the provider's version at the member commit.
+- `external`: declared dependencies no member provides, listed, never dropped.
+- `unresolved`: manifests or declarations that cannot be read, names provided
+  by more than one member, and git dependencies on a member that provides no
+  such package.
+
+Dependencies are read from Cargo (`[dependencies]`, dev, build and `target`
+tables, workspace inheritance; git, path and registry by crate name), npm/pnpm
+`package.json` (dependencies, dev, peer, optional; `workspace:`, `file:`, git
+and `npm:` aliases by package name), `go.mod` (`require` and `replace`, by
+module path) and Python (`[project]` dependencies and extras, dependency
+groups, Poetry tables, `[tool.uv.sources]` and `requirements*.txt`, by PEP 503
+name). A git dependency resolves by repository first. Dependencies satisfied
+inside the consumer's own repository are not edges. Every count is a lower
+bound: `setup.py` `install_requires` is not evaluated, and HTTP calls, queues
+and copied code link repositories without any declaration. Exit 0, 2 on an
+invalid manifest or missing clone, commit or map input, 3 on an internal error.
 
 ### `GET /api/healthz`
 

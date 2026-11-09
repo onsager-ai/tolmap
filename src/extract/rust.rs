@@ -923,7 +923,7 @@ fn crate_ident(name: &str) -> String {
     name.replace('-', "_")
 }
 
-fn manifests(repo: &Path) -> BTreeMap<String, toml::Value> {
+pub(crate) fn manifests(repo: &Path) -> BTreeMap<String, toml::Value> {
     let mut found = BTreeMap::new();
     let mut stack = vec![repo.to_path_buf()];
     while let Some(directory) = stack.pop() {
@@ -961,7 +961,7 @@ fn manifests(repo: &Path) -> BTreeMap<String, toml::Value> {
 
 /// The nearest manifest at or above `directory` that declares
 /// `[workspace]`.
-fn workspace_of<'a>(
+pub(crate) fn workspace_of<'a>(
     directory: &str,
     manifests: &'a BTreeMap<String, toml::Value>,
 ) -> Option<(&'a String, &'a toml::Value)> {
@@ -979,7 +979,7 @@ fn workspace_of<'a>(
     }
 }
 
-fn str_at<'a>(value: &'a toml::Value, keys: &[&str]) -> Option<&'a str> {
+pub(crate) fn str_at<'a>(value: &'a toml::Value, keys: &[&str]) -> Option<&'a str> {
     let mut current = value;
     for key in keys {
         current = current.get(key)?;
