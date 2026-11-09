@@ -3410,3 +3410,22 @@ This change also moves finding 63's "Not verified" list back under finding 63; a
 - Per-pair review covered 15 pairs by co-change count, the 10 Rust ↔ TypeScript pairs and 5 selected cross-directory pairs, which is 30 of 160. The categories for the remaining pairs are path rules only.
 - semon was not built or tested; the contracts were read from source.
 - The debt lens, with 26 paths, was not rendered in a browser.
+## 68. Literal build-config entries and test exclusion reduce semon's no-inbound and production-hotspot noise without changing its map
+
+Issue [#263](https://github.com/onsager-ai/tolmap/issues/263). [Scratch run 42661991789](https://github.com/onsager-ai/tolmap/actions/runs/42661991789) built `tolmap` at feature commit `5e245c2` (plus a disposable measurement workflow) and indexed semon at `50c5255` and Flask at its fixture pin `d73fa1c`. It built semon twice: maps and `tolmap debt --format json` were byte-identical; the debt lens resolved 6 areas, 132 members, 26 paths and 46 notes. The scratch branch was deleted after the run; no `data/*.json` or `data/lenses/flask-suggest/` file changed.
+
+| Repository | Map | Build-config entries | No-inbound files | Production hotspots | Test files excluded | Hidden coupling |
+|---|---|---:|---|---:|---:|---:|
+| semon | 223 files, 1,411 edges | 3 | `ui/src/{application.ts,lib-contract.tsx}` | 11 | 11 | 149 |
+| Flask | 35 files, 105 edges | 0 | `src/flask/views.py` | 2 | 0 | 124 |
+
+- **Config entries are optional, index-aligned `D.build_entries` evidence.** `build.mjs`, `build.js` and `*.config.*` contribute only literal esbuild/vite/rollup/webpack entry arrays, including literal wrapper arguments. The sidecar stays absent when maps predate the measurement; `tolmap debt` reports that as unmeasured. It is outside `E`, so extraction, blending, clustering and layout inputs stay unchanged.
+- **The semon result corrects findings 64 and 67's earlier five-entry claim.** `ui/build.mjs` statically names `shared.ts`, `viewer.ts` and `native-shell.ts`, which now stop appearing as no-inbound findings. `application.ts` and `lib-contract.tsx` are esbuild entries only in test scripts, not the defined build-config scope, so they remain in the report. Treating every test script as production configuration would over-classify test-only bundles and violate the lower-bound rule.
+- **Production hotspots exclude test paths using the test subset of the existing no-inbound rule.** `model/tests.rs` and `query/tests.rs`, formerly #7 and #9, no longer rank. The separate count keeps their omission explicit. This is broader than excluding a test beside its own module: only 6 of 58 semon hidden-coupling pairs involving a test file were such a pair, while broad test suites couple to many production files.
+- **Declared Rust module pairs are not hidden coupling.** The filter now normalizes `D.rust_mod.pairs` the same way as `E`/`U`; semon's 160 prior candidates become 149 after excluding 11 parent/child declarations, including `sealed.rs` and `sealed/tests.rs`. Those files have declared compilation reachability, not hidden coupling.
+- **Bindings came from CI generation.** The run generated the checked-in TypeScript bindings and their bytes match the feature branch. The successful CI build is the only local-build substitute used here.
+
+### Not verified
+- Static parsing deliberately does not evaluate computed configuration. A dynamic entry expression remains unmeasured and receives no entry exemption.
+- The test-hotspot cutoff has only this semon/Flask measurement. The existing 5% and two-file minimum remain unchanged and are not calibrated by this work.
+- The semon and Flask debt lenses were resolved in CI but not rendered in a browser.

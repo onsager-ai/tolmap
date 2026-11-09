@@ -395,8 +395,12 @@ pub struct MapDocument {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DebtSidecar {
+    #[serde(default)]
     pub cochange: Option<CochangeSidecar>,
+    #[serde(default)]
     pub rust_mod: Option<RustModSidecar>,
+    #[serde(default)]
+    pub build_entries: Option<BuildEntrySidecar>,
 }
 
 /// Co-change evidence retained for hidden-coupling findings. `pairs` rows are
@@ -429,6 +433,15 @@ pub struct RustModSidecar {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(type = "[number, number]")]
 pub struct RustModPair(pub (usize, usize));
+
+/// Source files named by statically readable bundler configuration. Every
+/// index is into `MapDocument::files`. The sidecar is absent when config
+/// entries were not measured, rather than claiming no config entries exist.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BuildEntrySidecar {
+    pub files: Vec<usize>,
+}
 
 // `tolmap check`'s report (issue #170, docs/CHECK.md). A consumer (CI,
 // Ostrom, Duhem) depends only on the exit code and on `version`; any change
@@ -646,6 +659,10 @@ pub struct GraphData {
     /// Rust's resolved declaration tree. It stays out of graph JSON and the
     /// blend/partition inputs, then becomes the optional compact debt sidecar.
     pub rust_mod: Option<RustModTree>,
+    /// Files named by statically readable bundler configuration. `None`
+    /// means a relevant config could not be read statically; `Some(empty)`
+    /// means configs were measured and named no mapped source file.
+    pub build_entries: Option<BTreeSet<FileId>>,
     pub nodes: Vec<SourceNode>,
     pub edges: Vec<SignalEdge>,
     /// `--refs scip` only: the per-language reference paths, carried to the
@@ -815,6 +832,7 @@ impl<'de> Deserialize<'de> for GraphData {
             commits_scanned: wire.commits_scanned,
             cochange: None,
             rust_mod: None,
+            build_entries: None,
             nodes: wire.nodes,
             edges: wire.edges,
             references: wire.references,
@@ -876,6 +894,7 @@ mod tests {
             commits_scanned: 0,
             cochange: None,
             rust_mod: None,
+            build_entries: None,
             nodes: ["a.go", "pkg/b.go"]
                 .into_iter()
                 .map(|file| SourceNode {
@@ -931,6 +950,7 @@ mod tests {
             commits_scanned: 0,
             cochange: None,
             rust_mod: None,
+            build_entries: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,
@@ -962,6 +982,7 @@ mod tests {
             commits_scanned: 0,
             cochange: None,
             rust_mod: None,
+            build_entries: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,

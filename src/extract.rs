@@ -768,6 +768,18 @@ fn build_selected_sources(
 
     let graph_started = Instant::now();
     let mut merged = union_sources(intermediates)?;
+    merged.build_entries = build_config_entries(repo, &merged.files)?.map(|paths| {
+        paths
+            .into_iter()
+            .filter_map(|path| {
+                merged
+                    .files
+                    .binary_search(&path)
+                    .ok()
+                    .map(|id| id as FileId)
+            })
+            .collect()
+    });
     graph_time += graph_started.elapsed();
     // Indexing runs after every source is resolved, because the fallback
     // gate compares each index with the hand-written graph, and before
@@ -1295,6 +1307,7 @@ struct MergedSources {
     uses: BTreeSet<(FileId, FileId, String)>,
     module_for: BTreeMap<String, String>,
     rust_mod: Option<RustModTree>,
+    build_entries: Option<BTreeSet<FileId>>,
     file_language: BTreeMap<String, LanguageKind>,
     /// One `(pkg, lang)` per source, in the same sorted order they were
     /// merged -- `GraphData.sources`.
@@ -1369,6 +1382,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             uses,
             module_for,
             rust_mod,
+            build_entries: None,
             file_language,
             sources: vec![(pkg.clone(), language.as_str().to_owned())],
             dominant_pkg: pkg,
@@ -1529,6 +1543,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             roots: rust_mod_roots,
             pairs: rust_mod_pairs,
         }),
+        build_entries: None,
         file_language,
         sources,
         dominant_pkg,
@@ -1876,6 +1891,122 @@ fn relative_slash(base: &Path, path: &Path) -> Result<String> {
         })
         .collect::<Vec<_>>()
         .join("/"))
+}
+
+/// Statically readable bundler entry points. This deliberately accepts only
+/// literal `entryPoints: ["..."]` declarations: a dynamic expression can
+/// name an arbitrary file at build time, so calling it an entry would turn a
+/// lower-bound report into a guess. Dynamic declarations are unmeasured and
+/// add no entry; readable literal declarations in the same repository remain
+/// useful lower-bound evidence.
+fn build_config_entries(repo: &Path, files: &[String]) -> Result<Option<BTreeSet<String>>> {
+    fn visit(directory: &Path, configs: &mut Vec<PathBuf>) -> Result<()> {
+        let mut entries = fs::read_dir(directory)
+            .with_context(|| format!("read directory {}", directory.display()))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type()?.is_dir() {
+                if !MULTI_SKIP_DIR.contains(&name.as_str()) && !name.starts_with('.') {
+                    visit(&path, configs)?;
+                }
+            } else if entry.file_type()?.is_file()
+                && (matches!(name.as_str(), "build.js" | "build.mjs") || name.contains(".config."))
+            {
+                configs.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut configs = Vec::new();
+    visit(repo, &mut configs)?;
+    let known = files.iter().cloned().collect::<BTreeSet<_>>();
+    let mut entries = BTreeSet::new();
+    for config in configs {
+        let text = match fs::read_to_string(&config) {
+            Ok(text) => text,
+            Err(_) => return Ok(None),
+        };
+        if !text.contains("entryPoints") {
+            continue;
+        }
+        let directory = config.parent().expect("config has a parent");
+        let mut add_list = |list: &str| -> Result<()> {
+            for item in list
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+            {
+                let Some(path) = item
+                    .strip_prefix('\"')
+                    .and_then(|item| item.strip_suffix('\"'))
+                    .or_else(|| {
+                        item.strip_prefix('\'')
+                            .and_then(|item| item.strip_suffix('\''))
+                    })
+                else {
+                    continue;
+                };
+                let path = relative_slash(repo, &directory.join(path))?;
+                if known.contains(&path) {
+                    entries.insert(path);
+                }
+            }
+            Ok(())
+        };
+        let mut rest = text.as_str();
+        while let Some(offset) = rest.find("entryPoints") {
+            rest = &rest[offset + "entryPoints".len()..];
+            let value = rest.trim_start();
+            let Some(value) = value.strip_prefix(':').or_else(|| value.strip_prefix('=')) else {
+                continue;
+            };
+            let value = value.trim_start();
+            let Some(value) = value.strip_prefix('[') else {
+                // A computed value is unmeasured, never an entry.
+                continue;
+            };
+            let Some(end) = value.find(']') else {
+                continue;
+            };
+            add_list(&value[..end])?;
+            rest = &value[end + 1..];
+        }
+        // A configuration can name `entryPoints` as a function parameter and
+        // bind it in a literal call. This catches static wrappers such as
+        // `buildViewer(false, ["src/native-shell.ts"])` without evaluating
+        // any JavaScript expression.
+        for definition in text.split("function ").skip(1) {
+            let Some((name, params_and_body)) = definition.split_once('(') else {
+                continue;
+            };
+            let name = name.trim();
+            let Some((params, _)) = params_and_body.split_once(')') else {
+                continue;
+            };
+            if name.is_empty() || !params.contains("entryPoints") {
+                continue;
+            }
+            let mut calls = text.as_str();
+            while let Some(call_offset) = calls.find(name) {
+                calls = &calls[call_offset + name.len()..];
+                let Some(args) = calls.trim_start().strip_prefix('(') else {
+                    continue;
+                };
+                let Some(array_start) = args.find('[') else {
+                    continue;
+                };
+                let Some(array_end) = args[array_start + 1..].find(']') else {
+                    continue;
+                };
+                add_list(&args[array_start + 1..array_start + 1 + array_end])?;
+            }
+        }
+    }
+    Ok(Some(entries))
 }
 
 fn walk(root: Node<'_>) -> Vec<Node<'_>> {
@@ -6678,6 +6809,7 @@ fn finish_graph(
         build_output_mirror,
         python_cross_project,
         rust_mod,
+        build_entries,
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
@@ -6882,6 +7014,7 @@ fn finish_graph(
         commits_scanned: history.commits,
         cochange: Some(cochange),
         rust_mod,
+        build_entries,
         nodes,
         edges,
         references: None,
@@ -9771,6 +9904,59 @@ mod tests {
             )]
             .into_iter()
             .collect()
+        );
+    }
+
+    #[test]
+    fn build_config_entries_keep_literal_entries_and_skip_dynamic_ones() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(dir.path(), "src/entry.ts", "export const entry = 1;");
+        write(dir.path(), "src/dynamic.ts", "export const dynamic = 1;");
+        write(
+            dir.path(),
+            "build.mjs",
+            "build({ entryPoints: ['src/entry.ts'] }); build({ entryPoints: target });",
+        );
+        let files = source_files(dir.path(), ".", LanguageKind::TypeScript).unwrap();
+        assert_eq!(
+            build_config_entries(dir.path(), &files).unwrap(),
+            Some(["src/entry.ts".to_owned()].into())
+        );
+    }
+
+    #[test]
+    fn build_config_entries_keep_literal_wrapper_arguments() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(dir.path(), "src/native.ts", "export const native = 1;");
+        write(
+            dir.path(),
+            "build.mjs",
+            "function bundle(entryPoints = ['src/default.ts']) {} bundle(false, ['src/native.ts']);",
+        );
+        let files = source_files(dir.path(), ".", LanguageKind::TypeScript).unwrap();
+        assert_eq!(
+            build_config_entries(dir.path(), &files).unwrap(),
+            Some(["src/native.ts".to_owned()].into())
+        );
+    }
+
+    #[test]
+    fn build_config_entries_ignore_non_config_scripts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write(
+            dir.path(),
+            "src/test-only.ts",
+            "export const test_only = 1;",
+        );
+        write(
+            dir.path(),
+            "tests/build-test.mjs",
+            "build({ entryPoints: ['../src/test-only.ts'] });",
+        );
+        let files = source_files(dir.path(), ".", LanguageKind::TypeScript).unwrap();
+        assert_eq!(
+            build_config_entries(dir.path(), &files).unwrap(),
+            Some(BTreeSet::new())
         );
     }
 
