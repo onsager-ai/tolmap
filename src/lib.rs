@@ -12,6 +12,7 @@ pub mod incremental;
 pub mod indexers;
 pub mod lens;
 pub mod lens_comparison;
+pub mod lens_suggest;
 pub mod local;
 pub mod local_pages;
 pub mod naming;

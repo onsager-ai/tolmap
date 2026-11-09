@@ -334,6 +334,22 @@ enum LensCommand {
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
     },
+    /// Proposes starting lenses from a stored map's landmarks and edges
+    /// (issue #249): `entry-routes`, `district-tour` and `crossings`. Every
+    /// hop is computed and a lower bound; the same map gives byte-identical
+    /// files. Writes `<name>.toml` into `--out`, or prints them to stdout
+    /// without it, so nothing is written into a repository unasked. A lens
+    /// with nothing to suggest (no `entry` landmark, say) is not written, and
+    /// a message on stderr says why. Exits 0, or 2 when the map cannot be
+    /// read or a file cannot be written.
+    Suggest {
+        /// A map JSON: a service store file or an exported map.
+        #[arg(long)]
+        map: PathBuf,
+        /// Directory to write the lens files into; created if absent.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -775,6 +791,9 @@ fn main() -> Result<()> {
         Command::Lens {
             command: LensCommand::Check { lens, map, format },
         } => std::process::exit(tolmap::lens::run_check(&lens, &map, &format)),
+        Command::Lens {
+            command: LensCommand::Suggest { map, out },
+        } => std::process::exit(tolmap::lens_suggest::run(&map, out.as_deref())),
         Command::Check {
             repo,
             base,
