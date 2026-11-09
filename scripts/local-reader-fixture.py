@@ -260,7 +260,7 @@ assert code==200 and b.encode() in page and b'/etc' not in page and b'example.in
 assert req('/api/index',True)[0]==400 and req('/api/index')[0]==400
 # Exact export fields and nothing path- or source-shaped in provenance/symbols.
 MAP_REQUIRED={'repo','q','names','districts','F','N','E','L','S','U','roads','lang'}
-MAP_ALLOWED=MAP_REQUIRED|{'C','coverage','P','footprint_centroids','file_neighbourhoods','neighbourhoods'}
+MAP_ALLOWED=MAP_REQUIRED|{'C','coverage','P','footprint_centroids','file_neighbourhoods','neighbourhoods','D'}
 assert MAP_REQUIRED<=set(export)<=MAP_ALLOWED,('export fields',sorted(set(export)^MAP_ALLOWED))
 SYMBOLS_REQUIRED={'district','files','symbol_indices','symbols','edges','kinds','module_code_lines'}
 SYMBOLS_ALLOWED=SYMBOLS_REQUIRED|{'symbol_rings','module_rings','header_rings'}
