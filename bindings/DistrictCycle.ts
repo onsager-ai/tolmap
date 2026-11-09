@@ -3,4 +3,13 @@ import type { DebtDistrict } from "./DebtDistrict";
 import type { DebtEdge } from "./DebtEdge";
 import type { DistrictBundle } from "./DistrictBundle";
 
-export type DistrictCycle = { districts: Array<DebtDistrict>, route: Array<number>, closing_edges: Array<DebtEdge>, cross_edges: number, mutual_pairs: Array<DistrictBundle>, cut: Array<DistrictBundle>, };
+export type DistrictCycle = { districts: Array<DebtDistrict>, route: Array<number>, closing_edges: Array<DebtEdge>, cross_edges: number, 
+/**
+ * The lighter direction of every mutually connected district pair.
+ */
+mutual_pairs: Array<DistrictBundle>, 
+/**
+ * A deterministic greedy feedback-arc cut. It is a small cut, not a
+ * minimum cut: returning every bundle makes the district graph acyclic.
+ */
+cut: Array<DistrictBundle>, };
