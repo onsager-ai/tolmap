@@ -1,4 +1,4 @@
-"""Measure the two candidate carriers for hidden coupling (issue #251).
+"""Measure the two candidate carriers for debt side data (issues #251, #258).
 
 For each built map and its full-history clone at the same commit, replay
 `git_history` in src/extract.rs (up to 4,000 non-merge commits, no rename
@@ -8,7 +8,18 @@ kept at count >= 2 with min(solo) >= 3, weight = count / min(solo)) and size:
   * sidecar: the co-change object inserted into the map document;
   * artifact: the same object as a separate JSON file beside the snapshot.
 
-Both are index-aligned to the map's `F`. Rows are `[a, b, count, weight]`
+The carrier is one optional object for data `tolmap debt` needs and the map
+does not otherwise hold: `cochange` (#251) and `mods` (#258, the Rust `mod`
+declaration tree as `[declaring, declared]` index pairs). Each payload is sized
+alone and both together.
+
+`mods` is approximated from source here: a `mod name;` item at any
+indentation, with an optional `#[path]`, resolved as rustc does to `name.rs` or
+`name/mod.rs`. Inline `mod` blocks and macro-generated `mod`s are skipped, so
+the count is a lower bound; the product's resolver (src/extract/rust.rs)
+follows them.
+
+Both are index-aligned to the map's `F`. Co-change rows are `[a, b, count, weight]`
 with a < b, weight rounded to two places. Each threshold is measured holding
 every pair above it ("all") and only those with no `E` or `U` edge between
 the two files ("hidden").
@@ -22,6 +33,8 @@ prints one JSON row.
 
 import gzip
 import json
+import os
+import re
 import subprocess
 import sys
 
@@ -64,6 +77,40 @@ def history(clone, files):
     return len(commits), solo, kept
 
 
+MOD = re.compile(
+    r'((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?(\w+)\s*;')
+PATH = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
+
+
+def mod_pairs(clone, files, index):
+    pairs = set()
+    for source in files:
+        if not source.endswith(".rs"):
+            continue
+        try:
+            text = open(os.path.join(clone, source), encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        here = os.path.dirname(source)
+        base = os.path.basename(source)
+        owns_dir = base in ("lib.rs", "main.rs", "mod.rs")
+        child_dir = here if owns_dir else source[:-3]
+        for match in MOD.finditer(COMMENT.sub("", text)):
+            attrs, name = match.groups()
+            path = PATH.search(attrs)
+            if path:
+                candidates = [os.path.normpath(os.path.join(here, path.group(1)))]
+            else:
+                candidates = [os.path.join(child_dir, name + ".rs"),
+                              os.path.join(child_dir, name, "mod.rs")]
+            for target in candidates:
+                if target in index:
+                    pairs.add((index[source], index[target]))
+                    break
+    return sorted([a, b] for a, b in pairs)
+
+
 def dumps(value):
     return json.dumps(value, separators=(",", ":"))
 
@@ -91,6 +138,22 @@ def main():
         "churn_mismatch": churn_mismatch, "kept_pairs": len(kept),
         "map_bytes": len(raw), "map_gzip": map_gz, "thresholds": [],
     }
+    mods = mod_pairs(clone, files, index)
+    row["rust_files"] = sum(1 for f in files if f.endswith(".rs"))
+    row["mod_pairs"] = len(mods)
+
+    def size(carrier):
+        body = dumps(carrier).encode()
+        assert raw.endswith(b"}")
+        with_sidecar = raw[:-1] + b',"D":' + body + b"}"
+        return {
+            "sidecar_bytes": len(with_sidecar) - len(raw),
+            "sidecar_gzip": len(gzip.compress(with_sidecar, 9, mtime=0)) - map_gz,
+            "artifact_bytes": len(body),
+            "artifact_gzip": len(gzip.compress(body, 9, mtime=0)),
+        }
+
+    row["mods_only"] = size({"mods": mods})
     for min_count, min_weight in THRESHOLDS:
         rows = {"all": [], "hidden": []}
         for (a, b), (count, weight) in kept.items():
@@ -104,19 +167,12 @@ def main():
         result = {"min_count": min_count, "min_weight": min_weight}
         for scope, entries in rows.items():
             entries.sort()
-            carrier = {"commits": commits, "window": MAX_COMMITS,
-                       "min_count": min_count, "min_weight": min_weight,
-                       "pairs": entries}
-            body = dumps(carrier).encode()
-            assert raw.endswith(b"}")
-            with_sidecar = raw[:-1] + b',"K":' + body + b"}"
-            result[scope] = {
-                "pairs": len(entries),
-                "sidecar_bytes": len(with_sidecar) - len(raw),
-                "sidecar_gzip": len(gzip.compress(with_sidecar, 9, mtime=0)) - map_gz,
-                "artifact_bytes": len(body),
-                "artifact_gzip": len(gzip.compress(body, 9, mtime=0)),
-            }
+            cochange = {"commits": commits, "window": MAX_COMMITS,
+                        "min_count": min_count, "min_weight": min_weight,
+                        "pairs": entries}
+            result[scope] = {"pairs": len(entries),
+                             "cochange": size({"cochange": cochange}),
+                             "both": size({"cochange": cochange, "mods": mods})}
         row["thresholds"].append(result)
     print(dumps(row))
 
