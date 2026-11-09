@@ -599,8 +599,11 @@ fn pct(share: f64) -> String {
 }
 
 // The lens equivalent of a report: one area per finding, one path per
-// cycle (its closing edges as computed hops, joined by declared hops inside
-// a district), and notes carrying the measured values.
+// cycle and notes carrying the measured values. A cycle path's closing
+// edges are computed hops. Consecutive closing edges inside one district
+// are joined by a declared hop only because a lens path needs one: no route
+// between those two files is guaranteed, and the reason says that no edge
+// is claimed, since the viewer draws a declared hop as a link.
 pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
     let t = &report.thresholds;
     let mut areas = vec![];
@@ -642,7 +645,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
             at: String::new(),
             hop: HopMode::Declared,
             reason: Some(format!(
-                "same district ({}); the district cycle continues from here",
+                "no edge claimed: both files are in district {}, where the cycle continues",
                 district_name(map, district)
             )),
         };

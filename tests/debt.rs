@@ -263,6 +263,12 @@ fn lens_resolves_fully_with_stable_labels() {
         ]
     );
 
+    // A declared hop joins two files of one district; it claims no edge.
+    assert_eq!(
+        lens.paths[0].stops[2].reason.as_deref(),
+        Some("no edge claimed: both files are in district b, where the cycle continues")
+    );
+
     // A metric change moves notes, never labels or path names.
     let mut hotter = synthetic();
     hotter.nodes[12].0 .5 = 40;
