@@ -3251,7 +3251,7 @@ and viewer/Storybook evidence must be reported separately. Remote-worker cache
 transport and production provider authority are not established by this CLI
 benchmark. No fixtures were refreshed and no algorithm thresholds were relaxed.
 
-## 63. On the pinned Flask map the debt lens finds one cycle spanning all three districts, two misplaced files, two hotspots, no god file and one file with no inbound edge found
+## 63. The debt lens finds one district cycle on both Flask and semon; Flask has no god file, while all five of semon's god files are also hotspots
 
 Issue [#250](https://github.com/onsager-ai/tolmap/issues/250). `tolmap debt` on `data/flask.json` (24 files, 94 edges), run with the CI-built binary from the npm package of PR [#254](https://github.com/onsager-ai/tolmap/pull/254)'s merge commit `347f2e3464d36e695adef2506b3448db486caf2a` ([run 42563267620](https://github.com/onsager-ai/tolmap/actions/runs/42563267620)). The thresholds are the defaults in `src/debt.rs`; on this map the 5% cuts select the top 2 of 24 files.
 
@@ -3271,7 +3271,24 @@ Issue [#250](https://github.com/onsager-ai/tolmap/issues/250). `tolmap debt` on 
 
 **The viewer.** `web/scripts/check-lens-browser.mjs` loads the Rust-resolved Flask debt lens (exported by `symbols::tests::export_lens_viewer_fixture`) on phone and desktop in both themes: overview tints districts only, file findings appear past the 40 px gate, a finding opens its card and the commit-pinned reader, and a controlled debt comparison reports added and removed findings. That comparison's head is a synthetic edit of the same map, not Flask history.
 
+**semon.** [Run 42568066956](https://github.com/onsager-ai/tolmap/actions/runs/42568066956) was a throwaway branch that built tolmap at `5f52409`, a scratch commit on top of this PR's `9ec4e05`. It indexed semon at `04aeb54aef33896d691c3ffdf0619bbfa2540599` with `tolmap local`, using all listed sources. This is the head commit of finding 62, without the lens commit on top. The map has 233 files (148 Rust, 85 TypeScript), 1366 edges and 7 districts, with q = 0.4382. Its SHA-256 is `5463b353…f9a2`. The run's artifact expires, so this entry is the durable record. The 5% cuts select 12 of 233 files.
+
+| Finding | Count | Files and measured values |
+|---|---:|---|
+| District cycle | 1 | 6 of 7 districts, 519 cross-district edges. Only `semon-control & semon-runtime` is outside it. One shortest route is `semon-sessions & semon-push → semon-sessions → semon-sessions & semon-push`, closed by `semon-cli/src/main.rs → semon-sessions/src/pricing/runtime.rs` and `semon-sessions/src/catalog.rs → catalog_observer.rs` |
+| Misplaced file | 9 | all in `crates/semon-sessions`, from `native_marker.rs` (6 of 9 edges, 66.67%) to `model/tests.rs` (14 of 27, 51.85%). `query.rs` has the most edges: 15 of 28 (53.57%) go to `semon-sessions & semon-push` |
+| God file | 5 | cuts: fan-in ≥ 21.67, complexity ≥ 356. The files are `events.rs` (fan-in 86.16, complexity 921), `model.rs`, `catalog.rs`, `events/store.rs` and `viewer.rs`, all in `crates/semon-sessions/src` |
+| Hotspot | 12 | cut: score ≥ 17056. The top one is `ui/src/app/catalogViewer.tsx`, 99 × 2261 = 223839. Hotspots #2–#6 are the five god files |
+| No inbound edge found | 26 | 11 entry files and 1 file without kept edges are excluded |
+
+- **On semon, god files and hotspots agree.** All five god files are hotspots #2–#6. The top hotspot, the viewer component that finding 62's two lenses share, is not a god file, because nothing in the repository imports it heavily.
+- **The cycle is most of the map.** On semon, as on Flask, the strongly connected set covers nearly every district. Excluding one district out of seven is more informative than Flask's three out of three, but a district cycle on these maps still reads as "the core is entangled", not as one removable edge.
+- **"No inbound edge found" is a lower bound on semon too.** Of the 26 files, 9 are Rust `tests.rs` modules, 6 are in `storage/postgres/`, and 5 are top-level `ui/src` modules. I did not inspect how each is reached. A Rust module declared with `mod` and a package export are plausible routes that this map does not record as edges. Four of the files (`model/tests.rs` and three in `storage/postgres/`) are also misplaced files, so their only edges point outward.
+- **Coverage and isolated files are counted differently.** The map's coverage reports 0 of 233 files without an edge, while the debt report excludes 1 file with no edge. Coverage counts blended edges before pruning. The debt report counts the map's kept edges, so one file loses all its edges in pruning.
+- **Determinism and the map.** The CI-built `tolmap debt --format json` ran twice on the stored map, and the outputs were byte-identical (`cmp`). The map's SHA-256 was unchanged afterwards. `GET /api/maps/snapshot/{id}/debt` resolved 5 areas with 56 memberships over 44 distinct files, 1 path and 53 notes, with nothing unresolved.
+
 ### Not verified
-- **semon is not measured.** No indexed semon map was available to this change, and indexing it locally is outside the host's thermal limits. Its numbers remain to be recorded from a stored semon snapshot.
-- One small library. The default fractions were not tuned on any corpus; whether 5% and five edges separate signal from noise on agent-maintained repositories is unmeasured.
+- **The semon debt lens was not rendered.** Its 53 notes and five overlapping per-kind tints on a 233-file map were measured through the API, not checked in a browser.
+- **The semon thresholds were not reviewed.** Nobody checked whether the 26 files with no inbound edge include any genuinely unused file.
+- Two repositories. The default fractions were not tuned on any corpus; whether 5% and five edges separate signal from noise on agent-maintained repositories is unmeasured.
 - Overlapping tints: the lens has one area per kind (owner decision, 2026-11-09), so a district is tinted at most five times, once per kind, however many findings it holds. Before that decision each finding was its own area, and on Flask two districts carried three overlapping tints. A large repository was not rendered.
