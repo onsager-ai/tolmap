@@ -416,6 +416,13 @@ pub(crate) fn python_manifest_declares_name(dir: &Path) -> bool {
     read_python_metadata_in(dir).is_some_and(|meta| meta.name.is_some())
 }
 
+/// The project name the manifest in `dir` declares, read exactly as
+/// detection reads one: what an organization map (issue #255) matches a
+/// Python dependency against.
+pub(crate) fn python_declared_name(dir: &Path) -> Option<String> {
+    read_python_metadata_in(dir).and_then(|meta| meta.name)
+}
+
 /// [`read_python_metadata`] for any directory holding a manifest: the
 /// repository root, or a nested project's directory (issue #162). One
 /// parser for both, so a nested project's declared name is read exactly as

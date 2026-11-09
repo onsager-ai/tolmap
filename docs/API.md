@@ -546,6 +546,72 @@ no district name, so lens comparison does not read a metric change or a
 renamed district as a removed and an added finding. Exit 0, or 2 when the map
 cannot be read.
 
+### `tolmap org check <name.org.toml>` and `tolmap org build <name.org.toml> [--clones <dir>] [--maps <dir>] [--out <file>]`
+
+Organization maps (issue #255; `src/org.rs`), CLI only. The organization
+manifest is passed to the CLI and never written into a member repository.
+Schema (`bindings/OrganizationManifest.ts`):
+
+```toml
+version = 1
+name = "semon"                       # [a-z0-9][a-z0-9._-]{0,63}
+
+[[members]]
+repo = "onsager-ai/semon"            # owner/repo, listed once
+commit = "<full 40-character sha>"   # always required
+
+[[members]]
+repo = "onsager-ai/semon-hub"
+commit = "<full 40-character sha>"
+path = "../semon-hub"                # optional local clone, relative to the manifest
+```
+
+`org check` exits 0 when the manifest is valid and 2 otherwise, with a distinct
+error for an unknown key, a duplicate member (case-insensitive), an abbreviated
+commit, a non-hex commit, a repository that is not `owner/repo`, and an empty
+or absolute `path`.
+
+`org build` reads no network. Each member's source is its commit checked out
+into a detached temporary worktree of its local clone (`path`, else
+`<clones>/<owner>/<repo>`), never a working tree; the build fails with exit 2
+when the clone or the commit is missing. A member's map is the stored
+`<maps>/<owner>/<repo>/<commit>.json` when present, otherwise it is built from
+the worktree as `tolmap build` builds it with detection, the offline IDF namer
+and SEED 7. Member maps are only read or built: never changed, re-clustered or
+laid out again. The `OrganizationDocument` (`bindings/OrganizationDocument.ts`)
+is pretty JSON on stdout or `--out`, byte-identical for the same manifest and
+member commits (members sorted by repository, every list sorted):
+
+- `members`: repository, commit, `path` as written in the manifest, `map`
+  (`stored` or `built`), `map_digest` (`sha256:` of the map bytes), file and
+  district counts from the member map, and the packages the member provides.
+  No modularity is computed or combined across repositories; a member's own
+  `q` stays in its map.
+- `edges`: consumer → provider repository, each with its evidence: the
+  consumer's package, manifest file and section, the provider package, the pin
+  (`commit`, `tag`, `branch`, `ref`, `version`, `path`, `workspace` or `none`)
+  and its status: `match`, `skew`, or `unjudged` with a reason (a branch, a
+  path, a range this reader does not evaluate).
+- `pin_skew`: every dependency pinning a different commit (a git rev, a tag or
+  a Go pseudo-version naming another commit) or a version requirement that
+  excludes the provider's version at the member commit.
+- `external`: declared dependencies no member provides, listed, never dropped.
+- `unresolved`: manifests or declarations that cannot be read, names provided
+  by more than one member, and git dependencies on a member that provides no
+  such package.
+
+Dependencies are read from Cargo (`[dependencies]`, dev, build and `target`
+tables, workspace inheritance; git, path and registry by crate name), npm/pnpm
+`package.json` (dependencies, dev, peer, optional; `workspace:`, `file:`, git
+and `npm:` aliases by package name), `go.mod` (`require` and `replace`, by
+module path) and Python (`[project]` dependencies and extras, dependency
+groups, Poetry tables, `[tool.uv.sources]` and `requirements*.txt`, by PEP 503
+name). A git dependency resolves by repository first. Dependencies satisfied
+inside the consumer's own repository are not edges. Every count is a lower
+bound: `setup.py` `install_requires` is not evaluated, and HTTP calls, queues
+and copied code link repositories without any declaration. Exit 0, 2 on an
+invalid manifest or missing clone, commit or map input, 3 on an internal error.
+
 ### `GET /api/healthz`
 
 ```
