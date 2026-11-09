@@ -3,6 +3,7 @@ pub mod blenddump;
 pub mod blobs;
 pub mod check;
 pub mod comparison;
+pub mod cycle_cut;
 pub mod debt;
 pub mod detect;
 pub mod extract;
