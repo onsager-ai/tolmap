@@ -131,6 +131,14 @@ jobs:
           name: lens-review-samples-${{ matrix.profile }}
           path: web/shots/lenses/
           if-no-files-found: error
+      - name: Lens walkthrough checks and screenshots (Flask, ${{ matrix.profile }}, both themes)
+        run: node scripts/check-lens-walkthrough.mjs http://127.0.0.1:5176 --profile ${{ matrix.profile }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lens-walkthrough-samples-${{ matrix.profile }}
+          path: web/shots/lens-walkthrough/
+          if-no-files-found: error
       - name: Comparison protocol browser checks (${{ matrix.profile }})
         run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176 --profile ${{ matrix.profile }}
       - name: Vite log on comparison failure

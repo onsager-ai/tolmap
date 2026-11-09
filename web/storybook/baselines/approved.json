@@ -4702,6 +4702,262 @@
       "sha256": "9215cbe7be29cf4b016a1959f5222109c0ae6f3a59148ab685e04e2bedef2f75"
     },
     {
+      "id": "map-lens-walk-first",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-first-desktop-dark.png",
+      "sha256": "c831291bdc53bc25659cf6b76a2cd56c9bc0e3cd86eb2f3d2292d7ea09b717ad"
+    },
+    {
+      "id": "map-lens-walk-first",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-lens-walk-first-desktop-light.png",
+      "sha256": "694b3f1b036e2091facace9b7d3e3d8e87e366f0a540621df5a10a1dd5a285dc"
+    },
+    {
+      "id": "map-lens-walk-first",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-first-landscape-dark.png",
+      "sha256": "9f0742166f82e744da6757fcf3abf387affe2f1da1d20a1cee3276d734ba5ab5"
+    },
+    {
+      "id": "map-lens-walk-first",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-lens-walk-first-landscape-light.png",
+      "sha256": "fd124098b5e21b5166084e07dc1ce60fc5c462dd288e9c5136af88bff5a0ff81"
+    },
+    {
+      "id": "map-lens-walk-first",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-first-phone-dark.png",
+      "sha256": "301c3a760e08825b149728b5fabdf0c56a9ed9ddd99cdf2961891654f803fb30"
+    },
+    {
+      "id": "map-lens-walk-first",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-lens-walk-first-phone-light.png",
+      "sha256": "b908f86e6d9403c922b822c0a7609c0b722d5b7e9bf50d8aca3e2710df6f65a4"
+    },
+    {
+      "id": "map-lens-walk-first",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-first-tablet-dark.png",
+      "sha256": "e0ba5df1e90f3bccbdf04d44c3b3564eb98d53a97a665f360ca42368e42f29f9"
+    },
+    {
+      "id": "map-lens-walk-first",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-lens-walk-first-tablet-light.png",
+      "sha256": "ba43ffefd9e4950a33dfa96a9dfb5fad439b83a013a5cc318d37f15ce45c2de3"
+    },
+    {
+      "id": "map-lens-walk-last",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-last-desktop-dark.png",
+      "sha256": "b7097873b1ecc506a165e60db9146828bd78f3fb8fb5dbfef559aabd5fe244fd"
+    },
+    {
+      "id": "map-lens-walk-last",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-lens-walk-last-desktop-light.png",
+      "sha256": "da78d11d80667045347216ae4190694e0dc957ca5c931c927b183402574fda75"
+    },
+    {
+      "id": "map-lens-walk-last",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-last-landscape-dark.png",
+      "sha256": "4c4b76889f0a6eb967c6e02c3b8881aa7f4f0ad41f47032f3bd3b78fbec1ada8"
+    },
+    {
+      "id": "map-lens-walk-last",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-lens-walk-last-landscape-light.png",
+      "sha256": "ad2c5ef58053ed424f857a40f975b62e0520fdd02650bcea49bd4d663f43613d"
+    },
+    {
+      "id": "map-lens-walk-last",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-last-phone-dark.png",
+      "sha256": "fcd4cbfd8cdadf480bf915453a167d608ecaa35c861a283364a886eff9d4a538"
+    },
+    {
+      "id": "map-lens-walk-last",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-lens-walk-last-phone-light.png",
+      "sha256": "f54d52edf20fd3600ddee7209f8849d56b3bf0ce2839b7e73fefa540ffd9eb26"
+    },
+    {
+      "id": "map-lens-walk-last",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-last-tablet-dark.png",
+      "sha256": "6ea83fa0bb8dac7d83100e77c69b059ab5701de1ad3e0307b6dfd301955f52d4"
+    },
+    {
+      "id": "map-lens-walk-last",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-lens-walk-last-tablet-light.png",
+      "sha256": "ba073ba3a2b83d15775fde134ccd7d8b3f7ead5e4c7c0499e459471d138126a0"
+    },
+    {
+      "id": "map-lens-walk-middle",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-middle-desktop-dark.png",
+      "sha256": "f4c5376b27cb2e07c6a4c2282eabd0a21872f3eb3aeb560d218da220cada0b4e"
+    },
+    {
+      "id": "map-lens-walk-middle",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-lens-walk-middle-desktop-light.png",
+      "sha256": "461fc5fbd8d66f65b8d141ad9636043aca0a6ec5779cc4c2652934ecb4c041d3"
+    },
+    {
+      "id": "map-lens-walk-middle",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-middle-landscape-dark.png",
+      "sha256": "653da1424e19ca15bc4c75c87764d85ac1b6c9f4db5dffc9d6ea1b8124054fbf"
+    },
+    {
+      "id": "map-lens-walk-middle",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-lens-walk-middle-landscape-light.png",
+      "sha256": "ee54c9a3357eb23c3c57cdf2009d35c8c13cbadc97b2d528ede35d1e7198fabe"
+    },
+    {
+      "id": "map-lens-walk-middle",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-middle-phone-dark.png",
+      "sha256": "013342d693afba803a1da4622ba4bc98823bff05c8a6ec04b4e416e2a5452f8a"
+    },
+    {
+      "id": "map-lens-walk-middle",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-lens-walk-middle-phone-light.png",
+      "sha256": "1911a48b121e938b9d4732fed115d3bbecc3ffc79a93ad26e4442e46b024870e"
+    },
+    {
+      "id": "map-lens-walk-middle",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-middle-tablet-dark.png",
+      "sha256": "631b797df9e290385963fb3d6b8c8631bdab78f70a5cd020611bc52ac3cc32c5"
+    },
+    {
+      "id": "map-lens-walk-middle",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-lens-walk-middle-tablet-light.png",
+      "sha256": "6f703e25856129cd865ad8e3b37cf41d6a11bf62bca219f2258adcad8d871840"
+    },
+    {
+      "id": "map-lens-walk-unresolved",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-unresolved-desktop-dark.png",
+      "sha256": "5cc4dacf18095229b8da88cf16a3fecbd9da58b11f1cbeb15840b89a0dbcbf17"
+    },
+    {
+      "id": "map-lens-walk-unresolved",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-lens-walk-unresolved-desktop-light.png",
+      "sha256": "29b0ee6a8c7614bb8de4d50e2cbd0884453020ec46d1882f32c85a3d6c14dc71"
+    },
+    {
+      "id": "map-lens-walk-unresolved",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-unresolved-landscape-dark.png",
+      "sha256": "219f2f9e0e3ff58d2e676e17351a08bc4d1a72f3510cb1048e15ea3e54571ad0"
+    },
+    {
+      "id": "map-lens-walk-unresolved",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-lens-walk-unresolved-landscape-light.png",
+      "sha256": "5b6711e139b3b2d107fed3ec852f628d87bb74eb30afb05021ba7ac7306120dd"
+    },
+    {
+      "id": "map-lens-walk-unresolved",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-unresolved-phone-dark.png",
+      "sha256": "db5dcc3ab09aa0ea3e020e49ec5a26fac77f5d9f17ca5bf0706e9c143117e4b3"
+    },
+    {
+      "id": "map-lens-walk-unresolved",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-lens-walk-unresolved-phone-light.png",
+      "sha256": "ff950397854b2cb63a857eef2d3bea38eafb0c83b449570bd94108d992f49d8d"
+    },
+    {
+      "id": "map-lens-walk-unresolved",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-lens-walk-unresolved-tablet-dark.png",
+      "sha256": "f3c401a07551433e3b7787e5f4684bfbaba0b380a27f2e03b7d2fa228ed0a27a"
+    },
+    {
+      "id": "map-lens-walk-unresolved",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-lens-walk-unresolved-tablet-light.png",
+      "sha256": "0c03cd2fd012617b8b99c02dc81f50574ffa844adeec7403baa17c3fe31d3f92"
+    },
+    {
       "id": "map-lens-loaded",
       "host": "oss",
       "viewport": "phone",
@@ -4771,7 +5027,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-lens-loaded-landscape-light.png",
-      "sha256": "46d98b0c3f557df1a762b062e34681ce2c0ad95e0476ccb0fb446253dfa49b94"
+      "sha256": "7d0050db44e1da4abe597c9182734da5ec7daa62372a2748edbb768425b0742d"
     },
     {
       "id": "map-lens-loaded",
@@ -4779,7 +5035,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-lens-loaded-landscape-dark.png",
-      "sha256": "2a46a0b523d9f2de04ec85ecdc2a405c2db288059f9f35a3616c1c3654c8366f"
+      "sha256": "bbf94538b437b139bf638a6150c818ac0f153d1f2a08ad99f5e0e9efed674b39"
     },
     {
       "id": "map-lens-unresolved",
@@ -4787,7 +5043,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-lens-unresolved-landscape-light.png",
-      "sha256": "2940af380e2634c019ed1e802ea7faacde4f9918443aa1d9504d0fff4c71a477"
+      "sha256": "e11c0ab6097aa6e2aa76a57d8e0055d19f5b1a6435cfb9cc2e296dc9e6f0aeb9"
     },
     {
       "id": "map-lens-unresolved",
@@ -4795,7 +5051,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-lens-unresolved-landscape-dark.png",
-      "sha256": "10815c6f4361fabf8ca91b6e80a46fc775fde1219803a82ac16adab019ca4fb7"
+      "sha256": "03a8326803317c7d5775a8b2192eb16bb3a99872d69401c3ee8cc59bc498f8c5"
     },
     {
       "id": "map-lens-empty",
@@ -4835,7 +5091,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-lens-loaded-tablet-light.png",
-      "sha256": "5976cd2ba81d1c7f34505880e73aabd6b7aa6768ae5d05e70e42b290de86a8ad"
+      "sha256": "e2800210ff9ce0b5874a8cce607f14234b0e303494f0e860fc2883bddd565d13"
     },
     {
       "id": "map-lens-loaded",
@@ -4843,7 +5099,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-lens-loaded-tablet-dark.png",
-      "sha256": "03b1cd87e0207a788f88851c124c9d9d74114cd0b41a60bb73ca4ce81234becb"
+      "sha256": "f14ddcc3017a8a7d6e1faf9a62d9f19f5f689510a4b3d249275a2358b19fb361"
     },
     {
       "id": "map-lens-unresolved",
@@ -4851,7 +5107,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-lens-unresolved-tablet-light.png",
-      "sha256": "adaf0e1c88bd5ac1e40f46225c1ee8c05fab15e6e31cb47bd157e4cc9f698c01"
+      "sha256": "8598733da3684bf61fe2444b1e374ebfe6fa91dd7d1a7c5c6052585399788b6f"
     },
     {
       "id": "map-lens-unresolved",
@@ -4859,7 +5115,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-lens-unresolved-tablet-dark.png",
-      "sha256": "7883a4aba9c991a6bf7750234c71e0f7af7fbe800103fd364c5886e0b5c8821c"
+      "sha256": "a9d35b8f06d6fd776f8463f223f6115c164364c8f21302e5a887e849f5fbaa4e"
     },
     {
       "id": "map-lens-empty",
@@ -4899,7 +5155,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-lens-loaded-desktop-light.png",
-      "sha256": "0ab6801fb45b85b7791cb69ba5b57dd507daf5b2d899a77c9a3f4bf8c489ef85"
+      "sha256": "585ce60810d877217eabc733f4d8bb2297e5b696e1d06c8aebf44942876f5941"
     },
     {
       "id": "map-lens-loaded",
@@ -4907,7 +5163,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-lens-loaded-desktop-dark.png",
-      "sha256": "57af471b2d576bcee033596b4b8132c8a9444def93ab72fdd24805d379e40b78"
+      "sha256": "f177be997467e408d214c4ae275f9402c75a80a0ce84ed6e31acb0ff31813bf9"
     },
     {
       "id": "map-lens-unresolved",
@@ -4915,7 +5171,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-lens-unresolved-desktop-light.png",
-      "sha256": "e526d59848add1dadefad8ae0a134a45a82c8ad62fb3f0c777b3f6125cedebbd"
+      "sha256": "8e18ae83715a00bd8ea2bd55e0a1b1286d0dbff548222c7406a83903fa6308ab"
     },
     {
       "id": "map-lens-unresolved",
@@ -4923,7 +5179,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-lens-unresolved-desktop-dark.png",
-      "sha256": "9406c3499c24ae89d4c9e0d224ed6204f814e7d01607d6232b70ab4149eb96eb"
+      "sha256": "f45b022b5e16616d8060fea2eb5a1cff162f0e27831ea3040b369932f915d246"
     },
     {
       "id": "map-lens-empty",
@@ -5640,6 +5896,62 @@
         "oss-map-lens-compare-overlap-phone-light.png",
         "oss-map-lens-compare-overlap-tablet-dark.png",
         "oss-map-lens-compare-overlap-tablet-light.png"
+      ]
+    },
+    {
+      "reason": "The owner approved 32 new lens walkthrough captures for map-lens-walk-first, map-lens-walk-middle, map-lens-walk-last and map-lens-walk-unresolved, and re-approved 12 differing map-lens-loaded/unresolved captures after the walkthrough Start control was added on 2026-11-09.",
+      "sourceRun": {
+        "id": "42583567170",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42583567170",
+        "sourceSha": "710f94a11460874c7758a2ee29f9a0bdf08ba078"
+      },
+      "files": [
+        "oss-map-lens-loaded-desktop-dark.png",
+        "oss-map-lens-loaded-desktop-light.png",
+        "oss-map-lens-loaded-landscape-dark.png",
+        "oss-map-lens-loaded-landscape-light.png",
+        "oss-map-lens-loaded-tablet-dark.png",
+        "oss-map-lens-loaded-tablet-light.png",
+        "oss-map-lens-unresolved-desktop-dark.png",
+        "oss-map-lens-unresolved-desktop-light.png",
+        "oss-map-lens-unresolved-landscape-dark.png",
+        "oss-map-lens-unresolved-landscape-light.png",
+        "oss-map-lens-unresolved-tablet-dark.png",
+        "oss-map-lens-unresolved-tablet-light.png",
+        "oss-map-lens-walk-first-desktop-dark.png",
+        "oss-map-lens-walk-first-desktop-light.png",
+        "oss-map-lens-walk-first-landscape-dark.png",
+        "oss-map-lens-walk-first-landscape-light.png",
+        "oss-map-lens-walk-first-phone-dark.png",
+        "oss-map-lens-walk-first-phone-light.png",
+        "oss-map-lens-walk-first-tablet-dark.png",
+        "oss-map-lens-walk-first-tablet-light.png",
+        "oss-map-lens-walk-last-desktop-dark.png",
+        "oss-map-lens-walk-last-desktop-light.png",
+        "oss-map-lens-walk-last-landscape-dark.png",
+        "oss-map-lens-walk-last-landscape-light.png",
+        "oss-map-lens-walk-last-phone-dark.png",
+        "oss-map-lens-walk-last-phone-light.png",
+        "oss-map-lens-walk-last-tablet-dark.png",
+        "oss-map-lens-walk-last-tablet-light.png",
+        "oss-map-lens-walk-middle-desktop-dark.png",
+        "oss-map-lens-walk-middle-desktop-light.png",
+        "oss-map-lens-walk-middle-landscape-dark.png",
+        "oss-map-lens-walk-middle-landscape-light.png",
+        "oss-map-lens-walk-middle-phone-dark.png",
+        "oss-map-lens-walk-middle-phone-light.png",
+        "oss-map-lens-walk-middle-tablet-dark.png",
+        "oss-map-lens-walk-middle-tablet-light.png",
+        "oss-map-lens-walk-unresolved-desktop-dark.png",
+        "oss-map-lens-walk-unresolved-desktop-light.png",
+        "oss-map-lens-walk-unresolved-landscape-dark.png",
+        "oss-map-lens-walk-unresolved-landscape-light.png",
+        "oss-map-lens-walk-unresolved-phone-dark.png",
+        "oss-map-lens-walk-unresolved-phone-light.png",
+        "oss-map-lens-walk-unresolved-tablet-dark.png",
+        "oss-map-lens-walk-unresolved-tablet-light.png"
       ]
     }
   ]

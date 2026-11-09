@@ -61,3 +61,16 @@
 .lens-note { padding-block: 6px; border-bottom: 1px solid var(--rule); }
 [data-lens-unresolved] { border-left: 2px dashed var(--dim); padding-left: 10px; }
 @media (forced-colors: active) { .lens-swatch { border: 1px solid CanvasText; } }
+/* Issue #248: the walkthrough card sits above the stop's selection card. */
+.lens-walkthrough { font-size: 14px; color: var(--on); padding-block: 12px; border-bottom: 1px solid var(--rule); margin-bottom: 8px; overflow-wrap: anywhere; }
+.lens-walkthrough > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.lens-walkthrough h3 { font-weight: 600; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.lens-walkthrough > header .lens-meta { margin-top: 0; white-space: nowrap; }
+.lens-walk-controls { display: flex; gap: 8px; margin-top: 8px; }
+.lens-walk-controls button, .lens-walkthrough > button { min-height: 44px; padding-inline: 14px; border: 1px solid var(--rule); border-radius: 8px; font-weight: 600; }
+.lens-walk-controls button:disabled { color: var(--dim); opacity: 0.6; }
+.lens-walk-controls [data-lens-walk="exit"] { margin-left: auto; font-weight: 400; }
+.lens-walkthrough .lens-computed, .lens-walkthrough .lens-declared { vertical-align: middle; margin-right: 4px; }
+.lens-walk-stop { margin-top: 8px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 600; }
+[data-lens-walk-unresolved] { border-left: 2px dashed var(--dim); padding-left: 10px; margin-top: 8px; }
+[data-lens-walk-unresolved] p + p { color: var(--dim); margin-top: 4px; }
