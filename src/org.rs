@@ -205,7 +205,7 @@ impl OrganizationManifest {
                     commit: commit.clone(),
                 });
             }
-            if !matches!(commit.len(), 40 | 64) {
+            if commit.len() != 40 {
                 return Err(ManifestError::InvalidCommit {
                     repo: member.repo.clone(),
                     commit: commit.clone(),
@@ -1079,6 +1079,10 @@ mod tests {
         );
         assert!(matches!(
             OrganizationManifest::parse(&manifest(&member("acme/core", "main"))),
+            Err(ManifestError::InvalidCommit { .. })
+        ));
+        assert!(matches!(
+            OrganizationManifest::parse(&manifest(&member("acme/core", &"a".repeat(64)))),
             Err(ManifestError::InvalidCommit { .. })
         ));
         assert_eq!(
