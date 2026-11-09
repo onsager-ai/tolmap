@@ -4963,7 +4963,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-map-lens-compare-commits-phone-light.png",
-      "sha256": "0f3050294ea15e255f1dc574586901ee1a4e89f8927427b0bf5faaa259ac9ee1"
+      "sha256": "06f1a3652794c0552ad57afc726c1048257c4ef3c8a997c9cacab27ae464b9c0"
     },
     {
       "id": "map-lens-compare-commits",
@@ -4971,7 +4971,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-map-lens-compare-commits-phone-dark.png",
-      "sha256": "2fab1b209b9d3de150d55b7c724d7572b0c93c5b9e8c99ada4eafb39424df937"
+      "sha256": "db27f1d441ef5053fa1636ac07149e8c086bd0a23e438f4a4f48b61d165ba96b"
     },
     {
       "id": "map-lens-compare-overlap",
@@ -4979,7 +4979,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-map-lens-compare-overlap-phone-light.png",
-      "sha256": "29926e430a0409f8388d7fd4c5c77db0c5a642f465670d0d1acb725d57b41821"
+      "sha256": "ad490227df66a321e663c85e21d7b5026979bbd3e59be2dfc14d12478cd02d67"
     },
     {
       "id": "map-lens-compare-overlap",
@@ -4987,7 +4987,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-map-lens-compare-overlap-phone-dark.png",
-      "sha256": "dac442b7414980e58c0cb1cf5b3be3508d3a72d59453ac5a7154e198a14ac123"
+      "sha256": "04c1a3bb13b7988c5327434bbd3cac7beb9da38e09ca7b8c9aec968d40e9f827"
     },
     {
       "id": "map-lens-compare-loading",
@@ -5043,7 +5043,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-lens-compare-commits-landscape-light.png",
-      "sha256": "1598de7355e36cbdb74b011607be4703f80b7d75ddb55ed7a9fe8483d9ffb9c9"
+      "sha256": "dcf76ee414ad268e24d34bbeda1806f73966371bf05886ff0b17f9074f650401"
     },
     {
       "id": "map-lens-compare-commits",
@@ -5051,7 +5051,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-lens-compare-commits-landscape-dark.png",
-      "sha256": "ceeb115afcf04b57a33de5e0ddb8252e8aee37426d888ded2d8d5d1a29974c63"
+      "sha256": "b52db84d00c7da575c96a6d841499460c6cb80831f6102c6e5abc53ac2ce9611"
     },
     {
       "id": "map-lens-compare-overlap",
@@ -5059,7 +5059,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-lens-compare-overlap-landscape-light.png",
-      "sha256": "5c4e3ac098c1a6bfc752de5068646a499f6e46b062cf1ed34629031f5f27327e"
+      "sha256": "3f632daa127009ea0166ea08959d9199504037314a5873abae1d7a9610834b49"
     },
     {
       "id": "map-lens-compare-overlap",
@@ -5067,7 +5067,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-lens-compare-overlap-landscape-dark.png",
-      "sha256": "f66ffb7636fba8de29b43d8a7d09126327bcd11d3bc5c71670048322b2b98d40"
+      "sha256": "3fd0a00cadb5932b8d89080c5bdfda0e51b7eaae4c215a8d2cb50c564e815053"
     },
     {
       "id": "map-lens-compare-loading",
@@ -5123,7 +5123,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-lens-compare-commits-tablet-light.png",
-      "sha256": "d6b9fccdf71a554c50eb6d242ed9b409a467c927fba3a60715993bd5636a13f3"
+      "sha256": "ae99109ae98b8781cc45b983663329efe911dc21fd92be098c966a6ee7e28cba"
     },
     {
       "id": "map-lens-compare-commits",
@@ -5131,7 +5131,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-lens-compare-commits-tablet-dark.png",
-      "sha256": "e44a3766fbb207b6f8a351d8be74a45055f8f837e23cf6ffd0d4086c3a2462ce"
+      "sha256": "435e3cdc6cc73c92f0a6f075807ea0535c18a7a130e95689faf2e5b728957366"
     },
     {
       "id": "map-lens-compare-overlap",
@@ -5139,7 +5139,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-lens-compare-overlap-tablet-light.png",
-      "sha256": "d80bd7271b3d09d2eb56dbe8a075c55c00a734b096e2b7c5d6662c5f8bf0d949"
+      "sha256": "8ab5c079e80d4803ddc5638df80cf20e491f6f86f53383406b209b724928395f"
     },
     {
       "id": "map-lens-compare-overlap",
@@ -5147,7 +5147,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-lens-compare-overlap-tablet-dark.png",
-      "sha256": "25f9e8f516799874d1e2927b13f32d8a58cf1a2a0cd4874a0b9e015a45dcb08e"
+      "sha256": "8286f35b1a46b9d3a72d055d1915930ed4b4e92078e3410c3128a3052134f91c"
     },
     {
       "id": "map-lens-compare-loading",
@@ -5203,7 +5203,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-lens-compare-commits-desktop-light.png",
-      "sha256": "1e3638493b93e93b2622df14a189eccd889ced1ffae456925934ddd9d61eb064"
+      "sha256": "b494c72ff392373296cacefa284098f7a964eb889f99acbce8a55b9db4eae0c5"
     },
     {
       "id": "map-lens-compare-commits",
@@ -5211,7 +5211,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-lens-compare-commits-desktop-dark.png",
-      "sha256": "240d881eb42aacc4e936e90e772c3fb1ce8a1066eecc96fc1a62de514b795f1f"
+      "sha256": "c59fa78e370cbb9dbc67970e3f8bb3a158a215f28f8a29b4869885cb430bcb27"
     },
     {
       "id": "map-lens-compare-overlap",
@@ -5219,7 +5219,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-lens-compare-overlap-desktop-light.png",
-      "sha256": "fc1d014097e5c6f0faebe4d87e5b11a41f08b75edd312691b29bbec9ea070a37"
+      "sha256": "fef20db47e34bce8c51a4f74c350e547c21fd91770972c78371799aaefc18d02"
     },
     {
       "id": "map-lens-compare-overlap",
@@ -5227,7 +5227,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-lens-compare-overlap-desktop-dark.png",
-      "sha256": "9268bf8b1129718c038ba0d9a25d3b8538d6bb643d7facbb0b90c8361eeb04f2"
+      "sha256": "fdcd82aac1a295339d43be9983dceb2f2811f185cfb70ee99efdce422c50cbeb"
     },
     {
       "id": "map-lens-compare-loading",
@@ -5612,6 +5612,34 @@
         "oss-map-lens-unresolved-tablet-light.png",
         "oss-map-path-phone-dark.png",
         "oss-map-path-phone-light.png"
+      ]
+    },
+    {
+      "reason": "PR #246 fixes lens route offsets: hop lines take level of detail per point and end on their stop markers, and comparison district status badges move 23 px down onto the point where overview hop lines end. This changes the commit and overlap comparison captures at every viewport and theme (16 identities). Approved by the repository owner in chat on 2026-11-09 after reviewing before/after crops and the semon transcript-read comparison render.",
+      "sourceRun": {
+        "id": "42549386311",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42549386311",
+        "sourceSha": "9c012e757be02677f4f034fb89a50ffd7d6b52a8"
+      },
+      "files": [
+        "oss-map-lens-compare-commits-desktop-dark.png",
+        "oss-map-lens-compare-commits-desktop-light.png",
+        "oss-map-lens-compare-commits-landscape-dark.png",
+        "oss-map-lens-compare-commits-landscape-light.png",
+        "oss-map-lens-compare-commits-phone-dark.png",
+        "oss-map-lens-compare-commits-phone-light.png",
+        "oss-map-lens-compare-commits-tablet-dark.png",
+        "oss-map-lens-compare-commits-tablet-light.png",
+        "oss-map-lens-compare-overlap-desktop-dark.png",
+        "oss-map-lens-compare-overlap-desktop-light.png",
+        "oss-map-lens-compare-overlap-landscape-dark.png",
+        "oss-map-lens-compare-overlap-landscape-light.png",
+        "oss-map-lens-compare-overlap-phone-dark.png",
+        "oss-map-lens-compare-overlap-phone-light.png",
+        "oss-map-lens-compare-overlap-tablet-dark.png",
+        "oss-map-lens-compare-overlap-tablet-light.png"
       ]
     }
   ]

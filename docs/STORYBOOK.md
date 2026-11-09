@@ -138,7 +138,9 @@ Lens comparison states (40 identities: five states × four viewports × two
 themes, OSS host), the 16 loaded/unresolved lens captures that gained the
 comparison action and phone `map-path` (light and dark, changed by bottom-sheet
 sizing) were approved by the owner on 2026-11-09 from run `42491269339`
-(source `d5470c7`); `approved.json` records them under `recaptures`. The Flask browser
+(source `d5470c7`). The 16 commit/overlap comparison captures were re-approved
+from run `42549386311` (source `9c012e7`) after route lines and district badges
+were moved onto their stop markers; `approved.json` records both under `recaptures`. The Flask browser
 lane includes commit comparison, zoomed comparison stops, overlap and stale
 snapshot captures in both themes on phone and desktop. Those comparison edits
 are explicitly synthetic resolver scenarios over the unchanged pinned Flask
