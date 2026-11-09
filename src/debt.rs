@@ -12,6 +12,7 @@
 //!
 //! Plain `//` comments on exported types, not doc comments: ts-rs copies doc
 //! comments into the bindings.
+use crate::cycle_cut::{greedy_cut, mutual_pairs, Bundles};
 use crate::extract::COCHANGE_MIN_COUNT;
 use crate::lens::{
     self, FileRename, HopMode, Lens, LensArea, LensColor, LensNote, LensPath, LensReport, LensStop,
@@ -50,6 +51,9 @@ pub const HOTSPOT_MIN_COUNT: usize = 2;
 // Hidden coupling uses the evidence retained in the optional map sidecar.
 // The count and cutoff are the extraction/pipeline constants that wrote it.
 pub const HIDDEN_COUPLING_LENS_PATHS: usize = 20;
+// Keep actionable-cycle paths bounded just as hidden-coupling paths are: a
+// large cycle can have hundreds of cut bundles, while its area remains whole.
+pub const CYCLE_LENS_PATHS: usize = 20;
 
 // Unreached file exclusions. Entry points have no importer by design, so a
 // file is an entry when the map marks it an `entry` landmark, or by name:
@@ -130,6 +134,19 @@ pub struct DistrictCycle {
     pub route: Vec<usize>,
     pub closing_edges: Vec<DebtEdge>,
     pub cross_edges: usize,
+    /// The lighter direction of every mutually connected district pair.
+    pub mutual_pairs: Vec<DistrictBundle>,
+    /// A deterministic greedy feedback-arc cut. It is a small cut, not a
+    /// minimum cut: returning every bundle makes the district graph acyclic.
+    pub cut: Vec<DistrictBundle>,
+}
+
+/// All file edges in one directed district-to-district bundle.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct DistrictBundle {
+    pub from_district: usize,
+    pub to_district: usize,
+    pub edges: Vec<DebtEdge>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -183,6 +200,15 @@ pub struct UnreachedFile {
     pub out_edges: usize,
 }
 
+/// A Rust source file in a crate source tree that no resolved crate-root
+/// declaration tree reaches. This is a lower bound: `#[path]` is included,
+/// but macro-generated `mod`s are intentionally not guessed.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct UndeclaredRustFile {
+    pub path: String,
+    pub district: usize,
+}
+
 // A co-change pair without any file edge in `E` or reference edge in `U`.
 // The sidecar itself is optional, so `hidden_coupling_measured` distinguishes
 // an old map from one where the measured lower bound is zero.
@@ -213,6 +239,9 @@ pub struct DebtReport {
     pub god_files: Vec<GodFile>,
     pub hotspots: Vec<Hotspot>,
     pub unreached: Vec<UnreachedFile>,
+    /// False for maps built before the Rust declaration sidecar existed.
+    pub rust_mod_reachability_measured: bool,
+    pub undeclared_rust: Vec<UndeclaredRustFile>,
     pub hidden_coupling_measured: bool,
     pub hidden_coupling: Vec<HiddenCoupling>,
     // Files the entry rule excludes from `unreached`, and files with no edge
@@ -242,6 +271,26 @@ pub fn is_entry_path(path: &str) -> bool {
         || ENTRY_MARKERS.iter().any(|m| name.contains(m))
         || ENTRY_STEM_PREFIXES.iter().any(|p| stem.starts_with(p))
         || ENTRY_STEM_SUFFIXES.iter().any(|s| stem.ends_with(s))
+}
+
+fn is_rust_target_path(path: &str) -> bool {
+    path == "build.rs"
+        || path.ends_with("/build.rs")
+        || path.starts_with("src/bin/")
+        || path.contains("/examples/")
+        || path.contains("/tests/")
+        || path.contains("/benches/")
+}
+
+fn is_below_rust_root(path: &str, root: &str) -> bool {
+    if root == "build.rs" || root.ends_with("/build.rs") {
+        return false;
+    }
+    let source = root
+        .find("src/")
+        .map(|index| &root[..index + 3])
+        .or_else(|| root.rsplit_once('/').map(|(parent, _)| parent));
+    source.is_some_and(|source| path.starts_with(source))
 }
 
 // The nearest-rank cut for the top `fraction` of `values`: the k-th largest,
@@ -328,87 +377,85 @@ fn components(graph: &BTreeMap<usize, BTreeSet<usize>>) -> Vec<Vec<usize>> {
 
 fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
     let district = |f: usize| map.nodes[f].district();
-    // For each ordered district pair, its file edges' representative: the
-    // smallest by path, so the choice survives files being added elsewhere.
-    let mut pairs: BTreeMap<(usize, usize), (&str, &str)> = BTreeMap::new();
+    let mut bundles = BTreeMap::<(usize, usize), Vec<DebtEdge>>::new();
     let mut graph: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for &[a, b] in &map.edges {
-        let (da, db) = (district(a), district(b));
-        if da == db {
+        let (from_district, to_district) = (district(a), district(b));
+        if from_district == to_district {
             continue;
         }
-        graph.entry(da).or_default().insert(db);
-        let edge = (map.files[a].as_str(), map.files[b].as_str());
-        pairs
-            .entry((da, db))
-            .and_modify(|e| *e = (*e).min(edge))
-            .or_insert(edge);
+        graph.entry(from_district).or_default().insert(to_district);
+        bundles
+            .entry((from_district, to_district))
+            .or_default()
+            .push(DebtEdge {
+                from: map.files[a].clone(),
+                to: map.files[b].clone(),
+                from_district,
+                to_district,
+            });
+    }
+    for edges in bundles.values_mut() {
+        edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
     }
     components(&graph)
         .into_iter()
         .map(|scc| {
             let set: BTreeSet<usize> = scc.iter().copied().collect();
-            let inside = |(da, db): &(usize, usize)| set.contains(da) && set.contains(db);
-            // Start at the district of the smallest closing edge by path, and
-            // visit successors by their representative edge's paths: the cycle
-            // then depends on file paths, not on district ids.
-            let start = pairs
+            let inside = |(from, to): &(usize, usize)| set.contains(from) && set.contains(to);
+            let weights: Bundles = bundles
                 .iter()
-                .filter(|(k, _)| inside(*k))
-                .min_by_key(|(_, e)| **e)
-                .unwrap()
+                .filter(|(key, _)| inside(key))
+                .map(|(&key, edges)| (key, edges.len()))
+                .collect();
+            let bundle = |(from_district, to_district)| DistrictBundle {
+                from_district,
+                to_district,
+                edges: bundles[&(from_district, to_district)].clone(),
+            };
+            // Start and traverse by file paths so the contextual route does
+            // not change merely because districts were renumbered.
+            let start = bundles
+                .iter()
+                .filter(|(key, _)| inside(key))
+                .min_by_key(|(_, edges)| (&edges[0].from, &edges[0].to))
+                .expect("cycle has a bundle")
                 .0
                  .0;
-            let successors = |u: usize| {
-                let mut next: Vec<(usize, (&str, &str))> = graph[&u]
+            let successors = |from: usize| {
+                let mut next = graph[&from]
                     .iter()
-                    .filter(|v| set.contains(*v))
-                    .map(|&v| (v, pairs[&(u, v)]))
-                    .collect();
-                next.sort_by_key(|(_, e)| *e);
+                    .filter(|to| set.contains(to))
+                    .map(|&to| (to, &bundles[&(from, to)][0]))
+                    .collect::<Vec<_>>();
+                next.sort_by_key(|(_, edge)| (&edge.from, &edge.to));
                 next
             };
             let mut prev = BTreeMap::from([(start, start)]);
             let mut queue = VecDeque::from([start]);
             let mut route = vec![];
-            'bfs: while let Some(u) = queue.pop_front() {
-                for (v, _) in successors(u) {
-                    if v == start {
-                        let mut c = u;
-                        route.push(u);
-                        while c != start {
-                            c = prev[&c];
-                            route.push(c);
+            'bfs: while let Some(from) = queue.pop_front() {
+                for (to, _) in successors(from) {
+                    if to == start {
+                        let mut current = from;
+                        route.push(from);
+                        while current != start {
+                            current = prev[&current];
+                            route.push(current);
                         }
                         route.reverse();
                         break 'bfs;
                     }
-                    if let std::collections::btree_map::Entry::Vacant(e) = prev.entry(v) {
-                        e.insert(u);
-                        queue.push_back(v);
+                    if let std::collections::btree_map::Entry::Vacant(entry) = prev.entry(to) {
+                        entry.insert(from);
+                        queue.push_back(to);
                     }
                 }
             }
             let closing_edges = (0..route.len())
-                .map(|i| {
-                    let (da, db) = (route[i], route[(i + 1) % route.len()]);
-                    let (from, to) = pairs[&(da, db)];
-                    DebtEdge {
-                        from: from.to_owned(),
-                        to: to.to_owned(),
-                        from_district: da,
-                        to_district: db,
-                    }
-                })
+                .map(|index| bundles[&(route[index], route[(index + 1) % route.len()])][0].clone())
                 .collect();
-            let cross_edges = map
-                .edges
-                .iter()
-                .filter(|&&[a, b]| {
-                    let (da, db) = (district(a), district(b));
-                    da != db && set.contains(&da) && set.contains(&db)
-                })
-                .count();
+            let cross_edges = weights.values().sum();
             DistrictCycle {
                 districts: scc
                     .iter()
@@ -420,6 +467,8 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
                 route,
                 closing_edges,
                 cross_edges,
+                mutual_pairs: mutual_pairs(&weights).into_iter().map(bundle).collect(),
+                cut: greedy_cut(&weights).into_iter().map(bundle).collect(),
             }
         })
         .collect()
@@ -562,14 +611,51 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     let isolated_files = (0..n)
         .filter(|&f| inbound[f] == 0 && outbound[f] == 0)
         .count();
+    let rust_mod = map.debt.as_ref().and_then(|debt| debt.rust_mod.as_ref());
+    let rust_mod_reachability_measured = rust_mod.is_some();
+    let declared_rust = rust_mod
+        .map(|tree| {
+            tree.pairs
+                .iter()
+                .map(|pair| pair.0 .1)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let rust_roots = rust_mod
+        .map(|tree| tree.roots.iter().copied().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
     let unreached = (0..n)
-        .filter(|&f| inbound[f] == 0 && outbound[f] > 0 && !entry(f))
+        .filter(|&f| {
+            inbound[f] == 0
+                && outbound[f] > 0
+                && !entry(f)
+                && !(map.files[f].ends_with(".rs") && declared_rust.contains(&f))
+        })
         .map(|f| UnreachedFile {
             path: map.files[f].clone(),
             district: district(f),
             out_edges: outbound[f],
         })
         .collect();
+    let undeclared_rust = rust_mod
+        .map(|_| {
+            (0..n)
+                .filter(|&f| {
+                    map.files[f].ends_with(".rs")
+                        && !rust_roots.contains(&f)
+                        && !declared_rust.contains(&f)
+                        && !is_rust_target_path(&map.files[f])
+                        && rust_roots
+                            .iter()
+                            .any(|&root| is_below_rust_root(&map.files[f], &map.files[root]))
+                })
+                .map(|f| UndeclaredRustFile {
+                    path: map.files[f].clone(),
+                    district: district(f),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let hidden_coupling = map
         .debt
@@ -641,6 +727,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         god_files,
         hotspots,
         unreached,
+        rust_mod_reachability_measured,
+        undeclared_rust,
         hidden_coupling_measured,
         hidden_coupling,
         entry_files,
@@ -660,6 +748,7 @@ pub const KIND_MISPLACED: &str = "misplaced file";
 pub const KIND_GOD: &str = "god file";
 pub const KIND_HOTSPOT: &str = "hotspot";
 pub const KIND_UNREACHED: &str = "no inbound edge found";
+pub const KIND_UNDECLARED_RUST: &str = "undeclared Rust file";
 pub const KIND_HIDDEN_COUPLING: &str = "hidden coupling";
 
 fn cycle_files(cycle: &DistrictCycle) -> BTreeSet<&str> {
@@ -693,6 +782,18 @@ fn hidden_coupling_path_name(coupling: &HiddenCoupling) -> String {
     )
 }
 
+fn cut_path_name(bundle: &DistrictBundle) -> String {
+    format!(
+        "cycle-cut-{:016x}",
+        path_hash(
+            bundle
+                .edges
+                .iter()
+                .flat_map(|edge| [edge.from.as_str(), edge.to.as_str()]),
+        )
+    )
+}
+
 fn pct(share: f64) -> String {
     format!("{}%", round4(share * 100.0))
 }
@@ -712,6 +813,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         (KIND_GOD, LensColor::Purple, BTreeSet::new()),
         (KIND_HOTSPOT, LensColor::Orange, BTreeSet::new()),
         (KIND_UNREACHED, LensColor::Grey, BTreeSet::new()),
+        (KIND_UNDECLARED_RUST, LensColor::Grey, BTreeSet::new()),
         (KIND_HIDDEN_COUPLING, LensColor::Teal, BTreeSet::new()),
     ];
     fn add<'a>(
@@ -785,6 +887,40 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
             name: cycle_path_name(&files),
             stops,
         });
+        let shown = cycle.cut.len().min(CYCLE_LENS_PATHS);
+        note(
+            first,
+            format!(
+                "{shown} of {} heuristic cut bundles shown as paths; removing all makes this district graph acyclic",
+                cycle.cut.len()
+            ),
+        );
+        for bundle in cycle.cut.iter().take(CYCLE_LENS_PATHS) {
+            let edges = &bundle.edges;
+            let mut stops = vec![LensStop {
+                at: edges[0].from.clone(),
+                hop: HopMode::Computed,
+                reason: None,
+            }];
+            for edge in edges {
+                if stops.last().unwrap().at != edge.from {
+                    stops.push(LensStop {
+                        at: edge.from.clone(),
+                        hop: HopMode::Declared,
+                        reason: Some("no edge claimed between cut-bundle edges".to_owned()),
+                    });
+                }
+                stops.push(LensStop {
+                    at: edge.to.clone(),
+                    hop: HopMode::Computed,
+                    reason: None,
+                });
+            }
+            paths.push(LensPath {
+                name: cut_path_name(bundle),
+                stops,
+            });
+        }
         add(&mut kinds, KIND_CYCLE, files);
     }
     for m in &report.misplaced {
@@ -854,6 +990,13 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
             ),
         );
         add(&mut kinds, KIND_UNREACHED, [u.path.as_str()]);
+    }
+    for file in &report.undeclared_rust {
+        note(
+            &file.path,
+            "undeclared Rust file: no `mod` declares it; likely not compiled (macro-generated declarations may be missed)".to_owned(),
+        );
+        add(&mut kinds, KIND_UNDECLARED_RUST, [file.path.as_str()]);
     }
     if !report.hidden_coupling.is_empty() {
         add(
@@ -965,6 +1108,15 @@ pub fn render_text(report: &DebtReport) -> String {
         report.entry_files,
         report.isolated_files,
     );
+    if report.rust_mod_reachability_measured {
+        let _ = writeln!(
+            out,
+            "{} undeclared Rust files (no `mod` declares them; likely not compiled)",
+            report.undeclared_rust.len(),
+        );
+    } else {
+        out.push_str("Rust mod reachability not measured (map has no Rust mod sidecar)\n");
+    }
     if report.hidden_coupling_measured {
         let _ = writeln!(
             out,
@@ -986,6 +1138,28 @@ pub fn render_text(report: &DebtReport) -> String {
         );
         for e in &c.closing_edges {
             let _ = writeln!(out, "  {} -> {}", e.from, e.to);
+        }
+        for pair in &c.mutual_pairs {
+            let _ = writeln!(
+                out,
+                "  mutual lighter bundle {} -> {} ({} file edges)",
+                pair.from_district,
+                pair.to_district,
+                pair.edges.len(),
+            );
+        }
+        let _ = writeln!(out, "  heuristic cut ({} bundles):", c.cut.len());
+        for bundle in &c.cut {
+            let _ = writeln!(
+                out,
+                "    {} -> {} ({} file edges)",
+                bundle.from_district,
+                bundle.to_district,
+                bundle.edges.len(),
+            );
+            for edge in &bundle.edges {
+                let _ = writeln!(out, "      {} -> {}", edge.from, edge.to);
+            }
         }
     }
     for m in &report.misplaced {
@@ -1063,12 +1237,13 @@ pub fn run(map: &std::path::Path, format: &str) -> i32 {
 // never collide with `.tolmap/lenses/<name>.toml`.
 pub const LENS_NAME: &str = "@debt";
 
-const KINDS: [&str; 6] = [
+const KINDS: [&str; 7] = [
     KIND_CYCLE,
     KIND_MISPLACED,
     KIND_GOD,
     KIND_HOTSPOT,
     KIND_UNREACHED,
+    KIND_UNDECLARED_RUST,
     KIND_HIDDEN_COUPLING,
 ];
 
@@ -1109,7 +1284,8 @@ pub fn compare(
                 .paths
                 .iter()
                 .filter(|path| {
-                    (kind == KIND_CYCLE && path.name.starts_with("cycle-"))
+                    (kind == KIND_CYCLE
+                        && (path.name.starts_with("cycle-") || path.name.starts_with("cycle-cut-")))
                         || (kind == KIND_HIDDEN_COUPLING
                             && path.name.starts_with("hidden-coupling-"))
                 })
@@ -1170,6 +1346,94 @@ mod tests {
         assert!(!report.hidden_coupling_measured);
         assert!(report.hidden_coupling.is_empty());
         assert!(render_text(&report).contains("hidden coupling not measured"));
+    }
+
+    #[test]
+    fn mod_sidecar_excludes_declared_modules_and_reports_orphans() {
+        let map: MapDocument = serde_json::from_value(json!({
+            "repo": "rust", "q": 0.0, "names": {"0": "only"}, "districts": {},
+            "F": ["src/lib.rs", "src/child.rs", "src/orphan.rs", "src/path.rs", "src/bin/tool.rs", "tests/integration.rs", "build.rs"],
+            "N": [
+                [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 4.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 5.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 6.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": [[1, 0]], "L": [], "S": {}, "U": {}, "roads": [], "lang": "rs",
+            "D": {"rust_mod": {"roots": [0, 6], "pairs": [[0, 1], [0, 3]]}}
+        })).unwrap();
+        let report = findings(&map);
+        assert!(report.rust_mod_reachability_measured);
+        assert!(
+            report.unreached.is_empty(),
+            "a mod child is compiled even with no inbound E edge"
+        );
+        assert_eq!(
+            report
+                .undeclared_rust
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/orphan.rs"]
+        );
+        let lens = to_lens(&report, &map);
+        assert!(lens
+            .areas
+            .iter()
+            .any(|area| area.label == KIND_UNDECLARED_RUST));
+    }
+
+    #[test]
+    fn old_maps_say_rust_mod_reachability_was_not_measured() {
+        let report = findings(&map(None));
+        assert!(!report.rust_mod_reachability_measured);
+        assert!(render_text(&report).contains("Rust mod reachability not measured"));
+    }
+
+    #[test]
+    fn cycle_report_has_light_cut_and_mutual_lighter_bundle() {
+        let map: MapDocument = serde_json::from_value(json!({
+            "repo": "cycle", "q": 0.0, "names": {"0": "a", "1": "b", "2": "c"}, "districts": {},
+            "F": ["a.rs", "b.rs", "c.rs", "c2.rs"],
+            "N": [
+                [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [2, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [2, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": [[0, 1], [1, 2], [2, 0], [1, 0]],
+            "L": [], "S": {}, "U": {}, "roads": [], "lang": "rs"
+        }))
+        .unwrap();
+        let first = findings(&map);
+        let second = findings(&map);
+        assert_eq!(render_json(&first), render_json(&second));
+        let cycle = &first.cycles[0];
+        assert_eq!(cycle.cut.len(), 1);
+        // 0 -> 1 lies on both cycles (0 -> 1 -> 0 and 0 -> 1 -> 2 -> 0), so
+        // removing that one bundle makes the district graph acyclic; 2 -> 0
+        // alone would leave 0 <-> 1.
+        assert_eq!(
+            (cycle.cut[0].from_district, cycle.cut[0].to_district),
+            (0, 1)
+        );
+        assert_eq!(cycle.cut[0].edges.len(), 1);
+        // 0 -> 1 and 1 -> 0 carry one file edge each, so the tie breaks on
+        // the smaller `from` district (src/cycle_cut.rs).
+        assert_eq!(
+            (
+                cycle.mutual_pairs[0].from_district,
+                cycle.mutual_pairs[0].to_district
+            ),
+            (0, 1)
+        );
+        assert!(to_lens(&first, &map)
+            .paths
+            .iter()
+            .any(|path| path.name.starts_with("cycle-cut-")));
     }
 
     #[test]

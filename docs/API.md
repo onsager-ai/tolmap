@@ -526,8 +526,10 @@ Structural debt findings (issue #250; `src/debt.rs`), computed offline from a
 stored map alone; the map is not changed and the same map gives byte-identical
 output. `json` prints a `DebtReport` (`bindings/DebtReport.ts`): district
 cycles (strongly connected district sets in the district graph built from
-`E`, each with one shortest route and the file edges that close it), misplaced
-files, god files, hotspots (churn × complexity; the top two include the map's
+`E`, each with one shortest route and the file edges that close it), their
+mutual district pairs (the lighter direction) and a deterministic greedy
+feedback-arc **small cut** (never claimed to be minimum), misplaced files,
+god files, hotspots (churn × complexity; the top two include the map's
 `hazard` landmarks), files with **no inbound edge found**, which excludes
 entry files, and **hidden coupling**: a pair retained in the optional,
 index-aligned map sidecar with at least three co-changes and weight ≥ 0.35 but
@@ -535,8 +537,14 @@ no file edge `E` or reference edge `U`. The sidecar records pair indices,
 co-change counts and weights rounded to two decimals from the indexer's 4,000
 non-merge-commit history window. It is absent from older maps; those reports
 state `hidden_coupling_measured: false` (and text output says "hidden coupling
-not measured"), never that no pair was found. Files with no edge at all are
-coverage gaps: they are counted in `isolated_files`, not listed. Every report
+not measured"), never that no pair was found. Rust `mod` declaration pairs and
+crate roots use the same optional, index-aligned sidecar: a declared `.rs`
+module is not reported as no-inbound, while a non-target Rust source file no
+root reaches is an **undeclared Rust file** (`no \`mod\` declares it; likely not
+compiled`). `#[path]` targets are retained; macro-generated declarations may
+be missed, so this too is a lower bound. Older maps report
+`rust_mod_reachability_measured: false`, never an empty Rust result. Files with
+no edge at all are coverage gaps: they are counted in `isolated_files`, not listed. Every report
 states its thresholds (named constants in `src/debt.rs`, plus the cuts they
 give on this map) and echoes the map's `coverage`; every count is a lower
 bound over the map's edges and history. Dynamic imports, reflection and
@@ -546,13 +554,13 @@ found is not shown to be dead.
 `lens` prints the equivalent lens TOML (format v1), which `tolmap lens check`
 resolves fully: at most one area per finding kind, labelled by the kind alone
 (`district cycle`, `misplaced file`, `god file`, `hotspot`, `no inbound edge
-found`, `hidden coupling`) and holding every file in a finding of that kind,
-so a district is tinted at most once per kind. It emits one path per cycle,
-named from the files of its closing edges (closing edges as computed hops;
-consecutive ones inside a district are joined by declared hops whose reason
-states that no edge is claimed), and declared paths for the first 20
-hidden-coupling pairs in report order (cross-district first, then weight). The
-hidden-coupling area still contains every pair's files, while a note states how
+found`, `undeclared Rust file`, `hidden coupling`) and holding every file in a
+finding of that kind, so a district is tinted at most once per kind. It emits
+one contextual path per cycle and computed paths for the first 20 heuristic
+cut bundles, named from file paths rather than district names; a note states
+how many cut bundles the full report retains. It also emits declared paths for
+the first 20 hidden-coupling pairs in report order (cross-district first, then
+weight). The hidden-coupling area still contains every pair's files, while a note states how
 many of the full `tolmap debt` report are shown as paths; each path's reason is
 `co-changed N times; no static edge found`. Notes carry the measured values,
 the misplaced file's per-district edge counts and the cycle's district names.

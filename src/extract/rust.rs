@@ -1773,6 +1773,47 @@ impl<'a> Resolver<'a> {
         }
         path
     }
+
+    /// The `mod` declaration tree (issue #258), as file paths. It is not an
+    /// edge (see the header) and never enters the graph; it tells which
+    /// files a crate compiles, so a module reached only through its parent's
+    /// `mod` can be told from a file no crate declares.
+    pub(crate) fn mod_tree(&self) -> ModTree {
+        let path = |file: FileId| self.files[file as usize].clone();
+        let roots = self
+            .roots
+            .iter()
+            .flatten()
+            .map(|&root| path(self.modules[root].file));
+        let mut declared = BTreeSet::new();
+        for module in &self.modules {
+            for &child in module.children.values().flatten() {
+                let child_file = self.modules[child].file;
+                // Inline modules share their parent's file.
+                if child_file != module.file {
+                    declared.insert((path(module.file), path(child_file)));
+                }
+            }
+        }
+        ModTree {
+            roots: roots.collect(),
+            declared,
+        }
+    }
+}
+
+/// Which Rust files the crates of a repository compile, as far as the
+/// module trees built from their roots reach. A file in neither set was
+/// not reached from any crate root: no `mod` in a compiled file declares
+/// it. That is a lower bound on what is compiled, because a macro-generated
+/// `mod` is not seen.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ModTree {
+    /// Crate root files: lib, bins and build scripts (`crate_targets`).
+    pub(crate) roots: BTreeSet<String>,
+    /// `(declaring file, declared file)` for every `mod x;` that resolved to
+    /// a file, `#[path]` included, and whatever its `cfg`.
+    pub(crate) declared: BTreeSet<(String, String)>,
 }
 
 /// How one `use` leaf or one written-out path resolved. Recorded only for
@@ -2185,6 +2226,7 @@ pub(crate) fn resolve(
         })
         .collect();
 
+    let rust_mod = resolver.mod_tree();
     Ok(SourceIntermediate {
         pkg: pkg.to_owned(),
         language: LanguageKind::Rust,
@@ -2195,6 +2237,14 @@ pub(crate) fn resolve(
         fanin,
         uses,
         module_for,
+        rust_mod: Some(crate::schema::RustModTree {
+            roots: rust_mod.roots.into_iter().map(|root| ids[&root]).collect(),
+            pairs: rust_mod
+                .declared
+                .into_iter()
+                .map(|(parent, child)| (ids[&parent], ids[&child]))
+                .collect(),
+        }),
         build_output_mirror: 0,
         python_cross_project: 0,
     })
@@ -2702,6 +2752,76 @@ mod tests {
         );
         assert!(syntax.uses[0].public && !syntax.uses[0].extern_crate);
         assert!(syntax.uses[1].extern_crate);
+    }
+
+    /// Issue #258: the declaration tree holds every `mod x;` that resolved
+    /// to a file, `#[path]` and both `cfg` alternatives included, and the
+    /// file children of inline modules. A file no compiled `mod` declares,
+    /// and whatever it declares itself, is in neither set.
+    #[test]
+    fn mod_tree_lists_crate_roots_and_declared_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        write_workspace(root);
+        write(
+            root,
+            "crates/core/build.rs",
+            "mod gen {\n    mod part;\n}\nfn main() {}\n",
+        );
+        write(root, "crates/core/gen/part.rs", "pub fn part() {}\n");
+        write(root, "crates/core/src/orphan.rs", "mod child;\n");
+        write(
+            root,
+            "crates/core/src/orphan/child.rs",
+            "pub fn child() {}\n",
+        );
+        let (parsed, raw) = super::super::parse_files(root, ".", LanguageKind::Rust).unwrap();
+        let (files, ids) = file_ids(parsed.keys().cloned()).unwrap();
+        let syntax = raw
+            .iter()
+            .filter_map(|(file, raw)| match raw {
+                FileRaw::Rust(syntax) => ids.get(file).map(|&id| (id, syntax)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        let crates = crate_targets(root);
+        let tree = Resolver::new(&files, &ids, &syntax, &crates).mod_tree();
+        let set = |rows: &[&str]| rows.iter().map(|row| (*row).to_owned()).collect();
+        assert_eq!(
+            tree.roots,
+            set(&[
+                "crates/app/src/main.rs",
+                "crates/core/build.rs",
+                "crates/core/src/lib.rs",
+            ])
+        );
+        let pairs = [
+            ("crates/app/src/main.rs", "crates/app/src/cli.rs"),
+            ("crates/core/build.rs", "crates/core/gen/part.rs"),
+            ("crates/core/src/lib.rs", "crates/core/src/model.rs"),
+            ("crates/core/src/lib.rs", "crates/core/src/store/mod.rs"),
+            ("crates/core/src/lib.rs", "crates/core/src/sys/unix.rs"),
+            ("crates/core/src/lib.rs", "crates/core/src/sys/windows.rs"),
+            (
+                "crates/core/src/model.rs",
+                "crates/core/src/model/detail.rs",
+            ),
+            (
+                "crates/core/src/store/mod.rs",
+                "crates/core/src/store/memory.rs",
+            ),
+            (
+                "crates/core/src/store/mod.rs",
+                "crates/core/src/store/ops.rs",
+            ),
+        ];
+        assert_eq!(
+            tree.declared,
+            pairs
+                .iter()
+                .map(|&(a, b)| (a.to_owned(), b.to_owned()))
+                .collect()
+        );
     }
 
     #[test]

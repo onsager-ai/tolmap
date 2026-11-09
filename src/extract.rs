@@ -12,7 +12,8 @@ use tree_sitter::{Language, Node, Parser};
 
 use crate::go_build::{go_build_status, GoBuild};
 use crate::schema::{
-    CochangeSignal, FileId, GraphData, ReferenceCoverage, SignalEdge, SourceNode, SymbolRow,
+    CochangeSignal, FileId, GraphData, ReferenceCoverage, RustModTree, SignalEdge, SourceNode,
+    SymbolRow,
 };
 
 const ALPHA: f64 = 0.45;
@@ -1266,6 +1267,10 @@ struct SourceIntermediate {
     /// just the file path. Carried as a map instead of a closure so it can
     /// be merged across sources without boxing a per-source `Fn`.
     module_for: BTreeMap<String, String>,
+    /// Resolved Rust crate roots and `mod` pairs, remapped to the graph's
+    /// final file ids. Declarations describe compilation reachability but are
+    /// never edges.
+    rust_mod: Option<RustModTree>,
     /// Issue #115: import specifiers this source's own edge-resolution loop
     /// resolved only through the guarded mirror rule (`mirror_build_output`).
     /// Zero for every language but TypeScript.
@@ -1289,6 +1294,7 @@ struct MergedSources {
     fanin: BTreeMap<FileId, f64>,
     uses: BTreeSet<(FileId, FileId, String)>,
     module_for: BTreeMap<String, String>,
+    rust_mod: Option<RustModTree>,
     file_language: BTreeMap<String, LanguageKind>,
     /// One `(pkg, lang)` per source, in the same sorted order they were
     /// merged -- `GraphData.sources`.
@@ -1349,6 +1355,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin,
             uses,
             module_for,
+            rust_mod,
             build_output_mirror,
             python_cross_project,
         } = intermediate;
@@ -1361,6 +1368,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin,
             uses,
             module_for,
+            rust_mod,
             file_language,
             sources: vec![(pkg.clone(), language.as_str().to_owned())],
             dominant_pkg: pkg,
@@ -1401,6 +1409,9 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
     let mut parsed = BTreeMap::new();
     let mut file_language = BTreeMap::new();
     let mut module_for = BTreeMap::new();
+    let mut rust_mod_measured = false;
+    let mut rust_mod_roots = BTreeSet::<FileId>::new();
+    let mut rust_mod_pairs = BTreeSet::<(FileId, FileId)>::new();
     let mut static_edges = BTreeMap::<(FileId, FileId), f64>::new();
     let mut directed = BTreeMap::<(FileId, FileId), f64>::new();
     let mut fanin = BTreeMap::<FileId, f64>::new();
@@ -1421,6 +1432,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             fanin: source_fanin,
             uses: source_uses,
             module_for: source_module_for,
+            rust_mod: source_rust_mod,
             build_output_mirror: source_build_output_mirror,
             python_cross_project: source_python_cross_project,
         } = intermediate;
@@ -1433,6 +1445,22 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         // full.
         build_output_mirror += source_build_output_mirror;
         python_cross_project += source_python_cross_project;
+        if let Some(tree) = source_rust_mod {
+            rust_mod_measured = true;
+            for root in tree.roots {
+                let file = &source_files[root as usize];
+                if owner_index.get(file) == Some(&idx) {
+                    rust_mod_roots.insert(global_ids[file]);
+                }
+            }
+            for (parent, child) in tree.pairs {
+                let parent = &source_files[parent as usize];
+                let child = &source_files[child as usize];
+                if owner_index.get(parent) == Some(&idx) && owner_index.get(child) == Some(&idx) {
+                    rust_mod_pairs.insert((global_ids[parent], global_ids[child]));
+                }
+            }
+        }
 
         let mut kept = 0usize;
         for (file, value) in source_parsed {
@@ -1497,6 +1525,10 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         fanin,
         uses,
         module_for,
+        rust_mod: rust_mod_measured.then_some(RustModTree {
+            roots: rust_mod_roots,
+            pairs: rust_mod_pairs,
+        }),
         file_language,
         sources,
         dominant_pkg,
@@ -2670,6 +2702,7 @@ fn parse_python_with_progress(
         fanin,
         uses,
         module_for,
+        rust_mod: None,
         build_output_mirror: 0,
         python_cross_project,
     })
@@ -4546,6 +4579,7 @@ fn parse_multi_with_progress(
         fanin,
         uses,
         module_for,
+        rust_mod: None,
         build_output_mirror: mirror_hits.get(),
         python_cross_project: 0,
     })
@@ -6643,6 +6677,7 @@ fn finish_graph(
         dominant_lang,
         build_output_mirror,
         python_cross_project,
+        rust_mod,
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
@@ -6846,6 +6881,7 @@ fn finish_graph(
         uses: uses.into_iter().collect(),
         commits_scanned: history.commits,
         cochange: Some(cochange),
+        rust_mod,
         nodes,
         edges,
         references: None,
@@ -9897,6 +9933,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            rust_mod: None,
             build_output_mirror: 0,
             python_cross_project: 0,
         };
@@ -9915,6 +9952,7 @@ mod tests {
             module_for: [("shared.txt".to_owned(), "shared".to_owned())]
                 .into_iter()
                 .collect(),
+            rust_mod: None,
             build_output_mirror: 0,
             python_cross_project: 0,
         };

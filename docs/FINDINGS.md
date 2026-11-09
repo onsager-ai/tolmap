@@ -3359,3 +3359,22 @@ The new debt finding produces one `hidden coupling` area containing every pair's
 - **The semon thresholds were not reviewed.** Nobody checked whether the 17 files with no inbound edge include any genuinely unused file. The `tests.rs` exclusion was not rerun on semon; the 17 is recomputed from the run's artifact.
 - Two repositories. The default fractions were not tuned on any corpus; whether 5% and five edges separate signal from noise on agent-maintained repositories is unmeasured.
 - Overlapping tints: the lens has one area per kind (owner decision, 2026-11-09), so a district is tinted at most five times, once per kind, however many findings it holds. Before that decision each finding was its own area, and on Flask two districts carried three overlapping tints. A large repository was not rendered.
+
+## 66. The Rust `mod` sidecar removes semon's 13 module-only no-inbound false positives; greedy cuts make both semon and Flask cycles concrete, but not necessarily small
+
+Issue [#258](https://github.com/onsager-ai/tolmap/issues/258). [Scratch run 42639319192](https://github.com/onsager-ai/tolmap/actions/runs/42639319192) built `tolmap` at feature head `4175754` (plus its disposable measurement-workflow merge) and indexed Flask at its pinned fixture commit `d73fa1c` and semon at `50c5255`. The scratch branch was never a fixture source: no `data/*.json` or `data/lenses/flask-suggest/` file changed.
+
+| Repository | Rust mod reachability | No-inbound files | Undeclared Rust files | Cycle cut(s) |
+|---|---:|---:|---:|---|
+| Flask (24 files, 94 edges) | not measured (Python) | 1 (`src/flask/views.py`) | 0 | one 3-district, 42-cross-edge cycle; 3 bundles / **18** file edges |
+| semon (223 files, 1,411 edges) | measured | **5** TypeScript bundle entries | **0** | 3-district, 454-cross-edge cycle: 3 bundles / **135** file edges; 2-district, 46-cross-edge cycle: 1 bundle / **4** file edges |
+
+- **Rust reachability changes only the reported debt.** semon's remaining no-inbound paths are `ui/src/{application.ts,lib-contract.tsx,native-shell.ts,shared.ts,viewer.ts}`: exactly the build-script bundle entries finding 64 left out of #258. The 13 Rust `mod` children no longer appear, and no Rust orphan was found. The extractor still does not put `mod` declarations in `E`, so extraction, blending, clustering and layout inputs are unchanged.
+- **The cuts are actionable evidence, not a minimum claim.** In semon's large SCC, the greedy cut selects district bundles `0 → 3` (59 edges), `2 → 0` (44), and `2 → 3` (32), totalling 135. Its smaller UI SCC selects `4 → 1` (4). Flask's selected bundles contain 10, 1 and 7 file edges. The report keeps every individual file edge; the lens draws at most 20 file-path-named cut paths and notes the shown total.
+- **Mutual pairs explain why the cut is not a reciprocal-import diagnosis.** The large semon cycle has three lighter mutual directions, with those same 59/44/32 bundle sizes; the UI cycle has its four-edge reverse bundle. It still reflects district-level coupling within packages, not a Cargo cycle.
+- **Determinism and comparison coverage are synthetic.** Unit tests use a three-district cycle with a one-edge light back bundle, assert its deterministic cut and mutual lighter direction, and assert that removing the closing edge removes both the contextual cycle path and its cut path in comparison. The Rust unit test covers a `#[path]` target, crate roots and `bin/`, `tests/`, and `build.rs` exclusions. The CI measurement ran each map once; it does not establish byte-identical output across two CI runs.
+
+### Not verified
+- The semon and Flask debt lenses were not rendered in a browser. Their areas, paths and notes were generated in CI but not viewed on phone or desktop.
+- The `mod` tree remains a lower bound: macro-generated declarations are not parsed. `#[path]` is covered synthetically, not re-read in semon's source.
+- A 135-edge cut is evidence that the large semon SCC is still too broad for a small manual edit. The heuristic makes the boundary visible; it does not choose an architectural boundary or prove a minimum feedback set.
