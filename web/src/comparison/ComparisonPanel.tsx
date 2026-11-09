@@ -51,6 +51,7 @@ export function ComparisonPanel({ search, data, pending, refreshing, error, upda
       <label>Max Δq drop<input name="max_dq" type="number" min="0" step="any" defaultValue={search.max_dq} /></label>
       <label><input name="report_only" type="checkbox" defaultChecked={search.report_only} />Report only (clear thresholds)</label>
       <button type="submit">Compare commits</button>
+      {search.lens && <button type="button" onClick={() => update({ lens_compare: true, base: search.base ?? search.commit })}>Compare active lens</button>}
     </form>
     {(pending || refreshing) && search.base && search.head && <p role="status">{refreshing ? "Revalidating comparison; previous result is stale." : "Computing comparison…"}</p>}
     {error && <p role="alert">{error.message}. <button onClick={retry}>Retry</button></p>}

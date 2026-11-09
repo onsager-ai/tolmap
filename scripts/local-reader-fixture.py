@@ -37,7 +37,10 @@ def descendants(parent):
     seen=set();pending=[parent]
     while pending:
         current=pending.pop()
-        for children in pathlib.Path(f'/proc/{current}/task').glob('*/children'):
+        # A process can exit between listing /proc/<pid>/task and reading it.
+        try:tasks=list(pathlib.Path(f'/proc/{current}/task').glob('*/children'))
+        except (FileNotFoundError,ProcessLookupError):continue
+        for children in tasks:
             try:ids=[int(x) for x in children.read_text().split()]
             except (FileNotFoundError,ProcessLookupError):continue
             for pid in ids:

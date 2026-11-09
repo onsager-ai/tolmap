@@ -405,6 +405,8 @@ pub struct ResolvedNote {
 pub enum UnresolvedKind {
     // A file path (or a stop or anchor) that is not in the map.
     MissingPath,
+    // Git found a rename; the target remains unresolved until the lens is edited.
+    RenamedFile,
     // A glob that matches no file of the map.
     EmptyGlob,
     // The file exists but has no symbol of that name (or start line).
@@ -425,6 +427,35 @@ pub struct Unresolved {
     pub location: String,
     pub spec: String,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub renamed: Option<FileRename>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct FileRename {
+    pub from: String,
+    pub to: String,
+    pub commit: String,
+}
+
+// Enrich only absent literal paths. A rename is evidence, never a replacement
+// target; globs and existing paths keep their ordinary resolution semantics.
+pub fn report_renames(report: &mut LensReport, renames: &[FileRename]) {
+    for item in &mut report.unresolved {
+        if item.kind != UnresolvedKind::MissingPath {
+            continue;
+        }
+        let path = item.spec.split('#').next().unwrap_or(&item.spec);
+        if let Some(rename) = renames.iter().find(|rename| rename.from == path) {
+            item.kind = UnresolvedKind::RenamedFile;
+            item.detail = format!(
+                "renamed {} → {} at {}; update the lens explicitly",
+                rename.from, rename.to, rename.commit
+            );
+            item.renamed = Some(rename.clone());
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -555,6 +586,7 @@ impl Cx<'_> {
             location: location.to_owned(),
             spec: spec.to_owned(),
             detail,
+            renamed: None,
         });
     }
 
@@ -921,6 +953,7 @@ fn route_name(kind: RouteKind) -> &'static str {
 fn kind_name(kind: UnresolvedKind) -> &'static str {
     match kind {
         UnresolvedKind::MissingPath => "missing_path",
+        UnresolvedKind::RenamedFile => "renamed_file",
         UnresolvedKind::EmptyGlob => "empty_glob",
         UnresolvedKind::UnknownSymbol => "unknown_symbol",
         UnresolvedKind::Ambiguous => "ambiguous",

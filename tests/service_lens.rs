@@ -177,6 +177,72 @@ async fn resolves_the_lens_at_the_pinned_commit() {
 }
 
 #[tokio::test]
+async fn rename_history_reports_the_old_stop_without_substitution() {
+    let f = fixture();
+    // The lens is last changed at B; the rename happens at C.
+    git(&f.repo, &["mv", "a.py", "renamed.py"]);
+    git(&f.repo, &["commit", "-m", "rename source"]);
+    let c = git(&f.repo, &["rev-parse", "HEAD"]);
+    let mut row = f.state.store.get("local/example", &f.b).unwrap().unwrap();
+    let bytes = fs::read(&row.map_path).unwrap();
+    let mut map: Value = serde_json::from_slice(&bytes).unwrap();
+    map["F"][0] = json!("renamed.py");
+    row.map_path = f._dir.path().join("renamed-map.json");
+    fs::write(&row.map_path, serde_json::to_vec(&map).unwrap()).unwrap();
+    row.commit = c.clone();
+    f.state.store.insert(&row).unwrap();
+    let (status, body) = get(
+        &f,
+        &format!("/api/maps/local/example/lenses/flow?commit={c}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let unresolved = body["report"]["unresolved"].as_array().unwrap();
+    let rename = unresolved
+        .iter()
+        .find(|u| u["kind"] == "renamed_file")
+        .unwrap();
+    assert_eq!(
+        rename["renamed"],
+        json!({"from":"a.py","to":"renamed.py","commit":c})
+    );
+    assert!(body["report"]["paths"][0]["stops"][0]["target"].is_null());
+    let (_, again) = get(
+        &f,
+        &format!("/api/maps/local/example/lenses/flow?commit={c}"),
+    )
+    .await;
+    assert_eq!(body, again);
+}
+
+#[tokio::test]
+async fn same_commit_lens_comparison_is_pinned_and_repeatable() {
+    let f = fixture();
+    let path = format!(
+        "/api/compare/local/example/lenses?base={}&head={}&lens=flow",
+        f.a, f.a
+    );
+    let (status, value) = get(&f, &path).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["base"], f.a);
+    assert!(value["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|d| d["status"] == "shared"));
+    assert_eq!(get(&f, &path).await.1, value);
+    let (status, _) = get(
+        &f,
+        &format!(
+            "/api/compare/local/example/lenses?base={}&head={}&lens=flow&other=broken",
+            f.a, f.b
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn lists_lens_names_at_the_commit() {
     let f = fixture();
     let (status, body) = get(
@@ -272,4 +338,92 @@ async fn explicit_error_states() {
         (status, body["error"].as_str()),
         (StatusCode::NOT_FOUND, Some("snapshot_not_indexed"))
     );
+}
+
+#[tokio::test]
+async fn polyglot_comparison_uses_both_snapshot_file_sets_and_places_new_files() {
+    let f = fixture();
+    fs::create_dir_all(f.repo.join("src")).unwrap();
+    fs::create_dir_all(f.repo.join("ui")).unwrap();
+    fs::write(
+        f.repo.join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.1.0'\nedition='2021'\n",
+    )
+    .unwrap();
+    fs::write(f.repo.join("src/lib.rs"), "pub fn stable() {}\n").unwrap();
+    fs::write(
+        f.repo.join("package.json"),
+        r#"{"name":"fixture","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    // The base needs at least one edge: check::compare refuses to blend an empty graph.
+    fs::write(
+        f.repo.join("ui/stable.ts"),
+        "import { one } from './helper';\nexport function stable() { return one; }\n",
+    )
+    .unwrap();
+    fs::write(f.repo.join("ui/helper.ts"), "export const one = 1;\n").unwrap();
+    fs::write(
+        f.repo.join("ui/excluded.ts"),
+        "export const excluded = 1;\n",
+    )
+    .unwrap();
+    let text = "version=1\n[[paths]]\nname='polyglot'\nstops=[{at='ui/stable.ts'},{at='ui/new.ts'},{at='src/lib.rs'},{at='ui/excluded.ts'}]\n";
+    fs::write(f.repo.join(".tolmap/lenses/flow.toml"), text).unwrap();
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-m", "polyglot base"]);
+    let base = git(&f.repo, &["rev-parse", "HEAD"]);
+    fs::write(
+        f.repo.join("ui/new.ts"),
+        "import { stable } from './stable';\nexport const added = stable();\n",
+    )
+    .unwrap();
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-m", "polyglot head"]);
+    let head = git(&f.repo, &["rev-parse", "HEAD"]);
+    let mut row = f.state.store.get("local/example", &f.a).unwrap().unwrap();
+    let node = |d: usize| json!([d, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let map = json!({"repo":"example","q":0.0,"names":{"0":"core"},
+        "districts":{"0":{"size":3,"c":[0.0,0.0],"blob":[]}},
+        "F":["src/lib.rs","ui/helper.ts","ui/stable.ts"],"N":[node(0),node(0),node(0)],
+        "E":[],"L":[],"S":{},"U":{},"roads":[],"lang":"rs"});
+    let mut head_map = map.clone();
+    head_map["F"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("ui/new.ts"));
+    // Head geometry is deliberately incompatible. Only its file scope is read.
+    head_map["N"] = json!([node(99), node(99), node(99), node(99)]);
+    for (commit, document) in [(&base, &map), (&head, &head_map)] {
+        row.commit = commit.clone();
+        row.map_path = f._dir.path().join(format!("{commit}.json"));
+        fs::write(&row.map_path, serde_json::to_vec(document).unwrap()).unwrap();
+        f.state.store.insert(&row).unwrap();
+    }
+    let base_path = f
+        .state
+        .store
+        .get("local/example", &base)
+        .unwrap()
+        .unwrap()
+        .map_path;
+    let bytes = fs::read(&base_path).unwrap();
+    let path = format!("/api/compare/local/example/lenses?base={base}&head={head}&lens=flow");
+    let (status, value) = get(&f, &path).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let changes = value["changes"].as_array().unwrap();
+    let stop = |path: &str| {
+        changes
+            .iter()
+            .find(|d| d["kind"] == "stop" && d["after"] == json!([path]))
+            .unwrap()
+    };
+    assert_eq!(stop("ui/stable.ts")["status"], "shared");
+    assert_eq!(stop("ui/new.ts")["status"], "added");
+    assert_eq!(stop("ui/new.ts")["targets"], json!([]));
+    assert_eq!(stop("ui/new.ts")["districts"], json!([0]));
+    assert_eq!(stop("ui/excluded.ts")["status"], "shared");
+    assert!(value["after"]["paths"][0]["stops"][3]["target"].is_null());
+    assert_eq!(get(&f, &path).await.1, value);
+    assert_eq!(fs::read(base_path).unwrap(), bytes);
 }

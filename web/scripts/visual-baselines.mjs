@@ -97,15 +97,24 @@ async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, basel
   }
   const missing = [...seen].filter(id => !references.has(id));
   const extra = [...references.keys()].filter(id => !seen.has(id));
-  if (missing.length || extra.length) throw new Error(`Approved reference matrix mismatch: missing=[${missing.join(', ')}], extra=[${extra.join(', ')}]`);
+  const matrixMismatch = missing.length > 0 || extra.length > 0;
+  report.missingReferences = missing.map(id => JSON.parse(id));
+  report.extraReferences = extra.map(id => JSON.parse(id));
   if (!isDeepStrictEqual(provenance, registry.provenance)) throw new Error('Capture provenance does not match approved references');
 
-  let failed = false, mismatched = false;
+  // A new story still fails the matrix gate, but must not hide pixel changes
+  // to existing stories: reviewers need both sets in one approval pass.
+  let failed = matrixMismatch, mismatched = false;
   for (const row of captures) {
     const result = { ...identity(row), status: 'failed', file: row.file };
     try {
       if (row.status !== 'passed' || row.result !== 'passed') throw new Error(`Capture did not complete successfully (status=${row.status ?? 'missing'}, result=${row.result ?? 'missing'})`);
       const reference = references.get(key(row));
+      if (!reference) {
+        result.status = 'missing-reference';
+        report.results.push(result);
+        continue;
+      }
       const actualUrl = await readPng(evidenceDir, row.file);
       const referenceUrl = await readPng(baselineDir, reference.file);
       const comparison = await compare(browser, actualUrl, referenceUrl);
@@ -125,6 +134,7 @@ async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, basel
   report.status = failed ? 'failed' : mismatched ? 'mismatched' : 'passed';
   if (advisoryPixels) report.pixelMode = 'advisory';
   await fs.writeFile(path.join(evidenceDir, REPORT), JSON.stringify(report, null, 2));
+  if (matrixMismatch) throw new Error(`Approved reference matrix mismatch; see ${REPORT}`);
   if (failed) throw new Error(`Visual baselines failed; see ${REPORT}`);
   return report;
 }
@@ -132,7 +142,7 @@ async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, basel
 export async function verifyVisualBaselines(options) {
   try { return await verifyVisualBaselinesImpl(options); }
   catch (error) {
-    if (error.message !== `Visual baselines failed; see ${REPORT}`) {
+    if (error.message !== `Visual baselines failed; see ${REPORT}` && error.message !== `Approved reference matrix mismatch; see ${REPORT}`) {
       await fs.mkdir(options.evidenceDir, { recursive: true });
       await fs.writeFile(path.join(options.evidenceDir, REPORT), JSON.stringify({ schemaVersion: 1, status: 'failed', sourceRevision: options.sourceRevision ?? null, provenance: options.provenance ?? null, results: [], error: error.message }, null, 2));
     }

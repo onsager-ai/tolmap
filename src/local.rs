@@ -566,7 +566,9 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
         return Ok(axum::Json(json!([])).into_response());
     }
     let parts: Vec<_> = path.trim_matches('/').split('/').collect();
-    if parts.len() == 4 && parts[..3] == ["api", "compare", "snapshot"] {
+    if (parts.len() == 4 || (parts.len() == 5 && parts[4] == "lenses"))
+        && parts[..3] == ["api", "compare", "snapshot"]
+    {
         let id = Uuid::parse_str(parts[3])?;
         let all = snapshots(s)?;
         let Some(snap) = all.iter().find(|x| x.id == id) else {
@@ -610,6 +612,30 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             .join(base.id.to_string())
             .join("map.json");
         let cache = s.data.join("comparisons");
+        if parts.len() == 5 {
+            let result = crate::service::lens::compare_at(
+                s.repository.clone(),
+                preview.path.clone(),
+                map,
+                s.data
+                    .join("snapshots")
+                    .join(head.id.to_string())
+                    .join("map.json"),
+                crate::service::lens::LensCompareQuery {
+                    base: query.base,
+                    head: query.head,
+                    lens: params.get("lens").context("lens")?.clone(),
+                    other: params.get("other").cloned(),
+                },
+            );
+            drop(preview);
+            return Ok(match result {
+                Ok(value) => {
+                    ([(header::CACHE_CONTROL, "no-store")], axum::Json(value)).into_response()
+                }
+                Err(error) => error.into_response(),
+            });
+        }
         let result = crate::comparison::run(
             crate::comparison::Inputs {
                 repository: &s.repository,
@@ -1121,13 +1147,13 @@ mod tests {
         std::fs::create_dir_all(data.join("snapshots")).unwrap();
         save_snapshot(&local, base_id, base_prepared, &base, 1);
         save_snapshot(&local, head_id, head_prepared, &head, 2);
-        std::fs::copy(
-            base_map,
-            data.join("snapshots")
-                .join(base_id.to_string())
-                .join("map.json"),
-        )
-        .unwrap();
+        for id in [base_id, head_id] {
+            std::fs::copy(
+                &base_map,
+                data.join("snapshots").join(id.to_string()).join("map.json"),
+            )
+            .unwrap();
+        }
 
         std::fs::write(
             checkout.join(".tolmap/lenses/flow.toml"),
@@ -1167,6 +1193,21 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["report"]["base"], base.as_str());
         assert_eq!(body["report"]["head"], head.as_str());
+
+        let lens_uri: Uri =
+            format!("/api/compare/snapshot/{base_id}/lenses?base={base}&head={head}&lens=flow")
+                .parse()
+                .unwrap();
+        let response = dispatch(&local, &Method::GET, &lens_uri).unwrap();
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let (status, compared) = json_response(response).await;
+        assert_eq!(status, StatusCode::OK, "{compared}");
+        assert_eq!(compared["before"]["title"], "Base lens");
+        assert_eq!(compared["after"]["title"], "Head lens");
+        assert_eq!(compared["base"], base);
+        assert_eq!(compared["head"], head);
+        let (_, repeated) = json_response(dispatch(&local, &Method::GET, &lens_uri).unwrap()).await;
+        assert_eq!(compared, repeated);
 
         let unrelated = directory.path().join("unrelated");
         std::fs::create_dir_all(&unrelated).unwrap();

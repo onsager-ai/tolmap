@@ -55,7 +55,7 @@ use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
 use crate::schema::{
     CheckDistrict, CheckEdge, CheckFile, CheckFileStatus, CheckLandmark, CheckReport,
-    CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument,
+    CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument, NodeRow,
 };
 
 /// `CheckReport::version`. Bumped on any change to a field's meaning or
@@ -1179,6 +1179,95 @@ fn detect_source(dir: &Path) -> Result<(String, LanguageKind), CheckError> {
 fn extract_graph(dir: &Path, source: &(String, LanguageKind)) -> Result<GraphData, CheckError> {
     extract::build_multi_source_with_refs(dir, std::slice::from_ref(source), RefsMode::default())
         .map_err(|error| internal(error.context(format!("extract {}", dir.display()))))
+}
+
+// Lens comparison resolves head content in the existing check frame. This is
+// a resolver-only document: no partition/layout is built and no geometry from
+// it is delivered to the viewer. Unplaced files keep an explicit sentinel.
+pub(crate) fn lens_head_map(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    base_map: &MapDocument,
+    head_snapshot: &MapDocument,
+) -> Result<MapDocument, CheckError> {
+    let mut scratch = Scratch::new(repo)?;
+    let base_dir = scratch.worktree(base, "base")?;
+    let head_dir = scratch.worktree(head, "head")?;
+    let changes = diff(repo, base, Some(head))?;
+    let history = CochangeHistory {
+        revision: base.to_owned(),
+        renames: changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Renamed { from, to } => Some((from.clone(), to.clone())),
+                _ => None,
+            })
+            .collect(),
+    };
+    let base_graph = extract::build_snapshot_graph(
+        &base_dir,
+        &base_map.files,
+        &CochangeHistory {
+            revision: base.into(),
+            renames: BTreeMap::new(),
+        },
+    )
+    .map_err(internal)?;
+    let graph = extract::build_snapshot_graph(&head_dir, &head_snapshot.files, &history)
+        .map_err(internal)?;
+    let report = compare(
+        base.into(),
+        Some(head.into()),
+        &changes,
+        base_map,
+        base_graph,
+        graph.clone(),
+        CheckThresholds {
+            max_districts: None,
+            max_dq: None,
+            source: CheckThresholdSource::ReportOnly,
+        },
+    )?;
+    let mut result = base_map.clone();
+    result.files = graph.nodes.iter().map(|node| node.file.clone()).collect();
+    result.nodes = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            let district = report
+                .files
+                .iter()
+                .find(|file| file.path == node.file)
+                .and_then(|file| file.district)
+                .or_else(|| {
+                    base_map
+                        .files
+                        .iter()
+                        .position(|file| file == &node.file)
+                        .map(|i| base_map.nodes[i].district())
+                })
+                .unwrap_or(usize::MAX);
+            NodeRow((district, 0.0, 0.0, node.loc, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        })
+        .collect();
+    result.edges = graph
+        .imports
+        .iter()
+        .map(|&(a, b, _)| [a as usize, b as usize])
+        .collect();
+    result.symbols = result
+        .files
+        .iter()
+        .enumerate()
+        .filter_map(|(i, path)| {
+            graph
+                .symbols
+                .get(path)
+                .map(|rows| (i.to_string(), rows.clone()))
+        })
+        .collect();
+    Ok(result)
 }
 
 /// Builds the base map the way `tolmap build` would, cold, into scratch.

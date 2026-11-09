@@ -75,6 +75,11 @@ export function page(id: string): StoryObj<Args> {
         if (root.querySelector("[data-phone-shell]")) { await click('[aria-label="Map layers"]'); await waitElement("[data-layers-sheet]"); }
         else await waitElement("[data-layer-segmented]");
       }
+      if (action === "lens-comparison") {
+        const state = id.endsWith("loading") ? "loading" : id.endsWith("stale") || id.endsWith("error") ? "error" : "loaded";
+        await waitElement(`[data-lens-comparison-state="${state}"]`);
+        if (id.endsWith("stale")) expect(root.querySelector("[data-lens-comparison]")?.textContent).toContain("Stale or mismatched");
+      }
       if (action === "lenses") {
         const phone = !!root.querySelector("[data-phone-shell]");
         if (phone && id === "map-lens-empty") { await click('[aria-label="Map layers"]'); await waitElement("[data-layers-sheet]"); }

@@ -35,6 +35,8 @@ export interface MapSearch {
   job?: string;
   commit?: string;
   lens?: string;
+  lens_compare?: boolean;
+  other_lens?: string;
   read?: boolean;
   line?: number;
   end?: number;
@@ -72,6 +74,8 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const job = typeof search.job === "string" && search.job.length > 0 ? search.job : undefined;
   const commit = typeof search.commit === "string" && /^[a-f0-9]{40,64}$/.test(search.commit) ? search.commit : undefined;
   const lens = typeof search.lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.lens) ? search.lens : undefined;
+  const other_lens = typeof search.other_lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.other_lens) ? search.other_lens : undefined;
+  const lens_compare = !!lens && (search.lens_compare === true || search.lens_compare === "true" || !!other_lens || (!!search.base && !!search.head && search.lens_compare !== false && search.lens_compare !== "false"));
   const read = !!file && (search.read === true || search.read === "true");
   const line = Math.floor(Math.max(1, Math.min(10_000_000, Number(search.line) || 1)));
   const end = Math.floor(Math.max(line, Math.min(10_000_000, Number(search.end) || line)));
@@ -82,7 +86,7 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const max_districts = search.max_districts != null && Number.isSafeInteger(md) && md >= 0 ? md : undefined;
   const max_dq = search.max_dq != null && Number.isFinite(mq) && mq >= 0 ? mq : undefined;
   const report_only = search.report_only === true || search.report_only === "true";
-  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, lens, read, line, end, compare: compare || undefined, base, head, source_commit, max_districts, max_dq, report_only };
+  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, lens, lens_compare: lens_compare || undefined, other_lens, read, line, end, compare: compare || undefined, base, head, source_commit, max_districts, max_dq, report_only };
 }
 
 /** Search state for the /new progress route (see routes/IndexJobView.tsx).

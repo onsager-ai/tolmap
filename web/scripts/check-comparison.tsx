@@ -26,4 +26,10 @@ const c = {report:{version:1,base,head,lower_bound:true},provenance:{report_vers
 assert.equal(validateComparison(c, search), c);
 assert.throws(() => validateComparison({...c,report:{...c.report,version:9}}, search), /version/);
 assert.throws(() => validateComparison(c, {...search,head:base}), /Stale/);
-console.log("comparison source sides, URL round-trip and stale/version checks passed");
+const lensSearch = validateMapSearch({ lens: "request", base, head });
+assert.equal(lensSearch.lens_compare, true, "lens plus commit comparison parameters opens lens comparison");
+const overlap = validateMapSearch({ lens: "request", other_lens: "storage", base, head: base });
+assert.equal(overlap.lens_compare, true);
+assert.equal(overlap.other_lens, "storage");
+assert.equal(validateMapSearch({ lens: "request", lens_compare: true, other_lens: "../bad" }).other_lens, undefined);
+console.log("comparison source sides, lens deep links, URL round-trip and stale/version checks passed");

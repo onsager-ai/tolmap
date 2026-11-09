@@ -6162,12 +6162,25 @@ async function checkPhoneSheetDragFromContent(browser, base, profile) {
   const e = { detent: await sheetDetent(page), scroll: await scroll() };
   report(e.detent !== "full", `${label}: with the content scrolled, a drag on the grabber still lowers the sheet`, JSON.stringify(e));
 
-  // Below Full, a drag up raises the sheet.
-  await setSheetDetent(page, "half");
-  await page.waitForTimeout(500);
-  const top = await page.locator("[data-phone-sheet]").evaluate((el) => el.getBoundingClientRect().top);
-  await touchDragVertical(page, cdp, x, Math.min(H - 40, top + 200), -260);
-  report((await sheetDetent(page)) === "full", `${label}: at Half a drag up in the content raises the sheet`, await sheetDetent(page));
+  // Every detent owns a visible scroll viewport. An upward touch scrolls
+  // its content; the grabber remains the way to raise the sheet.
+  for (const detent of ["half", "peek"]) {
+    await setSheetDetent(page, detent);
+    await page.waitForTimeout(500);
+    // At Peek the card header can fill the visible area; move into the
+    // content so this tests content scrolling rather than the drag zone.
+    await body.evaluate((el, start) => (el.scrollTop = start), detent === "peek" ? 200 : 0);
+    const start = await scroll();
+    const box = await body.boundingBox();
+    await touchDragVertical(page, cdp, x, Math.min(H - 35, box.y + box.height - 35), -70);
+    const state = { detent: await sheetDetent(page), scroll: await scroll() };
+    report(state.detent === detent && state.scroll.top > start.top, `${label}: at ${detent} an upward content drag scrolls within the visible sheet`, JSON.stringify(state));
+    const geometry = await body.evaluate((el) => ({ bottom: el.getBoundingClientRect().bottom, height: el.clientHeight, shellTop: el.closest("[data-phone-shell]").scrollTop }));
+    report(geometry.bottom <= H + 1 && geometry.shellTop === 0, `${label}: at ${detent} the scroll viewport ends on screen and the shell never scrolls`, JSON.stringify(geometry));
+  }
+  const handle = await page.locator("[data-sheet-grabber]").boundingBox();
+  await touchDragVertical(page, cdp, handle.x + handle.width / 2, handle.y + handle.height / 2, -260);
+  report((await sheetDetent(page)) !== "peek", `${label}: an upward grabber drag raises the sheet from Peek`, await sheetDetent(page));
   await context.close();
 }
 
