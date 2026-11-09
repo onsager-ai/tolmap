@@ -36,6 +36,11 @@ Only UI text and docs change in this round; code and schema field names stay as 
 | 街道 | Street | road between neighborhoods, or neighborhood ↔ district | 瓣道路 |
 | 交通枢纽 | Hub | role of a file imported by ≥ 30 files (the product's `hub` landmark) | 枢纽 |
 | 地标 | Landmark | existing product term: entry, bridge, hub, capital, hazard | — |
+| 区间环 | District cycle | debt finding: districts that reach each other through file edges (`E`); reported with the file edges that close it | — |
+| 错位文件 | Misplaced file | debt finding: a file with at least `MISPLACED_MIN_EDGES` edges, more than half of them to one other district | — |
+| 上帝文件 | God file | debt finding: a file in the top `GOD_TOP_FRACTION` of both fan-in and complexity | — |
+| 热点 | Hotspot | debt finding: a file in the top `HOTSPOT_TOP_FRACTION` by churn × complexity (at least two); generalises the `hazard` landmark | — |
+| 无入边文件 | No inbound edge found | debt finding: a non-entry file with outbound edges and no inbound edge in `E`; never called "dead" or "unused", since the map cannot see dynamic or declared connections | unreached file |
 | 地下通道 | Tunnel | two files often changed together with no import between them | 隐藏耦合 hidden coupling |
 | 边境文件 | Border file | role of a file whose district membership is uncertain | 边界文件 boundary file |
 | 主岛 / 离岛 | Mainland / Island | existing product terms: connected body / unconnected districts | — |

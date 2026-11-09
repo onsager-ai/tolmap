@@ -488,6 +488,32 @@ Viewers must reject mismatched repository/commit/lens identities and hide old
 results during revalidation. Deep links retain `lens`, `lens_compare`, `base`,
 `head` and optional `other_lens` alongside the existing comparison parameters.
 
+### `tolmap debt --map <map.json> [--format text|json|lens]`
+
+Structural debt findings (issue #250; `src/debt.rs`), computed offline from a
+stored map alone; the map is not changed and the same map gives byte-identical
+output. `json` prints a `DebtReport` (`bindings/DebtReport.ts`): district
+cycles (strongly connected district sets in the district graph built from
+`E`, each with one shortest route and the file edges that close it), misplaced
+files, god files, hotspots (churn × complexity; the top two include the map's
+`hazard` landmarks) and files with **no inbound edge found**, which excludes
+entry files. Files with no edge at all are coverage gaps: they are counted in
+`isolated_files`, not listed. Every report states its thresholds
+(named constants in `src/debt.rs`, plus the cuts they give on this map) and
+echoes the map's `coverage`; every count is a lower bound over the map's
+edges. Dynamic imports, reflection and declared connections are invisible to
+the map, so a file with no inbound edge found is not shown to be dead.
+
+`lens` prints the equivalent lens TOML (format v1), which `tolmap lens check`
+resolves fully: one area per finding, one path per cycle (closing edges as
+computed hops; consecutive ones inside a district are joined by declared hops
+whose reason states that no edge is claimed) and notes with the
+measured values. A finding's area label is its kind and its sorted file paths;
+for a cycle, the files of its closing edges. Labels carry no measured value and
+no district name, so lens comparison does not read a metric change or a
+renamed district as a removed and an added finding. Exit 0, or 2 when the map
+cannot be read.
+
 ### `GET /api/healthz`
 
 ```

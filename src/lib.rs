@@ -3,6 +3,7 @@ pub mod blenddump;
 pub mod blobs;
 pub mod check;
 pub mod comparison;
+pub mod debt;
 pub mod detect;
 pub mod extract;
 pub mod geometry;

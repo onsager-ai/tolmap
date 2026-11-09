@@ -206,6 +206,19 @@ enum Command {
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
     },
+    /// Structural debt findings (issue #250, docs/API.md): district cycles,
+    /// misplaced files, god files, hotspots and files with no inbound edge
+    /// found, computed from a stored map alone. Prints a `DebtReport` as
+    /// text or JSON, or the equivalent lens TOML (`--format lens`), which
+    /// `tolmap lens check` accepts. Counts are lower bounds; the map is
+    /// never changed. Exits 0, or 2 when the map cannot be read.
+    Debt {
+        /// A map JSON: a service store file or an exported map.
+        #[arg(long)]
+        map: PathBuf,
+        #[arg(long, default_value = "text", value_parser = ["text", "json", "lens"])]
+        format: String,
+    },
     /// Lenses (issue #241, docs/API.md): named overlays of areas, paths and
     /// notes kept in `.tolmap/lenses/<name>.toml`.
     Lens {
@@ -758,6 +771,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Debt { map, format } => std::process::exit(tolmap::debt::run(&map, &format)),
         Command::Lens {
             command: LensCommand::Check { lens, map, format },
         } => std::process::exit(tolmap::lens::run_check(&lens, &map, &format)),

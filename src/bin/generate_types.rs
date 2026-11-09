@@ -69,6 +69,8 @@ fn export_to(directory: &Path) -> Result<()> {
     tolmap::lens_comparison::LensComparison::export_all(
         &Config::default().with_out_dir(directory),
     )?;
+    // Issue #250: `tolmap debt --format json`'s report.
+    tolmap::debt::DebtReport::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 
