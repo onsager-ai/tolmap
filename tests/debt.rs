@@ -105,6 +105,12 @@ fn each_finding_kind_is_detected() {
         ]
     );
     assert_eq!(cycle.cross_edges, 3);
+    assert_eq!(cycle.cut.len(), 1);
+    assert_eq!(
+        (cycle.cut[0].from_district, cycle.cut[0].to_district),
+        (2, 0)
+    );
+    assert_eq!(cycle.cut[0].edges.len(), 1);
 
     assert_eq!(
         paths(report.misplaced.iter().map(|m| &m.path)),
@@ -379,11 +385,18 @@ fn comparison_reads_findings_by_identity() {
     ] {
         assert_eq!(status("district cycle", file), [Removed], "{file}");
     }
-    let cycle_path = &before.paths[0].name;
+    let cycle_paths = before
+        .paths
+        .iter()
+        .map(|path| path.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(cycle_paths
+        .iter()
+        .any(|path| path.starts_with("cycle-cut-")));
     assert!(changes
         .iter()
         .filter(|d| d.kind != "area")
-        .all(|d| d.status == Removed && d.label == *cycle_path));
+        .all(|d| { d.status == Removed && cycle_paths.contains(&d.label.as_str()) }));
     assert_eq!(status("god file", "src/a/core.py"), [Added]);
     assert_eq!(status("god file", "src/b/god.py"), [Removed]);
     assert_eq!(status("hotspot", "src/c/hot.py"), [Shared]);
