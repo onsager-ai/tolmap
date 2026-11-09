@@ -1413,9 +1413,12 @@ mod tests {
         assert_eq!(render_json(&first), render_json(&second));
         let cycle = &first.cycles[0];
         assert_eq!(cycle.cut.len(), 1);
+        // 0 -> 1 lies on both cycles (0 -> 1 -> 0 and 0 -> 1 -> 2 -> 0), so
+        // removing that one bundle makes the district graph acyclic; 2 -> 0
+        // alone would leave 0 <-> 1.
         assert_eq!(
             (cycle.cut[0].from_district, cycle.cut[0].to_district),
-            (2, 0)
+            (0, 1)
         );
         assert_eq!(cycle.cut[0].edges.len(), 1);
         assert_eq!(
