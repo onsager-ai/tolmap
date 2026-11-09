@@ -2326,7 +2326,7 @@ async function checkEmptyTapStepBack(browser, base) {
       return;
     }
     const before = await stableBox(page);
-    await tap(page, PROFILES[0], pt[0], pt[1]);
+    await tap(page, ALL_PROFILES[0], pt[0], pt[1]);
     await page.waitForTimeout(300);
     const url = new URL(page.url());
     assertFn(url, stepLabel);
@@ -2346,7 +2346,7 @@ async function checkEmptyTapStepBack(browser, base) {
   const finalPt = await findEmptyPointWithZoomOut(page, 1200, 800);
   if (finalPt) {
     const beforeUrl = page.url();
-    await tap(page, PROFILES[0], finalPt[0], finalPt[1]);
+    await tap(page, ALL_PROFILES[0], finalPt[0], finalPt[1]);
     await page.waitForTimeout(300);
     report(page.url() === beforeUrl, `${label}: an empty tap with nothing selected is a no-op`);
   }
@@ -5158,7 +5158,7 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
       report(false, `${label}: ${stepLabel}`, "no empty point found even after zooming out");
       return;
     }
-    await tap(page, PROFILES[0], pt[0], pt[1]);
+    await tap(page, ALL_PROFILES[0], pt[0], pt[1]);
     await page.waitForTimeout(300);
     assertFn(new URL(page.url()), stepLabel);
   };
