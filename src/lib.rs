@@ -16,6 +16,7 @@ pub mod local;
 pub mod local_pages;
 pub mod naming;
 pub mod neighbourhoods;
+pub mod org;
 pub mod parcels;
 pub mod parity;
 pub mod partition;
