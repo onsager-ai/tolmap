@@ -356,7 +356,6 @@ async fn polyglot_comparison_uses_both_snapshot_file_sets_and_places_new_files()
         r#"{"name":"fixture","version":"1.0.0"}"#,
     )
     .unwrap();
-    // The base needs at least one edge: check::compare refuses to blend an empty graph.
     fs::write(
         f.repo.join("ui/stable.ts"),
         "import { one } from './helper';\nexport function stable() { return one; }\n",
@@ -469,4 +468,45 @@ async fn debt_lens_is_built_in_and_pinned() {
     assert!(!changes.is_empty());
     assert!(changes.iter().all(|d| d["status"] == "shared"));
     assert_eq!(get(&f, &path).await.1, value);
+}
+
+#[tokio::test]
+async fn comparison_from_a_base_without_edges_succeeds() {
+    // A one-file base map has no candidate edges to blend; comparing from it
+    // used to fail with "cannot blend an empty graph" (a 500).
+    let f = fixture();
+    let text = "version=1\n[[paths]]\nname='grow'\nstops=[{at='a.py'},{at='d.py'}]\n";
+    fs::write(f.repo.join(".tolmap/lenses/flow.toml"), text).unwrap();
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-m", "lone base"]);
+    let base = git(&f.repo, &["rev-parse", "HEAD"]);
+    fs::write(f.repo.join("d.py"), "import a\n").unwrap();
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-m", "importer head"]);
+    let head = git(&f.repo, &["rev-parse", "HEAD"]);
+    let mut row = f.state.store.get("local/example", &f.a).unwrap().unwrap();
+    let node = |d: usize| json!([d, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let map = json!({"repo":"example","q":0.0,"names":{"0":"core"},
+        "districts":{"0":{"size":1,"c":[0.0,0.0],"blob":[]}},
+        "F":["a.py"],"N":[node(0)],
+        "E":[],"L":[],"S":{},"U":{},"roads":[],"lang":"py"});
+    let mut head_map = map.clone();
+    head_map["F"] = json!(["a.py", "d.py"]);
+    head_map["N"] = json!([node(0), node(0)]);
+    for (commit, document) in [(&base, &map), (&head, &head_map)] {
+        row.commit = commit.clone();
+        row.map_path = f._dir.path().join(format!("{commit}.json"));
+        fs::write(&row.map_path, serde_json::to_vec(document).unwrap()).unwrap();
+        f.state.store.insert(&row).unwrap();
+    }
+    let path = format!("/api/compare/local/example/lenses?base={base}&head={head}&lens=flow");
+    let (status, value) = get(&f, &path).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let added = value["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["kind"] == "stop" && d["after"] == json!(["d.py"]))
+        .unwrap();
+    assert_eq!(added["status"], "added");
 }

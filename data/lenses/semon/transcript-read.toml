@@ -1,0 +1,36 @@
+# semon lens (issue #241); in semon it lives at .tolmap/lenses/transcript-read.toml.
+# Evidence for semon commit 04aeb54aef33896d691c3ffdf0619bbfa2540599.
+# Expected computed routes: viewer imports catalogViewer (viewer.ts:2);
+# catalogViewer imports requestJson (catalogViewer.tsx:59); union calls the
+# re-exported transcript_range handler (union.rs:1594; lib.rs:105-112);
+# transcript_range uses storage::runtime (transcript_range.rs:647);
+# catalogViewer imports CatalogTranscriptStore (catalogViewer.tsx:37), which
+# imports and calls its wire parser (catalog-transcript.ts:3-7, :115).
+# docs/FINDINGS.md finding 62 records how these resolved on an indexed map.
+# The path follows a
+# request and its response, but the schema cannot represent a bidirectional
+# HTTP exchange as one edge or assert that a computed route is a call chain.
+version = 1
+title = "Selected transcript read"
+
+[[paths]]
+name = "transcript-request-and-render"
+stops = [
+  { at = "ui/src/app/viewer.ts" },
+  { at = "ui/src/app/catalogViewer.tsx" },
+  { at = "ui/src/lib/api.ts" },
+  { at = "crates/semon-sessions/src/union.rs", hop = "declared", reason = "catalogViewer requests /api/session-transcript (ui/src/app/catalogViewer.tsx:3269) through requestJson's fetch (ui/src/lib/api.ts:21); Rust dispatches that HTTP route (crates/semon-sessions/src/union.rs:1594-1604)." },
+  { at = "crates/semon-sessions/src/transcript_range.rs" },
+  { at = "crates/semon-sessions/src/storage/runtime.rs" },
+  { at = "ui/src/app/catalogViewer.tsx", hop = "declared", reason = "The Rust transcript handler returns a ViewerReply (crates/semon-sessions/src/transcript_range.rs:98-110); catalogViewer receives the HTTP response (ui/src/app/catalogViewer.tsx:3269-3271)." },
+  { at = "ui/src/state/catalog-transcript.ts" },
+  { at = "ui/src/state/catalog-transcript-wire.ts" },
+]
+
+[[notes]]
+anchor = "crates/semon-sessions/src/transcript_range.rs"
+text = "Transcript reads select a source-qualified range and check the current projection."
+
+[[notes]]
+anchor = "ui/src/state/catalog-transcript.ts"
+text = "The store owns requested ranges and parses transcript pages before accepting them."

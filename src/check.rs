@@ -345,7 +345,11 @@ struct SideGraph {
 }
 
 fn side_graph(mut data: GraphData) -> Result<SideGraph, CheckError> {
-    pipeline::apply_prune_variant(&mut data, PruneVariant::default()).map_err(internal)?;
+    // A side with no candidate edges (a base before its first import, say)
+    // has nothing to blend or prune; blending it is an error.
+    if !data.edges.is_empty() {
+        pipeline::apply_prune_variant(&mut data, PruneVariant::default()).map_err(internal)?;
+    }
     let index = file_index(&data);
     let mut edges = Vec::with_capacity(data.edges.len());
     for edge in &data.edges {
@@ -1378,6 +1382,20 @@ mod tests {
         // No weight anywhere: unplaced, never guessed.
         assert_eq!(place(&weights(&[])), None);
         assert_eq!(place(&weights(&[(1, 0.0)])), None);
+    }
+
+    #[test]
+    fn a_side_without_edges_keeps_its_files() {
+        let data: GraphData = serde_json::from_value(serde_json::json!({
+            "repo": "r", "pkg": "p", "lang": "py", "imports": [], "symbols": {},
+            "uses": [], "commits_scanned": 0, "edges": [],
+            "nodes": [{"file": "a.py", "loc": 1, "complexity": 0, "churn": 0,
+                       "fanin": 0.0, "module": "a"}]
+        }))
+        .unwrap();
+        let side = side_graph(data).unwrap();
+        assert_eq!(side.files, ["a.py"]);
+        assert!(side.edges.is_empty());
     }
 
     #[test]

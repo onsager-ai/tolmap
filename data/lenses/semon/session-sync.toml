@@ -1,0 +1,35 @@
+# semon lens (issue #241); in semon it lives at .tolmap/lenses/session-sync.toml.
+# Evidence for semon commit 04aeb54aef33896d691c3ffdf0619bbfa2540599.
+# Computed hops: CLI calls semon_push::push_until (main.rs:538); push
+# declares and calls redact (lib.rs:41, :978, :1183), including the reverse
+# hop back to its sender; serve imports mirror::Receiver (serve.rs:33) and
+# dispatches it (:872); union imports received::ReceivedMachines (union.rs:22).
+# docs/FINDINGS.md finding 62 records how these resolved on an indexed map
+# (received -> union resolved through crates/semon-sessions/src/lib.rs).
+# This illustrates synchronization and the separate viewer reader; it cannot
+# show a durable file as a stop, distinguish branches of execution, or prove
+# synchronization completed. A computed road is not proof of runtime order.
+version = 1
+title = "Session push to viewer"
+
+[[paths]]
+name = "push-to-viewer"
+stops = [
+  { at = "crates/semon-cli/src/main.rs" },
+  { at = "crates/semon-push/src/lib.rs" },
+  { at = "crates/semon-push/src/redact.rs" },
+  { at = "crates/semon-push/src/lib.rs" },
+  { at = "crates/semon-push/src/serve.rs", hop = "declared", reason = "The sender POSTs /v1/mirror/append or facts over HTTP (crates/semon-push/src/lib.rs:449, :537-544); the receiver authenticates and dispatches requests (crates/semon-push/src/serve.rs:849-872)." },
+  { at = "crates/semon-push/src/mirror.rs" },
+  { at = "crates/semon-sessions/src/received.rs", hop = "declared", reason = "The receiver writes machines/<name> source trees and facts (crates/semon-push/src/mirror.rs:243-245, :330-336, :663-675); ReceivedMachines reads the same directory (crates/semon-sessions/src/received.rs:124-145, :187-211)." },
+  { at = "crates/semon-sessions/src/union.rs" },
+  { at = "ui/src/app/catalogViewer.tsx", hop = "declared", reason = "The viewer requests /api/sessions via HTTP (ui/src/app/catalogViewer.tsx:2394); the Rust core dispatches that route (crates/semon-sessions/src/union.rs:1396-1399, :1462-1465)." },
+]
+
+[[notes]]
+anchor = "crates/semon-push/src/lib.rs"
+text = "Push saves a private cursor so interrupted synchronization can resume."
+
+[[notes]]
+anchor = "crates/semon-sessions/src/received.rs"
+text = "Received machine homes are read separately from the viewer's own cache."
