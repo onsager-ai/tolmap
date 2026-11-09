@@ -93,21 +93,24 @@ async function preflight(base) {
 }
 
 function parseArgs(argv) {
-  const args = { base: "http://127.0.0.1:5176", beforeBase: null, featureOnly: false };
+  const args = { base: "http://127.0.0.1:5176", beforeBase: null, featureOnly: false, profile: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--base") args.base = argv[++i];
     else if (argv[i] === "--before-base") args.beforeBase = argv[++i];
     else if (argv[i] === "--feature-only") args.featureOnly = true;
+    else if (argv[i] === "--profile") args.profile = argv[++i];
     else throw new Error(`unknown arg: ${argv[i]}`);
   }
+  if (args.profile != null && !["desktop", "phone"].includes(args.profile)) throw new Error("--profile must be desktop or phone");
   return args;
 }
 
 const MAPS = ["django/django", "langgenius/dify"];
-const PROFILES = [
+const ALL_PROFILES = [
   { name: "desktop", viewport: { width: 1200, height: 800 }, isMobile: false, hasTouch: false },
   { name: "phone", viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
 ];
+let PROFILES = ALL_PROFILES;
 
 let failures = 0;
 let checks = 0;
@@ -5202,7 +5205,7 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
 async function checkPhoneHubRingDeclutter(browser, base) {
   const label = "phone hub-ring declutter (dify)";
   console.log(`\n${label}`);
-  const phone = PROFILES.find((p) => p.name === "phone");
+  const phone = ALL_PROFILES.find((p) => p.name === "phone");
   const context = await browser.newContext({
     viewport: phone.viewport,
     isMobile: phone.isMobile,
@@ -7317,9 +7320,11 @@ async function checkFullscreenFallback(browser, base, profile) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  PROFILES = args.profile == null ? ALL_PROFILES : ALL_PROFILES.filter((profile) => profile.name === args.profile);
   await preflight(args.base);
   const browser = await chromium.launch();
   try {
+    const phoneProfile = PROFILES.find((p) => p.name === "phone");
     if (args.featureOnly) {
       for (const slug of MAPS) for (const profile of PROFILES) await checkFitFraming(browser, args.base, slug, profile);
       await checkFolderWinsFileCollision(browser, args.base);
@@ -7366,10 +7371,12 @@ async function main() {
     for (const profile of PROFILES) await checkStreetsAndTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkNeighbourhoodLabelsAtDeeperZoom(browser, args.base, profile);
     for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
-    await checkDesktopLabelPlacement(browser, args.base);
-    await checkDesktopLabelRules(browser, args.base);
-    await checkPhoneLabelRules(browser, args.base);
-    await checkDesktopZoomCameraAgreement(browser, args.base);
+    if (args.profile !== "phone") {
+      await checkDesktopLabelPlacement(browser, args.base);
+      await checkDesktopLabelRules(browser, args.base);
+      await checkDesktopZoomCameraAgreement(browser, args.base);
+    }
+    if (phoneProfile) await checkPhoneLabelRules(browser, args.base);
     await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
     for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);
@@ -7382,7 +7389,7 @@ async function main() {
     await checkSymbolCardsCarryLabelOrChild(browser, args.base);
     await checkSymbolCardsSingleSubpath(browser, args.base);
     await checkStepBackThroughSymbolLevels(browser, args.base);
-    await checkPhoneHubRingDeclutter(browser, args.base);
+    if (phoneProfile) await checkPhoneHubRingDeclutter(browser, args.base);
     await checkMapWithoutSymbolsStillWorks(browser, args.base);
     // Issue #82 "chrome follows the theme"
     for (const profile of PROFILES) await checkThemeToggleCycles(browser, args.base, profile);
@@ -7390,29 +7397,32 @@ async function main() {
     for (const profile of PROFILES) await checkLinkLegendWrapsAtHighDegree(browser, args.base, profile);
     await checkChromeContrast(browser, args.base);
     // docs/UX.md phase 2: the phone shell.
-    for (const profile of PHONE_SIZES) await checkPhoneShellChrome(browser, args.base, profile);
-    const phoneProfile = PROFILES.find((p) => p.name === "phone");
-    await checkPhoneTapSelection(browser, args.base, phoneProfile);
-    await checkPhoneBackStack(browser, args.base, phoneProfile);
-    // Issue #177: the owner's iPhone pass -- a way home and a working
-    // repository switch; the sheet drags down from scrolled content.
-    await checkPhoneRepoSheet(browser, args.base, phoneProfile);
-    await checkPhoneRepoSheet(browser, args.base, { name: "landscape-844x390", viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, landscape: true });
-    await checkPhoneSheetDragFromContent(browser, args.base, phoneProfile);
-    await checkPhoneLayersSheet(browser, args.base, phoneProfile);
-    await checkPhonePathMode(browser, args.base, phoneProfile);
+    if (phoneProfile) {
+      for (const profile of PHONE_SIZES) await checkPhoneShellChrome(browser, args.base, profile);
+      await checkPhoneTapSelection(browser, args.base, phoneProfile);
+      await checkPhoneBackStack(browser, args.base, phoneProfile);
+      // Issue #177: the owner's iPhone pass -- a way home and a working
+      // repository switch; the sheet drags down from scrolled content.
+      await checkPhoneRepoSheet(browser, args.base, phoneProfile);
+      await checkPhoneRepoSheet(browser, args.base, { name: "landscape-844x390", viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, landscape: true });
+      await checkPhoneSheetDragFromContent(browser, args.base, phoneProfile);
+      await checkPhoneLayersSheet(browser, args.base, phoneProfile);
+      await checkPhonePathMode(browser, args.base, phoneProfile);
+    }
     // docs/UX.md phase 3: search on both profiles, and the narrowest phone.
     for (const profile of PROFILES) await checkSearch(browser, args.base, profile);
-    await checkSearch(browser, args.base, PHONE_SIZES.find((p) => p.name === "phone-320"));
+    if (phoneProfile) await checkSearch(browser, args.base, PHONE_SIZES.find((p) => p.name === "phone-320"));
     // docs/UX.md phase 5: landscape, tablet and desktop (§5, §9), issue
     // #171, and the CSS fullscreen fallback.
-    for (const profile of LAYOUT_PROFILES) await checkProfileLayout(browser, args.base, profile);
-    await checkRepoSelectCounts(browser, args.base);
-    await checkDesktopBreadcrumbCurrentFits(browser, args.base);
-    await checkDesktopChromeInteractions(browser, args.base);
-    await checkDesktopOverviewKeyboardAndHover(browser, args.base);
-    await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.expect === "desktop"));
-    await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.name === "tablet-1024x768"));
+    if (args.profile !== "phone") {
+      for (const profile of LAYOUT_PROFILES) await checkProfileLayout(browser, args.base, profile);
+      await checkRepoSelectCounts(browser, args.base);
+      await checkDesktopBreadcrumbCurrentFits(browser, args.base);
+      await checkDesktopChromeInteractions(browser, args.base);
+      await checkDesktopOverviewKeyboardAndHover(browser, args.base);
+      await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.expect === "desktop"));
+      await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.name === "tablet-1024x768"));
+    }
     // docs/UX.md phase 6: Home (§4.9) -- loaded, empty, service-unavailable
     // with a retry, and input validation. Empty also covers a missing static
     // index; an unlisted deep link exercises MapView's not-mapped state.

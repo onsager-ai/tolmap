@@ -17,6 +17,10 @@ on:
       - ".github/workflows/viewer-check.yml"
   workflow_dispatch:
 
+concurrency:
+  group: viewer-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lens-fixtures:
     name: pinned Flask lens fixtures
@@ -53,8 +57,12 @@ jobs:
           path: web/lens-fixtures/
   view:
     needs: lens-fixtures
-    name: check:view + screenshots
+    name: check:view + screenshots (${{ matrix.profile }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [desktop, phone]
     timeout-minutes: 30
     defaults:
       run:
@@ -115,29 +123,29 @@ jobs:
         with:
           name: lens-fixtures
           path: web/lens-fixtures
-      - name: Lens overlay and comparison checks and screenshots (Flask, desktop and phone, both themes)
-        run: node scripts/check-lens-browser.mjs http://127.0.0.1:5176
+      - name: Lens overlay and comparison checks and screenshots (Flask, ${{ matrix.profile }}, both themes)
+        run: node scripts/check-lens-browser.mjs http://127.0.0.1:5176 --profile ${{ matrix.profile }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: lens-review-samples
+          name: lens-review-samples-${{ matrix.profile }}
           path: web/shots/lenses/
           if-no-files-found: error
-      - name: Comparison protocol browser checks (desktop and phone)
-        run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176
+      - name: Comparison protocol browser checks (${{ matrix.profile }})
+        run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176 --profile ${{ matrix.profile }}
       - name: Vite log on comparison failure
         if: failure()
         run: tail -n 120 vite.log || true
-      - name: check:view
-        run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176
+      - name: check:view (${{ matrix.profile }})
+        run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176 --profile ${{ matrix.profile }}
       - name: Screenshots
-        if: always()
+        if: always() && matrix.profile == 'desktop'
         run: node scripts/screenshots.mjs --base http://127.0.0.1:5176 --out shots
       # Issue #126: a Rust map (tolmap itself, data/tolmap.json, and its
       # symbols from web/check-fixtures) renders on a phone and a desktop,
       # overview to symbols, with the language named.
       - name: Screenshots (Rust map)
-        if: always()
+        if: always() && matrix.profile == 'desktop'
         run: |
           if [ -f public/maps/onsager-ai/tolmap.json ]; then
             node scripts/screenshots.mjs --base http://127.0.0.1:5176 --slugs onsager-ai/tolmap --out shots/rust
@@ -147,13 +155,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: viewer-shots
+          name: viewer-shots-${{ matrix.profile }}
           path: web/shots/
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: comparison-review-samples
+          name: comparison-review-samples-${{ matrix.profile }}
           path: web/shots/comparison/
           if-no-files-found: warn
       # B4 perf follow-up (issue #82, owner review): dify is the one fixture
@@ -172,10 +180,10 @@ jobs:
       # what's being measured (the same tolmap:draw performance-mark
       # duration either way), and both are reported plainly regardless.
       - name: Perf bench (dify, footprints vs dots baseline)
-        if: always()
+        if: always() && matrix.profile == 'desktop'
         run: node scripts/perf-bench.mjs --base http://127.0.0.1:5176 --maps langgenius/dify,dify-baseline/dify --runs 3 --out perf/dify.json
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && matrix.profile == 'desktop'
         with:
           name: perf-bench
           path: web/perf/
