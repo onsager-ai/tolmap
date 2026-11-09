@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "manifest_sha256": "73ed8134857663990892dff89fafdc20e6daac45f5d6fa69449b3a9699067c29",
-  "block_sha256": "b759967ebb4046ebcf6ab7f53f8858120698a6a551ff973356bf46e00923b206",
+  "manifest_sha256": "2c32a83257577f86d73a075fe91e2a93426102a9cc805d9b5219edc3f980085c",
+  "block_sha256": "21b24d84a4636c657f08116aac12fb3d4a0ea717b66c92f4cfe1dff433f8d9a4",
   "resolved_skills": [
     "ci-triage",
     "docs-drift-guard",
@@ -17,12 +17,17 @@
       "mode": "100644"
     },
     ".agents/skills/ci-triage/SKILL.md": {
-      "sha256": "077630e924b33308599f863a64ddc20dae5cca4341be847084dcecba7f58fcc5",
+      "sha256": "a61e1f9c08c5305c5c1fbaeccee806e13c505939c1436b78ec34d17f4e47b59f",
       "owner": "shared",
       "mode": "100644"
     },
     ".agents/skills/docs-drift-guard/SKILL.md": {
-      "sha256": "055577de81943f8b09f0515b5306592a768686eeaace9739285555cba0213277",
+      "sha256": "158e9c8c2d68b598a5609b181f97081c784dfe2b85a1b00a26a9b3e26d322d3f",
+      "owner": "shared",
+      "mode": "100644"
+    },
+    ".agents/skills/harness-operations/references/chatgpt-work.md": {
+      "sha256": "c6130e726c55d009b6c6938c6eeab85afe4372c3d86d2f0018e7dec970e8b17b",
       "owner": "shared",
       "mode": "100644"
     },
@@ -37,7 +42,7 @@
       "mode": "100644"
     },
     ".agents/skills/harness-operations/SKILL.md": {
-      "sha256": "06f67b31513b4550cea60dff6f1f6946bbfac9653a30a1e136f410f55120be54",
+      "sha256": "63a72db7b2893148463b8861322a52489fd24992ec88af5be6ff7a4e146d193e",
       "owner": "shared",
       "mode": "100644"
     },
@@ -57,7 +62,7 @@
       "mode": "100755"
     },
     ".agents/skills/issue-spec/SKILL.md": {
-      "sha256": "08cf37607416096ca7ed3e6fe6a9fafc8965d0323582c8ce3c981c6466605e48",
+      "sha256": "4faa4cc41a4091cf623497dc6b1f84dd36895115da01550e99050e63659ceb1b",
       "owner": "shared",
       "mode": "100644"
     },
@@ -66,13 +71,28 @@
       "owner": "shared",
       "mode": "100644"
     },
+    ".agents/skills/pr-lifecycle/references/pr-ci-trigger.md": {
+      "sha256": "a1ce7225b8649ef178a7be1a66a5303685c656c777ba4807770aac8f66eb4b52",
+      "owner": "shared",
+      "mode": "100644"
+    },
+    ".agents/skills/pr-lifecycle/references/review-and-cleanup.md": {
+      "sha256": "b06c3b88b4a8461a84a13032f9843da900c90134e5331bb9509c6a9d18ff1acc",
+      "owner": "shared",
+      "mode": "100644"
+    },
     ".agents/skills/pr-lifecycle/SKILL.md": {
-      "sha256": "7b197389d51bd615f27da7f781df569ad590c16a07ec2b005c142d3737502c8f",
+      "sha256": "b1afb127bf10fbf6736349b3d2da7b5a5b8755b56fd25f36ff67a53ad2b74b8e",
+      "owner": "shared",
+      "mode": "100644"
+    },
+    ".agents/skills/pre-push/references/commits.md": {
+      "sha256": "4cd62dde32a894944805648f15012d219460a942f376ced5f74402bc6288b7c9",
       "owner": "shared",
       "mode": "100644"
     },
     ".agents/skills/pre-push/SKILL.md": {
-      "sha256": "fb5831be5f4c147000db88612944288a4063d0346d944ce3db3eeb1266b75e0c",
+      "sha256": "153e3faba2fa93c81885415b3d1e85b66ab93ab65dacb07a27b7b61efeb8b367",
       "owner": "shared",
       "mode": "100644"
     },
@@ -87,12 +107,17 @@
       "mode": "100644"
     },
     ".claude/skills/ci-triage/SKILL.md": {
-      "sha256": "077630e924b33308599f863a64ddc20dae5cca4341be847084dcecba7f58fcc5",
+      "sha256": "a61e1f9c08c5305c5c1fbaeccee806e13c505939c1436b78ec34d17f4e47b59f",
       "owner": "shared",
       "mode": "100644"
     },
     ".claude/skills/docs-drift-guard/SKILL.md": {
-      "sha256": "055577de81943f8b09f0515b5306592a768686eeaace9739285555cba0213277",
+      "sha256": "158e9c8c2d68b598a5609b181f97081c784dfe2b85a1b00a26a9b3e26d322d3f",
+      "owner": "shared",
+      "mode": "100644"
+    },
+    ".claude/skills/harness-operations/references/chatgpt-work.md": {
+      "sha256": "c6130e726c55d009b6c6938c6eeab85afe4372c3d86d2f0018e7dec970e8b17b",
       "owner": "shared",
       "mode": "100644"
     },
@@ -107,7 +132,7 @@
       "mode": "100644"
     },
     ".claude/skills/harness-operations/SKILL.md": {
-      "sha256": "06f67b31513b4550cea60dff6f1f6946bbfac9653a30a1e136f410f55120be54",
+      "sha256": "63a72db7b2893148463b8861322a52489fd24992ec88af5be6ff7a4e146d193e",
       "owner": "shared",
       "mode": "100644"
     },
@@ -127,7 +152,7 @@
       "mode": "100755"
     },
     ".claude/skills/issue-spec/SKILL.md": {
-      "sha256": "08cf37607416096ca7ed3e6fe6a9fafc8965d0323582c8ce3c981c6466605e48",
+      "sha256": "4faa4cc41a4091cf623497dc6b1f84dd36895115da01550e99050e63659ceb1b",
       "owner": "shared",
       "mode": "100644"
     },
@@ -141,13 +166,28 @@
       "owner": "local-projection",
       "mode": "100644"
     },
+    ".claude/skills/pr-lifecycle/references/pr-ci-trigger.md": {
+      "sha256": "a1ce7225b8649ef178a7be1a66a5303685c656c777ba4807770aac8f66eb4b52",
+      "owner": "shared",
+      "mode": "100644"
+    },
+    ".claude/skills/pr-lifecycle/references/review-and-cleanup.md": {
+      "sha256": "b06c3b88b4a8461a84a13032f9843da900c90134e5331bb9509c6a9d18ff1acc",
+      "owner": "shared",
+      "mode": "100644"
+    },
     ".claude/skills/pr-lifecycle/SKILL.md": {
-      "sha256": "7b197389d51bd615f27da7f781df569ad590c16a07ec2b005c142d3737502c8f",
+      "sha256": "b1afb127bf10fbf6736349b3d2da7b5a5b8755b56fd25f36ff67a53ad2b74b8e",
+      "owner": "shared",
+      "mode": "100644"
+    },
+    ".claude/skills/pre-push/references/commits.md": {
+      "sha256": "4cd62dde32a894944805648f15012d219460a942f376ced5f74402bc6288b7c9",
       "owner": "shared",
       "mode": "100644"
     },
     ".claude/skills/pre-push/SKILL.md": {
-      "sha256": "fb5831be5f4c147000db88612944288a4063d0346d944ce3db3eeb1266b75e0c",
+      "sha256": "153e3faba2fa93c81885415b3d1e85b66ab93ab65dacb07a27b7b61efeb8b367",
       "owner": "shared",
       "mode": "100644"
     },
