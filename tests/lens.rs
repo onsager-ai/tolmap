@@ -22,6 +22,19 @@ fn path_lens(stops: &[&str]) -> String {
 }
 
 #[test]
+fn semon_lenses_round_trip() {
+    // Finding 62's lenses; semon is not a fixture, so only the schema is checked here.
+    for text in [
+        include_str!("../data/lenses/semon/session-sync.toml"),
+        include_str!("../data/lenses/semon/transcript-read.toml"),
+    ] {
+        let lens = Lens::parse(text).unwrap();
+        assert_eq!(Lens::parse(&lens.to_toml()).unwrap(), lens);
+        assert_eq!(lens.paths[0].stops.len(), 9);
+    }
+}
+
+#[test]
 fn example_lens_round_trips_and_resolves_fully() {
     let lens = Lens::parse(EXAMPLE).unwrap();
     assert_eq!(Lens::parse(&lens.to_toml()).unwrap(), lens);
