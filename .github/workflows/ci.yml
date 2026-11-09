@@ -104,26 +104,19 @@ jobs:
       web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
       - id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" != pull_request ] && [ "$EVENT_NAME" != push ]; then
+          if [ "$EVENT_NAME" != pull_request ]; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
             echo 'web=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "$EVENT_NAME" = pull_request ]; then
-            git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
-            base="$PR_BASE_SHA"
-          else
-            base="$BEFORE_SHA"
-          fi
+          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          base="$PR_BASE_SHA"
           changed=$(git diff --name-only "$base" "$GITHUB_SHA")
           if printf '%s\n' "$changed" | grep -Eq '^(src/|tests/|data/|eval/|native/|scripts/|Cargo\.(toml|lock)$|\.github/workflows/)'; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
@@ -138,7 +131,7 @@ jobs:
   rust:
     name: Rust build, lint, offline parity
     needs: changes
-    if: always() && needs.changes.outputs.rust == 'true'
+    if: always() && needs.changes.result == 'success' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -404,19 +397,22 @@ jobs:
     steps:
       - name: Report scoped Rust gate result
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUST_CHANGED: ${{ needs.changes.outputs.rust }}
           RUST_RESULT: ${{ needs.rust.result }}
         run: |
           set -euo pipefail
-          case "$RUST_RESULT" in
-            success) echo 'Rust, pipeline, fixture, or workflow inputs changed; the Rust gate passed.' ;;
-            skipped) echo 'No Rust, pipeline, fixture, or workflow inputs changed; offline parity was intentionally skipped.' ;;
-            *) echo "Rust gate concluded $RUST_RESULT" >&2; exit 1 ;;
+          [ "$CHANGES_RESULT" = success ] || { echo "Changed-input detection concluded $CHANGES_RESULT" >&2; exit 1; }
+          case "$RUST_CHANGED:$RUST_RESULT" in
+            true:success) echo 'Rust, pipeline, fixture, or workflow inputs changed; the Rust gate passed.' ;;
+            false:skipped) echo 'No Rust, pipeline, fixture, or workflow inputs changed; offline parity was intentionally skipped.' ;;
+            *) echo "Rust gate concluded $RUST_RESULT for rust=$RUST_CHANGED" >&2; exit 1 ;;
           esac
 
   scanner-probe:
     name: Python scanner mechanism and differential AST
     needs: changes
-    if: always() && needs.changes.outputs.rust == 'true'
+    if: always() && needs.changes.result == 'success' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -554,7 +550,7 @@ jobs:
   scip:
     name: SCIP ingest determinism (--refs scip, 3x sha256)
     needs: [changes, rust]
-    if: always() && needs.rust.result == 'success'
+    if: always() && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     env:
       SCIP_TYPESCRIPT_VERSION: "0.4.0"
@@ -677,7 +673,7 @@ jobs:
   scip-install:
     name: SCIP install sandbox (nsjail, --install sandbox, 3x sha256)
     needs: [changes, rust]
-    if: always() && needs.rust.result == 'success'
+    if: always() && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     env:
       SCIP_TYPESCRIPT_VERSION: "0.4.0"
@@ -830,8 +826,8 @@ jobs:
   # never by this job.
   scip-fixtures:
     name: SCIP nine-fixture gate (on demand / nightly)
-    needs: rust
-    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.rust.result == 'success'
+    needs: [changes, rust]
+    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     # django's scip-python run is about two minutes (finding 44); the other
     # eight are smaller. Bounded so a hung indexer cannot hold the runner.
@@ -939,8 +935,8 @@ jobs:
   # dispatch pays for it.
   scip-churn:
     name: SCIP churn diagnosis (on demand)
-    needs: rust
-    if: github.event_name == 'workflow_dispatch' && inputs.scip_churn && needs.rust.result == 'success'
+    needs: [changes, rust]
+    if: github.event_name == 'workflow_dispatch' && inputs.scip_churn && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
@@ -1134,8 +1130,8 @@ jobs:
   # or confirmed pairs falling (`gate`'s docstring says why only those).
   hand-score:
     name: Hand resolver vs SCIP score (on demand / nightly)
-    needs: rust
-    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.rust.result == 'success'
+    needs: [changes, rust]
+    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     # About the scip-fixtures job's indexing time plus the ingest; bounded so
     # a hung indexer cannot hold the runner.
@@ -1370,7 +1366,7 @@ jobs:
     # (collect-maps falls back to the committed data/ fixtures), plus oxlint.
     name: web build and lint
     needs: changes
-    if: always() && needs.changes.outputs.web == 'true'
+    if: always() && needs.changes.result == 'success' && needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
