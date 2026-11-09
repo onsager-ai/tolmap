@@ -47,10 +47,13 @@ pub const HOTSPOT_MIN_COUNT: usize = 2;
 
 // Unreached file exclusions. Entry points have no importer by design, so a
 // file is an entry when the map marks it an `entry` landmark, or by name:
-// - its base name, up to the first `.`, is one of these;
+// - its base name, up to the first `.`, is one of these. `tests` is a Rust
+//   `#[cfg(test)] mod tests;` child: nothing `use`s it, and the map records no
+//   `mod` declaration as an edge, so on semon 04aeb54 9 of the 26 files with
+//   no inbound edge found were `tests.rs` (docs/FINDINGS.md, finding 63);
 pub const ENTRY_STEMS: &[&str] = &[
     "main", "__main__", "__init__", "index", "lib", "mod", "build", "app", "cli", "server",
-    "setup", "conftest", "manage", "wsgi", "asgi",
+    "setup", "conftest", "manage", "wsgi", "asgi", "tests",
 ];
 // - a directory on its path is one of these (tests, tools and examples are
 //   run, not imported);

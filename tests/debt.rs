@@ -151,6 +151,7 @@ fn entry_rule() {
         "web/a.test.ts",
         "web/vite.config.ts",
         "web/env.d.ts",
+        "crates/x/src/model/tests.rs",
     ] {
         assert!(debt::is_entry_path(path), "{path}");
     }
@@ -159,6 +160,8 @@ fn entry_rule() {
         "pkg/testing.py",
         "web/src/data.ts",
         "src/domain.rs",
+        "crates/x/src/model/testing.rs",
+        "crates/x/src/contests.rs",
     ] {
         assert!(!debt::is_entry_path(path), "{path}");
     }
