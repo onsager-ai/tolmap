@@ -20,6 +20,14 @@ const BETA: f64 = 0.35;
 const GAMMA: f64 = 0.08;
 const DELTA: f64 = 0.12;
 
+// Git history is both the extraction horizon and the debt sidecar's reported
+// history window. The sidecar never claims evidence outside this bound.
+pub const COCHANGE_HISTORY_WINDOW: usize = 4000;
+// The minimum co-change evidence retained for hidden coupling. `git_history`
+// also requires this many observations of each file before it computes a
+// co-change weight, so sparse history does not make a pair look strong.
+pub const COCHANGE_MIN_COUNT: usize = 3;
+
 const IDENT_STOP: &[&str] = &[
     "self",
     "cls",
@@ -6638,7 +6646,13 @@ fn finish_graph(
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
-    let history = git_history(repo, &files, 4000, history, &history_stage)?;
+    let history = git_history(
+        repo,
+        &files,
+        COCHANGE_HISTORY_WINDOW,
+        history,
+        &history_stage,
+    )?;
     history_stage.set(history.commits as u64);
     history_stage.finish();
     let semantic = semantic_vectors(&parsed);
@@ -7076,7 +7090,7 @@ fn git_history(
     let mut cochange = BTreeMap::new();
     for ((a, b), count) in pairs {
         let denominator = solo[&a].min(solo[&b]);
-        if denominator >= 3 && count >= 2 {
+        if denominator >= COCHANGE_MIN_COUNT && count >= 2 {
             cochange.insert((a, b), (count, count as f64 / denominator as f64));
         }
     }
@@ -7306,7 +7320,7 @@ mod tests {
         let progress = crate::progress::Progress::silent();
         let stage = progress.stage(crate::progress::StageId::History, None);
 
-        let own = git_history(root, &files, 4000, None, &stage).unwrap();
+        let own = git_history(root, &files, COCHANGE_HISTORY_WINDOW, None, &stage).unwrap();
         // Every commit touching a mapped file: three rounds (b.py), the
         // rename (z.py) and three later rounds.
         assert_eq!(own.commits, 7);
@@ -7318,7 +7332,14 @@ mod tests {
             revision: base,
             renames: BTreeMap::from([("a.py".to_owned(), "z.py".to_owned())]),
         };
-        let from_base = git_history(root, &files, 4000, Some(&history), &stage).unwrap();
+        let from_base = git_history(
+            root,
+            &files,
+            COCHANGE_HISTORY_WINDOW,
+            Some(&history),
+            &stage,
+        )
+        .unwrap();
         assert_eq!(from_base.commits, 3, "only the base's three rounds");
         assert_eq!(
             from_base.cochange,

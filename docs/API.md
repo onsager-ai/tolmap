@@ -550,13 +550,15 @@ found`, `hidden coupling`) and holding every file in a finding of that kind,
 so a district is tinted at most once per kind. It emits one path per cycle,
 named from the files of its closing edges (closing edges as computed hops;
 consecutive ones inside a district are joined by declared hops whose reason
-states that no edge is claimed), and one declared path per hidden-coupling
-pair whose reason is `co-changed N times; no static edge found`. Notes carry
-the measured values, the misplaced file's per-district edge counts and the
-cycle's district names. Labels and path names carry no measured value and no
-district name, so lens comparison does not read a metric change or a renamed
-district as a removed and an added finding. Exit 0, or 2 when the map cannot
-be read.
+states that no edge is claimed), and declared paths for the first 20
+hidden-coupling pairs in report order (cross-district first, then weight). The
+hidden-coupling area still contains every pair's files, while a note states how
+many of the full `tolmap debt` report are shown as paths; each path's reason is
+`co-changed N times; no static edge found`. Notes carry the measured values,
+the misplaced file's per-district edge counts and the cycle's district names.
+Labels and path names carry no measured value and no district name, so lens
+comparison does not read a metric change or a renamed district as a removed
+and an added finding. Exit 0, or 2 when the map cannot be read.
 
 ### `GET /api/maps/{owner}/{repo}/debt[?commit=<full-sha>]`
 

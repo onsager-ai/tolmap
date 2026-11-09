@@ -3301,7 +3301,7 @@ The decision uses [CI run 42606484561](https://github.com/onsager-ai/tolmap/acti
 
 The largest inline raw increase is rich at +1.83%; the smallest is django at +0.08%. At the 0.00 cutoff, the inline carrier would add +5.1% raw overall (up to +14% for scrapy), so the 0.35 cutoff is a meaningful containment boundary. The same carrier reserves room for #258's Rust `mod` pairs; the measurement found 30 of those, but this change does not emit them. The evidence script is `eval/cochange_carrier_size.py`.
 
-The new debt finding produces one `hidden coupling` area and one declared path per pair. Paths are not roads: their reason says `co-changed N times; no static edge found`. Cross-district pairs sort first for the report, but no blend, clustering or layout input changes; regenerated fixture parity should therefore be exact. This change does not need `eval/batch_stability.py` because it changes none of blend, clustering or layout.
+The new debt finding produces one `hidden coupling` area containing every pair's files. The report keeps every pair, but the lens renders declared paths only for the first 20 in report order (cross-district first, then weight) and notes how many of the full `tolmap debt` report are shown. Paths are not roads: their reason says `co-changed N times; no static edge found`. No blend, clustering or layout input changes, so regenerated fixture parity is exact. This change does not need `eval/batch_stability.py` because it changes none of blend, clustering or layout.
 
 ### Not verified
 - **The semon debt lens was not rendered.** Its 53 notes and five overlapping per-kind tints on a 233-file map were measured through the API, not checked in a browser.

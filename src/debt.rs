@@ -12,11 +12,13 @@
 //!
 //! Plain `//` comments on exported types, not doc comments: ts-rs copies doc
 //! comments into the bindings.
+use crate::extract::COCHANGE_MIN_COUNT;
 use crate::lens::{
     self, FileRename, HopMode, Lens, LensArea, LensColor, LensNote, LensPath, LensReport, LensStop,
     LENS_VERSION,
 };
 use crate::lens_comparison::{self, ComparisonMode, LensDelta};
+use crate::pipeline::SHARE_COCHANGE;
 use crate::schema::{CoverageReport, MapDocument};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -46,10 +48,8 @@ pub const HOTSPOT_TOP_FRACTION: f64 = 0.05;
 // `hazard` landmarks, which it generalises.
 pub const HOTSPOT_MIN_COUNT: usize = 2;
 // Hidden coupling uses the evidence retained in the optional map sidecar.
-// It matches the carrier measurement's (3, 0.35) row and is intentionally
-// separate from the blend's 0.35 mass share.
-pub const HIDDEN_COUPLING_MIN_COUNT: usize = 3;
-pub const HIDDEN_COUPLING_MIN_WEIGHT: f64 = 0.35;
+// The count and cutoff are the extraction/pipeline constants that wrote it.
+pub const HIDDEN_COUPLING_LENS_PATHS: usize = 20;
 
 // Unreached file exclusions. Entry points have no importer by design, so a
 // file is an entry when the map marks it an `entry` landmark, or by name:
@@ -581,8 +581,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                 .iter()
                 .filter_map(|pair| {
                     let (left, right, cochanges, weight) = pair.0;
-                    if cochanges < HIDDEN_COUPLING_MIN_COUNT
-                        || weight < HIDDEN_COUPLING_MIN_WEIGHT
+                    if cochanges < COCHANGE_MIN_COUNT
+                        || weight < SHARE_COCHANGE
                         || linked.contains(&(left.min(right), left.max(right)))
                     {
                         return None;
@@ -627,8 +627,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             hotspot_top_fraction: HOTSPOT_TOP_FRACTION,
             hotspot_min_count: HOTSPOT_MIN_COUNT,
             hotspot_min_score,
-            hidden_coupling_min_count: HIDDEN_COUPLING_MIN_COUNT,
-            hidden_coupling_min_weight: HIDDEN_COUPLING_MIN_WEIGHT,
+            hidden_coupling_min_count: COCHANGE_MIN_COUNT,
+            hidden_coupling_min_weight: SHARE_COCHANGE,
             entry_stems: strings(ENTRY_STEMS),
             entry_dirs: strings(ENTRY_DIRS),
             entry_markers: strings(ENTRY_MARKERS),
@@ -855,37 +855,54 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         );
         add(&mut kinds, KIND_UNREACHED, [u.path.as_str()]);
     }
-    for coupling in &report.hidden_coupling {
-        note(
-            &coupling.left,
-            format!(
-                "hidden coupling: co-changed {} times (weight {:.2}); no static or reference edge found (lower bound)",
-                coupling.cochanges, coupling.weight
-            ),
-        );
-        paths.push(LensPath {
-            name: hidden_coupling_path_name(coupling),
-            stops: vec![
-                LensStop {
-                    at: coupling.left.clone(),
-                    hop: HopMode::Computed,
-                    reason: None,
-                },
-                LensStop {
-                    at: coupling.right.clone(),
-                    hop: HopMode::Declared,
-                    reason: Some(format!(
-                        "co-changed {} times; no static edge found",
-                        coupling.cochanges
-                    )),
-                },
-            ],
-        });
+    if !report.hidden_coupling.is_empty() {
         add(
             &mut kinds,
             KIND_HIDDEN_COUPLING,
-            [coupling.left.as_str(), coupling.right.as_str()],
+            report
+                .hidden_coupling
+                .iter()
+                .flat_map(|coupling| [coupling.left.as_str(), coupling.right.as_str()]),
         );
+        let shown = report.hidden_coupling.len().min(HIDDEN_COUPLING_LENS_PATHS);
+        note(
+            &report.hidden_coupling[0].left,
+            format!(
+                "{shown} of {} hidden-coupling pairs shown as paths; all are in `tolmap debt`",
+                report.hidden_coupling.len()
+            ),
+        );
+        for coupling in report
+            .hidden_coupling
+            .iter()
+            .take(HIDDEN_COUPLING_LENS_PATHS)
+        {
+            note(
+                &coupling.left,
+                format!(
+                    "hidden coupling: co-changed {} times (weight {:.2}); no static or reference edge found (lower bound)",
+                    coupling.cochanges, coupling.weight
+                ),
+            );
+            paths.push(LensPath {
+                name: hidden_coupling_path_name(coupling),
+                stops: vec![
+                    LensStop {
+                        at: coupling.left.clone(),
+                        hop: HopMode::Computed,
+                        reason: None,
+                    },
+                    LensStop {
+                        at: coupling.right.clone(),
+                        hop: HopMode::Declared,
+                        reason: Some(format!(
+                            "co-changed {} times; no static edge found",
+                            coupling.cochanges
+                        )),
+                    },
+                ],
+            });
+        }
     }
     let areas = kinds
         .into_iter()
@@ -1121,6 +1138,8 @@ pub fn compare(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extract::{COCHANGE_HISTORY_WINDOW, COCHANGE_MIN_COUNT};
+    use crate::pipeline::SHARE_COCHANGE;
     use crate::schema::MapDocument;
     use serde_json::json;
 
@@ -1154,13 +1173,54 @@ mod tests {
     }
 
     #[test]
+    fn hidden_coupling_lens_caps_paths_but_keeps_all_area_members() {
+        let mut report = findings(&map(Some(json!({
+            "cochange": {
+                "commits": 12,
+                "window": COCHANGE_HISTORY_WINDOW,
+                "min_count": COCHANGE_MIN_COUNT,
+                "min_weight": SHARE_COCHANGE,
+                "pairs": [[0, 1, 4, 0.5]]
+            }
+        }))));
+        report.hidden_coupling = (0..=HIDDEN_COUPLING_LENS_PATHS)
+            .map(|index| HiddenCoupling {
+                left: format!("left-{index}.rs"),
+                right: format!("right-{index}.rs"),
+                left_district: 0,
+                right_district: 1,
+                cochanges: index + COCHANGE_MIN_COUNT,
+                weight: 0.5,
+            })
+            .collect();
+        let lens = to_lens(&report, &map(None));
+        assert_eq!(
+            lens.paths
+                .iter()
+                .filter(|path| path.name.starts_with("hidden-coupling-"))
+                .count(),
+            HIDDEN_COUPLING_LENS_PATHS
+        );
+        assert!(lens.notes.iter().any(|note| {
+            note.text.contains(&format!(
+                "{HIDDEN_COUPLING_LENS_PATHS} of {} hidden-coupling pairs shown as paths",
+                HIDDEN_COUPLING_LENS_PATHS + 1
+            ))
+        }));
+        assert!(lens.areas.iter().any(|area| {
+            area.label == KIND_HIDDEN_COUPLING
+                && area.members.len() == 2 * (HIDDEN_COUPLING_LENS_PATHS + 1)
+        }));
+    }
+
+    #[test]
     fn hidden_coupling_uses_sidecar_and_emits_declared_path() {
         let report = findings(&map(Some(json!({
             "cochange": {
                 "commits": 12,
-                "window": 4000,
-                "min_count": 3,
-                "min_weight": 0.35,
+                "window": COCHANGE_HISTORY_WINDOW,
+                "min_count": COCHANGE_MIN_COUNT,
+                "min_weight": SHARE_COCHANGE,
                 "pairs": [[0, 1, 4, 0.5], [1, 2, 3, 0.35]]
             }
         }))));
@@ -1173,9 +1233,9 @@ mod tests {
             &map(Some(json!({
                 "cochange": {
                     "commits": 12,
-                    "window": 4000,
-                    "min_count": 3,
-                    "min_weight": 0.35,
+                    "window": COCHANGE_HISTORY_WINDOW,
+                    "min_count": COCHANGE_MIN_COUNT,
+                    "min_weight": SHARE_COCHANGE,
                     "pairs": [[0, 1, 4, 0.5], [1, 2, 3, 0.35]]
                 }
             }))),

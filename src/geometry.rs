@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::blobs;
-use crate::extract::{self, round_to, LanguageKind};
+use crate::extract::{self, round_to, LanguageKind, COCHANGE_HISTORY_WINDOW, COCHANGE_MIN_COUNT};
 use crate::naming;
 use crate::neighbourhoods;
 use crate::parcels;
@@ -797,7 +797,7 @@ fn compact(
             .iter()
             .filter_map(|(&(a, b), signal)| {
                 let pair = (a as usize, b as usize);
-                (signal.count >= 3
+                (signal.count >= COCHANGE_MIN_COUNT
                     && signal.weight >= SHARE_COCHANGE
                     && !static_pairs.contains(&pair))
                 .then(|| CochangePair((pair.0, pair.1, signal.count, round_to(signal.weight, 2))))
@@ -806,9 +806,9 @@ fn compact(
         DebtSidecar {
             cochange: Some(CochangeSidecar {
                 commits: layout.weighted.commits_scanned,
-                window: 4000,
-                min_count: 3,
-                min_weight: 0.35,
+                window: COCHANGE_HISTORY_WINDOW,
+                min_count: COCHANGE_MIN_COUNT,
+                min_weight: SHARE_COCHANGE,
                 pairs: cochange,
             }),
         }
