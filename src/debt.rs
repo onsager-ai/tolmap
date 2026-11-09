@@ -1421,12 +1421,14 @@ mod tests {
             (0, 1)
         );
         assert_eq!(cycle.cut[0].edges.len(), 1);
+        // 0 -> 1 and 1 -> 0 carry one file edge each, so the tie breaks on
+        // the smaller `from` district (src/cycle_cut.rs).
         assert_eq!(
             (
                 cycle.mutual_pairs[0].from_district,
                 cycle.mutual_pairs[0].to_district
             ),
-            (1, 0)
+            (0, 1)
         );
         assert!(to_lens(&first, &map)
             .paths
