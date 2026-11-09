@@ -1958,18 +1958,10 @@ export class MapRenderer {
         if (BATCH_LAYER && !alwaysDrawn.has(i) && !this.districtFootprintsLarge(d) && !inSymbolGate) {
           this.batchFootprint(footprintBatches, i, d, zf0, islandFadeFloorZf, islandExceptionDistricts);
         } else {
-          this.footprint(g, i, dim, zf0, islandFadeFloorZf, islandExceptionDistricts, folderFiles);
-          // Viewport cull for the card pass, independent of footprint()'s own
-          // polygon-bbox cull (which returns void, not a drew/culled flag):
-          // a generous anchor-based margin is enough here since a culled
-          // file's footprint wasn't drawn at all, so there's nothing for a
-          // card to sit on top of regardless.
-          if (inSymbolGate) {
-            const p = this.anchor(i);
-            const cx = this.X(p[0]);
-            const cy = this.Y(p[1]);
-            if (cx > -100 && cx < this.VW + 100 && cy > -100 && cy < this.VH + 100) filesNeedingCards.push(i);
-          }
+          const drawn = this.footprint(g, i, dim, zf0, islandFadeFloorZf, islandExceptionDistricts, folderFiles);
+          // Use the footprint's bounds for card culling too: older maps can
+          // place the file's layout anchor far outside its visible polygon.
+          if (inSymbolGate && drawn) filesNeedingCards.push(i);
         }
         continue;
       }
@@ -3304,12 +3296,8 @@ export class MapRenderer {
    * its neighbourhood's shade of its district's hue (map/neighbourhoods.ts,
    * map/geometry.ts's neighbourhoodShadeColor), stroked in a thin surface
    * colour so adjoining footprints read as tiles rather than one solid
-   * fill. Returns the on-screen anchor point (for the small-hit-circle grid
-   * hash, built by the caller over every footprint this paint draws) and
-   * whether this footprint is small enough to need one, or `null` if it was
-   * culled (off-screen) or hidden (a still-fading island) -- the same
-   * "return null = not drawn, not eligible for anything downstream" contract
-   * pins.ts's `screenOf` already uses. */
+   * fill. Returns whether the footprint was drawn, so the symbol-card pass
+   * can use the same viewport and island visibility decisions. */
   private footprint(
     g: SVGGElement,
     i: number,
@@ -3318,12 +3306,12 @@ export class MapRenderer {
     islandFadeFloorZf: number,
     islandExceptionDistricts: Set<number>,
     folderFiles: ReadonlySet<number> | null,
-  ): void {
+  ): boolean {
     const { doc, sel, layer } = this.state!;
     const poly = doc.P![String(i)];
     const d = D_(doc, i);
     const dIsland = this.islandFadeForDistrict(d, zf0, islandFadeFloorZf, islandExceptionDistricts);
-    if (!this.islandFadeVisible(dIsland)) return;
+    if (!this.islandFadeVisible(dIsland)) return false;
     let dAttr = "M";
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     for (let n = 0; n < poly.length; n++) {
@@ -3337,7 +3325,7 @@ export class MapRenderer {
     }
     dAttr += "Z";
     const margin = 20;
-    if (x1 < -margin || x0 > this.VW + margin || y1 < -margin || y0 > this.VH + margin) return;
+    if (x1 < -margin || x0 > this.VW + margin || y1 < -margin || y0 > this.VH + margin) return false;
     const faded = !!(dim && !dim.has(i));
     const neigh = doc.file_neighbourhoods?.[i];
     const shade = neigh != null ? this.neighbourhoodShade.get(neigh) ?? null : null;
@@ -3390,6 +3378,7 @@ export class MapRenderer {
     if (folderFiles?.has(i)) {
       g.appendChild(el("path", { d: dAttr, fill: "none", stroke: "var(--ink)", "stroke-width": 1.4, "pointer-events": "none", "data-folder-highlight": i }));
     }
+    return true;
   }
 
   /** B4 perf follow-up: the batched sibling of `footprint()` above, for a
