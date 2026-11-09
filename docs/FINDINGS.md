@@ -3173,6 +3173,43 @@ This is a deliberate move away from finding 60's rare-outlier target: #176 asked
 - The fire rate on agent-written changes, the case Ostrom and Duhem gate, is still unmeasured.
 - `eval/batch_stability.py` was not run: `tolmap build` still reads the checkout's own history, so no map changes. Only `tolmap check`'s head graph reads another commit's.
 
+## 62. Two semon lenses resolve every stop on an indexed map; 142 commits leave the push path unchanged; static edges never cross semon's HTTP boundary, so declared hops carry it
+
+Issue [#241](https://github.com/onsager-ai/tolmap/issues/241), PRs [#242](https://github.com/onsager-ai/tolmap/pull/242), [#245](https://github.com/onsager-ai/tolmap/pull/245) and [#246](https://github.com/onsager-ai/tolmap/pull/246). This records the plan's last item: a representative lens on semon and what it did and did not show.
+
+**The lenses.** [`data/lenses/semon/session-sync.toml`](../data/lenses/semon/session-sync.toml) follows a session push from the CLI to the viewer; [`transcript-read.toml`](../data/lenses/semon/transcript-read.toml) follows one transcript request from the viewer through the Rust handler and back. Each has nine stops and two notes. They were written by reading semon at `04aeb54aef33896d691c3ffdf0619bbfa2540599`, with a line citation for every hop, before any map was consulted. semon does not carry them yet.
+
+**The run.** [Run 42553156297](https://github.com/onsager-ai/tolmap/actions/runs/42553156297) built tolmap at `9c012e7` with `tolmap local`. It indexed semon's `bb5aeccb49a570d93454facf0cad4dbb70edf9c1` (base) and `04aeb54…` (head, 142 commits later), each with the two lenses committed on top. It then requested all three comparisons. The run was a throwaway branch; its artifact expires, and this entry is the durable record.
+
+**Resolution at head.** Both lenses resolve with no unresolved items.
+- **Hops.** session-sync has 5 computed hops and 3 declared ones; transcript-read has 6 and 2.
+- **Computed hops matched the citations.** Ten of the eleven are a single import edge in the direction the citations predicted, including the `imported-by` hop from `redact.rs` back to `push/lib.rs`.
+- **The exception.** `received.rs → union.rs` resolved through `crates/semon-sessions/src/lib.rs`, not the direct `use` at `union.rs:22`. It is the only three-file computed route in either lens.
+
+**Every crossing between semon's Rust core and its TypeScript UI is a declared hop.** Static extraction has no edge across an HTTP request or a directory written by one process and read by another. Without the declared hops these paths would be three or four disconnected fragments with no route between them, and the declared reasons are where the lens adds information the map cannot. This is the lower bound #241 anticipated, measured: on these two paths, 5 of 16 hops (31%) exist only because a person wrote them.
+
+**Comparison, base → head.**
+- **session-sync.** All 8 stops and 8 hops are `shared`. 142 commits changed semon without changing this path at file level, and no stop's base district changed.
+- **transcript-read.** `crates/semon-sessions/src/storage/runtime.rs` does not exist at the base; it was added in semon's `20bd6073c`. The base reports it as `missing_path` rather than dropping it. The comparison marks that stop and its two adjoining hops `added`; the other 7 stops and 6 hops are `shared`.
+- **Overlap at head.** The two lenses share exactly two stops, `crates/semon-sessions/src/union.rs` and `ui/src/app/catalogViewer.tsx`: the Rust HTTP dispatcher and the viewer component. They share no hop: each enters the dispatcher by a different route.
+
+**Defects found while running these lenses.** The first two were fixed in #246; this entry's change fixes the third.
+- **Language scope.** Comparison re-detected one language per side, so TypeScript stops were reported as broken. Each side now resolves against exactly the files its own snapshot indexed (#246).
+- **Line ends.** Route lines ended at district centres while their visible stops sat on files. Each endpoint now takes its own level of detail, and a browser check requires every visible stop to sit on a line end (#246).
+- **Edgeless base.** A base whose snapshot graph has no edges returned a 500, "cannot blend an empty graph". `check::side_graph` now skips blending and pruning for an edgeless side, with a unit test and an API test.
+
+**What the lenses could not show.**
+- **No runtime order.** A computed hop is an import between two files, not evidence of a call or of order at runtime. The `lib.rs` route above is a module path, not a call chain.
+- **No durable data as a stop.** A stop must be a file of the map, so the `machines/<name>` directory that the receiver writes and `ReceivedMachines` reads appears only in a declared reason.
+- **No request/response pairs.** transcript-read lists `catalogViewer.tsx` twice, once to send and once to receive, because a hop has one direction.
+- **No branches.** A path is one ordered list. Push's resume after an interruption, which the note on `push/lib.rs` describes, cannot be a second branch of the same path.
+- **No `moved` status here.** Neither comparison moved a stop between districts, so that status was exercised only by the fixture tests.
+
+### Not verified
+
+- **Single-run evidence.** These are observations from one run on one pair of commits. Other semon paths, semon-hub, and lenses written by someone who has not read the code first were not tried.
+- **Hand references only.** The run used hand references, not SCIP. Typed symbol edges (#103) might resolve `received.rs → union.rs` directly.
+
 ## Incremental extraction baseline (#225, 2026-10-25)
 
 [CI run 40170563034](https://github.com/onsager-ai/tolmap/actions/runs/40170563034)
