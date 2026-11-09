@@ -153,7 +153,18 @@ try {
     // this camera operation itself. Every step waits for the production glide.
     for (let i=0; i<10 && await page.locator('[data-lens-stop]').count() === 0; i++) await zoomInSettled(page,1);
     assert.ok(await page.locator('[data-lens-stop]').count()>0,'zoomed-in stops become visible');
-    const stop = page.locator('[data-lens-stop]').first();
+    // Every flask stop has a resolved hop. A visible stop marker must be a
+    // route end; whole-hop LOD once sent lines to district centres instead.
+    const detached = await page.evaluate(() => {
+      const ends = [...document.querySelectorAll('[data-lens-hop]')].flatMap(path => {
+        const d = path.getAttribute('d'), n = d.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g).map(Number);
+        return /c/.test(d) ? [n.slice(0,2)] : [n.slice(0,2), n.slice(-2)];
+      });
+      return [...document.querySelectorAll('[data-lens-stop] circle')].map(c => [+c.getAttribute('cx'), +c.getAttribute('cy')])
+        .filter(([x,y]) => !ends.some(([a,b]) => Math.hypot(a-x,b-y) < 0.5));
+    });
+    assert.deepEqual(detached,[],'hop lines end on visible stop markers');
+    const stop =page.locator('[data-lens-stop]').first();
     const spec = await stop.getAttribute('data-lens-stop');
     // May be outside the viewport at a particular camera centre. The ordered
     // list uses the same stop action and pans without changing zoom.

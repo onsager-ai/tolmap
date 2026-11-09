@@ -1449,11 +1449,14 @@ export class MapRenderer {
         if (!hop.resolved) return; // The full unresolved report stays in React.
         const from = path.stops[hop.from]?.target, to = path.stops[hop.to]?.target;
         if (!from || !to) return;
-        const detailed = this.lensTargetVisible(from, zf) && this.lensTargetVisible(to, zf);
         const files = hop.source === "declared" ? [from.file, to.file] : hop.via.map(file => doc.F.indexOf(file));
-        const points: [number, number][] = detailed
-          ? files.map(file => { const p = this.anchor(file); return [this.X(p[0]), this.Y(p[1])]; })
-          : files.map(file => this.lensPoint({ ...from, file, district: D_(doc, file), symbol: null }, false));
+        // Each point takes its own LOD, and endpoints use the stop target, so
+        // a route ends on its drawn stop marker. A whole-hop LOD switch sent
+        // lines to district centres while one visible stop sat on its file.
+        const points = files.map((file, i): [number, number] => {
+          const target = i === 0 ? from : i === files.length - 1 ? to : { ...from, file, district: D_(doc, file), symbol: null };
+          return this.lensPoint(target, this.lensTargetVisible(target, zf));
+        });
         // Consecutive files within one district collapse at overview. A small
         // loop keeps an intra-district declared hop available to tap there.
         const unique = points.filter((point, i) => i === 0 || point[0] !== points[i - 1][0] || point[1] !== points[i - 1][1]);
@@ -1528,8 +1531,8 @@ export class MapRenderer {
           for (const poly of doc.districts[String(district)]?.blob ?? []) put(el("path", { d: "M" + poly.map(q => `${this.X(q[0])} ${this.Y(q[1])}`).join("L") + "Z", fill: stroke, "fill-opacity": change.status === "shared" ? 0.04 : 0.1, stroke, "stroke-width": 2, "stroke-dasharray": dash, "pointer-events": "none", "data-lens-change": change.status }));
         }
       } else if (change.kind === "hop") {
-        const detailed = change.targets.length >= 2 && change.targets.every(target => this.lensTargetVisible(target, zf));
-        const points = change.targets.length >= 2 ? change.targets.slice(0,2).map(target => this.lensPoint(target, detailed)) : change.districts.map(district => this.lensPoint({ file: 0, path: "", symbol: null, district }, false));
+        // Per-endpoint LOD, as in drawLens: a visible stop marker is the line's end.
+        const points = change.targets.length >= 2 ? change.targets.slice(0,2).map(target => this.lensPoint(target, this.lensTargetVisible(target, zf))) : change.districts.map(district => this.lensPoint({ file: 0, path: "", symbol: null, district }, false));
         if (points.length < 1) return;
         const [x,y] = points[0], [a,b] = points[1] ?? points[0];
         const d = x === a && y === b ? `M${x} ${y}c-30 -36 30 -36 0 0` : `M${x} ${y}Q${(x+a)/2+22} ${(y+b)/2-22} ${a} ${b}`;
@@ -1548,6 +1551,7 @@ export class MapRenderer {
     g.appendChild(districtLabels);
     // At overview these are district status badges, never file symbols. Keep
     // every status visible even when several kinds changed in one district.
+    // Badges sit on the district point where overview hop lines end.
     for (const [district, statuses] of districtStatuses) {
       const [x, y] = this.lensPoint({ file: 0, path: "", symbol: null, district }, false);
       const entries = [...statuses].sort() as (keyof typeof marks)[];
@@ -1555,8 +1559,8 @@ export class MapRenderer {
       entries.forEach((status, index) => {
         const [symbol, , stroke] = marks[status];
         const bx = x + (index - (entries.length - 1) / 2) * 22;
-        badge.appendChild(el("circle", { cx: bx, cy: y - 23, r: 10, fill: "var(--chrome)", stroke, "stroke-width": 2 }));
-        const text = el("text", { x: bx, y: y - 19, "text-anchor": "middle", "font-size": 13, fill: "var(--on)" });
+        badge.appendChild(el("circle", { cx: bx, cy: y, r: 10, fill: "var(--chrome)", stroke, "stroke-width": 2 }));
+        const text = el("text", { x: bx, y: y + 4, "text-anchor": "middle", "font-size": 13, fill: "var(--on)" });
         text.textContent = symbol;
         badge.appendChild(text);
       });
