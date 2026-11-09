@@ -1,6 +1,6 @@
 ---
 name: ci-triage
-description: Investigate a failed GitHub Actions run or PR check, distinguish regression, flake, infrastructure and insufficient evidence, and reproduce with repository-owned gates and fixtures. Use for failed runs, red main or red PR checks.
+description: Investigate failed GitHub Actions runs and PR checks, classify evidence and reproduce using repository gates. Use for failed checks, red main, red PRs or uncertain CI failures.
 ---
 
 # CI triage
@@ -19,6 +19,10 @@ head from the tested merge preview. Use
 [harness-operations](../harness-operations/SKILL.md) when retrieving checks/logs
 requires a capability mapping. Authentication and log availability must be
 observed; do not assume all connectors expose the same fields or limitations.
+
+If expected PR runs are missing or a "no checks reported" alert arrives, follow
+[PR CI trigger recovery](../pr-lifecycle/references/pr-ci-trigger.md) before
+failure classification. Passing manual dispatches do not establish PR checks.
 
 ## Procedure
 
