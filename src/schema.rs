@@ -383,7 +383,36 @@ pub struct MapDocument {
     pub file_neighbourhoods: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub neighbourhoods: Option<BTreeMap<String, Neighbourhood>>,
+    // Optional index-aligned debt evidence. Its absence means this map
+    // predates the measurement, rather than that no evidence was found.
+    // Future evidence (such as Rust `mod` pairs) belongs beside `cochange`.
+    #[serde(rename = "D", default, skip_serializing_if = "Option::is_none")]
+    pub debt: Option<DebtSidecar>,
 }
+
+/// Optional debt evidence, indexed against `MapDocument::files`.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DebtSidecar {
+    pub cochange: Option<CochangeSidecar>,
+}
+
+/// Co-change evidence retained for hidden-coupling findings. `pairs` rows are
+/// `[left file index, right file index, co-change count, weight]`, where left
+/// is smaller than right and the weight is rounded to two decimal places.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CochangeSidecar {
+    pub commits: usize,
+    pub window: usize,
+    pub min_count: usize,
+    pub min_weight: f64,
+    pub pairs: Vec<CochangePair>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(type = "[number, number, number, number]")]
+pub struct CochangePair(pub (usize, usize, usize, f64));
 
 // `tolmap check`'s report (issue #170, docs/CHECK.md). A consumer (CI,
 // Ostrom, Duhem) depends only on the exit code and on `version`; any change
@@ -552,6 +581,15 @@ pub struct SignalEdge {
     pub semantic: f64,
 }
 
+/// The unblended co-change signal extracted from git history. It remains in
+/// `GraphData` until compact map construction so debt evidence does not
+/// recover counts from the blend or rerun history extraction.
+#[derive(Clone, Copy, Debug)]
+pub struct CochangeSignal {
+    pub count: usize,
+    pub weight: f64,
+}
+
 pub type FileId = u32;
 
 #[derive(Clone, Debug)]
@@ -579,6 +617,10 @@ pub struct GraphData {
     /// Resolved symbol uses indexed into `nodes`; names remain strings.
     pub uses: Vec<(FileId, FileId, String)>,
     pub commits_scanned: usize,
+    // `None` means this graph came from `--graph`, which carries no git
+    // history evidence. `Some(empty)` means history was measured and yielded
+    // no qualifying pair.
+    pub cochange: Option<BTreeMap<(FileId, FileId), CochangeSignal>>,
     pub nodes: Vec<SourceNode>,
     pub edges: Vec<SignalEdge>,
     /// `--refs scip` only: the per-language reference paths, carried to the
@@ -746,6 +788,7 @@ impl<'de> Deserialize<'de> for GraphData {
             symbols: wire.symbols,
             uses,
             commits_scanned: wire.commits_scanned,
+            cochange: None,
             nodes: wire.nodes,
             edges: wire.edges,
             references: wire.references,
@@ -805,6 +848,7 @@ mod tests {
             symbols: BTreeMap::new(),
             uses: vec![(0, 1, "Target".to_owned())],
             commits_scanned: 0,
+            cochange: None,
             nodes: ["a.go", "pkg/b.go"]
                 .into_iter()
                 .map(|file| SourceNode {
@@ -858,6 +902,7 @@ mod tests {
             symbols: BTreeMap::new(),
             uses: Vec::new(),
             commits_scanned: 0,
+            cochange: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,
@@ -887,6 +932,7 @@ mod tests {
             symbols: BTreeMap::new(),
             uses: Vec::new(),
             commits_scanned: 0,
+            cochange: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,

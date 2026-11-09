@@ -528,23 +528,34 @@ output. `json` prints a `DebtReport` (`bindings/DebtReport.ts`): district
 cycles (strongly connected district sets in the district graph built from
 `E`, each with one shortest route and the file edges that close it), misplaced
 files, god files, hotspots (churn × complexity; the top two include the map's
-`hazard` landmarks) and files with **no inbound edge found**, which excludes
-entry files. Files with no edge at all are coverage gaps: they are counted in
-`isolated_files`, not listed. Every report states its thresholds
-(named constants in `src/debt.rs`, plus the cuts they give on this map) and
-echoes the map's `coverage`; every count is a lower bound over the map's
-edges. Dynamic imports, reflection and declared connections are invisible to
-the map, so a file with no inbound edge found is not shown to be dead.
+`hazard` landmarks), files with **no inbound edge found**, which excludes
+entry files, and **hidden coupling**: a pair retained in the optional,
+index-aligned map sidecar with at least three co-changes and weight ≥ 0.35 but
+no file edge `E` or reference edge `U`. The sidecar records pair indices,
+co-change counts and weights rounded to two decimals from the indexer's 4,000
+non-merge-commit history window. It is absent from older maps; those reports
+state `hidden_coupling_measured: false` (and text output says "hidden coupling
+not measured"), never that no pair was found. Files with no edge at all are
+coverage gaps: they are counted in `isolated_files`, not listed. Every report
+states its thresholds (named constants in `src/debt.rs`, plus the cuts they
+give on this map) and echoes the map's `coverage`; every count is a lower
+bound over the map's edges and history. Dynamic imports, reflection and
+declared connections are invisible to the map, so a file with no inbound edge
+found is not shown to be dead.
 
 `lens` prints the equivalent lens TOML (format v1), which `tolmap lens check`
 resolves fully: at most one area per finding kind, labelled by the kind alone
 (`district cycle`, `misplaced file`, `god file`, `hotspot`, `no inbound edge
-found`) and holding every file in a finding of that kind, so a district is
-tinted at most once per kind; one path per cycle, named from the files of its
-closing edges (closing edges as computed hops; consecutive ones inside a
-district are joined by declared hops whose reason states that no edge is
-claimed); and notes anchored to each file with the measured values, the
-misplaced file's per-district edge counts and the cycle's district names.
+found`, `hidden coupling`) and holding every file in a finding of that kind,
+so a district is tinted at most once per kind. It emits one path per cycle,
+named from the files of its closing edges (closing edges as computed hops;
+consecutive ones inside a district are joined by declared hops whose reason
+states that no edge is claimed), and declared paths for the first 20
+hidden-coupling pairs in report order (cross-district first, then weight). The
+hidden-coupling area still contains every pair's files, while a note states how
+many of the full `tolmap debt` report are shown as paths; each path's reason is
+`co-changed N times; no static edge found`. Notes carry the measured values,
+the misplaced file's per-district edge counts and the cycle's district names.
 Labels and path names carry no measured value and no district name, so lens
 comparison does not read a metric change or a renamed district as a removed
 and an added finding. Exit 0, or 2 when the map cannot be read.

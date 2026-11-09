@@ -3,8 +3,9 @@ import type { CoverageReport } from "./CoverageReport";
 import type { DebtThresholds } from "./DebtThresholds";
 import type { DistrictCycle } from "./DistrictCycle";
 import type { GodFile } from "./GodFile";
+import type { HiddenCoupling } from "./HiddenCoupling";
 import type { Hotspot } from "./Hotspot";
 import type { MisplacedFile } from "./MisplacedFile";
 import type { UnreachedFile } from "./UnreachedFile";
 
-export type DebtReport = { version: number, repo: string, lower_bound: boolean, files: number, edges: number, thresholds: DebtThresholds, coverage: CoverageReport | null, cycles: Array<DistrictCycle>, misplaced: Array<MisplacedFile>, god_files: Array<GodFile>, hotspots: Array<Hotspot>, unreached: Array<UnreachedFile>, entry_files: number, isolated_files: number, };
+export type DebtReport = { version: number, repo: string, lower_bound: boolean, files: number, edges: number, thresholds: DebtThresholds, coverage: CoverageReport | null, cycles: Array<DistrictCycle>, misplaced: Array<MisplacedFile>, god_files: Array<GodFile>, hotspots: Array<Hotspot>, unreached: Array<UnreachedFile>, hidden_coupling_measured: boolean, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };
