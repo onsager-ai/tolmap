@@ -20,6 +20,8 @@ export const cases = [
   ['map-folder', 'Folder selected', 'folder', 'map-ready'],
   ...['c', 'x', 'p'].map(layer => [`map-layer-${layer}`, `Map layer ${layer}`, `/onsager-ai/tolmap?layer=${layer}`, 'map-ready']),
   ['map-detail-pending', 'Detail still running', '/onsager-ai/tolmap?job=fixture', 'early'],
+  // Issue #248: walkthrough steps restored from their deep links.
+  ...[['first', 1], ['middle', 2], ['unresolved', 3], ['last', 5]].map(([state, step]) => [`map-lens-walk-${state}`, `Lens walkthrough · ${state}`, `/onsager-ai/tolmap?lens=overview&path=request-flow&step=${step}`, 'lens-walk', 'lens-walk']),
   ...['search', 'search-empty', 'layers', 'repositories', 'quality', 'keyboard', 'path'].map(overlay => [`map-${overlay}`, `Map · ${overlay}`, overlay === 'path' ? 'file' : '/onsager-ai/tolmap', 'map-ready', overlay]),
   ...['ready', 'loading', 'unavailable', 'missing', 'expired', 'binary', 'large', 'unsupported', 'long-line', 'search', 'search-empty'].map(state => [`source-${state}`, `Source · ${state}`, 'source', `source-${state}`]),
   ...['queued', 'indexing', 'failed', 'stale', 'complete'].map(state => [

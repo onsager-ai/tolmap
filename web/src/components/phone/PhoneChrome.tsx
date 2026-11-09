@@ -18,6 +18,8 @@ import { OverviewCard, SelectionCard, type PathPick, type StructureCardState } f
 
 export interface PhoneChromeProps {
   sourceAction?: ReactNode;
+  /** Issue #248: the lens walkthrough card, above the stop's card. */
+  walkthrough?: ReactNode;
   lenses?: ReactNode;
   activeLens?: ReactNode;
   comparison?: ReactNode;
@@ -187,7 +189,7 @@ export function PhoneChrome(p: PhoneChromeProps) {
     />
   );
   const somethingShown = !!p.pathPick || !!p.structure || p.quality || p.sel != null || p.selD != null;
-  const sheetContent = p.comparison && !somethingShown ? p.comparison : <>{p.comparison && <button className="min-h-11 py-2 underline" onClick={p.onClearSelection}>Back to comparison</button>}{p.sourceAction && <div className={p.landscape ? "pb-3" : "pt-4 pb-3"}>{p.sourceAction}</div>}{somethingShown ? content : p.activeLens ?? overview}</>;
+  const sheetContent = p.comparison && !somethingShown ? p.comparison : <>{p.comparison && <button className="min-h-11 py-2 underline" onClick={p.onClearSelection}>Back to comparison</button>}{!p.structure && !p.quality && !p.pathPick && p.walkthrough}{p.sourceAction && <div className={p.landscape ? "pb-3" : "pt-4 pb-3"}>{p.sourceAction}</div>}{somethingShown ? content : p.activeLens ?? overview}</>;
   // §9: in landscape the pill and the control column float over the map
   // beside the side sheet (the sheet's width plus the left safe inset when
   // open; the left inset alone when collapsed).
