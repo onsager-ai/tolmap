@@ -17,6 +17,10 @@ on:
       - ".github/workflows/viewer-check.yml"
   workflow_dispatch:
 
+concurrency:
+  group: viewer-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lens-fixtures:
     name: pinned Flask lens fixtures
@@ -53,8 +57,12 @@ jobs:
           path: web/lens-fixtures/
   view:
     needs: lens-fixtures
-    name: check:view + screenshots
+    name: check:view + screenshots (${{ matrix.profile }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [desktop, phone]
     timeout-minutes: 30
     defaults:
       run:
@@ -115,29 +123,86 @@ jobs:
         with:
           name: lens-fixtures
           path: web/lens-fixtures
-      - name: Lens overlay and comparison checks and screenshots (Flask, desktop and phone, both themes)
-        run: node scripts/check-lens-browser.mjs http://127.0.0.1:5176
+      - name: Lens overlay and comparison checks and screenshots (Flask, ${{ matrix.profile }}, both themes)
+        run: node scripts/check-lens-browser.mjs http://127.0.0.1:5176 --profile ${{ matrix.profile }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: lens-review-samples
+          name: lens-review-samples-${{ matrix.profile }}
           path: web/shots/lenses/
           if-no-files-found: error
-      - name: Lens walkthrough checks and screenshots (Flask, desktop and phone, both themes)
-        run: node scripts/check-lens-walkthrough.mjs http://127.0.0.1:5176
+      - name: Lens walkthrough checks and screenshots (Flask, ${{ matrix.profile }}, both themes)
+        run: node scripts/check-lens-walkthrough.mjs http://127.0.0.1:5176 --profile ${{ matrix.profile }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: lens-walkthrough-samples
+          name: lens-walkthrough-samples-${{ matrix.profile }}
           path: web/shots/lens-walkthrough/
           if-no-files-found: error
-      - name: Comparison protocol browser checks (desktop and phone)
-        run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176
+      - name: Comparison protocol browser checks (${{ matrix.profile }})
+        run: node scripts/check-comparison-browser.mjs http://127.0.0.1:5176 --profile ${{ matrix.profile }}
       - name: Vite log on comparison failure
         if: failure()
         run: tail -n 120 vite.log || true
-      - name: check:view
-        run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176
+      - name: check:view (${{ matrix.profile }})
+        run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176 --profile ${{ matrix.profile }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-review-samples-${{ matrix.profile }}
+          path: web/shots/comparison/
+          if-no-files-found: warn
+
+  screenshots:
+    needs: lens-fixtures
+    name: screenshots and perf bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.21.0"
+      - run: corepack enable && corepack prepare pnpm@9.15.9 --activate
+      - run: pnpm install --frozen-lockfile
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+      - run: pnpm exec playwright install --with-deps chromium
+      # collect-maps writes the committed data/ fixtures into public/maps;
+      # the two maps check:view pins by hash are then unpacked over it.
+      - name: Maps
+        run: |
+          node scripts/collect-maps.mjs
+          for f in check-fixtures/*.json.gz; do
+            slug=$(basename "$f" .json.gz)
+            mkdir -p "public/maps/${slug%%__*}"
+            gunzip -c "$f" > "public/maps/${slug%%__*}/${slug##*__}.json"
+          done
+          for f in check-fixtures/*.symbols.tar.gz; do
+            slug=$(basename "$f" .symbols.tar.gz)
+            mkdir -p "public/maps/${slug%%__*}"
+            tar -xzf "$f" -C "public/maps/${slug%%__*}"
+          done
+      # Screenshots need the same API proxy as the assertion legs, even
+      # though they do not exercise every job-service response themselves.
+      - name: Start mock API server
+        run: |
+          nohup node scripts/mock-api-server.mjs 8787 > mock-api.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/api/healthz >/dev/null && exit 0; sleep 1; done
+          cat mock-api.log; exit 1
+      - name: Start Vite
+        env:
+          TOLMAP_API_PROXY_TARGET: "http://127.0.0.1:8787"
+        run: |
+          nohup pnpm exec vite --host 127.0.0.1 --port 5176 --strictPort > vite.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:5176/ >/dev/null && exit 0; sleep 1; done
+          cat vite.log; exit 1
       - name: Screenshots
         if: always()
         run: node scripts/screenshots.mjs --base http://127.0.0.1:5176 --out shots
@@ -157,12 +222,6 @@ jobs:
         with:
           name: viewer-shots
           path: web/shots/
-          if-no-files-found: warn
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: comparison-review-samples
-          path: web/shots/comparison/
           if-no-files-found: warn
       # B4 perf follow-up (issue #82, owner review): dify is the one fixture
       # large enough (6,347 files) for paint cost to be worth measuring in

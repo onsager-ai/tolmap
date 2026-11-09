@@ -93,21 +93,24 @@ async function preflight(base) {
 }
 
 function parseArgs(argv) {
-  const args = { base: "http://127.0.0.1:5176", beforeBase: null, featureOnly: false };
+  const args = { base: "http://127.0.0.1:5176", beforeBase: null, featureOnly: false, profile: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--base") args.base = argv[++i];
     else if (argv[i] === "--before-base") args.beforeBase = argv[++i];
     else if (argv[i] === "--feature-only") args.featureOnly = true;
+    else if (argv[i] === "--profile") args.profile = argv[++i];
     else throw new Error(`unknown arg: ${argv[i]}`);
   }
+  if (args.profile != null && !["desktop", "phone"].includes(args.profile)) throw new Error("--profile must be desktop or phone");
   return args;
 }
 
 const MAPS = ["django/django", "langgenius/dify"];
-const PROFILES = [
+const ALL_PROFILES = [
   { name: "desktop", viewport: { width: 1200, height: 800 }, isMobile: false, hasTouch: false },
   { name: "phone", viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
 ];
+let PROFILES = ALL_PROFILES;
 
 let failures = 0;
 let checks = 0;
@@ -2323,7 +2326,7 @@ async function checkEmptyTapStepBack(browser, base) {
       return;
     }
     const before = await stableBox(page);
-    await tap(page, PROFILES[0], pt[0], pt[1]);
+    await tap(page, ALL_PROFILES[0], pt[0], pt[1]);
     await page.waitForTimeout(300);
     const url = new URL(page.url());
     assertFn(url, stepLabel);
@@ -2343,7 +2346,7 @@ async function checkEmptyTapStepBack(browser, base) {
   const finalPt = await findEmptyPointWithZoomOut(page, 1200, 800);
   if (finalPt) {
     const beforeUrl = page.url();
-    await tap(page, PROFILES[0], finalPt[0], finalPt[1]);
+    await tap(page, ALL_PROFILES[0], finalPt[0], finalPt[1]);
     await page.waitForTimeout(300);
     report(page.url() === beforeUrl, `${label}: an empty tap with nothing selected is a no-op`);
   }
@@ -5155,7 +5158,7 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
       report(false, `${label}: ${stepLabel}`, "no empty point found even after zooming out");
       return;
     }
-    await tap(page, PROFILES[0], pt[0], pt[1]);
+    await tap(page, ALL_PROFILES[0], pt[0], pt[1]);
     await page.waitForTimeout(300);
     assertFn(new URL(page.url()), stepLabel);
   };
@@ -5202,7 +5205,7 @@ async function checkStepBackThroughSymbolLevels(browser, base) {
 async function checkPhoneHubRingDeclutter(browser, base) {
   const label = "phone hub-ring declutter (dify)";
   console.log(`\n${label}`);
-  const phone = PROFILES.find((p) => p.name === "phone");
+  const phone = ALL_PROFILES.find((p) => p.name === "phone");
   const context = await browser.newContext({
     viewport: phone.viewport,
     isMobile: phone.isMobile,
@@ -7317,12 +7320,15 @@ async function checkFullscreenFallback(browser, base, profile) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  PROFILES = args.profile == null ? ALL_PROFILES : ALL_PROFILES.filter((profile) => profile.name === args.profile);
   await preflight(args.base);
   const browser = await chromium.launch();
   try {
+    const phoneProfile = PROFILES.find((p) => p.name === "phone");
+    const primaryProfile = args.profile !== "phone";
     if (args.featureOnly) {
       for (const slug of MAPS) for (const profile of PROFILES) await checkFitFraming(browser, args.base, slug, profile);
-      await checkFolderWinsFileCollision(browser, args.base);
+      if (primaryProfile) await checkFolderWinsFileCollision(browser, args.base);
       for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
       return;
     }
@@ -7332,9 +7338,9 @@ async function main() {
         await runOne({ browser, base: args.base, slug, profile });
       }
     }
-    await checkFolderWinsFileCollision(browser, args.base);
+    if (primaryProfile) await checkFolderWinsFileCollision(browser, args.base);
     for (const profile of PROFILES) await checkRepoSwitch(browser, args.base, profile);
-    await checkMultiPolygonHover(browser, args.base);
+    if (primaryProfile) await checkMultiPolygonHover(browser, args.base);
     for (const profile of PROFILES) await checkSelectionDim(browser, args.base, profile);
     for (const profile of PROFILES) await checkPackageLayout(browser, args.base, profile);
     await checkDistrictRefinement(browser, args.base);
@@ -7346,85 +7352,96 @@ async function main() {
     for (const profile of PROFILES) await checkLinkColourLegend(browser, args.base, profile);
     for (const profile of PROFILES) await checkFitButtonIcon(browser, args.base, profile);
     for (const profile of PROFILES) await checkLayerAwareOverview(browser, args.base, profile);
-    await checkLayerBrightnessParity(browser, args.base);
+    if (primaryProfile) await checkLayerBrightnessParity(browser, args.base);
     for (const profile of PROFILES) await checkFolderLabelsAndUnconnected(browser, args.base, args.beforeBase, profile);
     // Issue #82 A1
-    await checkEmptyTapStepBack(browser, args.base);
+    if (primaryProfile) await checkEmptyTapStepBack(browser, args.base);
     for (const profile of PROFILES) await checkBreadcrumbNoMove(browser, args.base, profile);
     for (const profile of PROFILES) await checkFullscreenPreservesView(browser, args.base, profile);
-    await checkFileLabelTapSelects(browser, args.base);
-    await checkDragThresholdNoSelect(browser, args.base);
-    await checkSearchPanOffscreen(browser, args.base);
+    if (primaryProfile) {
+      await checkFileLabelTapSelects(browser, args.base);
+      await checkDragThresholdNoSelect(browser, args.base);
+      await checkSearchPanOffscreen(browser, args.base);
+    }
     // issue #82 (district hues, import roads, hub rings, always-on district names)
-    await checkDistrictHueAdjacency(browser, args.base);
+    if (primaryProfile) await checkDistrictHueAdjacency(browser, args.base);
     for (const profile of PROFILES) await checkRoadTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkHubRingTap(browser, args.base, profile);
     // B4 (nested footprints, issue #82): scope item 9(a)-(f)
     for (const profile of PROFILES) await checkFootprintModeDrawsPolygons(browser, args.base, profile);
     for (const profile of PROFILES) await checkFootprintCoordinateHitTest(browser, args.base, profile);
-    await checkImportLinesAnchorOnFootprintCentroids(browser, args.base);
+    if (primaryProfile) await checkImportLinesAnchorOnFootprintCentroids(browser, args.base);
     for (const profile of PROFILES) await checkStreetsAndTap(browser, args.base, profile);
     for (const profile of PROFILES) await checkNeighbourhoodLabelsAtDeeperZoom(browser, args.base, profile);
     for (const profile of PROFILES) await checkLabelsFitTheirBoxes(browser, args.base, profile);
-    await checkDesktopLabelPlacement(browser, args.base);
-    await checkDesktopLabelRules(browser, args.base);
-    await checkPhoneLabelRules(browser, args.base);
-    await checkDesktopZoomCameraAgreement(browser, args.base);
-    await checkLegacyMapWithoutFootprints(browser, args.base);
+    if (args.profile !== "phone") {
+      await checkDesktopLabelPlacement(browser, args.base);
+      await checkDesktopLabelRules(browser, args.base);
+      await checkDesktopZoomCameraAgreement(browser, args.base);
+    }
+    if (phoneProfile) await checkPhoneLabelRules(browser, args.base);
+    if (primaryProfile) await checkLegacyMapWithoutFootprints(browser, args.base);
     // Issue #82 C2: symbol cards, rolled-up references, outline tree.
     for (const profile of PROFILES) await checkNoCardsAtFitZoom(browser, args.base, profile);
-    await checkCardsAppearAtSymbolGate(browser, args.base);
-    await checkClassExpandsAtShortSide(browser, args.base);
-    await checkCardTapSelectsSymbolAndBreadcrumb(browser, args.base);
-    await checkReferenceLineEndpoints(browser, args.base);
-    await checkInheritanceLineAndCard(browser, args.base);
-    await checkOutlineHoverHighlightsCard(browser, args.base);
-    await checkSymbolCardsCarryLabelOrChild(browser, args.base);
-    await checkSymbolCardsSingleSubpath(browser, args.base);
-    await checkStepBackThroughSymbolLevels(browser, args.base);
-    await checkPhoneHubRingDeclutter(browser, args.base);
-    await checkMapWithoutSymbolsStillWorks(browser, args.base);
+    if (primaryProfile) {
+      await checkCardsAppearAtSymbolGate(browser, args.base);
+      await checkClassExpandsAtShortSide(browser, args.base);
+      await checkCardTapSelectsSymbolAndBreadcrumb(browser, args.base);
+      await checkReferenceLineEndpoints(browser, args.base);
+      await checkInheritanceLineAndCard(browser, args.base);
+      await checkOutlineHoverHighlightsCard(browser, args.base);
+      await checkSymbolCardsCarryLabelOrChild(browser, args.base);
+      await checkSymbolCardsSingleSubpath(browser, args.base);
+      await checkStepBackThroughSymbolLevels(browser, args.base);
+    }
+    if (phoneProfile) await checkPhoneHubRingDeclutter(browser, args.base);
+    if (primaryProfile) await checkMapWithoutSymbolsStillWorks(browser, args.base);
     // Issue #82 "chrome follows the theme"
     for (const profile of PROFILES) await checkThemeToggleCycles(browser, args.base, profile);
     for (const profile of PROFILES) await checkThemeRepaintsMapColours(browser, args.base, profile);
     for (const profile of PROFILES) await checkLinkLegendWrapsAtHighDegree(browser, args.base, profile);
-    await checkChromeContrast(browser, args.base);
+    if (primaryProfile) await checkChromeContrast(browser, args.base);
     // docs/UX.md phase 2: the phone shell.
-    for (const profile of PHONE_SIZES) await checkPhoneShellChrome(browser, args.base, profile);
-    const phoneProfile = PROFILES.find((p) => p.name === "phone");
-    await checkPhoneTapSelection(browser, args.base, phoneProfile);
-    await checkPhoneBackStack(browser, args.base, phoneProfile);
-    // Issue #177: the owner's iPhone pass -- a way home and a working
-    // repository switch; the sheet drags down from scrolled content.
-    await checkPhoneRepoSheet(browser, args.base, phoneProfile);
-    await checkPhoneRepoSheet(browser, args.base, { name: "landscape-844x390", viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, landscape: true });
-    await checkPhoneSheetDragFromContent(browser, args.base, phoneProfile);
-    await checkPhoneLayersSheet(browser, args.base, phoneProfile);
-    await checkPhonePathMode(browser, args.base, phoneProfile);
+    if (phoneProfile) {
+      for (const profile of PHONE_SIZES) await checkPhoneShellChrome(browser, args.base, profile);
+      await checkPhoneTapSelection(browser, args.base, phoneProfile);
+      await checkPhoneBackStack(browser, args.base, phoneProfile);
+      // Issue #177: the owner's iPhone pass -- a way home and a working
+      // repository switch; the sheet drags down from scrolled content.
+      await checkPhoneRepoSheet(browser, args.base, phoneProfile);
+      await checkPhoneRepoSheet(browser, args.base, { name: "landscape-844x390", viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, landscape: true });
+      await checkPhoneSheetDragFromContent(browser, args.base, phoneProfile);
+      await checkPhoneLayersSheet(browser, args.base, phoneProfile);
+      await checkPhonePathMode(browser, args.base, phoneProfile);
+    }
     // docs/UX.md phase 3: search on both profiles, and the narrowest phone.
     for (const profile of PROFILES) await checkSearch(browser, args.base, profile);
-    await checkSearch(browser, args.base, PHONE_SIZES.find((p) => p.name === "phone-320"));
+    if (phoneProfile) await checkSearch(browser, args.base, PHONE_SIZES.find((p) => p.name === "phone-320"));
     // docs/UX.md phase 5: landscape, tablet and desktop (§5, §9), issue
     // #171, and the CSS fullscreen fallback.
-    for (const profile of LAYOUT_PROFILES) await checkProfileLayout(browser, args.base, profile);
-    await checkRepoSelectCounts(browser, args.base);
-    await checkDesktopBreadcrumbCurrentFits(browser, args.base);
-    await checkDesktopChromeInteractions(browser, args.base);
-    await checkDesktopOverviewKeyboardAndHover(browser, args.base);
-    await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.expect === "desktop"));
-    await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.name === "tablet-1024x768"));
+    if (primaryProfile) {
+      for (const profile of LAYOUT_PROFILES) await checkProfileLayout(browser, args.base, profile);
+      await checkRepoSelectCounts(browser, args.base);
+      await checkDesktopBreadcrumbCurrentFits(browser, args.base);
+      await checkDesktopChromeInteractions(browser, args.base);
+      await checkDesktopOverviewKeyboardAndHover(browser, args.base);
+      await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.expect === "desktop"));
+      await checkFullscreenFallback(browser, args.base, LAYOUT_PROFILES.find((p) => p.name === "tablet-1024x768"));
+    }
     // docs/UX.md phase 6: Home (§4.9) -- loaded, empty, service-unavailable
     // with a retry, and input validation. Empty also covers a missing static
     // index; an unlisted deep link exercises MapView's not-mapped state.
-    await checkHomeLoaded(browser, args.base);
-    await checkHomeEmptyCatalogue(browser, args.base);
-    await checkUnknownMapDeepLink(browser, args.base);
-    await checkHomeServiceUnavailable(browser, args.base);
-    await checkHomeValidation(browser, args.base);
-    // docs/UX.md §6 and §12 (phase 4): the indexing, queue and failure
-    // pages and the early handover (check-view-jobs.mjs, against
-    // mock-api-server.mjs). Replaces issue #97's and #162's job-page checks.
-    await runJobPageChecks(browser, args.base, report);
+    if (primaryProfile) {
+      await checkHomeLoaded(browser, args.base);
+      await checkHomeEmptyCatalogue(browser, args.base);
+      await checkUnknownMapDeepLink(browser, args.base);
+      await checkHomeServiceUnavailable(browser, args.base);
+      await checkHomeValidation(browser, args.base);
+      // docs/UX.md §6 and §12 (phase 4): the indexing, queue and failure
+      // pages and the early handover (check-view-jobs.mjs, against
+      // mock-api-server.mjs). Replaces issue #97's and #162's job-page checks.
+      await runJobPageChecks(browser, args.base, report);
+    }
   } finally {
     await browser.close();
   }

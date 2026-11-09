@@ -4,7 +4,10 @@ import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { cameraBoxes, settleCamera } from './camera-settle.mjs';
-const base = process.argv[2] ?? 'http://127.0.0.1:5176';
+const base = process.argv.find((arg) => arg.startsWith('http://') || arg.startsWith('https://')) ?? 'http://127.0.0.1:5176';
+const profileArg = process.argv.indexOf('--profile');
+const profiles = profileArg < 0 ? ['desktop', 'phone'] : [process.argv[profileArg + 1]];
+if (profiles.some((profile) => !['desktop', 'phone'].includes(profile))) throw new Error('--profile must be desktop or phone');
 const origin = new URL(base).origin;
 const commit = 'd73fa1cdcbd8b1465c151db8924ba58b1dd14e35';
 const mapBytes = await readFile('lens-fixtures/flask.json');
@@ -20,7 +23,7 @@ let activePage;
 await mkdir('shots/lens-walkthrough', {recursive:true});
 const browser = await chromium.launch({headless:true});
 try {
-  for (const profile of ['desktop', 'phone']) for (const theme of ['light', 'dark']) {
+  for (const profile of profiles) for (const theme of ['light', 'dark']) {
     const phone = profile === 'phone';
     const context = await browser.newContext({ viewport: phone ? {width:390,height:844} : {width:1440,height:900}, hasTouch:phone, isMobile:phone, colorScheme:theme, reducedMotion:'reduce' });
     const page = await context.newPage();

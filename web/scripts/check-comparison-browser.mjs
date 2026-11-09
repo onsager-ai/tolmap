@@ -2,7 +2,10 @@
 import { chromium } from 'playwright';
 import { readFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-const baseUrl = process.argv[2] ?? 'http://127.0.0.1:5176';
+const baseUrl = process.argv.find((arg) => arg.startsWith('http://') || arg.startsWith('https://')) ?? 'http://127.0.0.1:5176';
+const profileArg = process.argv.indexOf('--profile');
+const profiles = profileArg < 0 ? ['desktop', 'phone'] : [process.argv[profileArg + 1]];
+if (profiles.some((profile) => !['desktop', 'phone'].includes(profile))) throw new Error('--profile must be desktop or phone');
 const appOrigin = new URL(baseUrl).origin;
 const base = 'a'.repeat(40), head = 'b'.repeat(40);
 const map = JSON.parse(await readFile(new URL('../../data/flask.json', import.meta.url), 'utf8'));
@@ -14,6 +17,7 @@ await mkdir('shots/comparison', {recursive:true});
 const browser = await chromium.launch({headless:true});
 try {
   for (const [profile, viewport] of [['desktop',{width:1440,height:900}],['phone',{width:390,height:844}]]) {
+    if (!profiles.includes(profile)) continue;
     const context = await browser.newContext({viewport,hasTouch:profile === 'phone',isMobile:profile === 'phone'});
     const page = await context.newPage();
     const diagnostics = [];

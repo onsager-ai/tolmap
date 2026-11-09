@@ -74,6 +74,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -86,13 +87,51 @@ on:
     # Actions scheduling crush.
     - cron: "17 3 * * *"
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   LEIDEN_PREFIX: ${{ github.workspace }}/.native/leiden
 
 jobs:
-  gate:
-    name: build, lint, offline parity gate
+  changes:
+    name: changed inputs
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo 'rust=true' >> "$GITHUB_OUTPUT"
+            echo 'web=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          base="$PR_BASE_SHA"
+          changed=$(git diff --name-only "$base" "$GITHUB_SHA")
+          if printf '%s\n' "$changed" | grep -Eq '^(src/|tests/|data/|eval/|native/|scripts/|Cargo\.(toml|lock)$|\.github/workflows/)'; then
+            echo 'rust=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'rust=false' >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "$changed" | grep -Eq '^(web/|bindings/)'; then
+            echo 'web=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'web=false' >> "$GITHUB_OUTPUT"
+          fi
+  rust:
+    name: Rust build, lint, offline parity
+    needs: changes
+    if: always() && needs.changes.result == 'success' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -350,8 +389,30 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  gate:
+    name: build, lint, offline parity gate
+    needs: [changes, rust]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report scoped Rust gate result
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUST_CHANGED: ${{ needs.changes.outputs.rust }}
+          RUST_RESULT: ${{ needs.rust.result }}
+        run: |
+          set -euo pipefail
+          [ "$CHANGES_RESULT" = success ] || { echo "Changed-input detection concluded $CHANGES_RESULT" >&2; exit 1; }
+          case "$RUST_CHANGED:$RUST_RESULT" in
+            true:success) echo 'Rust, pipeline, fixture, or workflow inputs changed; the Rust gate passed.' ;;
+            false:skipped) echo 'No Rust, pipeline, fixture, or workflow inputs changed; offline parity was intentionally skipped.' ;;
+            *) echo "Rust gate concluded $RUST_RESULT for rust=$RUST_CHANGED" >&2; exit 1 ;;
+          esac
+
   scanner-probe:
     name: Python scanner mechanism and differential AST
+    needs: changes
+    if: always() && needs.changes.result == 'success' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -488,7 +549,8 @@ jobs:
   # no-install policy src/indexers.rs enforces.
   scip:
     name: SCIP ingest determinism (--refs scip, 3x sha256)
-    needs: gate
+    needs: [changes, rust]
+    if: always() && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     env:
       SCIP_TYPESCRIPT_VERSION: "0.4.0"
@@ -610,7 +672,8 @@ jobs:
   #     build still succeeds, and no node_modules is left behind.
   scip-install:
     name: SCIP install sandbox (nsjail, --install sandbox, 3x sha256)
-    needs: gate
+    needs: [changes, rust]
+    if: always() && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     env:
       SCIP_TYPESCRIPT_VERSION: "0.4.0"
@@ -763,8 +826,8 @@ jobs:
   # never by this job.
   scip-fixtures:
     name: SCIP nine-fixture gate (on demand / nightly)
-    needs: gate
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: [changes, rust]
+    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     # django's scip-python run is about two minutes (finding 44); the other
     # eight are smaller. Bounded so a hung indexer cannot hold the runner.
@@ -872,8 +935,8 @@ jobs:
   # dispatch pays for it.
   scip-churn:
     name: SCIP churn diagnosis (on demand)
-    needs: gate
-    if: github.event_name == 'workflow_dispatch' && inputs.scip_churn
+    needs: [changes, rust]
+    if: github.event_name == 'workflow_dispatch' && inputs.scip_churn && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
@@ -1067,8 +1130,8 @@ jobs:
   # or confirmed pairs falling (`gate`'s docstring says why only those).
   hand-score:
     name: Hand resolver vs SCIP score (on demand / nightly)
-    needs: gate
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: [changes, rust]
+    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.changes.result == 'success' && needs.rust.result == 'success'
     runs-on: ubuntu-latest
     # About the scip-fixtures job's indexing time plus the ingest; bounded so
     # a hung indexer cannot hold the runner.
@@ -1302,6 +1365,8 @@ jobs:
     # runs the same `pnpm build` the Dockerfile's web-builder stage runs
     # (collect-maps falls back to the committed data/ fixtures), plus oxlint.
     name: web build and lint
+    needs: changes
+    if: always() && needs.changes.result == 'success' && needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:

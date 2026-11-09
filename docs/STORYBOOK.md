@@ -132,7 +132,7 @@ that the Lenses entry changed were approved by the owner on 2026-11-08 from run
 approval. The owner approved the 32 lens walkthrough captures and re-approved the 12 map-lens-loaded/unresolved captures (Start control) on 2026-11-09 from run `42583567170` (source `710f94a`). The Flask
 viewer-check lane additionally uploads overview, zoomed stops, declared-hop
 explanations and unresolved reports for phone and desktop in both themes under
-`lens-review-samples` (also included in `viewer-shots/lenses/`). Its map is `data/flask.json` unchanged; Rust resolves
+`lens-review-samples-desktop` and `lens-review-samples-phone`. Its map is `data/flask.json` unchanged; Rust resolves
 `data/lenses/flask-request.toml` and generates symbols from the fixture's pinned
 source. The unresolved sample intentionally adds a missing member and stop.
 Lens comparison states (40 identities: five states × four viewports × two
@@ -149,6 +149,6 @@ map, not a fabricated Flask commit pair.
 Lens walkthrough states for #248 (first, middle, unresolved and last steps,
 restored from `?lens=overview&path=request-flow&step=<n>`) are candidates
 awaiting owner review; the Flask browser lane uploads stepped captures under
-`lens-walkthrough-samples`.
+`lens-walkthrough-samples-desktop` and `lens-walkthrough-samples-phone`.
 Source-reader responses in that browser lane are explicitly synthetic; the
 native local/hosted service tests own git-object pinning evidence.
