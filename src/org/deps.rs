@@ -59,7 +59,21 @@ pub(crate) fn scan(root: &Path) -> Tree {
     cargo(root, &files, &mut tree);
     for file in &files {
         let name = file.rsplit('/').next().unwrap_or(file.as_str());
+        let ecosystem = match name {
+            "package.json" => Ecosystem::Npm,
+            "go.mod" => Ecosystem::Go,
+            "pyproject.toml" | "setup.py" | "setup.cfg" => Ecosystem::Python,
+            _ if is_requirements(name) => Ecosystem::Python,
+            _ => continue,
+        };
         let Ok(text) = fs::read_to_string(root.join(file)) else {
+            tree.unreadable.push(Unreadable {
+                ecosystem,
+                consumer_package: directory_or_root(directory_of(file)),
+                file: file.clone(),
+                name: String::new(),
+                reason: "manifest is not readable as UTF-8 text".to_owned(),
+            });
             continue;
         };
         match name {
@@ -943,6 +957,20 @@ fn requirements(root: &Path, file: &str, text: &str, tree: &mut Tree) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_manifest_is_retained_as_unresolved_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("package.json"), [0xff]).unwrap();
+        let tree = scan(root.path());
+        assert_eq!(tree.unreadable.len(), 1);
+        assert_eq!(tree.unreadable[0].ecosystem, Ecosystem::Npm);
+        assert_eq!(tree.unreadable[0].file, "package.json");
+        assert_eq!(
+            tree.unreadable[0].reason,
+            "manifest is not readable as UTF-8 text"
+        );
+    }
 
     #[test]
     fn github_urls_in_every_manifest_form() {
