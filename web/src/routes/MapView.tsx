@@ -976,13 +976,18 @@ export function MapView() {
     if (!doc) return;
     if (narrow && layersOpen) closeLayers();
     if (narrow && search.lens_compare && (detent === "half" || detent === "full")) comparisonDetentRef.current = detent;
+    if (target.symbol) {
+      const raw = districtSymbolsMap.get(target.district);
+      const local = raw?.symbols.findIndex(row => row[0] === target.file
+        && (row[1] === target.symbol!.name || target.symbol!.name.endsWith(`.${row[1]}`))
+        && row[3] === target.symbol!.start) ?? -1;
+      // A walkthrough symbol needs the same hierarchical selection the
+      // renderer's card pass uses. The legacy per-file `sym` selection opens
+      // its sidebar card but leaves the lens marker subject to label culling.
+      if (raw && local >= 0) { selectHierSymbol(raw.symbol_indices[local]); return; }
+    }
     const symbol = target.symbol ? doc.S[String(target.file)]?.findIndex(row => row[0] === target.symbol!.name && row[2] === target.symbol!.start) : undefined;
     selectFile(target.file, { symbol: symbol != null && symbol >= 0 ? symbol : undefined });
-    if (target.symbol && (symbol == null || symbol < 0)) {
-      const raw = districtSymbolsMap.get(target.district);
-      const local = raw?.symbols.findIndex(row => row[0] === target.file && row[1] === target.symbol!.name && row[3] === target.symbol!.start) ?? -1;
-      if (raw && local >= 0) selectHierSymbol(raw.symbol_indices[local]);
-    }
   }
   function chooseLens(lens?: string) {
     updateSearch({ lens, lens_compare: undefined, other_lens: undefined, path: undefined, step: undefined });
