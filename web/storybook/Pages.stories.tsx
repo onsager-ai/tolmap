@@ -82,3 +82,7 @@ export const MapLensCompareOverlap = { ...page("map-lens-compare-overlap") };
 export const MapLensCompareLoading = { ...page("map-lens-compare-loading") };
 export const MapLensCompareStale = { ...page("map-lens-compare-stale") };
 export const MapLensCompareError = { ...page("map-lens-compare-error") };
+export const MapDebtLoaded = { ...page("map-debt-loaded") };
+export const MapDebtEmpty = { ...page("map-debt-empty") };
+export const MapDebtError = { ...page("map-debt-error") };
+export const MapDebtCompare = { ...page("map-debt-compare") };

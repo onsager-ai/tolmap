@@ -427,6 +427,49 @@ async fn polyglot_comparison_uses_both_snapshot_file_sets_and_places_new_files()
     assert_eq!(fs::read(base_path).unwrap(), bytes);
 }
 
+// Issue #250: the built-in debt lens is computed from the stored map, never
+// read from `.tolmap/lenses/`, and its name cannot be a repository lens name.
+#[tokio::test]
+async fn debt_lens_is_built_in_and_pinned() {
+    let f = fixture();
+    let (status, body) = get(&f, &format!("/api/maps/local/example/debt?commit={}", f.a)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], "@debt");
+    assert_eq!(body["commit"], f.a);
+    let labels: Vec<&str> = body["report"]["areas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels, ["no inbound edge found"]);
+    assert!(body["report"]["unresolved"].as_array().unwrap().is_empty());
+    assert_eq!(
+        get(&f, &format!("/api/maps/local/example/debt?commit={}", f.a))
+            .await
+            .1,
+        body
+    );
+    let (status, _) = get(
+        &f,
+        &format!("/api/maps/local/example/lenses/@debt?commit={}", f.a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let path = format!("/api/compare/local/example/debt?base={}&head={}", f.a, f.a);
+    let (status, value) = get(&f, &path).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(
+        (value["lens"].as_str(), value["other"].as_str()),
+        (Some("@debt"), Some("@debt"))
+    );
+    let changes = value["changes"].as_array().unwrap();
+    assert!(!changes.is_empty());
+    assert!(changes.iter().all(|d| d["status"] == "shared"));
+    assert_eq!(get(&f, &path).await.1, value);
+}
+
 #[tokio::test]
 async fn comparison_from_a_base_without_edges_succeeds() {
     // A one-file base map has no candidate edges to blend; comparing from it

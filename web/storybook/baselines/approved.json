@@ -5342,6 +5342,262 @@
       "sha256": "30f4f0981ed919223e3b112a672d4e2549d1d272519e64082e56e28428f3b9e3"
     },
     {
+      "id": "map-debt-loaded",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-debt-loaded-desktop-dark.png",
+      "sha256": "614c9821fe897968cd13c3cc6a202acc113e6f2065e36f6c9586cf9f1091a780"
+    },
+    {
+      "id": "map-debt-loaded",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-debt-loaded-desktop-light.png",
+      "sha256": "18a38ba46ca35a80d12d55969fa746baa5dce9ba32b3745b37c94565e616f3f8"
+    },
+    {
+      "id": "map-debt-loaded",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-debt-loaded-landscape-dark.png",
+      "sha256": "79e0678223bb8c8dbaaea81fbe084fcf6e518b1bf11bbbc58d9801130948c954"
+    },
+    {
+      "id": "map-debt-loaded",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-debt-loaded-landscape-light.png",
+      "sha256": "803eec95536402c084effbd2c6642f141a6f1f1613613b943dc0dcf87a745395"
+    },
+    {
+      "id": "map-debt-loaded",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-debt-loaded-phone-dark.png",
+      "sha256": "f6b1884c0813d26c717470810707359570a27ed669966b1a9572492434558a4e"
+    },
+    {
+      "id": "map-debt-loaded",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-debt-loaded-phone-light.png",
+      "sha256": "8afcd73fb6613b26301c99680b25a85ae9ec4b75c392a3df4aad849673074cb0"
+    },
+    {
+      "id": "map-debt-loaded",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-debt-loaded-tablet-dark.png",
+      "sha256": "e1c677e9ffc626edec47e17b3de436771208bac32d729589cc22d26d256e57df"
+    },
+    {
+      "id": "map-debt-loaded",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-debt-loaded-tablet-light.png",
+      "sha256": "f31adda2c91d8924824bd50512cca46e3a63bb7d1ced73092932799237f69378"
+    },
+    {
+      "id": "map-debt-compare",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-debt-compare-desktop-dark.png",
+      "sha256": "5f4b5c2fbf54bb42dee378cf57134eed0eb58e5baea94ba4d612d6fb1d9b30f6"
+    },
+    {
+      "id": "map-debt-compare",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-debt-compare-desktop-light.png",
+      "sha256": "e2c96b54c2b5a9c67529ddfed636a34c346f70506b54234449346df8a366a647"
+    },
+    {
+      "id": "map-debt-compare",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-debt-compare-landscape-dark.png",
+      "sha256": "0303b946c9a54272bbb8953837d88d8f84da1d753d976aaf3cb5dc5ce9f53c16"
+    },
+    {
+      "id": "map-debt-compare",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-debt-compare-landscape-light.png",
+      "sha256": "b1fd2f0ba38f5f5537ff34ff041ffe37a636a7472b7d7b44751eae34832e9535"
+    },
+    {
+      "id": "map-debt-compare",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-debt-compare-phone-dark.png",
+      "sha256": "e33802dcdf132a0fa1ef619c91b417e1805d4e02bbdd6334c9d024316b6bfaae"
+    },
+    {
+      "id": "map-debt-compare",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-debt-compare-phone-light.png",
+      "sha256": "d0455b950e17b16f01b8ea568009448aa45c3798a716ba353583771af2425e6f"
+    },
+    {
+      "id": "map-debt-compare",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-debt-compare-tablet-dark.png",
+      "sha256": "baa2e39205ecf04f629455c73e89150c32e649a357860f2d49a4f24af77b05ef"
+    },
+    {
+      "id": "map-debt-compare",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-debt-compare-tablet-light.png",
+      "sha256": "f40acf9dff8df736c3dbbb3877ca18cb48e45b0ee7ea18dce7a6bad893973521"
+    },
+    {
+      "id": "map-debt-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-debt-empty-desktop-dark.png",
+      "sha256": "a45d30833a8b1220039313b99a9eb4dece006b4abd6501442dfb4d4c45ad2d0e"
+    },
+    {
+      "id": "map-debt-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-debt-empty-desktop-light.png",
+      "sha256": "190e834dee31be8425c06b9c95226bfec98b918ddf409deae0e44057dcecd7e6"
+    },
+    {
+      "id": "map-debt-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-debt-empty-landscape-dark.png",
+      "sha256": "27acf902946fe0768b1a2fe78836083d2f9bb3cd554a78f270f29f5e26292f85"
+    },
+    {
+      "id": "map-debt-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-debt-empty-landscape-light.png",
+      "sha256": "15ffe30bc0adabd450eb7879e549935cadc8be46a7b0796ad93de7783e78f4fc"
+    },
+    {
+      "id": "map-debt-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-debt-empty-phone-dark.png",
+      "sha256": "37502ef0cc638fd32e09dbba47e3c71c335428cfbe11352e6570995a839482a0"
+    },
+    {
+      "id": "map-debt-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-debt-empty-phone-light.png",
+      "sha256": "9ab52ef3211d4a2d3a208ff77f8465d6b2011e949b01742fb156568e100b6f1e"
+    },
+    {
+      "id": "map-debt-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-debt-empty-tablet-dark.png",
+      "sha256": "45fb744c81acbec6515ed0bde648b10e858465e2bd3a5e07c341a7ae997979e4"
+    },
+    {
+      "id": "map-debt-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-debt-empty-tablet-light.png",
+      "sha256": "62991aed6087021f0c32dc5dc9e16a8ed482bddfb0b841051582182093688cf2"
+    },
+    {
+      "id": "map-debt-error",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-map-debt-error-desktop-dark.png",
+      "sha256": "8734a280fcc4d212efa2a724346b1a4a7aa015102de7e5b15fdf017dbc068348"
+    },
+    {
+      "id": "map-debt-error",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-map-debt-error-desktop-light.png",
+      "sha256": "5be09e1211bb7a328b2395a1657600d664386caf669e4546f864112d29a2a396"
+    },
+    {
+      "id": "map-debt-error",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-map-debt-error-landscape-dark.png",
+      "sha256": "cbdf7c54970f6ae0d95b99e5604449339561c7acaa423db382401fe3b87b507f"
+    },
+    {
+      "id": "map-debt-error",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-map-debt-error-landscape-light.png",
+      "sha256": "9745c7cd4f0ce2d3f2a3049e222b42dd7d631ca9a6cd38233cc8dfe2f161d89e"
+    },
+    {
+      "id": "map-debt-error",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-map-debt-error-phone-dark.png",
+      "sha256": "ebfb5603c3e709ce793825f55a0cba83d4421d023df1de3d09e099ebcef49567"
+    },
+    {
+      "id": "map-debt-error",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-map-debt-error-phone-light.png",
+      "sha256": "d98871c16ba6ec8ae275ff2752ce1acc2e3c89e13ccd30ec86aac15c900bd8ef"
+    },
+    {
+      "id": "map-debt-error",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-map-debt-error-tablet-dark.png",
+      "sha256": "4b964a0bd809c1ebaed37e3249c402c5ba1fb0144dcb941f37f9a472c4a9aab5"
+    },
+    {
+      "id": "map-debt-error",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-map-debt-error-tablet-light.png",
+      "sha256": "961c71d58689fbf15169dbd66cccb15be2dc7e3977e066ae9e4496a2554009a8"
+    },
+    {
       "id": "map-lens-compare-stale",
       "host": "oss",
       "viewport": "landscape",
@@ -5952,6 +6208,50 @@
         "oss-map-lens-walk-unresolved-phone-light.png",
         "oss-map-lens-walk-unresolved-tablet-dark.png",
         "oss-map-lens-walk-unresolved-tablet-light.png"
+      ]
+    },
+    {
+      "reason": "PR #254 adds Debt lens states (loaded, compare, empty, error at every viewport and theme: 32 new identities), approved by the repository owner on 2026-11-09.",
+      "sourceRun": {
+        "id": "42577358027",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42577358027",
+        "sourceSha": "15d06e2427b6f2fcb1e0384600aa30a93512be68"
+      },
+      "files": [
+        "oss-map-debt-loaded-phone-light.png",
+        "oss-map-debt-loaded-phone-dark.png",
+        "oss-map-debt-empty-phone-light.png",
+        "oss-map-debt-empty-phone-dark.png",
+        "oss-map-debt-error-phone-light.png",
+        "oss-map-debt-error-phone-dark.png",
+        "oss-map-debt-compare-phone-light.png",
+        "oss-map-debt-compare-phone-dark.png",
+        "oss-map-debt-loaded-landscape-light.png",
+        "oss-map-debt-loaded-landscape-dark.png",
+        "oss-map-debt-empty-landscape-light.png",
+        "oss-map-debt-empty-landscape-dark.png",
+        "oss-map-debt-error-landscape-light.png",
+        "oss-map-debt-error-landscape-dark.png",
+        "oss-map-debt-compare-landscape-light.png",
+        "oss-map-debt-compare-landscape-dark.png",
+        "oss-map-debt-loaded-tablet-light.png",
+        "oss-map-debt-loaded-tablet-dark.png",
+        "oss-map-debt-empty-tablet-light.png",
+        "oss-map-debt-empty-tablet-dark.png",
+        "oss-map-debt-error-tablet-light.png",
+        "oss-map-debt-error-tablet-dark.png",
+        "oss-map-debt-compare-tablet-light.png",
+        "oss-map-debt-compare-tablet-dark.png",
+        "oss-map-debt-loaded-desktop-light.png",
+        "oss-map-debt-loaded-desktop-dark.png",
+        "oss-map-debt-empty-desktop-light.png",
+        "oss-map-debt-empty-desktop-dark.png",
+        "oss-map-debt-error-desktop-light.png",
+        "oss-map-debt-error-desktop-dark.png",
+        "oss-map-debt-compare-desktop-light.png",
+        "oss-map-debt-compare-desktop-dark.png"
       ]
     }
   ]

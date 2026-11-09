@@ -566,7 +566,7 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
         return Ok(axum::Json(json!([])).into_response());
     }
     let parts: Vec<_> = path.trim_matches('/').split('/').collect();
-    if (parts.len() == 4 || (parts.len() == 5 && parts[4] == "lenses"))
+    if (parts.len() == 4 || (parts.len() == 5 && matches!(parts[4], "lenses" | "debt")))
         && parts[..3] == ["api", "compare", "snapshot"]
     {
         let id = Uuid::parse_str(parts[3])?;
@@ -612,6 +612,26 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
             .join(base.id.to_string())
             .join("map.json");
         let cache = s.data.join("comparisons");
+        if parts.len() == 5 && parts[4] == "debt" {
+            let result = crate::service::debt::compare_debt_at(
+                s.repository.clone(),
+                preview.path.clone(),
+                map,
+                s.data
+                    .join("snapshots")
+                    .join(head.id.to_string())
+                    .join("map.json"),
+                query.base,
+                query.head,
+            );
+            drop(preview);
+            return Ok(match result {
+                Ok(value) => {
+                    ([(header::CACHE_CONTROL, "no-store")], axum::Json(value)).into_response()
+                }
+                Err(error) => error.into_response(),
+            });
+        }
         if parts.len() == 5 {
             let result = crate::service::lens::compare_at(
                 s.repository.clone(),
@@ -711,6 +731,16 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                 params.get("path").context("path")?,
             )?;
             return Ok(axum::Json(text).into_response());
+        }
+        if parts.len() == 5 && parts[4] == "debt" {
+            let result =
+                crate::service::debt::debt_at(snap.repository, snap.commit, dir.join("map.json"));
+            return Ok(match result {
+                Ok(value) => {
+                    ([(header::CACHE_CONTROL, "no-store")], axum::Json(value)).into_response()
+                }
+                Err(error) => error.into_response(),
+            });
         }
         if (parts.len() == 5 || parts.len() == 6) && parts[4] == "lenses" {
             let source = s
