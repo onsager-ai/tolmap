@@ -315,8 +315,12 @@ fn is_test_path(path: &str) -> bool {
     let stem = name.split('.').next().unwrap_or(name);
     TEST_STEMS.contains(&stem)
         || TEST_MARKERS.iter().any(|marker| name.contains(marker))
-        || TEST_STEM_PREFIXES.iter().any(|prefix| stem.starts_with(prefix))
-        || TEST_STEM_SUFFIXES.iter().any(|suffix| stem.ends_with(suffix))
+        || TEST_STEM_PREFIXES
+            .iter()
+            .any(|prefix| stem.starts_with(prefix))
+        || TEST_STEM_SUFFIXES
+            .iter()
+            .any(|suffix| stem.ends_with(suffix))
 }
 
 fn is_rust_target_path(path: &str) -> bool {
