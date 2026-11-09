@@ -1,4 +1,5 @@
 import type { Geo, Layer } from "@/map/constants";
+import { DEBT_LENS } from "@/lens/debt";
 
 /** Everything selectable on a map view, mirrored into the query string —
  * this closes the "the map cannot be linked to" gap HANDOFF.md lists against
@@ -37,6 +38,10 @@ export interface MapSearch {
   lens?: string;
   lens_compare?: boolean;
   other_lens?: string;
+  /** Issue #248: a lens walkthrough -- a path name in the active lens and a
+   * 1-based stop number. Each step replaces the URL (docs/UX.md Lenses). */
+  path?: string;
+  step?: number;
   read?: boolean;
   line?: number;
   end?: number;
@@ -73,9 +78,15 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const depth = Number.isInteger(depthRaw) && depthRaw > 0 ? depthRaw : undefined;
   const job = typeof search.job === "string" && search.job.length > 0 ? search.job : undefined;
   const commit = typeof search.commit === "string" && /^[a-f0-9]{40,64}$/.test(search.commit) ? search.commit : undefined;
-  const lens = typeof search.lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.lens) ? search.lens : undefined;
-  const other_lens = typeof search.other_lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.other_lens) ? search.other_lens : undefined;
+  const lens = typeof search.lens === "string" && (search.lens === DEBT_LENS || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.lens)) ? search.lens : undefined;
+  // The built-in debt lens compares across commits only.
+  const other_lens = lens !== DEBT_LENS && typeof search.other_lens === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(search.other_lens) ? search.other_lens : undefined;
   const lens_compare = !!lens && (search.lens_compare === true || search.lens_compare === "true" || !!other_lens || (!!search.base && !!search.head && search.lens_compare !== false && search.lens_compare !== "false"));
+  // The router parses JSON-like values, so a numeric path name arrives as a number.
+  const pathRaw = typeof search.path === "number" ? String(search.path) : search.path;
+  const path = lens && typeof pathRaw === "string" && pathRaw.length > 0 && pathRaw.length <= 256 ? pathRaw : undefined;
+  const stepRaw = Number(search.step);
+  const step = path && Number.isInteger(stepRaw) && stepRaw >= 1 ? stepRaw : undefined;
   const read = !!file && (search.read === true || search.read === "true");
   const line = Math.floor(Math.max(1, Math.min(10_000_000, Number(search.line) || 1)));
   const end = Math.floor(Math.max(line, Math.min(10_000_000, Number(search.end) || line)));
@@ -86,7 +97,7 @@ export function validateMapSearch(search: Record<string, unknown>): MapSearch {
   const max_districts = search.max_districts != null && Number.isSafeInteger(md) && md >= 0 ? md : undefined;
   const max_dq = search.max_dq != null && Number.isFinite(mq) && mq >= 0 ? mq : undefined;
   const report_only = search.report_only === true || search.report_only === "true";
-  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, lens, lens_compare: lens_compare || undefined, other_lens, read, line, end, compare: compare || undefined, base, head, source_commit, max_districts, max_dq, report_only };
+  return { file, sym, hsym, d, dir, depth, geo, layer, job, commit, lens, lens_compare: lens_compare || undefined, other_lens, path: step ? path : undefined, step, read, line, end, compare: compare || undefined, base, head, source_commit, max_districts, max_dq, report_only };
 }
 
 /** Search state for the /new progress route (see routes/IndexJobView.tsx).

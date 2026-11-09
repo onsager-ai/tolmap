@@ -174,6 +174,24 @@ Layers sheet, then collapses Half/Full to Peek before clearing a selection. The
 source reader closes before its underlying card. A deep link restores the lens
 at Peek without restoring a modal sheet.
 
+**Start walkthrough** on any path, in the desktop inspector or the phone's lens
+sheet, steps through its stops in order. A walkthrough card above the stop's
+card shows the step (n of m), Previous, Next and End, the hop arriving at the
+stop (computed, with its edge kind and route files, or declared, with its
+reason, in the dashed declared style) and the notes anchored to that stop. On
+desktop, ← and → also step. Only an explicit step moves the camera: it opens
+the stop's file or symbol card and frames the stop with its arriving hop when
+both fit. If the stop would be under its gate at that zoom (the 40 px file
+footprint, or 110 px short side for every containing class card), the step
+zooms just far enough to pass it; it never draws a stop under the gate. A
+step whose symbol detail has not loaded frames the file, then refines once
+the symbols arrive unless the camera has moved. An unresolved stop remains a
+step: it shows its resolver kind and explanation, clears the card and leaves
+the camera where it is. Share `?lens=<name>&path=<path>&step=<n>` (n is
+1-based); a deep link restores that step. Each step replaces the URL, so Back
+follows §3.4 and never walks back through steps. Choosing another lens ends
+the walkthrough. Neither the layout nor the map document changes.
+
 **Compare this lens** opens the existing base-map comparison frame. The commit
 comparison panel also offers **Compare active lens**. Choose a head commit for
 the same lens, or another saved lens at the base commit. Share
@@ -200,6 +218,34 @@ class-member gates. Existing base cards remain available through the list.
 Loading/revalidation hides previous paint; stale identities, unavailable source
 and mismatched snapshots show an explicit error. Return to lens keeps the base
 commit pinned. Physical-device and owner visual acceptance remain separate.
+
+#### Debt lens
+
+**Debt** is a built-in entry in the same picker, under *Built-in*, separate
+from the repository's saved lenses (*Repository*). It is computed from the
+stored map, never read from `.tolmap/lenses/`, so a repository lens can never
+replace it; share it as `?lens=%40debt` (`@debt` is outside the repository lens
+name charset). It shows the five structural findings (docs/GLOSSARY.md) through
+the unchanged lens overlay: one tinted area per finding kind (district cycles
+red, misplaced files amber, god files purple, hotspots orange, files with no
+inbound edge found grey), so a district is tinted at most once per kind
+whatever its number of findings (owner decision, 2026-11-09); one path per
+district cycle; and notes, anchored to each file, carrying the measured
+values. Overview tints districts only; file findings follow the 40 px gate. A
+cycle's closing edges are solid computed hops; the dashed declared hops between
+them only join two files of one district and claim no edge. A snapshot with no
+findings shows an explicit empty state, never an empty overlay. Every count is
+a lower bound over the map's edges; a file with no inbound edge found is never
+called dead.
+
+**Compare this lens** on Debt compares the findings at two commits on the base
+map (`?lens=%40debt&lens_compare=true&compare=true&base=<sha>&head=<sha>`).
+Debt compares commits only: there is no second lens to choose. Head findings
+come from the head snapshot, projected onto the base map, so a finding on a
+file new at head tints only its district. A finding that disappears is
+*Removed*, a new one *Added* (a member of its kind's area), a cycle that grows
+shows *Added* members, and a finding whose measured values changed stays
+*Unchanged*: labels name the kind, never values.
 
 ### 4.8 Search (artboard "Search active")
 
