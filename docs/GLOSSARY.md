@@ -41,14 +41,14 @@ Only UI text and docs change in this round; code and schema field names stay as 
 | 上帝文件 | God file | debt finding: a file in the top `GOD_TOP_FRACTION` of both fan-in and complexity | — |
 | 热点 | Hotspot | debt finding: a file in the top `HOTSPOT_TOP_FRACTION` by churn × complexity (at least two); generalises the `hazard` landmark | — |
 | 无入边文件 | No inbound edge found | debt finding: a non-entry file with outbound edges and no inbound edge in `E`; never called "dead" or "unused", since the map cannot see dynamic or declared connections | unreached file |
-| 地下通道 | Tunnel | two files often changed together with no import between them | 隐藏耦合 hidden coupling |
+| 地下通道 | Tunnel | hidden coupling: a pair with at least three co-changes and weight ≥ 0.35, but no file edge (`E`) or reference edge (`U`); a lower bound over the indexer's 4,000 non-merge-commit history window | 隐藏耦合 hidden coupling |
 | 边境文件 | Border file | role of a file whose district membership is uncertain | 边界文件 boundary file |
 | 主岛 / 离岛 | Mainland / Island | existing product terms: connected body / unconnected districts | — |
 | 航线 | Route | aggregated dependency between repositories (future) | — |
 | 版本错位 | Pin skew | a consumer repository pinning a provider member at a different commit or version than the organization's member commit; reported per declared dependency, only where the pin can be compared | — |
 | 世界视图 | World view | a view of several repos at once; a view name, not a noun for repos (future) | 星球 / 大陆（弃用） |
 | 透镜 | Lens | a named, versioned overlay of areas, paths and notes drawn over a map without changing it; a TOML file in the analysed repository (`.tolmap/lenses/<name>.toml`). Its *areas*, *paths* (ordered stops, each hop *computed* from map edges or *declared* with a reason) and *notes* are lens terms, not map terms; the viewer's "Path from / to" is a different, one-off thing. A lens comparison resolves one lens across commits or two lenses at one commit on the immutable base partition; overlap means shared resolved members, stops or ordered hops. A *generated* lens (`tolmap lens suggest`) is a starting proposal from the map's landmarks and edges, with computed hops only; it becomes a lens like any other once reviewed and committed | — |
-| 债务透镜 | Debt lens | the built-in lens (`@debt`) generated from a map's debt findings (district cycle, misplaced file, god file, hotspot, no inbound edge found): one area per finding kind, labelled by the kind; per-file measured values only in notes. Not a file in `.tolmap/lenses/`, so it never shares a name with a repository lens | — |
+| 债务透镜 | Debt lens | the built-in lens (`@debt`) generated from a map's debt findings (district cycle, misplaced file, god file, hotspot, no inbound edge found, hidden coupling): one area per finding kind, labelled by the kind; per-file measured values only in notes. Not a file in `.tolmap/lenses/`, so it never shares a name with a repository lens | — |
 
 ## 3. Internal geometry and method terms (docs only, not UI) / 内部用语
 

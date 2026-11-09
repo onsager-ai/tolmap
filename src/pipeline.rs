@@ -11,7 +11,9 @@ use crate::schema::{GraphData, SignalEdge, WeightedEdge, WeightedGraph};
 use crate::SEED;
 
 const SHARE_STATIC: f64 = 0.45;
-const SHARE_COCHANGE: f64 = 0.35;
+// Also the persisted hidden-coupling cutoff (issue #251): the sidecar keeps
+// only evidence at or above the share co-change receives in the blend.
+pub const SHARE_COCHANGE: f64 = 0.35;
 const SHARE_PROXIMITY: f64 = 0.08;
 const SHARE_SEMANTIC: f64 = 0.12;
 
@@ -1383,6 +1385,7 @@ mod tests {
             symbols: BTreeMap::new(),
             uses: Vec::new(),
             commits_scanned: 0,
+            cochange: None,
             nodes: Vec::new(),
             references: None,
             build_output_mirror: 0,
@@ -1450,6 +1453,7 @@ mod tests {
             symbols: BTreeMap::new(),
             uses: Vec::new(),
             commits_scanned: 0,
+            cochange: None,
             nodes: Vec::new(),
             references: None,
             build_output_mirror: 0,

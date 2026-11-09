@@ -10,10 +10,10 @@ use crate::naming;
 use crate::neighbourhoods;
 use crate::parcels;
 use crate::partition::LeidenFfi;
-use crate::pipeline::{self, LayoutDistrict};
+use crate::pipeline::{self, LayoutDistrict, SHARE_COCHANGE};
 use crate::schema::{
-    CoverageLanguage, CoverageReport, District, DistrictClass, FileId, GraphData, LandmarkRow,
-    MapDocument, NodeRow, SymbolRow,
+    CochangePair, CochangeSidecar, CoverageLanguage, CoverageReport, DebtSidecar, District,
+    DistrictClass, FileId, GraphData, LandmarkRow, MapDocument, NodeRow, SymbolRow,
 };
 #[derive(Clone, Debug)]
 pub struct BuildFeatures {
@@ -777,6 +777,42 @@ fn compact(
         })
         .collect::<BTreeMap<_, _>>();
     let uses = compact_uses(&layout, &file_index);
+    let static_pairs = edges
+        .iter()
+        .map(|&[a, b]| (a.min(b), a.max(b)))
+        .chain(uses.iter().flat_map(|(key, users)| {
+            let target = key
+                .split_once(':')
+                .expect("compact use key has a symbol index")
+                .0
+                .parse::<usize>()
+                .expect("compact use key has an integer file index");
+            users
+                .iter()
+                .map(move |&user| (target.min(user), target.max(user)))
+        }))
+        .collect::<BTreeSet<_>>();
+    let debt = layout.weighted.cochange.as_ref().map(|signals| {
+        let cochange = signals
+            .iter()
+            .filter_map(|(&(a, b), signal)| {
+                let pair = (a as usize, b as usize);
+                (signal.count >= 3
+                    && signal.weight >= SHARE_COCHANGE
+                    && !static_pairs.contains(&pair))
+                .then(|| CochangePair((pair.0, pair.1, signal.count, round_to(signal.weight, 2))))
+            })
+            .collect::<Vec<_>>();
+        DebtSidecar {
+            cochange: Some(CochangeSidecar {
+                commits: layout.weighted.commits_scanned,
+                window: 4000,
+                min_count: 3,
+                min_weight: 0.35,
+                pairs: cochange,
+            }),
+        }
+    });
     let mut groups = BTreeMap::<usize, Vec<usize>>::new();
     for (index, &district) in layout.membership.iter().enumerate() {
         groups.entry(district).or_default().push(index);
@@ -833,6 +869,7 @@ fn compact(
         footprint_centroids: None,
         file_neighbourhoods: None,
         neighbourhoods: None,
+        debt,
     }
 }
 

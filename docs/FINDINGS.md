@@ -3288,6 +3288,21 @@ Issue [#250](https://github.com/onsager-ai/tolmap/issues/250). `tolmap debt` on 
 - **Coverage and isolated files are counted differently.** The map's coverage reports 0 of 233 files without an edge, while the debt report excludes 1 file with no edge. Coverage counts blended edges before pruning. The debt report counts the map's kept edges, so one file loses all its edges in pruning.
 - **Determinism and the map.** The CI-built `tolmap debt --format json` ran twice on the stored map, and the outputs were byte-identical (`cmp`). The map's SHA-256 was unchanged afterwards. `GET /api/maps/snapshot/{id}/debt` resolved 5 areas with 56 memberships over 44 distinct files, 1 path and 53 notes, with nothing unresolved. These are the run's numbers, measured before the `tests.rs` exclusion.
 
+## 64. A compact optional co-change sidecar carries hidden-coupling evidence without changing partition inputs
+
+Issue [#251](https://github.com/onsager-ai/tolmap/issues/251). The owner chose an inline, optional, index-aligned `D.cochange` sidecar in the map document. It carries only pairs with at least three co-changes and weight at least 0.35, after excluding any pair joined by a file edge (`E`) or reference edge (`U`). Each row is `[left, right, cochanges, weight]`, with sorted file indices and a two-decimal weight. The sidecar is absent from older maps, so `tolmap debt` reports hidden coupling as **not measured**, never as none found. Its 4,000 non-merge-commit history window and every resulting count are lower bounds.
+
+The decision uses [CI run 42606484561](https://github.com/onsager-ai/tolmap/actions/runs/42606484561), job 129123693589, over the ten pinned fixtures with compact JSON and deterministic gzip-9:
+
+| Carrier | Raw increment | Gzip increment | Pairs |
+|---|---:|---:|---:|
+| Inline `D.cochange` | 13,630 B (+0.35% of 3.9 MB) | 4,731 B (+0.43%) | 830 hidden pairs |
+| Separate artifact | 13,580 B | 4,607 B | the same 830 hidden pairs |
+
+The largest inline raw increase is rich at +1.83%; the smallest is django at +0.08%. At the 0.00 cutoff, the inline carrier would add +5.1% raw overall (up to +14% for scrapy), so the 0.35 cutoff is a meaningful containment boundary. The same carrier reserves room for #258's Rust `mod` pairs; the measurement found 30 of those, but this change does not emit them. The evidence script is `eval/cochange_carrier_size.py`.
+
+The new debt finding produces one `hidden coupling` area and one declared path per pair. Paths are not roads: their reason says `co-changed N times; no static edge found`. Cross-district pairs sort first for the report, but no blend, clustering or layout input changes; regenerated fixture parity should therefore be exact. This change does not need `eval/batch_stability.py` because it changes none of blend, clustering or layout.
+
 ### Not verified
 - **The semon debt lens was not rendered.** Its 53 notes and five overlapping per-kind tints on a 233-file map were measured through the API, not checked in a browser.
 - **The semon thresholds were not reviewed.** Nobody checked whether the 17 files with no inbound edge include any genuinely unused file. The `tests.rs` exclusion was not rerun on semon; the 17 is recomputed from the run's artifact.

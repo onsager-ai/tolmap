@@ -1471,16 +1471,13 @@ jobs:
             exit 1
           fi
 
-      # Issue #251 plan item 1: size a co-change sidecar in the map against a
-      # separate artifact, on the clones and maps the step above built.
-      - name: Co-change carrier size (issue #251)
+      # Fixture regeneration runs only here (never on a maintainer laptop).
+      # Keep it even when parity fails so the implementation branch can carry
+      # the exact candidate maps and the failure remains visible in the job.
+      - uses: actions/upload-artifact@v4
         if: always()
-        run: |
-          set -euo pipefail
-          for map in full-out/*.json; do
-            name="$(basename "$map" .json)"
-            [ -d "full-clones/$name" ] || continue
-            python3 -I eval/cochange_carrier_size.py "$name" "full-clones/$name" "$map" \
-              | tee -a cochange-carrier.jsonl
-          done
-          { echo '```'; cat cochange-carrier.jsonl; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        with:
+          name: full-fixtures
+          path: full-out/*.json
+          if-no-files-found: error
+          retention-days: 7

@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Node, Parser};
 
 use crate::go_build::{go_build_status, GoBuild};
-use crate::schema::{FileId, GraphData, ReferenceCoverage, SignalEdge, SourceNode, SymbolRow};
+use crate::schema::{
+    CochangeSignal, FileId, GraphData, ReferenceCoverage, SignalEdge, SourceNode, SymbolRow,
+};
 
 const ALPHA: f64 = 0.45;
 const BETA: f64 = 0.35;
@@ -6648,7 +6650,12 @@ fn finish_graph(
     let cochange = history
         .cochange
         .iter()
-        .map(|((a, b), &value)| ((file_ids[a.as_str()], file_ids[b.as_str()]), value))
+        .map(|((a, b), &(count, weight))| {
+            (
+                (file_ids[a.as_str()], file_ids[b.as_str()]),
+                CochangeSignal { count, weight },
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     let mut candidates = static_edges.keys().copied().collect::<BTreeSet<_>>();
     candidates.extend(cochange.keys().copied());
@@ -6740,7 +6747,9 @@ fn finish_graph(
         let b = &files[b_id as usize];
         let static_max = static_max_by_language[&languages[a_id as usize]];
         let static_signal = static_edges.get(&(a_id, b_id)).copied().unwrap_or(0.0) / static_max;
-        let cochange = cochange.get(&(a_id, b_id)).copied().unwrap_or(0.0).min(1.0);
+        let cochange = cochange
+            .get(&(a_id, b_id))
+            .map_or(0.0, |signal| signal.weight.min(1.0));
         let proximity = proximity(a, b);
         let semantic_signal = cosine(a, b, &semantic);
         let weight =
@@ -6758,11 +6767,11 @@ fn finish_graph(
             semantic: round_to(semantic_signal, 4),
         });
     }
-    // These compact lookup structures are no longer needed once every
-    // candidate has been blended. Drop them before materialising the final
-    // node/import/use vectors so their high-water marks do not overlap.
+    // The unblended co-change evidence is retained through compact map
+    // construction so the debt sidecar can use the history signal directly.
+    // The other compact lookup structures are no longer needed once every
+    // candidate has been blended.
     drop(static_edges);
-    drop(cochange);
     drop(semantic);
     drop(file_ids);
 
@@ -6822,6 +6831,7 @@ fn finish_graph(
         symbols,
         uses: uses.into_iter().collect(),
         commits_scanned: history.commits,
+        cochange: Some(cochange),
         nodes,
         edges,
         references: None,
@@ -6940,7 +6950,7 @@ fn strip_quotes(value: &str) -> &str {
 
 #[derive(Default)]
 struct GitHistory {
-    cochange: BTreeMap<(String, String), f64>,
+    cochange: BTreeMap<(String, String), (usize, f64)>,
     churn: BTreeMap<String, usize>,
     commits: usize,
 }
@@ -7067,7 +7077,7 @@ fn git_history(
     for ((a, b), count) in pairs {
         let denominator = solo[&a].min(solo[&b]);
         if denominator >= 3 && count >= 2 {
-            cochange.insert((a, b), count as f64 / denominator as f64);
+            cochange.insert((a, b), (count, count as f64 / denominator as f64));
         }
     }
     Ok(GitHistory {
@@ -7312,7 +7322,7 @@ mod tests {
         assert_eq!(from_base.commits, 3, "only the base's three rounds");
         assert_eq!(
             from_base.cochange,
-            BTreeMap::from([(("b.py".to_owned(), "z.py".to_owned()), 1.0)]),
+            BTreeMap::from([(("b.py".to_owned(), "z.py".to_owned()), (3, 1.0))]),
             "a.py's base co-change is credited to z.py, and head's own is not read"
         );
     }

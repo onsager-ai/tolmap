@@ -206,9 +206,10 @@ enum Command {
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
     },
-    /// Structural debt findings (issue #250, docs/API.md): district cycles,
-    /// misplaced files, god files, hotspots and files with no inbound edge
-    /// found, computed from a stored map alone. Prints a `DebtReport` as
+    /// Structural debt findings (issues #250, #251, docs/API.md): district
+    /// cycles, misplaced files, god files, hotspots, files with no inbound
+    /// edge found and hidden coupling, computed from a stored map alone.
+    /// Prints a `DebtReport` as
     /// text or JSON, or the equivalent lens TOML (`--format lens`), which
     /// `tolmap lens check` accepts. Counts are lower bounds; the map is
     /// never changed. Exits 0, or 2 when the map cannot be read.
