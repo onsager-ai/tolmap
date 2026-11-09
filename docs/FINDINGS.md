@@ -3213,3 +3213,28 @@ a final-head timing claim. Head CI, publication fault cases, generated bindings
 and viewer/Storybook evidence must be reported separately. Remote-worker cache
 transport and production provider authority are not established by this CLI
 benchmark. No fixtures were refreshed and no algorithm thresholds were relaxed.
+
+## 62. On the pinned Flask map the debt lens finds one cycle spanning all three districts, two misplaced files, two hotspots, no god file and one file with no inbound edge found
+
+Issue [#250](https://github.com/onsager-ai/tolmap/issues/250). `tolmap debt` on `data/flask.json` (24 files, 94 edges), run with the CI-built binary from the npm package of PR [#254](https://github.com/onsager-ai/tolmap/pull/254)'s merge commit `347f2e3464d36e695adef2506b3448db486caf2a` ([run 42563267620](https://github.com/onsager-ai/tolmap/actions/runs/42563267620)). The thresholds are the defaults in `src/debt.rs`; on this map the 5% cuts select the top 2 of 24 files.
+
+| Finding | Count | Files and measured values |
+|---|---:|---|
+| District cycle | 1 | all three districts (`app & cli`, `sansio`, `json`), 42 cross-district edges; one shortest route `app & cli → sansio → app & cli`, closed by `__init__.py → blueprints.py` and `blueprints.py → cli.py` |
+| Misplaced file | 2 | `sessions.py` (in `json`): 5 of 7 edges (71.43%) to `app & cli`; `wrappers.py` (in `json`): 7 of 13 (53.85%) to `app & cli` |
+| God file | 0 | cuts: fan-in ≥ 24, complexity ≥ 148; no file is in the top 2 of both |
+| Hotspot | 2 | `app.py` 138 × 169 = 23322; `cli.py` 67 × 148 = 9916 |
+| No inbound edge found | 1 | `views.py` (2 outbound); 6 entry files excluded, 0 files without edges |
+
+- **The cycle is the whole map.** Flask's three districts reach each other through 42 file edges. On a library this small, a district cycle says little; its value is on larger maps, where a strongly connected subset stands out. The finding reports the set and one concrete route rather than enumerating cycles.
+- **The hotspots are the `hazard` landmarks.** `app.py` is also an `entry` landmark, so the map's single `hazard` row is `cli.py`. Both are in the top two hotspots, as the generalisation requires.
+- **No god file.** The top two by fan-in and the top two by complexity do not overlap: `app.py` has the highest complexity but not a top-two fan-in. At this size the rule is strict by design; a larger map gives the 5% cut more files.
+- **`views.py` is a lower bound, not dead code.** Flask's class-based views are imported by users of the package, not by Flask itself, and the map only sees in-repository edges.
+- **Determinism and the map.** Two runs of `--format json` were byte-identical, `data/flask.json`'s SHA-256 was unchanged, and the `--format lens` output passed `tolmap lens check` with exit 0 (6 areas, 8 members, 1 path, 6 notes, nothing unresolved).
+
+**The viewer.** `web/scripts/check-lens-browser.mjs` loads the Rust-resolved Flask debt lens (exported by `symbols::tests::export_lens_viewer_fixture`) on phone and desktop in both themes: overview tints districts only, file findings appear past the 40 px gate, a finding opens its card and the commit-pinned reader, and a controlled debt comparison reports added and removed findings. That comparison's head is a synthetic edit of the same map, not Flask history.
+
+### Not verified
+- **semon is not measured.** No indexed semon map was available to this change, and indexing it locally is outside the host's thermal limits. Its numbers remain to be recorded from a stored semon snapshot.
+- One small library. The default fractions were not tuned on any corpus; whether 5% and five edges separate signal from noise on agent-maintained repositories is unmeasured.
+- Overlapping tints: every finding tints its whole district, so a district with several findings is drawn darker. On Flask the deepest overlap is three areas; a large repository was not rendered.
