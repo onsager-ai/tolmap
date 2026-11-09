@@ -408,6 +408,38 @@ includes `renamed: { from, to, commit }`; `commit` names the comparison endpoint
 where the rename is observed. A renamed member/stop stays unresolved; the
 resolver never silently substitutes its destination.
 
+### `tolmap lens suggest --map <map.json> [--out <dir>]`
+
+Starting lenses proposed from a stored map's landmarks and edges (issue #249;
+`src/lens_suggest.rs`), for a reader who does not yet know which paths matter.
+They are ordinary lens files (format v1) to review, edit and commit to
+`.tolmap/lenses/`; the viewer lists a committed one in its Lenses picker. Up to
+three files, each `<name>.toml`:
+
+- `entry-routes`: from each `entry` landmark, a walk of at most 4 hops through
+  the highest-fan-in files it imports, directly or not, ending in another
+  district where one is reachable; a note on each entry;
+- `district-tour`: one area per district (largest first), with its `capital`
+  landmark as a note anchor;
+- `crossings`: each `bridge` landmark between its highest-fan-in importer and
+  import (other districts preferred), and for each of the 3 heaviest
+  cross-district roads the file edge whose ends carry the most fan-in.
+
+Every hop is `computed`, never `declared` (suggest cannot know a reason), and
+each stop is reachable from the previous one by imports, so `tolmap lens check`
+resolves every suggestion with no unresolved item and every hop as `imports`.
+Routes are lower bounds over the map's edges. Each file starts with a comment
+header saying it was generated, from which map (its file name and SHA-256) and
+that its routes are lower bounds; titles say "generated". Nothing is
+randomised: ties break by fan-in, then path, and the same map gives
+byte-identical files. With `--out` the files are written there (the directory
+is created); without it they are printed to stdout and nothing is written, so
+suggest never writes into an analysed repository unasked. A lens with nothing
+to suggest is not written, and a message on stderr says why (a map with no
+`entry` landmark: `no entry landmark in the map: entry-routes not written`).
+Exit 0, or 2 when the map cannot be read or a file cannot be written.
+`data/lenses/flask-suggest/` holds the suggestions for the pinned flask fixture.
+
 ### `GET /api/maps/{owner}/{repo}/lenses[?commit=<full-sha>]`
 
 `LensList`: the valid lens names (regular files `*.toml` in
