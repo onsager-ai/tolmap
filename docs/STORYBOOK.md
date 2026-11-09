@@ -87,7 +87,7 @@ checkout while the tested revision identifies the Hub commit.
 The full page set is required; a failed story stays visible in the manifest.
 
 Captures are candidates until the owner approves them. The owner approved the
-set from run `42169568634` (source `fd1d6c5`) on 2026-11-06;
+set from run `42169568634` (source `fd1d6c5`) on 2026-11-06. The owner approved the 32 Debt lens captures on 2026-11-09 from run `42577358027` (source `15d06e2`).
 `web/storybook/baselines/approved.json` records it with `status: "approved"`
 and CI compares exact pixels against those images. A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
