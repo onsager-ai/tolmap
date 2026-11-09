@@ -3308,3 +3308,33 @@ The new debt finding produces one `hidden coupling` area containing every pair's
 - **The semon thresholds were not reviewed.** Nobody checked whether the 17 files with no inbound edge include any genuinely unused file. The `tests.rs` exclusion was not rerun on semon; the 17 is recomputed from the run's artifact.
 - Two repositories. The default fractions were not tuned on any corpus; whether 5% and five edges separate signal from noise on agent-maintained repositories is unmeasured.
 - Overlapping tints: the lens has one area per kind (owner decision, 2026-11-09), so a district is tinted at most five times, once per kind, however many findings it holds. Before that decision each finding was its own area, and on Flask two districts carried three overlapping tints. A large repository was not rendered.
+
+## 64. On semon at its current head, 13 of 18 files with no inbound edge are reached only through `mod`, and 5 are bundle entries; the debt worth fixing is in the god files and hotspots, not in the cycles
+
+Issue [#250](https://github.com/onsager-ai/tolmap/issues/250), follow-up to finding 63. [Run 42613935062](https://github.com/onsager-ai/tolmap/actions/runs/42613935062) was a throwaway branch that built tolmap at main `a6add47` (plus one scratch workflow commit) and ran `tolmap build --all-sources` and `tolmap debt` on two semon commits. The thresholds are the defaults in `src/debt.rs`.
+
+- **Control.** At finding 63's pin `04aeb54aef33896d691c3ffdf0619bbfa2540599`, `tolmap build` reproduces finding 63's `tolmap local` result: 233 files, 1366 edges, 1 cycle with 519 cross-district edges, and 9 misplaced files, 5 god files, 12 hotspots and 17 files with no inbound edge found. So the two capture routes are comparable.
+- **Head.** semon `50c52557775d7247846d214e145db1b6b9e650a8` is 192 commits later. The map has 223 files (142 Rust, 81 TypeScript), 1411 edges and 6 districts, with q = 0.4426; its SHA-256 is `6ee77a3e…0db3`. The 5% cuts select 12 of 223 files. Both `--format json` runs were byte-identical, the map's SHA-256 was unchanged afterwards, and `tolmap lens check` resolved every member, stop and anchor (5 areas, 46 members, 2 paths, 40 notes).
+
+Each top item was checked against semon's source at the head commit, without building semon.
+
+| Finding | Count | Verdict |
+|---|---:|---|
+| District cycle | 2 | **Clustering granularity, not an import cycle.** A: `semon-sessions & events`, `semon-push`, `storage & postgres`, 454 cross-district edges. Cargo is acyclic (`semon-cli` depends on `semon-sessions`, not the reverse), and all three districts are slices of the `semon-sessions` crate. Removing the cycle between the clusters would take 135 ordinary imports, so no small set of edges breaks it. B: `ui & state` ↔ `ui`, 42 edges one way and 4 the other, all within one `ui` package. The 4 reverse edges are barrel and entry imports (`lib/index.ts`, `viewer.ts`), and neither example route is a reciprocal import. |
+| Misplaced file | 3 | **No real misplacement.** `storage/postgres/index.rs` is the `mod index;` child of `storage/postgres.rs:13`, so the omitted `mod` edge produces this finding. `sealed.rs` (16 of 29 edges, 55.17%) is shared log infrastructure just over the 50% cut. `attachments.rs` (5 of 8) is a crate-private helper shared by five callers. |
+| God file | 5 | **Real.** These are `events.rs` (10 500 lines, 77 importing files), `catalog.rs` (9 636), `model.rs` (9 016), `events/store.rs` (11 363) and `viewer.rs` (8 532), all in `crates/semon-sessions/src`. The first four are central and also mix responsibilities: parsing, storage, scanning and HTTP presentation sit next to the shared types. `viewer.rs` has a fan-in that its public HTTP boundary explains, but it is still too large. |
+| Hotspot | 12 | **Real, apart from 2 test files.** #1 is `ui/src/app/catalogViewer.tsx`: 100 × 2260, 4 536 lines in one factory closure with 42 nested functions, a single importer, and 108 commits since 2026-05-01, mostly product work. #2–#6 are the god files. #7 `model/tests.rs` and #9 `query/tests.rs` are test files whose churn follows production edits. |
+| No inbound edge found | 18 | **All 18 are false positives.** 13 Rust files (12 in `storage/postgres/`, plus `storage/runtime/custody.rs`) are private `mod` children whose items are called through their parent (#258). 5 TypeScript files (`application.ts`, `lib-contract.tsx`, `native-shell.ts`, `shared.ts`, `viewer.ts`) are bundle entries named in `ui/build.mjs` and embedded by `shell.rs`. `ui/package.json` has no `exports`, `main` or `module`, so no entry rule can see them. 11 of the 18 were already listed at `04aeb54`. |
+
+- **Fewer findings at head is partly semon and partly the map.** At `04aeb54` there was 1 cycle over 6 of 7 districts; at head there are 2 smaller ones. Misplaced files fell from 9 to 3. Of the 9 earlier misplaced files, 5 changed in the 192 commits; the other 4 have no commits touching them, so the clustering moved them. 7 → 6 districts and 233 → 223 files also change the cuts.
+- **What semon should fix first:** `catalogViewer.tsx`, then `events/store.rs`, then `model.rs`. Each has a seam that leaves its public types in place: reader and causal panels; catalog publication and ledger persistence; source scanning and transcript derivation. `events.rs` and `catalog.rs` are also real debt, but with 77 and 48 importing files they need an API boundary designed first. A related item came from reading the code, not from a finding: three PostgreSQL modules are compiled under `#[allow(dead_code)]` with "runtime integration is pending" (`storage/postgres.rs:22-28`: `catalog`, `custody`, `search`).
+- **What this says about tolmap.**
+  - Mod-aware Rust reachability (#258) would remove 13 of 18 no-inbound findings and 1 of 3 misplaced files on this map.
+  - Cycles between clusters inside one crate or package are not actionable. A cycle report needs either a boundary the build enforces or a small set of edges that breaks it (#258).
+  - Bundler entries defined only in a build script are a separate gap: neither #251 nor #258 covers them.
+  - Test files rank as production hotspots. `tests` is already an entry stem for the no-inbound finding, but the hotspot finding does not use it.
+
+### Not verified
+- semon was not built, and no edge was traced to its extraction provenance. Import lines were read from source; `E` gives only the detected file pairs.
+- semon-hub was not measured: it is private, and the scratch workflow's token cannot clone it.
+- Thresholds were not tuned. Whether a 5% cut and five edges suit a 223-file repository is still measured on two repositories only.
