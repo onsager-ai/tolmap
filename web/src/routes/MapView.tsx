@@ -686,13 +686,15 @@ export function MapView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrow, owner, repo]);
   // A selection (a deep link included) is one entry: back clears it before
-  // it leaves the map.
+  // it leaves the map. Walkthrough steps replace the current entry instead
+  // of pushing a selection entry for the card opened by the first step.
+  const phoneWalkthrough = !!search.lens && !!search.path && !!search.step && !search.lens_compare;
   useEffect(() => {
     if (!narrow || skippingRef.current) return;
-    if (phoneHistorySelection) pushOverlay("sel");
-    else dropOverlay("sel");
+    if (!phoneHistorySelection) dropOverlay("sel");
+    else if (!phoneWalkthrough) pushOverlay("sel");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phoneHistorySelection, narrow]);
+  }, [phoneHistorySelection, phoneWalkthrough, narrow]);
   // Establish the selected map entry before reading, including slow deep links.
   useEffect(() => {
     if (narrow && search.read && !skippingRef.current) pushOverlay("reader");
