@@ -3288,6 +3288,12 @@ Issue [#250](https://github.com/onsager-ai/tolmap/issues/250). `tolmap debt` on 
 - **Coverage and isolated files are counted differently.** The map's coverage reports 0 of 233 files without an edge, while the debt report excludes 1 file with no edge. Coverage counts blended edges before pruning. The debt report counts the map's kept edges, so one file loses all its edges in pruning.
 - **Determinism and the map.** The CI-built `tolmap debt --format json` ran twice on the stored map, and the outputs were byte-identical (`cmp`). The map's SHA-256 was unchanged afterwards. `GET /api/maps/snapshot/{id}/debt` resolved 5 areas with 56 memberships over 44 distinct files, 1 path and 53 notes, with nothing unresolved. These are the run's numbers, measured before the `tests.rs` exclusion.
 
+### Not verified
+- **The semon debt lens was not rendered.** Its 53 notes and five overlapping per-kind tints on a 233-file map were measured through the API, not checked in a browser.
+- **The semon thresholds were not reviewed.** Nobody checked whether the 17 files with no inbound edge include any genuinely unused file. The `tests.rs` exclusion was not rerun on semon; the 17 is recomputed from the run's artifact.
+- Two repositories. The default fractions were not tuned on any corpus; whether 5% and five edges separate signal from noise on agent-maintained repositories is unmeasured.
+- Overlapping tints: the lens has one area per kind (owner decision, 2026-11-09), so a district is tinted at most five times, once per kind, however many findings it holds. Before that decision each finding was its own area, and on Flask two districts carried three overlapping tints. A large repository was not rendered.
+
 ## 64. On semon at its current head, 13 of 18 files with no inbound edge are reached only through `mod`, and 5 are bundle entries; the debt worth fixing is in the god files and hotspots, not in the cycles
 
 Issue [#250](https://github.com/onsager-ai/tolmap/issues/250), follow-up to finding 63. [Run 42613935062](https://github.com/onsager-ai/tolmap/actions/runs/42613935062) was a throwaway branch that built tolmap at main `a6add47` (plus one scratch workflow commit) and ran `tolmap build --all-sources` and `tolmap debt` on two semon commits. The thresholds are the defaults in `src/debt.rs`.
@@ -3354,12 +3360,6 @@ The unseeded output retained the previously measured file count, district count,
 
 The new debt finding produces one `hidden coupling` area containing every pair's files. The report keeps every pair, but the lens renders declared paths only for the first 20 in report order (cross-district first, then weight) and notes how many of the full `tolmap debt` report are shown. Paths are not roads: their reason says `co-changed N times; no static edge found`.
 
-### Not verified
-- **The semon debt lens was not rendered.** Its 53 notes and five overlapping per-kind tints on a 233-file map were measured through the API, not checked in a browser.
-- **The semon thresholds were not reviewed.** Nobody checked whether the 17 files with no inbound edge include any genuinely unused file. The `tests.rs` exclusion was not rerun on semon; the 17 is recomputed from the run's artifact.
-- Two repositories. The default fractions were not tuned on any corpus; whether 5% and five edges separate signal from noise on agent-maintained repositories is unmeasured.
-- Overlapping tints: the lens has one area per kind (owner decision, 2026-11-09), so a district is tinted at most five times, once per kind, however many findings it holds. Before that decision each finding was its own area, and on Flask two districts carried three overlapping tints. A large repository was not rendered.
-
 ## 66. The Rust `mod` sidecar removes semon's 13 module-only no-inbound false positives; greedy cuts make both semon and Flask cycles concrete, but not necessarily small
 
 Issue [#258](https://github.com/onsager-ai/tolmap/issues/258). [Scratch run 42639319192](https://github.com/onsager-ai/tolmap/actions/runs/42639319192) built `tolmap` at feature head `4175754` (plus its disposable measurement-workflow merge) and indexed Flask at its pinned fixture commit `d73fa1c` and semon at `50c5255`. The scratch branch was never a fixture source: no `data/*.json` or `data/lenses/flask-suggest/` file changed.
@@ -3378,3 +3378,35 @@ Issue [#258](https://github.com/onsager-ai/tolmap/issues/258). [Scratch run 4263
 - The semon and Flask debt lenses were not rendered in a browser. Their areas, paths and notes were generated in CI but not viewed on phone or desktop.
 - The `mod` tree remains a lower bound: macro-generated declarations are not parsed. `#[path]` is covered synthetically, not re-read in semon's source.
 - A 135-edge cut is evidence that the large semon SCC is still too broad for a small manual edit. The heuristic makes the boundary visible; it does not choose an architectural boundary or prove a minimum feedback set.
+
+## 67. On semon, the hidden-coupling finding lists 160 pairs; its strongest cross-language pairs are real HTTP contracts, while 11 pairs are `mod` parent and child, which the finding should drop
+
+Issues [#251](https://github.com/onsager-ai/tolmap/issues/251) and [#258](https://github.com/onsager-ai/tolmap/issues/258), following findings 64–66. [Scratch run 42651623114](https://github.com/onsager-ai/tolmap/actions/runs/42651623114) built tolmap at main `0342f0c`, with one scratch workflow commit on top, and indexed semon `50c52557775d7247846d214e145db1b6b9e650a8` with `tolmap build --all-sources`.
+
+- **Determinism.** Both maps from two `tolmap build` runs in the same job are byte-identical (`cmp`), as are two `tolmap debt --format json` runs. The map's SHA-256 is `9a794286…2bc3`. It differs from finding 64's map only by the added `D` sidecar, which carries 160 co-change pairs and 138 `mod` pairs. `tolmap lens check` resolved every member, stop and anchor: 6 areas, 138 members, 26 paths, 50 notes. This is two builds on one runner, not two runners.
+- **Finding 66 reproduces from main.** There are 5 files with no inbound edge, all TypeScript bundle entries (#263), and 0 undeclared Rust files. The cycle cuts are 135 file edges (bundles of 59, 44 and 32) and 4 file edges.
+- **Unchanged from finding 64:** 2 cycles, 3 misplaced files, and the same 5 god files and 12 hotspots. `storage/postgres/index.rs` is still a misplaced file. Finding 64 expected #258 to remove it. It does not, because the `mod` sidecar changes only reachability, while misplacement counts `E`, which still has no `mod` edges.
+
+The co-change window scanned 954 non-merge commits, all of semon's history inside the 4,000-commit window. The sidecar keeps pairs with at least 3 co-changes and weight of at least 0.35 that have no `E` or `U` edge. Of the 160 pairs, 47 cross districts. 55 pairs have exactly 3 co-changes, 41 have 4, and 14 have 10 or more. The categories below are path rules applied to `D`; the top pairs were checked against semon's history and source.
+
+| Category | Pairs | Verdict |
+|---|---:|---|
+| `mod` parent and child | 11 | **tolmap false positive.** Examples: `sealed.rs` ↔ `sealed/tests.rs` (6 co-changes, weight 1.0) and `lib.rs` ↔ `slot_projection.rs` (10). The same map's `D.rust_mod` holds each of these pairs, but `debt.rs` drops only pairs linked by `E` or `U`. |
+| Involves a test file | 58 | **Expected, mostly.** Only 6 are a test beside its own module; 17 are in the same directory. The rest are broad tests such as `query/tests.rs` and `model/tests.rs` that change with many production files. That signals grab-bag integration tests, not hidden production coupling. |
+| Rust ↔ TypeScript | 10 | **Real.** Six are implicit contracts with no shared definition. Three use the session URL grammar, which is written twice (`session_route.rs:44-53` and `ui/src/lib/sessionRoute.ts:34-89`, the same `/session/…/trace/…` format): `union.rs` and `viewer.rs` ↔ `sessionRoute.ts`, and `native_html.rs` ↔ `catalogViewer.tsx`. The other three are the Catalog wire shape (`catalog.rs` ↔ `state/catalog-wire.ts`) and two `causal_trace.rs` payloads (`domain/sessionDetails.ts`, and `/api/session-trace` in `lib/trace.tsx`). The remaining four are one feature spread across the shell and assets. |
+| Same directory | 41 | **Feature coupling.** Examples: `tx.rs` ↔ `union.rs` (13) and `native_header.rs` ↔ `native_sidecar.rs` (12). |
+| Other | 40 | **Mostly real.** Includes one cross-crate file contract: `semon-push/src/mirror.rs` writes `facts.json` (`FACTS_FILE`, `mirror.rs:57`), and `facts/source_authority.rs` turns it into the current-source view. Includes one edge tolmap misses: `storage/runtime.rs` calls `storage/postgres/runtime.rs`'s inherent methods through a field type, which the hand extractor does not resolve. |
+
+- **Large commits do not inflate co-change on semon.** For each of the 15 pairs with the most co-changes outside the `mod` category, most of their shared commits touch 30 files or fewer.
+- **What semon should add to finding 64's fix-first list.** Generate one side of the session URL grammar from the other, or share one definition. Generate the TypeScript Catalog validation from the Rust types. Add a contract fixture for `/api/session-trace`. Document the `facts.json` boundary between `semon-push` and `semon-sessions`.
+- **What this says about tolmap.**
+  - The hidden-coupling finding should drop `D.rust_mod` pairs: 11 of 160 on semon.
+  - It could label own-module test pairs separately from broad test pairs (#263 already covers test files).
+  - Inherent-method calls through a field type are a Rust extraction gap. This run found one.
+
+This change also moves finding 63's "Not verified" list back under finding 63; a merge had placed it under finding 65.
+
+### Not verified
+- Per-pair review covered 15 pairs by co-change count, the 10 Rust ↔ TypeScript pairs and 5 selected cross-directory pairs, which is 30 of 160. The categories for the remaining pairs are path rules only.
+- semon was not built or tested; the contracts were read from source.
+- The debt lens, with 26 paths, was not rendered in a browser.
