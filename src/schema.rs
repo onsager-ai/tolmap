@@ -74,6 +74,18 @@ impl NodeRow {
     pub fn loc(&self) -> usize {
         self.0 .3
     }
+
+    pub fn complexity(&self) -> usize {
+        self.0 .4
+    }
+
+    pub fn churn(&self) -> usize {
+        self.0 .5
+    }
+
+    pub fn fanin(&self) -> f64 {
+        self.0 .6
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]

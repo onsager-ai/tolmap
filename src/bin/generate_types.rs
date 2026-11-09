@@ -66,6 +66,8 @@ fn export_to(directory: &Path) -> Result<()> {
     LensReport::export_all(&Config::default().with_out_dir(directory))?;
     LensResponse::export_all(&Config::default().with_out_dir(directory))?;
     LensList::export_all(&Config::default().with_out_dir(directory))?;
+    // Issue #250: `tolmap debt --format json`'s report.
+    tolmap::debt::DebtReport::export_all(&Config::default().with_out_dir(directory))?;
     Ok(())
 }
 
