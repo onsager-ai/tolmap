@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "manifest_sha256": "2c32a83257577f86d73a075fe91e2a93426102a9cc805d9b5219edc3f980085c",
-  "block_sha256": "21b24d84a4636c657f08116aac12fb3d4a0ea717b66c92f4cfe1dff433f8d9a4",
+  "manifest_sha256": "a49ac92ec0ed61cfd25d7bf367e22157cc6468a6260bc1551ee19b45666f3ff8",
+  "block_sha256": "1439c3ccca8e357299cad3e45d87db923b7ac76fc0ebb671d72984001bd6ab85",
   "resolved_skills": [
     "ci-triage",
     "docs-drift-guard",
@@ -92,12 +92,12 @@
       "mode": "100644"
     },
     ".agents/skills/pre-push/SKILL.md": {
-      "sha256": "153e3faba2fa93c81885415b3d1e85b66ab93ab65dacb07a27b7b61efeb8b367",
+      "sha256": "42392e9937b1401745b253780dd7816c6509ea8ab171a5a6c8efa16f1a821eb8",
       "owner": "shared",
       "mode": "100644"
     },
     ".agents/sync.mjs": {
-      "sha256": "68ab4378c640a8f89e6718c30b0903d853defcab2a8723436d082005b34099c2",
+      "sha256": "be96f56d2c4b814d0e7f5ad16d132cc445b930683816656e939c5d731d52cc3d",
       "owner": "tooling",
       "mode": "100644"
     },
@@ -187,13 +187,33 @@
       "mode": "100644"
     },
     ".claude/skills/pre-push/SKILL.md": {
-      "sha256": "153e3faba2fa93c81885415b3d1e85b66ab93ab65dacb07a27b7b61efeb8b367",
+      "sha256": "42392e9937b1401745b253780dd7816c6509ea8ab171a5a6c8efa16f1a821eb8",
       "owner": "shared",
       "mode": "100644"
     },
     ".claude/skills/viewer-verification/SKILL.md": {
       "sha256": "e2e3b16e29b1efa4feee30e6997677f8dc08ca863bf86f16560473aeb5809d8f",
       "owner": "local-projection",
+      "mode": "100644"
+    },
+    ".githooks/checks/rustfmt": {
+      "sha256": "04454c6ef15548648df5c36c9a51de67c0ed33764951ef904ca2cbfe3ccff0fe",
+      "owner": "hooks",
+      "mode": "100755"
+    },
+    ".githooks/post-checkout": {
+      "sha256": "15d69d0fa92569d08cdf2ae43d14eca8f4bb7cbfad00c5940cfde1d8318c7596",
+      "owner": "hooks",
+      "mode": "100755"
+    },
+    ".githooks/pre-commit": {
+      "sha256": "1a364f347099ad0c626f2a303fc2a1c8e7256c5209a676c49965104f5466aef8",
+      "owner": "hooks",
+      "mode": "100755"
+    },
+    ".githooks/README.md": {
+      "sha256": "f5853ef26495f6c7cabd497ad93239dd2cf7efb864c4672880acda79128a1fa6",
+      "owner": "hooks",
       "mode": "100644"
     },
     ".github/workflows/agent-config.yml": {
