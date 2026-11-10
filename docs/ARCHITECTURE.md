@@ -133,6 +133,25 @@ The manifest also records a real inconsistency in the corpus rather than hiding 
 
 ## Shared schema
 
+## Organization maps
+
+An organization map is composition, not a larger clustering run. A checked-in
+manifest names each public member repository and pins it to a full commit.
+`tolmap org check` validates that manifest; `tolmap org build` reads the
+committed member trees, resolves declared package dependencies, places the
+member maps as whole regions, and writes an `OrganizationDocument`. The service
+serves that prebuilt document only when every pin's immutable member map is in
+the store; the viewer composes its repository and district outlines with the
+resolved inter-repository roads.
+
+The organization layer never mutates, re-clusters, or re-lays out a member map,
+and it computes no cross-repository modularity. Dependency, external and
+unresolved counts are lower bounds because only declared Cargo, npm/pnpm, Go
+and Python dependencies are visible. File-level cross-repository references,
+cross-repository lenses, comparison of an organization across commits, and Hub
+storage or access policy are deliberately out of scope; they need their own
+specifications after the composition contract is stable.
+
 The map JSON is the contract between indexer and viewer. Define it once as Rust types and generate the TypeScript from them (`ts-rs` or `typeshare`) rather than maintaining two hand-written definitions. The current shape is in `data/*.json`; the compact index-addressed layout (`F`, `N`, `E`, `L`, `S`, `U`) exists because nine maps had to fit in one HTML page, and can be relaxed now that data is fetched.
 
 ## Milestones
