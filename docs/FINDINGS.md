@@ -3533,3 +3533,23 @@ Issue [#273](https://github.com/onsager-ai/tolmap/issues/273). [Scratch run 4276
 - The remaining cycle still runs through generated `JobSnapshot.ts` and `Eta.ts`. Whether cycle reporting should collapse generated files onto their generators is a separate design question, not part of this issue.
 - semon was not measured in this run. The CI result establishes the required tolmap behavior; no semon repository was cloned or modified.
 - The debt lens was checked for resolved stops in CI but not rendered in a browser.
+
+## 73. Package projection keeps the duhem district cycle within package scope and makes package evidence explicit
+
+Issue [#270](https://github.com/onsager-ai/tolmap/issues/270). [Scratch run 42769464206](https://github.com/onsager-ai/tolmap/actions/runs/42769464206) built tolmap at `ba323eca77b4f75a9120fa31cba5dbce0dff6554`, then ran each repository's required build twice and `tolmap debt --format json`, text and lens. Each repeated map was byte-identical; every emitted debt lens passed `tolmap lens check`. semon cloned successfully at `50c52557775d7247846d214e145db1b6b9e650a8`. No `data/*.json` or other pinned fixture byte changed.
+
+| Repository | Invocation | Map | Cycle package scope | Repeated map SHA-256 |
+|---|---|---:|---|---|
+| duhem `2cf813bd` | `--all-sources` | 273 files, 1,131 edges | 1 within-package cycle | `e956eeed6c55720ce6a2f33e0867509d441028f60ec7f094a2f387d5b32c800e` |
+| tolmap `ba323ec` | `--all-sources` | 288 files, 830 edges | 1 within-package cycle | `5c3c8124a24e9da996ada94ba2184d2bc7c8f4f392337747d0d4ee88d53ceae9` |
+| Flask `d73fa1c` | `--pkg . --lang py` | 35 files, 105 edges | 1 within-package cycle | `b32f087d934bc1788d5306f72265dba13646f6e39e0e37f55d0754960b52fa89` |
+| semon `50c5255` | `--all-sources` | 223 files, 1,411 edges | 2 within-package cycles | `28ccb1b146fe802d254fa605e8cbda15646fd068de25f7a3fa3494ead9ad96a9` |
+
+- **The duhem report is a clustering cycle, not a build-level loop.** Its projected package edges are acyclic: `duhem-cli` points to `duhem-evidence` (9 file edges), `duhem-judge` (2), `duhem-runtime` (12), `duhem-schema` (5), and `duhem-summary` (1); `duhem-runtime` points to `duhem-evidence` (49), `duhem-judge` (13), `duhem-schema` (44), and `duhem-summary` (1). The full district bundle also spans `duhem-dashboard/web`; no projected edge returns to cli or runtime.
+- **The current tolmap cycle remains within package scope.** It spans the repository root and `web`, with 67 projected file edges from `web` to the root and no reverse package edge. Flask's one cycle stays inside its root package. semon's cycles stay inside `ui`, and from `crates/semon-cli` to `crates/semon-sessions` (4 file edges), respectively.
+- **`D.package_roots` is report-only evidence.** Cargo, npm, Go, and declared Python pyproject roots are recorded in sorted order and assigned by nearest directory. The sidecar is outside `E`, so extraction, blending, clustering, and layout inputs remain unchanged; older maps report package scope as unmeasured instead of treating an absent sidecar as no package evidence.
+
+### Not verified
+
+- These reports establish projected edge direction and cycle classification, not that declared package dependencies capture every runtime connection.
+- CI resolved each debt lens but did not render it in a browser.
