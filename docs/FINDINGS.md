@@ -3553,3 +3553,22 @@ Issue [#270](https://github.com/onsager-ai/tolmap/issues/270). [Scratch run 4276
 
 - These reports establish projected edge direction and cycle classification, not that declared package dependencies capture every runtime connection.
 - CI resolved each debt lens but did not render it in a browser.
+
+## 74. Collapsing generated bindings splits tolmap's mixed cycle without changing semon or duhem
+
+Issue [#285](https://github.com/onsager-ai/tolmap/issues/285). [Scratch run 42782937014](https://github.com/onsager-ai/tolmap/actions/runs/42782937014) built baseline `6a73484504a46cfae91eab7a9c03add39cb3a2a2` and the issue implementation at `9d20a28ff441a441e70fccf23bfc61a7c25f9ab3`, then ran each required build twice and `tolmap debt --format json`, text and lens. Every repeated build produced byte-identical map JSON and every emitted debt lens passed `tolmap lens check`. The final lens-hop wording adjustment at `7643b13a7e5c9d086b6103517c0c46019872fa4f` does not affect map construction or debt JSON. No `data/*.json` or other pinned fixture byte changed.
+
+| Repository | Invocation | Before → after cycles | Before → after district membership / cross edges | Before → after cut sizes | `crosses_package` | Repeated map SHA-256 |
+|---|---|---:|---|---|---|---|
+| tolmap `7643b13` | `--all-sources` | 1 → 2 | `{0,1,2,3,4,5,7}` / 192 → `{1,5}` / 66; `{0,2,3,4,7}` / 57 | `[23,4,9,1,6,7,5,1,1,1,1]` → `[23]`; `[4,5,7,1,1,1]` | false → false | `41df8b82f53b0d187247f74277ccc96c153dcdc042b2a1542a8bd768f002649d` → `bfb8631ae41fc1de0fbf600b80797e40eac67366af08734c69bbd1420ca2efd3` |
+| semon `50c5255` | `--all-sources` | 2 → 2 | `{1,4}` / 46; `{0,2,3}` / 454 → unchanged | `[4]`; `[59,44,32]` → unchanged | false → false | `28ccb1b146fe802d254fa605e8cbda15646fd068de25f7a3fa3494ead9ad96a9` |
+| duhem `2cf813bd` | `--all-sources` | 1 → 1 | `{0,1,2,4}` / 150 → unchanged | `[11,1,6,3]` → unchanged | false → false | `e956eeed6c55720ce6a2f33e0867509d441028f60ec7f094a2f387d5b32c800e` |
+
+- **The target cycle stops pointing at generated files.** Before collapse, tolmap's contextual route was `bindings/JobSnapshot.ts → bindings/Eta.ts → web/src/types/index.ts → bindings/JobSnapshot.ts`. Collapsing known ts-rs bindings removes the generated-only connections that joined the two remaining report cycles: the service cycle closes through `src/bin/generate_types.rs → src/service/http.rs → src/service/agent.rs → src/naming.rs`, and the web cycle through `web/scripts/check-district-colours.ts → web/src/map/colour.ts → web/scripts/check-layout-profile.ts → web/src/lib/repoOptions.ts`. Collapsed report edges retain the consumed binding's `F` index in `via_generated`; text and the debt lens show its binding path.
+- **The rule is report-only.** Collapse happens before district-cycle search and cut computation, drops resulting same-file and same-district edges, and feeds the same collapsed bundles to package projection. `E`, blending, clustering, layout, map JSON, and every pinned fixture remain unchanged. A `D.generated` row without a generator and an older map without `D.generated` preserve prior behavior.
+- **No measured package classification changed.** All pre- and post-collapse cycles remained within-package (`crosses_package: false`). semon and duhem contain no cycle edge with a known generated-file generator at these pins, so both reports are byte-identical apart from debt report version 5 → 6.
+
+### Not verified
+
+- These three repositories do not establish how collapse behaves for generated files whose generator relationship is absent or stale; the report deliberately retains those edges unchanged.
+- CI resolved each debt lens but did not render it in a browser.

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 5;
+pub const DEBT_REPORT_VERSION: u32 = 6;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -143,20 +143,26 @@ pub struct DebtDistrict {
     pub name: String,
 }
 
-// One file edge of `E`, by path, with both districts.
+// One report file edge, by collapsed path, with both districts.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
 pub struct DebtEdge {
     pub from: String,
     pub to: String,
     pub from_district: usize,
     pub to_district: usize,
+    /// Generated binding collapsed onto its generator for this report edge.
+    /// When both ends are collapsed bindings, only the source binding is recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub via_generated: Option<u32>,
 }
 
-// A strongly connected set of districts in the district graph built from
-// `E`. `route` is one shortest cycle through it (district ids, the first not
-// repeated at the end), and `closing_edges` one file edge per hop of the
-// route, the last closing back to the first district. `cross_edges` counts
-// every file edge between two different districts of the set.
+// A strongly connected set of districts in the report graph built from `E`
+// after generated bindings are collapsed onto known generators. `route` is one
+// shortest cycle through it (district ids, the first not repeated at the end),
+// and `closing_edges` one file edge per hop of the route, the last closing back
+// to the first district. `cross_edges` counts every file edge between two
+// different districts of the set.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
 pub struct DistrictCycle {
     pub districts: Vec<DebtDistrict>,
@@ -588,10 +594,22 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
         })
     });
     let district = |f: usize| map.nodes[f].district();
+    let mut collapsed = (0..map.files.len()).collect::<Vec<_>>();
+    if let Some(generated) = map.debt.as_ref().and_then(|debt| debt.generated.as_ref()) {
+        for generated in generated {
+            if let Some(generator) = generated.generator {
+                collapsed[generated.file as usize] = generator as usize;
+            }
+        }
+    }
     let mut bundles = BTreeMap::<(usize, usize), Vec<DebtEdge>>::new();
     let mut graph: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for &[a, b] in &map.edges {
-        let (from_district, to_district) = (district(a), district(b));
+        let (from, to) = (collapsed[a], collapsed[b]);
+        if from == to {
+            continue;
+        }
+        let (from_district, to_district) = (district(from), district(to));
         if from_district == to_district {
             continue;
         }
@@ -600,10 +618,13 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
             .entry((from_district, to_district))
             .or_default()
             .push(DebtEdge {
-                from: map.files[a].clone(),
-                to: map.files[b].clone(),
+                from: map.files[from].clone(),
+                to: map.files[to].clone(),
                 from_district,
                 to_district,
+                via_generated: (from != a)
+                    .then_some(a as u32)
+                    .or_else(|| (to != b).then_some(b as u32)),
             });
     }
     for edges in bundles.values_mut() {
@@ -1174,6 +1195,16 @@ fn pct(share: f64) -> String {
     format!("{}%", round4(share * 100.0))
 }
 
+fn edge_text(edge: &DebtEdge, files: Option<&[String]>) -> String {
+    match (edge.via_generated, files) {
+        (Some(via), Some(files)) => {
+            format!("{} -> {} via {}", edge.from, edge.to, files[via as usize])
+        }
+        (Some(via), None) => format!("{} -> {} via F[{via}]", edge.from, edge.to),
+        (None, _) => format!("{} -> {}", edge.from, edge.to),
+    }
+}
+
 // The lens equivalent of a report: at most one area per finding kind (in
 // `KINDS` order, members sorted), one path per cycle and notes carrying the
 // measured values. A cycle path's closing
@@ -1257,11 +1288,34 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                     ..declared(edge.from_district)
                 });
             }
-            stops.push(LensStop {
-                at: edge.to.clone(),
-                hop: HopMode::Computed,
-                reason: None,
-            });
+            if let Some(via) = edge.via_generated {
+                let generator = map
+                    .debt
+                    .as_ref()
+                    .and_then(|debt| debt.generated.as_ref())
+                    .and_then(|generated| generated.iter().find(|generated| generated.file == via))
+                    .and_then(|generated| generated.generator)
+                    .expect("collapsed generated edge retains its generator");
+                stops.push(LensStop {
+                    at: map.files[via as usize].clone(),
+                    hop: HopMode::Declared,
+                    reason: Some(format!(
+                        "generated binding collapsed onto {}",
+                        map.files[generator as usize]
+                    )),
+                });
+                stops.push(LensStop {
+                    at: edge.to.clone(),
+                    hop: HopMode::Computed,
+                    reason: None,
+                });
+            } else {
+                stops.push(LensStop {
+                    at: edge.to.clone(),
+                    hop: HopMode::Computed,
+                    reason: None,
+                });
+            }
         }
         if stops.last().unwrap().at != *first {
             stops.push(LensStop {
@@ -1464,6 +1518,10 @@ pub fn render_json(report: &DebtReport) -> String {
 }
 
 pub fn render_text(report: &DebtReport) -> String {
+    render_text_with_files(report, None)
+}
+
+fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> String {
     use std::fmt::Write;
     let t = &report.thresholds;
     let mut out = String::new();
@@ -1565,12 +1623,12 @@ pub fn render_text(report: &DebtReport) -> String {
                     edge.edges.len(),
                 );
                 for file_edge in &edge.edges {
-                    let _ = writeln!(out, "    {} -> {}", file_edge.from, file_edge.to);
+                    let _ = writeln!(out, "    {}", edge_text(file_edge, files));
                 }
             }
         }
         for e in &c.closing_edges {
-            let _ = writeln!(out, "  {} -> {}", e.from, e.to);
+            let _ = writeln!(out, "  {}", edge_text(e, files));
         }
         for pair in &c.mutual_pairs {
             let _ = writeln!(
@@ -1591,7 +1649,7 @@ pub fn render_text(report: &DebtReport) -> String {
                 bundle.edges.len(),
             );
             for edge in &bundle.edges {
-                let _ = writeln!(out, "      {} -> {}", edge.from, edge.to);
+                let _ = writeln!(out, "      {}", edge_text(edge, files));
             }
         }
     }
@@ -1657,7 +1715,7 @@ pub fn run(map: &std::path::Path, format: &str) -> i32 {
     let rendered = match format {
         "json" => render_json(&report),
         "lens" => to_lens(&report, &doc).to_toml(),
-        _ => render_text(&report),
+        _ => render_text_with_files(&report, Some(&doc.files)),
     };
     print!("{rendered}");
     0
@@ -1822,6 +1880,134 @@ mod tests {
         let old = findings(&map(None));
         assert!(!old.generated_file_measurement);
         assert!(render_text(&old).contains("generated-file handling not measured"));
+    }
+
+    fn cycle_map(edges: serde_json::Value, debt: Option<serde_json::Value>) -> MapDocument {
+        let mut value = json!({
+            "repo": "cycles", "q": 0.0, "names": {"0": "src", "1": "bindings", "2": "web"}, "districts": {},
+            "F": ["src/a.rs", "bindings/A.ts", "web/c.ts"],
+            "N": [
+                [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [2, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": edges, "L": [], "S": {}, "U": {}, "roads": [], "lang": "ts"
+        });
+        if let Some(debt) = debt {
+            value["D"] = debt;
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn cycle_collapse_preserves_unlinked_bindings_and_old_maps() {
+        let edges = json!([[0, 1], [1, 2], [2, 0]]);
+        let unlinked = findings(&cycle_map(
+            edges.clone(),
+            Some(json!({"generated": [{"file": 1, "generator": null}]})),
+        ));
+        let old = findings(&cycle_map(edges, None));
+        assert_eq!(unlinked.cycles, old.cycles);
+        assert_eq!(unlinked.cycles[0].closing_edges[0].via_generated, None);
+    }
+
+    #[test]
+    fn cycle_collapse_records_binding_and_projects_generator_package() {
+        let report = findings(&cycle_map(
+            json!([[0, 1], [1, 2], [2, 0]]),
+            Some(json!({
+                "generated": [{"file": 1, "generator": 0}],
+                "package_roots": [
+                    {"dir": "src", "ecosystem": "cargo"},
+                    {"dir": "bindings", "ecosystem": "npm"},
+                    {"dir": "web", "ecosystem": "npm"}
+                ]
+            })),
+        ));
+        let cycle = &report.cycles[0];
+        assert_eq!(cycle.route, [0, 2]);
+        assert!(
+            cycle.crosses_package,
+            "the collapse creates src -> web -> src"
+        );
+        assert!(cycle
+            .closing_edges
+            .iter()
+            .any(|edge| edge.via_generated == Some(1)));
+        assert!(cycle.package_edges.iter().any(|edge| {
+            edge.from == "src"
+                && edge.to == "web"
+                && edge.edges.iter().any(|file| file.via_generated == Some(1))
+        }));
+        assert!(render_text_with_files(
+            &report,
+            Some(&[
+                "src/a.rs".to_owned(),
+                "bindings/A.ts".to_owned(),
+                "web/c.ts".to_owned()
+            ])
+        )
+        .contains("src/a.rs -> web/c.ts via bindings/A.ts"));
+        let lens = to_lens(
+            &report,
+            &cycle_map(
+                json!([[0, 1], [1, 2], [2, 0]]),
+                Some(json!({
+                    "generated": [{"file": 1, "generator": 0}],
+                    "package_roots": [
+                        {"dir": "src", "ecosystem": "cargo"},
+                        {"dir": "bindings", "ecosystem": "npm"},
+                        {"dir": "web", "ecosystem": "npm"}
+                    ]
+                })),
+            ),
+        );
+        assert!(lens.paths[0].stops.iter().any(|stop| {
+            stop.at == "bindings/A.ts"
+                && stop.hop == HopMode::Declared
+                && stop
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason == "generated binding collapsed onto src/a.rs")
+        }));
+    }
+
+    #[test]
+    fn cycle_lens_names_generator_for_target_binding() {
+        let document = cycle_map(
+            json!([[2, 1], [0, 2]]),
+            Some(json!({"generated": [{"file": 1, "generator": 0}]})),
+        );
+        let report = findings(&document);
+        let stops = &to_lens(&report, &document).paths[0].stops;
+        let binding = stops
+            .iter()
+            .position(|stop| stop.at == "bindings/A.ts")
+            .expect("collapsed target binding is on the cycle route");
+        assert_eq!(stops[binding - 1].at, "web/c.ts");
+        assert_eq!(stops[binding + 1].at, "src/a.rs");
+        assert_eq!(
+            stops[binding].reason.as_deref(),
+            Some("generated binding collapsed onto src/a.rs")
+        );
+        assert_ne!(
+            stops[binding].reason.as_deref(),
+            Some("generated binding collapsed onto web/c.ts")
+        );
+    }
+
+    #[test]
+    fn cycle_collapse_drops_self_loops_and_removes_cycle() {
+        let original = cycle_map(
+            json!([[0, 1], [1, 0]]),
+            Some(json!({"generated": [{"file": 1, "generator": null}]})),
+        );
+        assert_eq!(findings(&original).cycles.len(), 1);
+        let collapsed = cycle_map(
+            json!([[0, 1], [1, 0]]),
+            Some(json!({"generated": [{"file": 1, "generator": 0}]})),
+        );
+        assert!(findings(&collapsed).cycles.is_empty());
     }
 
     #[test]
