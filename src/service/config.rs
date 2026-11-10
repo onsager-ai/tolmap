@@ -143,6 +143,13 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_STATIC_DIR`.
     pub static_dir: Option<PathBuf>,
+    /// Directory of prebuilt organization documents. The service reads
+    /// `<name>.json` from this directory only after every pinned member map
+    /// is present in its immutable store; it never accepts paths or URLs from
+    /// an HTTP request and never indexes a member for this endpoint.
+    ///
+    /// Env: `TOLMAP_ORGANIZATIONS_DIR`.
+    pub organization_dir: Option<PathBuf>,
     /// Select the blend/prune route for maps built by the job service.
     /// Node-relative is the owner-approved default; every measured route
     /// remains available for controlled comparisons.
@@ -209,8 +216,9 @@ pub struct ServeConfig {
 impl ServeConfig {
     /// Reads overridable settings from the environment
     /// (`TOLMAP_PORT`, `TOLMAP_BIND_ADDR`, `TOLMAP_DB_PATH`,
-    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`, `TOLMAP_ALLOW_LOCAL_PATHS`,
-    /// `TOLMAP_PRUNE_VARIANT`, `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus
+    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`, `TOLMAP_ORGANIZATIONS_DIR`,
+    /// `TOLMAP_ALLOW_LOCAL_PATHS`, `TOLMAP_PRUNE_VARIANT`,
+    /// `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus
     /// `Limits::from_env`'s
     /// `TOLMAP_CLONE_CACHE_BYTES`/queue/rate variables); anything left unset uses its
     /// documented default. No config file yet -- the job service has no
@@ -246,6 +254,7 @@ impl ServeConfig {
         // Unset (the default) keeps the router exactly as it is without
         // this -- see the `static_dir` field's doc comment.
         let static_dir = env::var("TOLMAP_STATIC_DIR").ok().map(PathBuf::from);
+        let organization_dir = env::var("TOLMAP_ORGANIZATIONS_DIR").ok().map(PathBuf::from);
         let prune_variant = env_var_or("TOLMAP_PRUNE_VARIANT", PruneVariant::default());
         let namer = env_var_or("TOLMAP_NAMER", NamerKind::Idf);
         let namer_model =
@@ -273,6 +282,7 @@ impl ServeConfig {
             db_path,
             cache_dir,
             static_dir,
+            organization_dir,
             prune_variant,
             namer,
             namer_model,

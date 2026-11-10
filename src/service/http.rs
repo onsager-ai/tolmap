@@ -27,6 +27,7 @@ use super::error::ApiError;
 use super::jobs::{self, JobSnapshot, JobStatus};
 use super::ratelimit::Verdict;
 use super::AppState;
+use crate::org::OrganizationDocument;
 use crate::worker::WorkerBuild;
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -61,6 +62,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(super::lens::get_lens),
         )
         .route("/api/maps/{owner}/{repo}/debt", get(super::debt::get_debt))
+        .route("/api/organizations/{name}", get(get_organization))
         .route("/api/maps", get(get_maps))
         .route("/api/maps/{owner}/{repo}", get(get_map))
         .route("/api/maps/{owner}/{repo}/symbols", get(get_symbols))
@@ -382,6 +384,63 @@ async fn get_maps(
             })
             .collect(),
     ))
+}
+
+// ---- GET /api/organizations/{name} -----------------------------------------
+
+/// Serves one prebuilt organization document only when all of its pinned
+/// member maps are already stored. The resource deliberately does not accept
+/// a manifest, local path, clone directory, or repository URL: HTTP cannot
+/// cause source reads or indexing for an organization.
+async fn get_organization(
+    State(state): State<Arc<AppState>>,
+    AxPath(name): AxPath<String>,
+) -> Result<Json<OrganizationDocument>, ApiError> {
+    if !valid_organization_name(&name) {
+        return Err(ApiError::invalid_request(
+            "organization name must match [a-z0-9][a-z0-9._-]{0,63}",
+        ));
+    }
+    let directory = state.config.organization_dir.as_ref().ok_or_else(|| {
+        ApiError::not_found("organization resources are not configured")
+    })?;
+    let path = directory.join(format!("{name}.json"));
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                ApiError::not_found(format!("organization {name} is not stored"))
+            }
+            _ => ApiError::internal(format!("read {}: {error}", path.display())),
+        })?;
+    let document: OrganizationDocument = serde_json::from_slice(&bytes).map_err(|error| {
+        ApiError::internal(format!("organization {name} is not valid JSON: {error}"))
+    })?;
+    if document.name != name {
+        return Err(ApiError::internal(format!(
+            "organization resource {name} names {}",
+            document.name
+        )));
+    }
+    for member in &document.members {
+        let slug = member.repo.to_ascii_lowercase();
+        if state.store.get(&slug, &member.commit)?.is_none() {
+            return Err(ApiError::not_found(format!(
+                "{} has no stored map at pinned commit {}",
+                member.repo, member.commit
+            )));
+        }
+    }
+    Ok(Json(document))
+}
+
+fn valid_organization_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    matches!(bytes.first(), Some(byte) if byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && bytes.len() <= 64
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
 }
 
 // ---- GET /api/maps/{owner}/{repo} -----------------------------------------

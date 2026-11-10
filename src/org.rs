@@ -304,6 +304,34 @@ pub struct OrganizationMemberMap {
     pub packages: Vec<ProvidedPackage>,
 }
 
+// A repository-sized region in the organization overview. `translation` and
+// `scale` transform the member map as a whole; they never alter its bytes or
+// its own layout.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct OrganizationRegion {
+    pub repo: String,
+    pub translation: [f64; 2],
+    pub scale: f64,
+}
+
+// One inter-repository road. Its endpoints are the placed centres of the
+// consumer and provider regions, respectively.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct OrganizationRoad {
+    pub consumer: String,
+    pub provider: String,
+    pub from: [f64; 2],
+    pub to: [f64; 2],
+}
+
+// The deterministic, organization-level placement. It composes immutable
+// member maps with translations and uniform scales, and never has modularity.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct OrganizationPlacement {
+    pub regions: Vec<OrganizationRegion>,
+    pub roads: Vec<OrganizationRoad>,
+}
+
 // One declared dependency behind a repository edge.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DependencyEvidence {
@@ -369,10 +397,127 @@ pub struct OrganizationDocument {
     pub version: u32,
     pub name: String,
     pub members: Vec<OrganizationMemberMap>,
+    pub placement: OrganizationPlacement,
     pub edges: Vec<RepositoryEdge>,
     pub pin_skew: Vec<PinSkew>,
     pub external: Vec<ExternalDependency>,
     pub unresolved: Vec<UnresolvedDependency>,
+}
+
+const PLACEMENT_ITERATIONS: usize = 64;
+const REPOSITORY_REPULSION: f64 = 0.08;
+const REPOSITORY_ATTRACTION: f64 = 0.03;
+const MIN_DISTANCE_SQUARED: f64 = 0.0001;
+
+/// Places lexically-sorted repositories with a fixed number of spring steps.
+///
+/// The initial circle has a `SEED`-derived phase. Each step processes all
+/// pairs in repository order, so equal graph weights always keep the lexical
+/// order as the tie-break. Declared dependency evidence attracts its two
+/// repositories; every pair repels. The result is centred after the final
+/// step. This is a composition transform only: a member map's geometry is
+/// never read or rewritten here.
+fn placement(members: &[OrganizationMemberMap], edges: &[RepositoryEdge]) -> OrganizationPlacement {
+    let count = members.len();
+    if count == 0 {
+        return OrganizationPlacement {
+            regions: Vec::new(),
+            roads: Vec::new(),
+        };
+    }
+
+    let index = members
+        .iter()
+        .enumerate()
+        .map(|(position, member)| (member.repo.as_str(), position))
+        .collect::<BTreeMap<_, _>>();
+    let mut weights = vec![vec![0.0; count]; count];
+    for edge in edges {
+        let (Some(&consumer), Some(&provider)) = (
+            index.get(edge.consumer.as_str()),
+            index.get(edge.provider.as_str()),
+        ) else {
+            continue;
+        };
+        let weight = edge.evidence.len() as f64;
+        weights[consumer][provider] += weight;
+        weights[provider][consumer] += weight;
+    }
+
+    let phase = std::f64::consts::TAU * (crate::SEED % count as u64) as f64 / count as f64;
+    let mut positions = (0..count)
+        .map(|position| {
+            let angle = phase + std::f64::consts::TAU * position as f64 / count as f64;
+            [angle.cos(), angle.sin()]
+        })
+        .collect::<Vec<_>>();
+    if count == 1 {
+        positions[0] = [0.0, 0.0];
+    }
+    for _ in 0..PLACEMENT_ITERATIONS {
+        let mut forces = vec![[0.0, 0.0]; count];
+        for left in 0..count {
+            for right in (left + 1)..count {
+                let dx = positions[right][0] - positions[left][0];
+                let dy = positions[right][1] - positions[left][1];
+                let distance_squared = (dx * dx + dy * dy).max(MIN_DISTANCE_SQUARED);
+                let distance = distance_squared.sqrt();
+                let unit = [dx / distance, dy / distance];
+                let force = weights[left][right] * REPOSITORY_ATTRACTION * distance
+                    - REPOSITORY_REPULSION / distance_squared;
+                for axis in 0..2 {
+                    let adjustment = unit[axis] * force;
+                    forces[left][axis] += adjustment;
+                    forces[right][axis] -= adjustment;
+                }
+            }
+        }
+        for (position, force) in positions.iter_mut().zip(forces) {
+            position[0] += force[0];
+            position[1] += force[1];
+        }
+    }
+    let centre = positions.iter().fold([0.0, 0.0], |mut total, position| {
+        total[0] += position[0] / count as f64;
+        total[1] += position[1] / count as f64;
+        total
+    });
+    for position in &mut positions {
+        position[0] -= centre[0];
+        position[1] -= centre[1];
+    }
+
+    let largest = members
+        .iter()
+        .map(|member| member.files)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let regions = members
+        .iter()
+        .zip(&positions)
+        .map(|(member, &translation)| OrganizationRegion {
+            repo: member.repo.clone(),
+            translation,
+            scale: (member.files.max(1) as f64 / largest as f64).sqrt(),
+        })
+        .collect();
+    let roads = edges
+        .iter()
+        .filter_map(|edge| {
+            let (&consumer, &provider) = (
+                index.get(edge.consumer.as_str())?,
+                index.get(edge.provider.as_str())?,
+            );
+            Some(OrganizationRoad {
+                consumer: edge.consumer.clone(),
+                provider: edge.provider.clone(),
+                from: positions[consumer],
+                to: positions[provider],
+            })
+        })
+        .collect();
+    OrganizationPlacement { regions, roads }
 }
 
 // ---------------------------------------------------------------------
@@ -951,10 +1096,12 @@ pub fn build(
         .collect::<Vec<_>>();
     let resolution = resolve(&views, &|m, tag| tag_commit(&clones[m], tag));
     drop(scratches);
+    let placement = placement(&summaries, &resolution.edges);
     Ok(OrganizationDocument {
         version: DOCUMENT_VERSION,
         name: manifest.name,
         members: summaries,
+        placement,
         edges: resolution.edges,
         pin_skew: resolution.pin_skew,
         external: resolution.external,
@@ -1170,6 +1317,66 @@ mod tests {
                 value: value.to_owned(),
             },
         }
+    }
+
+    fn member_map(repo: &str, files: usize) -> OrganizationMemberMap {
+        OrganizationMemberMap {
+            repo: repo.to_owned(),
+            commit: COMMIT.to_owned(),
+            path: None,
+            map: MapSource::Stored,
+            map_digest: "sha256:fixture".to_owned(),
+            files,
+            districts: 1,
+            packages: Vec::new(),
+        }
+    }
+
+    fn edge(consumer: &str, provider: &str, evidence: usize) -> RepositoryEdge {
+        RepositoryEdge {
+            consumer: consumer.to_owned(),
+            provider: provider.to_owned(),
+            evidence: (0..evidence)
+                .map(|_| DependencyEvidence {
+                    ecosystem: Ecosystem::Cargo,
+                    consumer_package: "consumer".to_owned(),
+                    file: "Cargo.toml".to_owned(),
+                    section: "dependencies".to_owned(),
+                    provider_package: "provider".to_owned(),
+                    pin: Pin {
+                        kind: PinKind::Version,
+                        value: "1".to_owned(),
+                    },
+                    status: PinStatus::Match,
+                    reason: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn placement_is_byte_identical_and_uses_lexical_tie_breaks() {
+        let members = vec![
+            member_map("acme/app", 4),
+            member_map("acme/core", 16),
+            member_map("acme/extra", 1),
+        ];
+        let edges = vec![edge("acme/app", "acme/core", 2)];
+        let first = placement(&members, &edges);
+        let second = placement(&members, &edges);
+        assert_eq!(first, second);
+        assert_eq!(
+            first
+                .regions
+                .iter()
+                .map(|region| region.repo.as_str())
+                .collect::<Vec<_>>(),
+            vec!["acme/app", "acme/core", "acme/extra"]
+        );
+        assert_eq!(first.regions[1].scale, 1.0);
+        assert_eq!(first.roads.len(), 1);
+        assert_eq!(first.roads[0].from, first.regions[0].translation);
+        assert_eq!(first.roads[0].to, first.regions[1].translation);
     }
 
     #[test]
