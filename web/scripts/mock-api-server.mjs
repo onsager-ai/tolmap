@@ -40,6 +40,24 @@ const owner = "mockorg";
 const repo = "already-indexed";
 const cachedSlug = `${owner}/${repo}`;
 const cachedDoc = { ...FIXTURE_DOC, repo };
+const ORG_COMMIT_CORE = "a".repeat(40);
+const ORG_COMMIT_APP = "b".repeat(40);
+const organizationMaps = new Map([
+  [`acme/core@${ORG_COMMIT_CORE}`, { ...FIXTURE_DOC, repo: "core" }],
+  [`acme/app@${ORG_COMMIT_APP}`, { ...FIXTURE_DOC, repo: "app" }],
+]);
+const organizationDocument = {
+  version: 2,
+  name: "acme-platform",
+  members: [
+    { repo: "acme/app", commit: ORG_COMMIT_APP, path: null, map: "stored", map_digest: "sha256:app", files: FIXTURE_DOC.F.length, districts: Object.keys(FIXTURE_DOC.districts).length, packages: [{ ecosystem: "npm", name: "@acme/app", file: "package.json", version: "1.0.0" }] },
+    { repo: "acme/core", commit: ORG_COMMIT_CORE, path: null, map: "stored", map_digest: "sha256:core", files: FIXTURE_DOC.F.length, districts: Object.keys(FIXTURE_DOC.districts).length, packages: [{ ecosystem: "cargo", name: "acme-core", file: "Cargo.toml", version: "1.0.0" }] },
+  ],
+  placement: { regions: [{ repo: "acme/app", translation: [1.2, 0], scale: 0.9 }, { repo: "acme/core", translation: [-1.2, 0], scale: 1.0 }], roads: [{ consumer: "acme/app", provider: "acme/core", from: [1.2, 0], to: [-1.2, 0] }] },
+  edges: [{ consumer: "acme/app", provider: "acme/core", evidence: [{ ecosystem: "npm", consumer_package: "@acme/app", file: "package.json", section: "dependencies", provider_package: "acme-core", pin: { kind: "version", value: "^1.0.0" }, status: "skew", reason: null }] }],
+  pin_skew: [{ consumer: "acme/app", consumer_package: "@acme/app", file: "package.json", provider: "acme/core", provider_package: "acme-core", pin: { kind: "version", value: "^1.0.0" }, member_commit: ORG_COMMIT_CORE, member_version: "1.1.0" }],
+  external: [], unresolved: [],
+};
 
 // StageId::ALL, in pipeline order (src/progress.rs) -- label/unit copied
 // verbatim so the mock's stage rows read exactly like the real service's.
@@ -547,6 +565,9 @@ const server = createServer((req, res) => {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/organizations/acme-platform") return send(res, 200, organizationDocument);
+  if (req.method === "GET" && url.pathname === "/api/organizations/missing-map") return send(res, 404, { error: "not_found", message: "missing pinned map acme/core@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+
   if (req.method === "GET" && url.pathname === "/api/maps") {
     return send(res, 200, [
       {
@@ -568,6 +589,10 @@ const server = createServer((req, res) => {
     const [, o, r] = mapMatch;
     const slug = `${o}/${r}`;
     const commit = url.searchParams.get("commit");
+    // Organization members are immutable: the route must retain the exact
+    // commit supplied by OrganizationDocument, never silently use latest.
+    const organizationMap = commit ? organizationMaps.get(`${slug}@${commit}`) : undefined;
+    if (organizationMap) return send(res, 200, organizationMap);
     // docs/UX.md §12: a running job's map at its own commit only.
     const early = commit ? earlyDocs.get(`${slug}@${commit}`) : undefined;
     if (early) return send(res, 200, early);

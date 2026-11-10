@@ -7,6 +7,7 @@
 // 127.0.0.1 (vite.config.ts). Nothing here ever points at a public origin —
 // there is no third option.
 import type { DistrictSymbols, JobSnapshot, MapDocument } from "@/types";
+import type { OrganizationDocument } from "@bindings/OrganizationDocument";
 import { fetchJsonTracked } from "./streaming";
 
 export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "/api";
@@ -148,6 +149,13 @@ export function cancelJob(jobId: string): Promise<JobSnapshot> {
 
 export function getServiceCatalogue(): Promise<ServiceCatalogueEntry[]> {
   return request<ServiceCatalogueEntry[]>("/maps");
+}
+
+/** A prebuilt organization is only available from the service: unlike a
+ * repository map, it has no static-collection equivalent because every
+ * member is pinned to a specific stored commit. */
+export function getOrganizationDocument(name: string): Promise<OrganizationDocument> {
+  return request<OrganizationDocument>(`/organizations/${encodeURIComponent(name)}`);
 }
 
 export function getServiceMapDocument(owner: string, repo: string, commit?: string): Promise<MapDocument> {

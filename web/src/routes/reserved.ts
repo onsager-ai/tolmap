@@ -18,4 +18,5 @@ export const RESERVED_NAMES = new Set([
   "login",
   "admin",
   "search",
+  "org",
 ]);

@@ -50,6 +50,13 @@ export function page(id: string): StoryObj<Args> {
         const frame = await waitElement('iframe') as HTMLIFrameElement;
         await waitFor(() => expect(frame.contentDocument?.documentElement.dataset.fixtureReady).toBe(id.slice(6)));
         await frame.contentDocument!.fonts.ready;
+      } else if (id.startsWith("organization-")) {
+        if (id === "organization-loading") await waitElement("[data-organization-loading]");
+        else if (id === "organization-error") await waitElement("[data-organization-error]");
+        else {
+          await waitElement("[data-organization-canvas] [data-organization-repository]");
+          if (id === "organization-card") await waitElement("[data-organization-card]");
+        }
       } else if (id.startsWith("map-") || id.startsWith("source-")) {
         if (id === 'map-loading') await waitElement('[data-load-progress="idle"], [data-load-progress="downloading"], [data-load-progress="parsing"]');
         else if (id === 'map-unavailable') await waitFor(() => expect(root.body.textContent).toContain("couldn't load onsager-ai/tolmap."));

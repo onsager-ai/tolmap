@@ -9,6 +9,10 @@ export const cases = [
   ...['queued', 'fetch', 'read', 'map', 'detail'].map(state => [`job-${state}`, `Indexing ${state}`, '/new?job=fixture&slug=onsager-ai/tolmap', state]),
   ...['detection_uncertain', 'detection_failed', 'cancelled', 'clone_failed', 'worker_crashed', 'busy', 'server_stopping', 'rate_limited', 'index_failed', 'internal_error', 'unknown'].map(code => [`failed-${code.replaceAll('_', '-')}`, `Failure · ${code}`, '/new?job=fixture&slug=onsager-ai/tolmap', code]),
   ['map-overview', 'Map overview', '/onsager-ai/tolmap', 'map-ready'],
+  ['organization-overview', 'Organization overview', '/org/acme-platform', 'organization-ready'],
+  ['organization-card', 'Organization repository card', '/org/acme-platform?repo=acme%2Fapp', 'organization-ready'],
+  ['organization-loading', 'Organization loading', '/org/acme-platform', 'organization-loading'],
+  ['organization-error', 'Organization missing pinned map', '/org/acme-platform', 'organization-error'],
   ...['loaded', 'unresolved', 'empty', 'error'].map(state => [`map-lens-${state}`, `Lenses · ${state}`, `/onsager-ai/tolmap${state === 'empty' ? '' : '?lens=overview'}`, `lens-${state}`, 'lenses']),
   ...['commits', 'overlap', 'loading', 'stale', 'error'].map(state => [`map-lens-compare-${state}`, `Lens comparison · ${state}`, `/onsager-ai/tolmap?lens=overview&lens_compare=true&compare=true&base=${'a'.repeat(40)}&head=${state === 'overlap' ? 'a'.repeat(40) : 'b'.repeat(40)}${state === 'overlap' ? '&other_lens=other' : ''}`, `lens-compare-${state}`, 'lens-comparison']),
   // Issue #250: the built-in debt lens (`?lens=@debt`) and its comparison.
