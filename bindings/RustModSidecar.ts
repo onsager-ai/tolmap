@@ -2,8 +2,9 @@
 import type { RustModPair } from "./RustModPair";
 
 /**
- * Rust module-declaration evidence retained for debt reachability. Every
- * index is into `MapDocument::files`; `roots` are crate targets and `pairs`
- * are `[declaring file, declared file]` rows for resolved `mod` declarations.
+ * Rust declaration evidence retained for debt reachability. Every index is
+ * into `MapDocument::files`; `roots` are crate targets and `pairs` are
+ * `[declaring file, declared file]` rows for resolved `mod` declarations and
+ * literal `include!` paths.
  */
 export type RustModSidecar = { roots: Array<number>, pairs: Array<RustModPair>, };
