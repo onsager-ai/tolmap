@@ -781,10 +781,11 @@ impl Visitor<'_> {
                         .find(|child| child.kind() == "token_tree")
                         .and_then(|tree| {
                             let mut cursor = tree.walk();
-                            tree.named_children(&mut cursor)
-                                .find(|child| child.kind() == "string_literal")
+                            let literal = tree
+                                .named_children(&mut cursor)
+                                .find(|child| child.kind() == "string_literal");
+                            literal.and_then(|literal| string_value(literal, self.source))
                         })
-                        .and_then(|literal| string_value(literal, self.source))
                     {
                         self.out.includes.push(path);
                     }

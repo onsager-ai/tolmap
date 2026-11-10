@@ -698,7 +698,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     let non_production_hotspot_files_excluded = (0..n)
         .filter(|&f| is_non_production_path(&map.files[f]))
         .count();
-    let production = |f| !is_test_path(&map.files[f]) && !is_non_production_path(&map.files[f]);
+    let production =
+        |f: usize| !is_test_path(&map.files[f]) && !is_non_production_path(&map.files[f]);
     let production_scores = (0..n)
         .filter(|&f| production(f))
         .map(|f| score[f])
