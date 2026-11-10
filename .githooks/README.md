@@ -1,58 +1,29 @@
 # Repository hooks
 
-The primary checkout stays on `main`. New code changes happen in a git worktree beside it:
+These generated hooks are selected by `.agents/manifest.json`. Enable them once
+per clone from the repository root:
 
 ```sh
-git worktree add -b <branch> ../tolmap-wt-<slug> origin/main
+git config core.hooksPath .githooks
 ```
 
-## Why
+A relative `core.hooksPath` resolves from the active worktree, so linked
+worktrees use their own committed `.githooks` directory. The setting is shared
+by the repository; verify it with `git config --get core.hooksPath`.
 
-Much of what this repo is read for lives in the working tree rather than behind a ref: the frozen reference implementation under `src/tolmap/` that the port is checked against, the nine acceptance fixtures in `data/`, the eval scripts, and `docs/FINDINGS.md`, which records what has already been falsified by measurement. A person, an editor, or an agent subprocess that reads the checkout while it sits on a feature branch reads a version of all of that which may not be what `main` says — and the failure is silent, because every file is still there and still plausible.
+`pre-commit` runs the selected checks in manifest order. `rustfmt` runs only
+when staged added, copied, modified, or renamed Rust files exist; it checks the
+working tree, not the index, and reports when a staged Rust file has unstaged
+changes. `prettier` checks staged files with the root dependency only. Missing
+formatters fail with their remedy. Hooks never compile, typecheck, lint, or run
+tests.
 
-Pinning the root to `main` means the default thing to read is the true thing. Worktrees cost nothing here: several branches in this repo were already developed that way.
+`post-checkout` keeps a clean primary checkout on `main`; linked worktrees are
+unaffected. It warns instead of reverting a dirty primary checkout. It runs
+`post-checkout.local` after the guard. Executable repo-owned
+`pre-commit.local` runs after generated pre-commit checks. Local files are never
+generated, changed, or removed.
 
-## Enabling the hooks
-
-`core.hooksPath` is local configuration and cannot be committed, so each clone enables it once:
-
-```sh
-git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"
-```
-
-The absolute path is deliberate. A relative `core.hooksPath` is resolved against the current working directory rather than the repository root, which makes it behave inconsistently across worktrees and subdirectories.
-
-This one step enables every hook below, in the primary checkout and in every linked worktree, because `core.hooksPath` is shared repository-wide. From the repository root, the equivalent short form is `git config core.hooksPath "$PWD/.githooks"`. Avoid a bare relative `.githooks` for the reason above.
-
-Verify it is active:
-
-```sh
-git config --get core.hooksPath
-```
-
-## What `post-checkout` does
-
-If the **primary** worktree ends up on a branch other than `main`:
-
-- with a clean tree, it switches back to `main` and explains why;
-- with tracked changes uncommitted, it refuses to revert and tells you to commit or stash first, because the checkout has already swapped your files and an automatic revert could confuse real work.
-
-Untracked files do not count as dirty (`git status --porcelain -uno`). They survive a branch switch untouched, and Git refuses the switch outright if it would clobber one, so they are never at risk from the corrective checkout. This is the one place the hook differs from the ostrom-hub original it was ported from, which counts them.
-
-It never acts in a linked worktree. The hook compares `--git-dir` with `--git-common-dir`; those differ in a worktree, so branch work there is untouched even though `core.hooksPath` is shared repository-wide.
-
-## What `pre-commit` does
-
-If the commit stages any `*.rs` file (`git diff --cached --name-only`), it runs `cargo fmt --all -- --check`. When that fails, it lists the files that are not rustfmt-clean, says "run cargo fmt --all", and refuses the commit. Commits that stage no Rust file skip it entirely. rustfmt does not compile anything, so the hook is within the repository's no-local-build rule.
-
-Known limitations:
-
-- **It checks the working tree, not the index.** `cargo fmt --check` reads files on disk, so a commit can pass with unformatted staged content if the working tree has been formatted but not re-staged. It can also be refused because of unstaged edits. Stashing unstaged changes to check the index exactly was rejected: the risk to uncommitted work outweighs the gain.
-- **It can be bypassed** with `git commit --no-verify`, and it does nothing in a clone that has not set `core.hooksPath`. CI's `cargo fmt --check` remains the gate. Delegated work still reports the actual `cargo fmt --all -- --check; echo exit=$?` output as a backstop.
-- **Rust only.** Prettier and ESLint are not run.
-
-## What `post-checkout` cannot do
-
-It cannot *prevent* a checkout. Git has no `pre-checkout` hook, so `post-checkout` runs after the switch and reverting is the only mechanism available. A `reference-transaction` hook exiting non-zero on the `HEAD` update does not abort `git checkout` either — that was established in ostrom-hub by direct test and taken on trust here, not re-tested.
-
-Git does natively refuse to check out a branch that another worktree already holds, which covers part of the same risk without any hook.
+Hooks can be bypassed with `git commit --no-verify`, and clones without the
+configuration do not run them. CI remains authoritative; report formatter gate
+commands and their actual exit codes.

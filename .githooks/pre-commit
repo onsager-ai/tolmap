@@ -1,20 +1,10 @@
 #!/bin/sh
-# Refuse a commit whose Rust is not rustfmt-clean. CI's `cargo fmt --check`
-# caught unformatted Rust on #269, #271 and #272, a full CI round each time.
-#
-# Runs only when the commit stages a *.rs file, so web-only and docs commits
-# pay nothing. rustfmt formats without compiling, so this stays within the
-# no-local-build rule. See .githooks/README.md for the working-tree limitation.
+set -eu
 
-git diff --cached --name-only --diff-filter=ACMR | grep -q '\.rs$' || exit 0
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+  "$root/.githooks/checks/rustfmt"
 
-files=$(cargo fmt --all -- --check -l)
-status=$?
-if [ "$status" -ne 0 ]; then
-    if [ -n "$files" ]; then
-        echo "pre-commit: these Rust files are not rustfmt-clean:" >&2
-        echo "$files" >&2
-    fi
-    echo "pre-commit: run cargo fmt --all, stage the result, and commit again." >&2
-    exit 1
+if [ -x "$root/.githooks/pre-commit.local" ]; then
+  exec "$root/.githooks/pre-commit.local" "$@"
 fi

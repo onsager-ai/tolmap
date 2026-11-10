@@ -23,8 +23,8 @@ Use lowercase tolmap for package, binary, module and domain; Tolman is the perso
 The primary checkout stays on main. Code changes use an adjacent task worktree:
 `git worktree add -b <branch> ../tolmap-wt-<slug> origin/main`.
 Preserve unrelated changes and give delegated work an exact ref/worktree path.
-Enable the existing checkout guard according to .githooks/README.md; it is a
-post-checkout guard, not a Git pre-checkout hook.
+Enable the generated hooks once per clone with `git config core.hooksPath .githooks`,
+as documented in .githooks/README.md.
 
 ## Verification and completion
 
@@ -65,4 +65,5 @@ routing is in .agents/adapters/codex.md. These adapters grant no extra scope.
 - **ownership:** Edit repo-owned contracts and local skills at their canonical paths. Shared skills, Claude projections, this managed section and synchronization tooling are generated: change the upstream source or manifest selection and regenerate; do not hand-edit generated copies.
 - **workflow-policy:** Repository policy owns contribution process, scope and gates; shared methods do not impose an SDD spec requirement where the repo has none. Native tool names in shared workflows illustrate operations: use equivalent available connected tools, and report unavailable capabilities. No global skill install or personal MCP setup is required for discovery.
 - **human-decisions:** When a concrete decision remains for a human, use the current harness's supported structured question tool, following its native instructions, tool contract and mode restrictions. Resolve tool names and mechanics through the matching harness-operations reference where available. Do not leave the decision only in a plain-text question, final response, or "Human decides" checklist. State the decision, relevant context, options and tradeoffs in the tool call; wait for an explicit answer before dependent work and reconcile it into the spec or decision record. Continue independent authorized work and do not re-ask settled decisions. If no permitted question tool is available, state that limitation and the unresolved decision, keep dependent work blocked, and use the repository's established human handoff channel. Silence, elapsed time and a recommended option are not approval.
+- **git-hooks:** Enable generated repository hooks once per clone with `git config core.hooksPath .githooks`; in linked worktrees this relative path resolves to each checkout's own `.githooks`. Never use `--no-verify`. A passing hook, or an unconfigured hook, is not formatter evidence: run and report the repository gate's real result, for example `cargo fmt --all -- --check; echo exit=$?`.
 <!-- agent-config:end -->
