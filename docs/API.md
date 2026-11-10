@@ -549,14 +549,21 @@ results during revalidation. Deep links retain `lens`, `lens_compare`, `base`,
 Structural debt findings (issue #250; `src/debt.rs`), computed offline from a
 stored map alone; the map is not changed and the same map gives byte-identical
 output. `json` prints a `DebtReport` (`bindings/DebtReport.ts`): district
-cycles (strongly connected district sets in the district graph built from
-`E`, each with one shortest route and the file edges that close it), their
+cycles (strongly connected district sets in the report-only district graph built
+from `E`, each with one shortest route and the file edges that close it), their
 mutual district pairs (the lighter direction) and a deterministic greedy
-feedback-arc **small cut** (never claimed to be minimum). When `D.package_roots`
-is present, the report projects the file edges of all of the cycle's
-cross-district bundles, not only the cut or the mutual pairs, onto their nearest
-package roots. It calls a cycle `crosses_package` only when those
-projected package edges form a cycle; otherwise it is `within package`, a
+feedback-arc **small cut** (never claimed to be minimum). Before this report
+graph is searched, each `D.generated` binding with a `generator` is collapsed
+onto that generator; a resulting same-file or same-district edge is dropped.
+`DebtEdge.via_generated` retains the binding's `F` index whenever an edge used
+that collapse, and text and debt-lens output show its binding path. Bindings
+without a generator, and maps without `D.generated`, retain their existing
+behavior. This changes only the debt report: `E`, blending, clustering, layout,
+and map JSON are unchanged. When `D.package_roots` is present, the report
+projects the file edges of all of the cycle's collapsed cross-district bundles,
+not only the cut or the mutual pairs, onto their nearest package roots. It calls
+a cycle `crosses_package` only when those projected package edges form a cycle;
+otherwise it is `within package`, a
 clustering cycle that still lists its package edges. Maps without that sidecar
 report package scope as unmeasured. The report also includes misplaced files,
 god files, hotspots (churn × complexity; the top two include the map's
