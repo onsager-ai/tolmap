@@ -37,12 +37,12 @@ Only UI text and docs change in this round; code and schema field names stay as 
 | 交通枢纽 | Hub | role of a file imported by ≥ 30 files (the product's `hub` landmark) | 枢纽 |
 | 地标 | Landmark | existing product term: entry, bridge, hub, capital, hazard | — |
 | 区间环 | District cycle | debt finding: districts that reach each other through file edges (`E`); reported with contextual closing edges, mutual lighter bundles and a deterministic greedy small cut (not a minimum) | — |
-| 错位文件 | Misplaced file | debt finding: a file with at least `MISPLACED_MIN_EDGES` edges, more than half of them to one other district | — |
+| 错位文件 | Misplaced file | debt finding: a non-generated file with at least `MISPLACED_MIN_EDGES` edges, more than half of them to one other district | — |
 | 上帝文件 | God file | debt finding: a file in the top `GOD_TOP_FRACTION` of both fan-in and complexity | — |
 | 热点 | Hotspot | debt finding: a file in the top `HOTSPOT_TOP_FRACTION` by churn × complexity (at least two); generalises the `hazard` landmark | — |
-| 无入边文件 | No inbound edge found | debt finding: a non-entry file with outbound edges and no inbound edge in `E`; a Rust file declared by a measured `mod` tree is excluded; never called "dead" or "unused", since the map cannot see dynamic or declared connections | unreached file |
+| 无入边文件 | No inbound edge found | debt finding: a non-entry, non-generated file with outbound edges and no inbound edge in `E`; a Rust file declared by a measured `mod` tree is excluded; never called "dead" or "unused", since the map cannot see dynamic or declared connections | unreached file |
 | 未声明 Rust 文件 | Undeclared Rust file | debt finding: a non-target `.rs` file that no measured crate root or `mod` declaration reaches; "likely not compiled", not proof, because macro-generated declarations can be missed | — |
-| 地下通道 | Tunnel | hidden coupling: a pair with at least three co-changes and weight ≥ 0.35, but no file edge (`E`) or reference edge (`U`); a lower bound over the indexer's 4,000 non-merge-commit history window | 隐藏耦合 hidden coupling |
+| 地下通道 | Tunnel | hidden coupling: a pair with at least three co-changes and weight ≥ 0.35, but no file edge (`E`) or reference edge (`U`); a ts-rs binding pair is also excluded when its generator already has static linkage to the other file; a lower bound over the indexer's 4,000 non-merge-commit history window | 隐藏耦合 hidden coupling |
 | 边境文件 | Border file | role of a file whose district membership is uncertain | 边界文件 boundary file |
 | 主岛 / 离岛 | Mainland / Island | existing product terms: connected body / unconnected districts | — |
 | 航线 | Route | aggregated dependency between repositories (future) | — |

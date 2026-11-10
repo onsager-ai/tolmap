@@ -152,7 +152,7 @@ cross-repository lenses, comparison of an organization across commits, and Hub
 storage or access policy are deliberately out of scope; they need their own
 specifications after the composition contract is stable.
 
-The map JSON is the contract between indexer and viewer. Define it once as Rust types and generate the TypeScript from them (`ts-rs` or `typeshare`) rather than maintaining two hand-written definitions. The current shape is in `data/*.json`; the compact index-addressed layout (`F`, `N`, `E`, `L`, `S`, `U`) exists because nine maps had to fit in one HTML page, and can be relaxed now that data is fetched.
+The map JSON is the contract between indexer and viewer. Define it once as Rust types and generate the TypeScript from them (`ts-rs` or `typeshare`) rather than maintaining two hand-written definitions. The current shape is in `data/*.json`; the compact index-addressed layout (`F`, `N`, `E`, `L`, `S`, `U`) exists because nine maps had to fit in one HTML page, and can be relaxed now that data is fetched. Optional `D` sidecars retain debt-only evidence without changing `E` or any blending, clustering or layout input: `D.generated` is file-indexed header detection, with an optional ts-rs generator-file index only for a unique `#[derive(... TS ...)]` Rust struct or enum match.
 
 ## Milestones
 

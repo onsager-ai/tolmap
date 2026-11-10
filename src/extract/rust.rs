@@ -301,6 +301,7 @@ pub(crate) struct ItemDecl {
     pub(crate) name: String,
     pub(crate) kind: ItemKind,
     pub(crate) cfg: Cfg,
+    pub(crate) ts: bool,
 }
 
 /// One name a `use` declaration brings in.
@@ -358,6 +359,7 @@ pub(crate) struct RustSyntax {
 struct Attrs {
     cfg: Cfg,
     path: Option<String>,
+    ts: bool,
 }
 
 fn string_value(node: Node<'_>, source: &[u8]) -> Option<String> {
@@ -413,6 +415,11 @@ fn read_attribute(item: Node<'_>, source: &[u8], attrs: &mut Attrs) {
             {
                 attrs.path = Some(value);
             }
+        }
+        Some("derive") => {
+            attrs.ts |= text(attribute, source)
+                .split(|character: char| !character.is_alphanumeric() && character != '_')
+                .any(|name| name == "TS");
         }
         _ => {}
     }
@@ -552,13 +559,14 @@ impl Visitor<'_> {
         }
     }
 
-    fn item(&mut self, node: Node<'_>, kind: ItemKind, cfg: Cfg) {
+    fn item(&mut self, node: Node<'_>, kind: ItemKind, cfg: Cfg, ts: bool) {
         if let Some(name) = node.child_by_field_name("name") {
             self.out.items.push(ItemDecl {
                 scope: self.scope.clone(),
                 name: text(name, self.source).to_owned(),
                 kind,
                 cfg,
+                ts,
             });
         }
     }
@@ -690,7 +698,7 @@ impl Visitor<'_> {
             "line_comment" | "block_comment" => {}
             "macro_definition" => {
                 if context.item_level {
-                    self.item(node, ItemKind::Macro, cfg);
+                    self.item(node, ItemKind::Macro, cfg, attrs.ts);
                 }
             }
             "mod_item" => {
@@ -726,19 +734,24 @@ impl Visitor<'_> {
             }
             "function_item" | "function_signature_item" | "const_item" | "static_item" => {
                 if context.item_level {
-                    self.item(node, ItemKind::Value, cfg);
+                    self.item(node, ItemKind::Value, cfg, attrs.ts);
                 }
                 self.children(node, inner);
             }
             "struct_item" | "enum_item" | "union_item" | "type_item" => {
                 if context.item_level {
-                    self.item(node, ItemKind::Type, cfg);
+                    self.item(
+                        node,
+                        ItemKind::Type,
+                        cfg,
+                        attrs.ts && matches!(node.kind(), "struct_item" | "enum_item"),
+                    );
                 }
                 self.children(node, inner);
             }
             "trait_item" => {
                 if context.item_level {
-                    self.item(node, ItemKind::Trait, cfg);
+                    self.item(node, ItemKind::Trait, cfg, attrs.ts);
                 }
                 self.children(node, inner);
             }
@@ -2284,6 +2297,30 @@ pub(crate) fn resolve(
         })
         .collect();
 
+    let ts_types = syntax
+        .iter()
+        .flat_map(|(&file, syntax)| {
+            syntax
+                .items
+                .iter()
+                .filter(|item| item.ts)
+                .map(move |item| (item.name.clone(), file))
+        })
+        .fold(
+            BTreeMap::<String, Vec<FileId>>::new(),
+            |mut types, (name, file)| {
+                types.entry(name).or_default().push(file);
+                types
+            },
+        );
+    let generated = parsed
+        .iter()
+        .filter_map(|(file, parsed)| {
+            parsed
+                .generated
+                .then_some((ids[file], parsed.ts_rs_generated))
+        })
+        .collect();
     let rust_mod = resolver.mod_tree();
     Ok(SourceIntermediate {
         pkg: pkg.to_owned(),
@@ -2303,6 +2340,8 @@ pub(crate) fn resolve(
                 .map(|(parent, child)| (ids[&parent], ids[&child]))
                 .collect(),
         }),
+        generated: Some(generated),
+        ts_types: Some(ts_types),
         build_output_mirror: 0,
         python_cross_project: 0,
     })

@@ -401,6 +401,18 @@ pub struct DebtSidecar {
     pub rust_mod: Option<RustModSidecar>,
     #[serde(default)]
     pub build_entries: Option<BuildEntrySidecar>,
+    #[serde(default)]
+    pub generated: Option<Vec<GeneratedFile>>,
+}
+
+/// A generated file found from its header. `file` and `generator`, when
+/// known, are indices into `MapDocument::files`. The generator is retained
+/// only for a ts-rs binding whose type declaration matched exactly once.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GeneratedFile {
+    pub file: u32,
+    pub generator: Option<u32>,
 }
 
 /// Co-change evidence retained for hidden-coupling findings. `pairs` rows are
@@ -664,6 +676,9 @@ pub struct GraphData {
     /// means a relevant config could not be read statically; `Some(empty)`
     /// means configs were measured and named no mapped source file.
     pub build_entries: Option<BTreeSet<FileId>>,
+    /// Generated source files found from their headers. This stays out of
+    /// graph JSON and every map-building input, then becomes debt evidence.
+    pub generated: Option<Vec<GeneratedFile>>,
     pub nodes: Vec<SourceNode>,
     pub edges: Vec<SignalEdge>,
     /// `--refs scip` only: the per-language reference paths, carried to the
@@ -834,6 +849,7 @@ impl<'de> Deserialize<'de> for GraphData {
             cochange: None,
             rust_mod: None,
             build_entries: None,
+            generated: None,
             nodes: wire.nodes,
             edges: wire.edges,
             references: wire.references,
@@ -896,6 +912,7 @@ mod tests {
             cochange: None,
             rust_mod: None,
             build_entries: None,
+            generated: None,
             nodes: ["a.go", "pkg/b.go"]
                 .into_iter()
                 .map(|file| SourceNode {
@@ -952,6 +969,7 @@ mod tests {
             cochange: None,
             rust_mod: None,
             build_entries: None,
+            generated: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,
@@ -984,6 +1002,7 @@ mod tests {
             cochange: None,
             rust_mod: None,
             build_entries: None,
+            generated: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,

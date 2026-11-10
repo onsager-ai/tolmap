@@ -13,8 +13,8 @@ use crate::partition::LeidenFfi;
 use crate::pipeline::{self, LayoutDistrict, SHARE_COCHANGE};
 use crate::schema::{
     BuildEntrySidecar, CochangePair, CochangeSidecar, CoverageLanguage, CoverageReport,
-    DebtSidecar, District, DistrictClass, FileId, GraphData, LandmarkRow, MapDocument, NodeRow,
-    RustModPair, RustModSidecar, SymbolRow,
+    DebtSidecar, District, DistrictClass, FileId, GeneratedFile, GraphData, LandmarkRow,
+    MapDocument, NodeRow, RustModPair, RustModSidecar, SymbolRow,
 };
 #[derive(Clone, Debug)]
 pub struct BuildFeatures {
@@ -831,13 +831,25 @@ fn compact(
         .map(|files| BuildEntrySidecar {
             files: files.iter().map(|&file| file as usize).collect(),
         });
-    let debt = (cochange.is_some() || rust_mod.is_some() || build_entries.is_some()).then_some(
-        DebtSidecar {
-            cochange,
-            rust_mod,
-            build_entries,
-        },
-    );
+    let generated = layout.weighted.generated.as_ref().map(|files| {
+        files
+            .iter()
+            .map(|file| GeneratedFile {
+                file: file.file,
+                generator: file.generator,
+            })
+            .collect()
+    });
+    let debt = (cochange.is_some()
+        || rust_mod.is_some()
+        || build_entries.is_some()
+        || generated.is_some())
+    .then_some(DebtSidecar {
+        cochange,
+        rust_mod,
+        build_entries,
+        generated,
+    });
     let mut groups = BTreeMap::<usize, Vec<usize>>::new();
     for (index, &district) in layout.membership.iter().enumerate() {
         groups.entry(district).or_default().push(index);
