@@ -1755,13 +1755,13 @@ mod tests {
                 .map(|pair| (pair.left.as_str(), pair.right.as_str()))
                 .collect::<Vec<_>>(),
             [
+                ("contracts/alpha.rs", "ui/alpha.ts"),
+                ("contracts/beta.rs", "ui/beta.ts"),
+                ("services/same.rs", "services/same.ts"),
                 ("services/alpha.rs", "web/alpha.rs"),
                 ("services/changes.rs", "web/changes.rs"),
                 ("services/weight.rs", "web/weight.rs"),
                 ("services/remote.rs", "web/remote.rs"),
-                ("contracts/alpha.rs", "ui/alpha.ts"),
-                ("contracts/beta.rs", "ui/beta.ts"),
-                ("services/same.rs", "services/same.ts"),
                 ("src/local.rs", "src/other.rs"),
                 ("lib/tail.rs", "lib/tail_two.rs"),
             ]
