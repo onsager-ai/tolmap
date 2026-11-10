@@ -544,9 +544,8 @@ fn separate_regions(positions: &mut [[f64; 2]], scales: &[f64]) {
                 let dy = positions[right][1] - positions[left][1];
                 let actual_distance_squared = dx * dx + dy * dy;
                 let distance = actual_distance_squared.sqrt();
-                let required = region_radius(scales[left])
-                    + region_radius(scales[right])
-                    + REGION_SEPARATION;
+                let required =
+                    region_radius(scales[left]) + region_radius(scales[right]) + REGION_SEPARATION;
                 if distance < required {
                     let adjustment = (required - distance) / 2.0;
                     // A coincident pair has no geometric direction. Give it

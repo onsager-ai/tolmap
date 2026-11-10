@@ -401,9 +401,11 @@ async fn get_organization(
             "organization name must match [a-z0-9][a-z0-9._-]{0,63}",
         ));
     }
-    let directory = state.config.organization_dir.as_ref().ok_or_else(|| {
-        ApiError::not_found("organization resources are not configured")
-    })?;
+    let directory = state
+        .config
+        .organization_dir
+        .as_ref()
+        .ok_or_else(|| ApiError::not_found("organization resources are not configured"))?;
     let path = directory.join(format!("{name}.json"));
     let bytes = tokio::fs::read(&path)
         .await
