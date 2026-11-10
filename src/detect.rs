@@ -1094,6 +1094,32 @@ fn detect_typescript(repo: &Path) -> Result<Option<SourceCandidate>> {
     let has_tsconfig =
         repo.join("tsconfig.json").is_file() || repo.join("src/tsconfig.json").is_file();
     if !has_package_json || !has_tsconfig {
+        let nested_packages = nested_typescript_package_dirs(repo)?;
+        if !nested_packages.is_empty() {
+            let names = nested_packages
+                .iter()
+                .take(TYPESCRIPT_NESTED_EVIDENCE_NAMED)
+                .map(|dir| {
+                    dir.to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/")
+                })
+                .collect::<Vec<_>>();
+            let suffix = if nested_packages.len() > names.len() {
+                ", …"
+            } else {
+                ""
+            };
+            return Ok(Some(SourceCandidate {
+                language: LanguageKind::TypeScript,
+                pkg: ".".to_owned(),
+                confidence: Confidence::Medium,
+                file_count: total,
+                evidence: format!(
+                    "no root package.json+tsconfig.json; nested package(s) {}{suffix}; mapping the repository root directly",
+                    names.join(", ")
+                ),
+            }));
+        }
         return Ok(Some(SourceCandidate {
             language: LanguageKind::TypeScript,
             pkg: ".".to_owned(),
@@ -1165,6 +1191,34 @@ fn detect_typescript(repo: &Path) -> Result<Option<SourceCandidate>> {
         file_count: total,
         evidence: "package.json+tsconfig.json present but no src/ or workspace layout; mapping the repository root directly".to_owned(),
     }))
+}
+
+/// Nested TypeScript projects named in fallback evidence before `…`.
+const TYPESCRIPT_NESTED_EVIDENCE_NAMED: usize = 3;
+
+/// Directories below `repo` that hold both a package manifest and a TypeScript
+/// config. `collect_named_dirs` shares Rust's deterministic traversal and
+/// pruning, so nested dependencies or vendored projects never become evidence.
+fn nested_typescript_package_dirs(repo: &Path) -> Result<Vec<PathBuf>> {
+    let mut packages = Vec::new();
+    collect_named_dirs(repo, repo, "package.json", &mut packages)?;
+    packages.retain(|dir| !dir.as_os_str().is_empty() && has_typescript_config(&repo.join(dir)));
+    packages.sort();
+    Ok(packages)
+}
+
+fn has_typescript_config(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(|entry| entry.ok()).any(|entry| {
+        entry.file_type().is_ok_and(|kind| kind.is_file())
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .strip_prefix("tsconfig")
+                .is_some_and(|suffix| suffix.ends_with(".json"))
+    })
 }
 
 /// `pnpm-workspace.yaml`'s `packages:` list. Hand-rolled rather than a YAML
@@ -1662,6 +1716,58 @@ mod tests {
         assert_eq!(candidate.pkg, "packages");
         assert_eq!(candidate.confidence, Confidence::High);
         assert!(candidate.evidence.contains("packages-private"));
+    }
+
+    #[test]
+    fn typescript_nested_package_maps_root_with_named_evidence() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "web/package.json", "{}\n");
+        write(dir.path(), "web/tsconfig.json", "{}\n");
+        write(dir.path(), "web/src/index.ts", "export {}\n");
+        let candidate = detect_typescript(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, ".");
+        assert_eq!(candidate.confidence, Confidence::Medium);
+        assert_eq!(
+            candidate.evidence,
+            "no root package.json+tsconfig.json; nested package(s) web; mapping the repository root directly"
+        );
+    }
+
+    #[test]
+    fn typescript_nested_package_can_be_deeply_nested() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "crates/x/web/package.json", "{}\n");
+        write(dir.path(), "crates/x/web/tsconfig.app.json", "{}\n");
+        write(dir.path(), "crates/x/web/src/index.ts", "export {}\n");
+        let candidate = detect_typescript(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, ".");
+        assert_eq!(candidate.confidence, Confidence::Medium);
+        assert!(candidate.evidence.contains("crates/x/web"));
+    }
+
+    #[test]
+    fn typescript_nested_package_without_tsconfig_does_not_count() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "web/package.json", "{}\n");
+        write(dir.path(), "web/src/index.ts", "export {}\n");
+        let candidate = detect_typescript(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, ".");
+        assert_eq!(candidate.confidence, Confidence::Low);
+        assert_eq!(
+            candidate.evidence,
+            "no package.json+tsconfig.json pair found; mapping the repository root directly"
+        );
+    }
+
+    #[test]
+    fn typescript_nested_package_in_node_modules_is_ignored() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "node_modules/dep/package.json", "{}\n");
+        write(dir.path(), "node_modules/dep/tsconfig.json", "{}\n");
+        write(dir.path(), "src/index.ts", "export {}\n");
+        let candidate = detect_typescript(dir.path()).unwrap().unwrap();
+        assert_eq!(candidate.pkg, ".");
+        assert_eq!(candidate.confidence, Confidence::Low);
     }
 
     #[test]
