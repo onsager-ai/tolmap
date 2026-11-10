@@ -5,9 +5,10 @@
 //! `impl` blocks, and the paths and identifiers it names. Phase 2
 //! ([`resolve`]) needs every file at once: it builds each crate's module tree
 //! from its root (`lib.rs`, `main.rs`, `[lib] path`, `[[bin]] path`, the
-//! build script), following `mod foo;` to `foo.rs` or `foo/mod.rs` and
-//! `#[path = "..."]` where one is given, and then resolves every `use` and
-//! every qualified path against that tree.
+//! build script), following `mod foo;` to `foo.rs` or `foo/mod.rs`,
+//! `#[path = "..."]` where one is given, and literal `include!("...")`
+//! paths, and then resolves every `use` and every qualified path against that
+//! tree.
 //!
 //! An edge means a name is used (owner decision, "Uses only"):
 //! - A `use` leaf links the file that defines the item it brings in, once
@@ -60,7 +61,7 @@
 //! Everything here iterates BTreeMaps, BTreeSets and vectors in source or
 //! file order, so a map is byte-identical from run to run (finding 9).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -335,6 +336,9 @@ pub(crate) struct ImplDecl {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RustSyntax {
     pub(crate) mods: Vec<ModDecl>,
+    /// Literal paths from `include!("...")`. Non-literal macro arguments
+    /// are deliberately not followed, so reachability remains a lower bound.
+    pub(crate) includes: Vec<String>,
     pub(crate) items: Vec<ItemDecl>,
     pub(crate) uses: Vec<UseDecl>,
     pub(crate) impls: Vec<ImplDecl>,
@@ -361,6 +365,25 @@ fn string_value(node: Node<'_>, source: &[u8]) -> Option<String> {
     let raw = raw.strip_prefix('r').unwrap_or(raw);
     let raw = raw.trim_matches('#');
     Some(raw.strip_prefix('"')?.strip_suffix('"')?.to_owned())
+}
+
+/// The literal argument of an `include!("...")` invocation. The Rust grammar
+/// exposes the macro name as the `macro` field, including at source-file item
+/// level; other macro arguments remain intentionally unmeasured.
+fn literal_include_path(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let macro_name = node.child_by_field_name("macro")?;
+    if macro_name.kind() != "identifier" || text(macro_name, source) != "include" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let token_tree = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "token_tree")?;
+    let mut cursor = token_tree.walk();
+    let literal = token_tree
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "string_literal")?;
+    string_value(literal, source)
 }
 
 fn read_attribute(item: Node<'_>, source: &[u8], attrs: &mut Attrs) {
@@ -766,13 +789,16 @@ impl Visitor<'_> {
             "identifier" | "type_identifier" => self.ident(node),
             "macro_invocation" => {
                 // The macro's own name is not followed: macros are
-                // deliberately unresolved.
+                // deliberately unresolved. `include!` is the exception for
+                // declaration reachability when its argument is literal.
+                if let Some(path) = literal_include_path(node, self.source) {
+                    self.out.includes.push(path);
+                }
                 let mut cursor = node.walk();
-                let trees = node
+                for tree in node
                     .named_children(&mut cursor)
                     .filter(|child| child.kind() == "token_tree")
-                    .collect::<Vec<_>>();
-                for tree in trees {
+                {
                     self.tokens(tree);
                 }
             }
@@ -1795,6 +1821,37 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+        // A literal include is compiled as though its contents appeared at the
+        // call site. It is not a graph edge, but it declares its target for
+        // reachability just as `mod` does. Follow nested literal includes;
+        // macro-composed paths stay unmeasured, preserving the lower bound.
+        let mut pending = self
+            .modules
+            .iter()
+            .map(|module| module.file)
+            .collect::<VecDeque<_>>();
+        let mut seen = pending.iter().copied().collect::<BTreeSet<_>>();
+        while let Some(parent) = pending.pop_front() {
+            let Some(syntax) = self.syntax.get(&parent) else {
+                continue;
+            };
+            let base = directory_name(&self.files[parent as usize]);
+            for relative in &syntax.includes {
+                let target = join_slash(base, relative);
+                let Some(child) = self
+                    .files
+                    .iter()
+                    .position(|path| path == &target)
+                    .map(|index| index as FileId)
+                else {
+                    continue;
+                };
+                declared.insert((path(parent), path(child)));
+                if seen.insert(child) {
+                    pending.push_back(child);
+                }
+            }
+        }
         ModTree {
             roots: roots.collect(),
             declared,
@@ -1812,7 +1869,8 @@ pub(crate) struct ModTree {
     /// Crate root files: lib, bins and build scripts (`crate_targets`).
     pub(crate) roots: BTreeSet<String>,
     /// `(declaring file, declared file)` for every `mod x;` that resolved to
-    /// a file, `#[path]` included, and whatever its `cfg`.
+    /// a file, `#[path]` and literal `include!` paths included, and whatever
+    /// its `cfg`.
     pub(crate) declared: BTreeSet<(String, String)>,
 }
 
@@ -2821,6 +2879,55 @@ mod tests {
                 .iter()
                 .map(|&(a, b)| (a.to_owned(), b.to_owned()))
                 .collect()
+        );
+    }
+
+    #[test]
+    fn mod_tree_follows_literal_include_paths_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            "Cargo.toml",
+            "[package]\nname = \"includes\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write(
+            root,
+            "src/lib.rs",
+            "include!(\"included/root.rs\");\ninclude!(concat!(\"included/\", \"nonliteral.rs\"));\ninclude!(\"included/missing.rs\");\nmod nested { include!(\"nested/child.rs\"); }\n",
+        );
+        write(
+            root,
+            "src/included/root.rs",
+            "include!(\"nested/child.rs\");\n",
+        );
+        write(root, "src/included/nested/child.rs", "pub fn child() {}\n");
+        write(root, "src/nested/child.rs", "pub fn nested() {}\n");
+        write(
+            root,
+            "src/included/nonliteral.rs",
+            "pub fn nonliteral() {}\n",
+        );
+        let (parsed, raw) = super::super::parse_files(root, ".", LanguageKind::Rust).unwrap();
+        let (files, ids) = file_ids(parsed.keys().cloned()).unwrap();
+        let syntax = raw
+            .iter()
+            .filter_map(|(file, raw)| match raw {
+                FileRaw::Rust(syntax) => ids.get(file).map(|&id| (id, syntax)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        let tree = Resolver::new(&files, &ids, &syntax, &crate_targets(root)).mod_tree();
+        assert_eq!(
+            tree.declared,
+            [
+                ("src/lib.rs", "src/included/root.rs"),
+                ("src/included/root.rs", "src/included/nested/child.rs"),
+                ("src/lib.rs", "src/nested/child.rs"),
+            ]
+            .into_iter()
+            .map(|(parent, child)| (parent.to_owned(), child.to_owned()))
+            .collect()
         );
     }
 

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 2;
+pub const DEBT_REPORT_VERSION: u32 = 3;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -63,9 +63,11 @@ pub const CYCLE_LENS_PATHS: usize = 20;
 //   with no inbound edge found were `tests.rs` (docs/FINDINGS.md, finding 63);
 const TEST_STEMS: &[&str] = &["tests"];
 const TEST_DIRS: &[&str] = &["test", "tests", "__tests__", "spec", "e2e"];
-const TEST_MARKERS: &[&str] = &[".test.", ".spec.", ".stories."];
+const TEST_MARKERS: &[&str] = &[".test.", ".spec."];
 const TEST_STEM_PREFIXES: &[&str] = &["test_"];
-const TEST_STEM_SUFFIXES: &[&str] = &["_test", "_spec"];
+const TEST_STEM_SUFFIXES: &[&str] = &["_test", "_tests", "_spec"];
+const NON_PRODUCTION_DIRS: &[&str] = &["storybook"];
+const NON_PRODUCTION_MARKERS: &[&str] = &[".stories."];
 
 pub const ENTRY_STEMS: &[&str] = &[
     "main",
@@ -100,13 +102,7 @@ pub const ENTRY_DIRS: &[&str] = &[
 ];
 // - its base name contains one of these (test, story, tool config and
 //   ambient declaration files);
-pub const ENTRY_MARKERS: &[&str] = &[
-    TEST_MARKERS[0],
-    TEST_MARKERS[1],
-    TEST_MARKERS[2],
-    ".config.",
-    ".d.",
-];
+pub const ENTRY_MARKERS: &[&str] = &[TEST_MARKERS[0], TEST_MARKERS[1], ".config.", ".d."];
 // - or its stem starts `test_` or ends `_test` / `_spec` (Python, Go, Ruby).
 pub const ENTRY_STEM_PREFIXES: &[&str] = &[TEST_STEM_PREFIXES[0]];
 pub const ENTRY_STEM_SUFFIXES: &[&str] = &[TEST_STEM_SUFFIXES[0], TEST_STEM_SUFFIXES[1]];
@@ -126,6 +122,8 @@ pub struct DebtThresholds {
     pub hotspot_min_count: usize,
     pub hotspot_min_score: Option<usize>,
     pub test_hotspot_files_excluded: usize,
+    pub non_production_hotspot_files_excluded: usize,
+    pub misplaced_test_files_excluded: usize,
     pub hidden_coupling_test_pairs_excluded: usize,
     pub hidden_coupling_min_count: usize,
     pub hidden_coupling_min_weight: f64,
@@ -270,6 +268,11 @@ pub struct DebtReport {
     /// Test files use the same path rule as no-inbound entry files and are
     /// excluded from production hotspot ranking.
     pub test_hotspot_files_excluded: usize,
+    /// Storybook files and Storybook stories are non-production, but not
+    /// tests, so only production-hotspot ranking excludes them.
+    pub non_production_hotspot_files_excluded: usize,
+    /// Test files are excluded from misplaced-file findings.
+    pub misplaced_test_files_excluded: usize,
     pub unreached: Vec<UnreachedFile>,
     /// False for maps built before the Rust declaration sidecar existed.
     pub rust_mod_reachability_measured: bool,
@@ -326,6 +329,15 @@ fn is_test_path(path: &str) -> bool {
         || TEST_STEM_SUFFIXES
             .iter()
             .any(|suffix| stem.ends_with(suffix))
+}
+
+fn is_non_production_path(path: &str) -> bool {
+    let (dirs, name) = path.rsplit_once('/').unwrap_or(("", path));
+    dirs.split('/')
+        .any(|dir| NON_PRODUCTION_DIRS.contains(&dir))
+        || NON_PRODUCTION_MARKERS
+            .iter()
+            .any(|marker| name.contains(marker))
 }
 
 // There is no per-file language in the compact map. Keep related extensions
@@ -604,7 +616,9 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         }
     }
 
+    let misplaced_test_files_excluded = (0..n).filter(|&f| is_test_path(&map.files[f])).count();
     let mut misplaced: Vec<MisplacedFile> = (0..n)
+        .filter(|&f| !is_test_path(&map.files[f]))
         .filter_map(|f| {
             let counts = &by_district[f];
             let edges: usize = counts.values().sum();
@@ -678,17 +692,22 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         .map(|r| r.churn() * r.complexity())
         .collect();
     // Tests churn with production work, but they are not production change
-    // hotspots. This is the test subset of the same path rule that exempts
-    // test entries from no-inbound findings.
+    // hotspots. Storybook is likewise non-production, without becoming a
+    // test or an entry for any other finding.
     let test_hotspot_files_excluded = (0..n).filter(|&f| is_test_path(&map.files[f])).count();
+    let non_production_hotspot_files_excluded = (0..n)
+        .filter(|&f| is_non_production_path(&map.files[f]))
+        .count();
+    let production =
+        |f: usize| !is_test_path(&map.files[f]) && !is_non_production_path(&map.files[f]);
     let production_scores = (0..n)
-        .filter(|&f| !is_test_path(&map.files[f]))
+        .filter(|&f| production(f))
         .map(|f| score[f])
         .collect::<Vec<_>>();
     let hotspot_min_score = top_cut(&production_scores, HOTSPOT_TOP_FRACTION, HOTSPOT_MIN_COUNT);
     let mut hot: Vec<usize> = match hotspot_min_score {
         Some(cut) => (0..n)
-            .filter(|&f| !is_test_path(&map.files[f]) && score[f] >= cut)
+            .filter(|&f| production(f) && score[f] >= cut)
             .collect(),
         None => vec![],
     };
@@ -859,6 +878,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             hotspot_min_count: HOTSPOT_MIN_COUNT,
             hotspot_min_score,
             test_hotspot_files_excluded,
+            non_production_hotspot_files_excluded,
+            misplaced_test_files_excluded,
             hidden_coupling_test_pairs_excluded,
             hidden_coupling_min_count: COCHANGE_MIN_COUNT,
             hidden_coupling_min_weight: SHARE_COCHANGE,
@@ -874,6 +895,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         god_files,
         hotspots,
         test_hotspot_files_excluded,
+        non_production_hotspot_files_excluded,
+        misplaced_test_files_excluded,
         unreached,
         rust_mod_reachability_measured,
         undeclared_rust,
@@ -1088,14 +1111,15 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         note(
             &m.path,
             format!(
-                "misplaced file: {} of {} edges ({}) go to district {}, {own} stay in {} (threshold: at least {} edges, more than {} to one other district)",
+                "misplaced file: {} of {} edges ({}) go to district {}, {own} stay in {} (threshold: at least {} edges, more than {} to one other district; {} test files excluded)",
                 to.edges,
                 m.edges,
                 pct(m.share),
                 to.name,
                 district_name(map, m.district),
                 t.misplaced_min_edges,
-                pct(t.misplaced_min_share)
+                pct(t.misplaced_min_share),
+                report.misplaced_test_files_excluded
             ),
         );
         add(&mut kinds, KIND_MISPLACED, [m.path.as_str()]);
@@ -1120,14 +1144,16 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         note(
             &h.path,
             format!(
-                "hotspot #{}: churn {} × complexity {} = {} (top {}, at least {}; score ≥ {})",
+                "hotspot #{}: churn {} × complexity {} = {} (top {}, at least {}; score ≥ {}; {} test files and {} non-production files excluded)",
                 h.rank,
                 h.churn,
                 h.complexity,
                 h.score,
                 pct(t.hotspot_top_fraction),
                 t.hotspot_min_count,
-                t.hotspot_min_score.unwrap_or_default()
+                t.hotspot_min_score.unwrap_or_default(),
+                report.test_hotspot_files_excluded,
+                report.non_production_hotspot_files_excluded
             ),
         );
         add(&mut kinds, KIND_HOTSPOT, [h.path.as_str()]);
@@ -1245,17 +1271,19 @@ pub fn render_text(report: &DebtReport) -> String {
     }
     let _ = writeln!(
         out,
-        "{} district cycles; {} misplaced files (>= {} edges, > {} to one other district); {} god files (top {} by fan-in and complexity); {} production hotspots (top {} by churn x complexity, at least {}; {} test files excluded); {} files with no inbound edge found ({} entry files and {} files with no edge excluded)",
+        "{} district cycles; {} misplaced files (>= {} edges, > {} to one other district; {} test files excluded); {} god files (top {} by fan-in and complexity); {} production hotspots (top {} by churn x complexity, at least {}; {} test files and {} non-production files excluded); {} files with no inbound edge found ({} entry files and {} files with no edge excluded)",
         report.cycles.len(),
         report.misplaced.len(),
         t.misplaced_min_edges,
         pct(t.misplaced_min_share),
+        report.misplaced_test_files_excluded,
         report.god_files.len(),
         pct(t.god_top_fraction),
         report.hotspots.len(),
         pct(t.hotspot_top_fraction),
         t.hotspot_min_count,
         report.test_hotspot_files_excluded,
+        report.non_production_hotspot_files_excluded,
         report.unreached.len(),
         report.entry_files,
         report.isolated_files,
@@ -1520,6 +1548,33 @@ mod tests {
     }
 
     #[test]
+    fn test_files_are_excluded_from_misplaced_findings() {
+        let mut value = serde_json::to_value(map(None)).unwrap();
+        value["F"] = json!([
+            "tests/case.rs",
+            "other/a.rs",
+            "other/b.rs",
+            "other/c.rs",
+            "other/d.rs",
+            "other/e.rs"
+        ]);
+        value["N"] = json!([
+            [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+            [1, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+            [1, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+            [1, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+            [1, 4.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+            [1, 5.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+        ]);
+        value["E"] = json!([[0, 1], [0, 2], [0, 3], [0, 4], [0, 5]]);
+        let report = findings(&serde_json::from_value(value).unwrap());
+        assert_eq!(report.misplaced_test_files_excluded, 1);
+        assert!(report.misplaced.is_empty());
+        assert!(is_test_path("src/assertion_evidence_tests.rs"));
+        assert!(render_text(&report).contains("1 test files excluded"));
+    }
+
+    #[test]
     fn test_files_do_not_rank_as_production_hotspots() {
         let map: MapDocument = serde_json::from_value(json!({
             "repo": "hotspots", "q": 0.0, "names": {"0": "only"}, "districts": {},
@@ -1542,6 +1597,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["src/model.rs", "src/query.rs"]
         );
+    }
+
+    #[test]
+    fn storybook_is_non_production_without_becoming_a_test_or_entry() {
+        let map: MapDocument = serde_json::from_value(json!({
+            "repo": "storybook", "q": 0.0, "names": {"0": "only"}, "districts": {},
+            "F": ["web/storybook/fixtures.ts", "web/button.stories.tsx", "src/model.rs", "src/query.rs"],
+            "N": [
+                [0, 0.0, 0.0, 1, 100, 100, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 1.0, 0.0, 1, 90, 90, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 2.0, 0.0, 1, 20, 20, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 3.0, 0.0, 1, 10, 10, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": [[0, 2], [1, 2]], "L": [], "S": {}, "U": {}, "roads": [], "lang": "ts"
+        }))
+        .unwrap();
+        let report = findings(&map);
+        assert_eq!(report.non_production_hotspot_files_excluded, 2);
+        assert_eq!(report.test_hotspot_files_excluded, 0);
+        assert_eq!(report.entry_files, 0);
+        assert_eq!(
+            report
+                .hotspots
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/model.rs", "src/query.rs"]
+        );
+        assert!(report
+            .unreached
+            .iter()
+            .any(|file| file.path == "web/storybook/fixtures.ts"));
+        assert!(!is_test_path("web/storybook/fixtures.ts"));
+        assert!(!is_test_path("web/button.stories.tsx"));
+        assert!(!is_entry_path("web/storybook/fixtures.ts"));
     }
 
     #[test]
