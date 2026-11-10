@@ -831,9 +831,10 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     hidden_coupling.sort_by(|a, b| {
         (language_from_path(&a.left) == language_from_path(&a.right))
             .cmp(&(language_from_path(&b.left) == language_from_path(&b.right)))
-            .then(same_parent_directory(&a.left, &a.right).cmp(&same_parent_directory(
-                &b.left, &b.right,
-            )))
+            .then(
+                same_parent_directory(&a.left, &a.right)
+                    .cmp(&same_parent_directory(&b.left, &b.right)),
+            )
             .then((a.left_district == a.right_district).cmp(&(b.left_district == b.right_district)))
             .then(b.weight.total_cmp(&a.weight))
             .then(b.cochanges.cmp(&a.cochanges))
@@ -1672,15 +1673,30 @@ mod tests {
         assert_eq!(without_pair.misplaced[0].path, "src/child.rs");
         assert_eq!(without_pair.misplaced[0].edges, 5);
 
-        let with_pair = findings(&misplaced_map(Some(json!({"roots": [0], "pairs": [[0, 1]]})), false));
-        assert!(with_pair.misplaced.is_empty(), "the parent link makes the foreign district exactly half of incident evidence");
+        let with_pair = findings(&misplaced_map(
+            Some(json!({"roots": [0], "pairs": [[0, 1]]})),
+            false,
+        ));
+        assert!(
+            with_pair.misplaced.is_empty(),
+            "the parent link makes the foreign district exactly half of incident evidence"
+        );
 
-        let with_edge_and_pair = findings(&misplaced_map(Some(json!({"roots": [0], "pairs": [[0, 1]]})), true));
+        let with_edge_and_pair = findings(&misplaced_map(
+            Some(json!({"roots": [0], "pairs": [[0, 1]]})),
+            true,
+        ));
         assert_eq!(with_edge_and_pair.misplaced[0].path, "src/child.rs");
-        assert_eq!(with_edge_and_pair.misplaced[0].edges, 5, "an existing E edge prevents a duplicate mod count");
+        assert_eq!(
+            with_edge_and_pair.misplaced[0].edges, 5,
+            "an existing E edge prevents a duplicate mod count"
+        );
 
         let old_map = findings(&misplaced_map(None, false));
-        assert_eq!(old_map.misplaced, without_pair.misplaced, "maps without rust_mod retain E-only misplaced evidence");
+        assert_eq!(
+            old_map.misplaced, without_pair.misplaced,
+            "maps without rust_mod retain E-only misplaced evidence"
+        );
     }
 
     #[test]
