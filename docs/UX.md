@@ -111,9 +111,12 @@ member maps at their pinned commits: each repository has one outline containing
 its district outlines, with only declared inter-repository roads between them.
 It never shows files, symbols, or a cross-repository modularity value. Tapping a
 repository opens a card with its pinned commit, package and dependency evidence,
-and pin skew. **Open map** pushes the pinned member route
-`/{owner}/{repo}?commit={full-sha}`; browser Back returns to the organization
-overview and its repository card entry.
+and pin skew. Its close control is 44 px; tapping empty canvas clears the
+repository selection. Opening a card pushes one selection history entry, while
+selection changes replace its URL; Back clears the card before it leaves the
+organization and a reload or shared link never restores an overlay. **Open map**
+pushes the pinned member route `/{owner}/{repo}?commit={full-sha}`; browser Back
+returns to the organization overview and its repository card entry.
 
 ## 4. Phone screens
 

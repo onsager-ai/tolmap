@@ -10,6 +10,7 @@ interface OrganizationCanvasProps {
   maps: readonly MemberMap[];
   selectedRepo?: string;
   onSelectRepository(repo: string): void;
+  onClearSelection(): void;
 }
 
 const NS = "http://www.w3.org/2000/svg";
@@ -25,11 +26,13 @@ function element<K extends keyof SVGElementTagNameMap>(name: K, attrs: Record<st
  * symbol, road, and LOD passes: the organization contract is outlines plus
  * declared inter-repository roads only. React owns the selected card; this
  * classless SVG composition only paints and reports repository taps. */
-export function OrganizationCanvas({ organization, maps, selectedRepo, onSelectRepository }: OrganizationCanvasProps) {
+export function OrganizationCanvas({ organization, maps, selectedRepo, onSelectRepository, onClearSelection }: OrganizationCanvasProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const selectRef = useRef(onSelectRepository);
+  const clearRef = useRef(onClearSelection);
   selectRef.current = onSelectRepository;
+  clearRef.current = onClearSelection;
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -40,6 +43,9 @@ export function OrganizationCanvas({ organization, maps, selectedRepo, onSelectR
       const height = Math.max(1, wrap.clientHeight);
       svg.replaceChildren();
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.onclick = event => {
+        if (!(event.target as Element).closest("[data-organization-repository]")) clearRef.current();
+      };
       const regions = new Map(organization.placement.regions.map(region => [region.repo, region]));
       const extent: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
       for (const region of organization.placement.regions) {

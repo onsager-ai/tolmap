@@ -1,11 +1,13 @@
 import type { OrganizationMemberMap } from "@bindings/OrganizationMemberMap";
 import type { PinSkew } from "@bindings/PinSkew";
-import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
+import { useEffect, useRef } from "react";
 import { ApiRequestError } from "@/api/client";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { TolmapLogo } from "@/components/TolmapLogo";
 import { useOrganizationDocument, useOrganizationMemberMaps } from "@/data/queries";
 import { OrganizationCanvas } from "@/org/OrganizationCanvas";
+import { closeOverlay, initBack, openOverlay, OVERLAY_MARKER, popTo, type BackState } from "@/map/backStack";
 import type { OrganizationSearch } from "@/routes/search";
 
 function shortCommit(commit: string) {
@@ -20,7 +22,7 @@ function evidenceLabel(count: number) {
   return `${count} dependency ${count === 1 ? "edge" : "edges"}`;
 }
 
-function RepositoryCard({ member, pinSkew, edges, onOpen }: { member: OrganizationMemberMap; pinSkew: readonly PinSkew[]; edges: readonly { consumer: string; provider: string; evidence: unknown[] }[]; onOpen(): void }) {
+function RepositoryCard({ member, pinSkew, edges, onClose, onOpen }: { member: OrganizationMemberMap; pinSkew: readonly PinSkew[]; edges: readonly { consumer: string; provider: string; evidence: unknown[] }[]; onClose(): void; onOpen(): void }) {
   const incoming = edges.filter(edge => edge.provider === member.repo);
   const outgoing = edges.filter(edge => edge.consumer === member.repo);
   const skew = relatedSkew(pinSkew, member.repo);
@@ -32,7 +34,10 @@ function RepositoryCard({ member, pinSkew, edges, onOpen }: { member: Organizati
           <p className="mt-1 text-meta text-[var(--dim)]">Pinned commit <code>{shortCommit(member.commit)}</code></p>
           <p className="mt-1 break-all font-mono text-meta text-[var(--dim)]" data-organization-full-commit>{member.commit}</p>
         </div>
-        <span className="rounded-full border border-[var(--rule)] px-2 py-1 font-mono text-meta">{member.map}</span>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-[var(--rule)] px-2 py-1 font-mono text-meta">{member.map}</span>
+          <button type="button" onClick={onClose} aria-label="Close repository card" className="flex h-11 w-11 items-center justify-center rounded-full border border-[var(--rule)] text-title text-[var(--on)]" data-organization-card-close>×</button>
+        </div>
       </div>
       <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-small">
         <div><dt className="text-[var(--dim)]">Files</dt><dd className="font-mono">{member.files.toLocaleString()}</dd></div>
@@ -59,13 +64,64 @@ export function OrganizationView() {
   const { name } = useParams({ strict: false }) as { name: string };
   const search = useSearch({ strict: false }) as OrganizationSearch;
   const navigate = useNavigate();
+  const router = useRouter();
   const document = useOrganizationDocument(name);
   const members = useOrganizationMemberMaps(document.data?.members ?? []);
   const selected = document.data?.members.find(member => member.repo === search.repo);
+  const historyIndex = () => Number((router.history.location.state as unknown as Record<string, unknown>).__TSR_index ?? 0);
+  const backRef = useRef<BackState | null>(null);
+  const skippingRef = useRef(false);
+  const liveRepoRef = useRef(search.repo);
+  if (!skippingRef.current) liveRepoRef.current = search.repo;
 
-  function selectRepository(repo?: string) {
+  function clearRepository() {
+    if (backRef.current) backRef.current = closeOverlay(backRef.current, "sel");
+    liveRepoRef.current = undefined;
+    navigate({ to: ".", search: { repo: undefined }, replace: true, state: true });
+  }
+
+  function selectRepository(repo: string) {
+    const current = backRef.current ?? initBack(historyIndex(), null, false);
+    const opened = openOverlay(current, "sel", historyIndex());
+    backRef.current = opened.state;
+    if (opened.push) {
+      router.history.push(router.history.location.href, { [OVERLAY_MARKER]: "sel" } as never);
+      router.history.flush();
+    }
     navigate({ to: ".", search: { repo }, replace: true, state: true });
   }
+
+  useEffect(() => {
+    const state = router.history.location.state as unknown as Record<string, unknown>;
+    backRef.current = initBack(historyIndex(), state[OVERLAY_MARKER], !!search.repo);
+    if (search.repo && state[OVERLAY_MARKER] !== "sel") {
+      const opened = openOverlay(backRef.current, "sel", historyIndex());
+      backRef.current = opened.state;
+      if (opened.push) {
+        router.history.push(router.history.location.href, { [OVERLAY_MARKER]: "sel" } as never);
+        router.history.flush();
+      }
+    }
+    skippingRef.current = false;
+    return router.history.subscribe(({ location, action }) => {
+      if (action.type !== "BACK" && action.type !== "FORWARD" && action.type !== "GO") return;
+      if (location.pathname !== `/org/${name}`) {
+        skippingRef.current = false;
+        return;
+      }
+      const state = location.state as unknown as Record<string, unknown>;
+      const result = popTo(backRef.current ?? initBack(historyIndex(), null, false), Number(state.__TSR_index ?? 0), state[OVERLAY_MARKER], !!liveRepoRef.current);
+      backRef.current = result.state;
+      if (result.undo.includes("sel")) {
+        liveRepoRef.current = undefined;
+        navigate({ to: ".", search: { repo: undefined }, replace: true, state: true });
+      }
+      skippingRef.current = result.skipBack;
+      if (result.skipBack) router.history.back();
+    });
+    // The route is itself the scope for this history stack.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
 
   if (document.isLoading) return <div className="flex h-full items-center justify-center bg-[var(--canvas)] text-small text-[var(--dim)]" data-organization-loading>Loading organization…</div>;
   if (document.isError || !document.data) {
@@ -77,12 +133,12 @@ export function OrganizationView() {
   if (members.error || members.maps.length !== document.data.members.length) return <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--chrome)] p-6 text-center text-small"><p className="text-[var(--link-out)]" data-organization-error>A pinned member map is unavailable (404).</p><p className="text-[var(--dim)]">{members.error instanceof Error ? members.error.message : "The organization cannot be composed without every pinned member map."}</p></div>;
 
   return <div className="relative h-full overflow-hidden bg-[var(--canvas)]" data-organization-view>
-    <OrganizationCanvas organization={document.data} maps={members.maps} selectedRepo={selected?.repo} onSelectRepository={selectRepository} />
+    <OrganizationCanvas organization={document.data} maps={members.maps} selectedRepo={selected?.repo} onSelectRepository={selectRepository} onClearSelection={clearRepository} />
     <header className="pointer-events-none absolute left-4 right-4 top-4 z-10 flex items-center justify-between sm:left-6 sm:right-6 sm:top-6">
       <div className="pointer-events-auto rounded-[14px] border border-[var(--rule)] bg-[var(--chrome)] px-3 py-2 shadow-sm"><Link to="/" className="flex items-center gap-2"><TolmapLogo className="h-7 w-auto" /><span className="font-mono text-small">{document.data.name}</span></Link><p className="mt-1 text-meta text-[var(--dim)]">Repository outlines · district outlines · dependency roads</p></div>
       <ThemeToggle className="pointer-events-auto h-11 w-11 rounded-full border border-[var(--rule)] bg-[var(--chrome)]" />
     </header>
-    {selected && <RepositoryCard member={selected} pinSkew={document.data.pin_skew} edges={document.data.edges} onOpen={() => {
+    {selected && <RepositoryCard member={selected} pinSkew={document.data.pin_skew} edges={document.data.edges} onClose={clearRepository} onOpen={() => {
       const [owner, repo] = selected.repo.split("/", 2);
       navigate({ to: "/$owner/$repo", params: { owner, repo }, search: { geo: "r", layer: "d", commit: selected.commit } });
     }} />}
