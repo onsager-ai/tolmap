@@ -29,9 +29,13 @@ misplaced_test_files_excluded: number,
  */
 generated_file_measurement: boolean, 
 /**
- * Generated files excluded from no-inbound and misplaced findings.
+ * Generated files excluded from misplaced findings.
  */
-generated_files_excluded: number, unreached: Array<UnreachedFile>, 
+misplaced_generated_files_excluded: number, 
+/**
+ * Generated files excluded from no-inbound findings.
+ */
+unreached_generated_files_excluded: number, unreached: Array<UnreachedFile>, 
 /**
  * False for maps built before the Rust declaration sidecar existed.
  */

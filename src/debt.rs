@@ -124,7 +124,8 @@ pub struct DebtThresholds {
     pub test_hotspot_files_excluded: usize,
     pub non_production_hotspot_files_excluded: usize,
     pub misplaced_test_files_excluded: usize,
-    pub generated_files_excluded: usize,
+    pub misplaced_generated_files_excluded: usize,
+    pub unreached_generated_files_excluded: usize,
     pub hidden_coupling_test_pairs_excluded: usize,
     pub hidden_coupling_generated_pairs_suppressed: usize,
     pub hidden_coupling_min_count: usize,
@@ -277,8 +278,10 @@ pub struct DebtReport {
     pub misplaced_test_files_excluded: usize,
     /// False for maps built before generated-file evidence was retained.
     pub generated_file_measurement: bool,
-    /// Generated files excluded from no-inbound and misplaced findings.
-    pub generated_files_excluded: usize,
+    /// Generated files excluded from misplaced findings.
+    pub misplaced_generated_files_excluded: usize,
+    /// Generated files excluded from no-inbound findings.
+    pub unreached_generated_files_excluded: usize,
     pub unreached: Vec<UnreachedFile>,
     /// False for maps built before the Rust declaration sidecar existed.
     pub rust_mod_reachability_measured: bool,
@@ -608,6 +611,10 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
+    let generated_paths = generated_files
+        .iter()
+        .filter_map(|&file| map.files.get(file).map(String::as_str))
+        .collect::<BTreeSet<_>>();
     let generated_by_file = generated
         .map(|files| {
             files
@@ -644,9 +651,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     }
 
     let misplaced_test_files_excluded = (0..n).filter(|&f| is_test_path(&map.files[f])).count();
-    let generated_files_excluded = generated_files.len();
     let mut misplaced: Vec<MisplacedFile> = (0..n)
-        .filter(|&f| !is_test_path(&map.files[f]) && !generated_files.contains(&f))
+        .filter(|&f| !is_test_path(&map.files[f]))
         .filter_map(|f| {
             let counts = &by_district[f];
             let edges: usize = counts.values().sum();
@@ -688,6 +694,11 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             .then(b.edges.cmp(&a.edges))
             .then(a.path.cmp(&b.path))
     });
+    let misplaced_generated_files_excluded = misplaced
+        .iter()
+        .filter(|file| generated_paths.contains(file.path.as_str()))
+        .count();
+    misplaced.retain(|file| !generated_paths.contains(file.path.as_str()));
 
     let fanin: Vec<f64> = map.nodes.iter().map(|r| r.fanin()).collect();
     let complexity: Vec<usize> = map.nodes.iter().map(|r| r.complexity()).collect();
@@ -791,12 +802,11 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     let rust_roots = rust_mod
         .map(|tree| tree.roots.iter().copied().collect::<BTreeSet<_>>())
         .unwrap_or_default();
-    let unreached = (0..n)
+    let mut unreached = (0..n)
         .filter(|&f| {
             inbound[f] == 0
                 && outbound[f] > 0
                 && !entry(f)
-                && !generated_files.contains(&f)
                 && !(map.files[f].ends_with(".rs") && declared_rust.contains(&f))
         })
         .map(|f| UnreachedFile {
@@ -804,7 +814,12 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             district: district(f),
             out_edges: outbound[f],
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let unreached_generated_files_excluded = unreached
+        .iter()
+        .filter(|file| generated_paths.contains(file.path.as_str()))
+        .count();
+    unreached.retain(|file| !generated_paths.contains(file.path.as_str()));
     let undeclared_rust = rust_mod
         .map(|_| {
             (0..n)
@@ -924,7 +939,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             test_hotspot_files_excluded,
             non_production_hotspot_files_excluded,
             misplaced_test_files_excluded,
-            generated_files_excluded,
+            misplaced_generated_files_excluded,
+            unreached_generated_files_excluded,
             hidden_coupling_test_pairs_excluded,
             hidden_coupling_generated_pairs_suppressed,
             hidden_coupling_min_count: COCHANGE_MIN_COUNT,
@@ -944,7 +960,8 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         non_production_hotspot_files_excluded,
         misplaced_test_files_excluded,
         generated_file_measurement,
-        generated_files_excluded,
+        misplaced_generated_files_excluded,
+        unreached_generated_files_excluded,
         unreached,
         rust_mod_reachability_measured,
         undeclared_rust,
@@ -1326,7 +1343,7 @@ pub fn render_text(report: &DebtReport) -> String {
         t.misplaced_min_edges,
         pct(t.misplaced_min_share),
         report.misplaced_test_files_excluded,
-        report.generated_files_excluded,
+        report.misplaced_generated_files_excluded,
         report.god_files.len(),
         pct(t.god_top_fraction),
         report.hotspots.len(),
@@ -1336,7 +1353,7 @@ pub fn render_text(report: &DebtReport) -> String {
         report.non_production_hotspot_files_excluded,
         report.unreached.len(),
         report.entry_files,
-        report.generated_files_excluded,
+        report.unreached_generated_files_excluded,
         report.isolated_files,
     );
     if !report.generated_file_measurement {
@@ -1620,7 +1637,8 @@ mod tests {
         })).unwrap();
         let report = findings(&generated);
         assert!(report.generated_file_measurement);
-        assert_eq!(report.generated_files_excluded, 1);
+        assert_eq!(report.misplaced_generated_files_excluded, 1);
+        assert_eq!(report.unreached_generated_files_excluded, 1);
         assert!(
             report.misplaced.is_empty(),
             "the generated binding would otherwise be misplaced"
