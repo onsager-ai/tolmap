@@ -10311,28 +10311,32 @@ mod tests {
 
     #[test]
     fn generated_ts_rs_binding_links_only_an_exact_unique_type() {
-        let source = |language, files, generated, ts_types| SourceIntermediate {
-            pkg: ".".to_owned(),
-            language,
-            parsed: files
-                .iter()
-                .map(|file| ((*file).to_owned(), test_parsed_file(1, 0, &[])))
-                .collect(),
-            files: files.iter().map(|file| (*file).to_owned()).collect(),
-            static_edges: BTreeMap::new(),
-            directed: BTreeMap::new(),
-            fanin: BTreeMap::new(),
-            uses: BTreeSet::new(),
-            module_for: files
-                .iter()
-                .map(|file| ((*file).to_owned(), (*file).to_owned()))
-                .collect(),
-            rust_mod: None,
-            generated,
-            ts_types,
-            build_output_mirror: 0,
-            python_cross_project: 0,
-        };
+        let source =
+            |language: LanguageKind,
+             files: &[&str],
+             generated: Option<Vec<(FileId, bool)>>,
+             ts_types: Option<BTreeMap<String, Vec<FileId>>>| SourceIntermediate {
+                pkg: ".".to_owned(),
+                language,
+                parsed: files
+                    .iter()
+                    .map(|file| ((*file).to_owned(), test_parsed_file(1, 0, &[])))
+                    .collect(),
+                files: files.iter().map(|file| (*file).to_owned()).collect(),
+                static_edges: BTreeMap::new(),
+                directed: BTreeMap::new(),
+                fanin: BTreeMap::new(),
+                uses: BTreeSet::new(),
+                module_for: files
+                    .iter()
+                    .map(|file| ((*file).to_owned(), (*file).to_owned()))
+                    .collect(),
+                rust_mod: None,
+                generated,
+                ts_types,
+                build_output_mirror: 0,
+                python_cross_project: 0,
+            };
         let binding = || {
             source(
                 LanguageKind::TypeScript,
