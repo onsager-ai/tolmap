@@ -367,6 +367,25 @@ fn string_value(node: Node<'_>, source: &[u8]) -> Option<String> {
     Some(raw.strip_prefix('"')?.strip_suffix('"')?.to_owned())
 }
 
+/// The literal argument of an `include!("...")` invocation. The Rust grammar
+/// exposes the macro name as the `macro` field, including at source-file item
+/// level; other macro arguments remain intentionally unmeasured.
+fn literal_include_path(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let macro_name = node.child_by_field_name("macro")?;
+    if macro_name.kind() != "identifier" || text(macro_name, source) != "include" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let token_tree = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "token_tree")?;
+    let mut cursor = token_tree.walk();
+    let literal = token_tree
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "string_literal")?;
+    string_value(literal, source)
+}
+
 fn read_attribute(item: Node<'_>, source: &[u8], attrs: &mut Attrs) {
     let mut cursor = item.walk();
     let Some(attribute) = item
@@ -770,28 +789,14 @@ impl Visitor<'_> {
             "identifier" | "type_identifier" => self.ident(node),
             "macro_invocation" => {
                 // The macro's own name is not followed: macros are
-                // deliberately unresolved.
-                let mut cursor = node.walk();
-                let children = node.named_children(&mut cursor).collect::<Vec<_>>();
-                if children.iter().any(|child| {
-                    child.kind() == "identifier" && text(*child, self.source) == "include"
-                }) {
-                    if let Some(path) = children
-                        .iter()
-                        .find(|child| child.kind() == "token_tree")
-                        .and_then(|tree| {
-                            let mut cursor = tree.walk();
-                            let literal = tree
-                                .named_children(&mut cursor)
-                                .find(|child| child.kind() == "string_literal");
-                            literal.and_then(|literal| string_value(literal, self.source))
-                        })
-                    {
-                        self.out.includes.push(path);
-                    }
+                // deliberately unresolved. `include!` is the exception for
+                // declaration reachability when its argument is literal.
+                if let Some(path) = literal_include_path(node, self.source) {
+                    self.out.includes.push(path);
                 }
-                for tree in children
-                    .into_iter()
+                let mut cursor = node.walk();
+                for tree in node
+                    .named_children(&mut cursor)
                     .filter(|child| child.kind() == "token_tree")
                 {
                     self.tokens(tree);
@@ -2889,17 +2894,18 @@ mod tests {
         write(
             root,
             "src/lib.rs",
-            "include!(\"generated/root.rs\");\ninclude!(concat!(\"generated/\", \"nonliteral.rs\"));\ninclude!(\"generated/missing.rs\");\n",
+            "include!(\"included/root.rs\");\ninclude!(concat!(\"included/\", \"nonliteral.rs\"));\ninclude!(\"included/missing.rs\");\nmod nested { include!(\"nested/child.rs\"); }\n",
         );
         write(
             root,
-            "src/generated/root.rs",
+            "src/included/root.rs",
             "include!(\"nested/child.rs\");\n",
         );
-        write(root, "src/generated/nested/child.rs", "pub fn child() {}\n");
+        write(root, "src/included/nested/child.rs", "pub fn child() {}\n");
+        write(root, "src/nested/child.rs", "pub fn nested() {}\n");
         write(
             root,
-            "src/generated/nonliteral.rs",
+            "src/included/nonliteral.rs",
             "pub fn nonliteral() {}\n",
         );
         let (parsed, raw) = super::super::parse_files(root, ".", LanguageKind::Rust).unwrap();
@@ -2915,8 +2921,9 @@ mod tests {
         assert_eq!(
             tree.declared,
             [
-                ("src/lib.rs", "src/generated/root.rs"),
-                ("src/generated/root.rs", "src/generated/nested/child.rs"),
+                ("src/lib.rs", "src/included/root.rs"),
+                ("src/included/root.rs", "src/included/nested/child.rs"),
+                ("src/lib.rs", "src/nested/child.rs"),
             ]
             .into_iter()
             .map(|(parent, child)| (parent.to_owned(), child.to_owned()))
