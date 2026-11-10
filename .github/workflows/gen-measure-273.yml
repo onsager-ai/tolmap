@@ -1,0 +1,105 @@
+name: Scratch generated debt measurement
+
+on:
+  push:
+    branches: [scratch/gen-measure-273]
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: generated debt measurement
+    runs-on: ubuntu-latest
+    env:
+      LEIDEN_PREFIX: ${{ github.workspace }}/.native/leiden
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: generated-debt-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - uses: actions/cache@v4
+        id: cache-leiden
+        with:
+          path: ${{ env.LEIDEN_PREFIX }}
+          key: leiden-${{ runner.os }}-${{ hashFiles('scripts/install-leiden.sh') }}
+      - name: Build native Leiden/igraph
+        if: steps.cache-leiden.outputs.cache-hit != 'true'
+        run: bash scripts/install-leiden.sh "$LEIDEN_PREFIX"
+      - name: Build tolmap
+        run: cargo build --locked --release --bin tolmap
+      - name: Measure tolmap map and debt
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$GITHUB_WORKSPACE/target/release/tolmap"
+          O="$GITHUB_WORKSPACE/scratch-out"
+          mkdir -p "$O"
+          git rev-parse HEAD > "$O/tolmap-bin-sha"
+          for n in 1 2; do
+            "$T" build "$GITHUB_WORKSPACE" --all-sources --name tolmap --out "$O/build-$n" > "$O/build-$n.log" 2>&1
+          done
+          cp "$O/build-1/tolmap.json" "$O/tolmap.map.json"
+          cmp "$O/build-1/tolmap.json" "$O/build-2/tolmap.json"
+          echo 'tolmap map identical across two builds' > "$O/determinism.txt"
+          "$T" debt --map "$O/tolmap.map.json" --format json > "$O/tolmap.debt.after.json"
+          python3 - "$O/tolmap.map.json" "$O/tolmap.map.before.json" <<'PY'
+          import json
+          import sys
+
+          source, destination = sys.argv[1:]
+          with open(source, encoding="utf-8") as handle:
+              document = json.load(handle)
+          document["D"].pop("generated", None)
+          if not document["D"]:
+              document.pop("D")
+          with open(destination, "w", encoding="utf-8") as handle:
+              json.dump(document, handle, separators=(",", ":"))
+          PY
+          "$T" debt --map "$O/tolmap.map.before.json" --format json > "$O/tolmap.debt.before.json"
+          "$T" debt --map "$O/tolmap.map.json" --format json > "$O/tolmap.debt.again.json"
+          cmp "$O/tolmap.debt.after.json" "$O/tolmap.debt.again.json"
+          echo 'tolmap debt JSON identical across two runs' >> "$O/determinism.txt"
+          "$T" debt --map "$O/tolmap.map.json" --format text > "$O/tolmap.debt.txt"
+          "$T" debt --map "$O/tolmap.map.json" --format lens > "$O/tolmap.debt.toml"
+          "$T" lens check "$O/tolmap.debt.toml" --map "$O/tolmap.map.json" > "$O/tolmap.lenscheck.txt"
+          python3 - "$O/tolmap.debt.before.json" "$O/tolmap.debt.after.json" "$O/summary.json" <<'PY'
+          import json
+          import sys
+
+          before_path, after_path, summary_path = sys.argv[1:]
+          with open(before_path, encoding="utf-8") as handle:
+              before = json.load(handle)
+          with open(after_path, encoding="utf-8") as handle:
+              after = json.load(handle)
+          kinds = ("cycles", "misplaced", "god_files", "hotspots", "unreached", "undeclared_rust", "hidden_coupling")
+          summary = {
+              "counts": {kind: {"before": len(before[kind]), "after": len(after[kind])} for kind in kinds},
+              "generated_files_excluded": after["generated_files_excluded"],
+              "generated_pairs_suppressed": after["hidden_coupling_generated_pairs_suppressed"],
+              "generated_measurement": after["generated_file_measurement"],
+              "remaining_binding_hidden_coupling": [
+                  pair for pair in after["hidden_coupling"]
+                  if pair["left"].startswith("bindings/") or pair["right"].startswith("bindings/")
+              ],
+              "mapdocument_cycle": [
+                  cycle for cycle in after["cycles"]
+                  if any("bindings/MapDocument.ts" in edge[side] for edge in cycle["closing_edges"] for side in ("from", "to"))
+              ],
+          }
+          with open(summary_path, "w", encoding="utf-8") as handle:
+              json.dump(summary, handle, indent=2)
+          print(json.dumps(summary, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generated-debt-measurement
+          path: scratch-out/
+          if-no-files-found: error
