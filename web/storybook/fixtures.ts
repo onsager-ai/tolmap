@@ -5,9 +5,26 @@ import { setupWorker } from "msw/browser";
 import type { JobSnapshot, MapDocument } from "../src/types";
 import type { StageId } from "../../bindings/StageId";
 import type { SnapshotFreshness } from "../../bindings/SnapshotFreshness";
+import type { OrganizationDocument } from "../../bindings/OrganizationDocument";
 
 export const commit = "1111111111111111111111111111111111111111";
 export const slug = "onsager-ai/tolmap";
+const organizationCoreCommit = "a".repeat(40);
+const organizationAppCommit = "b".repeat(40);
+
+export const organizationFixture: OrganizationDocument = {
+  version: 2,
+  name: "acme-platform",
+  members: [
+    { repo: "acme/app", commit: organizationAppCommit, path: null, map: "stored", map_digest: "sha256:app", files: 24, districts: 3, packages: [{ ecosystem: "npm", name: "@acme/app", file: "package.json", version: "1.0.0" }] },
+    { repo: "acme/core", commit: organizationCoreCommit, path: null, map: "stored", map_digest: "sha256:core", files: 18, districts: 2, packages: [{ ecosystem: "cargo", name: "acme-core", file: "Cargo.toml", version: "1.1.0" }] },
+  ],
+  placement: { regions: [{ repo: "acme/app", translation: [1.2, 0], scale: 0.9 }, { repo: "acme/core", translation: [-1.2, 0], scale: 1 }], roads: [{ consumer: "acme/app", provider: "acme/core", from: [1.2, 0], to: [-1.2, 0] }] },
+  edges: [{ consumer: "acme/app", provider: "acme/core", evidence: [{ ecosystem: "npm", consumer_package: "@acme/app", file: "package.json", section: "dependencies", provider_package: "acme-core", pin: { kind: "version", value: "^1.0.0" }, status: "skew", reason: null }] }],
+  pin_skew: [{ consumer: "acme/app", consumer_package: "@acme/app", file: "package.json", provider: "acme/core", provider_package: "acme-core", pin: { kind: "version", value: "^1.0.0" }, member_commit: organizationCoreCommit, member_version: "1.1.0" }],
+  external: [], unresolved: [],
+};
+
 export const failedFreshness: SnapshotFreshness = {
   indexed_commit: commit, requested_commit: "abcdef0123456789abcdef0123456789abcdef01",
   state: "failed", failure_code: "worker_crashed",
@@ -51,6 +68,11 @@ export async function installFixture(state: string) {
   const handler = async ({ request }: { request: Request }) => {
     const url = new URL(request.url), path = url.pathname;
     if (path === "/api/healthz") return json({ status: "ok" });
+    if (path === "/api/organizations/acme-platform") {
+      if (state === "organization-loading") { await delay("infinite"); }
+      if (state === "organization-error") return json({ error: "not_found", message: "missing pinned map acme/core@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, 404);
+      return json(organizationFixture);
+    }
     if (path.endsWith("/freshness")) return state === "freshness-in-map" ? json(failedFreshness) : json({}, 404);
     if (path === "/api/maps" || path === "/maps/index.json") {
       if (state === "loading") { await delay("infinite"); return json([]); }
@@ -144,6 +166,8 @@ export async function installFixture(state: string) {
     }
     if (path.startsWith("/api/maps/") || /^\/maps\/.+\.json$/.test(path)) {
       if (state === "map-loading") { await delay("infinite"); }
+      if (path === "/api/maps/acme/app" && url.searchParams.get("commit") === organizationAppCommit) return json({ ...map, repo: "app" });
+      if (path === "/api/maps/acme/core" && url.searchParams.get("commit") === organizationCoreCommit) return json({ ...map, repo: "core" });
       if (state.startsWith("lens-") || state.startsWith("debt-")) return new HttpResponse(JSON.stringify(map), { headers: { "Content-Type": "application/json", "x-tolmap-commit": snapshotCommit } });
       return state === "map-unavailable" ? json({ error: "not_found" }, 404) : json(map);
     }

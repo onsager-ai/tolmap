@@ -109,6 +109,17 @@ export interface JobSearch {
   slug?: string;
 }
 
+/** The organization overview owns only the repository-card deep link. A
+ * member map's immutable commit belongs on its normal repository route. */
+export interface OrganizationSearch {
+  repo?: string;
+}
+
+export function validateOrganizationSearch(search: Record<string, unknown>): OrganizationSearch {
+  const repo = typeof search.repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(search.repo) ? search.repo : undefined;
+  return { repo };
+}
+
 const SLUG_RE = /^[^/\s]+\/[^/\s]+$/;
 
 export function validateJobSearch(search: Record<string, unknown>): JobSearch {

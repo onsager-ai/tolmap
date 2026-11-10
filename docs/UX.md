@@ -104,6 +104,17 @@ Selection changes themselves `replace` the URL (deep links keep working, and the
 - The sheet's close button (44 px, top right) clears the selection.
 - Dragging the sheet below Peek is not a state; it springs back.
 
+### 3.6 Organization overview
+
+`/org/{name}` is the deep link for a prebuilt organization. Its overview composes
+member maps at their pinned commits: each repository has one outline containing
+its district outlines, with only declared inter-repository roads between them.
+It never shows files, symbols, or a cross-repository modularity value. Tapping a
+repository opens a card with its pinned commit, package and dependency evidence,
+and pin skew. **Open map** pushes the pinned member route
+`/{owner}/{repo}?commit={full-sha}`; browser Back returns to the organization
+overview and its repository card entry.
+
 ## 4. Phone screens
 
 ### 4.1 Map overview (artboard "Map overview · peek")

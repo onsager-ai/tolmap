@@ -3,7 +3,7 @@ export const REQUIRED_STORIES = [
   'local-start', 'local-confirm', 'local-running', 'local-cancelling', 'local-detection-failed', 'local-index-failed', 'local-saved',
   'job-missing', 'job-queued', 'job-fetch', 'job-read', 'job-map', 'job-detail',
   'failed-detection-uncertain', 'failed-detection-failed', 'failed-cancelled', 'failed-clone-failed', 'failed-worker-crashed', 'failed-busy', 'failed-server-stopping', 'failed-rate-limited', 'failed-index-failed', 'failed-internal-error', 'failed-unknown',
-  'map-overview', 'map-loading', 'map-unavailable', 'map-district', 'map-file', 'map-symbol', 'map-folder', 'map-layer-c', 'map-layer-x', 'map-layer-p', 'map-detail-pending',
+  'map-overview', 'organization-overview', 'organization-card', 'organization-loading', 'organization-error', 'map-loading', 'map-unavailable', 'map-district', 'map-file', 'map-symbol', 'map-folder', 'map-layer-c', 'map-layer-x', 'map-layer-p', 'map-detail-pending',
   'map-lens-loaded', 'map-lens-unresolved', 'map-lens-empty', 'map-lens-error',
   'map-lens-compare-commits', 'map-lens-compare-overlap', 'map-lens-compare-loading', 'map-lens-compare-stale', 'map-lens-compare-error',
   'map-debt-loaded', 'map-debt-empty', 'map-debt-error', 'map-debt-compare',
@@ -37,7 +37,7 @@ export function assertStorybookCoverage(cases, index, reservedNames) {
   }
 
   const reservedCandidates = candidateIds.filter(id => id.startsWith('reserved-')).map(id => id.slice('reserved-'.length)).sort();
-  const expectedReserved = [...reservedNames].filter(name => name !== 'new').sort();
+  const expectedReserved = [...reservedNames].filter(name => name !== 'new' && name !== 'org').sort();
   if (JSON.stringify(reservedCandidates) !== JSON.stringify(expectedReserved)) {
     throw new Error(`Reserved route catalogue mismatch: stories=[${reservedCandidates.join(', ')}], production=[${expectedReserved.join(', ')}]`);
   }
@@ -45,11 +45,11 @@ export function assertStorybookCoverage(cases, index, reservedNames) {
 }
 
 export function assertRouteTreeContract(source) {
-  for (const fragment of ['filter((name) => name !== "new")', 'path: `/${name}`', 'RESERVED_NAMES.has(params.owner)']) {
+  for (const fragment of ['filter((name) => name !== "new" && name !== "org")', 'path: `/${name}`', 'RESERVED_NAMES.has(params.owner)']) {
     if (!source.includes(fragment)) throw new Error(`Production routeTree is missing reserved-route guard: ${fragment}`);
   }
   const actual = [...source.matchAll(/\bpath:\s*(?:"([^"]+)"|`([^`]+)`)/g)].map(match => match[1] ?? match[2]).sort();
-  const expected = ['/', '/new', '/$owner/$repo', '/${name}'].sort();
+  const expected = ['/', '/new', '/org/$name', '/$owner/$repo', '/${name}'].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Production route path set changed: [${actual.join(', ')}]`);
   return true;
 }

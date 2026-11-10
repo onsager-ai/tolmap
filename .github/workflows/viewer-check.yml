@@ -146,6 +146,8 @@ jobs:
         run: tail -n 120 vite.log || true
       - name: check:view (${{ matrix.profile }})
         run: node scripts/check-view-stability.mjs --base http://127.0.0.1:5176 --profile ${{ matrix.profile }}
+      - name: Organization overview (${{ matrix.profile }})
+        run: node scripts/check-organization-view.mjs --base http://127.0.0.1:5176 --profile ${{ matrix.profile }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,8 +1,10 @@
 import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { CatalogueEntry, DistrictSymbols, MapDocument } from "@/types";
+import type { OrganizationDocument } from "@bindings/OrganizationDocument";
 import {
   getServiceCatalogue,
+  getOrganizationDocument,
   getServiceDistrictSymbols,
   getServiceMapSnapshot,
   pingService,
@@ -147,6 +149,42 @@ export function useCatalogue() {
 export interface MapDocumentPin {
   commit?: string;
   wait?: boolean;
+}
+
+/** Organizations deliberately do not fall back to static map files. Their
+ * document promises that every member's full commit exists in the same
+ * service store, which is what keeps the composition and its member links
+ * immutable. */
+export function useOrganizationDocument(name: string) {
+  return useQuery<OrganizationDocument>({
+    queryKey: ["organization", name],
+    queryFn: () => getOrganizationDocument(name),
+    enabled: !!name,
+    staleTime: 15_000,
+    retry: false,
+  });
+}
+
+export function useOrganizationMemberMaps(members: readonly { repo: string; commit: string }[]) {
+  const queries = useQueries({
+    queries: members.map(member => {
+      const [owner, repo] = member.repo.split("/", 2);
+      return {
+        queryKey: ["organization-map", member.repo, member.commit],
+        queryFn: () => getServiceMapSnapshot(owner, repo, member.commit),
+        staleTime: 15_000,
+        retry: false,
+      };
+    }),
+  });
+  return {
+    maps: members.flatMap((member, index) => {
+      const document = queries[index]?.data?.document;
+      return document ? [{ repo: member.repo, document }] : [];
+    }),
+    isLoading: queries.some(query => query.isLoading),
+    error: queries.find(query => query.isError)?.error,
+  };
 }
 
 export function useMapDocument(owner: string, repo: string, pin: MapDocumentPin = {}) {
