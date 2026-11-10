@@ -872,6 +872,11 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                         hidden_coupling_test_pairs_excluded += 1;
                         return None;
                     }
+                    if linked.contains(&(left.min(right), left.max(right)))
+                        || declared_rust_pairs.contains(&(left.min(right), left.max(right)))
+                    {
+                        return None;
+                    }
                     let suppresses = |generated: usize, other: usize| {
                         let Some(Some(generator)) = generated_by_file.get(&generated) else {
                             return false;
@@ -883,11 +888,6 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                     };
                     if suppresses(left, right) || suppresses(right, left) {
                         hidden_coupling_generated_pairs_suppressed += 1;
-                        return None;
-                    }
-                    if linked.contains(&(left.min(right), left.max(right)))
-                        || declared_rust_pairs.contains(&(left.min(right), left.max(right)))
-                    {
                         return None;
                     }
                     Some(HiddenCoupling {
@@ -1177,7 +1177,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         note(
             &m.path,
             format!(
-                "misplaced file: {} of {} edges ({}) go to district {}, {own} stay in {} (threshold: at least {} edges, more than {} to one other district; {} test files excluded)",
+                "misplaced file: {} of {} edges ({}) go to district {}, {own} stay in {} (threshold: at least {} edges, more than {} to one other district; {} test files and {} generated files excluded)",
                 to.edges,
                 m.edges,
                 pct(m.share),
@@ -1185,7 +1185,8 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 district_name(map, m.district),
                 t.misplaced_min_edges,
                 pct(t.misplaced_min_share),
-                report.misplaced_test_files_excluded
+                report.misplaced_test_files_excluded,
+                report.misplaced_generated_files_excluded
             ),
         );
         add(&mut kinds, KIND_MISPLACED, [m.path.as_str()]);
@@ -1657,24 +1658,32 @@ mod tests {
     fn generated_binding_hidden_coupling_is_suppressed_only_with_static_generator_link() {
         let document: MapDocument = serde_json::from_value(json!({
             "repo": "generated", "q": 0.0, "names": {"0": "only"}, "districts": {},
-            "F": ["bindings/Thing.ts", "src/model.rs", "src/linked.rs", "src/unlinked.rs"],
+            "F": ["bindings/Thing.ts", "src/model.rs", "src/linked.rs", "src/unlinked.rs", "src/direct.rs"],
             "N": [
                 [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
                 [0, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
                 [0, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
-                [0, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+                [0, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 4.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
             ],
-            "E": [[1, 2]], "L": [], "S": {}, "U": {}, "roads": [], "lang": "ts",
+            "E": [[0, 4], [1, 2]], "L": [], "S": {}, "U": {}, "roads": [], "lang": "ts",
             "D": {
                 "generated": [{"file": 0, "generator": 1}],
                 "cochange": {"commits": 12, "window": COCHANGE_HISTORY_WINDOW, "min_count": COCHANGE_MIN_COUNT, "min_weight": SHARE_COCHANGE,
-                    "pairs": [[0, 1, 4, 0.5], [0, 2, 4, 0.5], [0, 3, 4, 0.5]]}
+                    "pairs": [[0, 1, 4, 0.5], [0, 2, 4, 0.5], [0, 3, 4, 0.5], [0, 4, 4, 0.5]]}
             }
         })).unwrap();
         let report = findings(&document);
         assert_eq!(report.hidden_coupling_generated_pairs_suppressed, 2);
         assert_eq!(report.hidden_coupling.len(), 1);
         assert_eq!(report.hidden_coupling[0].right, "src/unlinked.rs");
+        assert!(
+            report
+                .hidden_coupling
+                .iter()
+                .all(|pair| pair.right != "src/direct.rs"),
+            "a directly linked generated pair is dropped before alias suppression"
+        );
     }
 
     #[test]
@@ -1701,7 +1710,7 @@ mod tests {
         assert_eq!(report.misplaced_test_files_excluded, 1);
         assert!(report.misplaced.is_empty());
         assert!(is_test_path("src/assertion_evidence_tests.rs"));
-        assert!(render_text(&report).contains("1 test files excluded"));
+        assert!(render_text(&report).contains("1 test files and 0 generated files excluded"));
     }
 
     #[test]

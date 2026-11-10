@@ -218,6 +218,24 @@ fn generated_headers(source: &[u8]) -> (bool, bool) {
     (generated, ts_rs)
 }
 
+fn ts_rs_generator(
+    file: FileId,
+    ts_rs: bool,
+    files: &[String],
+    ts_types: Option<&BTreeMap<String, Vec<FileId>>>,
+) -> Option<FileId> {
+    ts_rs
+        .then(|| {
+            files[file as usize]
+                .strip_prefix("bindings/")
+                .and_then(|path| path.strip_suffix(".ts"))
+                .and_then(|name| ts_types?.get(name))
+                .filter(|matches| matches.len() == 1)
+                .and_then(|matches| matches.first().copied())
+        })
+        .flatten()
+}
+
 /// The raw, single-file output of the second tree walk -- import strings and
 /// selector/attribute candidates -- captured in [`parse_files`] while the
 /// tree is still alive, so [`parse_python`] and [`parse_multi`] can resolve
@@ -1027,6 +1045,7 @@ fn parse_selected_files(
             }
         }
         parsed_count += 1;
+        let (generated, ts_rs_generated) = generated_headers(&source);
         let Some(tree) = parser.parse(&source, None) else {
             // Tree-sitter can return None on cancellation. Keep the file's
             // conservative metrics without inventing symbols or edges.
@@ -1036,8 +1055,8 @@ fn parse_selected_files(
                     loc: source.iter().filter(|&&byte| byte == b'\n').count() + 1,
                     code_lines: nonblank_lines(&source),
                     complexity: 0,
-                    generated: generated_headers(&source).0,
-                    ts_rs_generated: generated_headers(&source).1,
+                    generated,
+                    ts_rs_generated,
                     identifiers: BTreeMap::new(),
                     symbols: Vec::new(),
                 },
@@ -1152,8 +1171,8 @@ fn parse_selected_files(
                 loc,
                 code_lines,
                 complexity,
-                generated: generated_headers(&source).0,
-                ts_rs_generated: generated_headers(&source).1,
+                generated,
+                ts_rs_generated,
                 identifiers,
                 symbols,
             },
@@ -1412,16 +1431,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
                 .into_iter()
                 .map(|(file, ts_rs)| GeneratedFile {
                     file,
-                    generator: ts_rs
-                        .then(|| {
-                            files[file as usize]
-                                .strip_prefix("bindings/")
-                                .and_then(|path| path.strip_suffix(".ts"))
-                                .and_then(|name| ts_types.as_ref()?.get(name))
-                                .filter(|matches| matches.len() == 1)
-                                .and_then(|matches| matches.iter().next().copied())
-                        })
-                        .flatten(),
+                    generator: ts_rs_generator(file, ts_rs, &files, ts_types.as_ref()),
                 })
                 .collect::<Vec<_>>();
             generated.sort_by_key(|file| file.file);
@@ -1618,16 +1628,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             .into_iter()
             .map(|(file, ts_rs)| GeneratedFile {
                 file,
-                generator: ts_rs
-                    .then(|| {
-                        files[file as usize]
-                            .strip_prefix("bindings/")
-                            .and_then(|path| path.strip_suffix(".ts"))
-                            .and_then(|name| ts_types.get(name))
-                            .filter(|matches| matches.len() == 1)
-                            .and_then(|matches| matches.iter().next().copied())
-                    })
-                    .flatten(),
+                generator: ts_rs_generator(file, ts_rs, &files, Some(&ts_types)),
             })
             .collect::<Vec<_>>();
         generated.sort_by_key(|file| file.file);
