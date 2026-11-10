@@ -4,28 +4,28 @@ import type { DebtEdge } from "./DebtEdge";
 import type { DistrictBundle } from "./DistrictBundle";
 import type { PackageEdge } from "./PackageEdge";
 
-export type DistrictCycle = { districts: Array<DebtDistrict>, route: Array<number>, closing_edges: Array<DebtEdge>, cross_edges: number,
+export type DistrictCycle = { districts: Array<DebtDistrict>, route: Array<number>, closing_edges: Array<DebtEdge>, cross_edges: number, 
 /**
  * False for maps built before package roots were retained in `D`.
  */
-package_scope_measured: boolean,
+package_scope_measured: boolean, 
 /**
  * A real cycle in the projection of the report's file bundles onto
  * package roots. False means this is a clustering cycle.
  */
-crosses_package: boolean,
+crosses_package: boolean, 
 /**
  * Package roots containing files in the district cycle's bundle edges.
  */
-packages: Array<string>,
+packages: Array<string>, 
 /**
  * Projected package edges from the district cycle and their file edges.
  */
-package_edges: Array<PackageEdge>,
+package_edges: Array<PackageEdge>, 
 /**
  * The lighter direction of every mutually connected district pair.
  */
-mutual_pairs: Array<DistrictBundle>,
+mutual_pairs: Array<DistrictBundle>, 
 /**
  * A deterministic greedy feedback-arc cut. It is a small cut, not a
  * minimum cut: returning every bundle makes the district graph acyclic.
