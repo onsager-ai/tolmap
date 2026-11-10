@@ -3490,3 +3490,21 @@ Issue [#250](https://github.com/onsager-ai/tolmap/issues/250), following finding
 - duhem's other misplaced files, e.g. `engine/registry.rs` with 74% of 35 edges to another district, were not checked against the code.
 - The unused shadcn components were found by searching for their import paths, not by building either web app.
 - The debt lenses were resolved in CI but not rendered in a browser.
+
+## 71. A public semon organization example composes two pinned repository maps deterministically, but shows no declared inter-repository dependency
+
+Issue [#255](https://github.com/onsager-ai/tolmap/issues/255), plan item 6. [Scratch run 42748832166](https://github.com/onsager-ai/tolmap/actions/runs/42748832166) built tolmap at `e7c3b6e5af9fa096c414c564c4b23ebb4c2ffaab` plus its disposable measurement workflow, cloned public `onsager-ai/semon` at `812bf3975e559f65a94ed66e8053d1ae60612426` and public `onsager-ai/duhem` at `cc5e44bb6c561ad6f6ca32b000f499500f2201c7`, and ran `tolmap org build` twice. Both documents have SHA-256 `58bb25ad4da4ca4bdb6157653d91c6958a82f5c8a0584de6f3516e248344f0bf`; `cmp` confirmed their bytes are identical. The scratch branch was deleted after the run.
+
+| Member | Commit | Files | Districts | Placement translation | Scale |
+|---|---|---:|---:|---|---:|
+| `onsager-ai/duhem` | `cc5e44bb6c561ad6f6ca32b000f499500f2201c7` | 202 | 7 | `[-1.6952508722752684, 3.1141253317255007e-16]` | 1.0 |
+| `onsager-ai/semon` | `812bf3975e559f65a94ed66e8053d1ae60612426` | 143 | 8 | `[1.6952508722752684, -3.1141253317255007e-16]` | 0.8413802898090779 |
+
+- **The example is public-only.** `gh repo view` verified that semon and duhem are public before the run. `semon-hub` was left out because it is private and CI cannot read it; including it would make the committed example non-reproducible in the public CI lane.
+- **No declared edge was found between public members.** The organization document has 0 repository edges, 0 pin-skew entries, 171 external dependencies and 0 unresolved declarations. The public manifests sampled for semon, duhem, tolmap and ostrom did not declare a dependency on semon, so this example correctly has no road. It demonstrates pinned composition and empty inter-repository evidence, not an architectural relationship between semon and duhem.
+- **What it showed.** Both pinned member maps can be read as immutable regions and deterministically placed side by side. The retained artifact contains the byte-identical documents.
+- **What it did not show.** It shows neither a road nor pin skew. Those counts, and the 171 external dependencies, are lower bounds: only declared Cargo, npm/pnpm, Go and Python dependencies are considered; HTTP calls, queues and copied code are invisible. It also does not establish cross-repository modularity, because none is computed.
+
+### Not verified
+- No public pair available to this run had a declared edge to semon, so a real public inter-repository road and pin-skew case remain unmeasured.
+- The public viewer route renders its synthetic contract fixture; this scratch run built documents only and did not deploy or render a production organization.
