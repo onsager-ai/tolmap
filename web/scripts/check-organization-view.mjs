@@ -33,7 +33,9 @@ async function emptyCanvasPoint(page) {
     const svg = canvas?.querySelector("svg");
     if (!canvas || !svg) return null;
     const box = svg.getBoundingClientRect();
-    for (const [x, y] of [[box.left + box.width * 0.5, box.top + 44], [box.left + 24, box.top + box.height * 0.5], [box.right - 24, box.top + box.height * 0.5]]) {
+    // The phone header spans the top and the card covers the lower half, so
+    // also probe just below the header.
+    for (const [x, y] of [[box.left + box.width * 0.5, box.top + 44], [box.left + 24, box.top + box.height * 0.5], [box.right - 24, box.top + box.height * 0.5], [box.left + 24, box.top + 140], [box.right - 24, box.top + 140], [box.left + box.width * 0.5, box.top + 140]]) {
       const target = document.elementFromPoint(x, y);
       if (target?.closest("svg") === svg && !target.closest("[data-organization-repository]")) return { x, y };
     }
