@@ -4,6 +4,8 @@ use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use ts_rs::TS;
 
+use crate::org::Ecosystem;
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct District {
@@ -403,6 +405,17 @@ pub struct DebtSidecar {
     pub build_entries: Option<BuildEntrySidecar>,
     #[serde(default)]
     pub generated: Option<Vec<GeneratedFile>>,
+    #[serde(default)]
+    pub package_roots: Option<Vec<PackageRoot>>,
+}
+
+/// A package manifest root, relative to the repository. The root directory
+/// is the empty string; rows are sorted by `dir` and then ecosystem.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq, PartialOrd, Ord)]
+#[ts(export)]
+pub struct PackageRoot {
+    pub dir: String,
+    pub ecosystem: Ecosystem,
 }
 
 /// A generated file found from its header. `file` and `generator`, when
@@ -679,6 +692,9 @@ pub struct GraphData {
     /// Generated source files found from their headers. This stays out of
     /// graph JSON and every map-building input, then becomes debt evidence.
     pub generated: Option<Vec<GeneratedFile>>,
+    /// Package manifest roots found with the organization manifest reader.
+    /// Like the other sidecar inputs, this never affects graph construction.
+    pub package_roots: Option<Vec<PackageRoot>>,
     pub nodes: Vec<SourceNode>,
     pub edges: Vec<SignalEdge>,
     /// `--refs scip` only: the per-language reference paths, carried to the
@@ -850,6 +866,7 @@ impl<'de> Deserialize<'de> for GraphData {
             rust_mod: None,
             build_entries: None,
             generated: None,
+            package_roots: None,
             nodes: wire.nodes,
             edges: wire.edges,
             references: wire.references,
@@ -913,6 +930,7 @@ mod tests {
             rust_mod: None,
             build_entries: None,
             generated: None,
+            package_roots: None,
             nodes: ["a.go", "pkg/b.go"]
                 .into_iter()
                 .map(|file| SourceNode {
@@ -970,6 +988,7 @@ mod tests {
             rust_mod: None,
             build_entries: None,
             generated: None,
+            package_roots: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,
@@ -1003,6 +1022,7 @@ mod tests {
             rust_mod: None,
             build_entries: None,
             generated: None,
+            package_roots: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             references: None,

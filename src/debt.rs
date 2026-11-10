@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 4;
+pub const DEBT_REPORT_VERSION: u32 = 5;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -163,6 +163,15 @@ pub struct DistrictCycle {
     pub route: Vec<usize>,
     pub closing_edges: Vec<DebtEdge>,
     pub cross_edges: usize,
+    /// False for maps built before package roots were retained in `D`.
+    pub package_scope_measured: bool,
+    /// A real cycle in the projection of the report's file bundles onto
+    /// package roots. False means this is a clustering cycle.
+    pub crosses_package: bool,
+    /// Package roots containing files in the district cycle's bundle edges.
+    pub packages: Vec<String>,
+    /// Projected package edges from the district cycle and their file edges.
+    pub package_edges: Vec<PackageEdge>,
     /// The lighter direction of every mutually connected district pair.
     pub mutual_pairs: Vec<DistrictBundle>,
     /// A deterministic greedy feedback-arc cut. It is a small cut, not a
@@ -175,6 +184,14 @@ pub struct DistrictCycle {
 pub struct DistrictBundle {
     pub from_district: usize,
     pub to_district: usize,
+    pub edges: Vec<DebtEdge>,
+}
+
+/// File edges projected from one package root to another.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct PackageEdge {
+    pub from: String,
+    pub to: String,
     pub edges: Vec<DebtEdge>,
 }
 
@@ -478,7 +495,98 @@ fn components(graph: &BTreeMap<usize, BTreeSet<usize>>) -> Vec<Vec<usize>> {
     out
 }
 
+fn package_for<'a>(path: &str, roots: &'a [String]) -> Option<&'a str> {
+    roots
+        .iter()
+        .filter_map(|root| {
+            (root.is_empty()
+                || path
+                    .strip_prefix(root)
+                    .is_some_and(|rest| rest.starts_with('/')))
+            .then_some(root.as_str())
+        })
+        .max_by_key(|root| root.len())
+}
+
+fn package_projection(
+    bundles: impl IntoIterator<Item = DistrictBundle>,
+    roots: &[String],
+) -> (bool, Vec<String>, Vec<PackageEdge>) {
+    let mut packages = BTreeSet::new();
+    let mut edges = BTreeMap::<(String, String), Vec<DebtEdge>>::new();
+    for bundle in bundles {
+        for edge in bundle.edges {
+            let (Some(from), Some(to)) =
+                (package_for(&edge.from, roots), package_for(&edge.to, roots))
+            else {
+                continue;
+            };
+            packages.insert(from.to_owned());
+            packages.insert(to.to_owned());
+            if from != to {
+                edges
+                    .entry((from.to_owned(), to.to_owned()))
+                    .or_default()
+                    .push(edge);
+            }
+        }
+    }
+    let mut graph = BTreeMap::<String, BTreeSet<String>>::new();
+    let package_edges = edges
+        .into_iter()
+        .map(|((from, to), mut edges)| {
+            edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
+            edges.dedup();
+            graph.entry(from.clone()).or_default().insert(to.clone());
+            PackageEdge { from, to, edges }
+        })
+        .collect::<Vec<_>>();
+    let crosses_package = has_cycle(&graph);
+    (
+        crosses_package,
+        packages.into_iter().collect(),
+        package_edges,
+    )
+}
+
+fn has_cycle(graph: &BTreeMap<String, BTreeSet<String>>) -> bool {
+    fn visit(
+        node: &str,
+        graph: &BTreeMap<String, BTreeSet<String>>,
+        visiting: &mut BTreeSet<String>,
+        visited: &mut BTreeSet<String>,
+    ) -> bool {
+        if !visiting.insert(node.to_owned()) {
+            return true;
+        }
+        let found = graph
+            .get(node)
+            .into_iter()
+            .flatten()
+            .any(|next| !visited.contains(next) && visit(next, graph, visiting, visited));
+        visiting.remove(node);
+        visited.insert(node.to_owned());
+        found
+    }
+
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    graph
+        .keys()
+        .any(|node| !visited.contains(node) && visit(node, graph, &mut visiting, &mut visited))
+}
+
 fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
+    let package_roots = map.debt.as_ref().and_then(|debt| {
+        debt.package_roots.as_ref().map(|roots| {
+            roots
+                .iter()
+                .map(|root| root.dir.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        })
+    });
     let district = |f: usize| map.nodes[f].district();
     let mut bundles = BTreeMap::<(usize, usize), Vec<DebtEdge>>::new();
     let mut graph: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
@@ -501,7 +609,7 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
     for edges in bundles.values_mut() {
         edges.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
     }
-    components(&graph)
+    let mut cycles = components(&graph)
         .into_iter()
         .map(|scc| {
             let set: BTreeSet<usize> = scc.iter().copied().collect();
@@ -559,6 +667,24 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
                 .map(|index| bundles[&(route[index], route[(index + 1) % route.len()])][0].clone())
                 .collect();
             let cross_edges = weights.values().sum();
+            let mutual_pairs = mutual_pairs(&weights)
+                .into_iter()
+                .map(bundle)
+                .collect::<Vec<_>>();
+            let cut = greedy_cut(&weights)
+                .into_iter()
+                .map(bundle)
+                .collect::<Vec<_>>();
+            let (package_scope_measured, crosses_package, packages, package_edges) =
+                match &package_roots {
+                    Some(roots) => {
+                        let projected = weights.keys().copied().map(bundle);
+                        let (crosses_package, packages, package_edges) =
+                            package_projection(projected, roots);
+                        (true, crosses_package, packages, package_edges)
+                    }
+                    None => (false, false, Vec::new(), Vec::new()),
+                };
             DistrictCycle {
                 districts: scc
                     .iter()
@@ -570,11 +696,21 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
                 route,
                 closing_edges,
                 cross_edges,
-                mutual_pairs: mutual_pairs(&weights).into_iter().map(bundle).collect(),
-                cut: greedy_cut(&weights).into_iter().map(bundle).collect(),
+                package_scope_measured,
+                crosses_package,
+                packages,
+                package_edges,
+                mutual_pairs,
+                cut,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    cycles.sort_by(|a, b| {
+        b.crosses_package
+            .cmp(&a.crosses_package)
+            .then(a.route.cmp(&b.route))
+    });
+    cycles
 }
 
 pub fn findings(map: &MapDocument) -> DebtReport {
@@ -1082,10 +1218,20 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
             .map(|&d| district_name(map, d))
             .collect();
         let first = &cycle.closing_edges[0].from;
+        let package_scope = if !cycle.package_scope_measured {
+            "package scope not measured".to_owned()
+        } else if cycle.crosses_package {
+            format!("crosses package: {}", cycle.packages.join(", "))
+        } else {
+            format!(
+                "within package: spans {}, acyclic at package level",
+                cycle.packages.join(", ")
+            )
+        };
         note(
             first,
             format!(
-                "district cycle: {}; {} cross-district edges among {} districts (lower bound)",
+                "district cycle: {}; {} cross-district edges among {} districts (lower bound); {package_scope}",
                 names.join(" → "),
                 cycle.cross_edges,
                 cycle.districts.len()
@@ -1393,12 +1539,36 @@ pub fn render_text(report: &DebtReport) -> String {
     }
     for c in &report.cycles {
         let ids: Vec<String> = c.route.iter().map(usize::to_string).collect();
+        let scope = if !c.package_scope_measured {
+            "package scope not measured".to_owned()
+        } else if c.crosses_package {
+            format!("crosses package: {}", c.packages.join(", "))
+        } else {
+            format!(
+                "within package: spans {}, acyclic at package level",
+                c.packages.join(", ")
+            )
+        };
         let _ = writeln!(
             out,
-            "cycle districts {} ({} cross-district edges)",
+            "cycle districts {} ({} cross-district edges; {scope})",
             ids.join(" -> "),
             c.cross_edges
         );
+        if c.package_scope_measured {
+            for edge in &c.package_edges {
+                let _ = writeln!(
+                    out,
+                    "  package {} -> {} ({} file edges)",
+                    edge.from,
+                    edge.to,
+                    edge.edges.len(),
+                );
+                for file_edge in &edge.edges {
+                    let _ = writeln!(out, "    {} -> {}", file_edge.from, file_edge.to);
+                }
+            }
+        }
         for e in &c.closing_edges {
             let _ = writeln!(out, "  {} -> {}", e.from, e.to);
         }
@@ -1824,6 +1994,101 @@ mod tests {
         let report = findings(&map(None));
         assert!(!report.rust_mod_reachability_measured);
         assert!(render_text(&report).contains("Rust mod reachability not measured"));
+    }
+
+    #[test]
+    fn package_projection_distinguishes_clustering_and_package_cycles() {
+        let cycle = |roots, edges| {
+            let map: MapDocument = serde_json::from_value(json!({
+                "repo": "packages", "q": 0.0, "names": {"0": "a", "1": "b", "2": "c"}, "districts": {},
+                "F": ["cli/a.rs", "schema/a.rs", "runtime/a.rs", "evidence/a.rs", "outside.rs"],
+                "N": [
+                    [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [1, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [2, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [1, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [2, 4.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+                ],
+                "E": edges, "L": [], "S": {}, "U": {}, "roads": [], "lang": "rs",
+                "D": {"package_roots": roots}
+            })).unwrap();
+            let mut report = findings(&map);
+            report.cycles.remove(0)
+        };
+        let roots = json!([
+            {"dir": "cli", "ecosystem": "cargo"},
+            {"dir": "schema", "ecosystem": "cargo"},
+            {"dir": "runtime", "ecosystem": "cargo"},
+            {"dir": "evidence", "ecosystem": "cargo"}
+        ]);
+        let clustering = cycle(
+            roots.clone(),
+            json!([[0, 1], [0, 2], [2, 1], [1, 3], [3, 0]]),
+        );
+        assert!(clustering.package_scope_measured);
+        assert!(
+            !clustering.crosses_package,
+            "duhem-shaped package edges are acyclic"
+        );
+        assert_eq!(
+            clustering.packages,
+            ["cli", "evidence", "runtime", "schema"]
+        );
+        assert!(render_text(&DebtReport {
+            cycles: vec![clustering.clone()],
+            ..findings(&map(None))
+        })
+        .contains(
+            "within package: spans cli, evidence, runtime, schema, acyclic at package level"
+        ));
+
+        let package_cycle = cycle(roots, json!([[0, 1], [1, 2], [2, 0]]));
+        assert!(package_cycle.crosses_package);
+        assert_eq!(package_cycle.package_edges.len(), 3);
+    }
+
+    #[test]
+    fn package_projection_uses_nearest_root_and_ignores_unowned_files() {
+        let map: MapDocument = serde_json::from_value(json!({
+            "repo": "nested", "q": 0.0, "names": {"0": "a", "1": "b", "2": "c"}, "districts": {},
+            "F": ["crates/a/src/lib.rs", "crates/a/tools/src/lib.rs", "crates/b/src/lib.rs", "outside.rs"],
+            "N": [
+                [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [2, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [2, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": [[0, 1], [1, 2], [2, 0], [2, 3], [3, 0]], "L": [], "S": {}, "U": {}, "roads": [], "lang": "rs",
+            "D": {"package_roots": [
+                {"dir": "crates/a", "ecosystem": "cargo"},
+                {"dir": "crates/a/tools", "ecosystem": "cargo"},
+                {"dir": "crates/b", "ecosystem": "cargo"}
+            ]}
+        })).unwrap();
+        let mut report = findings(&map);
+        let cycle = report.cycles.remove(0);
+        assert_eq!(cycle.packages, ["crates/a", "crates/a/tools", "crates/b"]);
+        assert!(cycle.package_edges.iter().all(|edge| edge
+            .edges
+            .iter()
+            .all(|file| !file.from.contains("outside") && !file.to.contains("outside"))));
+    }
+
+    #[test]
+    fn old_map_cycle_package_scope_is_unmeasured() {
+        let map: MapDocument = serde_json::from_value(json!({
+            "repo": "old", "q": 0.0, "names": {"0": "a", "1": "b"}, "districts": {},
+            "F": ["a.rs", "b.rs"],
+            "N": [[0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0], [1, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]],
+            "E": [[0, 1], [1, 0]], "L": [], "S": {}, "U": {}, "roads": [], "lang": "rs"
+        })).unwrap();
+        let report = findings(&map);
+        assert!(!report.cycles[0].package_scope_measured);
+        assert!(render_text(&report).contains("package scope not measured"));
+        assert!(to_lens(&report, &map)
+            .notes
+            .iter()
+            .any(|note| note.text.contains("package scope not measured")));
     }
 
     #[test]

@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Node, Parser};
 
 use crate::go_build::{go_build_status, GoBuild};
+use crate::org;
 use crate::schema::{
-    CochangeSignal, FileId, GeneratedFile, GraphData, ReferenceCoverage, RustModTree, SignalEdge,
-    SourceNode, SymbolRow,
+    CochangeSignal, FileId, GeneratedFile, GraphData, PackageRoot, ReferenceCoverage, RustModTree,
+    SignalEdge, SourceNode, SymbolRow,
 };
 
 const ALPHA: f64 = 0.45;
@@ -820,6 +821,12 @@ fn build_selected_sources(
             })
             .collect()
     });
+    merged.package_roots = Some(
+        org::deps::package_roots(repo)
+            .into_iter()
+            .map(|(dir, ecosystem)| PackageRoot { dir, ecosystem })
+            .collect(),
+    );
     graph_time += graph_started.elapsed();
     // Indexing runs after every source is resolved, because the fallback
     // gate compares each index with the hand-written graph, and before
@@ -1359,6 +1366,7 @@ struct MergedSources {
     rust_mod: Option<RustModTree>,
     generated: Option<Vec<GeneratedFile>>,
     build_entries: Option<BTreeSet<FileId>>,
+    package_roots: Option<Vec<PackageRoot>>,
     file_language: BTreeMap<String, LanguageKind>,
     /// One `(pkg, lang)` per source, in the same sorted order they were
     /// merged -- `GraphData.sources`.
@@ -1448,6 +1456,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             rust_mod,
             generated,
             build_entries: None,
+            package_roots: None,
             file_language,
             sources: vec![(pkg.clone(), language.as_str().to_owned())],
             dominant_pkg: pkg,
@@ -1648,6 +1657,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         }),
         generated,
         build_entries: None,
+        package_roots: None,
         file_language,
         sources,
         dominant_pkg,
@@ -6935,6 +6945,7 @@ fn finish_graph(
         rust_mod,
         generated,
         build_entries,
+        package_roots,
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
@@ -7141,6 +7152,7 @@ fn finish_graph(
         rust_mod,
         generated,
         build_entries,
+        package_roots,
         nodes,
         edges,
         references: None,

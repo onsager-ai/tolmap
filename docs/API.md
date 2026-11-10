@@ -552,7 +552,12 @@ output. `json` prints a `DebtReport` (`bindings/DebtReport.ts`): district
 cycles (strongly connected district sets in the district graph built from
 `E`, each with one shortest route and the file edges that close it), their
 mutual district pairs (the lighter direction) and a deterministic greedy
-feedback-arc **small cut** (never claimed to be minimum), misplaced files,
+feedback-arc **small cut** (never claimed to be minimum). When `D.package_roots`
+is present, the report projects the listed cut and mutual bundle file edges onto
+their nearest package roots. It calls a cycle `crosses_package` only when those
+projected package edges form a cycle; otherwise it is `within package`, a
+clustering cycle that still lists its package edges. Maps without that sidecar
+report package scope as unmeasured. The report also includes misplaced files,
 god files, hotspots (churn × complexity; the top two include the map's
 `hazard` landmarks), files with **no inbound edge found**, which excludes
 entry files, and **hidden coupling**: a pair retained in the optional,
