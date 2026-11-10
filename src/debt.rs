@@ -65,7 +65,7 @@ const TEST_STEMS: &[&str] = &["tests"];
 const TEST_DIRS: &[&str] = &["test", "tests", "__tests__", "spec", "e2e"];
 const TEST_MARKERS: &[&str] = &[".test.", ".spec."];
 const TEST_STEM_PREFIXES: &[&str] = &["test_"];
-const TEST_STEM_SUFFIXES: &[&str] = &["_test", "_spec"];
+const TEST_STEM_SUFFIXES: &[&str] = &["_test", "_tests", "_spec"];
 const NON_PRODUCTION_DIRS: &[&str] = &["storybook"];
 const NON_PRODUCTION_MARKERS: &[&str] = &[".stories."];
 
@@ -1570,6 +1570,7 @@ mod tests {
         let report = findings(&serde_json::from_value(value).unwrap());
         assert_eq!(report.misplaced_test_files_excluded, 1);
         assert!(report.misplaced.is_empty());
+        assert!(is_test_path("src/assertion_evidence_tests.rs"));
         assert!(render_text(&report).contains("1 test files excluded"));
     }
 
