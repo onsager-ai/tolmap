@@ -359,6 +359,30 @@ One row per configured worker class (smallest first, same order and indices as `
 One row per `(slug)`, showing its most recently indexed commit. Ordered by
 `indexed_at` descending.
 
+### `GET /api/organizations/{name}`
+
+Returns the prebuilt `OrganizationDocument` (see `src/org.rs`,
+`bindings/OrganizationDocument.ts`) named `<name>.json` in
+`TOLMAP_ORGANIZATIONS_DIR`. `name` matches
+`[a-z0-9][a-z0-9._-]{0,63}`. The service reads no manifest, repository URL,
+local path, clone, or working tree for this endpoint, and it never queues an
+indexing job. Every member map in the document must already be in the service
+store at its declared full commit; otherwise it returns `404` naming the
+missing pinned map.
+
+`placement` composes immutable member maps: the viewer first fits each member
+map's bounds into a unit square, multiplies it by that repository's uniform
+`scale`, then centres it on `translation`. `roads` join consumer and provider
+region centres from declared repository dependency edges. The fixed 64-step
+SEED 7 spring pass processes repository pairs in lexical order, caps each
+repository's per-step displacement, and then runs a fixed lexical-order
+separation pass over the scaled unit-square regions. The same document is
+therefore byte-identical for the same pinned member maps and dependency
+evidence, and regions do not overlap in this frame. It does not recompute
+member geometry, clustering, or modularity. `OrganizationDocument` version 2
+requires this placement; version 1 documents from the prior organization build
+schema are not accepted by this resource.
+
 ### `GET /api/maps/{owner}/{repo}`
 
 The `MapDocument` (see `src/schema.rs`, `bindings/MapDocument.ts`) for the
@@ -799,6 +823,7 @@ single-trust-domain routes. These handlers do not call `access::enforce`.
 | `GET /api/maps/{owner}/{repo}/provenance` | `service::compare::provenance` | Source v1 identity for a verified full-SHA commit; no moving-ref fallback. |
 | `GET /api/maps/{owner}/{repo}/source` | `service::compare::read_source` | Inert source contract for `commit` + `path` from a retained clone. |
 | `GET /api/maps` | `service::http::get_maps` | Lists the public service catalogue through `Store::list_latest`. |
+| `GET /api/organizations/{name}` | `service::http::get_organization` | Reads a configured prebuilt document only after `Store::get` finds every member's pinned commit; it neither accepts sources nor indexes. |
 | `GET /api/maps/{owner}/{repo}` | `service::http::get_map` | Uses `Store::get`/`Store::latest`; may return the active job's early map, then reads the stored map. |
 | `GET /api/maps/{owner}/{repo}/lenses[/{name}]` | `service::lens::list_lenses`, `get_lens` | Stored map by `commit`; the lens is read from that commit's git objects in the retained clone; `Cache-Control: no-store`. |
 | `GET /api/maps/{owner}/{repo}/symbols` | `service::http::get_symbols` | Uses the stored map identity and reads a district symbol file. |

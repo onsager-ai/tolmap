@@ -47,6 +47,7 @@ fn state_with_static_dir(
         db_path,
         cache_dir,
         static_dir,
+        organization_dir: None,
         prune_variant: tolmap::pipeline::PruneVariant::NodeRelative,
         namer: tolmap::naming::NamerKind::Idf,
         namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),

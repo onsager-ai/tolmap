@@ -5570,6 +5570,7 @@ mod tests {
                 db_path: dir.path().join("store.sqlite3"),
                 cache_dir: dir.path().join("cache"),
                 static_dir: None,
+                organization_dir: None,
                 prune_variant: crate::pipeline::PruneVariant::NodeRelative,
                 namer: crate::naming::NamerKind::Idf,
                 namer_model: crate::naming::DEFAULT_MODEL.to_owned(),

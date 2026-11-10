@@ -90,6 +90,7 @@ fn fixture() -> Fixture {
         db_path: dir.path().join("store.sqlite3"),
         cache_dir: dir.path().join("cache"),
         static_dir: None,
+        organization_dir: None,
         prune_variant: tolmap::pipeline::PruneVariant::NodeRelative,
         namer: tolmap::naming::NamerKind::Idf,
         namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),
