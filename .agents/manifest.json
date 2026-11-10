@@ -2,7 +2,7 @@
   "schema": 1,
   "source": {
     "repository": "onsager-ai/dev-skills",
-    "revision": "71db87e7a3516b1d712af1830b22b690c7e42df2"
+    "revision": "b9e0bca80a725097d86e0083ed5dee1e0d8ffb0c"
   },
   "skills": [
     "issue-spec",
@@ -17,11 +17,16 @@
     "discovery",
     "ownership",
     "workflow-policy",
-    "human-decisions"
+    "human-decisions",
+    "git-hooks"
   ],
   "local_skills": [
     "benchmark",
     "map-parity",
     "viewer-verification"
+  ],
+  "hooks": [
+    "rustfmt",
+    "primary-checkout-guard"
   ]
 }
