@@ -23,7 +23,19 @@ non_production_hotspot_files_excluded: number,
 /**
  * Test files are excluded from misplaced-file findings.
  */
-misplaced_test_files_excluded: number, unreached: Array<UnreachedFile>, 
+misplaced_test_files_excluded: number, 
+/**
+ * False for maps built before generated-file evidence was retained.
+ */
+generated_file_measurement: boolean, 
+/**
+ * Generated files excluded from misplaced findings.
+ */
+misplaced_generated_files_excluded: number, 
+/**
+ * Generated files excluded from no-inbound findings.
+ */
+unreached_generated_files_excluded: number, unreached: Array<UnreachedFile>, 
 /**
  * False for maps built before the Rust declaration sidecar existed.
  */
@@ -37,4 +49,9 @@ build_entry_measurement: boolean, build_entry_files: number, hidden_coupling_mea
  * Test paths use the same rule as production hotspot exclusions and are
  * excluded from hidden-coupling ranking.
  */
-hidden_coupling_test_pairs_excluded: number, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };
+hidden_coupling_test_pairs_excluded: number, 
+/**
+ * Pairs suppressed because a generated ts-rs binding is paired with its
+ * generator or a file already statically linked to that generator.
+ */
+hidden_coupling_generated_pairs_suppressed: number, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };

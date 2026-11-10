@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 3;
+pub const DEBT_REPORT_VERSION: u32 = 4;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -124,7 +124,10 @@ pub struct DebtThresholds {
     pub test_hotspot_files_excluded: usize,
     pub non_production_hotspot_files_excluded: usize,
     pub misplaced_test_files_excluded: usize,
+    pub misplaced_generated_files_excluded: usize,
+    pub unreached_generated_files_excluded: usize,
     pub hidden_coupling_test_pairs_excluded: usize,
+    pub hidden_coupling_generated_pairs_suppressed: usize,
     pub hidden_coupling_min_count: usize,
     pub hidden_coupling_min_weight: f64,
     pub entry_stems: Vec<String>,
@@ -273,6 +276,12 @@ pub struct DebtReport {
     pub non_production_hotspot_files_excluded: usize,
     /// Test files are excluded from misplaced-file findings.
     pub misplaced_test_files_excluded: usize,
+    /// False for maps built before generated-file evidence was retained.
+    pub generated_file_measurement: bool,
+    /// Generated files excluded from misplaced findings.
+    pub misplaced_generated_files_excluded: usize,
+    /// Generated files excluded from no-inbound findings.
+    pub unreached_generated_files_excluded: usize,
     pub unreached: Vec<UnreachedFile>,
     /// False for maps built before the Rust declaration sidecar existed.
     pub rust_mod_reachability_measured: bool,
@@ -285,6 +294,9 @@ pub struct DebtReport {
     /// Test paths use the same rule as production hotspot exclusions and are
     /// excluded from hidden-coupling ranking.
     pub hidden_coupling_test_pairs_excluded: usize,
+    /// Pairs suppressed because a generated ts-rs binding is paired with its
+    /// generator or a file already statically linked to that generator.
+    pub hidden_coupling_generated_pairs_suppressed: usize,
     pub hidden_coupling: Vec<HiddenCoupling>,
     // Files the entry rule excludes from `unreached`, and files with no edge
     // at all. The latter are not reported as unreached: a file the extractor
@@ -589,6 +601,28 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                 .collect()
         }))
         .collect::<BTreeSet<_>>();
+    let generated = map.debt.as_ref().and_then(|debt| debt.generated.as_ref());
+    let generated_file_measurement = generated.is_some();
+    let generated_files = generated
+        .map(|files| {
+            files
+                .iter()
+                .map(|file| file.file as usize)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let generated_paths = generated_files
+        .iter()
+        .filter_map(|&file| map.files.get(file).map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let generated_by_file = generated
+        .map(|files| {
+            files
+                .iter()
+                .map(|file| (file.file as usize, file.generator.map(|id| id as usize)))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     let mut inbound = vec![0usize; n];
     let mut outbound = vec![0usize; n];
     let mut by_district: Vec<BTreeMap<usize, usize>> = vec![BTreeMap::new(); n];
@@ -660,6 +694,11 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             .then(b.edges.cmp(&a.edges))
             .then(a.path.cmp(&b.path))
     });
+    let misplaced_generated_files_excluded = misplaced
+        .iter()
+        .filter(|file| generated_paths.contains(file.path.as_str()))
+        .count();
+    misplaced.retain(|file| !generated_paths.contains(file.path.as_str()));
 
     let fanin: Vec<f64> = map.nodes.iter().map(|r| r.fanin()).collect();
     let complexity: Vec<usize> = map.nodes.iter().map(|r| r.complexity()).collect();
@@ -763,7 +802,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     let rust_roots = rust_mod
         .map(|tree| tree.roots.iter().copied().collect::<BTreeSet<_>>())
         .unwrap_or_default();
-    let unreached = (0..n)
+    let mut unreached = (0..n)
         .filter(|&f| {
             inbound[f] == 0
                 && outbound[f] > 0
@@ -775,7 +814,12 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             district: district(f),
             out_edges: outbound[f],
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let unreached_generated_files_excluded = unreached
+        .iter()
+        .filter(|file| generated_paths.contains(file.path.as_str()))
+        .count();
+    unreached.retain(|file| !generated_paths.contains(file.path.as_str()));
     let undeclared_rust = rust_mod
         .map(|_| {
             (0..n)
@@ -808,6 +852,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         })
         .unwrap_or_default();
     let mut hidden_coupling_test_pairs_excluded = 0;
+    let mut hidden_coupling_generated_pairs_suppressed = 0;
     let hidden_coupling = map
         .debt
         .as_ref()
@@ -818,17 +863,31 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                 .iter()
                 .filter_map(|pair| {
                     let (left, right, cochanges, weight) = pair.0;
-                    if cochanges < COCHANGE_MIN_COUNT
-                        || weight < SHARE_COCHANGE
-                        || linked.contains(&(left.min(right), left.max(right)))
-                        || declared_rust_pairs.contains(&(left.min(right), left.max(right)))
-                    {
+                    if cochanges < COCHANGE_MIN_COUNT || weight < SHARE_COCHANGE {
                         return None;
                     }
                     let left_path = map.files.get(left)?;
                     let right_path = map.files.get(right)?;
                     if is_test_path(left_path) || is_test_path(right_path) {
                         hidden_coupling_test_pairs_excluded += 1;
+                        return None;
+                    }
+                    if linked.contains(&(left.min(right), left.max(right)))
+                        || declared_rust_pairs.contains(&(left.min(right), left.max(right)))
+                    {
+                        return None;
+                    }
+                    let suppresses = |generated: usize, other: usize| {
+                        let Some(Some(generator)) = generated_by_file.get(&generated) else {
+                            return false;
+                        };
+                        other == *generator
+                            || linked.contains(&((*generator).min(other), (*generator).max(other)))
+                            || declared_rust_pairs
+                                .contains(&((*generator).min(other), (*generator).max(other)))
+                    };
+                    if suppresses(left, right) || suppresses(right, left) {
+                        hidden_coupling_generated_pairs_suppressed += 1;
                         return None;
                     }
                     Some(HiddenCoupling {
@@ -880,7 +939,10 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             test_hotspot_files_excluded,
             non_production_hotspot_files_excluded,
             misplaced_test_files_excluded,
+            misplaced_generated_files_excluded,
+            unreached_generated_files_excluded,
             hidden_coupling_test_pairs_excluded,
+            hidden_coupling_generated_pairs_suppressed,
             hidden_coupling_min_count: COCHANGE_MIN_COUNT,
             hidden_coupling_min_weight: SHARE_COCHANGE,
             entry_stems: strings(ENTRY_STEMS),
@@ -897,6 +959,9 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         test_hotspot_files_excluded,
         non_production_hotspot_files_excluded,
         misplaced_test_files_excluded,
+        generated_file_measurement,
+        misplaced_generated_files_excluded,
+        unreached_generated_files_excluded,
         unreached,
         rust_mod_reachability_measured,
         undeclared_rust,
@@ -904,6 +969,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         build_entry_files,
         hidden_coupling_measured,
         hidden_coupling_test_pairs_excluded,
+        hidden_coupling_generated_pairs_suppressed,
         hidden_coupling,
         entry_files,
         isolated_files,
@@ -1111,7 +1177,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         note(
             &m.path,
             format!(
-                "misplaced file: {} of {} edges ({}) go to district {}, {own} stay in {} (threshold: at least {} edges, more than {} to one other district; {} test files excluded)",
+                "misplaced file: {} of {} edges ({}) go to district {}, {own} stay in {} (threshold: at least {} edges, more than {} to one other district; {} test files and {} generated files excluded)",
                 to.edges,
                 m.edges,
                 pct(m.share),
@@ -1119,7 +1185,8 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 district_name(map, m.district),
                 t.misplaced_min_edges,
                 pct(t.misplaced_min_share),
-                report.misplaced_test_files_excluded
+                report.misplaced_test_files_excluded,
+                report.misplaced_generated_files_excluded
             ),
         );
         add(&mut kinds, KIND_MISPLACED, [m.path.as_str()]);
@@ -1271,12 +1338,13 @@ pub fn render_text(report: &DebtReport) -> String {
     }
     let _ = writeln!(
         out,
-        "{} district cycles; {} misplaced files (>= {} edges, > {} to one other district; {} test files excluded); {} god files (top {} by fan-in and complexity); {} production hotspots (top {} by churn x complexity, at least {}; {} test files and {} non-production files excluded); {} files with no inbound edge found ({} entry files and {} files with no edge excluded)",
+        "{} district cycles; {} misplaced files (>= {} edges, > {} to one other district; {} test files and {} generated files excluded); {} god files (top {} by fan-in and complexity); {} production hotspots (top {} by churn x complexity, at least {}; {} test files and {} non-production files excluded); {} files with no inbound edge found ({} entry files, {} generated files and {} files with no edge excluded)",
         report.cycles.len(),
         report.misplaced.len(),
         t.misplaced_min_edges,
         pct(t.misplaced_min_share),
         report.misplaced_test_files_excluded,
+        report.misplaced_generated_files_excluded,
         report.god_files.len(),
         pct(t.god_top_fraction),
         report.hotspots.len(),
@@ -1286,8 +1354,12 @@ pub fn render_text(report: &DebtReport) -> String {
         report.non_production_hotspot_files_excluded,
         report.unreached.len(),
         report.entry_files,
+        report.unreached_generated_files_excluded,
         report.isolated_files,
     );
+    if !report.generated_file_measurement {
+        out.push_str("generated-file handling not measured (map has no generated-file sidecar)\n");
+    }
     if report.rust_mod_reachability_measured {
         let _ = writeln!(
             out,
@@ -1309,11 +1381,12 @@ pub fn render_text(report: &DebtReport) -> String {
     if report.hidden_coupling_measured {
         let _ = writeln!(
             out,
-            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found; {} test pairs excluded)",
+            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found; {} test pairs excluded, {} generated-binding pairs suppressed)",
             report.hidden_coupling.len(),
             t.hidden_coupling_min_count,
             t.hidden_coupling_min_weight,
             report.hidden_coupling_test_pairs_excluded,
+            report.hidden_coupling_generated_pairs_suppressed,
         );
     } else {
         out.push_str("hidden coupling not measured (map has no co-change sidecar)\n");
@@ -1548,6 +1621,72 @@ mod tests {
     }
 
     #[test]
+    fn generated_files_are_excluded_and_old_maps_are_unmeasured() {
+        let generated: MapDocument = serde_json::from_value(json!({
+            "repo": "generated", "q": 0.0, "names": {"0": "left", "1": "right"}, "districts": {},
+            "F": ["bindings/Thing.ts", "src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs", "src/e.rs"],
+            "N": [
+                [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 4.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 5.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": [[0, 1], [0, 2], [0, 3], [0, 4], [0, 5]], "L": [], "S": {}, "U": {}, "roads": [], "lang": "ts",
+            "D": {"generated": [{"file": 0, "generator": null}]}
+        })).unwrap();
+        let report = findings(&generated);
+        assert!(report.generated_file_measurement);
+        assert_eq!(report.misplaced_generated_files_excluded, 1);
+        assert_eq!(report.unreached_generated_files_excluded, 1);
+        assert!(
+            report.misplaced.is_empty(),
+            "the generated binding would otherwise be misplaced"
+        );
+        assert!(
+            report.unreached.is_empty(),
+            "the generated binding would otherwise lack inbound edges"
+        );
+
+        let old = findings(&map(None));
+        assert!(!old.generated_file_measurement);
+        assert!(render_text(&old).contains("generated-file handling not measured"));
+    }
+
+    #[test]
+    fn generated_binding_hidden_coupling_is_suppressed_only_with_static_generator_link() {
+        let document: MapDocument = serde_json::from_value(json!({
+            "repo": "generated", "q": 0.0, "names": {"0": "only"}, "districts": {},
+            "F": ["bindings/Thing.ts", "src/model.rs", "src/linked.rs", "src/unlinked.rs", "src/direct.rs"],
+            "N": [
+                [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 4.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": [[0, 4], [1, 2]], "L": [], "S": {}, "U": {}, "roads": [], "lang": "ts",
+            "D": {
+                "generated": [{"file": 0, "generator": 1}],
+                "cochange": {"commits": 12, "window": COCHANGE_HISTORY_WINDOW, "min_count": COCHANGE_MIN_COUNT, "min_weight": SHARE_COCHANGE,
+                    "pairs": [[0, 1, 4, 0.5], [0, 2, 4, 0.5], [0, 3, 4, 0.5], [0, 4, 4, 0.5]]}
+            }
+        })).unwrap();
+        let report = findings(&document);
+        assert_eq!(report.hidden_coupling_generated_pairs_suppressed, 2);
+        assert_eq!(report.hidden_coupling.len(), 1);
+        assert_eq!(report.hidden_coupling[0].right, "src/unlinked.rs");
+        assert!(
+            report
+                .hidden_coupling
+                .iter()
+                .all(|pair| pair.right != "src/direct.rs"),
+            "a directly linked generated pair is dropped before alias suppression"
+        );
+    }
+
+    #[test]
     fn test_files_are_excluded_from_misplaced_findings() {
         let mut value = serde_json::to_value(map(None)).unwrap();
         value["F"] = json!([
@@ -1571,7 +1710,7 @@ mod tests {
         assert_eq!(report.misplaced_test_files_excluded, 1);
         assert!(report.misplaced.is_empty());
         assert!(is_test_path("src/assertion_evidence_tests.rs"));
-        assert!(render_text(&report).contains("1 test files excluded"));
+        assert!(render_text(&report).contains("1 test files and 0 generated files excluded"));
     }
 
     #[test]
