@@ -3,5 +3,6 @@
 export type DebtEdge = { from: string, to: string, from_district: number, to_district: number, 
 /**
  * Generated binding collapsed onto its generator for this report edge.
+ * When both ends are collapsed bindings, only the source binding is recorded.
  */
 via_generated?: number, };

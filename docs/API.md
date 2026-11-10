@@ -556,8 +556,9 @@ feedback-arc **small cut** (never claimed to be minimum). Before this report
 graph is searched, each `D.generated` binding with a `generator` is collapsed
 onto that generator; a resulting same-file or same-district edge is dropped.
 `DebtEdge.via_generated` retains the binding's `F` index whenever an edge used
-that collapse, and text and debt-lens output show its binding path. Bindings
-without a generator, and maps without `D.generated`, retain their existing
+that collapse; when both ends are collapsed bindings, only the source binding is
+recorded. Text and debt-lens output show its binding path. Bindings without a
+generator, and maps without `D.generated`, retain their existing
 behavior. This changes only the debt report: `E`, blending, clustering, layout,
 and map JSON are unchanged. When `D.package_roots` is present, the report
 projects the file edges of all of the cycle's collapsed cross-district bundles,

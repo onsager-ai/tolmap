@@ -151,6 +151,7 @@ pub struct DebtEdge {
     pub from_district: usize,
     pub to_district: usize,
     /// Generated binding collapsed onto its generator for this report edge.
+    /// When both ends are collapsed bindings, only the source binding is recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub via_generated: Option<u32>,
@@ -1288,10 +1289,20 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
                 });
             }
             if let Some(via) = edge.via_generated {
+                let generator = map
+                    .debt
+                    .as_ref()
+                    .and_then(|debt| debt.generated.as_ref())
+                    .and_then(|generated| generated.iter().find(|generated| generated.file == via))
+                    .and_then(|generated| generated.generator)
+                    .expect("collapsed generated edge retains its generator");
                 stops.push(LensStop {
                     at: map.files[via as usize].clone(),
                     hop: HopMode::Declared,
-                    reason: Some(format!("generated binding collapsed onto {}", edge.from)),
+                    reason: Some(format!(
+                        "generated binding collapsed onto {}",
+                        map.files[generator as usize]
+                    )),
                 });
                 stops.push(LensStop {
                     at: edge.to.clone(),
@@ -1959,6 +1970,30 @@ mod tests {
                     .as_deref()
                     .is_some_and(|reason| reason == "generated binding collapsed onto src/a.rs")
         }));
+    }
+
+    #[test]
+    fn cycle_lens_names_generator_for_target_binding() {
+        let document = cycle_map(
+            json!([[2, 1], [0, 2]]),
+            Some(json!({"generated": [{"file": 1, "generator": 0}]})),
+        );
+        let report = findings(&document);
+        let stops = &to_lens(&report, &document).paths[0].stops;
+        let binding = stops
+            .iter()
+            .position(|stop| stop.at == "bindings/A.ts")
+            .expect("collapsed target binding is on the cycle route");
+        assert_eq!(stops[binding - 1].at, "web/c.ts");
+        assert_eq!(stops[binding + 1].at, "src/a.rs");
+        assert_eq!(
+            stops[binding].reason.as_deref(),
+            Some("generated binding collapsed onto src/a.rs")
+        );
+        assert_ne!(
+            stops[binding].reason.as_deref(),
+            Some("generated binding collapsed onto web/c.ts")
+        );
     }
 
     #[test]
