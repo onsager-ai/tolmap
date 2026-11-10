@@ -862,9 +862,9 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                             return false;
                         };
                         other == *generator
-                            || linked.contains(&(generator.min(other), generator.max(other)))
+                            || linked.contains(&((*generator).min(other), (*generator).max(other)))
                             || declared_rust_pairs
-                                .contains(&(generator.min(other), generator.max(other)))
+                                .contains(&((*generator).min(other), (*generator).max(other)))
                     };
                     if suppresses(left, right) || suppresses(right, left) {
                         hidden_coupling_generated_pairs_suppressed += 1;

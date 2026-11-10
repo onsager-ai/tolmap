@@ -1613,6 +1613,26 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
     }
 
     let (_, dominant_pkg, dominant_lang) = dominant.expect("at least one source");
+    let generated = generated_measured.then(|| {
+        let mut generated = generated_files
+            .into_iter()
+            .map(|(file, ts_rs)| GeneratedFile {
+                file,
+                generator: ts_rs
+                    .then(|| {
+                        files[file as usize]
+                            .strip_prefix("bindings/")
+                            .and_then(|path| path.strip_suffix(".ts"))
+                            .and_then(|name| ts_types.get(name))
+                            .filter(|matches| matches.len() == 1)
+                            .and_then(|matches| matches.iter().next().copied())
+                    })
+                    .flatten(),
+            })
+            .collect::<Vec<_>>();
+        generated.sort_by_key(|file| file.file);
+        generated
+    });
     Ok(MergedSources {
         parsed,
         files,
@@ -1625,26 +1645,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             roots: rust_mod_roots,
             pairs: rust_mod_pairs,
         }),
-        generated: generated_measured.then(|| {
-            let mut generated = generated_files
-                .into_iter()
-                .map(|(file, ts_rs)| GeneratedFile {
-                    file,
-                    generator: ts_rs
-                        .then(|| {
-                            files[file as usize]
-                                .strip_prefix("bindings/")
-                                .and_then(|path| path.strip_suffix(".ts"))
-                                .and_then(|name| ts_types.get(name))
-                                .filter(|matches| matches.len() == 1)
-                                .and_then(|matches| matches.iter().next().copied())
-                        })
-                        .flatten(),
-                })
-                .collect::<Vec<_>>();
-            generated.sort_by_key(|file| file.file);
-            generated
-        }),
+        generated,
         build_entries: None,
         file_language,
         sources,
