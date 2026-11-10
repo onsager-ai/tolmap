@@ -1290,7 +1290,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
             if let Some(via) = edge.via_generated {
                 stops.push(LensStop {
                     at: map.files[via as usize].clone(),
-                    hop: HopMode::Computed,
+                    hop: HopMode::Declared,
                     reason: Some(format!("generated binding collapsed onto {}", edge.from)),
                 });
                 stops.push(LensStop {
@@ -1953,6 +1953,7 @@ mod tests {
         );
         assert!(lens.paths[0].stops.iter().any(|stop| {
             stop.at == "bindings/A.ts"
+                && stop.hop == HopMode::Declared
                 && stop
                     .reason
                     .as_deref()
