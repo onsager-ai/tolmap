@@ -70,7 +70,7 @@ export function OrganizationCanvas({ organization, maps, selectedRepo, onSelectR
       for (const road of organization.placement.roads) {
         roads.appendChild(element("path", {
           d: `M${x(road.from[0]).toFixed(1)} ${y(road.from[1]).toFixed(1)} L${x(road.to[0]).toFixed(1)} ${y(road.to[1]).toFixed(1)}`,
-          fill: "none", stroke: "var(--link)", "stroke-width": 2.5, "stroke-opacity": 0.72, "stroke-linecap": "round",
+          fill: "none", stroke: "var(--ink)", "stroke-width": 2.5, "stroke-opacity": 0.5, "stroke-linecap": "round",
           "data-organization-road": `${road.consumer}:${road.provider}`,
         }));
       }

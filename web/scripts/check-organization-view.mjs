@@ -53,6 +53,8 @@ try {
     await page.goto(`${args.base}/org/acme-platform`);
     await page.locator('[data-organization-view]').waitFor();
     assert.equal(await page.locator('[data-organization-roads] [data-organization-road]').count(), 1, `${profile.name}: one declared road`);
+    const roadStroke = await page.locator("[data-organization-road]").first().evaluate(node => getComputedStyle(node).stroke);
+    assert.ok(roadStroke && roadStroke !== "none" && !roadStroke.includes("rgba(0, 0, 0, 0)"), `${profile.name}: road is painted (stroke ${roadStroke})`);
     assert.ok(await page.locator('[data-organization-repository-outline]').count() >= 2, `${profile.name}: member repository outlines`);
     assert.ok(await page.locator('[data-organization-district]').count() > 0, `${profile.name}: member district outlines`);
     assert.equal(await page.locator('[data-organization-canvas] [data-k^="f:"], [data-organization-canvas] [data-k^="s:"]').count(), 0, `${profile.name}: no files or symbols at overview`);
