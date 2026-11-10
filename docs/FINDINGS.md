@@ -3446,3 +3446,47 @@ Issue [#250](https://github.com/onsager-ai/tolmap/issues/250), following finding
 ### Not verified
 - The semon and Flask debt lenses were resolved but not rendered in a browser.
 - The top five pairs establish ordering and co-change evidence, not that any individual contract lacks another source of truth outside these repositories. Counts remain lower bounds over the retained map and the 4,000 non-merge-commit co-change window.
+
+## 70. On tolmap itself and on duhem, most structural debt findings trace to four tolmap gaps: generated bindings, `include!`, cycles that span packages but not their dependency graph, and root-only TypeScript detection
+
+Issue [#250](https://github.com/onsager-ai/tolmap/issues/250), following findings 64 and 67 (semon). [Scratch run 42735215829](https://github.com/onsager-ai/tolmap/actions/runs/42735215829) built `tolmap` at main `af44d90` and ran `tolmap build --all-sources` twice on tolmap at `af44d90` and on duhem at `2cf813bd9e59fad9b9ee2fc4fd482eaf291b9f4b`. Both maps and both `tolmap debt --format json` reports were byte-identical across the two runs, and both debt lenses passed `tolmap lens check`. The numbers predate #272, #279 and #281; the scratch branch was deleted after the run.
+
+| Repository | Map | Cycles | Misplaced | God files | Production hotspots | No inbound edge | Undeclared Rust | Hidden coupling |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| tolmap | 280 files (59 rs, 221 ts), 802 edges | 1 | 5 | 1 | 14 (2 tests excluded) | 13 | 0 | 176 |
+| duhem | 273 files (200 rs, 73 ts), 1,131 edges | 1 | 8 | 1 | 14 | 5 | 2 | 450 |
+
+- **Generated ts-rs bindings cause tolmap's false positives in four finding kinds.**
+  - Hidden coupling: 50 of 176 pairs involve a `bindings/*.ts` file and the Rust that defines or uses its type, e.g. `bindings/StageId.ts` ↔ `src/progress.rs`.
+  - Misplaced: 2 of 5 (`bindings/StageId.ts`, `bindings/DistrictSymbols.ts`).
+  - No inbound edge: 8 of 13. These are generated API types that `web/` does not import, e.g. `bindings/DebtReport.ts`, `bindings/WorkerSpec.ts`.
+  - The one cycle's reported path runs through `bindings/MapDocument.ts` ↔ `web/src/api/client.ts`.
+  - Issue [#273](https://github.com/onsager-ai/tolmap/issues/273) records generated files in an optional `D.generated` sidecar, with their generator.
+- **duhem's two undeclared Rust files are `include!`d, not uncompiled.** `crates/duhem-runtime/src/engine/runner.rs:854-855` includes `runner/cleanup_tests.rs` and `runner/flow_cleanup_tests.rs`. PR [#281](https://github.com/onsager-ai/tolmap/pull/281) makes the Rust `mod` sidecar follow literal `include!` paths.
+- **duhem's one district cycle spans four crates whose Cargo graph is acyclic.**
+  - The cycle has file edges among `duhem-cli`, `duhem-runtime`, `duhem-schema` and `duhem-evidence`.
+  - Their Cargo dependencies have no loop: cli → {actions, evidence, judge, runtime, schema, summary}; runtime → {actions, dashboard, evidence, judge, schema, summary}; evidence → {judge, summary}; actions → schema; schema → none.
+  - A rule that called any package-crossing cycle a package cycle would therefore misreport it. Issue [#270](https://github.com/onsager-ai/tolmap/issues/270) classifies cycles by projecting their bundle edges onto packages.
+  - tolmap's cycle sits inside one crate plus one TypeScript tree, so it is a clustering cycle too.
+- **TypeScript detection looked only at the repository root.**
+  - Both repositories mapped TypeScript at `.` with low confidence ("no package.json+tsconfig.json pair found"), although `web/` and `crates/duhem-dashboard/web/` each hold that pair.
+  - PR [#279](https://github.com/onsager-ai/tolmap/pull/279) (issue [#274](https://github.com/onsager-ai/tolmap/issues/274)) names nested packages and raises confidence, while keeping the root as the package. It keeps the root because tolmap's `web/` includes `../bindings` through its tsconfig.
+- **The frozen Python reference is outside tolmap's map because of the `--all-sources` floor, not an explicit policy.**
+  - `pyproject.toml` names `tolmap`, which matches `src/tolmap` with 8 files. That is below `ALL_SOURCES_MIN_FILES = 25`.
+  - `viewer/` holds no source file.
+  - So no finding needed a "frozen reference" classification.
+- **Smaller false positives.**
+  - `web/storybook/fixtures.ts` ranked as tolmap's production hotspot #12.
+  - duhem's `engine/assertion_evidence_tests.rs` was listed as misplaced.
+  - PR [#281](https://github.com/onsager-ai/tolmap/pull/281) treats Storybook paths as non-production for hotspots, and excludes test paths from misplaced files.
+- **The remaining findings include real debt in the measured repositories.**
+  - tolmap: `src/extract.rs` (10,748 lines) is the only god file and hotspot #2. `web/src/map/MapRenderer.ts` (5,582 lines, complexity 2,401) is hotspot #1.
+  - duhem: `engine/runner.rs` (4,976 lines, 62 commits) is hotspot #2, `web/src/views/CheckPage.tsx` (1,970 lines) is hotspot #1, and `eval.rs` (1,886 lines) is the god file.
+  - Each repository has five vendored shadcn UI components that no file imports: tolmap's `badge`, `card`, `scroll-area`, `separator` and `toggle-group`; duhem's `accordion`, `scroll-area`, `separator`, `tabs` and `tooltip`. These are the only no-inbound findings that are dead code.
+  - These findings are recorded for the repositories' owners; tolmap needs no change for them.
+
+### Not verified
+- duhem's 450 hidden-coupling pairs (291 cross-district) were not triaged pair by pair, nor re-ranked under #272's ordering.
+- duhem's other misplaced files, e.g. `engine/registry.rs` with 74% of 35 edges to another district, were not checked against the code.
+- The unused shadcn components were found by searching for their import paths, not by building either web app.
+- The debt lenses were resolved in CI but not rendered in a browser.
