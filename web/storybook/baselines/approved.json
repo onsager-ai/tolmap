@@ -5347,7 +5347,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-debt-loaded-desktop-dark.png",
-      "sha256": "614c9821fe897968cd13c3cc6a202acc113e6f2065e36f6c9586cf9f1091a780"
+      "sha256": "813f3e24f935599b2f9ae959232d26ae392309256ee053a99629fac01789580d"
     },
     {
       "id": "map-debt-loaded",
@@ -5355,7 +5355,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-debt-loaded-desktop-light.png",
-      "sha256": "18a38ba46ca35a80d12d55969fa746baa5dce9ba32b3745b37c94565e616f3f8"
+      "sha256": "2a71850bd87f796de9ea838d9f25b01a4388ba7cad5d13fe879b1f7c6afbbf30"
     },
     {
       "id": "map-debt-loaded",
@@ -5363,7 +5363,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-debt-loaded-landscape-dark.png",
-      "sha256": "79e0678223bb8c8dbaaea81fbe084fcf6e518b1bf11bbbc58d9801130948c954"
+      "sha256": "297b35ac20448cbf648a2511dfc492fd4a2a8d281de949db3fd629f68d0386cd"
     },
     {
       "id": "map-debt-loaded",
@@ -5371,7 +5371,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-debt-loaded-landscape-light.png",
-      "sha256": "803eec95536402c084effbd2c6642f141a6f1f1613613b943dc0dcf87a745395"
+      "sha256": "c3d7bd843733b32ebc20fce446a990f0636ba229ccf5503aa0cdd7536d3004b2"
     },
     {
       "id": "map-debt-loaded",
@@ -5395,7 +5395,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-debt-loaded-tablet-dark.png",
-      "sha256": "e1c677e9ffc626edec47e17b3de436771208bac32d729589cc22d26d256e57df"
+      "sha256": "6c8d8922b522fa2f8bb51e5f7883c0878da1abe7b7ce73a608f33e6a1929ab6d"
     },
     {
       "id": "map-debt-loaded",
@@ -5403,7 +5403,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-debt-loaded-tablet-light.png",
-      "sha256": "f31adda2c91d8924824bd50512cca46e3a63bb7d1ced73092932799237f69378"
+      "sha256": "7147aaffee42a121bbee4ce9f2b80b8b9d31f2434ff3105b7e1f15a9dd88e3ba"
     },
     {
       "id": "map-debt-compare",
@@ -5788,6 +5788,262 @@
       "theme": "dark",
       "file": "oss-map-lens-compare-error-desktop-dark.png",
       "sha256": "0918c1cea01caff56fe9b2c0035672c6b563a4cf45bbd6945e74c239a56ca2d3"
+    },
+    {
+      "id": "organization-overview",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-organization-overview-phone-light.png",
+      "sha256": "7e01f0cbc023c7b974c9836f552c812f5e641deb19473fb65be3ebb2eb8c15d2"
+    },
+    {
+      "id": "organization-overview",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-organization-overview-phone-dark.png",
+      "sha256": "e258303768e9e03b376fdf8cdedc9e0117952718376d322150f15df2aa95f510"
+    },
+    {
+      "id": "organization-card",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-organization-card-phone-light.png",
+      "sha256": "da4b3e2a41aa845b256888187298353c45cc610c24d9220f1648454ad91ef10a"
+    },
+    {
+      "id": "organization-card",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-organization-card-phone-dark.png",
+      "sha256": "e29163eaa694c9dbf0ba6a414e9b74ab60f352e8b79783cb57daa934f5aa2a3e"
+    },
+    {
+      "id": "organization-loading",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-organization-loading-phone-light.png",
+      "sha256": "e23623cc139ee1ad898d660be013ebcd87a2886aec4e091b6a31864e4844be23"
+    },
+    {
+      "id": "organization-loading",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-organization-loading-phone-dark.png",
+      "sha256": "b0245db0aff4af562a70925ad3f4d86f0ac29a39c00b0e1ebc0b766c307571a3"
+    },
+    {
+      "id": "organization-error",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-organization-error-phone-light.png",
+      "sha256": "8237636802f92727c4557277ab04f509272800044ca23831b9c84b8469655ade"
+    },
+    {
+      "id": "organization-error",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-organization-error-phone-dark.png",
+      "sha256": "5b1ddd2f22e10b7d870feeefdca714485e56cb945e378ed76306d8a1f47eabc8"
+    },
+    {
+      "id": "organization-overview",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-organization-overview-landscape-light.png",
+      "sha256": "c73f20688225b2ecc2441d997556a70f12f422d4c9469e4ac7c512b406a57dac"
+    },
+    {
+      "id": "organization-overview",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-organization-overview-landscape-dark.png",
+      "sha256": "e0d69ed00710afcf19c31ead2b5d2c7ff3b84541fbf1ed83643edeb7a311b0f2"
+    },
+    {
+      "id": "organization-card",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-organization-card-landscape-light.png",
+      "sha256": "7090a880a32f5390ec55a1626469be3a820bc69d8fd48a2af49e0dcb0ddec35c"
+    },
+    {
+      "id": "organization-card",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-organization-card-landscape-dark.png",
+      "sha256": "82cdec6efc90b0a9bd53b12a2d84b521a4602fde491a0143d5f0aeeab7bcf05c"
+    },
+    {
+      "id": "organization-loading",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-organization-loading-landscape-light.png",
+      "sha256": "b74ea8c5bac65aa81351af3375e848b386d2b12959c85c1c750092bd2f41484b"
+    },
+    {
+      "id": "organization-loading",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-organization-loading-landscape-dark.png",
+      "sha256": "46b41f684a5cefc92f4bdc22abff1f7748acac7ffd33c2e5b42f6e6d39e4eb9d"
+    },
+    {
+      "id": "organization-error",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-organization-error-landscape-light.png",
+      "sha256": "6accc504de5f4842abe75dd4c6c342b8009ee20955a541c7beec477a306fcce9"
+    },
+    {
+      "id": "organization-error",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-organization-error-landscape-dark.png",
+      "sha256": "7ba6a5e5e6078359c7939e58f18234956f71a00fe7e9ac2b630ff3981d484ada"
+    },
+    {
+      "id": "organization-overview",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-organization-overview-tablet-light.png",
+      "sha256": "3aa959b18b975cfd98a6ee3eeb4e09f6e592e0bb2e28d9d5b785b1c32c234e92"
+    },
+    {
+      "id": "organization-overview",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-organization-overview-tablet-dark.png",
+      "sha256": "893ad4e84b8b0473e6fa2fff21dd3e6ccf8721ada2e58ec54d3cdceda0c36c81"
+    },
+    {
+      "id": "organization-card",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-organization-card-tablet-light.png",
+      "sha256": "49297f2c8b563df808475e53b1be58ebc376f9350ef9bde968ce115d5c842a2d"
+    },
+    {
+      "id": "organization-card",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-organization-card-tablet-dark.png",
+      "sha256": "90a5e71178a31d1aaa0d1ba07d2b672b14914070a6b33971072aaebf5a141b32"
+    },
+    {
+      "id": "organization-loading",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-organization-loading-tablet-light.png",
+      "sha256": "16b79dcb337bcaf68eb900f9ba9a852e09c7bf3e636650cd711e7da0ea6a5e5e"
+    },
+    {
+      "id": "organization-loading",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-organization-loading-tablet-dark.png",
+      "sha256": "1bc87e7babd2ac178b0bd207d3af82720c46b35861aca22b7807aa7301ff6755"
+    },
+    {
+      "id": "organization-error",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-organization-error-tablet-light.png",
+      "sha256": "b13e474e20b480f59141e848b4fb9ce5f6f22ce7846d154906e618f3029e2422"
+    },
+    {
+      "id": "organization-error",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-organization-error-tablet-dark.png",
+      "sha256": "12ffffc40a726e9e841524605fd72aea03712aacf7776abb2591b155b2fe5b5d"
+    },
+    {
+      "id": "organization-overview",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-organization-overview-desktop-light.png",
+      "sha256": "1649060dfa007e9d5e383b922e09213572830ac46605be33e274a8795ac60bb1"
+    },
+    {
+      "id": "organization-overview",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-organization-overview-desktop-dark.png",
+      "sha256": "c400a3bcc52736d04e16aa1d94b4c423b6e95850f49797b9ccab2e8355d70c98"
+    },
+    {
+      "id": "organization-card",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-organization-card-desktop-light.png",
+      "sha256": "124d6e506295a5fa3419879fc4010755e12cf575cd7bc6acea8e811a43cbf520"
+    },
+    {
+      "id": "organization-card",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-organization-card-desktop-dark.png",
+      "sha256": "4fb9445d52ea0f3bf03a18f017e3282b4232257dcb07a3f9f3b0b0e45ee6235b"
+    },
+    {
+      "id": "organization-loading",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-organization-loading-desktop-light.png",
+      "sha256": "3240137f00cb63ff085aa7022dd88a6f10920b432c8c3bf825bafad3d0af624e"
+    },
+    {
+      "id": "organization-loading",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-organization-loading-desktop-dark.png",
+      "sha256": "f42b9fb3fe6482160cd3fad0b89d2bb6b28affc7ed72207a242cd9aa603100df"
+    },
+    {
+      "id": "organization-error",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-organization-error-desktop-light.png",
+      "sha256": "fe42683bf7c8c47527b7cca2732e2302aaa3f93d5479018414511f126d727158"
+    },
+    {
+      "id": "organization-error",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-organization-error-desktop-dark.png",
+      "sha256": "533fdf88f062339620758cd7f776df7977b8560c8dcdec4492116578b2f28ed8"
     }
   ],
   "recaptures": [
@@ -6252,6 +6508,56 @@
         "oss-map-debt-error-desktop-dark.png",
         "oss-map-debt-compare-desktop-light.png",
         "oss-map-debt-compare-desktop-dark.png"
+      ]
+    },
+    {
+      "reason": "PR #276 adds organization overview states (overview, card, loading, error at every viewport and theme: 32 new identities) and re-approves 6 map-debt-loaded captures that gained the debt cycle path's Start walkthrough control; approved by the repository owner on 2026-11-10.",
+      "sourceRun": {
+        "id": "42742304222",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42742304222",
+        "sourceSha": "ef8aea3603f674e7ba15b22d03f6c81f6841af53"
+      },
+      "files": [
+        "oss-organization-overview-phone-light.png",
+        "oss-organization-overview-phone-dark.png",
+        "oss-organization-card-phone-light.png",
+        "oss-organization-card-phone-dark.png",
+        "oss-organization-loading-phone-light.png",
+        "oss-organization-loading-phone-dark.png",
+        "oss-organization-error-phone-light.png",
+        "oss-organization-error-phone-dark.png",
+        "oss-organization-overview-landscape-light.png",
+        "oss-organization-overview-landscape-dark.png",
+        "oss-organization-card-landscape-light.png",
+        "oss-organization-card-landscape-dark.png",
+        "oss-organization-loading-landscape-light.png",
+        "oss-organization-loading-landscape-dark.png",
+        "oss-organization-error-landscape-light.png",
+        "oss-organization-error-landscape-dark.png",
+        "oss-organization-overview-tablet-light.png",
+        "oss-organization-overview-tablet-dark.png",
+        "oss-organization-card-tablet-light.png",
+        "oss-organization-card-tablet-dark.png",
+        "oss-organization-loading-tablet-light.png",
+        "oss-organization-loading-tablet-dark.png",
+        "oss-organization-error-tablet-light.png",
+        "oss-organization-error-tablet-dark.png",
+        "oss-organization-overview-desktop-light.png",
+        "oss-organization-overview-desktop-dark.png",
+        "oss-organization-card-desktop-light.png",
+        "oss-organization-card-desktop-dark.png",
+        "oss-organization-loading-desktop-light.png",
+        "oss-organization-loading-desktop-dark.png",
+        "oss-organization-error-desktop-light.png",
+        "oss-organization-error-desktop-dark.png",
+        "oss-map-debt-loaded-landscape-light.png",
+        "oss-map-debt-loaded-landscape-dark.png",
+        "oss-map-debt-loaded-tablet-light.png",
+        "oss-map-debt-loaded-tablet-dark.png",
+        "oss-map-debt-loaded-desktop-light.png",
+        "oss-map-debt-loaded-desktop-dark.png"
       ]
     }
   ]

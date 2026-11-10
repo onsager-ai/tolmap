@@ -90,7 +90,11 @@ Captures are candidates until the owner approves them. The owner approved the
 set from run `42169568634` (source `fd1d6c5`) on 2026-11-06;
 `web/storybook/baselines/approved.json` records it with `status: "approved"`
 and CI compares exact pixels against those images. The owner approved the 32
-Debt lens captures on 2026-11-09 from run `42577358027` (source `15d06e2`). A registry with
+Debt lens captures on 2026-11-09 from run `42577358027` (source `15d06e2`). The owner approved the 32
+organization overview captures (overview, repository card, loading, error) and
+re-approved the 6 desktop/tablet/landscape `map-debt-loaded` captures (debt cycle
+path Start walkthrough control) on 2026-11-10 from run `42742304222` (source
+`ef8aea3`); `approved.json` records them under `recaptures`. A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
 `images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says
