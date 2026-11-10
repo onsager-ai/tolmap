@@ -14,7 +14,16 @@ export type DebtReport = { version: number, repo: string, lower_bound: boolean, 
  * Test files use the same path rule as no-inbound entry files and are
  * excluded from production hotspot ranking.
  */
-test_hotspot_files_excluded: number, unreached: Array<UnreachedFile>, 
+test_hotspot_files_excluded: number,
+/**
+ * Storybook files and Storybook stories are non-production, but not
+ * tests, so only production-hotspot ranking excludes them.
+ */
+non_production_hotspot_files_excluded: number,
+/**
+ * Test files are excluded from misplaced-file findings.
+ */
+misplaced_test_files_excluded: number, unreached: Array<UnreachedFile>,
 /**
  * False for maps built before the Rust declaration sidecar existed.
  */

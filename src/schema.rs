@@ -420,9 +420,10 @@ pub struct CochangeSidecar {
 #[ts(type = "[number, number, number, number]")]
 pub struct CochangePair(pub (usize, usize, usize, f64));
 
-/// Rust module-declaration evidence retained for debt reachability. Every
-/// index is into `MapDocument::files`; `roots` are crate targets and `pairs`
-/// are `[declaring file, declared file]` rows for resolved `mod` declarations.
+/// Rust declaration evidence retained for debt reachability. Every index is
+/// into `MapDocument::files`; `roots` are crate targets and `pairs` are
+/// `[declaring file, declared file]` rows for resolved `mod` declarations and
+/// literal `include!` paths.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RustModSidecar {
