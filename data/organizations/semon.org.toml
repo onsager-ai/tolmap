@@ -1,0 +1,10 @@
+version = 1
+name = "semon"
+
+[[members]]
+repo = "onsager-ai/semon"
+commit = "812bf3975e559f65a94ed66e8053d1ae60612426"
+
+[[members]]
+repo = "onsager-ai/duhem"
+commit = "cc5e44bb6c561ad6f6ca32b000f499500f2201c7"

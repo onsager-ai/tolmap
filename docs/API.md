@@ -639,9 +639,9 @@ repo = "onsager-ai/semon"            # owner/repo, listed once
 commit = "<full 40-character sha>"   # always required
 
 [[members]]
-repo = "onsager-ai/semon-hub"
+repo = "onsager-ai/duhem"
 commit = "<full 40-character sha>"
-path = "../semon-hub"                # optional local clone, relative to the manifest
+path = "../duhem"                    # optional local clone, relative to the manifest
 ```
 
 `org check` exits 0 when the manifest is valid and 2 otherwise, with a distinct
