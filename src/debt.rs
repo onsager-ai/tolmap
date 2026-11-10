@@ -1290,27 +1290,21 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
             if let Some(via) = edge.via_generated {
                 stops.push(LensStop {
                     at: map.files[via as usize].clone(),
-                    hop: HopMode::Declared,
-                    reason: Some(format!(
-                        "collapsed generated binding: {}",
-                        edge_text(edge, Some(&map.files))
-                    )),
+                    hop: HopMode::Computed,
+                    reason: Some(format!("generated binding collapsed onto {}", edge.from)),
+                });
+                stops.push(LensStop {
+                    at: edge.to.clone(),
+                    hop: HopMode::Computed,
+                    reason: None,
+                });
+            } else {
+                stops.push(LensStop {
+                    at: edge.to.clone(),
+                    hop: HopMode::Computed,
+                    reason: None,
                 });
             }
-            stops.push(LensStop {
-                at: edge.to.clone(),
-                hop: if edge.via_generated.is_some() {
-                    HopMode::Declared
-                } else {
-                    HopMode::Computed
-                },
-                reason: edge.via_generated.map(|_| {
-                    format!(
-                        "collapsed generated binding: {}",
-                        edge_text(edge, Some(&map.files))
-                    )
-                }),
-            });
         }
         if stops.last().unwrap().at != *first {
             stops.push(LensStop {
@@ -1962,7 +1956,7 @@ mod tests {
                 && stop
                     .reason
                     .as_deref()
-                    .is_some_and(|reason| reason.contains("via bindings/A.ts"))
+                    .is_some_and(|reason| reason == "generated binding collapsed onto src/a.rs")
         }));
     }
 
