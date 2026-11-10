@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "manifest_sha256": "a49ac92ec0ed61cfd25d7bf367e22157cc6468a6260bc1551ee19b45666f3ff8",
+  "manifest_sha256": "164e6d14f1070584af582ae4b4e7f6db85dfaa66a42aa78b31d9c041daed5528",
   "block_sha256": "1439c3ccca8e357299cad3e45d87db923b7ac76fc0ebb671d72984001bd6ab85",
   "resolved_skills": [
     "ci-triage",
@@ -97,7 +97,7 @@
       "mode": "100644"
     },
     ".agents/sync.mjs": {
-      "sha256": "be96f56d2c4b814d0e7f5ad16d132cc445b930683816656e939c5d731d52cc3d",
+      "sha256": "d982b940cb47c31b1246ada6890f3035f6249b4d796c465a65725719b7270844",
       "owner": "tooling",
       "mode": "100644"
     },
@@ -202,17 +202,17 @@
       "mode": "100755"
     },
     ".githooks/post-checkout": {
-      "sha256": "15d69d0fa92569d08cdf2ae43d14eca8f4bb7cbfad00c5940cfde1d8318c7596",
+      "sha256": "cf0807760939fa7d5834fe154273d5ebd8c6d0aef03cd2957fd70dc597c3c2a2",
       "owner": "hooks",
       "mode": "100755"
     },
     ".githooks/pre-commit": {
-      "sha256": "1a364f347099ad0c626f2a303fc2a1c8e7256c5209a676c49965104f5466aef8",
+      "sha256": "a78dff69220f18fa5a914fd41b45319c00823d52897058d62154c501274e65d5",
       "owner": "hooks",
       "mode": "100755"
     },
     ".githooks/README.md": {
-      "sha256": "f5853ef26495f6c7cabd497ad93239dd2cf7efb864c4672880acda79128a1fa6",
+      "sha256": "c4fdadeee8d6079b7442da1ca1757f3986fad0f141ea43bc8f4f1f3c6b2d7a5b",
       "owner": "hooks",
       "mode": "100644"
     },
