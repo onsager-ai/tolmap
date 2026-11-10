@@ -22,6 +22,8 @@ git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"
 
 The absolute path is deliberate. A relative `core.hooksPath` is resolved against the current working directory rather than the repository root, which makes it behave inconsistently across worktrees and subdirectories.
 
+This one step enables every hook below, in the primary checkout and in every linked worktree, because `core.hooksPath` is shared repository-wide. From the repository root, the equivalent short form is `git config core.hooksPath "$PWD/.githooks"`. Avoid a bare relative `.githooks` for the reason above.
+
 Verify it is active:
 
 ```sh
@@ -39,7 +41,17 @@ Untracked files do not count as dirty (`git status --porcelain -uno`). They surv
 
 It never acts in a linked worktree. The hook compares `--git-dir` with `--git-common-dir`; those differ in a worktree, so branch work there is untouched even though `core.hooksPath` is shared repository-wide.
 
-## What this cannot do
+## What `pre-commit` does
+
+If the commit stages any `*.rs` file (`git diff --cached --name-only`), it runs `cargo fmt --all -- --check`. When that fails, it lists the files that are not rustfmt-clean, says "run cargo fmt --all", and refuses the commit. Commits that stage no Rust file skip it entirely. rustfmt does not compile anything, so the hook is within the repository's no-local-build rule.
+
+Known limitations:
+
+- **It checks the working tree, not the index.** `cargo fmt --check` reads files on disk, so a commit can pass with unformatted staged content if the working tree has been formatted but not re-staged. It can also be refused because of unstaged edits. Stashing unstaged changes to check the index exactly was rejected: the risk to uncommitted work outweighs the gain.
+- **It can be bypassed** with `git commit --no-verify`, and it does nothing in a clone that has not set `core.hooksPath`. CI's `cargo fmt --check` remains the gate. Delegated work still reports the actual `cargo fmt --all -- --check; echo exit=$?` output as a backstop.
+- **Rust only.** Prettier and ESLint are not run.
+
+## What `post-checkout` cannot do
 
 It cannot *prevent* a checkout. Git has no `pre-checkout` hook, so `post-checkout` runs after the switch and reverting is the only mechanism available. A `reference-transaction` hook exiting non-zero on the `HEAD` update does not abort `git checkout` either — that was established in ostrom-hub by direct test and taken on trust here, not re-tested.
 
