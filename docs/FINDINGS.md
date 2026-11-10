@@ -3493,7 +3493,7 @@ Issue [#250](https://github.com/onsager-ai/tolmap/issues/250), following finding
 
 ## 72. Generated headers remove tolmap's binding noise from debt findings without changing its map, while seven binding pairs remain measured contracts
 
-Issue [#273](https://github.com/onsager-ai/tolmap/issues/273). [Scratch run 42756259690](https://github.com/onsager-ai/tolmap/actions/runs/42756259690) built tolmap at `473540375df0d6208cf99d4bc848a82a674fd719`, ran `tolmap build --all-sources` twice on the checkout itself, and ran `tolmap debt` against the resulting map with and without its new `D.generated` sidecar. The two maps had SHA-256 `f6659ddaa53a2d7afbb2503af33734e9a7b792cb78d76eb69891903b956d7c5a`; repeated debt JSON was byte-identical and `tolmap lens check` resolved the generated debt lens with 6 areas, 95 members, 32 paths and 47 notes. No `data/*.json` or other pinned fixture byte changed.
+Issue [#273](https://github.com/onsager-ai/tolmap/issues/273). [Scratch run 42760509603](https://github.com/onsager-ai/tolmap/actions/runs/42760509603) built tolmap at `f93aad4e48afdb878b0068a6a9ac96ac01d999fb`, ran `tolmap build --all-sources` twice on the checkout itself, and ran `tolmap debt` against the resulting map with and without its new `D.generated` sidecar. The two maps had SHA-256 `f6659ddaa53a2d7afbb2503af33734e9a7b792cb78d76eb69891903b956d7c5a`; repeated debt JSON was byte-identical and `tolmap lens check` resolved the generated debt lens with 6 areas, 95 members, 32 paths and 47 notes. No `data/*.json` or other pinned fixture byte changed.
 
 | Finding kind | Without `D.generated` | With `D.generated` | Change |
 |---|---:|---:|---:|
