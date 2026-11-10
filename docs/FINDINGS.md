@@ -3491,6 +3491,29 @@ Issue [#250](https://github.com/onsager-ai/tolmap/issues/250), following finding
 - The unused shadcn components were found by searching for their import paths, not by building either web app.
 - The debt lenses were resolved in CI but not rendered in a browser.
 
+## 72. Generated headers remove tolmap's binding noise from debt findings without changing its map, while seven binding pairs remain measured contracts
+
+Issue [#273](https://github.com/onsager-ai/tolmap/issues/273). [Scratch run 42756259690](https://github.com/onsager-ai/tolmap/actions/runs/42756259690) built tolmap at `473540375df0d6208cf99d4bc848a82a674fd719`, ran `tolmap build --all-sources` twice on the checkout itself, and ran `tolmap debt` against the resulting map with and without its new `D.generated` sidecar. The two maps had SHA-256 `f6659ddaa53a2d7afbb2503af33734e9a7b792cb78d76eb69891903b956d7c5a`; repeated debt JSON was byte-identical and `tolmap lens check` resolved the generated debt lens with 6 areas, 95 members, 32 paths and 47 notes. No `data/*.json` or other pinned fixture byte changed.
+
+| Finding kind | Without `D.generated` | With `D.generated` | Change |
+|---|---:|---:|---:|
+| District cycles | 1 | 1 | 0 |
+| Misplaced files | 5 | 2 | -3 |
+| God files | 1 | 1 | 0 |
+| Production hotspots | 14 | 14 | 0 |
+| No inbound edge | 14 | 7 | -7 |
+| Undeclared Rust | 0 | 0 | 0 |
+| Hidden coupling | 186 | 135 | -51 |
+
+- **`D.generated` is report-only evidence.** The map retains 109 generated files, detected from the first five lines only; the sidecar records each file index and, for an exact ts-rs type match, its Rust generator-file index. It is outside `E`, so the two map bytes match and clustering/layout inputs remain unchanged. Maps predating the field report generated handling as unmeasured.
+- **The excluded binding findings are concrete.** Misplaced `bindings/{StageId,DistrictSymbols,MapDocument}.ts` drop out. The no-inbound report drops `DebtReport`, `HealthzResponse`, `Lens`, `OrganizationManifest`, `SymbolsDocument`, `WorkerEvent` and `WorkerSpec`; the seven remaining no-inbound paths are five unimported shadcn components and two Storybook stories. The report exposes the 109 generated-file exclusions rather than implying the remaining counts are exhaustive.
+- **Hidden coupling removes the 51 generated-binding alias pairs with recorded generator linkage.** Of 58 pre-filter pairs involving a binding, seven remain: `bindings/StageId.ts ↔ src/service/store.rs` has no `E`/`U`/`D.rust_mod` link from `src/progress.rs`, its generator, to `src/service/store.rs`; the other six are binding-to-binding pairs (`DebtReport ↔ DebtSidecar`, `DistrictSymbols ↔ SymbolsDocument`, `RepoFeatures ↔ WorkerSpec`, `StageId ↔ WorkerSpec`, `DebtSidecar ↔ DebtThresholds`, and `WorkerEvent ↔ WorkerSpec`). They stay listed because the rule only suppresses a generated binding paired with its generator or a file statically linked to that generator.
+- **The old MapDocument cycle was measured away by earlier map changes, not hidden here.** This run's sole cycle is `bindings/JobSnapshot.ts → bindings/Eta.ts → web/src/types/index.ts → bindings/JobSnapshot.ts`; `bindings/MapDocument.ts` is not on its route before or after `D.generated`. Cycle logic is unchanged by this issue.
+
+### Not verified
+- semon was not measured in this run. The CI result establishes the required tolmap behavior; no semon repository was cloned or modified.
+- The debt lens was checked for resolved stops in CI but not rendered in a browser.
+
 ## 71. A public semon organization example composes two pinned repository maps deterministically, but shows no declared inter-repository dependency
 
 Issue [#255](https://github.com/onsager-ai/tolmap/issues/255), plan item 6. [Scratch run 42748832166](https://github.com/onsager-ai/tolmap/actions/runs/42748832166) built tolmap at `e7c3b6e5af9fa096c414c564c4b23ebb4c2ffaab` plus its disposable measurement workflow, cloned public `onsager-ai/semon` at `812bf3975e559f65a94ed66e8053d1ae60612426` and public `onsager-ai/duhem` at `cc5e44bb6c561ad6f6ca32b000f499500f2201c7`, and ran `tolmap org build` twice. Both documents have SHA-256 `58bb25ad4da4ca4bdb6157653d91c6958a82f5c8a0584de6f3516e248344f0bf`; `cmp` confirmed their bytes are identical. The scratch branch was deleted after the run.
