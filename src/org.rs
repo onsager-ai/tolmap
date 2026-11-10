@@ -33,7 +33,7 @@ use crate::pipeline::PruneVariant;
 use crate::schema::MapDocument;
 
 pub const MANIFEST_VERSION: u32 = 1;
-pub const DOCUMENT_VERSION: u32 = 1;
+pub const DOCUMENT_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------
 // Manifest
@@ -304,9 +304,10 @@ pub struct OrganizationMemberMap {
     pub packages: Vec<ProvidedPackage>,
 }
 
-// A repository-sized region in the organization overview. `translation` and
-// `scale` transform the member map as a whole; they never alter its bytes or
-// its own layout.
+// A repository-sized region in the organization overview. The viewer fits the
+// member map's bounds into a unit square, multiplies that square by `scale`,
+// then centres it on `translation`. The transform never alters the member
+// map's bytes or its own layout.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 pub struct OrganizationRegion {
     pub repo: String,
@@ -405,18 +406,25 @@ pub struct OrganizationDocument {
 }
 
 const PLACEMENT_ITERATIONS: usize = 64;
+const SEPARATION_ITERATIONS: usize = 32;
 const REPOSITORY_REPULSION: f64 = 0.08;
 const REPOSITORY_ATTRACTION: f64 = 0.03;
 const MIN_DISTANCE_SQUARED: f64 = 0.0001;
+const MAX_STEP: f64 = 0.05;
+const REGION_MARGIN: f64 = 0.1;
+const REGION_SEPARATION: f64 = 0.01;
 
-/// Places lexically-sorted repositories with a fixed number of spring steps.
+/// Places lexically-sorted repositories with fixed spring and separation
+/// passes. The initial circle has a `SEED`-derived phase. Each spring step
+/// processes pairs in repository order, so equal graph weights use lexical
+/// order as the tie-break; evidence attracts its pair and every pair repels.
+/// A per-step cap prevents a high evidence count from overshooting.
 ///
-/// The initial circle has a `SEED`-derived phase. Each step processes all
-/// pairs in repository order, so equal graph weights always keep the lexical
-/// order as the tie-break. Declared dependency evidence attracts its two
-/// repositories; every pair repels. The result is centred after the final
-/// step. This is a composition transform only: a member map's geometry is
-/// never read or rewritten here.
+/// The final separation pass treats the unit-square member regions as discs
+/// with radius `scale * sqrt(1/2) + REGION_MARGIN`. It processes every pair in
+/// lexical order for a fixed number of iterations, so transformed member maps
+/// cannot overlap. This is composition only: member geometry is never read or
+/// rewritten here.
 fn placement(members: &[OrganizationMemberMap], edges: &[RepositoryEdge]) -> OrganizationPlacement {
     let count = members.len();
     if count == 0 {
@@ -439,7 +447,7 @@ fn placement(members: &[OrganizationMemberMap], edges: &[RepositoryEdge]) -> Org
         ) else {
             continue;
         };
-        let weight = edge.evidence.len() as f64;
+        let weight = (edge.evidence.len() as f64).ln_1p();
         weights[consumer][provider] += weight;
         weights[provider][consumer] += weight;
     }
@@ -473,10 +481,24 @@ fn placement(members: &[OrganizationMemberMap], edges: &[RepositoryEdge]) -> Org
             }
         }
         for (position, force) in positions.iter_mut().zip(forces) {
-            position[0] += force[0];
-            position[1] += force[1];
+            let magnitude = (force[0] * force[0] + force[1] * force[1]).sqrt();
+            let ratio = (MAX_STEP / magnitude).min(1.0);
+            position[0] += force[0] * ratio;
+            position[1] += force[1] * ratio;
         }
     }
+
+    let largest = members
+        .iter()
+        .map(|member| member.files)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let scales = members
+        .iter()
+        .map(|member| (member.files.max(1) as f64 / largest as f64).sqrt())
+        .collect::<Vec<_>>();
+    separate_regions(&mut positions, &scales);
     let centre = positions.iter().fold([0.0, 0.0], |mut total, position| {
         total[0] += position[0] / count as f64;
         total[1] += position[1] / count as f64;
@@ -487,19 +509,13 @@ fn placement(members: &[OrganizationMemberMap], edges: &[RepositoryEdge]) -> Org
         position[1] -= centre[1];
     }
 
-    let largest = members
-        .iter()
-        .map(|member| member.files)
-        .max()
-        .unwrap_or(1)
-        .max(1);
     let regions = members
         .iter()
-        .zip(&positions)
-        .map(|(member, &translation)| OrganizationRegion {
+        .zip(positions.iter().copied().zip(scales))
+        .map(|(member, (translation, scale))| OrganizationRegion {
             repo: member.repo.clone(),
             translation,
-            scale: (member.files.max(1) as f64 / largest as f64).sqrt(),
+            scale,
         })
         .collect();
     let roads = edges
@@ -518,6 +534,41 @@ fn placement(members: &[OrganizationMemberMap], edges: &[RepositoryEdge]) -> Org
         })
         .collect();
     OrganizationPlacement { regions, roads }
+}
+
+fn separate_regions(positions: &mut [[f64; 2]], scales: &[f64]) {
+    for _ in 0..SEPARATION_ITERATIONS {
+        for left in 0..positions.len() {
+            for right in (left + 1)..positions.len() {
+                let dx = positions[right][0] - positions[left][0];
+                let dy = positions[right][1] - positions[left][1];
+                let actual_distance_squared = dx * dx + dy * dy;
+                let distance = actual_distance_squared.sqrt();
+                let required = region_radius(scales[left])
+                    + region_radius(scales[right])
+                    + REGION_SEPARATION;
+                if distance < required {
+                    let adjustment = (required - distance) / 2.0;
+                    // A coincident pair has no geometric direction. Give it
+                    // the lexically ordered pair's fixed horizontal axis so
+                    // the separation pass remains deterministic and moves it.
+                    let unit = if actual_distance_squared <= MIN_DISTANCE_SQUARED {
+                        [1.0, 0.0]
+                    } else {
+                        [dx / distance, dy / distance]
+                    };
+                    for axis in 0..2 {
+                        positions[left][axis] -= unit[axis] * adjustment;
+                        positions[right][axis] += unit[axis] * adjustment;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn region_radius(scale: f64) -> f64 {
+    scale * std::f64::consts::FRAC_1_SQRT_2 + REGION_MARGIN
 }
 
 // ---------------------------------------------------------------------
@@ -1354,11 +1405,33 @@ mod tests {
         }
     }
 
+    fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {
+        let dx = right[0] - left[0];
+        let dy = right[1] - left[1];
+        (dx * dx + dy * dy).sqrt()
+    }
+
+    fn assert_regions_do_not_overlap(placement: &OrganizationPlacement) {
+        for (left, region) in placement.regions.iter().enumerate() {
+            for other in placement.regions.iter().skip(left + 1) {
+                assert!(
+                    distance(region.translation, other.translation)
+                        >= region_radius(region.scale)
+                            + region_radius(other.scale)
+                            + REGION_SEPARATION,
+                    "{} overlaps {}",
+                    region.repo,
+                    other.repo
+                );
+            }
+        }
+    }
+
     #[test]
-    fn placement_is_byte_identical_and_uses_lexical_tie_breaks() {
+    fn placement_is_byte_identical_keeps_linked_repositories_near_and_separate() {
         let members = vec![
-            member_map("acme/app", 4),
-            member_map("acme/core", 16),
+            member_map("acme/app", 1),
+            member_map("acme/core", 1),
             member_map("acme/extra", 1),
         ];
         let edges = vec![edge("acme/app", "acme/core", 2)];
@@ -1373,10 +1446,28 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["acme/app", "acme/core", "acme/extra"]
         );
-        assert_eq!(first.regions[1].scale, 1.0);
+        assert!(first.regions.iter().all(|region| region.scale == 1.0));
         assert_eq!(first.roads.len(), 1);
         assert_eq!(first.roads[0].from, first.regions[0].translation);
         assert_eq!(first.roads[0].to, first.regions[1].translation);
+        let app = first.regions[0].translation;
+        let core = first.regions[1].translation;
+        let extra = first.regions[2].translation;
+        assert!(distance(app, core) < distance(app, extra));
+        assert!(distance(app, core) < distance(core, extra));
+        assert_regions_do_not_overlap(&first);
+    }
+
+    #[test]
+    fn placement_caps_high_evidence_steps_and_separates_regions() {
+        let members = vec![member_map("acme/app", 1), member_map("acme/core", 1)];
+        let placement = placement(&members, &[edge("acme/app", "acme/core", 200)]);
+        assert!(placement
+            .regions
+            .iter()
+            .flat_map(|region| region.translation)
+            .all(f64::is_finite));
+        assert_regions_do_not_overlap(&placement);
     }
 
     #[test]

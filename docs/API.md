@@ -370,12 +370,18 @@ indexing job. Every member map in the document must already be in the service
 store at its declared full commit; otherwise it returns `404` naming the
 missing pinned map.
 
-`placement` composes immutable member maps: each lexically ordered repository
-has one uniform `scale` and `translation`, while `roads` join consumer and
-provider region centres from declared repository dependency edges. The fixed
-64-step SEED 7 spring pass processes repository pairs in lexical order, so the
-same document is byte-identical for the same pinned member maps and dependency
-evidence. It does not recompute member geometry, clustering, or modularity.
+`placement` composes immutable member maps: the viewer first fits each member
+map's bounds into a unit square, multiplies it by that repository's uniform
+`scale`, then centres it on `translation`. `roads` join consumer and provider
+region centres from declared repository dependency edges. The fixed 64-step
+SEED 7 spring pass processes repository pairs in lexical order, caps each
+repository's per-step displacement, and then runs a fixed lexical-order
+separation pass over the scaled unit-square regions. The same document is
+therefore byte-identical for the same pinned member maps and dependency
+evidence, and regions do not overlap in this frame. It does not recompute
+member geometry, clustering, or modularity. `OrganizationDocument` version 2
+requires this placement; version 1 documents from the prior organization build
+schema are not accepted by this resource.
 
 ### `GET /api/maps/{owner}/{repo}`
 

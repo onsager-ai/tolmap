@@ -286,6 +286,7 @@ fn org_build_reports_edges_pin_skew_external_and_unresolved() {
     let first = build(&fixture);
     assert_eq!(first.code, 0, "{}", first.stderr);
     let document: serde_json::Value = serde_json::from_str(&first.stdout).unwrap();
+    assert_eq!(document["version"], 2);
 
     // Members, sorted by repository; app's map is the stored one, read only.
     let members = document["members"].as_array().unwrap();

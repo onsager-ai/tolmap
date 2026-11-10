@@ -27,7 +27,7 @@ use super::error::ApiError;
 use super::jobs::{self, JobSnapshot, JobStatus};
 use super::ratelimit::Verdict;
 use super::AppState;
-use crate::org::OrganizationDocument;
+use crate::org::{OrganizationDocument, DOCUMENT_VERSION};
 use crate::worker::WorkerBuild;
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -413,7 +413,17 @@ async fn get_organization(
             }
             _ => ApiError::internal(format!("read {}: {error}", path.display())),
         })?;
-    let document: OrganizationDocument = serde_json::from_slice(&bytes).map_err(|error| {
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+        ApiError::internal(format!("organization {name} is not valid JSON: {error}"))
+    })?;
+    let version = value.get("version").and_then(serde_json::Value::as_u64);
+    if version != Some(DOCUMENT_VERSION.into()) {
+        return Err(ApiError::not_found(format!(
+            "organization {name} has document version {}; expected {DOCUMENT_VERSION}",
+            version.map_or_else(|| "missing".to_owned(), |version| version.to_string())
+        )));
+    }
+    let document: OrganizationDocument = serde_json::from_value(value).map_err(|error| {
         ApiError::internal(format!("organization {name} is not valid JSON: {error}"))
     })?;
     if document.name != name {

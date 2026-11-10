@@ -68,7 +68,7 @@ fn insert_map(state: &AppState, dir: &tempfile::TempDir, slug: &str, commit: &st
 
 fn document() -> serde_json::Value {
     json!({
-        "version": 1,
+        "version": 2,
         "name": "acme",
         "members": [
             {"repo": "acme/app", "commit": APP_COMMIT, "path": null, "map": "stored", "map_digest": "sha256:app", "files": 1, "districts": 1, "packages": []},
@@ -119,6 +119,25 @@ async fn organization_needs_every_pinned_member_map_already_stored() {
     let (status, body) = get(state, "/api/organizations/acme").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["placement"]["roads"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn prior_document_version_is_not_a_resource() {
+    let dir = tempfile::tempdir().unwrap();
+    let organization_dir = dir.path().join("organizations");
+    std::fs::create_dir(&organization_dir).unwrap();
+    let mut prior = document();
+    prior["version"] = json!(1);
+    prior.as_object_mut().unwrap().remove("placement");
+    std::fs::write(
+        organization_dir.join("acme.json"),
+        serde_json::to_vec(&prior).unwrap(),
+    )
+    .unwrap();
+    let state = state(&dir, organization_dir);
+    let (status, body) = get(state, "/api/organizations/acme").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["message"].as_str().unwrap().contains("version 1"));
 }
 
 #[tokio::test]
