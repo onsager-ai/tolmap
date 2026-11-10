@@ -3429,3 +3429,20 @@ Issue [#263](https://github.com/onsager-ai/tolmap/issues/263). [Scratch run 4266
 - Static parsing deliberately does not evaluate computed configuration. A dynamic entry expression remains unmeasured and receives no entry exemption.
 - The test-hotspot cutoff has only this semon/Flask measurement. The existing 5% and two-file minimum remain unchanged and are not calibrated by this work.
 - The semon and Flask debt lenses were resolved in CI but not rendered in a browser.
+
+## 69. Rust `mod` links count for misplaced-file evidence, while test-free hidden coupling puts semon's HTTP contracts first
+
+Issue [#250](https://github.com/onsager-ai/tolmap/issues/250), following findings 64, 66, 67 and 68. [Scratch run 42734191060](https://github.com/onsager-ai/tolmap/actions/runs/42734191060) built `tolmap` at `504e3f9` plus a disposable workflow merge and indexed semon at `50c52557775d7247846d214e145db1b6b9e650a8` twice. [Flask rerun 42735624075](https://github.com/onsager-ai/tolmap/actions/runs/42735624075) built the same feature with finding 68's exact `--pkg .` invocation at fixture pin `d73fa1cdcbd8b1465c151db8924ba58b1dd14e35`. The maps and `tolmap debt --format json` were byte-identical across semon's two builds. Both debt lenses passed `tolmap lens check`; no map, fixture, or schema bytes changed in the feature branch, and the scratch branches were deleted after the runs.
+
+| Repository | Map | Misplaced files | Hidden coupling | Test pairs excluded |
+|---|---|---:|---:|---:|
+| semon | 223 files, 1,411 edges | 3 | 105 | 44 |
+| Flask | 35 files, 105 edges | 0 | 124 | 0 |
+
+- **The semon hidden-coupling lower bound fell from finding 68's 149 pairs to 105.** The 44 excluded pairs have a test path under the same rule as production-hotspot exclusions. That count is reported in JSON, text and debt-lens notes, so the 105 is not mistaken for an exhaustive co-change count. The ordering rule ranks cross-language pairs first: the top five are Rust ↔ TypeScript, `shell.rs` ↔ `ui/src/viewer.ts` (3 co-changes, weight 1.00), `viewer.rs` ↔ `ui/src/lib-contract.tsx` (6, 0.86), `union.rs` ↔ `ui/src/lib/sessionRoute.ts` (3, 0.75), `viewer.rs` ↔ `ui/src/lib/sessionRoute.ts` (3, 0.75), and `native_html.rs` ↔ `ui/src/app/catalogViewer.tsx` (3, 0.60). Finding 67 identified these as real HTTP and UI contracts.
+- **On semon, the Rust `mod` link rule changes no finding.** The one misplaced-file candidate, `storage/postgres/index.rs`, has a declared parent pair `[storage/postgres.rs, storage/postgres/index.rs]` and an existing reverse `E` edge. Counting the declaration would double-count that relationship, so it correctly retains 5 incident edges, 3 to another district (60%). The measured misplaced files remain `attachments.rs`, `storage/postgres/index.rs`, and `sealed.rs`; the rule's effect is covered by unit tests.
+- **The Rust `mod` link is report-only evidence.** It increases both endpoint totals and district tallies only where no `E` edge joins the pair in either direction. Extraction, blending, clustering, layout, `E`, the `D` sidecar, and `MapDocument` are unchanged. The report version is 2 because its JSON now declares the excluded hidden-coupling test-pair count; generated TypeScript bindings came from the CI generator. The prior Flask row used `--pkg src/flask`; reproducing finding 68's `--pkg .` invocation restored its 35-file, 105-edge map and 124 pairs with no test-pair exclusion.
+
+### Not verified
+- The semon and Flask debt lenses were resolved but not rendered in a browser.
+- The top five pairs establish ordering and co-change evidence, not that any individual contract lacks another source of truth outside these repositories. Counts remain lower bounds over the retained map and the 4,000 non-merge-commit co-change window.

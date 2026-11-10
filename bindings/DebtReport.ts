@@ -23,4 +23,9 @@ rust_mod_reachability_measured: boolean, undeclared_rust: Array<UndeclaredRustFi
  * False for maps built before statically readable bundler entries were
  * retained in the debt sidecar.
  */
-build_entry_measurement: boolean, build_entry_files: number, hidden_coupling_measured: boolean, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };
+build_entry_measurement: boolean, build_entry_files: number, hidden_coupling_measured: boolean, 
+/**
+ * Test paths use the same rule as production hotspot exclusions and are
+ * excluded from hidden-coupling ranking.
+ */
+hidden_coupling_test_pairs_excluded: number, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };

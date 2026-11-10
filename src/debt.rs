@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 1;
+pub const DEBT_REPORT_VERSION: u32 = 2;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -126,6 +126,7 @@ pub struct DebtThresholds {
     pub hotspot_min_count: usize,
     pub hotspot_min_score: Option<usize>,
     pub test_hotspot_files_excluded: usize,
+    pub hidden_coupling_test_pairs_excluded: usize,
     pub hidden_coupling_min_count: usize,
     pub hidden_coupling_min_weight: f64,
     pub entry_stems: Vec<String>,
@@ -183,9 +184,10 @@ pub struct DistrictEdges {
     pub edges: usize,
 }
 
-// `by_district` counts the file's incident edges by the other end's
-// district (its own included), most first. `share` is `to_district`'s
-// share of `edges`, rounded to 4 places.
+// `by_district` counts the file's incident `E` edges, plus a declared Rust
+// `mod` parent-child pair only when `E` has no edge between those files, by
+// the other end's district (its own included), most first. `share` is
+// `to_district`'s share of `edges`, rounded to 4 places.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 pub struct MisplacedFile {
     pub path: String,
@@ -277,6 +279,9 @@ pub struct DebtReport {
     pub build_entry_measurement: bool,
     pub build_entry_files: usize,
     pub hidden_coupling_measured: bool,
+    /// Test paths use the same rule as production hotspot exclusions and are
+    /// excluded from hidden-coupling ranking.
+    pub hidden_coupling_test_pairs_excluded: usize,
     pub hidden_coupling: Vec<HiddenCoupling>,
     // Files the entry rule excludes from `unreached`, and files with no edge
     // at all. The latter are not reported as unreached: a file the extractor
@@ -321,6 +326,30 @@ fn is_test_path(path: &str) -> bool {
         || TEST_STEM_SUFFIXES
             .iter()
             .any(|suffix| stem.ends_with(suffix))
+}
+
+// There is no per-file language in the compact map. Keep related extensions
+// together so TypeScript's `.ts` and `.tsx`, for example, do not look like a
+// cross-language contract merely because their suffixes differ.
+fn language_from_path(path: &str) -> &str {
+    match path.rsplit_once('.').map_or("", |(_, extension)| extension) {
+        "rs" => "rust",
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "py" | "pyi" => "python",
+        "go" => "go",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "rb" => "ruby",
+        "php" => "php",
+        "cs" => "csharp",
+        extension => extension,
+    }
+}
+
+fn same_parent_directory(left: &str, right: &str) -> bool {
+    left.rsplit_once('/').map_or("", |(parent, _)| parent)
+        == right.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
 fn is_rust_target_path(path: &str) -> bool {
@@ -527,10 +556,14 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
 pub fn findings(map: &MapDocument) -> DebtReport {
     let n = map.files.len();
     let district = |f: usize| map.nodes[f].district();
-    let linked = map
+    let file_edges = map
         .edges
         .iter()
         .map(|&[left, right]| (left.min(right), left.max(right)))
+        .collect::<BTreeSet<_>>();
+    let linked = file_edges
+        .iter()
+        .copied()
         .chain(map.uses.iter().flat_map(|(key, users)| {
             let Some((target, _)) = key.split_once(':') else {
                 return Vec::new();
@@ -555,6 +588,20 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         inbound[b] += 1;
         *by_district[a].entry(district(b)).or_default() += 1;
         *by_district[b].entry(district(a)).or_default() += 1;
+    }
+    // A Rust `mod` declaration is not a graph edge: it names no item and must
+    // remain outside extraction, blending, clustering and layout. For this
+    // report only, however, it is one incident relationship between parent and
+    // child when `E` did not retain that relationship already.
+    if let Some(rust_mod) = map.debt.as_ref().and_then(|debt| debt.rust_mod.as_ref()) {
+        for pair in &rust_mod.pairs {
+            let (a, b) = pair.0;
+            if a == b || file_edges.contains(&(a.min(b), a.max(b))) {
+                continue;
+            }
+            *by_district[a].entry(district(b)).or_default() += 1;
+            *by_district[b].entry(district(a)).or_default() += 1;
+        }
     }
 
     let mut misplaced: Vec<MisplacedFile> = (0..n)
@@ -741,6 +788,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
+    let mut hidden_coupling_test_pairs_excluded = 0;
     let hidden_coupling = map
         .debt
         .as_ref()
@@ -758,9 +806,15 @@ pub fn findings(map: &MapDocument) -> DebtReport {
                     {
                         return None;
                     }
+                    let left_path = map.files.get(left)?;
+                    let right_path = map.files.get(right)?;
+                    if is_test_path(left_path) || is_test_path(right_path) {
+                        hidden_coupling_test_pairs_excluded += 1;
+                        return None;
+                    }
                     Some(HiddenCoupling {
-                        left: map.files.get(left)?.clone(),
-                        right: map.files.get(right)?.clone(),
+                        left: left_path.clone(),
+                        right: right_path.clone(),
                         left_district: map.nodes.get(left)?.district(),
                         right_district: map.nodes.get(right)?.district(),
                         cochanges,
@@ -771,11 +825,17 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         });
     let hidden_coupling_measured = hidden_coupling.is_some();
     let mut hidden_coupling = hidden_coupling.unwrap_or_default();
-    // Cross-district pairs rank first, then the strongest evidence, then
-    // file order. The sidecar itself is already index/path deterministic.
+    // Contracts across languages come first. Within that group, cross-folder
+    // and cross-district evidence is usually more actionable than a local
+    // implementation detail; the remaining keys make every tie deterministic.
     hidden_coupling.sort_by(|a, b| {
-        (a.left_district == a.right_district)
-            .cmp(&(b.left_district == b.right_district))
+        (language_from_path(&a.left) == language_from_path(&a.right))
+            .cmp(&(language_from_path(&b.left) == language_from_path(&b.right)))
+            .then(
+                same_parent_directory(&a.left, &a.right)
+                    .cmp(&same_parent_directory(&b.left, &b.right)),
+            )
+            .then((a.left_district == a.right_district).cmp(&(b.left_district == b.right_district)))
             .then(b.weight.total_cmp(&a.weight))
             .then(b.cochanges.cmp(&a.cochanges))
             .then(a.left.cmp(&b.left))
@@ -799,6 +859,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             hotspot_min_count: HOTSPOT_MIN_COUNT,
             hotspot_min_score,
             test_hotspot_files_excluded,
+            hidden_coupling_test_pairs_excluded,
             hidden_coupling_min_count: COCHANGE_MIN_COUNT,
             hidden_coupling_min_weight: SHARE_COCHANGE,
             entry_stems: strings(ENTRY_STEMS),
@@ -819,6 +880,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         build_entry_measurement,
         build_entry_files,
         hidden_coupling_measured,
+        hidden_coupling_test_pairs_excluded,
         hidden_coupling,
         entry_files,
         isolated_files,
@@ -1100,8 +1162,8 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         note(
             &report.hidden_coupling[0].left,
             format!(
-                "{shown} of {} hidden-coupling pairs shown as paths; all are in `tolmap debt`",
-                report.hidden_coupling.len()
+                "{shown} of {} hidden-coupling pairs shown as paths; {} test pairs excluded; all remaining pairs are in `tolmap debt`",
+                report.hidden_coupling.len(), report.hidden_coupling_test_pairs_excluded
             ),
         );
         for coupling in report
@@ -1219,10 +1281,11 @@ pub fn render_text(report: &DebtReport) -> String {
     if report.hidden_coupling_measured {
         let _ = writeln!(
             out,
-            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found)",
+            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found; {} test pairs excluded)",
             report.hidden_coupling.len(),
             t.hidden_coupling_min_count,
             t.hidden_coupling_min_weight,
+            report.hidden_coupling_test_pairs_excluded,
         );
     } else {
         out.push_str("hidden coupling not measured (map has no co-change sidecar)\n");
@@ -1575,6 +1638,134 @@ mod tests {
             .paths
             .iter()
             .any(|path| path.name.starts_with("cycle-cut-")));
+    }
+
+    #[test]
+    fn rust_mod_pairs_count_once_for_misplaced_files() {
+        fn misplaced_map(rust_mod: Option<serde_json::Value>, parent_edge: bool) -> MapDocument {
+            let mut edges = vec![[1, 2], [1, 4], [1, 5], [1, 6]];
+            if parent_edge {
+                edges.push([0, 1]);
+            } else {
+                edges.push([1, 3]);
+            }
+            let mut value = json!({
+                "repo": "misplaced", "q": 0.0, "names": {"0": "own", "1": "other"}, "districts": {},
+                "F": ["src/parent.rs", "src/child.rs", "src/own.rs", "src/own_two.rs", "other/a.rs", "other/b.rs", "other/c.rs"],
+                "N": [
+                    [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [0, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [0, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [0, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [1, 4.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [1, 5.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                    [1, 6.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+                ],
+                "E": edges, "L": [], "S": {}, "U": {}, "roads": [], "lang": "rs"
+            });
+            if let Some(rust_mod) = rust_mod {
+                value["D"] = json!({"rust_mod": rust_mod});
+            }
+            serde_json::from_value(value).unwrap()
+        }
+
+        let without_pair = findings(&misplaced_map(None, false));
+        assert_eq!(without_pair.misplaced[0].path, "src/child.rs");
+        assert_eq!(without_pair.misplaced[0].edges, 5);
+
+        let with_pair = findings(&misplaced_map(
+            Some(json!({"roots": [0], "pairs": [[0, 1]]})),
+            false,
+        ));
+        assert!(
+            with_pair.misplaced.is_empty(),
+            "the parent link makes the foreign district exactly half of incident evidence"
+        );
+
+        let with_edge_and_pair = findings(&misplaced_map(
+            Some(json!({"roots": [0], "pairs": [[0, 1]]})),
+            true,
+        ));
+        assert_eq!(with_edge_and_pair.misplaced[0].path, "src/child.rs");
+        assert_eq!(
+            with_edge_and_pair.misplaced[0].edges, 5,
+            "an existing E edge prevents a duplicate mod count"
+        );
+
+        let old_map = findings(&misplaced_map(None, false));
+        assert_eq!(
+            old_map.misplaced, without_pair.misplaced,
+            "maps without rust_mod retain E-only misplaced evidence"
+        );
+    }
+
+    #[test]
+    fn hidden_coupling_excludes_tests_and_sorts_actionably() {
+        let map: MapDocument = serde_json::from_value(json!({
+            "repo": "coupling", "q": 0.0, "names": {"0": "left", "1": "right"}, "districts": {},
+            "F": [
+                "tests/case.rs", "src/lib.rs", "contracts/alpha.rs", "ui/alpha.ts",
+                "contracts/beta.rs", "ui/beta.ts", "src/local.rs", "src/other.rs",
+                "services/remote.rs", "web/remote.rs", "services/same.rs", "services/same.ts",
+                "lib/tail.rs", "lib/tail_two.rs", "services/weight.rs", "web/weight.rs",
+                "services/changes.rs", "web/changes.rs", "services/alpha.rs", "web/alpha.rs"
+            ],
+            "N": [
+                [0, 0.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 1.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 2.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 3.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 4.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 5.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 6.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 7.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 8.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 9.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 10.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 11.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 12.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 13.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 14.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 15.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 16.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 17.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [0, 18.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                [1, 19.0, 0.0, 1, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0]
+            ],
+            "E": [], "L": [], "S": {}, "U": {}, "roads": [], "lang": "mixed",
+            "D": {"cochange": {
+                "commits": 12, "window": COCHANGE_HISTORY_WINDOW,
+                "min_count": COCHANGE_MIN_COUNT, "min_weight": SHARE_COCHANGE,
+                "pairs": [
+                    [0, 1, 4, 0.5], [2, 3, 3, 0.35], [4, 5, 9, 0.99],
+                    [6, 7, 9, 0.99], [8, 9, 5, 0.35], [10, 11, 9, 0.99],
+                    [12, 13, 9, 0.99], [14, 15, 3, 0.9], [16, 17, 5, 0.9],
+                    [18, 19, 5, 0.9]
+                ]
+            }}
+        }))
+        .unwrap();
+        let report = findings(&map);
+        assert_eq!(report.hidden_coupling_test_pairs_excluded, 1);
+        assert!(render_text(&report).contains("1 test pairs excluded"));
+        assert_eq!(
+            report
+                .hidden_coupling
+                .iter()
+                .map(|pair| (pair.left.as_str(), pair.right.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("contracts/alpha.rs", "ui/alpha.ts"),
+                ("contracts/beta.rs", "ui/beta.ts"),
+                ("services/same.rs", "services/same.ts"),
+                ("services/alpha.rs", "web/alpha.rs"),
+                ("services/changes.rs", "web/changes.rs"),
+                ("services/weight.rs", "web/weight.rs"),
+                ("services/remote.rs", "web/remote.rs"),
+                ("src/local.rs", "src/other.rs"),
+                ("lib/tail.rs", "lib/tail_two.rs"),
+            ]
+        );
     }
 
     #[test]
