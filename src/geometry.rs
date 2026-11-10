@@ -14,7 +14,7 @@ use crate::pipeline::{self, LayoutDistrict, SHARE_COCHANGE};
 use crate::schema::{
     BuildEntrySidecar, CochangePair, CochangeSidecar, CoverageLanguage, CoverageReport,
     DebtSidecar, District, DistrictClass, FileId, GeneratedFile, GraphData, LandmarkRow,
-    MapDocument, NodeRow, RustModPair, RustModSidecar, SymbolRow,
+    MapDocument, NodeRow, PackageRoot, RustModPair, RustModSidecar, SymbolRow,
 };
 #[derive(Clone, Debug)]
 pub struct BuildFeatures {
@@ -840,15 +840,26 @@ fn compact(
             })
             .collect()
     });
+    let package_roots = layout.weighted.package_roots.as_ref().map(|roots| {
+        roots
+            .iter()
+            .map(|root| PackageRoot {
+                dir: root.dir.clone(),
+                ecosystem: root.ecosystem,
+            })
+            .collect()
+    });
     let debt = (cochange.is_some()
         || rust_mod.is_some()
         || build_entries.is_some()
-        || generated.is_some())
+        || generated.is_some()
+        || package_roots.is_some())
     .then_some(DebtSidecar {
         cochange,
         rust_mod,
         build_entries,
         generated,
+        package_roots,
     });
     let mut groups = BTreeMap::<usize, Vec<usize>>::new();
     for (index, &district) in layout.membership.iter().enumerate() {

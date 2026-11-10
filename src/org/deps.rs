@@ -53,6 +53,25 @@ pub(crate) struct Tree {
     pub unreadable: Vec<Unreadable>,
 }
 
+/// Package roots from manifests that declare a package. The rows are sorted
+/// by directory and match the package detection organization maps use.
+pub(crate) fn package_roots(root: &Path) -> Vec<(String, Ecosystem)> {
+    let mut roots = scan(root)
+        .provided
+        .into_iter()
+        // Debt package scope intentionally does not extend Python's legacy
+        // setup.py/setup.cfg support: a root is a pyproject with [project]
+        // or [tool.poetry], as the map contract specifies.
+        .filter(|package| {
+            package.ecosystem != Ecosystem::Python || package.file.ends_with("pyproject.toml")
+        })
+        .map(|package| (directory_of(&package.file).to_owned(), package.ecosystem))
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 pub(crate) fn scan(root: &Path) -> Tree {
     let mut tree = Tree::default();
     let files = manifest_files(root);
@@ -957,6 +976,39 @@ fn requirements(root: &Path, file: &str, text: &str, tree: &mut Tree) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_roots_follow_each_supported_manifest_and_skip_workspaces() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |path: &str, text: &str| {
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write("Cargo.toml", "[workspace]\nmembers = []\n");
+        write(
+            "crates/core/Cargo.toml",
+            "[package]\nname = 'core'\nversion = '0.1.0'\n",
+        );
+        write("web/package.json", "{\"name\": \"web\"}");
+        write("cmd/go.mod", "module example.com/cmd\n");
+        write("python/pyproject.toml", "[project]\nname = 'python'\n");
+        write(
+            "poetry/pyproject.toml",
+            "[tool.poetry]\nname = 'poetry'\nversion = '0.1.0'\n",
+        );
+        write("empty/pyproject.toml", "[build-system]\nrequires = []\n");
+        assert_eq!(
+            package_roots(root.path()),
+            vec![
+                ("cmd".to_owned(), Ecosystem::Go),
+                ("crates/core".to_owned(), Ecosystem::Cargo),
+                ("poetry".to_owned(), Ecosystem::Python),
+                ("python".to_owned(), Ecosystem::Python),
+                ("web".to_owned(), Ecosystem::Npm),
+            ]
+        );
+    }
 
     #[test]
     fn unreadable_manifest_is_retained_as_unresolved_evidence() {

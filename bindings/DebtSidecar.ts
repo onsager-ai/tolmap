@@ -2,9 +2,10 @@
 import type { BuildEntrySidecar } from "./BuildEntrySidecar";
 import type { CochangeSidecar } from "./CochangeSidecar";
 import type { GeneratedFile } from "./GeneratedFile";
+import type { PackageRoot } from "./PackageRoot";
 import type { RustModSidecar } from "./RustModSidecar";
 
 /**
  * Optional debt evidence, indexed against `MapDocument::files`.
  */
-export type DebtSidecar = { cochange: CochangeSidecar | null, rust_mod: RustModSidecar | null, build_entries: BuildEntrySidecar | null, generated: Array<GeneratedFile> | null, };
+export type DebtSidecar = { cochange: CochangeSidecar | null, rust_mod: RustModSidecar | null, build_entries: BuildEntrySidecar | null, generated: Array<GeneratedFile> | null, package_roots: Array<PackageRoot> | null, };
