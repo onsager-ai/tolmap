@@ -84,7 +84,6 @@ import {
   rollInheritanceReferences,
   rollReferences,
   rowKind,
-  rowName,
   symbolLabel,
   topN,
   type DecodedDistrictSymbols,
