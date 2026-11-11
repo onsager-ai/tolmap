@@ -105,7 +105,11 @@ export function RepositoryPage() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Action failed."); }
     finally { setPending(false); }
   }
-  function confirm(value: Confirmation) { setError(null); setConfirmation(value); }
+  function confirm(value: Confirmation) {
+    // The action menus are native <details>; close them so none stays open behind the dialog.
+    for (const menu of document.querySelectorAll("details[open]")) menu.removeAttribute("open");
+    setError(null); setConfirmation(value);
+  }
   return <div className="h-full overflow-y-auto bg-[var(--chrome)] text-[var(--on)]"><main className="mx-auto flex max-w-[760px] flex-col gap-6 px-5 pb-10 pt-7">
     <nav className="flex items-center justify-between"><Link to="/" className="flex min-h-11 items-center text-small text-[var(--accent)]">‹ Repositories</Link><ThemeToggle className="h-11 w-11 rounded-full" /></nav>
     {history.isLoading && <p>Loading repository…</p>}
