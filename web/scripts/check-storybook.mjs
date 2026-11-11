@@ -170,6 +170,7 @@ try {
     };
     const report = await verifyVisualBaselines({ browser, captures: results, evidenceDir: output, baselineDir, provenance, sourceRevision: viewerRevision, advisoryPixels: pixelMode === 'advisory' });
     if (report.status === 'mismatched') summariseMismatches(report.results.filter(row => row.status === 'mismatched'));
+    if (report.missingReferences?.length) summarisePending(report.missingReferences);
   } catch (error) { baselineError = error; }
   await browser.close();
   const evidence = { status: 'candidate-unapproved', viewerRevision, testedRevision, browser: { name: 'Chromium', version: browserVersion }, locale: 'en-US', timezone: 'UTC', scale: 1, fixedClock: '2026-10-19T08:00:00Z', viewports: viewports.map(({ name, width, height, touch }) => ({ name, width, height, hasTouch: touch })), fixture: 'web/check-fixtures/onsager-ai__tolmap.json.gz', expectedCaptures, completedCaptures: results.filter(row => row.status === 'passed').length, captureComplete: results.length === expectedCaptures && results.every(row => row.status === 'passed'), results };
@@ -230,6 +231,14 @@ function summariseMismatches(rows) {
     const difference = row.reason === 'dimensions-changed' ? `size ${row.reference.width}×${row.reference.height} → ${row.actual.width}×${row.actual.height}` : `${row.differingPixels} px`;
     lines.push(`| ${row.host}/${row.id} | ${row.viewport} | ${row.theme} | ${difference} |`);
   }
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
+}
+
+function summarisePending(rows) {
+  console.log(`::warning title=Storybook references pending::${rows.length} capture(s) have no approved reference yet; the owner approves them in a batch from tolmap-visual-candidates`);
+  if (!process.env.GITHUB_STEP_SUMMARY) return;
+  const ids = [...new Set(rows.map(row => `${row.host}/${row.id}`))].sort();
+  const lines = ['### Storybook references pending approval', '', `${rows.length} capture(s) across ${ids.length} stor${ids.length === 1 ? 'y' : 'ies'} have no approved reference. This does not fail the job; approve them from the \`tolmap-visual-candidates\` artifact.`, '', ...ids.map(id => `- ${id}`)];
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
 }
 

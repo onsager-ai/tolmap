@@ -42,8 +42,9 @@ jobs:
           cat /tmp/tolmap-storybook.log; exit 1
       - run: pnpm check:storybook
         env:
-          # Pixel mismatches are reported in visual-regression.json and the job
-          # summary but do not fail; render errors and missing references do.
+          # Pixel mismatches and new stories without an approved reference are
+          # reported in visual-regression.json and the job summary but do not
+          # fail; render errors, invalid references and removed stories do.
           STORYBOOK_PIXELS: advisory
       - uses: actions/upload-artifact@v4
         if: always()

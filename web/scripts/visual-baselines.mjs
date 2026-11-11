@@ -63,9 +63,11 @@ async function compare(browser, actualUrl, referenceUrl) {
 
 // Exact pixel comparison failed most PR runs on rendering nondeterminism (#219)
 // rather than on product changes, so CI can run it as advisory: a pixel or
-// dimension mismatch is reported as 'mismatched' with its evidence, while
-// capture failures, missing or invalid references, matrix and provenance
-// changes still fail.
+// dimension mismatch is reported as 'mismatched' with its evidence. Advisory
+// mode also lets a new story merge before its reference is approved (owner,
+// 2026-11-11: approve in batches): it is reported as 'missing-reference' and
+// listed in missingReferences. Capture failures, invalid reference files,
+// references whose story disappeared, and provenance changes still fail.
 async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, baselineDir, provenance, sourceRevision, advisoryPixels = false }) {
   await fs.mkdir(evidenceDir, { recursive: true });
   const manifestPath = path.join(baselineDir, REGISTRY);
@@ -97,13 +99,13 @@ async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, basel
   }
   const missing = [...seen].filter(id => !references.has(id));
   const extra = [...references.keys()].filter(id => !seen.has(id));
-  const matrixMismatch = missing.length > 0 || extra.length > 0;
+  const matrixMismatch = extra.length > 0 || (missing.length > 0 && !advisoryPixels);
   report.missingReferences = missing.map(id => JSON.parse(id));
   report.extraReferences = extra.map(id => JSON.parse(id));
   if (!isDeepStrictEqual(provenance, registry.provenance)) throw new Error('Capture provenance does not match approved references');
 
-  // A new story still fails the matrix gate, but must not hide pixel changes
-  // to existing stories: reviewers need both sets in one approval pass.
+  // Outside advisory mode a new story fails the matrix gate, but must not hide
+  // pixel changes to existing stories: reviewers need both sets in one pass.
   let failed = matrixMismatch, mismatched = false;
   for (const row of captures) {
     const result = { ...identity(row), status: 'failed', file: row.file };
@@ -131,7 +133,7 @@ async function verifyVisualBaselinesImpl({ browser, captures, evidenceDir, basel
     } catch (error) { failed = true; result.error = error.message; }
     report.results.push(result);
   }
-  report.status = failed ? 'failed' : mismatched ? 'mismatched' : 'passed';
+  report.status = failed ? 'failed' : mismatched ? 'mismatched' : missing.length ? 'pending-references' : 'passed';
   if (advisoryPixels) report.pixelMode = 'advisory';
   await fs.writeFile(path.join(evidenceDir, REPORT), JSON.stringify(report, null, 2));
   if (matrixMismatch) throw new Error(`Approved reference matrix mismatch; see ${REPORT}`);

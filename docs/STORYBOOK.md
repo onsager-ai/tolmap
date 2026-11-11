@@ -122,8 +122,12 @@ PNGs and dimensions, and zero differing RGBA pixels. A mismatch writes actual,
 reference and diff PNGs plus a failed report. With `STORYBOOK_PIXELS=advisory`
 (set by the Storybook workflow) a pixel or dimension mismatch is instead
 recorded as `mismatched` in `visual-regression.json`, listed in the job summary
-and does not fail the job; capture or render failures, a missing or invalid
-reference, matrix or provenance changes still fail. Exact pixel rendering proved
+and does not fail the job. Advisory mode also lets a new story merge before
+its reference is approved: its captures are listed under `missingReferences`
+(report status `pending-references`) and in the job summary, and the owner
+approves them in a batch later (owner decision, 2026-11-11). Capture or render
+failures, an invalid or unreadable reference, an approved reference whose story
+no longer exists, and provenance changes still fail. Exact pixel rendering proved
 nondeterministic across runs (#219), so CI pixel differences are review
 evidence, not a gate. The default, `strict`, keeps them a hard failure.
 CI never accepts or rewrites a reference. Review
