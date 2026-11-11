@@ -7,15 +7,20 @@ import { ChevronIcon } from "@/components/phone/icons";
 import type { CatalogueEntry } from "@/types";
 import { HostActions } from "@/components/HostActions";
 import { hostProfile } from "@/host";
+import { IndexedTime, RepositoryState } from "@/components/RepositoryMeta";
 
-/** docs/UX.md §4.9's "Mapped repositories" row: 64px, name then files ·
- * districts · language, from whatever the catalogue actually returns --
- * `CatalogueEntry` (src/types/index.ts) never carries a field that isn't in
- * both the static index and GET /api/maps, so nothing here is invented.
- * Numbers are mono (§8.1); the rest of the meta line is Archivo, matching
- * the approved artboard exactly (only "6,347" and "19" are mono there, not
- * "files" or "districts"). */
+/** Stable host identities get repository navigation and a direct-map action.
+ * Legacy static/service entries preserve the approved 64px direct-map row. */
 function RepoRow({ m }: { m: CatalogueEntry }) {
+  if (m.repository_id) return (
+    <div data-catalogue-row className="flex min-h-[64px] items-center border-b border-[var(--rule)] last:border-b-0">
+      <Link to="/repositories/$repositoryId/history" params={{ repositoryId: m.repository_id }} aria-label={`View repository ${m.label ?? m.slug}`} className="flex min-h-16 min-w-0 flex-1 flex-col justify-center gap-0.5 px-4 py-2 hover:bg-[var(--chrome)]">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="truncate font-mono text-row">{m.label ?? m.slug}</span><RepositoryState status={m.status} /></span>
+        <span className="text-meta text-[var(--dim)]"><span className="font-mono">{m.files.toLocaleString()}</span> files · <span className="font-mono">{m.districts.toLocaleString()}</span> districts · {m.lang}{m.indexed_at && <> · <IndexedTime value={m.indexed_at} /></>}</span>
+      </Link>
+      {m.latest_snapshot_id && <Link to="/$owner/$repo" params={{ owner: m.owner, repo: m.repo }} search={{ geo: "r", layer: "d" }} className="repo-control repo-control-ghost mr-2" aria-label={`Open latest map for ${m.label ?? m.slug}`}>Map <ChevronIcon /></Link>}
+    </div>
+  );
   return (
     <Link
       to="/$owner/$repo"
@@ -106,7 +111,7 @@ export function CatalogueIndex() {
           {!isLoading && !isError && data.length > 0 && (
             <div className="flex flex-col overflow-hidden rounded-[14px] border border-[var(--rule)]">
               {data.map((m) => (
-                <RepoRow key={m.slug} m={m} />
+                <RepoRow key={m.repository_id ?? m.slug} m={m} />
               ))}
             </div>
           )}

@@ -24,7 +24,8 @@ Only use this on a host whose local policy permits browser/rendering work.
 
 | Family | States | Governing reference |
 | --- | --- | --- |
-| Home | Catalogue, empty, loading, unavailable | UX §4.9; preserve |
+| Home | Catalogue, empty, loading, unavailable; grouped repositories with indexing/failed/reconnect status (27 snapshots across 3 repos) | UX §4.9; existing references preserved, grouped state candidate |
+| Repository | History, running job, empty, no capabilities, delete-snapshot confirmation | UX §4.9 and HOST_PROFILE.md; candidates only |
 | Local checkout | Detect, scope/all-source confirmation, indexing/cancel, detection/index failure, saved history/export | LOCAL.md and production native template; preserve |
 | Indexing | No job, queue, Fetch/Read/Map/Detail, every failure class | UX §6; preserve |
 | Map | Overview, district/file/symbol/folder, four layers, early detail, loading/error | UX §§3–5, 7, 9; preserve |
@@ -94,7 +95,10 @@ Debt lens captures on 2026-11-09 from run `42577358027` (source `15d06e2`). The 
 organization overview captures (overview, repository card, loading, error) and
 re-approved the 6 desktop/tablet/landscape `map-debt-loaded` captures (debt cycle
 path Start walkthrough control) on 2026-11-10 from run `42742304222` (source
-`ef8aea3`); `approved.json` records them under `recaptures`. A registry with
+`ef8aea3`); `approved.json` records them under `recaptures`. The owner approved the 48
+repository Home and repository page captures (repository list, history, running job,
+empty, no capabilities, delete-snapshot confirmation) on 2026-11-11 from run
+`42995174099` (source `ac76780`), also under `recaptures`. A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
 `images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says
@@ -156,3 +160,12 @@ awaiting owner review; the Flask browser lane uploads stepped captures under
 `lens-walkthrough-samples-desktop` and `lens-walkthrough-samples-phone`.
 Source-reader responses in that browser lane are explicitly synthetic; the
 native local/hosted service tests own git-object pinning evidence.
+
+Repository candidates are `home-repositories`, `repository-history`,
+`repository-running`, `repository-empty`, `repository-no-capabilities` and
+`repository-delete-snapshot`. They use production routes and MSW host contracts,
+with 390 px phone and desktop captures (plus the normal tablet/landscape and
+theme/host matrix). Grouping assertions require three rows from 27 fixture
+snapshots and all three host statuses. Repository plays check history length,
+empty state, inline progress, absent re-index capability, and the open snapshot
+delete confirmation. No approved pixel references are added or changed.

@@ -2,7 +2,7 @@ import type { LensColor } from "../../bindings/LensColor";
 import type { LensReport } from "../../bindings/LensReport";
 import { http, HttpResponse, delay } from "msw";
 import { setupWorker } from "msw/browser";
-import type { JobSnapshot, MapDocument } from "../src/types";
+import type { RepositoryHistory, CatalogueEntry, JobSnapshot, MapDocument } from "../src/types";
 import type { StageId } from "../../bindings/StageId";
 import type { SnapshotFreshness } from "../../bindings/SnapshotFreshness";
 import type { OrganizationDocument } from "../../bindings/OrganizationDocument";
@@ -61,12 +61,43 @@ export async function installFixture(state: string) {
   const snapshotCommit = state.startsWith("lens-compare-") || state === "debt-compare" ? "a".repeat(40) : commit;
   const mapDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(map)));
   const mapSha256 = Array.from(new Uint8Array(mapDigest), byte => byte.toString(16).padStart(2, "0")).join("");
-  let job = snapshot(state === "freshness-in-map" ? "early" : state);
+  let job = snapshot(state === "repository-running" ? "read" : state === "freshness-in-map" ? "early" : state);
+  if (state === "repository-running") job.slug = "acme/platform";
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const emit = () => new TextEncoder().encode(`data: ${JSON.stringify(job, (_key, value) => typeof value === "bigint" ? Number(value) : value)}\n\n`);
   const entry = { slug, owner: "onsager-ai", repo: "tolmap", label: "acme/platform", files: map.F.length, districts: Object.keys(map.districts).length, lang: "rs", modularity: map.q, commit, indexed_at: "2026-10-19T08:00:00Z" };
+  // 27 snapshots across three repositories exercise grouping without a 20-row cap.
+  const groupedEntries: CatalogueEntry[] = state === "repository-home" ? Array.from({ length: 27 }, (_, index) => {
+    const repo = index % 3;
+    return { ...entry, source: "service", file: "", repository_id: `acme-${["platform", "tools", "web"][repo]}`,
+      slug: `acme/${["platform", "tools", "web"][repo]}-${index}`, label: `acme/${["platform", "tools", "web"][repo]}`,
+      latest_snapshot_id: `snapshot-${index}`, snapshot_count: 9, indexed_at: new Date(Date.UTC(2026, 9, 19, 7, index)).toISOString(),
+      status: repo === 0 ? { kind: "indexing", phase: "Read", job_id: "fixture" } : repo === 1 ? { kind: "failed", message: "Indexing failed; your saved map is available." } : { kind: "reconnect_needed" },
+    };
+  }) : [];
+  const noCapabilities = state === "repository-no-capabilities";
+  const repositoryHistory: RepositoryHistory | undefined = state.startsWith("repository-") ? {
+    repository_id: "acme-platform", name: "acme/platform", current_core_revision: "22222222",
+    status: state === "repository-running" ? { kind: "indexing", phase: "Read", job_id: "fixture" } : null,
+    actions: {
+      reopen: noCapabilities || state === "repository-empty" ? null : { path: `/${slug}`, method: "GET" },
+      reindex: noCapabilities ? null : { path: "/fixture/reindex", method: "POST" },
+      disconnect: noCapabilities ? null : { path: "/fixture/disconnect", method: "POST" },
+      delete_repository: noCapabilities ? null : { path: "/fixture/repository", method: "DELETE" },
+    },
+    snapshots: state === "repository-empty" ? [] : Array.from({ length: 9 }, (_, index) => ({
+      id: `snapshot-${index}`, commit: (index + 1).toString().repeat(40), indexed_at: new Date(Date.UTC(2026, 9, 19 - index, 8)).toISOString(),
+      files: entry.files, districts: entry.districts, core_revision: index > 1 ? "11111111" : "22222222",
+      reopen: noCapabilities ? null : { path: `/${slug}?commit=${(index + 1).toString().repeat(40)}`, method: "GET" },
+      delete_snapshot: noCapabilities ? null : { path: `/fixture/snapshots/${index}`, method: "DELETE" },
+    })),
+  } : undefined;
   const handler = async ({ request }: { request: Request }) => {
     const url = new URL(request.url), path = url.pathname;
+    if (path === "/api/repositories/acme-platform/history") return json(repositoryHistory);
+    if (path === "/fixture/reindex") { job = snapshot("read"); return json({ job_id: "fixture", status: "queued", slug }); }
+    if (path.startsWith("/fixture/snapshots/")) { repositoryHistory!.snapshots = repositoryHistory!.snapshots.filter(item => item.id !== `snapshot-${path.split("/").pop()}`); return new HttpResponse(null, { status: 204 }); }
+    if (path.startsWith("/fixture/")) return new HttpResponse(null, { status: 204 });
     if (path === "/api/healthz") return json({ status: "ok" });
     if (path === "/api/organizations/acme-platform") {
       if (state === "organization-loading") { await delay("infinite"); }
@@ -75,6 +106,7 @@ export async function installFixture(state: string) {
     }
     if (path.endsWith("/freshness")) return state === "freshness-in-map" ? json(failedFreshness) : json({}, 404);
     if (path === "/api/maps" || path === "/maps/index.json") {
+      if (state === "repository-home") return json(groupedEntries);
       if (state === "loading") { await delay("infinite"); return json([]); }
       return state === "unavailable" ? json({ error: "unavailable" }, 503) : json(state === "empty" ? [] : [entry]);
     }
@@ -173,7 +205,7 @@ export async function installFixture(state: string) {
     }
     return json({ error: "unhandled_fixture_request", path }, 500);
   };
-  worker.resetHandlers(http.all("/api/*", handler), http.all("/maps/*", handler));
+  worker.resetHandlers(http.all("/api/*", handler), http.all("/maps/*", handler), http.all("/fixture/*", handler));
   started ??= worker.start({ quiet: true, serviceWorker: { url: new URL("mockServiceWorker.js", location.href).pathname }, onUnhandledRequest(request, print) {
     if (new URL(request.url).pathname.startsWith("/api/")) print.error();
   } });

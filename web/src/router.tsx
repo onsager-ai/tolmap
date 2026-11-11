@@ -1,5 +1,6 @@
 import { createRootRoute, createRoute, createRouter, notFound } from "@tanstack/react-router";
 import { RootLayout } from "@/routes/RootLayout";
+import { RepositoryPage } from "@/routes/RepositoryPage";
 import { CatalogueIndex } from "@/routes/CatalogueIndex";
 import { ReservedPage } from "@/routes/ReservedPage";
 import { MapView } from "@/routes/MapView";
@@ -54,6 +55,12 @@ const organizationRoute = createRoute({
   component: OrganizationView,
 });
 
+const repositoryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/repositories/$repositoryId/history",
+  component: RepositoryPage,
+});
+
 const ownerRepoRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$owner/$repo",
@@ -68,7 +75,7 @@ const ownerRepoRoute = createRoute({
   component: MapView,
 });
 
-export const routeTree = rootRoute.addChildren([indexRoute, newRoute, organizationRoute, ...reservedRoutes, ownerRepoRoute]);
+export const routeTree = rootRoute.addChildren([indexRoute, newRoute, organizationRoute, repositoryRoute, ...reservedRoutes, ownerRepoRoute]);
 
 export const router = createRouter({ routeTree });
 

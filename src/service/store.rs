@@ -326,11 +326,24 @@ impl Store {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         conn.query_row(
             "SELECT slug, owner, repo, commit_sha, branch, lang, files, districts, modularity, map_path, indexed_at
-             FROM maps WHERE slug = ?1 ORDER BY indexed_at DESC LIMIT 1",
+             FROM maps WHERE slug = ?1 ORDER BY indexed_at DESC, commit_sha DESC LIMIT 1",
             params![slug],
             row_to_map,
         )
         .optional_context()
+    }
+
+    /// Every retained snapshot for a repository, newest first with stable ties.
+    pub fn history(&self, slug: &str) -> Result<Vec<MapRow>> {
+        let conn = self.conn.lock().expect("store connection mutex poisoned");
+        let mut statement = conn.prepare(
+            "SELECT slug, owner, repo, commit_sha, branch, lang, files, districts, modularity, map_path, indexed_at
+             FROM maps WHERE slug = ?1 ORDER BY indexed_at DESC, commit_sha DESC",
+        )?;
+        let rows = statement
+            .query_map(params![slug], row_to_map)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Where a warm start reads its previous membership from: same branch
@@ -380,9 +393,9 @@ impl Store {
         let mut statement = conn.prepare(
             "SELECT m.slug, m.owner, m.repo, m.commit_sha, m.branch, m.lang, m.files, m.districts, m.modularity, m.map_path, m.indexed_at
              FROM maps m
-             JOIN (SELECT slug, MAX(indexed_at) AS max_at FROM maps GROUP BY slug) latest
-               ON m.slug = latest.slug AND m.indexed_at = latest.max_at
-             ORDER BY m.indexed_at DESC",
+             WHERE NOT EXISTS (SELECT 1 FROM maps newer WHERE newer.slug = m.slug
+               AND (newer.indexed_at > m.indexed_at OR (newer.indexed_at = m.indexed_at AND newer.commit_sha > m.commit_sha)))
+             ORDER BY m.indexed_at DESC, m.slug ASC",
         )?;
         let rows = statement
             .query_map([], row_to_map)?
@@ -1111,6 +1124,35 @@ mod tests {
             map_path: map_path.to_owned(),
             indexed_at: indexed_at.to_owned(),
         }
+    }
+
+    #[test]
+    fn repository_history_keeps_all_commits_and_latest_has_stable_ties() {
+        let (dir, store) = temp_store();
+        for (slug, commit, date) in [
+            ("o/r", "a", "2026-01-01"),
+            ("o/r", "b", "2026-01-02"),
+            ("o/r", "c", "2026-01-02"),
+            ("o/other", "d", "2026-01-03"),
+        ] {
+            store
+                .insert(&row(slug, commit, date, &dir.path().join(commit)))
+                .unwrap();
+        }
+        let history = store.history("o/r").unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .map(|row| row.commit.as_str())
+                .collect::<Vec<_>>(),
+            ["c", "b", "a"]
+        );
+        let latest = store.list_latest().unwrap();
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest[0].slug, "o/other");
+        assert_eq!(latest[1].commit, "c");
+        assert_eq!(store.latest("o/r").unwrap().unwrap().commit, "c");
+        assert!(store.history("o/missing").unwrap().is_empty());
     }
 
     #[test]

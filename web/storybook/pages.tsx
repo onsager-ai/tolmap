@@ -38,6 +38,49 @@ export function page(id: string): StoryObj<Args> {
       const click = async (selector: string) => userEvent.click(await waitElement(selector));
       if (id === 'home') {
         await waitFor(() => { expect(root.querySelector('[data-catalogue-row]')).not.toBeNull(); expect(root.querySelector('[data-catalogue-error], [data-catalogue-empty]')).toBeNull(); });
+      } else if (id === 'home-repositories') {
+        await waitFor(() => expect(root.querySelectorAll('[data-catalogue-row]').length).toBe(3));
+        for (const status of ['indexing', 'failed', 'reconnect_needed']) await waitElement(`[data-repository-status="${status}"]`);
+        for (const row of Array.from(root.querySelectorAll('[data-catalogue-row]'))) {
+          const links = row.querySelectorAll('a');
+          expect(links.length).toBe(2);
+          expect(links[0].getAttribute('aria-label')).toMatch(/^View repository /);
+          expect(links[1].getAttribute('aria-label')).toMatch(/^Open latest map for /);
+          expect(links[0].getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+          const hit = getComputedStyle(links[1], '::after');
+          if (matchMedia('(pointer: coarse)').matches) {
+            expect(parseFloat(hit.minHeight)).toBeGreaterThanOrEqual(44);
+            expect(parseFloat(hit.minWidth)).toBeGreaterThanOrEqual(44);
+          }
+        }
+      } else if (id.startsWith('repository-')) {
+        await waitElement('[data-repository-header]');
+        if (id === 'repository-empty') await waitElement('[data-history-empty]');
+        else await waitFor(() => expect(root.querySelectorAll('[data-snapshot-row]').length).toBe(9));
+        if (id === 'repository-running') {
+          const progress = await waitElement('[data-job-state="indexing"]');
+          expect(progress.textContent).toContain('acme/platform');
+          expect(progress.textContent).not.toContain('onsager-ai/tolmap');
+          expect(progress.getBoundingClientRect().height).toBeLessThan(180);
+        }
+        if (id === 'repository-no-capabilities') {
+          expect(canvas.queryByRole('button', { name: 'Re-index' })).toBeNull();
+          expect(canvas.queryByRole('link', { name: 'Open latest map' })).toBeNull();
+          expect(canvas.queryByLabelText(/Actions for snapshot/)).toBeNull();
+          expect(canvas.queryByLabelText('Repository actions')).toBeNull();
+        }
+        if (id === 'repository-history') {
+          expect(root.querySelector('[data-snapshot-row]')?.textContent).toContain('Latest');
+          expect(root.querySelector('[data-snapshot-row] a')?.getAttribute('href')).toContain('commit=11111111');
+          expect(root.querySelectorAll('[data-snapshot-row]')[2].textContent).toContain('different indexer');
+        }
+        if (id === 'repository-delete-snapshot') {
+          await userEvent.click(canvas.getAllByLabelText(/Actions for snapshot/)[0]);
+          await userEvent.click(canvas.getAllByRole('button', { name: 'Delete snapshot' })[0]);
+          const dialog = await waitElement('dialog[open]');
+          expect(dialog.textContent).toContain('Delete snapshot 11111111?');
+          expect(dialog.textContent).toContain('The previous snapshot becomes the latest.');
+        }
       } else if (id === 'home-empty') {
         await waitFor(() => expect(root.querySelector('[data-catalogue-empty]')?.textContent?.trim()).toBe('No repositories mapped yet — paste one above.'));
       } else if (id === 'home-loading') {
