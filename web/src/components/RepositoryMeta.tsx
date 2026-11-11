@@ -13,7 +13,9 @@ export function IndexedTime({ value }: { value: string }) {
 
 export function RepositoryState({ status }: { status?: RepositoryStatus | null }) {
   if (!status) return null;
-  return <span data-repository-status={status.kind} className="text-meta text-[var(--dim)]" title={status.kind === "failed" ? status.message : undefined}>
+  const tone = status.kind === "failed" ? "var(--link-out)" : status.kind === "reconnect_needed" ? "var(--warn)" : "var(--accent)";
+  return <span data-repository-status={status.kind} className="inline-flex w-fit shrink-0 items-center gap-1 rounded-full border border-current px-1.5 py-0.5 text-meta leading-none" style={{ color: tone }} title={status.kind === "failed" ? status.message : undefined}>
+    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
     {status.kind === "indexing" ? `Indexing · ${status.phase}` : status.kind === "failed" ? "Failed" : "Reconnect needed"}
   </span>;
 }

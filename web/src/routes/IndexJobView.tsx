@@ -484,7 +484,9 @@ export function ProgressPage({
 
   if (inline) return (
     <section data-job-state={job.status} aria-label="Indexing progress" className="rounded-[14px] border border-[var(--rule)] p-4">
-      {header}{phaseList}{foundLine}
+      <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-mono text-small">{job.slug}</span><span className="text-small font-semibold">{queued ? "Waiting to start" : phases.find(phase => phase.state === "running")?.title ?? "Indexing"}</span></div>
+      <p className="mt-2 text-meta text-[var(--dim)]">{job.progress?.label ?? job.stage}{job.progress && <> · <span className="font-mono">{String(job.progress.done)}{job.progress.total != null && ` / ${String(job.progress.total)}`}</span> {job.progress.unit}</>}</p>
+      <div className="mt-3 grid grid-cols-4 gap-2" aria-hidden>{phases.map(phase => <div key={phase.id} className="h-1.5 overflow-hidden rounded-full bg-[var(--rule)]"><div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${Math.round(phase.fraction * 100)}%` }} /></div>)}</div>
     </section>
   );
   if (narrow) {

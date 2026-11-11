@@ -14,10 +14,9 @@ import { IndexedTime, RepositoryState } from "@/components/RepositoryMeta";
 function RepoRow({ m }: { m: CatalogueEntry }) {
   if (m.repository_id) return (
     <div data-catalogue-row className="flex min-h-[64px] items-center border-b border-[var(--rule)] last:border-b-0">
-      <Link to="/repositories/$repositoryId/history" params={{ repositoryId: m.repository_id }} className="flex min-h-16 min-w-0 flex-1 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-[var(--chrome)]">
-        <span className="truncate font-mono text-row">{m.label ?? m.slug}</span>
+      <Link to="/repositories/$repositoryId/history" params={{ repositoryId: m.repository_id }} aria-label={`View repository ${m.label ?? m.slug}`} className="flex min-h-16 min-w-0 flex-1 flex-col justify-center gap-0.5 px-4 py-2 hover:bg-[var(--chrome)]">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="truncate font-mono text-row">{m.label ?? m.slug}</span><RepositoryState status={m.status} /></span>
         <span className="text-meta text-[var(--dim)]"><span className="font-mono">{m.files.toLocaleString()}</span> files · <span className="font-mono">{m.districts.toLocaleString()}</span> districts · {m.lang}{m.indexed_at && <> · <IndexedTime value={m.indexed_at} /></>}</span>
-        <RepositoryState status={m.status} />
       </Link>
       {m.latest_snapshot_id && <Link to="/$owner/$repo" params={{ owner: m.owner, repo: m.repo }} search={{ geo: "r", layer: "d" }} className="flex min-h-11 shrink-0 items-center px-3 text-small text-[var(--accent)]" aria-label={`Open latest map for ${m.label ?? m.slug}`}>Map <ChevronIcon /></Link>}
     </div>

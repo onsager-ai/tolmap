@@ -62,6 +62,7 @@ export async function installFixture(state: string) {
   const mapDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(map)));
   const mapSha256 = Array.from(new Uint8Array(mapDigest), byte => byte.toString(16).padStart(2, "0")).join("");
   let job = snapshot(state === "repository-running" ? "read" : state === "freshness-in-map" ? "early" : state);
+  if (state === "repository-running") job.slug = "acme/platform";
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const emit = () => new TextEncoder().encode(`data: ${JSON.stringify(job, (_key, value) => typeof value === "bigint" ? Number(value) : value)}\n\n`);
   const entry = { slug, owner: "onsager-ai", repo: "tolmap", label: "acme/platform", files: map.F.length, districts: Object.keys(map.districts).length, lang: "rs", modularity: map.q, commit, indexed_at: "2026-10-19T08:00:00Z" };
