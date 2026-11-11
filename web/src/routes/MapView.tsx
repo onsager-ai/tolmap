@@ -1021,6 +1021,14 @@ export function MapView() {
     const { path, index, stop } = current;
     if (stop.target) {
       pickLensStop(stop.target);
+      if (!narrow) {
+        // A restored walkthrough opens its card even on a collapsed tablet.
+        // Apply the destination panel inset synchronously: waiting for React
+        // (or a preview click) frames file-only stops behind the later panel.
+        setDesktopPanelOpen(true);
+        const inset = desktopSafeInsets({ profile, panelOpen: true, safe: safeArea });
+        canvasRef.current?.setInsets({ frame: inset, safe: inset, centreInSafe: true });
+      }
       if (districtClass(doc.districts[String(stop.target.district)]) !== "unconnected") {
         canvasRef.current?.frameLensStep(stop.target, walkthroughHop(path, index, doc.F, (file) => D_(doc, file)), anim);
       }
