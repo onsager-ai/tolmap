@@ -293,7 +293,16 @@ typing the repository name. History is newest first; each row opens its immutabl
 snapshot and has a confirmed delete action when advertised. Different known core
 revisions are labelled; unknown provenance is not invented. Running jobs reuse
 the production progress component inline above history. Empty history and read-only
-principals have explicit candidate states. Every action target is at least 44 px.
+principals have explicit candidate states. New repository controls use 32 px visual buttons on phone and 28 px on desktop,
+10 px horizontal padding, 6–8 px corners, medium weight, and text no smaller than
+12 px. Open latest map is the single filled accent action; secondary controls
+are outline or ghost. Coarse-pointer controls use a centered pseudo-element hit
+area of at least 44×44 px, independent of the smaller visual box. Status badges
+are 18–20 px tall, 12 px text, 4 px corners and token-tinted backgrounds. Snapshot
+rows are about 50 px on desktop; quiet icon menus hold destructive actions.
+Dialogs use the same compact controls, right-aligned, with a 400 px maximum width.
+These styles apply only to repository UI; approved Home forms/map chrome retain
+their existing controls.
 
 Progress, map and source reading remain the production OSS components. Private
 profiles do not fall back to a public catalogue or offer public issue links

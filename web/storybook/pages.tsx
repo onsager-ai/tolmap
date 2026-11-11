@@ -46,7 +46,12 @@ export function page(id: string): StoryObj<Args> {
           expect(links.length).toBe(2);
           expect(links[0].getAttribute('aria-label')).toMatch(/^View repository /);
           expect(links[1].getAttribute('aria-label')).toMatch(/^Open latest map for /);
-          for (const link of Array.from(links)) expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+          expect(links[0].getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+          const hit = getComputedStyle(links[1], '::after');
+          if (matchMedia('(pointer: coarse)').matches) {
+            expect(parseFloat(hit.minHeight)).toBeGreaterThanOrEqual(44);
+            expect(parseFloat(hit.minWidth)).toBeGreaterThanOrEqual(44);
+          }
         }
       } else if (id.startsWith('repository-')) {
         await waitElement('[data-repository-header]');
@@ -61,7 +66,7 @@ export function page(id: string): StoryObj<Args> {
         if (id === 'repository-no-capabilities') {
           expect(canvas.queryByRole('button', { name: 'Re-index' })).toBeNull();
           expect(canvas.queryByRole('link', { name: 'Open latest map' })).toBeNull();
-          expect(canvas.queryByRole('button', { name: /Delete snapshot/ })).toBeNull();
+          expect(canvas.queryByLabelText(/Actions for snapshot/)).toBeNull();
           expect(canvas.queryByLabelText('Repository actions')).toBeNull();
         }
         if (id === 'repository-history') {
@@ -70,7 +75,8 @@ export function page(id: string): StoryObj<Args> {
           expect(root.querySelectorAll('[data-snapshot-row]')[2].textContent).toContain('different indexer');
         }
         if (id === 'repository-delete-snapshot') {
-          await userEvent.click(canvas.getAllByRole('button', { name: /Delete snapshot/ })[0]);
+          await userEvent.click(canvas.getAllByLabelText(/Actions for snapshot/)[0]);
+          await userEvent.click(canvas.getAllByRole('button', { name: 'Delete snapshot' })[0]);
           const dialog = await waitElement('dialog[open]');
           expect(dialog.textContent).toContain('Delete snapshot 11111111?');
           expect(dialog.textContent).toContain('The previous snapshot becomes the latest.');

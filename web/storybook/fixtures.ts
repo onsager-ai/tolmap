@@ -67,16 +67,16 @@ export async function installFixture(state: string) {
   const emit = () => new TextEncoder().encode(`data: ${JSON.stringify(job, (_key, value) => typeof value === "bigint" ? Number(value) : value)}\n\n`);
   const entry = { slug, owner: "onsager-ai", repo: "tolmap", label: "acme/platform", files: map.F.length, districts: Object.keys(map.districts).length, lang: "rs", modularity: map.q, commit, indexed_at: "2026-10-19T08:00:00Z" };
   // 27 snapshots across three repositories exercise grouping without a 20-row cap.
-  const groupedEntries: CatalogueEntry[] = Array.from({ length: 27 }, (_, index) => {
+  const groupedEntries: CatalogueEntry[] = state === "repository-home" ? Array.from({ length: 27 }, (_, index) => {
     const repo = index % 3;
     return { ...entry, source: "service", file: "", repository_id: `acme-${["platform", "tools", "web"][repo]}`,
       slug: `acme/${["platform", "tools", "web"][repo]}-${index}`, label: `acme/${["platform", "tools", "web"][repo]}`,
       latest_snapshot_id: `snapshot-${index}`, snapshot_count: 9, indexed_at: new Date(Date.UTC(2026, 9, 19, 7, index)).toISOString(),
       status: repo === 0 ? { kind: "indexing", phase: "Read", job_id: "fixture" } : repo === 1 ? { kind: "failed", message: "Indexing failed; your saved map is available." } : { kind: "reconnect_needed" },
     };
-  });
+  }) : [];
   const noCapabilities = state === "repository-no-capabilities";
-  const repositoryHistory: RepositoryHistory = {
+  const repositoryHistory: RepositoryHistory | undefined = state.startsWith("repository-") ? {
     repository_id: "acme-platform", name: "acme/platform", current_core_revision: "22222222",
     status: state === "repository-running" ? { kind: "indexing", phase: "Read", job_id: "fixture" } : null,
     actions: {
@@ -91,12 +91,12 @@ export async function installFixture(state: string) {
       reopen: noCapabilities ? null : { path: `/${slug}?commit=${(index + 1).toString().repeat(40)}`, method: "GET" },
       delete_snapshot: noCapabilities ? null : { path: `/fixture/snapshots/${index}`, method: "DELETE" },
     })),
-  };
+  } : undefined;
   const handler = async ({ request }: { request: Request }) => {
     const url = new URL(request.url), path = url.pathname;
     if (path === "/api/repositories/acme-platform/history") return json(repositoryHistory);
     if (path === "/fixture/reindex") { job = snapshot("read"); return json({ job_id: "fixture", status: "queued", slug }); }
-    if (path.startsWith("/fixture/snapshots/")) { repositoryHistory.snapshots = repositoryHistory.snapshots.filter(item => item.id !== `snapshot-${path.split("/").pop()}`); return new HttpResponse(null, { status: 204 }); }
+    if (path.startsWith("/fixture/snapshots/")) { repositoryHistory!.snapshots = repositoryHistory!.snapshots.filter(item => item.id !== `snapshot-${path.split("/").pop()}`); return new HttpResponse(null, { status: 204 }); }
     if (path.startsWith("/fixture/")) return new HttpResponse(null, { status: 204 });
     if (path === "/api/healthz") return json({ status: "ok" });
     if (path === "/api/organizations/acme-platform") {

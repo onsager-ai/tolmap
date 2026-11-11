@@ -1,3 +1,4 @@
+import "./repository.css";
 import type { RepositoryStatus } from "@/types";
 
 export function IndexedTime({ value }: { value: string }) {
@@ -14,7 +15,7 @@ export function IndexedTime({ value }: { value: string }) {
 export function RepositoryState({ status }: { status?: RepositoryStatus | null }) {
   if (!status) return null;
   const tone = status.kind === "failed" ? "var(--link-out)" : status.kind === "reconnect_needed" ? "var(--warn)" : "var(--accent)";
-  return <span data-repository-status={status.kind} className="inline-flex w-fit shrink-0 items-center gap-1 rounded-full border border-current px-1.5 py-0.5 text-meta leading-none" style={{ color: tone }} title={status.kind === "failed" ? status.message : undefined}>
+  return <span data-repository-status={status.kind} className="inline-flex w-fit shrink-0 items-center gap-1 h-5 rounded-[4px] px-1.5 text-[12px] leading-none" style={{ color: tone, background: `color-mix(in srgb, ${tone} 12%, transparent)` }} title={status.kind === "failed" ? status.message : undefined}>
     <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
     {status.kind === "indexing" ? `Indexing · ${status.phase}` : status.kind === "failed" ? "Failed" : "Reconnect needed"}
   </span>;
