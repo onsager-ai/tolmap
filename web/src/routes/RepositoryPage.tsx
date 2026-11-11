@@ -6,7 +6,7 @@ import { useJobProgress } from "@/api/useJobProgress";
 import { IndexedTime, RepositoryState } from "@/components/RepositoryMeta";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ProgressPage } from "@/routes/IndexJobView";
-import type { RepositoryAction, RepositoryHistory, RepositorySnapshot } from "@/types";
+import type { JobSnapshot, RepositoryAction, RepositoryHistory, RepositorySnapshot } from "@/types";
 
 const button = "inline-flex min-h-11 items-center justify-center rounded-[12px] border border-[var(--rule)] px-4 text-small font-semibold";
 
@@ -19,13 +19,15 @@ function OpenAction({ action, children }: { action: RepositoryAction; children: 
   return action.method === "GET" ? <a href={actionPath(action)} className={button}>{children}</a> : null;
 }
 
-function RunningJob({ id, onFinished }: { id: string; onFinished: () => void }) {
+function RunningJob({ id, onFinished }: { id: string; onFinished: (job: JobSnapshot) => void }) {
   const { job, seen, error } = useJobProgress(id);
   useEffect(() => {
-    if (job?.status === "done" || job?.status === "failed") onFinished();
-  }, [job?.status, onFinished]);
+    if (job?.status === "done" || job?.status === "failed") onFinished(job);
+  }, [job, onFinished]);
   if (error) return <p role="alert" className="text-small">{error}</p>;
   if (!job) return <p role="status">Loading indexing progress…</p>;
+  if (job.status === "failed") return <p role="alert" className="text-small text-[var(--link-out)]">{job.error ?? "Indexing failed. Your saved snapshots are still available."}</p>;
+  if (job.status === "done") return null;
   return <ProgressPage job={job} seen={seen} narrow inline />;
 }
 
@@ -57,7 +59,7 @@ function ConfirmAction({ confirmation, pending, error, onConfirm, onClose }: { c
 }
 
 export function RepositoryPage() {
-  const { repositoryId } = useParams({ from: "/repositories/$repositoryId" });
+  const { repositoryId } = useParams({ from: "/repositories/$repositoryId/history" });
   const cache = useQueryClient();
   const history = useQuery({
     queryKey: ["repository-history", repositoryId],
@@ -78,7 +80,14 @@ export function RepositoryPage() {
     await cache.invalidateQueries({ queryKey: ["catalogue"] });
     await cache.invalidateQueries({ queryKey: ["repository-history", repositoryId] });
   }, [cache, repositoryId]);
-  const finished = useCallback(() => { setJobId(undefined); void refresh(); }, [refresh]);
+  const finished = useCallback((job: JobSnapshot) => {
+    if (jobId && job.status === "done") {
+      window.location.assign(`/${job.slug}${job.commit ? `?commit=${encodeURIComponent(job.commit)}` : ""}`);
+      return;
+    }
+    setJobId(undefined);
+    void refresh();
+  }, [jobId, refresh]);
   async function perform(action: RepositoryAction, leave = false) {
     setPending(true); setError(null);
     try {
@@ -87,7 +96,7 @@ export function RepositoryPage() {
       if (response.headers.get("content-type")?.includes("application/json")) {
         const result = await response.json() as Partial<IndexResponse>;
         if (result.job_id) setJobId(result.job_id);
-        else if (result.status === "done" && result.slug) { window.location.assign(`/${result.slug}`); return; }
+        else if (result.status === "done" && result.slug) { window.location.assign(`/${result.slug}?commit=${encodeURIComponent(result.commit ?? "")}`); return; }
       }
       setConfirmation(null);
       if (leave) window.location.assign("/");

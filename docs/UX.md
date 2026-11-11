@@ -280,7 +280,7 @@ files, districts, language, relative indexed time (exact time in the title), and
 host-reported indexing phase, failure or reconnect status. There is no client
 limit that drops repositories. The host must return the complete repository list.
 
-Repository rows open `/repositories/<repository-id>`. A separate 44 px “Map”
+Repository rows open `/repositories/<repository-id>/history`. A separate 44 px “Map”
 affordance opens the latest map directly; this choice is a Storybook candidate
 for owner review. Without repository identity, public/static catalogue rows keep
 the approved layout and link directly to the map.

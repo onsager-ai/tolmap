@@ -50,7 +50,7 @@ export function assertRouteTreeContract(source) {
     if (!source.includes(fragment)) throw new Error(`Production routeTree is missing reserved-route guard: ${fragment}`);
   }
   const actual = [...source.matchAll(/\bpath:\s*(?:"([^"]+)"|`([^`]+)`)/g)].map(match => match[1] ?? match[2]).sort();
-  const expected = ['/', '/new', '/org/$name', '/repositories/$repositoryId', '/$owner/$repo', '/${name}'].sort();
+  const expected = ['/', '/new', '/org/$name', '/repositories/$repositoryId/history', '/$owner/$repo', '/${name}'].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Production route path set changed: [${actual.join(', ')}]`);
   return true;
 }

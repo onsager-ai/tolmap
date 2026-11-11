@@ -46,7 +46,16 @@ export function page(id: string): StoryObj<Args> {
         if (id === 'repository-empty') await waitElement('[data-history-empty]');
         else await waitFor(() => expect(root.querySelectorAll('[data-snapshot-row]').length).toBe(9));
         if (id === 'repository-running') await waitElement('[data-job-state="indexing"]');
-        if (id === 'repository-no-capabilities') expect(canvas.queryByRole('button', { name: 'Re-index' })).toBeNull();
+        if (id === 'repository-no-capabilities') {
+          expect(canvas.queryByRole('button', { name: 'Re-index' })).toBeNull();
+          expect(canvas.queryByRole('link', { name: 'Open latest map' })).toBeNull();
+          expect(canvas.queryByRole('button', { name: /Delete snapshot/ })).toBeNull();
+          expect(canvas.queryByLabelText('Repository actions')).toBeNull();
+        }
+        if (id === 'repository-history') {
+          expect(root.querySelector('[data-snapshot-row] a')?.getAttribute('href')).toContain('commit=11111111');
+          expect(root.querySelectorAll('[data-snapshot-row]')[2].textContent).toContain('different indexer');
+        }
         if (id === 'repository-delete-snapshot') {
           await userEvent.click(canvas.getAllByRole('button', { name: /Delete snapshot/ })[0]);
           await waitElement('dialog[open]');

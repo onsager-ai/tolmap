@@ -70,7 +70,7 @@ export async function installFixture(state: string) {
     const repo = index % 3;
     return { ...entry, source: "service", file: "", repository_id: `acme-${["platform", "tools", "web"][repo]}`,
       slug: `acme/${["platform", "tools", "web"][repo]}-${index}`, label: `acme/${["platform", "tools", "web"][repo]}`,
-      latest_snapshot_id: `snapshot-${index}`, snapshot_count: 9, indexed_at: new Date(Date.UTC(2026, 9, 19, 8, index)).toISOString(),
+      latest_snapshot_id: `snapshot-${index}`, snapshot_count: 9, indexed_at: new Date(Date.UTC(2026, 9, 19, 7, index)).toISOString(),
       status: repo === 0 ? { kind: "indexing", phase: "Read", job_id: "fixture" } : repo === 1 ? { kind: "failed", message: "Indexing failed; your saved map is available." } : { kind: "reconnect_needed" },
     };
   });
@@ -87,7 +87,7 @@ export async function installFixture(state: string) {
     snapshots: state === "repository-empty" ? [] : Array.from({ length: 9 }, (_, index) => ({
       id: `snapshot-${index}`, commit: (index + 1).toString().repeat(40), indexed_at: new Date(Date.UTC(2026, 9, 19 - index, 8)).toISOString(),
       files: entry.files, districts: entry.districts, core_revision: index > 1 ? "11111111" : "22222222",
-      reopen: { path: `/${slug}?commit=${commit}`, method: "GET" },
+      reopen: noCapabilities ? null : { path: `/${slug}?commit=${(index + 1).toString().repeat(40)}`, method: "GET" },
       delete_snapshot: noCapabilities ? null : { path: `/fixture/snapshots/${index}`, method: "DELETE" },
     })),
   };
@@ -204,7 +204,7 @@ export async function installFixture(state: string) {
     }
     return json({ error: "unhandled_fixture_request", path }, 500);
   };
-  worker.resetHandlers(http.all("/api/*", handler), http.all("/maps/*", handler));
+  worker.resetHandlers(http.all("/api/*", handler), http.all("/maps/*", handler), http.all("/fixture/*", handler));
   started ??= worker.start({ quiet: true, serviceWorker: { url: new URL("mockServiceWorker.js", location.href).pathname }, onUnhandledRequest(request, print) {
     if (new URL(request.url).pathname.startsWith("/api/")) print.error();
   } });

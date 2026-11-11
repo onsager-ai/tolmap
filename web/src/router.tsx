@@ -57,7 +57,7 @@ const organizationRoute = createRoute({
 
 const repositoryRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/repositories/$repositoryId",
+  path: "/repositories/$repositoryId/history",
   component: RepositoryPage,
 });
 

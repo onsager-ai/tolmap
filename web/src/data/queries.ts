@@ -77,7 +77,12 @@ function mergeCatalogues(
 ): CatalogueEntry[] {
   const bySlug = new Map<string, CatalogueEntry>();
   for (const e of staticEntries ?? []) bySlug.set(e.slug, e);
-  for (const e of serviceEntries ?? []) bySlug.set(e.slug, toCatalogueEntry(e));
+  for (const entry of serviceEntries ?? []) {
+    const previous = bySlug.get(entry.slug);
+    if (previous?.source !== "service" || (entry.indexed_at ?? "") >= (previous.indexed_at ?? "")) {
+      bySlug.set(entry.slug, toCatalogueEntry(entry));
+    }
+  }
   const repositories = new Map<string, CatalogueEntry>();
   for (const entry of bySlug.values()) {
     const key = entry.repository_id ?? entry.slug;
