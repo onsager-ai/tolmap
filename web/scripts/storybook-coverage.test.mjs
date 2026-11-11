@@ -105,7 +105,8 @@ test('new identities fail the strict matrix gate while existing pixel diffs rema
   const report = JSON.parse(await fs.readFile(path.join(dirs.evidenceDir, 'visual-regression.json'), 'utf8'));
   assert.equal(report.status, 'failed');
   assert.deepEqual(report.missingReferences, [{ id: added.id, host: added.host, viewport: added.viewport, theme: added.theme }]);
-  assert.equal(report.results[0].status, 'mismatched');
+  // Strict mode: the existing story's pixel diff is a failure, still with evidence.
+  assert.equal(report.results[0].status, 'failed');
   assert.equal(report.results[0].differingPixels, 1);
   assert.equal(report.results[1].status, 'missing-reference');
 });
