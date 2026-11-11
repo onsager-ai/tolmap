@@ -395,14 +395,16 @@ function CancelArea({ job, queued }: { job: JobSnapshot; queued: boolean }) {
   );
 }
 
-function ProgressPage({
+export function ProgressPage({
   job,
   seen,
   narrow,
+  inline = false,
 }: {
   job: JobSnapshot;
   seen: Partial<Record<StageId, ProgressValue>>;
   narrow: boolean;
+  inline?: boolean;
 }) {
   const queued = job.status === "queued";
   const now = useTick(true);
@@ -480,6 +482,11 @@ function ProgressPage({
       </p>
     ) : null;
 
+  if (inline) return (
+    <section data-job-state={job.status} aria-label="Indexing progress" className="rounded-[14px] border border-[var(--rule)] p-4">
+      {header}{phaseList}{foundLine}
+    </section>
+  );
   if (narrow) {
     return (
       <main className="flex min-h-[calc(100%-56px)] flex-col px-5 pb-[max(env(safe-area-inset-bottom),16px)] pt-4" data-job-state={job.status}>

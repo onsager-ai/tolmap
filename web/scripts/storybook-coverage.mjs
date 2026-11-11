@@ -1,5 +1,6 @@
 export const REQUIRED_STORIES = [
   'home', 'home-empty', 'home-loading', 'home-unavailable',
+  'home-repositories', 'repository-history', 'repository-running', 'repository-empty', 'repository-no-capabilities', 'repository-delete-snapshot',
   'local-start', 'local-confirm', 'local-running', 'local-cancelling', 'local-detection-failed', 'local-index-failed', 'local-saved',
   'job-missing', 'job-queued', 'job-fetch', 'job-read', 'job-map', 'job-detail',
   'failed-detection-uncertain', 'failed-detection-failed', 'failed-cancelled', 'failed-clone-failed', 'failed-worker-crashed', 'failed-busy', 'failed-server-stopping', 'failed-rate-limited', 'failed-index-failed', 'failed-internal-error', 'failed-unknown',
@@ -49,7 +50,7 @@ export function assertRouteTreeContract(source) {
     if (!source.includes(fragment)) throw new Error(`Production routeTree is missing reserved-route guard: ${fragment}`);
   }
   const actual = [...source.matchAll(/\bpath:\s*(?:"([^"]+)"|`([^`]+)`)/g)].map(match => match[1] ?? match[2]).sort();
-  const expected = ['/', '/new', '/org/$name', '/$owner/$repo', '/${name}'].sort();
+  const expected = ['/', '/new', '/org/$name', '/repositories/$repositoryId', '/$owner/$repo', '/${name}'].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Production route path set changed: [${actual.join(', ')}]`);
   return true;
 }

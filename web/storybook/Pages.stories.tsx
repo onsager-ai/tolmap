@@ -90,3 +90,10 @@ export const MapDebtLoaded = { ...page("map-debt-loaded") };
 export const MapDebtEmpty = { ...page("map-debt-empty") };
 export const MapDebtError = { ...page("map-debt-error") };
 export const MapDebtCompare = { ...page("map-debt-compare") };
+
+export const HomeRepositories = { ...page('home-repositories') };
+export const RepositoryHistory = { ...page('repository-history') };
+export const RepositoryRunning = { ...page('repository-running') };
+export const RepositoryEmpty = { ...page('repository-empty') };
+export const RepositoryNoCapabilities = { ...page('repository-no-capabilities') };
+export const RepositoryDeleteSnapshot = { ...page('repository-delete-snapshot') };

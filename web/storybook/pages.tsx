@@ -38,6 +38,19 @@ export function page(id: string): StoryObj<Args> {
       const click = async (selector: string) => userEvent.click(await waitElement(selector));
       if (id === 'home') {
         await waitFor(() => { expect(root.querySelector('[data-catalogue-row]')).not.toBeNull(); expect(root.querySelector('[data-catalogue-error], [data-catalogue-empty]')).toBeNull(); });
+      } else if (id === 'home-repositories') {
+        await waitFor(() => expect(root.querySelectorAll('[data-catalogue-row]').length).toBe(3));
+        for (const status of ['indexing', 'failed', 'reconnect_needed']) await waitElement(`[data-repository-status="${status}"]`);
+      } else if (id.startsWith('repository-')) {
+        await waitElement('[data-repository-header]');
+        if (id === 'repository-empty') await waitElement('[data-history-empty]');
+        else await waitFor(() => expect(root.querySelectorAll('[data-snapshot-row]').length).toBe(9));
+        if (id === 'repository-running') await waitElement('[data-job-state="indexing"]');
+        if (id === 'repository-no-capabilities') expect(canvas.queryByRole('button', { name: 'Re-index' })).toBeNull();
+        if (id === 'repository-delete-snapshot') {
+          await userEvent.click(canvas.getAllByRole('button', { name: /Delete snapshot/ })[0]);
+          await waitElement('dialog[open]');
+        }
       } else if (id === 'home-empty') {
         await waitFor(() => expect(root.querySelector('[data-catalogue-empty]')?.textContent?.trim()).toBe('No repositories mapped yet — paste one above.'));
       } else if (id === 'home-loading') {

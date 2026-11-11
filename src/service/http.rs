@@ -64,6 +64,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/maps/{owner}/{repo}/debt", get(super::debt::get_debt))
         .route("/api/organizations/{name}", get(get_organization))
         .route("/api/maps", get(get_maps))
+        .route(
+            "/api/repositories/{repository_id}/history",
+            get(get_repository_history),
+        )
         .route("/api/maps/{owner}/{repo}", get(get_map))
         .route("/api/maps/{owner}/{repo}/symbols", get(get_symbols))
         .route("/api/maps/{owner}/{repo}/freshness", get(get_freshness))
@@ -352,26 +356,21 @@ async fn get_job_events(
 
 // ---- GET /api/maps --------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-struct MapsListEntry {
-    slug: String,
-    owner: String,
-    repo: String,
-    lang: String,
-    files: i64,
-    districts: i64,
-    modularity: f64,
-    commit: String,
-    indexed_at: String,
-}
-
 async fn get_maps(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<MapsListEntry>>, ApiError> {
+) -> Result<Json<Vec<crate::catalogue::CatalogueEntry>>, ApiError> {
+    use crate::catalogue::{CatalogueEntry, CatalogueSource};
     let rows = state.store.list_latest()?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|row| MapsListEntry {
+    let entries = rows
+        .into_iter()
+        .map(|row| {
+            let snapshot_count = state.store.history(&row.slug)?.len() as u64;
+            Ok(CatalogueEntry {
+                repository_id: None,
+                latest_snapshot_id: Some(row.commit.clone()),
+                snapshot_count: Some(snapshot_count),
+                indexed_at: Some(row.indexed_at),
+                commit: Some(row.commit),
                 slug: row.slug,
                 owner: row.owner,
                 repo: row.repo,
@@ -379,11 +378,55 @@ async fn get_maps(
                 files: row.files,
                 districts: row.districts,
                 modularity: row.modularity,
-                commit: row.commit,
-                indexed_at: row.indexed_at,
+                label: None,
+                file: String::new(),
+                source: CatalogueSource::Service,
+                status: None,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(Json(entries))
+}
+
+async fn get_repository_history(
+    State(state): State<Arc<AppState>>,
+    AxPath(repository_id): AxPath<String>,
+) -> Result<Json<crate::catalogue::RepositoryHistory>, ApiError> {
+    use crate::catalogue::{
+        ActionMethod, RepositoryAction, RepositoryActions, RepositoryHistory, RepositorySnapshot,
+    };
+    let slug = repository_id.to_ascii_lowercase();
+    let rows = state.store.history(&slug)?;
+    let latest = rows
+        .first()
+        .ok_or_else(|| ApiError::not_found("repository has no stored maps"))?;
+    let open = |commit: &str| RepositoryAction {
+        path: format!("/{}/{}?commit={commit}", latest.owner, latest.repo),
+        method: ActionMethod::Get,
+    };
+    Ok(Json(RepositoryHistory {
+        repository_id: slug.clone(),
+        name: slug,
+        status: None,
+        current_core_revision: None,
+        actions: RepositoryActions {
+            reopen: Some(open(&latest.commit)),
+            ..Default::default()
+        },
+        snapshots: rows
+            .iter()
+            .map(|row| RepositorySnapshot {
+                id: row.commit.clone(),
+                commit: row.commit.clone(),
+                indexed_at: row.indexed_at.clone(),
+                files: row.files,
+                districts: row.districts,
+                core_revision: None,
+                reopen: Some(open(&row.commit)),
+                delete_snapshot: None,
             })
             .collect(),
-    ))
+    }))
 }
 
 // ---- GET /api/organizations/{name} -----------------------------------------

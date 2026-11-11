@@ -45,6 +45,8 @@ fn typescript_files(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
 
 fn export_to(directory: &Path) -> Result<()> {
     fs::create_dir_all(directory)?;
+    tolmap::catalogue::CatalogueEntry::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::catalogue::RepositoryHistory::export_all(&Config::default().with_out_dir(directory))?;
     MapDocument::export_all(&Config::default().with_out_dir(directory))?;
     SymbolsDocument::export_all(&Config::default().with_out_dir(directory))?;
     DistrictSymbols::export_all(&Config::default().with_out_dir(directory))?;

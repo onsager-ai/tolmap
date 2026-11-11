@@ -36,23 +36,8 @@ export type { StageId } from "@bindings/StageId";
 export type { Eta } from "@bindings/Eta";
 export type { EtaBasis } from "@bindings/EtaBasis";
 
-/** One entry in /maps/index.json, emitted by scripts/collect-maps.mjs, or
- * one entry from GET /api/maps normalised to the same shape (see
- * src/data/queries.ts). `source` and `commit` distinguish the two — a slug
- * present in both sources prefers "service" (docs/ARCHITECTURE.md: cache by
- * (repo, commit_sha), so the service copy is the fresher one). */
-export interface CatalogueEntry {
-  slug: string;
-  label?: string;
-  owner: string;
-  repo: string;
-  /** Public path under /maps/ this entry's MapDocument was copied to.
-   * Empty for a service-sourced entry — it's fetched from the API instead. */
-  file: string;
-  files: number;
-  districts: number;
-  modularity: number;
-  lang: string;
-  source: "static" | "service";
-  commit?: string;
-}
+export type { CatalogueEntry } from "@bindings/CatalogueEntry";
+export type { RepositoryHistory } from "@bindings/RepositoryHistory";
+export type { RepositorySnapshot } from "@bindings/RepositorySnapshot";
+export type { RepositoryStatus } from "@bindings/RepositoryStatus";
+export type { RepositoryAction } from "@bindings/RepositoryAction";

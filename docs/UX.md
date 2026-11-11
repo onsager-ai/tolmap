@@ -274,11 +274,33 @@ A plain one-screen page: wordmark and theme button; "Map a codebase" with one se
 
 An authenticated host can compose this same page using the versioned
 [host profile](HOST_PROFILE.md): workspace/actions below the wordmark, an
-authorized-repository select in the existing field slot, and snapshot labels in
-the same catalogue rows. Progress, map and source reading remain the production
-OSS components. Private profiles do not fall back to a public catalogue or offer
-public issue links containing repository context. Existing OSS references remain
-unchanged; hosted identity/select states need separate human-reviewed candidates.
+authorized-repository select in the existing field slot, and one catalogue row per
+stable repository identity. Rows are ordered by latest indexed activity and show
+files, districts, language, relative indexed time (exact time in the title), and
+host-reported indexing phase, failure or reconnect status. There is no client
+limit that drops repositories. The host must return the complete repository list.
+
+Repository rows open `/repositories/<repository-id>`. A separate 44 px “Map”
+affordance opens the latest map directly; this choice is a Storybook candidate
+for owner review. Without repository identity, public/static catalogue rows keep
+the approved layout and link directly to the map.
+
+The repository page uses a 760 px column, the same tokens and Archivo text with
+mono counts and commits, on phone (390 px) and desktop. It has a name/status
+header, “Open latest map”, advertised “Re-index”, and an overflow menu containing
+advertised Disconnect and Delete repository actions. Repository deletion requires
+typing the repository name. History is newest first; each row opens its immutable
+snapshot and has a confirmed delete action when advertised. Different known core
+revisions are labelled; unknown provenance is not invented. Running jobs reuse
+the production progress component inline above history. Empty history and read-only
+principals have explicit candidate states. Every action target is at least 44 px.
+
+Progress, map and source reading remain the production OSS components. Private
+profiles do not fall back to a public catalogue or offer public issue links
+containing repository context. Existing OSS references remain unchanged; hosted
+identity/select states and repository pages need separate human-reviewed candidates.
+The native local Saved snapshots template is unchanged pending a separate candidate
+and approval; local reuse also requires persisted analysis scope/core provenance.
 
 ## 5. Desktop layout: map-first, floating (prototype "tolmap desktop prototype")
 

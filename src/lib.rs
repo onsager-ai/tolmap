@@ -1,6 +1,7 @@
 pub mod access;
 pub mod blenddump;
 pub mod blobs;
+pub mod catalogue;
 pub mod check;
 pub mod comparison;
 pub mod cycle_cut;

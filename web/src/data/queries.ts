@@ -49,19 +49,7 @@ function fetchStaticDistrictSymbols(owner: string, repo: string, district: numbe
 }
 
 function toCatalogueEntry(m: ServiceCatalogueEntry): CatalogueEntry {
-  return {
-    slug: m.slug,
-    label: m.label,
-    owner: m.owner,
-    repo: m.repo,
-    file: "",
-    files: m.files,
-    districts: m.districts,
-    modularity: m.modularity,
-    lang: m.lang,
-    source: "service",
-    commit: m.commit,
-  };
+  return { ...m, file: "", source: "service" };
 }
 
 /** Data-source resolution (milestone brief, "Data source resolution"): the
@@ -90,7 +78,16 @@ function mergeCatalogues(
   const bySlug = new Map<string, CatalogueEntry>();
   for (const e of staticEntries ?? []) bySlug.set(e.slug, e);
   for (const e of serviceEntries ?? []) bySlug.set(e.slug, toCatalogueEntry(e));
-  return [...bySlug.values()].sort((a, b) => a.slug.localeCompare(b.slug));
+  const repositories = new Map<string, CatalogueEntry>();
+  for (const entry of bySlug.values()) {
+    const key = entry.repository_id ?? entry.slug;
+    const previous = repositories.get(key);
+    if (!previous || (entry.indexed_at ?? "") > (previous.indexed_at ?? "")) repositories.set(key, entry);
+  }
+  return [...repositories.values()].sort((a, b) =>
+    a.repository_id && b.repository_id
+      ? (b.indexed_at ?? "").localeCompare(a.indexed_at ?? "") || a.slug.localeCompare(b.slug)
+      : a.slug.localeCompare(b.slug));
 }
 
 export function useCatalogue() {

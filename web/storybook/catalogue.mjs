@@ -1,6 +1,8 @@
 // One inventory drives stories, evidence and route coverage. These are candidates.
 export const cases = [
   ['home', 'Home', '/', 'home'],
+  ['home-repositories', 'Home repositories and status', '/', 'repository-home'],
+  ...['history', 'running', 'empty', 'no-capabilities', 'delete-snapshot'].map(state => [`repository-${state}`, `Repository · ${state}`, '/repositories/acme-platform', `repository-${state}`]),
   ['home-empty', 'Home empty', '/', 'empty'],
   ['home-loading', 'Home loading', '/', 'loading'],
   ['home-unavailable', 'Home unavailable', '/', 'unavailable'],

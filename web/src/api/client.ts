@@ -32,18 +32,8 @@ export interface ApiError {
   message: string;
 }
 
-export interface ServiceCatalogueEntry {
-  slug: string;
-  label?: string;
-  owner: string;
-  repo: string;
-  lang: string;
-  files: number;
-  districts: number;
-  modularity: number;
-  commit: string;
-  indexed_at: string;
-}
+export type { CatalogueEntry as ServiceCatalogueEntry } from "@bindings/CatalogueEntry";
+import type { CatalogueEntry as ServiceCatalogueEntry } from "@bindings/CatalogueEntry";
 
 /** Thrown for any non-2xx response. `code` is the contract's `error` field
  * when the body parsed as one; `tooLarge` is set when the service's own
