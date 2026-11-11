@@ -95,7 +95,10 @@ Debt lens captures on 2026-11-09 from run `42577358027` (source `15d06e2`). The 
 organization overview captures (overview, repository card, loading, error) and
 re-approved the 6 desktop/tablet/landscape `map-debt-loaded` captures (debt cycle
 path Start walkthrough control) on 2026-11-10 from run `42742304222` (source
-`ef8aea3`); `approved.json` records them under `recaptures`. A registry with
+`ef8aea3`); `approved.json` records them under `recaptures`. The owner approved the 48
+repository Home and repository page captures (repository list, history, running job,
+empty, no capabilities, delete-snapshot confirmation) on 2026-11-11 from run
+`42995174099` (source `ac76780`), also under `recaptures`. A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
 `images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says

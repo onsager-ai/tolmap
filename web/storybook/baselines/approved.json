@@ -6044,6 +6044,390 @@
       "theme": "dark",
       "file": "oss-organization-error-desktop-dark.png",
       "sha256": "533fdf88f062339620758cd7f776df7977b8560c8dcdec4492116578b2f28ed8"
+    },
+    {
+      "id": "home-repositories",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-home-repositories-phone-light.png",
+      "sha256": "e6b368e34c3faca97055efe08c495de89def5f0dd0b1bc853a40176c92a07f46"
+    },
+    {
+      "id": "home-repositories",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-home-repositories-phone-dark.png",
+      "sha256": "a074c686b8b3c389ce831a241034ed798163064d77eef73d39dbcf36dcfff727"
+    },
+    {
+      "id": "repository-history",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-repository-history-phone-light.png",
+      "sha256": "ec02f3ae32567d9a02d8651312bdc1e69772286b531a03b02cf7737e00f5bf09"
+    },
+    {
+      "id": "repository-history",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-repository-history-phone-dark.png",
+      "sha256": "92518ecc3c94a1424b620c91b930b51347745efde7df95ac41856b0d129017f7"
+    },
+    {
+      "id": "repository-running",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-repository-running-phone-light.png",
+      "sha256": "ada5b15a88affe75f96850c6e7b76be01dcb4e3197c8dd4154a7a168156fc4cf"
+    },
+    {
+      "id": "repository-running",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-repository-running-phone-dark.png",
+      "sha256": "5533aa70ccd60bd5fab69e82d273af887c843cc08dda224d6b47a796115d5f64"
+    },
+    {
+      "id": "repository-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-repository-empty-phone-light.png",
+      "sha256": "d96585776cae4567ecfc4a73a2bd2a9d07483ebe555a55a271843564205ac487"
+    },
+    {
+      "id": "repository-empty",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-repository-empty-phone-dark.png",
+      "sha256": "018cde312007412b1cc90a87019ce9ef6943556e412c621c0932420092b976b3"
+    },
+    {
+      "id": "repository-no-capabilities",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-repository-no-capabilities-phone-light.png",
+      "sha256": "e04e52f7f8430117314e184d815ba0894aeb1b88026d6111d2d2129a16f747b3"
+    },
+    {
+      "id": "repository-no-capabilities",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-repository-no-capabilities-phone-dark.png",
+      "sha256": "4ea11961109d73c29675fdc3fe1876a9ba9680ffc57d03c1df84cc8a5ddd014d"
+    },
+    {
+      "id": "repository-delete-snapshot",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "oss-repository-delete-snapshot-phone-light.png",
+      "sha256": "3deec1d3b61a6d3892bb2996ec4c659b360d35ae1302b3bef8cd6f555b1446c1"
+    },
+    {
+      "id": "repository-delete-snapshot",
+      "host": "oss",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "oss-repository-delete-snapshot-phone-dark.png",
+      "sha256": "af5d5ebab4e65e6410564fe6e0560b2670f2aec133e37f757df4677cf2abed3a"
+    },
+    {
+      "id": "home-repositories",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-home-repositories-landscape-light.png",
+      "sha256": "2cc86fc669b12f383b9e785a94be065b829d7e521d9dbe4186ed9152fd50232b"
+    },
+    {
+      "id": "home-repositories",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-home-repositories-landscape-dark.png",
+      "sha256": "fad5564f0d6066c9ec4dc872bf428025814b9b556c4d35f89f1d4bf5cd7a75f2"
+    },
+    {
+      "id": "repository-history",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-repository-history-landscape-light.png",
+      "sha256": "67c9879b4de8fdf8f636159336f3ab20c6eb0cdf1c078323aa5b02ee6f7b557b"
+    },
+    {
+      "id": "repository-history",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-repository-history-landscape-dark.png",
+      "sha256": "5cce807e2e5d18042f0a01ce983d5b67c904683cb8e4873603284a3522357ca9"
+    },
+    {
+      "id": "repository-running",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-repository-running-landscape-light.png",
+      "sha256": "4048e7354a67b22bf283402995e6194897d1da67a1c49e5bc5fe8e81091e75f2"
+    },
+    {
+      "id": "repository-running",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-repository-running-landscape-dark.png",
+      "sha256": "8799a67d1202c7d732b98e920452d0f131f8bf37ac5e5c77cad4ca0ea4779365"
+    },
+    {
+      "id": "repository-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-repository-empty-landscape-light.png",
+      "sha256": "b112fb9f977e4b28f2e7395671bb940c9fde19a1ca8f69e0321c999c78e0eb05"
+    },
+    {
+      "id": "repository-empty",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-repository-empty-landscape-dark.png",
+      "sha256": "7f22a6c1bdfc9e93f767c0d4a23f1132f0646d40bbd497b09e055eed78a2e964"
+    },
+    {
+      "id": "repository-no-capabilities",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-repository-no-capabilities-landscape-light.png",
+      "sha256": "f86b4a6658be2a203478a3c9b42380045292ddb5f5b9cdfe914487036b301b20"
+    },
+    {
+      "id": "repository-no-capabilities",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-repository-no-capabilities-landscape-dark.png",
+      "sha256": "8337f2a22e9ffa027140dcd61439a7e144af1f0113e57c1d881ba2fba2ebb989"
+    },
+    {
+      "id": "repository-delete-snapshot",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "oss-repository-delete-snapshot-landscape-light.png",
+      "sha256": "15855d802663ca3f260e2642ce477957c2806787665e456a35017b37c4d6c413"
+    },
+    {
+      "id": "repository-delete-snapshot",
+      "host": "oss",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "oss-repository-delete-snapshot-landscape-dark.png",
+      "sha256": "ccfb8a8e067130e7e53e057958d27017c49ccb973724a4487233a62c062cd1fe"
+    },
+    {
+      "id": "home-repositories",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-home-repositories-tablet-light.png",
+      "sha256": "61cb2f50cf393d3c41d07494c7245421f66826d8f693bb7316b0750d458a3adb"
+    },
+    {
+      "id": "home-repositories",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-home-repositories-tablet-dark.png",
+      "sha256": "cbf00e609a5762d0574c3e9bf36e422105f3cac2df7edee3713c0f2e3360c021"
+    },
+    {
+      "id": "repository-history",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-repository-history-tablet-light.png",
+      "sha256": "bb3b434aa1561179ddb0ef06b453d3462a0668829ac590ee6d515f5708d4ad80"
+    },
+    {
+      "id": "repository-history",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-repository-history-tablet-dark.png",
+      "sha256": "8dc6f8de9a438757ab34a78aec04685eb2c0352eddbcd962d502a12e0f8b4213"
+    },
+    {
+      "id": "repository-running",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-repository-running-tablet-light.png",
+      "sha256": "a6a5657c213b439b27c93eb78672854f416fe0981ce155246d569c494a35bc71"
+    },
+    {
+      "id": "repository-running",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-repository-running-tablet-dark.png",
+      "sha256": "378283abad0a6e7a402588fe6c3280fc829bd6d50278750ed71b8c985824996e"
+    },
+    {
+      "id": "repository-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-repository-empty-tablet-light.png",
+      "sha256": "f734fb41d9c97e050ab148e63f3bf1d4bbca9d53ed2374e8d3f826344ef68889"
+    },
+    {
+      "id": "repository-empty",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-repository-empty-tablet-dark.png",
+      "sha256": "f176bcd97363b8419d5e2cfd509aaafb9c383130089c220354e226295993acd7"
+    },
+    {
+      "id": "repository-no-capabilities",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-repository-no-capabilities-tablet-light.png",
+      "sha256": "de76f8385f091f93a1196ab631290e05c2d1e04b7592b7467c6dfa625f6d4bc4"
+    },
+    {
+      "id": "repository-no-capabilities",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-repository-no-capabilities-tablet-dark.png",
+      "sha256": "d2f8ed7c40e131c5d1057b0e96e0736edaed67847d29e5f9c7b2bd2ebf3f4eeb"
+    },
+    {
+      "id": "repository-delete-snapshot",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "oss-repository-delete-snapshot-tablet-light.png",
+      "sha256": "95e6ff32f9ecde063302dadee943ca5bc6569df3cf07b0cac8df26116a3b9246"
+    },
+    {
+      "id": "repository-delete-snapshot",
+      "host": "oss",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "oss-repository-delete-snapshot-tablet-dark.png",
+      "sha256": "e9531642d07a18edbc204b1ad7dab3834e8108057b9f2eb4cceafb8e43db0fbc"
+    },
+    {
+      "id": "home-repositories",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-home-repositories-desktop-light.png",
+      "sha256": "40624cce06f6e433b478cbb48aea1acef848d5ea7b77550f8091fced74775313"
+    },
+    {
+      "id": "home-repositories",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-home-repositories-desktop-dark.png",
+      "sha256": "89696847cb44cc9db320dad7b359ffdc539598b1924b09facf71acccbd1a9ed9"
+    },
+    {
+      "id": "repository-history",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-repository-history-desktop-light.png",
+      "sha256": "048fba5b21ead67bb6cfeadc0d2e73e0c83ff2f612ef31f9f8f51cdd8ba79df8"
+    },
+    {
+      "id": "repository-history",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-repository-history-desktop-dark.png",
+      "sha256": "fdbd7d8aeec08aefd6e8371acdaafbe18ef31b9d1f628ccb32434e329dd7fba6"
+    },
+    {
+      "id": "repository-running",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-repository-running-desktop-light.png",
+      "sha256": "2897603ba783db276dd8aa4e894de9f65d28c222c90fb56ec6ff163ef4636c69"
+    },
+    {
+      "id": "repository-running",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-repository-running-desktop-dark.png",
+      "sha256": "c7259faf8684ea336d25a6574fd22e2760e2d8ea5e8aa6874a8db5c537b5b199"
+    },
+    {
+      "id": "repository-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-repository-empty-desktop-light.png",
+      "sha256": "f216025165994f5665c2db9a51d3a304f146edb5abe38117873e9bde9da02a95"
+    },
+    {
+      "id": "repository-empty",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-repository-empty-desktop-dark.png",
+      "sha256": "feef96d74b0b9b62ed2a184b5f388e89e22cfc31175bebae86bd0a9100de3d08"
+    },
+    {
+      "id": "repository-no-capabilities",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-repository-no-capabilities-desktop-light.png",
+      "sha256": "676d1dec9881498ab1b4849726124fd5ea736b6dc63fbd38479aa9df4473b6d8"
+    },
+    {
+      "id": "repository-no-capabilities",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-repository-no-capabilities-desktop-dark.png",
+      "sha256": "c7f5977f87a0cffc1223209864acb7f9a6549963b362ad1f88735bd2d2e86407"
+    },
+    {
+      "id": "repository-delete-snapshot",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "oss-repository-delete-snapshot-desktop-light.png",
+      "sha256": "447175c6d0846f19cfdf682c3825c447287b4b1fd5d5fe545e9cd164117214ba"
+    },
+    {
+      "id": "repository-delete-snapshot",
+      "host": "oss",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "oss-repository-delete-snapshot-desktop-dark.png",
+      "sha256": "82ce59310cfe708d5ebacc5f7f38b2f34d3cfcf63ed02993be76b7588a6e6773"
     }
   ],
   "recaptures": [
@@ -6558,6 +6942,66 @@
         "oss-map-debt-loaded-tablet-dark.png",
         "oss-map-debt-loaded-desktop-light.png",
         "oss-map-debt-loaded-desktop-dark.png"
+      ]
+    },
+    {
+      "reason": "PR #294 adds the repository-centric Home and repository page (home-repositories, repository-history, repository-running, repository-empty, repository-no-capabilities, repository-delete-snapshot at every viewport and theme: 48 new identities); approved by the repository owner on 2026-11-11.",
+      "sourceRun": {
+        "id": "42995174099",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/42995174099",
+        "sourceSha": "ac7678051e830438ff3db08fad61b93984209b01"
+      },
+      "files": [
+        "oss-home-repositories-phone-light.png",
+        "oss-home-repositories-phone-dark.png",
+        "oss-repository-history-phone-light.png",
+        "oss-repository-history-phone-dark.png",
+        "oss-repository-running-phone-light.png",
+        "oss-repository-running-phone-dark.png",
+        "oss-repository-empty-phone-light.png",
+        "oss-repository-empty-phone-dark.png",
+        "oss-repository-no-capabilities-phone-light.png",
+        "oss-repository-no-capabilities-phone-dark.png",
+        "oss-repository-delete-snapshot-phone-light.png",
+        "oss-repository-delete-snapshot-phone-dark.png",
+        "oss-home-repositories-landscape-light.png",
+        "oss-home-repositories-landscape-dark.png",
+        "oss-repository-history-landscape-light.png",
+        "oss-repository-history-landscape-dark.png",
+        "oss-repository-running-landscape-light.png",
+        "oss-repository-running-landscape-dark.png",
+        "oss-repository-empty-landscape-light.png",
+        "oss-repository-empty-landscape-dark.png",
+        "oss-repository-no-capabilities-landscape-light.png",
+        "oss-repository-no-capabilities-landscape-dark.png",
+        "oss-repository-delete-snapshot-landscape-light.png",
+        "oss-repository-delete-snapshot-landscape-dark.png",
+        "oss-home-repositories-tablet-light.png",
+        "oss-home-repositories-tablet-dark.png",
+        "oss-repository-history-tablet-light.png",
+        "oss-repository-history-tablet-dark.png",
+        "oss-repository-running-tablet-light.png",
+        "oss-repository-running-tablet-dark.png",
+        "oss-repository-empty-tablet-light.png",
+        "oss-repository-empty-tablet-dark.png",
+        "oss-repository-no-capabilities-tablet-light.png",
+        "oss-repository-no-capabilities-tablet-dark.png",
+        "oss-repository-delete-snapshot-tablet-light.png",
+        "oss-repository-delete-snapshot-tablet-dark.png",
+        "oss-home-repositories-desktop-light.png",
+        "oss-home-repositories-desktop-dark.png",
+        "oss-repository-history-desktop-light.png",
+        "oss-repository-history-desktop-dark.png",
+        "oss-repository-running-desktop-light.png",
+        "oss-repository-running-desktop-dark.png",
+        "oss-repository-empty-desktop-light.png",
+        "oss-repository-empty-desktop-dark.png",
+        "oss-repository-no-capabilities-desktop-light.png",
+        "oss-repository-no-capabilities-desktop-dark.png",
+        "oss-repository-delete-snapshot-desktop-light.png",
+        "oss-repository-delete-snapshot-desktop-dark.png"
       ]
     }
   ]
