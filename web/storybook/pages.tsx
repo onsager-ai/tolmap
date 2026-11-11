@@ -41,12 +41,12 @@ export function page(id: string): StoryObj<Args> {
       } else if (id === 'home-repositories') {
         await waitFor(() => expect(root.querySelectorAll('[data-catalogue-row]').length).toBe(3));
         for (const status of ['indexing', 'failed', 'reconnect_needed']) await waitElement(`[data-repository-status="${status}"]`);
-        for (const row of root.querySelectorAll('[data-catalogue-row]')) {
+        for (const row of Array.from(root.querySelectorAll('[data-catalogue-row]'))) {
           const links = row.querySelectorAll('a');
           expect(links.length).toBe(2);
           expect(links[0].getAttribute('aria-label')).toMatch(/^View repository /);
           expect(links[1].getAttribute('aria-label')).toMatch(/^Open latest map for /);
-          for (const link of links) expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+          for (const link of Array.from(links)) expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
         }
       } else if (id.startsWith('repository-')) {
         await waitElement('[data-repository-header]');
