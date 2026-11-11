@@ -81,7 +81,7 @@ function mergeCatalogues(
   serviceEntries: ServiceCatalogueEntry[] | undefined,
 ): CatalogueEntry[] {
   // Preserve legacy map catalogue resolution; grouping is a host opt-in.
-  if (!serviceEntries?.some(entry => entry.repository_id)) {
+  if (![...(staticEntries ?? []), ...(serviceEntries ?? [])].some(entry => entry.repository_id)) {
     const legacy = new Map<string, CatalogueEntry>();
     for (const entry of staticEntries ?? []) legacy.set(entry.slug, entry);
     for (const entry of serviceEntries ?? []) legacy.set(entry.slug, toCatalogueEntry(entry));
