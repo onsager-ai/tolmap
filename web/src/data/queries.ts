@@ -49,7 +49,12 @@ function fetchStaticDistrictSymbols(owner: string, repo: string, district: numbe
 }
 
 function toCatalogueEntry(m: ServiceCatalogueEntry): CatalogueEntry {
-  return { ...m, file: "", source: "service" };
+  if (m.repository_id) return { ...m, file: "", source: "service" };
+  return {
+    slug: m.slug, label: m.label, owner: m.owner, repo: m.repo,
+    file: "", files: m.files, districts: m.districts,
+    modularity: m.modularity, lang: m.lang, source: "service", commit: m.commit,
+  };
 }
 
 /** Data-source resolution (milestone brief, "Data source resolution"): the
@@ -75,6 +80,13 @@ function mergeCatalogues(
   staticEntries: CatalogueEntry[] | undefined,
   serviceEntries: ServiceCatalogueEntry[] | undefined,
 ): CatalogueEntry[] {
+  // Preserve legacy map catalogue resolution; grouping is a host opt-in.
+  if (!serviceEntries?.some(entry => entry.repository_id)) {
+    const legacy = new Map<string, CatalogueEntry>();
+    for (const entry of staticEntries ?? []) legacy.set(entry.slug, entry);
+    for (const entry of serviceEntries ?? []) legacy.set(entry.slug, toCatalogueEntry(entry));
+    return [...legacy.values()].sort((a, b) => a.slug.localeCompare(b.slug));
+  }
   const bySlug = new Map<string, CatalogueEntry>();
   for (const e of staticEntries ?? []) bySlug.set(e.slug, e);
   for (const entry of serviceEntries ?? []) {
