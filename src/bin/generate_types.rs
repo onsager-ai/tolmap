@@ -47,6 +47,11 @@ fn export_to(directory: &Path) -> Result<()> {
     fs::create_dir_all(directory)?;
     tolmap::catalogue::CatalogueEntry::export_all(&Config::default().with_out_dir(directory))?;
     tolmap::catalogue::RepositoryHistory::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::catalogue::HostProfile::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::catalogue::OfferedRepository::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::catalogue::BatchIndexRequest::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::catalogue::BatchIndexResponse::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::catalogue::BatchProgress::export_all(&Config::default().with_out_dir(directory))?;
     MapDocument::export_all(&Config::default().with_out_dir(directory))?;
     SymbolsDocument::export_all(&Config::default().with_out_dir(directory))?;
     DistrictSymbols::export_all(&Config::default().with_out_dir(directory))?;
