@@ -6595,7 +6595,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "hub-add-expired-phone-light.png",
-      "sha256": "9d88d37813623ae53708cf4c5e3090029fcc2f3125765bdcb07d3df628d09b21"
+      "sha256": "7ebbaa17c8371af1b09475a0ca1208db6b3b424035ca2cf4356605c48463d6a9"
     },
     {
       "id": "add-expired",
@@ -6603,7 +6603,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "hub-add-expired-phone-dark.png",
-      "sha256": "789dabb63ad3f2e1f068b3470be089a3c0155ce5c4816d999bf7741f07e23b45"
+      "sha256": "0cb2b4dfd3019ed95362a5871eadf171e66b605579c142d994783e321755c704"
     },
     {
       "id": "batch-progress",
@@ -6787,7 +6787,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "hub-add-expired-landscape-light.png",
-      "sha256": "1efd2e09bc41887f594591615ae9266b2bf08316d82742ab7c3e373bc013f370"
+      "sha256": "4770151c37f02d6f4e6b986aa53b77f07dda6bb8345fc21c9b227b86f142e25b"
     },
     {
       "id": "add-expired",
@@ -6795,7 +6795,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "hub-add-expired-landscape-dark.png",
-      "sha256": "91c1130a2960bfea82fa9cfc3bba5404a05bc7dd3bd1c73f5f1c20068fee5a75"
+      "sha256": "1192ccc612bd7c9138d328375c448d728a109f0dd99181e0c5e38c60f76ada9f"
     },
     {
       "id": "batch-progress",
@@ -6979,7 +6979,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "hub-add-expired-tablet-light.png",
-      "sha256": "738295732a55bc8e6802bd4307d366b9f34ea7ecc3edb17eda4e5d0ae491c546"
+      "sha256": "e670df86c1efe7f154c15542d8cbfabb5b2cbc8520865d94ae4abe7a99427562"
     },
     {
       "id": "add-expired",
@@ -6987,7 +6987,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "hub-add-expired-tablet-dark.png",
-      "sha256": "bda05163ed72c1168cf5bf1a72443a0131e08920e32c742749b8678486ee6036"
+      "sha256": "28f64602888c7104601e8e69021d6d553da31927d746a0b415a729c5ef0166a6"
     },
     {
       "id": "batch-progress",
@@ -7171,7 +7171,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "hub-add-expired-desktop-light.png",
-      "sha256": "b7dc3a11ae73b51fa03cafdb13d0f1293357d8e3526712f2f4f9a095da117ded"
+      "sha256": "4829254acafc46a84cc42aeecb7e548ee418055a4fa0d0040376cc8449b4a2bd"
     },
     {
       "id": "add-expired",
@@ -7179,7 +7179,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "hub-add-expired-desktop-dark.png",
-      "sha256": "2113238f5f96ba5cd8abd10845ecf9c17313f6b21a6ddd9dd44f0e1b78a1596e"
+      "sha256": "e9e2f1e05b5ef4d0d480a0544a056c0be8b0780733a6c77594d2ab1cab9b623c"
     },
     {
       "id": "batch-progress",
@@ -7196,6 +7196,70 @@
       "theme": "dark",
       "file": "hub-batch-progress-desktop-dark.png",
       "sha256": "cb9493c75d64663622ac4219d158250cbb19f349f1e82a9b0ea7390830abb897"
+    },
+    {
+      "id": "add-reconnect",
+      "host": "hub",
+      "viewport": "phone",
+      "theme": "light",
+      "file": "hub-add-reconnect-phone-light.png",
+      "sha256": "32cd6ba2c76e51d90a06bb025c9c0adf158fd8a0255b58aff5c65ff5401a8585"
+    },
+    {
+      "id": "add-reconnect",
+      "host": "hub",
+      "viewport": "phone",
+      "theme": "dark",
+      "file": "hub-add-reconnect-phone-dark.png",
+      "sha256": "b3b11c62ee23d5dac777cb8eb0b952b95c4861f3868e11095fa7715d86909e43"
+    },
+    {
+      "id": "add-reconnect",
+      "host": "hub",
+      "viewport": "landscape",
+      "theme": "light",
+      "file": "hub-add-reconnect-landscape-light.png",
+      "sha256": "ab18a12b7067b450f08d7c4143caec39af5d6128038a005a81bda37e5ce7402d"
+    },
+    {
+      "id": "add-reconnect",
+      "host": "hub",
+      "viewport": "landscape",
+      "theme": "dark",
+      "file": "hub-add-reconnect-landscape-dark.png",
+      "sha256": "82cdfd9111522c590f48e9ee74097bd31394a070ae5a760b11a9a79319cedcef"
+    },
+    {
+      "id": "add-reconnect",
+      "host": "hub",
+      "viewport": "tablet",
+      "theme": "light",
+      "file": "hub-add-reconnect-tablet-light.png",
+      "sha256": "042270355ee718ede1186ba2b5199c6c87c3a185765082bff1f5cea626ba778b"
+    },
+    {
+      "id": "add-reconnect",
+      "host": "hub",
+      "viewport": "tablet",
+      "theme": "dark",
+      "file": "hub-add-reconnect-tablet-dark.png",
+      "sha256": "a2aa85527b610b7559b66252fa4e572b574e5597958a05342ded0e70f5f044a8"
+    },
+    {
+      "id": "add-reconnect",
+      "host": "hub",
+      "viewport": "desktop",
+      "theme": "light",
+      "file": "hub-add-reconnect-desktop-light.png",
+      "sha256": "7b9ef9f0a63299738873ddefef3193440e0b3dbab14d793b7df5811ad51e6c28"
+    },
+    {
+      "id": "add-reconnect",
+      "host": "hub",
+      "viewport": "desktop",
+      "theme": "dark",
+      "file": "hub-add-reconnect-desktop-dark.png",
+      "sha256": "edf49d650d33bed30af6dc1af1084ff83fc426f30165782e9bd4d9a7752d06c9"
     }
   ],
   "recaptures": [
@@ -7962,6 +8026,46 @@
         "oss-job-map-desktop-dark.png",
         "oss-job-detail-desktop-light.png",
         "oss-job-detail-desktop-dark.png"
+      ]
+    },
+    {
+      "reason": "PR #300 adds the hub add-sheet reconnect state (Reconnect GitHub after provider authorization lapses): 8 new identities; approved by the repository owner on 2026-11-12.",
+      "sourceRun": {
+        "id": "43207280764",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/43207280764",
+        "sourceSha": "db8c8948051e0d5b0eab29c8661ace354735514d"
+      },
+      "files": [
+        "hub-add-reconnect-phone-light.png",
+        "hub-add-reconnect-phone-dark.png",
+        "hub-add-reconnect-landscape-light.png",
+        "hub-add-reconnect-landscape-dark.png",
+        "hub-add-reconnect-tablet-light.png",
+        "hub-add-reconnect-tablet-dark.png",
+        "hub-add-reconnect-desktop-light.png",
+        "hub-add-reconnect-desktop-dark.png"
+      ]
+    },
+    {
+      "reason": "PR #300 adds a Sign in action to the hub add-sheet expired-session state: 8 re-approved identities; approved by the repository owner on 2026-11-12.",
+      "sourceRun": {
+        "id": "43207280764",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/43207280764",
+        "sourceSha": "db8c8948051e0d5b0eab29c8661ace354735514d"
+      },
+      "files": [
+        "hub-add-expired-phone-light.png",
+        "hub-add-expired-phone-dark.png",
+        "hub-add-expired-landscape-light.png",
+        "hub-add-expired-landscape-dark.png",
+        "hub-add-expired-tablet-light.png",
+        "hub-add-expired-tablet-dark.png",
+        "hub-add-expired-desktop-light.png",
+        "hub-add-expired-desktop-dark.png"
       ]
     }
   ]
