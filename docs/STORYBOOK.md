@@ -3,7 +3,9 @@
 Storybook renders the production route tree, React components, map renderer,
 fonts and tokens. `web/storybook/catalogue.mjs` is the page/state inventory.
 No alternate display implementation or fixture path enters the product bundle.
-The `host` toolbar previews OSS or synthetic private host composition; it is
+The default capture matrix includes the hosted-only onboarding candidates
+using the Hub profile alongside the existing OSS identities. The `host` toolbar
+previews OSS or synthetic private host composition; it is
 not authorization or a test of the real Hub service.
 
 Run on CI (do not run browsers on the thermally constrained maintainer host):

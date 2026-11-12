@@ -46,15 +46,15 @@ const newRoute = createRoute({
   component: IndexJobView,
 });
 
-/** Organizations are an application namespace, never a GitHub owner. Its
- * explicit route is registered before the repository route and `org` is
- * reserved above so a future one-segment owner route cannot capture it. */
 const batchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/new/batches/$batchId",
   component: BatchProgressView,
 });
 
+/** Organizations are an application namespace, never a GitHub owner. Its
+ * explicit route is registered before the repository route and `org` is
+ * reserved above so a future one-segment owner route cannot capture it. */
 const organizationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/org/$name",

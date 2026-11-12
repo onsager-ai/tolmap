@@ -19,6 +19,7 @@ import {
   desktopControlSize,
 } from "@/map/layoutProfile";
 import { FolderBody } from "@/components/SelectionPanel";
+import { useAddRepository } from "@/components/AppShell";
 import { hostProfile } from "@/host";
 import { TolmapLogo } from "@/components/TolmapLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -150,6 +151,7 @@ export interface DesktopChromeProps {
 
 /** Full-bleed desktop/tablet command bar, actions, dialogs and map controls. */
 export function DesktopChrome(p: DesktopChromeProps) {
+  const openAddRepository = useAddRepository();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const repoButtonRef = useRef<HTMLButtonElement>(null);
@@ -395,10 +397,10 @@ export function DesktopChrome(p: DesktopChromeProps) {
               ))}
             </div>
             <div data-repository-footer className="shrink-0 border-t border-[var(--rule)] pt-1">
-              <Link to="/" hash="repo-field" replace data-repo-map-another role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
+              {hostProfile?.onboarding ? <button type="button" data-repo-map-another role="menuitem" onClick={() => { setMenuOpen(false); openAddRepository(); }} className="repo-control repo-control-ghost w-full">Add repository</button> : <Link to="/" hash="repo-field" replace data-repo-map-another role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
                 <PlusIcon size={16} />
                 <span>Map another repository</span>
-              </Link>
+              </Link>}
               <Link to="/" data-repo-home role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
                 <MonoIcon><path d="M4 11l8-7 8 7v9H4z" /></MonoIcon>
                 <span>Home</span>

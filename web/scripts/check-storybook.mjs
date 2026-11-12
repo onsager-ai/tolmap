@@ -39,9 +39,13 @@ assertRouteTreeContract(routeSource);
 const browser = await chromium.launch({ args: ['--disable-partial-raster'] });
 const browserVersion = browser.version();
 const resultMap = new Map();
-const applicable = (item, viewport) => captureApplies(item, viewport, host);
+// Hosted-only onboarding candidates join the default matrix so CI captures
+// both compositions without duplicating or dropping approved OSS identities.
+const captureHost = item => item.id.startsWith('hosted-') || item.id.startsWith('add-') || item.id === 'batch-progress' ? 'hub' : host;
+const applicable = (item, viewport) => captureApplies(item, viewport, captureHost(item));
 const expected = viewports.flatMap(viewport => cases.filter(item => applicable(item, viewport)).flatMap(item => ['light', 'dark'].map(theme => {
-  const row = { id: item.id, host, viewport: viewport.name, theme, status: 'not-run', file: `${host}-${item.id}-${viewport.name}-${theme}.png` };
+  const itemHost = captureHost(item);
+  const row = { id: item.id, host: itemHost, viewport: viewport.name, theme, status: 'not-run', file: `${itemHost}-${item.id}-${viewport.name}-${theme}.png` };
   resultMap.set(JSON.stringify([row.id, row.host, row.viewport, row.theme]), row);
   return row;
 })));
@@ -58,10 +62,11 @@ try {
     page.on('request', request => { if (new URL(request.url()).origin !== new URL(base).origin && /^https?:/.test(request.url())) external.push(request.url()); });
     await page.clock.setFixedTime(new Date('2026-10-19T08:00:00Z'));
     for (const item of cases.filter(item => applicable(item, viewport))) {
-      const row = resultMap.get(JSON.stringify([item.id, host, viewport.name, theme]));
+      const itemHost = captureHost(item);
+      const row = resultMap.get(JSON.stringify([item.id, itemHost, viewport.name, theme]));
       try {
         const storyId = item.storybookId ?? `tolmap-pages--${item.id}`;
-        await page.goto(`${base}/iframe.html?id=${storyId}&viewMode=story&globals=theme:${theme};host:${host}`);
+        await page.goto(`${base}/iframe.html?id=${storyId}&viewMode=story&globals=theme:${theme};host:${itemHost}`);
         await page.locator(`html[data-visual-ready="${item.id}"]`).waitFor({ timeout: 30000 });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `horizontal overflow: ${item.id}`);
         assert.equal(await page.locator('html').getAttribute('data-theme'), theme);

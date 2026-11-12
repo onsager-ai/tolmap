@@ -26,8 +26,10 @@ export function AddRepositoryProvider({ children }: { children: ReactNode }) {
   return <AddRepositoryContext.Provider value={() => setOpen(true)}>{children}{open && hostProfile?.onboarding && <AddRepositorySheet onClose={close} />}</AddRepositoryContext.Provider>;
 }
 
+export function useAddRepository() { return useContext(AddRepositoryContext); }
+
 export function AddRepositoryButton() {
-  const open = useContext(AddRepositoryContext);
+  const open = useAddRepository();
   if (!hostProfile?.onboarding) return null;
   return <button type="button" className="repo-control" onClick={open}>Add repository</button>;
 }

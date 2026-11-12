@@ -19,14 +19,15 @@ export function AddRepositorySheet({ onClose }: { onClose: () => void }) {
   const offered = useQuery({ queryKey: ["offered-repositories", onboarding.offered_repositories_path], queryFn: () => hostRequest<OfferedRepository[]>(onboarding.offered_repositories_path), retry: false, staleTime: 0, refetchOnMount: "always" });
   useEffect(() => { dialog.current?.showModal(); }, []);
   const repositories = offered.data ?? [];
+  const selectedRepositories = repositories.filter(repo => !repo.connected_repository_id && selected.has(repo.provider_id));
   const visible = repositories.filter(repo => repo.full_name.toLowerCase().includes(search.trim().toLowerCase()));
   const expired = offered.error instanceof HostRequestError && [401, 403].includes(offered.error.status);
   const state = offered.isLoading ? "loading" : offered.isError ? expired ? "expired" : "unavailable" : repositories.length === 0 ? "empty" : visible.length === 0 ? "search-miss" : "list";
   async function submit() {
-    if (pending || selected.size === 0) return;
+    if (pending || selectedRepositories.length === 0) return;
     setPending(true); setSubmitError(undefined);
     try {
-      const body: BatchIndexRequest = { provider_ids: repositories.filter(repo => !repo.connected_repository_id && selected.has(repo.provider_id)).map(repo => repo.provider_id) };
+      const body: BatchIndexRequest = { provider_ids: selectedRepositories.map(repo => repo.provider_id) };
       const result = await hostRequest<BatchIndexResponse>(onboarding.batch_index_path, body);
       if (result.jobs.length === 0) throw new Error("No mapping jobs were started. Refresh the repository list and try again.");
       onClose();
@@ -51,6 +52,6 @@ export function AddRepositorySheet({ onClose }: { onClose: () => void }) {
     </div>
     {onboarding.manage_access && <HostActionLink action={onboarding.manage_access} className="text-small text-[var(--dim)] underline underline-offset-2">Don't see it? Manage GitHub access ↗</HostActionLink>}
     {submitError && <p role="alert" className="text-small text-[var(--link-out)]">{submitError}</p>}
-    <div className="flex justify-end gap-3 py-1"><button type="button" className="repo-control" onClick={onClose}>Cancel</button><button type="button" className="repo-control repo-control-primary" disabled={pending || selected.size === 0 || offered.isError || offered.isLoading} onClick={() => void submit()}>{pending ? "Starting…" : `Map ${selected.size} ${selected.size === 1 ? "repository" : "repositories"}`}</button></div>
+    <div className="flex justify-end gap-3 py-1"><button type="button" className="repo-control" onClick={onClose}>Cancel</button><button type="button" className="repo-control repo-control-primary" disabled={pending || selectedRepositories.length === 0 || offered.isError || offered.isLoading} onClick={() => void submit()}>{pending ? "Starting…" : `Map ${selectedRepositories.length} ${selectedRepositories.length === 1 ? "repository" : "repositories"}`}</button></div>
   </dialog>;
 }

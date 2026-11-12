@@ -1,3 +1,5 @@
+import { useAddRepository } from "@/components/AppShell";
+import { hostProfile } from "@/host";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import type { CatalogueEntry, DistrictSymbols, MapDocument } from "@/types";
@@ -449,6 +451,7 @@ function ModalSheet({
  * 56 px rows (the same catalogue query Home lists). Every row is a real
  * link that replaces the sheet's history entry (see PhoneChrome). */
 function RepoSheetBody({ doc, slug, catalogue, onLeave }: { doc: MapDocument; slug: string; catalogue: CatalogueEntry[] | undefined; onLeave(): void }) {
+  const openAddRepository = useAddRepository();
   let mainland = 0;
   for (const d of Object.values(doc.districts)) if (districtClass(d) === "mainland") mainland++;
   const others = (catalogue ?? []).filter((m) => m.slug !== slug);
@@ -469,12 +472,12 @@ function RepoSheetBody({ doc, slug, catalogue, onLeave }: { doc: MapDocument; sl
           </span>
           <span className="min-w-0 flex-1 text-row">Home</span>
         </Link>
-        <Link to="/" hash="repo-field" replace onClick={onLeave} data-repo-map-another className={row}>
+        {hostProfile?.onboarding ? <button type="button" data-repo-map-another className={row} onClick={() => { onLeave(); openAddRepository(); }}>Add repository</button> : <Link to="/" hash="repo-field" replace onClick={onLeave} data-repo-map-another className={row}>
           <span className="shrink-0 text-[var(--accent)]">
             <PlusIcon />
           </span>
           <span className="min-w-0 flex-1 text-row">Map another repository</span>
-        </Link>
+        </Link>}
       </div>
       <h3 className="mt-5 text-[15px] font-semibold">Mapped repositories</h3>
       {others.length ? (
