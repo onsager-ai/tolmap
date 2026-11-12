@@ -101,7 +101,10 @@ path Start walkthrough control) on 2026-11-10 from run `42742304222` (source
 `ef8aea3`); `approved.json` records them under `recaptures`. The owner approved the 48
 repository Home and repository page captures (repository list, history, running job,
 empty, no capabilities, delete-snapshot confirmation) on 2026-11-11 from run
-`42995174099` (source `ac76780`), also under `recaptures`. A registry with
+`42995174099` (source `ac76780`), also under `recaptures`. On 2026-11-12 the owner
+approved the 96 hosted Home, add sheet and batch progress captures and re-approved
+72 intentionally changed public Home and job progress captures from run
+`43152991681` (source `cc14421`), also under `recaptures`. A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
 `images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says
