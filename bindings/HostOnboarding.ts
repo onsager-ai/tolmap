@@ -9,4 +9,4 @@ batch_progress_path: string,
 /**
  * Query parameter whose value "1" reopens the sheet after provider return.
  */
-open_sheet_parameter: string, install: HostAction | null, manage_access: HostAction | null, };
+open_sheet_parameter: string, install: HostAction | null, manage_access: HostAction | null, sign_in?: HostAction, authorize?: HostAction, };

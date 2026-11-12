@@ -96,7 +96,8 @@ export async function installFixture(state: string) {
     const url = new URL(request.url), path = url.pathname;
     if (path === "/fixture/offered") {
       if (state === "add-loading") await delay("infinite");
-      if (state === "add-expired") return json({ error: "session_expired" }, 401);
+      if (state === "add-expired") return json({ error: "session_expired" }, 403);
+      if (state === "add-reconnect") return json({ error: "provider_authorization_needed" }, 409);
       if (state === "add-unavailable") return json({ error: "provider_unavailable" }, 503);
       return json(state === "add-empty" ? [] : [
         { provider_id: "101", full_name: "acme/platform", visibility: "private", connected_repository_id: "acme-platform" },

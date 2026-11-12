@@ -109,4 +109,5 @@ export const AddEmpty = { ...page('add-empty') };
 export const AddSearchMiss = { ...page('add-search-miss') };
 export const AddUnavailable = { ...page('add-unavailable') };
 export const AddExpired = { ...page('add-expired') };
+export const AddReconnect = { ...page('add-reconnect') };
 export const BatchProgress = { ...page('batch-progress') };

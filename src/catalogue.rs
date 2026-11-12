@@ -147,6 +147,12 @@ pub struct HostOnboarding {
     pub open_sheet_parameter: String,
     pub install: Option<HostAction>,
     pub manage_access: Option<HostAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sign_in: Option<HostAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub authorize: Option<HostAction>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
