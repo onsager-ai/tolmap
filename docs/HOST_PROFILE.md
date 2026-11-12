@@ -78,7 +78,7 @@ are host-owned, and `method:"post"` submits a same-origin form.
 Example onboarding capability (all paths here are illustrative, not core routes):
 
 ```json
-{"offered_repositories_path":"/host/offered","batch_index_path":"/host/index-batch","batch_progress_path":"/host/batches/{batch_id}","open_sheet_parameter":"add","install":null,"manage_access":{"label":"Manage GitHub access","path":"/host/github/configure"}}
+{"offered_repositories_path":"/host/offered","batch_index_path":"/host/index-batch","batch_progress_path":"/host/batches/{batch_id}","open_sheet_parameter":"add","install":null,"manage_access":{"label":"Manage GitHub access","path":"/host/github/configure"},"sign_in":{"label":"Sign in","path":"/login"},"authorize":{"label":"Reconnect GitHub","path":"/host/github/start","method":"post"}}
 ```
 
 - `GET offered_repositories_path` returns `OfferedRepository[]`, each with
@@ -102,8 +102,14 @@ Example onboarding capability (all paths here are illustrative, not core routes)
   example `/?add=1`). Opening the sheet always refreshes offered repositories;
   closing removes the marker. Core does not embed a provider callback route.
 
-Endpoints are same-origin absolute paths and JSON; 401/403 produce expired-session
-copy, other errors provider-unavailable copy with Retry. Sessions and provider
-permission remain server authority. Single jobs use the existing `/new` flow;
+Endpoints are same-origin absolute paths and JSON. A 401/403 produces expired-session
+copy and the optional `sign_in` HostAction as the primary recovery action. A 409
+with a JSON error body (for example `{"error":"provider_authorization_needed"}`)
+means provider authorization is missing or expired: core shows “Reconnect GitHub
+to see your repositories.” and the optional `authorize` HostAction. Both actions
+support `method:"post"` form submission; without the relevant action the sheet
+shows the state’s copy without a recovery button. Other errors retain
+provider-unavailable copy with Retry. Sessions and provider permission remain
+server authority. Single jobs use the existing `/new` flow;
 multiple jobs use the core route `/new/batches/<batch-id>`. No capability means
 no sheet, and `tolmap serve` needs no changes to implement this optional contract.

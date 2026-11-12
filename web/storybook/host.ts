@@ -17,5 +17,11 @@ export function setHost(host: string) {
 }
 
 export function setOnboardingFixture(state: string) {
+  // Recovery contracts can be exercised in the OSS preview without a hub profile.
+  if (!hostProfile && state === "add-reconnect") hostProfile = { version: 1, private: false, workspace: "", repositories: [], actions: [], onboarding: {
+    offered_repositories_path: "/fixture/offered", batch_index_path: "/fixture/batch", batch_progress_path: "/fixture/batches/{batch_id}", open_sheet_parameter: "add", install: null, manage_access: null,
+  } };
   if (hostProfile?.onboarding && state === "hosted-empty-connect") hostProfile.onboarding.install = { label: "Connect GitHub", path: "/fixture/install" };
+  if (hostProfile?.onboarding && state === "add-expired") hostProfile.onboarding.sign_in = { label: "Sign in", path: "/fixture/login" };
+  if (hostProfile?.onboarding && state === "add-reconnect") hostProfile.onboarding.authorize = { label: "Reconnect GitHub", path: "/fixture/authorize", method: "post" };
 }

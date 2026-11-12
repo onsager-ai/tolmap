@@ -60,6 +60,21 @@ export function page(id: string): StoryObj<Args> {
           await waitElement('[data-add-state="search-miss"]');
         } else await waitElement(`[data-add-state="${state === 'already-mapped' ? 'list' : state}"]`);
         if (state === 'already-mapped') expect(root.querySelector('[data-offered-repository] input:disabled')).not.toBeNull();
+        if (state === 'reconnect' || state === 'expired') {
+          const sheet = within(root.querySelector<HTMLDialogElement>('dialog')!);
+          if (state === 'reconnect') {
+            expect(sheet.getByText('Reconnect GitHub to see your repositories.')).toBeVisible();
+            const action = sheet.getByRole('button', { name: 'Reconnect GitHub' });
+            expect(action).toBeVisible();
+            expect(action).toHaveAttribute('type', 'submit');
+            expect(action.closest('form')).toHaveAttribute('method', 'post');
+            expect(action.closest('form')).toHaveAttribute('action', '/fixture/authorize');
+          } else {
+            expect(sheet.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/fixture/login');
+            expect(sheet.getByRole('link', { name: 'Sign in' })).toBeVisible();
+          }
+          expect(sheet.queryByRole('button', { name: 'Retry' })).toBeNull();
+        }
       } else if (id === 'batch-progress') {
         await waitFor(() => expect(root.querySelectorAll('[data-batch-job]').length).toBe(3));
       } else if (id === 'home') {
