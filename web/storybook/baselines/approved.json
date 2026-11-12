@@ -4827,7 +4827,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-lens-walk-last-tablet-light.png",
-      "sha256": "ba073ba3a2b83d15775fde134ccd7d8b3f7ead5e4c7c0499e459471d138126a0"
+      "sha256": "45378009cc54e3d3193cd402656799e9cf06763fc5132ab4ce53d971544090f9"
     },
     {
       "id": "map-lens-walk-middle",
@@ -4883,7 +4883,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-lens-walk-middle-tablet-dark.png",
-      "sha256": "631b797df9e290385963fb3d6b8c8631bdab78f70a5cd020611bc52ac3cc32c5"
+      "sha256": "3a366c3e377b28238700d28633cb43775e07908113345339833ccac546f114e7"
     },
     {
       "id": "map-lens-walk-middle",
@@ -4891,7 +4891,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-lens-walk-middle-tablet-light.png",
-      "sha256": "6f703e25856129cd865ad8e3b37cf41d6a11bf62bca219f2258adcad8d871840"
+      "sha256": "067722968eca00cccab3f6aa732890f882df9e6b7702a74111641f309490f402"
     },
     {
       "id": "map-lens-walk-unresolved",
@@ -8066,6 +8066,21 @@
         "hub-add-expired-tablet-dark.png",
         "hub-add-expired-desktop-light.png",
         "hub-add-expired-desktop-dark.png"
+      ]
+    },
+    {
+      "reason": "PR #301 applies the open tablet panel inset before walkthrough framing (#295): tablet walk-last light and walk-middle light/dark re-approved; approved by the repository owner on 2026-11-12.",
+      "sourceRun": {
+        "id": "43207779191",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/43207779191",
+        "sourceSha": "5fced3098a30d754768945c30f481e82c333cf61"
+      },
+      "files": [
+        "oss-map-lens-walk-middle-tablet-light.png",
+        "oss-map-lens-walk-middle-tablet-dark.png",
+        "oss-map-lens-walk-last-tablet-light.png"
       ]
     }
   ]
