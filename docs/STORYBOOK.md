@@ -24,7 +24,8 @@ Only use this on a host whose local policy permits browser/rendering work.
 
 | Family | States | Governing reference |
 | --- | --- | --- |
-| Home | Catalogue, empty, loading, unavailable; grouped repositories with indexing/failed/reconnect status (27 snapshots across 3 repos) | UX §4.9; existing references preserved, grouped state candidate |
+| Home | Catalogue, empty, loading, unavailable; grouped repositories with indexing/failed/reconnect status (27 snapshots across 3 repos) | UX §4.9; compact OSS controls and hosted shell intentionally change existing Home captures |
+| Hosted onboarding | Home list, empty/connect, empty/add; add sheet list, selected two, mapped, loading, empty, search miss, unavailable, expired; batch progress | UX §4.9 and HOST_PROFILE.md; candidates, hub captures only |
 | Repository | History, running job, empty, no capabilities, delete-snapshot confirmation | UX §4.9 and HOST_PROFILE.md; candidates only |
 | Local checkout | Detect, scope/all-source confirmation, indexing/cancel, detection/index failure, saved history/export | LOCAL.md and production native template; preserve |
 | Indexing | No job, queue, Fetch/Read/Map/Detail, every failure class | UX §6; preserve |

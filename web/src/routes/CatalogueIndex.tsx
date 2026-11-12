@@ -1,11 +1,9 @@
 import { Link } from "@tanstack/react-router";
 import { useCatalogue } from "@/data/queries";
 import { SubmitRepoForm } from "@/components/SubmitRepoForm";
-import { TolmapLogo } from "@/components/TolmapLogo";
-import { ThemeToggle } from "@/components/ThemeToggle";
 import { ChevronIcon } from "@/components/phone/icons";
 import type { CatalogueEntry } from "@/types";
-import { HostActions } from "@/components/HostActions";
+import { AppShell, FirstRepositoryAction } from "@/components/AppShell";
 import { hostProfile } from "@/host";
 import { IndexedTime, RepositoryState } from "@/components/RepositoryMeta";
 
@@ -44,12 +42,8 @@ function RepoRow({ m }: { m: CatalogueEntry }) {
   );
 }
 
-/** docs/UX.md §4.9 (phase 6): a plain one-screen page -- wordmark and theme
- * button, "Map a codebase" with one sentence, the repo field and its
- * button, then "Mapped repositories". The same content sits in a 640px
- * column on desktop, which is just this container's max-width -- Home has
- * no chrome that differs by breakpoint the way the map view's rail/sheet
- * do, so no useIsNarrow branch is needed here. */
+/** Home uses the shared shell. Hosted workspaces show their catalogue;
+ * OSS also offers the public repository form (docs/UX.md §4.9). */
 export function CatalogueIndex() {
   const { data, isLoading, isError, serviceAvailable, refetch } = useCatalogue();
 
@@ -59,24 +53,16 @@ export function CatalogueIndex() {
         className="mx-auto flex w-full max-w-[640px] flex-col gap-8 px-5 pb-10"
         style={{ paddingTop: "calc(28px + env(safe-area-inset-top, 0px))" }}
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <TolmapLogo className="h-9 w-auto shrink-0" />
-            {hostProfile && <span className="text-title">Hub</span>}
-          </div>
-          <ThemeToggle className="h-11 w-11 rounded-full" />
-        </div>
+        <AppShell />
 
-        <HostActions />
-
-        <div className="flex flex-col gap-3">
+        {!hostProfile && <div className="flex flex-col gap-3">
           <h1 className="text-title">Map a codebase</h1>
           <p className="text-body text-[var(--dim)]">
             tolmap groups a repository's files into districts by how they import each other and change together, so
             you can see its structure and find what to optimize.
           </p>
           <SubmitRepoForm />
-        </div>
+        </div>}
 
         <div className="flex flex-col gap-2.5">
           <h2 className="text-section-title">Mapped repositories</h2>
@@ -95,7 +81,7 @@ export function CatalogueIndex() {
                 type="button"
                 data-catalogue-retry
                 onClick={() => refetch()}
-                className="flex h-11 items-center rounded-[12px] border border-[var(--rule)] bg-[var(--chrome)] px-4 text-small font-semibold text-[var(--on)]"
+                className="repo-control"
               >
                 Retry
               </button>
@@ -103,9 +89,7 @@ export function CatalogueIndex() {
           )}
 
           {!isLoading && !isError && data.length === 0 && (
-            <p data-catalogue-empty className="text-small text-[var(--dim)]">
-              No repositories mapped yet — paste one above.
-            </p>
+            hostProfile ? <div data-catalogue-empty className="flex flex-col items-start gap-3 rounded-[14px] border border-[var(--rule)] p-5"><h1 className="text-title">Map your first repository</h1><p className="text-small text-[var(--dim)]">Choose the repositories you want to explore.</p><FirstRepositoryAction /></div> : <p data-catalogue-empty className="text-small text-[var(--dim)]">No repositories mapped yet — paste one above.</p>
           )}
 
           {!isLoading && !isError && data.length > 0 && (

@@ -3,16 +3,9 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import { validateRepoInput } from "@/api/repoInput";
 import { postIndexJob, ApiRequestError } from "@/api/client";
 import { useServiceAvailable } from "@/data/queries";
-import { hostProfile } from "@/host";
 
-/** Home's "Map a codebase" entry point (docs/UX.md §4.9): a labelled 16px
- * mono field and a full-width "Map it" button, stacked (never side by side
- * -- the approved artboard has no room for both at 16px on a 320px phone).
- * Validates the pasted shape client-side (src/api/repoInput.ts, which also
- * rejects the router's reserved names as an owner), POSTs it, and moves to
- * the progress view at /new. When the service isn't reachable the box stays
- * visible but inert -- the mapped-repositories list below it still works
- * either way. */
+/** OSS Home's public repository entry point. Compact controls retain the
+ * existing input validation, service availability and progress navigation. */
 export function SubmitRepoForm() {
   const navigate = useNavigate();
   const { data: serviceAvailable } = useServiceAvailable();
@@ -29,9 +22,8 @@ export function SubmitRepoForm() {
   // and one more tap raises the keyboard.)
   const hash = useLocation({ select: (l) => l.hash });
   const fieldRef = useRef<HTMLInputElement>(null);
-  const selectRef = useRef<HTMLSelectElement>(null);
   useEffect(() => {
-    if (hash === "repo-field") (hostProfile ? selectRef.current : fieldRef.current)?.focus();
+    if (hash === "repo-field") fieldRef.current?.focus();
   }, [hash]);
 
   async function onSubmit(e: FormEvent) {
@@ -39,10 +31,7 @@ export function SubmitRepoForm() {
     if (disabled || submitting) return;
     setSubmitError(null);
 
-    const choice = hostProfile?.repositories.find((r) => r.value === value);
-    const result = hostProfile
-      ? choice ? { ok: true as const, parsed: { apiValue: choice.value } } : { ok: false as const, message: "Choose an authorized repository." }
-      : validateRepoInput(value);
+    const result = validateRepoInput(value);
     if (!result.ok) {
       setValidationError(result.message);
       return;
@@ -74,15 +63,9 @@ export function SubmitRepoForm() {
   return (
     <form onSubmit={(e) => void onSubmit(e)} className="flex flex-col gap-2">
       <label htmlFor="repo-field" className="text-small font-semibold">
-        {hostProfile ? "Authorized repository" : "GitHub repository"}
+        GitHub repository
       </label>
-      {hostProfile ? (
-        <select ref={selectRef} id="repo-field" data-repo-field value={value} onChange={(e) => setValue(e.target.value)} disabled={disabled || submitting}
-          className="h-[52px] rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)] px-4 font-mono text-body text-[var(--on)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]">
-          <option value="">{hostProfile.repositories.length ? "Select a repository" : "Connect a repository to begin"}</option>
-          {hostProfile.repositories.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-        </select>
-      ) : <input
+      <input
         id="repo-field"
         ref={fieldRef}
         data-repo-field
@@ -95,12 +78,12 @@ export function SubmitRepoForm() {
         aria-invalid={validationError != null}
         aria-describedby={validationError ? "repo-field-error" : undefined}
         disabled={disabled || submitting}
-        className="h-[52px] rounded-[14px] border border-[var(--rule)] bg-[var(--chrome2)] px-4 font-mono text-body text-[var(--on)] outline-none placeholder:text-[var(--dim)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-50"
-      />}
+        className="h-8 rounded-[7px] border border-[var(--rule)] bg-[var(--chrome2)] px-3 font-mono text-body text-[var(--on)] outline-none placeholder:text-[var(--dim)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-50"
+      />
       <button
         type="submit"
         disabled={disabled || submitting || value.trim().length === 0}
-        className="h-[52px] rounded-[14px] bg-[var(--accent)] text-body font-bold text-[var(--on-accent)] disabled:opacity-50"
+        className="repo-control repo-control-primary self-start"
       >
         {submitting ? "mapping…" : "Map it"}
       </button>

@@ -4,7 +4,7 @@ import { Page } from "./Page";
 import { NativeLocal } from "./NativeLocal";
 import { cases } from "./catalogue.mjs";
 import { failedFreshness, installFixture, resolveRoute } from "./fixtures";
-import { setHost } from "./host";
+import { setHost, setOnboardingFixture } from "./host";
 import { applyThemeChoice } from "../src/lib/theme";
 
 type Args = { visualCaseId: string };
@@ -15,6 +15,7 @@ export const meta = {
     setHost(globals.host);
     applyThemeChoice(globals.theme);
     const item = cases.find(item => item.id === args.visualCaseId)!;
+    setOnboardingFixture(item.fixture);
     const doc = await installFixture(item.fixture);
     return { route: resolveRoute(item.route, doc) };
   }],
@@ -36,7 +37,30 @@ export function page(id: string): StoryObj<Args> {
         return element!;
       };
       const click = async (selector: string) => userEvent.click(await waitElement(selector));
-      if (id === 'home') {
+      if (id.startsWith('hosted-')) {
+        await waitElement('[data-app-shell]');
+        if (id !== 'hosted-list') await waitElement('[data-catalogue-empty]');
+        else await waitElement('[data-catalogue-row]');
+        expect(canvas.queryByText('Authorized repository')).toBeNull();
+        expect(canvas.queryByRole('button', { name: 'Map it' })).toBeNull();
+      } else if (id.startsWith('add-')) {
+        const state = id.slice(4);
+        await waitElement('dialog[open]');
+        if (state === 'selected-two') {
+          await waitElement('[data-add-state="list"]');
+          const checkboxes = canvasElement.ownerDocument.querySelectorAll<HTMLInputElement>('[data-offered-repository] input:not(:disabled)');
+          await userEvent.click(checkboxes[0]); await userEvent.click(checkboxes[1]);
+          await waitElement('dialog button:not(:disabled)');
+          expect(root.querySelector('dialog')?.textContent).toContain('Map 2 repositories');
+        } else if (state === 'search-miss') {
+          await waitElement('[data-add-state="list"]');
+          await userEvent.type(root.querySelector<HTMLInputElement>('#offered-search')!, 'absent-repository');
+          await waitElement('[data-add-state="search-miss"]');
+        } else await waitElement(`[data-add-state="${state === 'already-mapped' ? 'list' : state}"]`);
+        if (state === 'already-mapped') expect(root.querySelector('[data-offered-repository] input:disabled')).not.toBeNull();
+      } else if (id === 'batch-progress') {
+        await waitFor(() => expect(root.querySelectorAll('[data-batch-job]').length).toBe(3));
+      } else if (id === 'home') {
         await waitFor(() => { expect(root.querySelector('[data-catalogue-row]')).not.toBeNull(); expect(root.querySelector('[data-catalogue-error], [data-catalogue-empty]')).toBeNull(); });
       } else if (id === 'home-repositories') {
         await waitFor(() => expect(root.querySelectorAll('[data-catalogue-row]').length).toBe(3));
@@ -82,7 +106,7 @@ export function page(id: string): StoryObj<Args> {
           expect(dialog.textContent).toContain('The previous snapshot becomes the latest.');
         }
       } else if (id === 'home-empty') {
-        await waitFor(() => expect(root.querySelector('[data-catalogue-empty]')?.textContent?.trim()).toBe('No repositories mapped yet — paste one above.'));
+        await waitFor(() => expect(root.querySelector('[data-catalogue-empty]')?.textContent).toContain(root.querySelector('[data-host-workspace]') ? 'Map your first repository' : 'No repositories mapped yet — paste one above.'));
       } else if (id === 'home-loading') {
         await waitFor(() => { expect(root.body.textContent).toContain('Mapped repositories'); expect(root.body.textContent?.toLowerCase()).toContain('loading…'); });
       } else if (id === 'home-unavailable') {

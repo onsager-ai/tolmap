@@ -6,6 +6,7 @@ import type { JobSnapshot } from "@/types";
 import type { ProgressValue } from "@bindings/ProgressValue";
 import type { StageId } from "@bindings/StageId";
 import { TolmapLogo } from "@/components/TolmapLogo";
+import { AppShell } from "@/components/AppShell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useLayoutProfile } from "@/hooks/useLayoutProfile";
 import { isPhoneShell } from "@/map/layoutProfile";
@@ -154,7 +155,7 @@ function FailureIcon({ cls }: { cls: FailureView["cls"] }) {
 function PageFrame({ narrow, children }: { narrow: boolean; children: ReactNode }) {
   return (
     <div className="h-full overflow-y-auto bg-[var(--chrome)] text-[var(--on)]" data-index-page>
-      {narrow ? (
+      {hostProfile ? <div className="px-5 pt-4"><AppShell /></div> : narrow ? (
         <div className="px-3 pt-[max(env(safe-area-inset-top),12px)]">
           <Link to="/" className="inline-flex h-11 items-center gap-1.5 rounded-[12px] pl-1 pr-3 text-row text-[var(--on)]" aria-label="tolmap home">
             <ChevronLeft />
@@ -199,10 +200,7 @@ function PhaseRow({ phase }: { phase: PhaseView }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-3">
           <p className={`text-row ${phase.state === "pending" ? "text-[var(--dim)]" : "text-[var(--on)]"}`}>{phase.title}</p>
-          <span className="ml-auto font-mono text-meta tabular-nums text-[var(--dim)]">
-            {phase.state === "done" && phase.durationS != null ? formatDuration(phase.durationS) : null}
-            {phase.state === "failed" ? "stopped" : null}
-          </span>
+          {phase.state === "failed" && <span className="ml-auto text-meta text-[var(--dim)]">stopped</span>}
         </div>
         <p className="text-small text-[var(--dim)]">{phase.meaning}</p>
         {running && step && (
@@ -238,8 +236,7 @@ function PhaseRow({ phase }: { phase: PhaseView }) {
 }
 
 /** §6.4: the full stage list grouped under the four phases, with durations,
- * "stage 6 of 22" and the raw `stage` string. Open on desktop, closed on
- * phones. */
+ * "stage 6 of 22" and the raw `stage` string. Closed until requested. */
 function TechnicalDetails({ job, phases, open, card }: { job: JobSnapshot; phases: PhaseView[]; open: boolean; card: boolean }) {
   const position = stagePosition(job);
   const skipped = skippedStages(job.stages);
@@ -252,15 +249,16 @@ function TechnicalDetails({ job, phases, open, card }: { job: JobSnapshot; phase
       <summary className={`flex min-h-11 cursor-pointer select-none items-center justify-between gap-3 ${card ? "border-b border-[var(--rule)] px-5 py-3" : "py-3"}`}>
         <span className="text-row">Technical details</span>
         <span className="flex items-center gap-2.5">
+          <Chevron />
+        </span>
+      </summary>
+      <div className={card ? "px-5 py-4" : "pb-4"}>
           {position && (
             <span className="font-mono text-meta text-[var(--dim)]" data-stage-position>
               stage {position.index} of {position.count}
             </span>
           )}
-          <Chevron />
-        </span>
-      </summary>
-      <div className={card ? "px-5 py-4" : "pb-4"}>
+        <p className="mb-3 text-meta text-[var(--dim)]">Running {formatDuration(job.elapsed_s, true)} · started {new Date(job.started_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</p>
         <p className="mb-3 break-words font-mono text-meta text-[var(--dim)]" data-raw-stage>
           {job.stage}
         </p>
@@ -408,17 +406,11 @@ export function ProgressPage({
 }) {
   const queued = job.status === "queued";
   const now = useTick(true);
-  // The tick at which the snapshot on screen arrived, so the elapsed time
-  // runs on from the service's `elapsed_s` between snapshots.
-  const [received, setReceived] = useState({ job, at: now });
-  if (received.job !== job) setReceived({ job, at: now });
-  const receivedAt = received.job === job ? received.at : now;
   const phases = useMemo(() => summarisePhases(job), [job]);
   // §6.3: from the last progress value seen for each stage
   // (useJobProgress keeps them, per snapshot received).
   const found = useMemo(() => foundSoFar(seen), [seen]);
 
-  const elapsedS = job.elapsed_s + Math.max(0, (now - receivedAt) / 1000);
   const waitingS = Math.max(0, (now - Date.parse(job.started_at)) / 1000);
   const basis = job.eta?.basis === "model" ? "rough estimate" : "estimate";
   const title = queued
@@ -428,7 +420,6 @@ export function ProgressPage({
     : job.eta
       ? formatEtaRange(job.eta.low_s, job.eta.high_s)
       : "Working out how long";
-  const startedAt = new Date(job.started_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
   const header = (
     <>
@@ -444,8 +435,7 @@ export function ProgressPage({
         </p>
       ) : (
         <p className="mt-2 text-small text-[var(--dim)]" data-running-text>
-          Running <span className="font-mono text-[var(--on)]">{formatDuration(elapsedS, true)}</span> · started {startedAt}
-          {job.eta && ` · ${basis}`}
+          {job.eta ? basis : "Mapping your repository"}
         </p>
       )}
       <div className="mt-6 grid grid-cols-4 gap-2" data-phase-bar aria-hidden>
@@ -520,7 +510,7 @@ export function ProgressPage({
           <CancelArea job={job} queued={queued} />
         </div>
       </div>
-      <div className="min-w-0">{!queued && <TechnicalDetails job={job} phases={phases} open card />}</div>
+      <div className="min-w-0">{!queued && <TechnicalDetails job={job} phases={phases} open={false} card />}</div>
     </main>
   );
 }

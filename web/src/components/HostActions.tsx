@@ -1,18 +1,14 @@
-import { hostProfile } from "@/host";
+import { hostProfile, hostPath } from "@/host";
+import type { HostAction } from "@bindings/HostAction";
 
-/** Product identity lives in the authored Home frame; the map stays full bleed. */
+export function HostActionLink({ action, children, className = "repo-control" }: { action: HostAction; children?: React.ReactNode; className?: string }) {
+  return action.method === "post" ? <form method="post" action={hostPath(action.path)}><button className={className} type="submit">{children ?? action.label}</button></form>
+    : <a className={className} href={hostPath(action.path)}>{children ?? action.label}</a>;
+}
+
 export function HostActions() {
-  if (!hostProfile) return null;
-  return (
-    <div data-host-workspace className="flex flex-wrap items-center gap-3 text-small">
-      <span className="mr-auto text-[var(--dim)]">{hostProfile.workspace}</span>
-      {hostProfile.actions.map((action) => action.method === "post" ? (
-        <form key={action.path} method="post" action={action.path}>
-          <button className="min-h-11 rounded-[12px] border border-[var(--rule)] px-3" type="submit">{action.label}</button>
-        </form>
-      ) : (
-        <a key={action.path} className="inline-flex min-h-11 items-center underline underline-offset-2" href={action.path}>{action.label}</a>
-      ))}
-    </div>
-  );
+  if (!hostProfile || hostProfile.actions.length === 0) return null;
+  return <details className="relative"><summary aria-label="Account menu" className="repo-control repo-control-ghost repo-control-icon list-none">⋯</summary><div className="repo-menu">
+    {hostProfile.actions.map(action => <HostActionLink key={action.path} action={action} className="repo-control repo-control-ghost" />)}
+  </div></details>;
 }

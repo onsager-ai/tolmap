@@ -4,6 +4,7 @@ import { RepositoryPage } from "@/routes/RepositoryPage";
 import { CatalogueIndex } from "@/routes/CatalogueIndex";
 import { ReservedPage } from "@/routes/ReservedPage";
 import { MapView } from "@/routes/MapView";
+import { BatchProgressView } from "@/routes/BatchProgressView";
 import { IndexJobView } from "@/routes/IndexJobView";
 import { OrganizationView } from "@/routes/OrganizationView";
 import { RESERVED_NAMES } from "@/routes/reserved";
@@ -48,6 +49,12 @@ const newRoute = createRoute({
 /** Organizations are an application namespace, never a GitHub owner. Its
  * explicit route is registered before the repository route and `org` is
  * reserved above so a future one-segment owner route cannot capture it. */
+const batchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/new/batches/$batchId",
+  component: BatchProgressView,
+});
+
 const organizationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/org/$name",
@@ -75,7 +82,7 @@ const ownerRepoRoute = createRoute({
   component: MapView,
 });
 
-export const routeTree = rootRoute.addChildren([indexRoute, newRoute, organizationRoute, repositoryRoute, ...reservedRoutes, ownerRepoRoute]);
+export const routeTree = rootRoute.addChildren([indexRoute, newRoute, batchRoute, organizationRoute, repositoryRoute, ...reservedRoutes, ownerRepoRoute]);
 
 export const router = createRouter({ routeTree });
 
