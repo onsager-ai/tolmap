@@ -298,7 +298,8 @@ core never constructs provider routes. Catalogue rows remain ordered by latest
 indexed activity, show files, districts, language, indexed time and reported
 indexing/failure/reconnect status. Hosts return the complete repository list.
 
-Repository rows open `/repositories/<repository-id>/history`. A separate 44 px “Map”
+Repository rows open `/repositories/<repository-id>/history`. Hosted row ⋯ menus
+load advertised capabilities and offer Re-index when available. A separate 44 px “Map”
 affordance opens the latest map directly; this choice is a Storybook candidate
 for owner review. Without repository identity, public/static catalogue rows keep
 the approved layout and link directly to the map.

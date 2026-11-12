@@ -43,6 +43,8 @@ export function page(id: string): StoryObj<Args> {
         else await waitElement('[data-catalogue-row]');
         expect(canvas.queryByText('Authorized repository')).toBeNull();
         expect(canvas.queryByRole('button', { name: 'Map it' })).toBeNull();
+        if (id === 'hosted-empty-connect') expect(canvas.getByRole('link', { name: 'Connect GitHub' })).toBeVisible();
+        if (id === 'hosted-empty-add') expect(canvas.getAllByRole('button', { name: 'Add repository' }).length).toBe(2);
       } else if (id.startsWith('add-')) {
         const state = id.slice(4);
         await waitElement('dialog[open]');
