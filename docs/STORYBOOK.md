@@ -107,7 +107,9 @@ approved the 96 hosted Home, add sheet and batch progress captures and re-approv
 `43152991681` (source `cc14421`), also under `recaptures`. Later on 2026-11-12 the
 owner approved the 8 hub add-sheet reconnect captures and re-approved the 8 hub
 expired-session captures (now with Sign in) from run `43207280764` (source
-`db8c894`), also under `recaptures`. A registry with
+`db8c894`), also under `recaptures`. The owner re-approved 3 tablet walkthrough
+captures (walk-last light, walk-middle light/dark) after the open-panel framing fix
+for #295 from run `43207779191` (source `5fced30`), also under `recaptures`. A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
 `images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says
