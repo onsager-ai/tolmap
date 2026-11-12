@@ -15,7 +15,7 @@
 @media (pointer: coarse) { .repo-control::after { content: ""; position: absolute; top: 50%; left: 50%; width: 100%; height: 100%; min-width: 44px; min-height: 44px; transform: translate(-50%, -50%); } .repo-menu .repo-control { margin: 6px 0; } }
 .app-shell { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
 .app-workspace { min-width: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.add-repository-dialog { width: min(560px, calc(100% - 32px)); max-height: min(720px, calc(100% - 32px)); margin: auto; padding: 20px; border: 1px solid var(--rule); border-radius: 14px; background: var(--chrome2); color: var(--on); }
+.add-repository-dialog { width: min(560px, calc(100% - 32px)); max-width: none; max-height: min(720px, calc(100% - 32px)); margin: auto; padding: 20px; border: 1px solid var(--rule); border-radius: 14px; background: var(--chrome2); color: var(--on); }
 .add-repository-dialog[open] { display: flex; flex-direction: column; gap: 16px; }
 .add-repository-dialog::backdrop { background: #0007; }
 .offered-search { flex: none; width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--rule); border-radius: 7px; background: var(--chrome); font-size: 16px; color: var(--on); }
