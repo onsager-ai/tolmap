@@ -107,3 +107,82 @@ pub struct RepositoryHistory {
     /// Newest first, including all retained snapshots.
     pub snapshots: Vec<RepositorySnapshot>,
 }
+
+/// Optional browser composition. Every endpoint and provider action is host-owned.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct HostProfile {
+    #[ts(type = "1")]
+    pub version: u8,
+    pub private: bool,
+    pub workspace: String,
+    pub repositories: Vec<HostRepository>,
+    pub actions: Vec<HostAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub onboarding: Option<HostOnboarding>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct HostRepository {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct HostAction {
+    pub label: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"post\"")]
+    pub method: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct HostOnboarding {
+    pub offered_repositories_path: String,
+    pub batch_index_path: String,
+    /// Same-origin template containing {batch_id} exactly once.
+    pub batch_progress_path: String,
+    /// Query parameter whose value "1" reopens the sheet after provider return.
+    pub open_sheet_parameter: String,
+    pub install: Option<HostAction>,
+    pub manage_access: Option<HostAction>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct OfferedRepository {
+    pub provider_id: String,
+    pub full_name: String,
+    pub visibility: RepositoryVisibility,
+    pub connected_repository_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryVisibility {
+    Public,
+    Private,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct BatchIndexRequest {
+    pub provider_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct BatchIndexJob {
+    pub repository_id: String,
+    pub job_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct BatchIndexResponse {
+    pub batch_id: String,
+    pub jobs: Vec<BatchIndexJob>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct BatchProgress {
+    pub batch_id: String,
+    pub jobs: Vec<crate::service::jobs::JobSnapshot>,
+}

@@ -13,3 +13,26 @@
 .repo-snapshot { min-height: 52px; padding: 7px 12px; }
 @media (min-width: 640px) { .repo-control { height: 28px; font-size: 12px; } .repo-control-icon { width: 28px; font-size: 20px; } .repo-snapshot { min-height: 50px; } }
 @media (pointer: coarse) { .repo-control::after { content: ""; position: absolute; top: 50%; left: 50%; width: 100%; height: 100%; min-width: 44px; min-height: 44px; transform: translate(-50%, -50%); } .repo-menu .repo-control { margin: 6px 0; } }
+.app-shell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.app-workspace { flex: 1; min-width: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.add-repository-dialog { width: min(560px, calc(100% - 32px)); max-width: none; max-height: min(720px, calc(100% - 32px)); margin: auto; padding: 20px; border: 1px solid var(--rule); border-radius: 14px; background: var(--chrome2); color: var(--on); }
+.add-repository-dialog[open] { display: flex; flex-direction: column; gap: 16px; }
+.add-repository-dialog::backdrop { background: #0007; }
+.offered-search { flex: none; width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--rule); border-radius: 7px; background: var(--chrome); font-size: 16px; color: var(--on); }
+.offered-repositories { min-height: 90px; overflow-y: auto; font-size: 14px; }
+.offered-repository { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 0; border-bottom: 1px solid var(--rule); cursor: pointer; }
+.offered-repository:has(input:disabled) { color: var(--dim); cursor: default; }
+.offered-repository input { flex: none; width: 16px; height: 16px; accent-color: var(--accent); }
+.offered-badge { flex: none; display: inline-flex; align-items: center; min-height: 18px; border-radius: 4px; padding: 1px 5px; font-size: 12px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--dim); }
+.batch-progress-bar { width: 100%; height: 5px; accent-color: var(--accent); border: 0; border-radius: 4px; background: var(--rule); }
+.batch-progress-bar::-webkit-progress-bar { background: var(--rule); border-radius: 4px; }
+.batch-progress-bar::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+.batch-progress-bar::-moz-progress-bar { background: var(--accent); border-radius: 4px; }
+@media (max-width: 639px) { .add-repository-dialog { width: 100%; max-height: calc(100% - 24px); margin: auto 0 0; border-radius: 16px 16px 0 0; padding-bottom: max(20px, env(safe-area-inset-bottom)); } .app-workspace { max-width: 150px; } }
+
+.app-add-icon { display: none; }
+.batch-status { color: var(--dim); background: color-mix(in srgb, var(--dim) 10%, transparent); }
+.batch-status-running, .batch-status-done { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.batch-status-failed { color: var(--link-out); background: color-mix(in srgb, var(--link-out) 12%, transparent); }
+@media (max-width: 639px) { .app-add-repository { width: 32px; padding: 0; } .app-add-label { display: none; } .app-add-icon { display: inline; font-size: 20px; line-height: 1; } }
+@media (max-width: 399px) { .app-workspace { display: none; } }

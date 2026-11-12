@@ -1,4 +1,5 @@
 export const REQUIRED_STORIES = [
+  'hosted-list', 'hosted-empty-connect', 'hosted-empty-add', 'add-list', 'add-selected-two', 'add-already-mapped', 'add-loading', 'add-empty', 'add-search-miss', 'add-unavailable', 'add-expired', 'batch-progress',
   'home', 'home-empty', 'home-loading', 'home-unavailable',
   'home-repositories', 'repository-history', 'repository-running', 'repository-empty', 'repository-no-capabilities', 'repository-delete-snapshot',
   'local-start', 'local-confirm', 'local-running', 'local-cancelling', 'local-detection-failed', 'local-index-failed', 'local-saved',
@@ -50,13 +51,14 @@ export function assertRouteTreeContract(source) {
     if (!source.includes(fragment)) throw new Error(`Production routeTree is missing reserved-route guard: ${fragment}`);
   }
   const actual = [...source.matchAll(/\bpath:\s*(?:"([^"]+)"|`([^`]+)`)/g)].map(match => match[1] ?? match[2]).sort();
-  const expected = ['/', '/new', '/org/$name', '/repositories/$repositoryId/history', '/$owner/$repo', '/${name}'].sort();
+  const expected = ['/', '/new', '/new/batches/$batchId', '/org/$name', '/repositories/$repositoryId/history', '/$owner/$repo', '/${name}'].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Production route path set changed: [${actual.join(', ')}]`);
   return true;
 }
 
 export function captureApplies(item, viewport, host) {
-  return (host !== 'hub' || (!item.id.startsWith('reserved-') && !item.id.startsWith('local-')))
+  return (!(item.id.startsWith('hosted-') || item.id.startsWith('add-') || item.id === 'batch-progress') || host === 'hub')
+    && (host !== 'hub' || (!item.id.startsWith('reserved-') && !item.id.startsWith('local-')))
     && !(item.id === 'map-keyboard' && ['phone', 'landscape'].includes(viewport.name));
 }
 

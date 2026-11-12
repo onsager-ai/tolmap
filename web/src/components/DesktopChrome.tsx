@@ -19,6 +19,8 @@ import {
   desktopControlSize,
 } from "@/map/layoutProfile";
 import { FolderBody } from "@/components/SelectionPanel";
+import { useAddRepository } from "@/components/AppShell";
+import { hostProfile } from "@/host";
 import { TolmapLogo } from "@/components/TolmapLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PackageLegend } from "@/components/PackageLegend";
@@ -149,6 +151,7 @@ export interface DesktopChromeProps {
 
 /** Full-bleed desktop/tablet command bar, actions, dialogs and map controls. */
 export function DesktopChrome(p: DesktopChromeProps) {
+  const openAddRepository = useAddRepository();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const repoButtonRef = useRef<HTMLButtonElement>(null);
@@ -394,10 +397,10 @@ export function DesktopChrome(p: DesktopChromeProps) {
               ))}
             </div>
             <div data-repository-footer className="shrink-0 border-t border-[var(--rule)] pt-1">
-              <Link to="/" hash="repo-field" replace data-repo-map-another role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
+              {hostProfile?.onboarding ? <button type="button" data-repo-map-another role="menuitem" onClick={() => { setMenuOpen(false); openAddRepository(); }} className="repo-control repo-control-ghost w-full">Add repository</button> : <Link to="/" hash="repo-field" replace data-repo-map-another role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
                 <PlusIcon size={16} />
                 <span>Map another repository</span>
-              </Link>
+              </Link>}
               <Link to="/" data-repo-home role="menuitem" onClick={() => setMenuOpen(false)} className="flex min-h-[44px] items-center gap-2.5 rounded-[9px] px-2.5 text-small hover:bg-[var(--chrome-hover)]">
                 <MonoIcon><path d="M4 11l8-7 8 7v9H4z" /></MonoIcon>
                 <span>Home</span>
@@ -439,7 +442,7 @@ export function DesktopChrome(p: DesktopChromeProps) {
           <button ref={searchButtonRef} type="button" data-open-desktop-search aria-haspopup="dialog" aria-expanded={p.searchOpen} aria-label="Search districts, files and symbols" title={`Search  ${typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K"}`} onClick={openSearchFromButton} className={`flex ${p.touch ? "h-11 w-11" : "h-9 w-9"} items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]`}>
             <SearchIcon size={18} />
           </button>
-          <ThemeToggle iconSize={18} className={`border-0 bg-transparent text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)] ${p.touch ? "h-11 w-11 rounded-[10px]" : "h-9 w-9 rounded-[10px]"}`} />
+          {!hostProfile && <ThemeToggle iconSize={18} className={`border-0 bg-transparent text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)] ${p.touch ? "h-11 w-11 rounded-[10px]" : "h-9 w-9 rounded-[10px]"}`} />}
           <button ref={keyboardButtonRef} type="button" data-open-keyboard aria-label="Keyboard shortcuts" title="Keyboard shortcuts" aria-haspopup="dialog" aria-expanded={p.keyboardOpen} onClick={() => p.onKeyboardOpen(!p.keyboardOpen)} className={`flex ${p.touch ? "h-11 w-11" : "h-9 w-9"} items-center justify-center rounded-[10px] text-[var(--dim)] hover:bg-[var(--chrome-hover)] hover:text-[var(--on)]`}>
             <MonoIcon size={18}><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></MonoIcon>
           </button>

@@ -63,7 +63,7 @@ async function checkRunningPage(browser, base, report, profile) {
   const titleSize = await page.locator("[data-eta-range]").evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
   report(titleSize >= 30, `${label}: the ETA is the page title size (30 px)`, String(titleSize));
   const meta = await page.locator("[data-running-text]").innerText();
-  report(/^Running \d+m \d+s · started .+ · estimate$/.test(meta.trim()), `${label}: "Running … · started … · estimate"`, JSON.stringify(meta));
+  report(meta.trim() === "estimate", `${label}: estimate basis stays visible without technical timings`, JSON.stringify(meta));
 
   const states = await page.locator("[data-phase-row]").evaluateAll((rows) => rows.map((r) => `${r.dataset.phaseId}:${r.dataset.phaseState}`));
   report(
@@ -72,7 +72,7 @@ async function checkRunningPage(browser, base, report, profile) {
     JSON.stringify(states),
   );
   const fetchRow = await page.locator('[data-phase-row][data-phase-id="fetch"]').innerText();
-  report(/Download the repository/.test(fetchRow) && /15s/.test(fetchRow), `${label}: a finished phase shows its meaning and duration`, JSON.stringify(fetchRow));
+  report(/Download the repository/.test(fetchRow) && !/15s/.test(fetchRow), `${label}: a finished phase shows its meaning with timings behind details`, JSON.stringify(fetchRow));
   const step = await page.locator("[data-current-step]").innerText();
   report(/Parsing files/.test(step) && /3,912 \/ 6,347 files/.test(step) && /410 files\/s/.test(step), `${label}: the current step in plain words, with count and rate`, JSON.stringify(step));
   const pct = Number(await page.locator("[data-current-step] [data-progress-fill]").getAttribute("data-progress-pct"));
@@ -85,10 +85,13 @@ async function checkRunningPage(browser, base, report, profile) {
   report(/You can close this page\. The link keeps working, and the map opens here when it's ready\./.test(note), `${label}: with its note`, JSON.stringify(note));
   const details = page.locator("details[data-tech-details]");
   const open = await details.evaluate((el) => el.open).catch(() => null);
-  report(open === !profile.isMobile, `${label}: Technical details ${profile.isMobile ? "closed on a phone" : "open on desktop"}`, String(open));
+  report(open === false, `${label}: Technical details start closed on every viewport`, String(open));
+  report(!(await page.locator("[data-stage-position]").isVisible()), `${label}: stage position is hidden behind Technical details`);
+  await details.locator("summary").click();
+  const timing = await details.innerText();
+  report(/Running \d+m \d+s · started/.test(timing) && /9s/.test(timing) && /3s/.test(timing), `${label}: opened details expose elapsed and stage timings`, JSON.stringify(timing));
   const position = await page.locator("[data-stage-position]").innerText().catch(() => "");
   report(position.trim() === "stage 6 of 22", `${label}: "stage 6 of 22"`, JSON.stringify(position));
-  if (profile.isMobile) await details.locator("summary").click();
   const rows = await page.locator("[data-stage-row]").count();
   report(rows === 19, `${label}: the full stage list behind the disclosure (22 less 3 unused index stages)`, String(rows));
   const cancelText = await page.locator("[data-cancel-button]").innerText().catch(() => "");

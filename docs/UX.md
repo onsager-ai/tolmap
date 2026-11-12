@@ -270,17 +270,40 @@ shows *Added* members, and a finding whose measured values changed stays
 
 ### 4.9 Home (artboard "Home")
 
-A plain one-screen page: wordmark and theme button; "Map a codebase" with one sentence of what tolmap does; the repository field (16 px, mono) and a full-width "Map it" button; then "Mapped repositories" as 64 px rows with files, districts and language. On desktop the same content sits in a 640 px column.
+OSS Home keeps the “Map a codebase” introduction, a labelled 16 px mono GitHub
+URL field and “Map it”, followed by the repository catalogue in a 640 px column.
+Its controls use the compact sizes below.
 
-An authenticated host can compose this same page using the versioned
-[host profile](HOST_PROFILE.md): workspace/actions below the wordmark, an
-authorized-repository select in the existing field slot, and one catalogue row per
-stable repository identity. Rows are ordered by latest indexed activity and show
-files, districts, language, relative indexed time (exact time in the title), and
-host-reported indexing phase, failure or reconnect status. There is no client
-limit that drops repositories. The host must return the complete repository list.
+Hosted Home is the repository list. Home, repository pages, progress and maps
+share a wordmark, workspace name, compact “Add repository”, a ⋯ account menu
+built from advertised actions (Connections, Settings, Sign out), and theme toggle.
+On narrow phones the header uses an accessible + add button; the workspace
+truncates and is hidden below 400 px to keep one compact row. Maps retain their
+map-specific controls below this shell. Hosted Home has no
+introductory paragraph, authorized-repository dropdown or “Map it”. An empty
+workspace says “Map your first repository”, with “Connect GitHub” when the host
+advertises an install action, otherwise “Add repository”. The empty state has
+no redundant list heading, uses a section-sized headline, and hides header Add
+while Connect GitHub is the primary action.
 
-Repository rows open `/repositories/<repository-id>/history`. A separate 44 px “Map”
+The add dialog lists offered repositories with search, checkboxes, public/private
+badges and a Mapped marker on disabled connected rows. “Map N repositories” starts
+the selection; “Don't see it? Manage GitHub access ↗” uses the advertised provider
+action. It is a desktop dialog and a phone bottom sheet. Loading, no shared
+repositories, search miss, unavailable provider and expired session have explicit
+states. The host's query marker (value `1`) reopens and refreshes it after GitHub.
+One selection opens `/new?job=…`; several open `/new/batches/<batch-id>`.
+Batch rows show phase, an overview bar, status tint and trailing chevron, linking to the full progress
+page. The host persists batches so the URL survives reload. Stage positions and
+timing details live inside the closed “Technical details” disclosure.
+
+The versioned [host profile](HOST_PROFILE.md) advertises onboarding endpoints;
+core never constructs provider routes. Catalogue rows remain ordered by latest
+indexed activity, show files, districts, language, indexed time and reported
+indexing/failure/reconnect status. Hosts return the complete repository list.
+
+Repository rows open `/repositories/<repository-id>/history`. Hosted row ⋯ menus
+load advertised capabilities and offer Re-index when available. A separate 44 px “Map”
 affordance opens the latest map directly; this choice is a Storybook candidate
 for owner review. Without repository identity, public/static catalogue rows keep
 the approved layout and link directly to the map.
@@ -301,13 +324,12 @@ area of at least 44×44 px, independent of the smaller visual box. Status badges
 are 18–20 px tall, 12 px text, 4 px corners and token-tinted backgrounds. Snapshot
 rows are about 50 px on desktop; quiet icon menus hold destructive actions.
 Dialogs use the same compact controls, right-aligned, with a 400 px maximum width.
-These styles apply only to repository UI; approved Home forms/map chrome retain
-their existing controls.
+Home, onboarding and hosted shell controls use these same compact sizes.
 
 Progress, map and source reading remain the production OSS components. Private
 profiles do not fall back to a public catalogue or offer public issue links
-containing repository context. Existing OSS references remain unchanged; hosted
-identity/select states and repository pages need separate human-reviewed candidates.
+containing repository context. OSS behavior remains unchanged; compact Home controls, hosted shells and the new
+onboarding states are candidates for human review.
 The native local Saved snapshots template is unchanged pending a separate candidate
 and approval; local reuse also requires persisted analysis scope/core provenance.
 

@@ -94,6 +94,22 @@ export async function installFixture(state: string) {
   } : undefined;
   const handler = async ({ request }: { request: Request }) => {
     const url = new URL(request.url), path = url.pathname;
+    if (path === "/fixture/offered") {
+      if (state === "add-loading") await delay("infinite");
+      if (state === "add-expired") return json({ error: "session_expired" }, 401);
+      if (state === "add-unavailable") return json({ error: "provider_unavailable" }, 503);
+      return json(state === "add-empty" ? [] : [
+        { provider_id: "101", full_name: "acme/platform", visibility: "private", connected_repository_id: "acme-platform" },
+        { provider_id: "102", full_name: "acme/tools", visibility: "public", connected_repository_id: null },
+        { provider_id: "103", full_name: "acme/web", visibility: "private", connected_repository_id: null },
+      ]);
+    }
+    if (path === "/fixture/batch") return json({ batch_id: "fixture", jobs: [{ repository_id: "tools", job_id: "tools" }, { repository_id: "web", job_id: "web" }] }, 202);
+    if (path === "/fixture/batches/fixture") return json({ batch_id: "fixture", jobs: [
+      { ...snapshot("read"), job_id: "tools", slug: "acme/tools" },
+      { ...snapshot("queued"), job_id: "web", slug: "acme/web" },
+      { ...snapshot("clone_failed"), job_id: "docs", slug: "acme/docs" },
+    ] });
     if (path === "/api/repositories/acme-platform/history") return json(repositoryHistory);
     if (path === "/fixture/reindex") { job = snapshot("read"); return json({ job_id: "fixture", status: "queued", slug }); }
     if (path.startsWith("/fixture/snapshots/")) { repositoryHistory!.snapshots = repositoryHistory!.snapshots.filter(item => item.id !== `snapshot-${path.split("/").pop()}`); return new HttpResponse(null, { status: 204 }); }
@@ -107,6 +123,8 @@ export async function installFixture(state: string) {
     if (path.endsWith("/freshness")) return state === "freshness-in-map" ? json(failedFreshness) : json({}, 404);
     if (path === "/api/maps" || path === "/maps/index.json") {
       if (state === "repository-home") return json(groupedEntries);
+      if (state.startsWith("hosted-empty")) return json([]);
+      if (state === "hosted-list") return json([{ ...entry, repository_id: "acme-platform", latest_snapshot_id: "snapshot-1", snapshot_count: 9, status: { kind: "indexing", phase: "Read", job_id: "fixture" } }]);
       if (state === "loading") { await delay("infinite"); return json([]); }
       return state === "unavailable" ? json({ error: "unavailable" }, 503) : json(state === "empty" ? [] : [entry]);
     }

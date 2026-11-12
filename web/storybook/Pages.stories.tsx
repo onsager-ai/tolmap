@@ -97,3 +97,16 @@ export const RepositoryRunning = { ...page('repository-running') };
 export const RepositoryEmpty = { ...page('repository-empty') };
 export const RepositoryNoCapabilities = { ...page('repository-no-capabilities') };
 export const RepositoryDeleteSnapshot = { ...page('repository-delete-snapshot') };
+
+export const HostedList = { ...page('hosted-list') };
+export const HostedEmptyConnect = { ...page('hosted-empty-connect') };
+export const HostedEmptyAdd = { ...page('hosted-empty-add') };
+export const AddList = { ...page('add-list') };
+export const AddSelectedTwo = { ...page('add-selected-two') };
+export const AddAlreadyMapped = { ...page('add-already-mapped') };
+export const AddLoading = { ...page('add-loading') };
+export const AddEmpty = { ...page('add-empty') };
+export const AddSearchMiss = { ...page('add-search-miss') };
+export const AddUnavailable = { ...page('add-unavailable') };
+export const AddExpired = { ...page('add-expired') };
+export const BatchProgress = { ...page('batch-progress') };

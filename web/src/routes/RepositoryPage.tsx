@@ -5,6 +5,8 @@ import { API_BASE, type IndexResponse } from "@/api/client";
 import { useJobProgress } from "@/api/useJobProgress";
 import { IndexedTime, RepositoryState } from "@/components/RepositoryMeta";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { AppShell } from "@/components/AppShell";
+import { hostProfile } from "@/host";
 import { ProgressPage } from "@/routes/IndexJobView";
 import type { JobSnapshot, RepositoryAction, RepositoryHistory, RepositorySnapshot } from "@/types";
 
@@ -111,7 +113,7 @@ export function RepositoryPage() {
     setError(null); setConfirmation(value);
   }
   return <div className="h-full overflow-y-auto bg-[var(--chrome)] text-[var(--on)]"><main className="mx-auto flex max-w-[760px] flex-col gap-6 px-5 pb-10 pt-7">
-    <nav className="flex items-center justify-between"><Link to="/" className="flex min-h-11 items-center text-small text-[var(--accent)]">‹ Repositories</Link><ThemeToggle className="h-11 w-11 rounded-full" /></nav>
+    {hostProfile ? <AppShell /> : <nav className="flex items-center justify-between"><Link to="/" className="flex min-h-11 items-center text-small text-[var(--accent)]">‹ Repositories</Link><ThemeToggle className="h-11 w-11 rounded-full" /></nav>}
     {history.isLoading && <p>Loading repository…</p>}
     {history.isError && <div role="alert"><p>Repository history couldn't be reached.</p><button className={button} onClick={() => void history.refetch()}>Retry</button></div>}
     {data && <>

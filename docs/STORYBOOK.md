@@ -3,7 +3,9 @@
 Storybook renders the production route tree, React components, map renderer,
 fonts and tokens. `web/storybook/catalogue.mjs` is the page/state inventory.
 No alternate display implementation or fixture path enters the product bundle.
-The `host` toolbar previews OSS or synthetic private host composition; it is
+The default capture matrix includes the hosted-only onboarding candidates
+using the Hub profile alongside the existing OSS identities. The `host` toolbar
+previews OSS or synthetic private host composition; it is
 not authorization or a test of the real Hub service.
 
 Run on CI (do not run browsers on the thermally constrained maintainer host):
@@ -24,7 +26,8 @@ Only use this on a host whose local policy permits browser/rendering work.
 
 | Family | States | Governing reference |
 | --- | --- | --- |
-| Home | Catalogue, empty, loading, unavailable; grouped repositories with indexing/failed/reconnect status (27 snapshots across 3 repos) | UX §4.9; existing references preserved, grouped state candidate |
+| Home | Catalogue, empty, loading, unavailable; grouped repositories with indexing/failed/reconnect status (27 snapshots across 3 repos) | UX §4.9; compact OSS controls and hosted shell intentionally change existing Home captures |
+| Hosted onboarding | Home list, empty/connect, empty/add; add sheet list, selected two, mapped, loading, empty, search miss, unavailable, expired; batch progress | UX §4.9 and HOST_PROFILE.md; candidates, hub captures only |
 | Repository | History, running job, empty, no capabilities, delete-snapshot confirmation | UX §4.9 and HOST_PROFILE.md; candidates only |
 | Local checkout | Detect, scope/all-source confirmation, indexing/cancel, detection/index failure, saved history/export | LOCAL.md and production native template; preserve |
 | Indexing | No job, queue, Fetch/Read/Map/Detail, every failure class | UX §6; preserve |
@@ -98,7 +101,10 @@ path Start walkthrough control) on 2026-11-10 from run `42742304222` (source
 `ef8aea3`); `approved.json` records them under `recaptures`. The owner approved the 48
 repository Home and repository page captures (repository list, history, running job,
 empty, no capabilities, delete-snapshot confirmation) on 2026-11-11 from run
-`42995174099` (source `ac76780`), also under `recaptures`. A registry with
+`42995174099` (source `ac76780`), also under `recaptures`. On 2026-11-12 the owner
+approved the 96 hosted Home, add sheet and batch progress captures and re-approved
+72 intentionally changed public Home and job progress captures from run
+`43152991681` (source `cc14421`), also under `recaptures`. A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
 `images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says

@@ -9,8 +9,9 @@ the module script:
 {"version":1,"private":true,"workspace":"Personal workspace","repositories":[{"value":"opaque-repository-id","label":"owner/repository"}],"actions":[{"label":"Connections and history","path":"/workspace"},{"label":"Sign out","path":"/logout","method":"post"}]}
 ```
 
-Serialize it safely for HTML (escape `<` as `\u003c`). It selects authorized
-repository options instead of the public repository input. POST `/api/index`
+Serialize it safely for HTML (escape `<` as `\u003c`). The profile is Rust-defined
+in `src/catalogue.rs` and generated into `bindings/`. Hosted Home shows the
+repository list and shared app shell, without the public repository form. POST `/api/index`
 still returns the public `IndexResponse`; progress uses the generated
 `JobSnapshot` contract and real worker stage events. Unknown counts and ETA stay
 null. Completion may change the job's slug to an immutable snapshot route.
@@ -21,7 +22,7 @@ existing OSS behavior. The profile supplies presentation, never authority:
 the hosting server must validate sessions, grants, provider permission, immutable
 revision, cache hits, streams, source and downloads independently.
 
-The map remains full viewport, with the existing Home navigation and camera,
+The map fills the area below the shared hosted shell, with existing navigation and camera,
 selection, source-reader and visibility-gate behavior. There is no second
 reader or map implementation in the hosting application.
 
@@ -66,3 +67,43 @@ reopen only, and unknown core provenance stays null. Its public catalogue omits
 one retained map returns a one-item history. Native local history and same-commit
 reuse are deferred: existing local metadata does not persist core revision or
 analysis scope, and changing the approved native template requires owner review.
+
+## Repository onboarding and batches (#297)
+
+`HostProfile.onboarding` is optional; omit it to advertise no add capability.
+`repositories` remains supported for existing profile producers, but is no longer
+an input picker. Account `actions` populate the shell's ⋯ menu; labels and paths
+are host-owned, and `method:"post"` submits a same-origin form.
+
+Example onboarding capability (all paths here are illustrative, not core routes):
+
+```json
+{"offered_repositories_path":"/host/offered","batch_index_path":"/host/index-batch","batch_progress_path":"/host/batches/{batch_id}","open_sheet_parameter":"add","install":null,"manage_access":{"label":"Manage GitHub access","path":"/host/github/configure"}}
+```
+
+- `GET offered_repositories_path` returns `OfferedRepository[]`, each with
+  `provider_id` (opaque string), `full_name`, `visibility` (`public` or `private`),
+  and nullable `connected_repository_id`. Connected rows are marked Mapped and
+  cannot be selected. The host returns the complete offered list.
+- `POST batch_index_path` accepts `BatchIndexRequest`: `{"provider_ids":["101","102"]}`.
+  It validates provider access, connects the selection and starts indexing, returning
+  `BatchIndexResponse`: `{"batch_id":"batch-1","jobs":[{"repository_id":"repo-1","job_id":"job-1"},{"repository_id":"repo-2","job_id":"job-2"}]}`.
+  A successful response has at least one job. Errors must not silently drop selected
+  repositories; the host owns transactional/idempotency policy.
+- `GET batch_progress_path`, replacing its single `{batch_id}` placeholder with
+  the encoded id, returns `BatchProgress`: `{"batch_id":"batch-1","jobs":[...]}`
+  using the existing generated `JobSnapshot` shape. The host persists membership,
+  authorizes every read and retains progress across browser reloads. Core polls
+  every two seconds until all jobs are done or failed.
+- `install` is a nullable `HostAction`: when present the empty workspace offers
+  “Connect GitHub”; otherwise it offers “Add repository”. `manage_access` supplies
+  the quiet provider access link, including POST form semantics when required.
+- The provider callback returns to Home with `?<open_sheet_parameter>=1` (for
+  example `/?add=1`). Opening the sheet always refreshes offered repositories;
+  closing removes the marker. Core does not embed a provider callback route.
+
+Endpoints are same-origin absolute paths and JSON; 401/403 produce expired-session
+copy, other errors provider-unavailable copy with Retry. Sessions and provider
+permission remain server authority. Single jobs use the existing `/new` flow;
+multiple jobs use the core route `/new/batches/<batch-id>`. No capability means
+no sheet, and `tolmap serve` needs no changes to implement this optional contract.
