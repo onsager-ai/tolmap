@@ -1,8 +1,10 @@
 import { hostPath } from "@/host";
 
 export class HostRequestError extends Error {
-  constructor(public status: number) {
+  status: number;
+  constructor(status: number) {
     super(status === 401 || status === 403 ? "Your session has expired. Sign in again to add repositories." : "GitHub repositories are unavailable right now. Try again shortly.");
+    this.status = status;
   }
 }
 
