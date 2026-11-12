@@ -28,10 +28,10 @@ export function AddRepositoryProvider({ children }: { children: ReactNode }) {
 
 export function useAddRepository() { return useContext(AddRepositoryContext); }
 
-export function AddRepositoryButton() {
+export function AddRepositoryButton({ compact = false }: { compact?: boolean } = {}) {
   const open = useAddRepository();
   if (!hostProfile?.onboarding) return null;
-  return <button type="button" className="repo-control" onClick={open}>Add repository</button>;
+  return <button type="button" className={`repo-control ${compact ? "app-add-repository" : ""}`} aria-label="Add repository" onClick={open}>{compact && <span className="app-add-icon" aria-hidden="true">+</span>}<span className={compact ? "app-add-label" : undefined}>Add repository</span></button>;
 }
 
 export function FirstRepositoryAction() {
@@ -44,6 +44,6 @@ export function AppShell() {
   return <header data-app-shell className="app-shell">
     <Link to="/" aria-label="tolmap home" className="shrink-0"><TolmapLogo className="h-7 w-auto" /></Link>
     {hostProfile && <span data-host-workspace className="app-workspace text-small text-[var(--dim)]">{hostProfile.workspace}</span>}
-    <div className="ml-auto flex items-center gap-2 py-1"><AddRepositoryButton /><HostActions /><ThemeToggle className="repo-control repo-control-icon" /></div>
+    <div className="ml-auto flex shrink-0 items-center gap-2 py-1">{!hostProfile?.onboarding?.install && <AddRepositoryButton compact />}<HostActions /><ThemeToggle className="repo-control repo-control-icon" /></div>
   </header>;
 }

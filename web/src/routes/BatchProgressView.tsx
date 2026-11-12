@@ -2,6 +2,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { hostProfile } from "@/host";
 import { hostRequest } from "@/api/onboarding";
+import { ChevronIcon } from "@/components/phone/icons";
 import { AppShell } from "@/components/AppShell";
 import { summarisePhases } from "@/lib/indexPhases";
 import type { BatchProgress } from "@bindings/BatchProgress";
@@ -21,11 +22,12 @@ export function BatchProgressView() {
       const phases = summarisePhases(job);
       const phase = phases.find(item => item.state === "running" || item.state === "failed");
       const complete = job.status === "done";
+      const tone = job.status === "failed" ? "failed" : complete ? "done" : job.status === "queued" ? "queued" : "running";
       // Stage position is a lower-bound overview; within-stage work never implies
       // a precise estimate of total indexing time.
       const progress = complete ? 100 : job.progress ? Math.max(0, Math.min(99, ((job.progress.stage_index - 1) / job.progress.stage_count) * 100)) : undefined;
       return <li key={job.job_id} className="border-b border-[var(--rule)] last:border-0"><Link to="/new" search={{ job: job.job_id, slug: job.slug }} data-batch-job className="flex flex-col gap-2 px-4 py-3 hover:bg-[var(--chrome2)]">
-        <span className="flex items-baseline justify-between gap-3"><span className="min-w-0 break-words font-mono text-small">{job.slug}</span><span className="offered-badge">{complete ? "Ready" : job.status === "failed" ? "Failed" : job.status === "queued" ? "Queued" : phase?.title ?? "Mapping"}</span></span>
+        <span className="flex items-baseline justify-between gap-3"><span className="min-w-0 break-words font-mono text-small">{job.slug}</span><span className="flex shrink-0 items-center gap-2"><span className={`offered-badge batch-status batch-status-${tone}`}>{complete ? "Ready" : job.status === "failed" ? "Failed" : job.status === "queued" ? "Queued" : phase?.title ?? "Mapping"}</span><span aria-hidden="true" className="text-[var(--dim)]"><ChevronIcon /></span></span></span>
         <progress aria-label={`Mapping ${job.slug}`} max={100} value={progress} className="batch-progress-bar" />
         <span className="text-meta text-[var(--dim)]">{job.status === "failed" ? job.error ?? "Mapping failed. Open details to retry." : complete ? "Open progress to view the map" : phase?.meaning ?? "Waiting to start"}</span>
       </Link></li>;

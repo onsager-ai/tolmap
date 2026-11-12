@@ -3,7 +3,7 @@ export type { HostProfile } from "@bindings/HostProfile";
 import type { HostProfile } from "@bindings/HostProfile";
 
 export function hostPath(path: string) {
-  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\") || /[\u0000-\u0020\u007f]/.test(path)) throw new Error("Host paths must stay on this origin");
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\") || [...path].some(character => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127)) throw new Error("Host paths must stay on this origin");
   return path;
 }
 

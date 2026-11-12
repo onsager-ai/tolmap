@@ -40,10 +40,10 @@ export function page(id: string): StoryObj<Args> {
       if (id.startsWith('hosted-')) {
         await waitElement('[data-app-shell]');
         if (id !== 'hosted-list') await waitElement('[data-catalogue-empty]');
-        else await waitElement('[data-catalogue-row]');
+        else { await waitElement('[data-catalogue-row] time'); await waitElement('[data-repository-status="indexing"]'); await waitElement('a[aria-label^="Open latest map"]'); }
         expect(canvas.queryByText('Authorized repository')).toBeNull();
         expect(canvas.queryByRole('button', { name: 'Map it' })).toBeNull();
-        if (id === 'hosted-empty-connect') expect(canvas.getByRole('link', { name: 'Connect GitHub' })).toBeVisible();
+        if (id === 'hosted-empty-connect') { expect(canvas.getByRole('link', { name: 'Connect GitHub' })).toBeVisible(); expect(canvas.queryByRole('button', { name: 'Add repository' })).toBeNull(); }
         if (id === 'hosted-empty-add') expect(canvas.getAllByRole('button', { name: 'Add repository' }).length).toBe(2);
       } else if (id.startsWith('add-')) {
         const state = id.slice(4);

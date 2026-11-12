@@ -277,10 +277,14 @@ Its controls use the compact sizes below.
 Hosted Home is the repository list. Home, repository pages, progress and maps
 share a wordmark, workspace name, compact “Add repository”, a ⋯ account menu
 built from advertised actions (Connections, Settings, Sign out), and theme toggle.
-Maps retain their map-specific controls below this shell. Hosted Home has no
+On narrow phones the header uses an accessible + add button; the workspace
+truncates and is hidden below 400 px to keep one compact row. Maps retain their
+map-specific controls below this shell. Hosted Home has no
 introductory paragraph, authorized-repository dropdown or “Map it”. An empty
 workspace says “Map your first repository”, with “Connect GitHub” when the host
-advertises an install action, otherwise “Add repository”.
+advertises an install action, otherwise “Add repository”. The empty state has
+no redundant list heading, uses a section-sized headline, and hides header Add
+while Connect GitHub is the primary action.
 
 The add dialog lists offered repositories with search, checkboxes, public/private
 badges and a Mapped marker on disabled connected rows. “Map N repositories” starts
@@ -289,7 +293,7 @@ action. It is a desktop dialog and a phone bottom sheet. Loading, no shared
 repositories, search miss, unavailable provider and expired session have explicit
 states. The host's query marker (value `1`) reopens and refreshes it after GitHub.
 One selection opens `/new?job=…`; several open `/new/batches/<batch-id>`.
-Batch rows show phase, an overview bar and status, linking to the full progress
+Batch rows show phase, an overview bar, status tint and trailing chevron, linking to the full progress
 page. The host persists batches so the URL survives reload. Stage positions and
 timing details live inside the closed “Technical details” disclosure.
 

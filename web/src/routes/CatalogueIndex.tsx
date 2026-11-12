@@ -67,7 +67,7 @@ export function CatalogueIndex() {
         </div>}
 
         <div className="flex flex-col gap-2.5">
-          <h2 className="text-section-title">Mapped repositories</h2>
+          {(!hostProfile || data.length > 0 || isLoading || isError) && <h2 className="text-section-title">Mapped repositories</h2>}
 
           {isLoading && <p className="text-small text-[var(--dim)]">loading…</p>}
 
@@ -91,7 +91,7 @@ export function CatalogueIndex() {
           )}
 
           {!isLoading && !isError && data.length === 0 && (
-            hostProfile ? <div data-catalogue-empty className="flex flex-col items-start gap-3 rounded-[14px] border border-[var(--rule)] p-5"><h1 className="text-title">Map your first repository</h1><p className="text-small text-[var(--dim)]">Choose the repositories you want to explore.</p><FirstRepositoryAction /></div> : <p data-catalogue-empty className="text-small text-[var(--dim)]">No repositories mapped yet — paste one above.</p>
+            hostProfile ? <div data-catalogue-empty className="flex flex-col items-start gap-3 rounded-[14px] border border-[var(--rule)] p-5"><h1 className="text-section-title">Map your first repository</h1><p className="text-small text-[var(--dim)]">Choose the repositories you want to explore.</p><FirstRepositoryAction /></div> : <p data-catalogue-empty className="text-small text-[var(--dim)]">No repositories mapped yet — paste one above.</p>
           )}
 
           {!isLoading && !isError && data.length > 0 && (

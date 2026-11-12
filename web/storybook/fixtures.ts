@@ -124,6 +124,7 @@ export async function installFixture(state: string) {
     if (path === "/api/maps" || path === "/maps/index.json") {
       if (state === "repository-home") return json(groupedEntries);
       if (state.startsWith("hosted-empty")) return json([]);
+      if (state === "hosted-list") return json([{ ...entry, repository_id: "acme-platform", latest_snapshot_id: "snapshot-1", snapshot_count: 9, status: { kind: "indexing", phase: "Read", job_id: "fixture" } }]);
       if (state === "loading") { await delay("infinite"); return json([]); }
       return state === "unavailable" ? json({ error: "unavailable" }, 503) : json(state === "empty" ? [] : [entry]);
     }
