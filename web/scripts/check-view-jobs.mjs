@@ -89,7 +89,7 @@ async function checkRunningPage(browser, base, report, profile) {
   report(!(await page.locator("[data-stage-position]").isVisible()), `${label}: stage position is hidden behind Technical details`);
   await details.locator("summary").click();
   const timing = await details.innerText();
-  report(/Running \d+m \d+s · started/.test(timing) && /15s/.test(timing), `${label}: opened details expose elapsed and stage timings`, JSON.stringify(timing));
+  report(/Running \d+m \d+s · started/.test(timing) && /9s/.test(timing) && /3s/.test(timing), `${label}: opened details expose elapsed and stage timings`, JSON.stringify(timing));
   const position = await page.locator("[data-stage-position]").innerText().catch(() => "");
   report(position.trim() === "stage 6 of 22", `${label}: "stage 6 of 22"`, JSON.stringify(position));
   const rows = await page.locator("[data-stage-row]").count();
