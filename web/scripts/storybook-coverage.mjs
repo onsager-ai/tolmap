@@ -1,5 +1,5 @@
 export const REQUIRED_STORIES = [
-  'hosted-list', 'hosted-empty-connect', 'hosted-empty-add', 'add-list', 'add-selected-two', 'add-already-mapped', 'add-loading', 'add-empty', 'add-search-miss', 'add-unavailable', 'add-expired', 'batch-progress',
+  'hosted-list', 'hosted-empty-connect', 'hosted-empty-add', 'add-list', 'add-selected-two', 'add-already-mapped', 'add-loading', 'add-empty', 'add-search-miss', 'add-unavailable', 'add-expired', 'add-reconnect', 'batch-progress',
   'home', 'home-empty', 'home-loading', 'home-unavailable',
   'home-repositories', 'repository-history', 'repository-running', 'repository-empty', 'repository-no-capabilities', 'repository-delete-snapshot',
   'local-start', 'local-confirm', 'local-running', 'local-cancelling', 'local-detection-failed', 'local-index-failed', 'local-saved',
@@ -57,7 +57,7 @@ export function assertRouteTreeContract(source) {
 }
 
 export function captureApplies(item, viewport, host) {
-  return (!(item.id.startsWith('hosted-') || item.id.startsWith('add-') || item.id === 'batch-progress') || host === 'hub')
+  return (item.id === 'add-reconnect' || !(item.id.startsWith('hosted-') || item.id.startsWith('add-') || item.id === 'batch-progress') || host === 'hub')
     && (host !== 'hub' || (!item.id.startsWith('reserved-') && !item.id.startsWith('local-')))
     && !(item.id === 'map-keyboard' && ['phone', 'landscape'].includes(viewport.name));
 }

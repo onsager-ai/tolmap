@@ -22,6 +22,8 @@ function readProfile(): HostProfile | undefined {
     if (!onboarding.open_sheet_parameter) throw new Error("Missing open sheet parameter");
     if (onboarding.install) hostPath(onboarding.install.path);
     if (onboarding.manage_access) hostPath(onboarding.manage_access.path);
+    if (onboarding.sign_in) hostPath(onboarding.sign_in.path);
+    if (onboarding.authorize) hostPath(onboarding.authorize.path);
   }
   return value;
 }

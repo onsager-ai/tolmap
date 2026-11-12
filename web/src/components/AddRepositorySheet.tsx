@@ -22,7 +22,9 @@ export function AddRepositorySheet({ onClose }: { onClose: () => void }) {
   const selectedRepositories = repositories.filter(repo => !repo.connected_repository_id && selected.has(repo.provider_id));
   const visible = repositories.filter(repo => repo.full_name.toLowerCase().includes(search.trim().toLowerCase()));
   const expired = offered.error instanceof HostRequestError && [401, 403].includes(offered.error.status);
-  const state = offered.isLoading ? "loading" : offered.isError ? expired ? "expired" : "unavailable" : repositories.length === 0 ? "empty" : visible.length === 0 ? "search-miss" : "list";
+  const reconnect = offered.error instanceof HostRequestError && offered.error.status === 409;
+  const recoveryAction = expired ? onboarding.sign_in : reconnect ? onboarding.authorize : undefined;
+  const state = offered.isLoading ? "loading" : offered.isError ? expired ? "expired" : reconnect ? "reconnect" : "unavailable" : repositories.length === 0 ? "empty" : visible.length === 0 ? "search-miss" : "list";
   async function submit() {
     if (pending || selectedRepositories.length === 0) return;
     setPending(true); setSubmitError(undefined);
@@ -44,7 +46,7 @@ export function AddRepositorySheet({ onClose }: { onClose: () => void }) {
       {state === "loading" && <p role="status">Loading repositories…</p>}
       {state === "empty" && <p>No repositories shared with tolmap yet.</p>}
       {state === "search-miss" && <p>No repositories match “{search}”.</p>}
-      {offered.isError && <div role="alert"><p>{offered.error.message}</p>{!expired && <button type="button" className="repo-control mt-3" onClick={() => void offered.refetch()}>Retry</button>}</div>}
+      {offered.isError && <div role="alert"><p>{reconnect ? "Reconnect GitHub to see your repositories." : offered.error.message}</p>{recoveryAction ? <HostActionLink action={recoveryAction} className="repo-control repo-control-primary mt-3" /> : !expired && !reconnect && <button type="button" className="repo-control mt-3" onClick={() => void offered.refetch()}>Retry</button>}</div>}
       {visible.map(repo => <label key={repo.provider_id} data-offered-repository className="offered-repository">
         <input type="checkbox" disabled={!!repo.connected_repository_id || pending} checked={selected.has(repo.provider_id)} onChange={event => setSelected(previous => { const next = new Set(previous); if (event.target.checked) next.add(repo.provider_id); else next.delete(repo.provider_id); return next; })} />
         <span className="min-w-0 flex-1 break-words font-mono text-small">{repo.full_name}</span><span className="offered-badge">{repo.visibility}</span>{repo.connected_repository_id && <span className="offered-badge">Mapped</span>}

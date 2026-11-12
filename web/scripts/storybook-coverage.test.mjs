@@ -33,6 +33,8 @@ test('catalogue, Storybook IDs and production route paths stay in exact coverage
   assert.equal(captureApplies({ id: 'map-keyboard' }, { name: 'phone' }, 'oss'), false);
   assert.equal(captureApplies({ id: 'reserved-about' }, { name: 'desktop' }, 'hub'), false);
   assert.equal(captureApplies({ id: 'map-overview' }, { name: 'desktop' }, 'hub'), true);
+  assert.equal(captureApplies({ id: 'add-reconnect' }, { name: 'phone' }, 'oss'), true);
+  assert.equal(captureApplies({ id: 'add-reconnect' }, { name: 'desktop' }, 'hub'), true);
   const routeSource = await fs.readFile(new URL('../src/router.tsx', import.meta.url), 'utf8');
   assert.equal(assertRouteTreeContract(routeSource), true);
   assert.throws(() => assertRouteTreeContract(routeSource.replace('path: "/new",', 'path: "/unexpected", path: "/new",')), /route path set changed/);
