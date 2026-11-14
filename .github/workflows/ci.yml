@@ -1471,67 +1471,12 @@ jobs:
       - name: cargo build
         run: cargo build --release --bin tolmap
 
-      - name: Full nine-fixture parity
-        run: |
-          set -uo pipefail
-          # name pkg lang url commit -- commits pinned at the SHA each
-          # fixture happened to be at when this workflow was authored
-          # (2026-09-19). Not verified to be the exact commit `data/*.json`
-          # was itself measured against (that commit is not recorded
-          # anywhere in this repo) -- if a fixture's numbers drift from
-          # data/*.json, check that before assuming a regression.
-          fixtures="
-          flask      src/flask      py https://github.com/pallets/flask.git      d73fa1cdcbd8b1465c151db8924ba58b1dd14e35
-          httpx      httpx          py https://github.com/encode/httpx.git       b5addb64f0161ff6bfe94c124ef76f6a1fba5254
-          rich       rich           py https://github.com/Textualize/rich.git    9d8f9a372cc5916fd4781fec207ced7ddac2f08f
-          celery     celery         py https://github.com/celery/celery.git     208a803655672d63cf2a257d30f39c672a5b4bcf
-          scrapy     scrapy         py https://github.com/scrapy/scrapy.git      fe30c1882a12651c19c5a94d71e9f14e442456c7
-          sqlalchemy lib/sqlalchemy py https://github.com/sqlalchemy/sqlalchemy.git 4883307858ea3def775b5a1cc1c01a5be6dfe213
-          django     django         py https://github.com/django/django.git     a3f0642f69277f01611d0d3e829fc3b85aded2ec
-          vue        packages       ts https://github.com/vuejs/core.git        4ab865a848a1da3d10fb674f857e5fff13094644
-          prometheus .              go https://github.com/prometheus/prometheus.git 296080c0a504ea0e72941ef16143f0a9702b137b
-          tolmap     .              rs https://github.com/onsager-ai/tolmap.git  c62a96869a86940dcdb8eaa251f43e31b481c181
-          "
-          mkdir -p full-clones full-out
-          failed=""
-          while read -r name pkg lang url sha; do
-            [ -z "$name" ] && continue
-            echo "::group::$name"
-            dir="full-clones/$name"
-            # Blobless clone: co-change needs full commit history (git log
-            # over every commit, not just the tip), so a depth-1 clone is
-            # not enough -- docs/ARCHITECTURE.md's documented clone strategy.
-            git clone --quiet --filter=blob:none "$url" "$dir"
-            git -C "$dir" checkout --quiet "$sha"
-            # --refs hand: data/*.json is the hand path's output -- the
-            # Rust product's for all nine since finding 53 re-derived
-            # httpx, the last frozen-Python-reference fixture
-            # (data/fixtures.toml's `generator`) -- and it knows no SCIP. The SCIP path is
-            # gated against its own fixtures in `scip-fixtures` below.
-            ./target/release/tolmap build "$dir" --pkg "$pkg" --lang "$lang" \
-              --refs hand --name "$name" --out full-out --resolution 1.1
-            if ! ./target/release/tolmap parity "data/${name}.json" "full-out/${name}.json"; then
-              failed="$failed $name"
-            fi
-            echo "::endgroup::"
-          done <<< "$fixtures"
-          failed="$(echo "$failed" | xargs)"  # trim
-          echo "failed fixtures:${failed:+ $failed}${failed:-" (none)"}"
-          # See the workflow-level comment: sqlalchemy failing alone, on its
-          # landmark list only, is the one open, measured gap
-          # (docs/FINDINGS.md finding 11) -- not a regression signal by
-          # itself. Anything else failing, or sqlalchemy failing alongside
-          # another fixture, is a real regression and must not be silently
-          # absorbed into "expected". Still exits non-zero even on the
-          # expected case: this job's whole purpose is to stay a visible red
-          # record of the gap until it's actually closed, not to report green
-          # over it.
-          if [ "$failed" = "sqlalchemy" ]; then
-            echo "only the known gap (sqlalchemy) failed -- see docs/FINDINGS.md finding 11"
-            exit 1
-          elif [ -z "$failed" ]; then
-            echo "all nine fixtures passed -- if sqlalchemy's gap has been closed, update the workflow comment and this check"
-          else
-            echo "UNEXPECTED failure(s), beyond the known sqlalchemy gap: $failed"
-            exit 1
-          fi
+      - name: Regenerate pinned fixtures with seeded names and parity
+        run: python3 eval/regenerate_fixtures.py --out fixture-record
+
+      - name: Upload regenerated maps, lenses and parity evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: regenerated-fixtures
+          path: fixture-record/
+          if-no-files-found: error
