@@ -38,13 +38,18 @@ def main():
         run("git", "clone", "--quiet", "--filter=blob:none", spec["url"], str(repo))
         run("git", "-C", str(repo), "checkout", "--quiet", spec["commit"])
         seed_names.seed(name, str(built))
-        run("target/release/tolmap", "build", str(repo), "--pkg", spec["pkg"],
-            "--lang", spec["lang"], "--refs", "hand", "--name", name,
-            "--out", str(built), "--resolution", "1.1")
+        command = ["target/release/tolmap", "build", str(repo), "--pkg", spec["pkg"],
+                   "--lang", spec["lang"], "--refs", "hand", "--name", name,
+                   "--out", str(built), "--resolution", "1.1"]
+        if not spec["parcels"]:
+            command.append("--no-parcels")
+        run(*command)
         parity = subprocess.run(
             ["target/release/tolmap", "parity", f"data/{name}.json", str(built / f"{name}.json")],
-            capture_output=True, text=True, check=True)
+            capture_output=True, text=True)
         print(parity.stdout, flush=True)
+        print(parity.stderr, flush=True)
+        parity.check_returncode()
         before = json.loads(Path(f"data/{name}.json").read_text())
         after = json.loads((built / f"{name}.json").read_text())
         if before["names"] != after["names"]:
