@@ -79,6 +79,8 @@ fn directory_layout_and_invalid_indices() {
     let bytes = include_bytes!("../data/flask.json");
     std::fs::write(temp.path().join("flask.json"), bytes).unwrap();
     std::fs::write(temp.path().join("flask.names.json"), b"{}").unwrap();
+    // Known sidecars are never parsed during map-only directory discovery.
+    std::fs::write(temp.path().join("flask.symbols.json"), b"not JSON").unwrap();
     assert_eq!(Snapshot::load(temp.path()).unwrap().map.repo, "flask");
     std::fs::write(temp.path().join("other.json"), bytes).unwrap();
     assert!(Snapshot::load(temp.path()).is_err());
@@ -196,6 +198,21 @@ fn cli_exit_codes_and_text() {
         .unwrap();
     assert_eq!(bad.status.code(), Some(2));
     assert!(bad.stdout.is_empty());
+    #[cfg(unix)]
+    {
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let internal = std::process::Command::new(binary)
+            .args(["overview", "--map"])
+            .arg(&map)
+            .stdout(full)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(internal.code(), Some(3));
+    }
 }
 
 #[test]
@@ -234,4 +251,17 @@ fn hierarchical_symbols_and_unknown_coverage() {
         .coverage
         .calls_total
         .is_none());
+    let mut malformed = symbols;
+    malformed["symbols"][0][5] = serde_json::json!(1);
+    std::fs::write(
+        map.with_extension("symbols.json"),
+        serde_json::to_vec(&malformed).unwrap(),
+    )
+    .unwrap();
+    assert!(s
+        .where_is("run", 8)
+        .unwrap_err()
+        .to_string()
+        .contains("cycle"));
+    assert_eq!(s.where_is(&s.map.files[0], 8).unwrap().total, 1);
 }

@@ -62,7 +62,12 @@ impl Snapshot {
             let mut maps = Vec::new();
             for entry in std::fs::read_dir(path).context("read map directory")? {
                 let candidate = entry?.path();
-                if candidate.extension().is_some_and(|ext| ext == "json") && candidate.is_file() {
+                let name = candidate.file_name().unwrap_or_default().to_string_lossy();
+                if candidate.extension().is_some_and(|ext| ext == "json")
+                    && !name.ends_with(".symbols.json")
+                    && !name.ends_with(".names.json")
+                    && candidate.is_file()
+                {
                     let bytes = std::fs::read(&candidate)?;
                     if serde_json::from_slice::<MapDocument>(&bytes).is_ok() {
                         maps.push(candidate);
@@ -433,6 +438,18 @@ pub fn text(report: &QueryResponse) -> String {
         report.total,
         if report.truncated { " (truncated)" } else { "" }
     );
+    out.push_str(&format!(
+        "{} commit={} sha256={} limit={}\n",
+        report.schema,
+        report.map.commit.as_deref().unwrap_or("unknown"),
+        report.map.sha256,
+        report.limit
+    ));
+    out.push_str(&format!(
+        "query={} coverage={}\n",
+        serde_json::to_string(&report.query).expect("query serializes"),
+        serde_json::to_string(&report.coverage).expect("coverage serializes")
+    ));
     if matches!(
         report.query,
         Query::Where {

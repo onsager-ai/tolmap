@@ -85,7 +85,6 @@ pub enum QueryResult {
     File {
         path: String,
         district: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
         symbol: Option<QuerySymbol>,
     },
     Dependency {

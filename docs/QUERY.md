@@ -31,7 +31,9 @@ the caller.
 
 Only a symbol lookup reads the map's `<stem>.symbols.json` sibling, when present.
 A missing sibling uses the older compact map `S` table, which has no parent
-hierarchy; only simple names and `path::name` work there. A malformed or
+hierarchy; only simple names and `path::name` work there. Compact names are
+stored truncated to 44 characters, so full long-name searches require a symbols
+sibling and compact qualified names are not guaranteed unique. A malformed or
 unreadable sibling is an input error rather than silent fallback. The sibling
 must belong to the same build as the map; legacy files contain no shared
 identity with which to verify this association.
@@ -49,7 +51,7 @@ uses the same envelope, also available as generic `QueryEnvelope<T>` for future
 snapshot queries:
 
 ```json
-{"schema":"tolmap.query/v1","query":{"kind":"where","target":"src/main.rs","ambiguous":false},"map":{"repo":"tolmap","commit":null,"sha256":"<64 lowercase hex digits>"},"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":8,"total":1,"truncated":false,"results":[{"kind":"file","path":"src/main.rs","district":"<district name>"}]}
+{"schema":"tolmap.query/v1","query":{"kind":"where","target":"src/main.rs","ambiguous":false},"map":{"repo":"tolmap","commit":null,"sha256":"<64 lowercase hex digits>"},"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":8,"total":1,"truncated":false,"results":[{"kind":"file","path":"src/main.rs","district":"<district name>","symbol":null}]}
 ```
 
 The example's angle-bracket values are placeholders. JSON is compact UTF-8 with
@@ -74,8 +76,9 @@ one trailing newline. Paths and district names replace all internal indices.
 ## Query and result shapes
 
 - **where**: `query` has `target` and `ambiguous`. Rows are
-  `{"kind":"file","path":...,"district":...}` with optional
-  `symbol: {"name":...,"qualified_name":...,"start":...,"end":...}`.
+  `{"kind":"file","path":...,"district":...,"symbol":null}` for files;
+  symbol candidates set `symbol` to
+  `{"name":...,"qualified_name":...,"start":...,"end":...}`.
   Line ranges are the stored one-based inclusive ranges. Symbol candidates sort
   by path, start line, qualified name, then end line.
 - **deps**: `query` has `path` and `direction` (`in`, `out`, `both`). Rows are
