@@ -238,7 +238,10 @@ def main():
 
     def truncation(payload):
         doc = json.loads(payload)
-        return {key: doc[key] for key in ('total', 'limit', 'truncated', 'omitted', 'next_limit') if key in doc} | ({'directions': doc['directions']} if 'directions' in doc else {})
+        result = {key: doc[key] for key in ('total', 'limit', 'truncated', 'omitted', 'next_limit')}
+        if 'directions' in doc['query']:
+            result['directions'] = doc['query']['directions']
+        return result
 
     def cost(byte_count, calls, **extra):
         return {'bytes': byte_count, 'calls': calls, **extra}
