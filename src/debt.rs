@@ -295,6 +295,7 @@ pub struct DebtReport {
     /// Filter selections used to produce this report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filters: Option<DebtFilters>,
+    /// Counts after applying the selected CLI filters and ranking limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filtered_counts: Option<BTreeMap<String, usize>>,
     // Always true: see the module comment.
@@ -1545,6 +1546,18 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
     use std::fmt::Write;
     let t = &report.thresholds;
     let mut out = String::new();
+    if let Some(filters) = &report.filters {
+        let _ = writeln!(
+            out,
+            "applied filters: kinds={:?}, path={:?}, district={:?}, top={:?}",
+            filters.kinds, filters.path, filters.district, filters.top
+        );
+        let _ = writeln!(
+            out,
+            "unfiltered totals: {:?}; filtered counts: {:?}",
+            report.unfiltered_counts, report.filtered_counts
+        );
+    }
     let _ = writeln!(
         out,
         "debt findings for {} ({} files, {} edges); counts are lower bounds",
@@ -1723,63 +1736,170 @@ fn count_kinds(report: &DebtReport) -> BTreeMap<String, usize> {
         (KIND_UNREACHED, report.unreached.len()),
         (KIND_UNDECLARED_RUST, report.undeclared_rust.len()),
         (KIND_HIDDEN_COUPLING, report.hidden_coupling.len()),
-    ].into_iter().map(|(k, n)| (k.to_owned(), n)).collect()
+    ]
+    .into_iter()
+    .map(|(k, n)| (k.to_owned(), n))
+    .collect()
 }
 
 fn glob_match(pattern: &str, text: &str) -> bool {
     let (mut p, mut t, mut star, mut retry) = (0usize, 0usize, None, 0usize);
     let (pb, tb) = (pattern.as_bytes(), text.as_bytes());
     while t < tb.len() {
-        if p < pb.len() && (pb[p] == b'?' || pb[p] == tb[t]) { p += 1; t += 1; }
-        else if p < pb.len() && pb[p] == b'*' { star = Some(p); p += 1; retry = t; }
-        else if let Some(s) = star { retry += 1; t = retry; p = s + 1; }
-        else { return false; }
+        if p < pb.len() && (pb[p] == b'?' || pb[p] == tb[t]) {
+            p += 1;
+            t += 1;
+        } else if p < pb.len() && pb[p] == b'*' {
+            star = Some(p);
+            p += 1;
+            retry = t;
+        } else if let Some(s) = star {
+            retry += 1;
+            t = retry;
+            p = s + 1;
+        } else {
+            return false;
+        }
     }
-    while p < pb.len() && pb[p] == b'*' { p += 1; }
+    while p < pb.len() && pb[p] == b'*' {
+        p += 1;
+    }
     p == pb.len()
 }
 
 fn path_matches(path: &str, pattern: &str) -> bool {
-    if pattern.contains('*') || pattern.contains('?') { glob_match(pattern, path) }
-    else { path.starts_with(pattern) }
+    if pattern.contains('*') || pattern.contains('?') {
+        glob_match(pattern, path)
+    } else {
+        path.starts_with(pattern)
+    }
 }
 
-fn apply_filters(report: &mut DebtReport, map: &MapDocument, kinds: &[String], path: Option<&str>, district: Option<&str>, top: Option<usize>) {
+fn apply_filters(
+    report: &mut DebtReport,
+    map: &MapDocument,
+    kinds: &[String],
+    path: Option<&str>,
+    district: Option<&str>,
+    top: Option<usize>,
+) {
     let totals = count_kinds(report);
-    let known = [KIND_CYCLE, KIND_MISPLACED, KIND_GOD, KIND_HOTSPOT, KIND_UNREACHED, KIND_UNDECLARED_RUST, KIND_HIDDEN_COUPLING];
-    for kind in kinds { if !known.contains(&kind.as_str()) { eprintln!("tolmap debt: unknown kind `{kind}`"); } }
-    let kind_selected = |kind: &str| kinds.is_empty() || kinds.iter().any(|k| k == kind);
+    let known = [
+        KIND_CYCLE,
+        KIND_MISPLACED,
+        KIND_GOD,
+        KIND_HOTSPOT,
+        KIND_UNREACHED,
+        KIND_UNDECLARED_RUST,
+        KIND_HIDDEN_COUPLING,
+    ];
+    let normalized_kinds: Vec<&str> = kinds
+        .iter()
+        .map(|kind| match kind.as_str() {
+            "cycle" => KIND_CYCLE,
+            "misplaced" => KIND_MISPLACED,
+            "god" => KIND_GOD,
+            "hotspot" => KIND_HOTSPOT,
+            "unreached" => KIND_UNREACHED,
+            "undeclared-rust" => KIND_UNDECLARED_RUST,
+            "hidden-coupling" => KIND_HIDDEN_COUPLING,
+            other => other,
+        })
+        .collect();
+    for kind in &normalized_kinds {
+        if !known.contains(kind) {
+            eprintln!("tolmap debt: unknown kind `{kind}`");
+        }
+    }
+    let kind_selected = |kind: &str| kinds.is_empty() || normalized_kinds.contains(&kind);
     if !kinds.is_empty() {
-        if !kind_selected(KIND_CYCLE) { report.cycles.clear(); }
-        if !kind_selected(KIND_MISPLACED) { report.misplaced.clear(); }
-        if !kind_selected(KIND_GOD) { report.god_files.clear(); }
-        if !kind_selected(KIND_HOTSPOT) { report.hotspots.clear(); }
-        if !kind_selected(KIND_UNREACHED) { report.unreached.clear(); }
-        if !kind_selected(KIND_UNDECLARED_RUST) { report.undeclared_rust.clear(); }
-        if !kind_selected(KIND_HIDDEN_COUPLING) { report.hidden_coupling.clear(); }
+        if !kind_selected(KIND_CYCLE) {
+            report.cycles.clear();
+        }
+        if !kind_selected(KIND_MISPLACED) {
+            report.misplaced.clear();
+        }
+        if !kind_selected(KIND_GOD) {
+            report.god_files.clear();
+        }
+        if !kind_selected(KIND_HOTSPOT) {
+            report.hotspots.clear();
+        }
+        if !kind_selected(KIND_UNREACHED) {
+            report.unreached.clear();
+        }
+        if !kind_selected(KIND_UNDECLARED_RUST) {
+            report.undeclared_rust.clear();
+        }
+        if !kind_selected(KIND_HIDDEN_COUPLING) {
+            report.hidden_coupling.clear();
+        }
     }
     let district_name_by_id = |id: usize| district_name(map, id);
-    report.misplaced.retain(|x| path.map_or(true, |p| path_matches(&x.path,p)) && district.map_or(true, |d| district_name_by_id(x.district) == d));
-    report.god_files.retain(|x| path.map_or(true, |p| path_matches(&x.path,p)) && district.map_or(true, |d| district_name_by_id(x.district) == d));
-    report.hotspots.retain(|x| path.map_or(true, |p| path_matches(&x.path,p)) && district.map_or(true, |d| district_name_by_id(x.district) == d));
-    report.unreached.retain(|x| path.map_or(true, |p| path_matches(&x.path,p)) && district.map_or(true, |d| district_name_by_id(x.district) == d));
-    report.undeclared_rust.retain(|x| path.map_or(true, |p| path_matches(&x.path,p)) && district.map_or(true, |d| district_name_by_id(x.district) == d));
-    report.hidden_coupling.retain(|x| path.map_or(true, |p| path_matches(&x.left,p) || path_matches(&x.right,p)) && district.map_or(true, |d| district_name_by_id(x.left_district) == d || district_name_by_id(x.right_district) == d));
-    report.cycles.retain(|x| path.map_or(true, |p| cycle_files(x).iter().any(|f| path_matches(f,p))) && district.map_or(true, |d| x.districts.iter().any(|x| district_name_by_id(x.id) == d)));
-    if let Some(n) = top { report.hotspots.truncate(n); report.god_files.truncate(n); }
+    report.misplaced.retain(|x| {
+        path.map_or(true, |p| path_matches(&x.path, p))
+            && district.map_or(true, |d| district_name_by_id(x.district) == d)
+    });
+    report.god_files.retain(|x| {
+        path.map_or(true, |p| path_matches(&x.path, p))
+            && district.map_or(true, |d| district_name_by_id(x.district) == d)
+    });
+    report.hotspots.retain(|x| {
+        path.map_or(true, |p| path_matches(&x.path, p))
+            && district.map_or(true, |d| district_name_by_id(x.district) == d)
+    });
+    report.unreached.retain(|x| {
+        path.map_or(true, |p| path_matches(&x.path, p))
+            && district.map_or(true, |d| district_name_by_id(x.district) == d)
+    });
+    report.undeclared_rust.retain(|x| {
+        path.map_or(true, |p| path_matches(&x.path, p))
+            && district.map_or(true, |d| district_name_by_id(x.district) == d)
+    });
+    report.hidden_coupling.retain(|x| {
+        path.map_or(true, |p| {
+            path_matches(&x.left, p) || path_matches(&x.right, p)
+        }) && district.map_or(true, |d| {
+            district_name_by_id(x.left_district) == d || district_name_by_id(x.right_district) == d
+        })
+    });
+    report.cycles.retain(|x| {
+        path.map_or(true, |p| cycle_files(x).iter().any(|f| path_matches(f, p)))
+            && district.map_or(true, |d| {
+                x.districts.iter().any(|x| district_name_by_id(x.id) == d)
+            })
+    });
+    if let Some(n) = top {
+        report.hotspots.truncate(n);
+        report.god_files.truncate(n);
+    }
     let has_filter = !kinds.is_empty() || path.is_some() || district.is_some() || top.is_some();
     if has_filter {
         report.unfiltered_counts = Some(totals);
         report.filtered_counts = Some(count_kinds(report));
-        report.filters = Some(DebtFilters { kinds: kinds.to_vec(), path: path.map(str::to_owned), district: district.map(str::to_owned), top });
+        report.filters = Some(DebtFilters {
+            kinds: kinds.to_vec(),
+            path: path.map(str::to_owned),
+            district: district.map(str::to_owned),
+            top,
+        });
     }
 }
 
 // `tolmap debt`. Findings are informational: 0 on success, 2 on an
 // unreadable map.
-pub fn run(map: &std::path::Path, format: &str) -> i32 { run_filtered(map, format, &[], None, None, None) }
+pub fn run(map: &std::path::Path, format: &str) -> i32 {
+    run_filtered(map, format, &[], None, None, None)
+}
 
-pub fn run_filtered(map: &std::path::Path, format: &str, kinds: &[String], path: Option<&str>, district: Option<&str>, top: Option<usize>) -> i32 {
+pub fn run_filtered(
+    map: &std::path::Path,
+    format: &str,
+    kinds: &[String],
+    path: Option<&str>,
+    district: Option<&str>,
+    top: Option<usize>,
+) -> i32 {
     let bytes = match std::fs::read(map) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -1798,8 +1918,15 @@ pub fn run_filtered(map: &std::path::Path, format: &str, kinds: &[String], path:
     apply_filters(&mut report, &doc, kinds, path, district, top);
     let rendered = match format {
         "json" => render_json(&report),
-        "lens" => { let mut text = format!("# applied filters: kinds={:?}, path={:?}, district={:?}, top={:?}\n", kinds, path, district, top); text.push_str(&to_lens(&report, &doc).to_toml()); text },
-        _ => { let mut text = format!("applied filters: kinds={:?}, path={:?}, district={:?}, top={:?}\n", kinds, path, district, top); text.push_str(&render_text_with_files(&report, Some(&doc.files))); text },
+        "lens" => {
+            let mut text = format!(
+                "# applied filters: kinds={:?}, path={:?}, district={:?}, top={:?}\n",
+                kinds, path, district, top
+            );
+            text.push_str(&to_lens(&report, &doc).to_toml());
+            text
+        }
+        _ => render_text_with_files(&report, Some(&doc.files)),
     };
     print!("{rendered}");
     0
@@ -1809,30 +1936,151 @@ pub fn run_filtered(map: &std::path::Path, format: &str, kinds: &[String], path:
 
 pub const DEBT_DIFF_VERSION: u32 = 1;
 #[derive(Serialize)]
-struct DebtDiff { version: u32, before_version: u32, after_version: u32, findings: Vec<DebtDiffItem> }
+struct DebtDiff {
+    version: u32,
+    before_version: u32,
+    after_version: u32,
+    findings: Vec<DebtDiffItem>,
+}
 #[derive(Serialize)]
-struct DebtDiffItem { kind: String, identity: String, status: &'static str, before: Option<serde_json::Value>, after: Option<serde_json::Value>, deltas: BTreeMap<String, f64> }
+struct DebtDiffItem {
+    kind: String,
+    identity: String,
+    status: &'static str,
+    before: Option<serde_json::Value>,
+    after: Option<serde_json::Value>,
+    deltas: BTreeMap<String, f64>,
+}
 
 fn report_items(report: &DebtReport) -> BTreeMap<(String, String), serde_json::Value> {
     let mut out = BTreeMap::new();
-    macro_rules! put { ($kind:expr, $identity:expr, $value:expr) => { out.insert(($kind.to_owned(), $identity.to_owned()), serde_json::to_value($value).unwrap()); }; }
-    for x in &report.misplaced { put!(KIND_MISPLACED, &x.path, x); }
-    for x in &report.god_files { put!(KIND_GOD, &x.path, x); }
-    for x in &report.hotspots { put!(KIND_HOTSPOT, &x.path, x); }
-    for x in &report.unreached { put!(KIND_UNREACHED, &x.path, x); }
-    for x in &report.undeclared_rust { put!(KIND_UNDECLARED_RUST, &x.path, x); }
-    for x in &report.hidden_coupling { put!(KIND_HIDDEN_COUPLING, format!("{}|{}", x.left, x.right), x); }
-    for x in &report.cycles { let identity = cycle_path_name(&cycle_files(x)); put!(KIND_CYCLE, identity, x); }
+    macro_rules! put {
+        ($kind:expr, $identity:expr, $value:expr) => {
+            out.insert(
+                ($kind.to_owned(), $identity.to_owned()),
+                serde_json::to_value($value).unwrap(),
+            );
+        };
+    }
+    for x in &report.misplaced {
+        put!(KIND_MISPLACED, &x.path, x);
+    }
+    for x in &report.god_files {
+        put!(KIND_GOD, &x.path, x);
+    }
+    for x in &report.hotspots {
+        put!(KIND_HOTSPOT, &x.path, x);
+    }
+    for x in &report.unreached {
+        put!(KIND_UNREACHED, &x.path, x);
+    }
+    for x in &report.undeclared_rust {
+        put!(KIND_UNDECLARED_RUST, &x.path, x);
+    }
+    for x in &report.hidden_coupling {
+        put!(KIND_HIDDEN_COUPLING, format!("{}|{}", x.left, x.right), x);
+    }
+    for x in &report.cycles {
+        let identity = cycle_path_name(&cycle_files(x));
+        let mut value = serde_json::to_value(x).unwrap();
+        value["district_names"] = serde_json::Value::Array(
+            x.districts
+                .iter()
+                .map(|d| serde_json::Value::String(d.name.clone()))
+                .collect(),
+        );
+        out.insert((KIND_CYCLE.to_owned(), identity), value);
+    }
     out
 }
 
 pub fn run_diff(before_path: &std::path::Path, after_path: &std::path::Path) -> i32 {
-    let read = |p: &std::path::Path| -> Result<DebtReport, String> { let b=std::fs::read(p).map_err(|e|e.to_string())?; serde_json::from_slice(&b).map_err(|e|e.to_string()) };
-    let (before, after) = match (read(before_path), read(after_path)) { (Ok(a),Ok(b)) => (a,b), (Err(e),_) => {eprintln!("tolmap debt diff: {}: {e}",before_path.display()); return 2}, (_,Err(e)) => {eprintln!("tolmap debt diff: {}: {e}",after_path.display()); return 2} };
-    if before.version != DEBT_REPORT_VERSION || after.version != DEBT_REPORT_VERSION { eprintln!("tolmap debt diff: unsupported DebtReport version (expected {DEBT_REPORT_VERSION})"); return 2; }
-    let a=report_items(&before); let b=report_items(&after); let keys: BTreeSet<_>=a.keys().chain(b.keys()).cloned().collect();
-    let findings=keys.into_iter().map(|(kind,identity)| { let x=a.get(&(kind.clone(),identity.clone())); let y=b.get(&(kind.clone(),identity.clone())); let status=match(x,y){(Some(_),Some(_))=>"shared",(Some(_),None)=>"removed",(None,Some(_))=>"added",_=>unreachable!()}; let mut deltas=BTreeMap::new(); if let (Some(x),Some(y))=(x,y) { for field in ["churn","complexity","score","fanin","edges","out_edges","cochanges","weight","share"] { if let (Some(a),Some(b))=(x.get(field).and_then(|v|v.as_f64()),y.get(field).and_then(|v|v.as_f64())) { deltas.insert(field.to_owned(),b-a); } } } DebtDiffItem{kind,identity,status,before:x.cloned(),after:y.cloned(),deltas} }).collect();
-    println!("{}",serde_json::to_string_pretty(&DebtDiff{version:DEBT_DIFF_VERSION,before_version:before.version,after_version:after.version,findings}).unwrap()); 0
+    let read = |p: &std::path::Path| -> Result<DebtReport, String> {
+        let b = std::fs::read(p).map_err(|e| e.to_string())?;
+        serde_json::from_slice(&b).map_err(|e| e.to_string())
+    };
+    let (before, after) = match (read(before_path), read(after_path)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) => {
+            eprintln!("tolmap debt diff: {}: {e}", before_path.display());
+            return 2;
+        }
+        (_, Err(e)) => {
+            eprintln!("tolmap debt diff: {}: {e}", after_path.display());
+            return 2;
+        }
+    };
+    if before.version != DEBT_REPORT_VERSION || after.version != DEBT_REPORT_VERSION {
+        eprintln!(
+            "tolmap debt diff: unsupported DebtReport version (expected {DEBT_REPORT_VERSION})"
+        );
+        return 2;
+    }
+    if before.filters.is_some() || after.filters.is_some() {
+        eprintln!(
+            "tolmap debt diff: filtered reports cannot be compared; provide unfiltered reports"
+        );
+        return 2;
+    }
+    let a = report_items(&before);
+    let b = report_items(&after);
+    let keys: BTreeSet<_> = a.keys().chain(b.keys()).cloned().collect();
+    let findings = keys
+        .into_iter()
+        .map(|(kind, identity)| {
+            let x = a.get(&(kind.clone(), identity.clone()));
+            let y = b.get(&(kind.clone(), identity.clone()));
+            let status = match (x, y) {
+                (Some(_), Some(_)) => "shared",
+                (Some(_), None) => "removed",
+                (None, Some(_)) => "added",
+                _ => unreachable!(),
+            };
+            let mut deltas = BTreeMap::new();
+            if let (Some(x), Some(y)) = (x, y) {
+                for field in [
+                    "churn",
+                    "complexity",
+                    "score",
+                    "fanin",
+                    "edges",
+                    "out_edges",
+                    "cochanges",
+                    "weight",
+                    "share",
+                    "fanin_rank",
+                    "complexity_rank",
+                    "cross_edges",
+                ] {
+                    if let (Some(a), Some(b)) = (
+                        x.get(field).and_then(|v| v.as_f64()),
+                        y.get(field).and_then(|v| v.as_f64()),
+                    ) {
+                        deltas.insert(field.to_owned(), b - a);
+                    }
+                }
+            }
+            DebtDiffItem {
+                kind,
+                identity,
+                status,
+                before: x.cloned(),
+                after: y.cloned(),
+                deltas,
+            }
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&DebtDiff {
+            version: DEBT_DIFF_VERSION,
+            before_version: before.version,
+            after_version: after.version,
+            findings
+        })
+        .unwrap()
+    );
+    0
 }
 
 // ---- built-in lens and comparison (issue #250 items 3-4) -------------------

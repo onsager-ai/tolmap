@@ -344,6 +344,42 @@ fn debt_cli_formats_and_exit_codes() {
         "{}",
         String::from_utf8_lossy(&check.stdout)
     );
+    let (code, filtered) = run(&[
+        "--map", m, "--format", "json", "--kind", "hotspot", "--path", "src/c/*", "--top", "1",
+    ]);
+    assert_eq!(code, 0);
+    let filtered: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+    assert_eq!(filtered["version"], debt::DEBT_REPORT_VERSION);
+    assert_eq!(filtered["unfiltered_counts"]["hotspot"], 1);
+    assert_eq!(filtered["filtered_counts"]["hotspot"], 1);
+    assert_eq!(filtered["filters"]["path"], "src/c/*");
+    assert_eq!(filtered["hotspots"][0]["path"], "src/c/hot.py");
+    let before_report = dir.path().join("before-report.json");
+    let after_report = dir.path().join("after-report.json");
+    std::fs::write(
+        &before_report,
+        debt::render_json(&debt::findings(&synthetic())),
+    )
+    .unwrap();
+    let mut changed = synthetic();
+    changed.nodes[12].0 .5 = 25;
+    std::fs::write(&after_report, debt::render_json(&debt::findings(&changed))).unwrap();
+    let diff = std::process::Command::new(env!("CARGO_BIN_EXE_tolmap"))
+        .args(["debt", "diff"])
+        .arg(&before_report)
+        .arg(&after_report)
+        .output()
+        .unwrap();
+    assert_eq!(diff.status.code(), Some(0));
+    let diff: serde_json::Value = serde_json::from_slice(&diff.stdout).unwrap();
+    let hot = diff["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["identity"] == "src/c/hot.py")
+        .unwrap();
+    assert_eq!(hot["status"], "shared");
+    assert_eq!(hot["deltas"]["churn"], 5.0);
     assert_eq!(before, std::fs::read(&map).unwrap());
     assert_eq!(
         run(&["--map", dir.path().join("absent.json").to_str().unwrap()]).0,

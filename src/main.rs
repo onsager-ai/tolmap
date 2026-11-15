@@ -228,7 +228,7 @@ enum Command {
         #[arg(long, default_value = "text", value_parser = ["text", "json", "lens"])]
         format: String,
         /// Keep only these finding kinds (repeatable).
-        #[arg(long, value_parser = ["district cycle", "misplaced file", "god file", "hotspot", "no inbound edge found", "undeclared Rust file", "hidden coupling"])]
+        #[arg(long, value_parser = ["cycle", "misplaced", "god", "hotspot", "unreached", "undeclared-rust", "hidden-coupling"])]
         kind: Vec<String>,
         /// Keep findings whose paths match this prefix or glob.
         #[arg(long)]
@@ -236,7 +236,7 @@ enum Command {
         /// Keep findings in this district.
         #[arg(long)]
         district: Option<String>,
-        /// Limit ranked finding kinds after filtering.
+        /// Limit ranked finding kinds after filtering (god files and hotspots).
         #[arg(long)]
         top: Option<usize>,
     },
@@ -844,13 +844,33 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Debt { command, map, format, kind, path, district, top } => {
+        Command::Debt {
+            command,
+            map,
+            format,
+            kind,
+            path,
+            district,
+            top,
+        } => {
             let code = match command {
-                Some(DebtCommand::Diff { before, after }) => tolmap::debt::run_diff(&before, &after),
-                None => match map {
-                    Some(map) => tolmap::debt::run_filtered(&map, &format, &kind, path.as_deref(), district.as_deref(), top),
-                    None => { eprintln!("tolmap debt: provide --map or `debt diff`"); 2 }
+                Some(DebtCommand::Diff { before, after }) => {
+                    tolmap::debt::run_diff(&before, &after)
                 }
+                None => match map {
+                    Some(map) => tolmap::debt::run_filtered(
+                        &map,
+                        &format,
+                        &kind,
+                        path.as_deref(),
+                        district.as_deref(),
+                        top,
+                    ),
+                    None => {
+                        eprintln!("tolmap debt: provide --map or `debt diff`");
+                        2
+                    }
+                },
             };
             std::process::exit(code)
         }
