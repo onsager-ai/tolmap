@@ -248,9 +248,10 @@ jobs:
             REPOS_INPUT="check-calibration"
           fi
           if [ "$COMMAND" = "agent-pilot" ]; then
-            REPOS_INPUT="onsager-ai/tolmap"
+            matrix='{"include":[{"slug":"onsager-ai/tolmap"}]}'
+          else
+            matrix="$(python3 eval/remote_matrix.py --repos "$REPOS_INPUT")"
           fi
-          matrix="$(python3 eval/remote_matrix.py --repos "$REPOS_INPUT")"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           if [ -n "$COMPARE_REF" ]; then
             echo "has_compare=true" >> "$GITHUB_OUTPUT"

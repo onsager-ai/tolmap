@@ -8,6 +8,7 @@ The full baseline reads raw files then a grep/Python projection; filtered_only
 also records the cheaper case where an agent already knows the schema.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -126,6 +127,8 @@ def main():
          "before_bytes": map_bytes + dep_projection, "before_calls": 2,
          "filtered_only_bytes": dep_projection, "filtered_only_calls": 1,
          "complete_query_bytes": len(complete),
+         "complete_query_calls": 1, "retry_total_bytes": len(deps) + len(complete),
+         "retry_total_calls": 2,
          "note": "Default deps is capped at 8; complete recall requires a second call with --limit 1000"},
         {"task": "review-impact", "query_bytes": len(check), "query_calls": 1,
          "before_bytes": base_path.stat().st_size + len(diff) + impact_projection, "before_calls": 3,
@@ -150,6 +153,7 @@ def main():
     save("measurements", {
         "binary_commit": run("binary-sha", ["git", "rev-parse", "HEAD"]).decode().strip(),
         "source_commit": main_sha, "diff_commit": diff_sha,
+        "map_sha256": hashlib.sha256(map_path.read_bytes()).hexdigest(),
         "raw_bytes": {"map": map_bytes, "symbols": symbols_bytes, "debt": len(debt)},
         "tasks": tasks, "recall_default": recall(deps), "recall_complete": recall(complete),
         "declaration_edge_excluded": "src/lib.rs: pub mod check; (not a name-use import)",
