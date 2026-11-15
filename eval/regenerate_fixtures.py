@@ -1,13 +1,14 @@
-"""CI-only landmark refresh at data/fixtures.toml pins.
+"""Regenerate pinned Rust fixtures in CI, preserving names and gating parity.
 
-PR #302's general regeneration is not on main yet. This scoped variant keeps
-all committed fields except L byte-equivalent, verifies the rebuilt partition
-and extraction exactly, and records every landmark change. It never refreshes
-Flask lenses when the Flask fixture is unchanged.
+Run from the repository root after building target/release/tolmap. The output
+artifact contains only maps, suggested lenses, and the parity/name evidence.
+Historical rust-* generator labels all select the current Rust hand resolver;
+they record the last algorithm change that required each oracle's refresh.
 """
 import argparse
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tomllib
 
@@ -30,9 +31,9 @@ def main():
     manifest = tomllib.loads(Path("data/fixtures.toml").read_text())
     evidence = []
     for name, spec in manifest.items():
-        print(f"::group::{name} ({spec['generator']})", flush=True)
         if not spec["generator"].startswith("rust-"):
-            raise SystemExit(f"{name}: unsupported generator")
+            raise SystemExit(f"{name}: unsupported generator {spec['generator']}")
+        print(f"::group::{name} ({spec['generator']})", flush=True)
         repo = clones / name
         run("git", "clone", "--quiet", "--filter=blob:none", spec["url"], str(repo))
         run("git", "-C", str(repo), "checkout", "--quiet", spec["commit"])
@@ -43,38 +44,42 @@ def main():
         if not spec["parcels"]:
             command.append("--no-parcels")
         run(*command)
-        original = Path(f"data/{name}.json")
-        before = json.loads(original.read_text())
-        after = json.loads((built / f"{name}.json").read_text())
-        for key in ("F", "E", "S", "U", "names", "q"):
-            if before[key] != after[key]:
-                raise SystemExit(f"{name}: non-landmark {key} changed")
-        if [row[0] for row in before["N"]] != [row[0] for row in after["N"]]:
-            raise SystemExit(f"{name}: partition changed")
-        # Compare all original structural fields with only the intentionally
-        # changed L replaced. The product parity command remains unmodified.
-        expected = dict(before, L=after["L"])
-        candidate = args.out / f"{name}.json"
-        if before["L"] == after["L"]:
-            candidate.write_bytes(original.read_bytes())
-        else:
-            candidate.write_text(json.dumps(expected, separators=(",", ":"), ensure_ascii=False))
         parity = subprocess.run(
-            ["target/release/tolmap", "parity", str(candidate), str(built / f"{name}.json")],
+            ["target/release/tolmap", "parity", f"data/{name}.json", str(built / f"{name}.json")],
             capture_output=True, text=True)
         print(parity.stdout, flush=True)
         print(parity.stderr, flush=True)
         parity.check_returncode()
-        describe = lambda rows: [{"file": before["F"][row[0]], "kind": row[1],
-                                  "detail": row[2], "rank": row[3]} for row in rows]
-        evidence.append({"fixture": name, "commit": spec["commit"],
-                         "placement": "100.0%", "delta_q": 0,
-                         "before": describe(before["L"]), "after": describe(after["L"]),
-                         "parity": parity.stdout, "parity_exit": parity.returncode})
+        before = json.loads(Path(f"data/{name}.json").read_text())
+        after = json.loads((built / f"{name}.json").read_text())
+        # Entry selection must not affect extraction or partition inputs.
+        # Record every landmark row, including rank changes, for PR review.
+        for key in ("F", "E", "S", "U", "q"):
+            if before[key] != after[key]:
+                raise SystemExit(f"{name}: non-landmark {key} changed")
+        if [row[0] for row in before["N"]] != [row[0] for row in after["N"]]:
+            raise SystemExit(f"{name}: partition changed")
+        if before["names"] != after["names"]:
+            raise SystemExit(f"{name}: district names changed: {before['names']} -> {after['names']}")
+        if "D" not in after:
+            raise SystemExit(f"{name}: missing D sidecar")
+        evidence.append({"fixture": name, "generator": spec["generator"],
+                         "commit": spec["commit"], "before_names": before["names"],
+                         "after_names": after["names"], "before_keys": sorted(before),
+                         "after_keys": sorted(after),
+                         "before_landmarks": [
+                             {"file": before["F"][row[0]], "kind": row[1],
+                              "detail": row[2], "rank": row[3]} for row in before["L"]],
+                         "after_landmarks": [
+                             {"file": after["F"][row[0]], "kind": row[1],
+                              "detail": row[2], "rank": row[3]} for row in after["L"]],
+                         "parity": parity.stdout,
+                         "parity_exit": parity.returncode})
+        shutil.copyfile(built / f"{name}.json", args.out / f"{name}.json")
         print("::endgroup::", flush=True)
-    flask_changed = (args.out / "flask.json").read_bytes() != Path("data/flask.json").read_bytes()
-    if flask_changed:
-        raise SystemExit("Flask changed unexpectedly; do not refresh its lens baseline")
+    if (args.out / "flask.json").read_bytes() != Path("data/flask.json").read_bytes():
+        run("target/release/tolmap", "lens", "suggest", "--map", str(args.out / "flask.json"),
+            "--out", str(args.out / "lenses/flask-suggest"))
     (args.out / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
 
 

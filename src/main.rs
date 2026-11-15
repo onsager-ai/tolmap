@@ -16,6 +16,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Summarize districts in a stored map (docs/QUERY.md).
+    Overview(tolmap::query::QueryOptions),
+    /// Locate a file or symbol in a stored map (docs/QUERY.md).
+    Where(tolmap::query::WhereArgs),
+    /// Direct incoming/outgoing map imports (docs/QUERY.md).
+    Deps(tolmap::query::DepsArgs),
+    /// Find a file import path, never a runtime call chain (docs/QUERY.md).
+    Route(tolmap::query::RouteArgs),
     /// Analyze a committed private checkout with a loopback-only viewer.
     Local {
         repo: PathBuf,
@@ -191,6 +199,15 @@ enum Command {
         /// base graph is still extracted: a map keeps no edge weights.
         #[arg(long)]
         base_map: Option<PathBuf>,
+        /// Select all sources above build's detection floor.
+        #[arg(long, conflicts_with_all = ["pkg", "lang"])]
+        all_sources: bool,
+        /// Source roots, paired positionally with repeated --lang.
+        #[arg(long)]
+        pkg: Vec<String>,
+        /// Source languages (py, go, rs, ts), as for build.
+        #[arg(long)]
+        lang: Vec<String>,
         /// Fail (exit 1) when the change crosses more than N districts.
         /// Any threshold flag replaces both defaults.
         #[arg(long)]
@@ -605,6 +622,20 @@ fn wants_multi_source(pkg: &[String], lang: &[String], all_sources: bool) -> boo
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Route(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
+            Ok(snapshot.route(&args.from, &args.to, args.options.limit))
+        })),
+        Command::Overview(options) => {
+            std::process::exit(tolmap::query::run(&options, |snapshot| {
+                Ok(snapshot.overview(options.limit))
+            }))
+        }
+        Command::Where(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
+            snapshot.where_is(&args.target, args.options.limit)
+        })),
+        Command::Deps(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
+            Ok(snapshot.deps(&args.path, args.direction, args.options.limit))
+        })),
         Command::Local {
             repo,
             data,
@@ -851,6 +882,9 @@ fn main() -> Result<()> {
             base,
             head,
             base_map,
+            pkg,
+            lang,
+            all_sources,
             max_districts,
             max_dq,
             report_only,
@@ -861,6 +895,9 @@ fn main() -> Result<()> {
                 base,
                 head,
                 base_map,
+                pkg,
+                lang,
+                all_sources,
                 max_districts,
                 max_dq,
                 report_only,

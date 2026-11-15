@@ -27,6 +27,8 @@ pub mod partition;
 pub mod pipeline;
 pub mod polyglot;
 pub mod progress;
+pub mod query;
+pub mod query_contract;
 pub mod schema;
 pub mod scip_ingest;
 pub mod service;

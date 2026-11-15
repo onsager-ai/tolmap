@@ -91,3 +91,6 @@ The maintainers' own production/staging hosting config (Fly, Railway, pricing an
 Working prototype, measured. Not yet a product: see `HANDOFF.md` for what is missing and in what order it should be built.
 
 Private checkout → map → same-commit source: see [local reading](docs/LOCAL.md).
+
+For compact structural answers from an existing map, see [CLI queries](docs/QUERY.md):
+`overview`, `where`, `deps` and file-to-file `route`, with versioned JSON or short text.
