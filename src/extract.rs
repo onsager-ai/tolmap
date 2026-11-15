@@ -689,20 +689,40 @@ pub(crate) fn build_snapshot_graph(
     files: &[String],
     history: &CochangeHistory,
 ) -> Result<GraphData> {
-    let mut selected = BTreeMap::<String, Vec<String>>::new();
-    for file in files {
-        let language = match file.rsplit('.').next() {
-            Some("py") => LanguageKind::Python,
-            Some("go") => LanguageKind::Go,
-            Some("rs") => LanguageKind::Rust,
-            Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") => LanguageKind::TypeScript,
-            _ => bail!("unsupported indexed source file {file:?}"),
-        };
-        selected
-            .entry(language.as_str().into())
-            .or_default()
-            .push(file.clone());
+    let sources = snapshot_sources(repo, files)?;
+    build_scoped_snapshot_graph(repo, files, &sources, history)
+}
+
+/// Keep the base roots even when head deletes every recorded file.
+pub(crate) fn build_scoped_snapshot_graph(
+    repo: &Path,
+    files: &[String],
+    sources: &[(String, LanguageKind)],
+    history: &CochangeHistory,
+) -> Result<GraphData> {
+    let mut selected = snapshot_files(files)?;
+    for (_, language) in sources {
+        selected.entry(language.as_str().into()).or_default();
     }
+    Ok(build_selected_sources(
+        repo,
+        sources,
+        false,
+        RefsMode::Hand,
+        &InstallMode::Off,
+        Some(history),
+        &crate::progress::Progress::silent(),
+        Some(&selected),
+    )?
+    .0)
+}
+
+/// Recover source roots from recorded file paths, shared by check snapshots.
+pub(crate) fn snapshot_sources(
+    repo: &Path,
+    files: &[String],
+) -> Result<Vec<(String, LanguageKind)>> {
+    let mut selected = snapshot_files(files)?;
     let mut sources = Vec::new();
     for (language, files) in &mut selected {
         files.sort();
@@ -718,17 +738,25 @@ pub(crate) fn build_snapshot_graph(
             .map_or_else(|| ".".into(), |candidate| candidate.pkg);
         sources.push((root, language));
     }
-    Ok(build_selected_sources(
-        repo,
-        &sources,
-        false,
-        RefsMode::Hand,
-        &InstallMode::Off,
-        Some(history),
-        &crate::progress::Progress::silent(),
-        Some(&selected),
-    )?
-    .0)
+    Ok(sources)
+}
+
+fn snapshot_files(files: &[String]) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut selected = BTreeMap::<String, Vec<String>>::new();
+    for file in files {
+        let language = match file.rsplit('.').next() {
+            Some("py") => LanguageKind::Python,
+            Some("go") => LanguageKind::Go,
+            Some("rs") => LanguageKind::Rust,
+            Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") => LanguageKind::TypeScript,
+            _ => bail!("unsupported indexed source file {file:?}"),
+        };
+        selected
+            .entry(language.as_str().into())
+            .or_default()
+            .push(file.clone());
+    }
+    Ok(selected)
 }
 
 fn build_selected_sources(

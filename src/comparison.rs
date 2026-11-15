@@ -6,7 +6,6 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -131,6 +130,9 @@ fn run_in_domain(
         max_districts: query.max_districts,
         max_dq: query.max_dq,
         report_only: query.report_only,
+        pkg: vec![],
+        lang: vec![],
+        all_sources: false,
     };
     let thresholds = check::resolve_thresholds(&options).map_err(check_error)?;
     let map_bytes = fs::read(inputs.base_map).map_err(|_| unavailable())?;
@@ -177,28 +179,17 @@ fn run_in_domain(
                     )
                 })?
                 .map_err(check_error)?;
-        let indexed: BTreeSet<_> = report.files.iter().map(|f| f.path.as_str()).collect();
-        let outside_graph = check::diff(inputs.repo, &base, Some(&head))
-            .map_err(check_error)?
-            .into_iter()
-            .filter_map(|c| {
-                let (path, base_path, status) = match c {
-                    check::Change::Added(p) => (p, None, CheckFileStatus::Added),
-                    check::Change::Modified(p) => (p, None, CheckFileStatus::Modified),
-                    check::Change::Deleted(p) => (p, None, CheckFileStatus::Deleted),
-                    check::Change::Renamed { from, to } => {
-                        (to, Some(from), CheckFileStatus::Renamed)
-                    }
-                };
-                (!indexed.contains(path.as_str())).then_some(CheckFile {
-                    path,
-                    base_path,
-                    status,
-                    district: None,
-                    placed: false,
-                })
+        let outside_graph = report
+            .outside_graph
+            .iter()
+            .map(|file| CheckFile {
+                path: file.path.clone(),
+                base_path: file.base_path.clone(),
+                status: file.status,
+                district: None,
+                placed: false,
             })
-            .collect::<Vec<_>>();
+            .collect();
         let provenance = ComparisonProvenance {
             repository: inputs.repository.into(),
             base,

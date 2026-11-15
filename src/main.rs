@@ -199,6 +199,15 @@ enum Command {
         /// base graph is still extracted: a map keeps no edge weights.
         #[arg(long)]
         base_map: Option<PathBuf>,
+        /// Select all sources above build's detection floor.
+        #[arg(long, conflicts_with_all = ["pkg", "lang"])]
+        all_sources: bool,
+        /// Source roots, paired positionally with repeated --lang.
+        #[arg(long)]
+        pkg: Vec<String>,
+        /// Source languages (py, go, rs, ts), as for build.
+        #[arg(long)]
+        lang: Vec<String>,
         /// Fail (exit 1) when the change crosses more than N districts.
         /// Any threshold flag replaces both defaults.
         #[arg(long)]
@@ -873,6 +882,9 @@ fn main() -> Result<()> {
             base,
             head,
             base_map,
+            pkg,
+            lang,
+            all_sources,
             max_districts,
             max_dq,
             report_only,
@@ -883,6 +895,9 @@ fn main() -> Result<()> {
                 base,
                 head,
                 base_map,
+                pkg,
+                lang,
+                all_sources,
                 max_districts,
                 max_dq,
                 report_only,

@@ -54,8 +54,9 @@ use crate::geometry::{self, BuildFeatures};
 use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
 use crate::schema::{
-    CheckDistrict, CheckEdge, CheckFile, CheckFileStatus, CheckLandmark, CheckReport,
-    CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument, NodeRow,
+    CheckDistrict, CheckEdge, CheckFile, CheckFileStatus, CheckLandmark, CheckOutsideGraph,
+    CheckReport, CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument,
+    NodeRow,
 };
 
 /// `CheckReport::version`. Bumped on any change to a field's meaning or
@@ -108,6 +109,9 @@ pub struct CheckOptions {
     pub base: String,
     pub head: Option<String>,
     pub base_map: Option<PathBuf>,
+    pub pkg: Vec<String>,
+    pub lang: Vec<String>,
+    pub all_sources: bool,
     pub max_districts: Option<usize>,
     pub max_dq: Option<f64>,
     /// No threshold at all: the check reports and exits 0 (PR 1's
@@ -259,15 +263,34 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
 
     let mut scratch = Scratch::new(&top)?;
     let base_dir = scratch.worktree(&base, "base")?;
-    let source = detect_source(&base_dir)?;
+    let recorded_scope = supplied_map
+        .as_ref()
+        .filter(|_| !options.all_sources && options.pkg.is_empty() && options.lang.is_empty());
+    let sources = if let Some(map) = recorded_scope {
+        extract::snapshot_sources(&base_dir, &map.files).map_err(internal)?
+    } else {
+        resolve_sources(&base_dir, options)?
+    };
     eprintln!(
-        "tolmap check: base {base}, head {}, source {} at {}",
+        "tolmap check: base {base}, head {}, {} source(s)",
         head.as_deref().unwrap_or("working tree"),
-        source.1.as_str(),
-        source.0
+        sources.len()
     );
     let stage = Instant::now();
-    let base_graph = extract_graph(&base_dir, &source)?;
+    let base_graph = if let Some(map) = recorded_scope {
+        extract::build_snapshot_graph(
+            &base_dir,
+            &map.files,
+            &CochangeHistory {
+                revision: base.clone(),
+                renames: BTreeMap::new(),
+            },
+        )
+        .map_err(internal)?
+    } else {
+        extract_graph(&base_dir, &sources)?
+    };
+    let recorded_files = recorded_scope.map(|map| map.files.clone());
     let base_graph_s = stage.elapsed().as_secs_f64();
     let stage = Instant::now();
     let base_map = match supplied_map {
@@ -279,12 +302,6 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
         Some(sha) => scratch.worktree(sha, "head")?,
         None => top.clone(),
     };
-    if !head_dir.join(&source.0).is_dir() {
-        return Err(input(format!(
-            "the source root {} detected at base is not a directory at head; the check compares one source on both sides",
-            source.0
-        )));
-    }
     // The head graph reads the base's co-change history (issue #176), with
     // renamed files credited under their head paths: the two graphs then
     // differ only in the diff's own static signals, so a commit that changes
@@ -300,7 +317,50 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
             .collect(),
     };
     let stage = Instant::now();
-    let head_graph = extract_head_graph(&head_dir, &source, &history)?;
+    let head_graph = if let Some(files) = recorded_files {
+        let mut head_files = files
+            .into_iter()
+            .map(|file| history.renames.get(&file).cloned().unwrap_or(file))
+            .filter(|file| source_language(file).is_some() && head_dir.join(file).is_file())
+            .collect::<BTreeSet<_>>();
+        // New files can enter the recorded languages/roots, but unchanged
+        // files omitted by the stored snapshot cannot silently enter it.
+        let eligible = sources
+            .iter()
+            .filter(|(pkg, _)| head_dir.join(pkg).is_dir())
+            .map(|(pkg, lang)| extract::source_files(&head_dir, pkg, *lang))
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map_err(internal)?
+            .into_iter()
+            .flatten()
+            .collect::<BTreeSet<_>>();
+        for change in &changes {
+            let path = match change {
+                Change::Added(path) => path,
+                Change::Renamed { to, .. } => to,
+                _ => continue,
+            };
+            if eligible.contains(path) {
+                head_files.insert(path.clone());
+            }
+        }
+        extract::build_scoped_snapshot_graph(
+            &head_dir,
+            &head_files.into_iter().collect::<Vec<_>>(),
+            &sources,
+            &history,
+        )
+        .map_err(internal)?
+    } else {
+        for (pkg, _) in &sources {
+            if !head_dir.join(pkg).is_dir() {
+                return Err(input(format!(
+                    "source root {pkg} selected at base is not a directory at head"
+                )));
+            }
+        }
+        extract_head_graph(&head_dir, &sources, &history)?
+    };
     let head_graph_s = stage.elapsed().as_secs_f64();
     drop(scratch);
 
@@ -483,6 +543,7 @@ fn compare(
 
     // Head nodes: a file the base map holds (under its base path, for a
     // rename) keeps its base district; anything else is new and is placed.
+    let base_index = file_index(&base_graph);
     let head_index = file_index(&head_graph);
     let head_files = head_graph
         .nodes
@@ -609,6 +670,7 @@ fn compare(
     // The changed files that are on the map, and the districts they count
     // toward.
     let mut files = Vec::new();
+    let mut outside_graph = Vec::new();
     for change in changes {
         let (path, base_path, status, reported_base) = match change {
             Change::Added(path) => (path, None, CheckFileStatus::Added, None),
@@ -618,7 +680,9 @@ fn compare(
                 (to, Some(from), CheckFileStatus::Renamed, Some(from.clone()))
             }
         };
-        let in_base = base_path.and_then(|file| base_membership.get(file.as_str()).copied());
+        let in_base = base_path
+            .filter(|file| base_index.contains_key(*file))
+            .and_then(|file| base_membership.get(file.as_str()).copied());
         let in_head = if status == CheckFileStatus::Deleted {
             None
         } else {
@@ -627,7 +691,20 @@ fn compare(
         let (district, placed) = match (in_base, in_head) {
             (Some(district), _) => (Some(district), false),
             (None, Some(index)) => (head_district[index], head_district[index].is_some()),
-            (None, None) => continue,
+            (None, None) => {
+                outside_graph.push(CheckOutsideGraph {
+                    path: path.clone(),
+                    base_path: reported_base,
+                    status,
+                    reason: if source_language(path).is_some() {
+                        "not_in_scope"
+                    } else {
+                        "unsupported_language"
+                    }
+                    .into(),
+                });
+                continue;
+            }
         };
         files.push(CheckFile {
             path: path.clone(),
@@ -637,6 +714,12 @@ fn compare(
             placed,
         });
     }
+    outside_graph.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.base_path.cmp(&b.base_path))
+    });
+    outside_graph.dedup();
     files.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
@@ -725,6 +808,7 @@ fn compare(
         districts,
         files,
         unplaced_files,
+        outside_graph,
         modularity_base: round(q_base),
         modularity_head: round(q_head),
         delta_q,
@@ -1180,8 +1264,80 @@ pub(crate) fn detect_source(dir: &Path) -> Result<(String, LanguageKind), CheckE
     Ok((chosen.pkg, chosen.language))
 }
 
-fn extract_graph(dir: &Path, source: &(String, LanguageKind)) -> Result<GraphData, CheckError> {
-    extract::build_multi_source_with_refs(dir, std::slice::from_ref(source), RefsMode::default())
+fn source_language(path: &str) -> Option<LanguageKind> {
+    match path.rsplit('.').next()? {
+        "py" => Some(LanguageKind::Python),
+        "go" => Some(LanguageKind::Go),
+        "rs" => Some(LanguageKind::Rust),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => Some(LanguageKind::TypeScript),
+        _ => None,
+    }
+}
+
+fn resolve_sources(
+    dir: &Path,
+    options: &CheckOptions,
+) -> Result<Vec<(String, LanguageKind)>, CheckError> {
+    if options.all_sources {
+        if !options.pkg.is_empty() || !options.lang.is_empty() {
+            return Err(input("--all-sources cannot be combined with --pkg/--lang"));
+        }
+        let sources = detect::all_sources(dir).map_err(internal)?;
+        if sources.is_empty() {
+            return Err(input(
+                "no source cleared the --all-sources floor; pass --pkg/--lang explicitly",
+            ));
+        }
+        return Ok(sources.into_iter().map(|c| (c.pkg, c.language)).collect());
+    }
+    if options.pkg.len() > 1 || options.lang.len() > 1 {
+        if options.pkg.len() != options.lang.len() {
+            return Err(input(
+                "--pkg and --lang must be given the same number of times; pair them positionally",
+            ));
+        }
+        return options
+            .pkg
+            .iter()
+            .zip(&options.lang)
+            .map(|(pkg, lang)| {
+                Ok((
+                    if dir.join(pkg).is_dir() {
+                        pkg.clone()
+                    } else {
+                        return Err(input(format!("source root {pkg} is not a directory")));
+                    },
+                    LanguageKind::parse(lang).map_err(|e| input(e.to_string()))?,
+                ))
+            })
+            .collect();
+    }
+    let source = match (options.pkg.first(), options.lang.first()) {
+        (Some(pkg), Some(lang)) => (
+            pkg.clone(),
+            LanguageKind::parse(lang).map_err(|e| input(e.to_string()))?,
+        ),
+        (Some(pkg), None) => (pkg.clone(), detect_source(dir)?.1),
+        (None, Some(lang)) => {
+            let language = LanguageKind::parse(lang).map_err(|e| input(e.to_string()))?;
+            let candidate = detect::detect_language(dir, language)
+                .map_err(internal)?
+                .ok_or_else(|| input(format!("no {lang} source found; pass --pkg explicitly")))?;
+            (candidate.pkg, language)
+        }
+        (None, None) => detect_source(dir)?,
+    };
+    if !dir.join(&source.0).is_dir() {
+        return Err(input(format!(
+            "source root {} is not a directory",
+            source.0
+        )));
+    }
+    Ok(vec![source])
+}
+
+fn extract_graph(dir: &Path, sources: &[(String, LanguageKind)]) -> Result<GraphData, CheckError> {
+    extract::build_multi_source_with_refs(dir, sources, RefsMode::default())
         .map_err(|error| internal(error.context(format!("extract {}", dir.display()))))
 }
 
@@ -1279,16 +1435,11 @@ pub(crate) fn lens_head_map(
 /// membership, names or landmarks, which is all the check reads.
 fn extract_head_graph(
     dir: &Path,
-    source: &(String, LanguageKind),
+    sources: &[(String, LanguageKind)],
     history: &CochangeHistory,
 ) -> Result<GraphData, CheckError> {
-    extract::build_multi_source_with_history(
-        dir,
-        std::slice::from_ref(source),
-        RefsMode::default(),
-        history,
-    )
-    .map_err(|error| internal(error.context(format!("extract {}", dir.display()))))
+    extract::build_multi_source_with_history(dir, sources, RefsMode::default(), history)
+        .map_err(|error| internal(error.context(format!("extract {}", dir.display()))))
 }
 
 fn build_base_map(graph: GraphData, out: &Path) -> Result<MapDocument, CheckError> {
@@ -1450,6 +1601,9 @@ mod tests {
             base: "HEAD".to_owned(),
             head: None,
             base_map: None,
+            pkg: vec![],
+            lang: vec![],
+            all_sources: false,
             max_districts,
             max_dq,
             report_only,

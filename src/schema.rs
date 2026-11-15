@@ -499,6 +499,8 @@ pub struct CheckReport {
     pub districts: Vec<CheckDistrict>,
     pub files: Vec<CheckFile>,
     pub unplaced_files: Vec<String>,
+    #[serde(default)]
+    pub outside_graph: Vec<CheckOutsideGraph>,
     pub modularity_base: f64,
     pub modularity_head: f64,
     pub delta_q: f64,
@@ -508,6 +510,16 @@ pub struct CheckReport {
     pub thresholds: CheckThresholds,
     pub verdict: CheckVerdict,
     pub lower_bound: bool,
+}
+
+// A changed file absent from both graphs. `not_in_scope` includes files
+// omitted by extraction filters or by the stored snapshot's recorded scope.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct CheckOutsideGraph {
+    pub path: String,
+    pub base_path: Option<String>,
+    pub status: CheckFileStatus,
+    pub reason: String,
 }
 
 // One base district a changed file sits in (or, for a new file, was placed
@@ -1080,7 +1092,7 @@ pub enum FreshnessState {
     Stale,
 }
 
-// Comparison envelope adds provenance without changing CheckReport v1.
+// Comparison envelope adds provenance alongside CheckReport.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 pub struct Comparison {
     pub id: String,
