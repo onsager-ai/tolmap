@@ -58,8 +58,25 @@ pub enum Direction {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Query {
-    Where { target: String, ambiguous: bool },
-    Deps { path: String, direction: Direction },
+    Where {
+        target: String,
+        ambiguous: bool,
+    },
+    Deps {
+        path: String,
+        direction: Direction,
+    },
+    Overview {
+        files: usize,
+        imports: usize,
+        districts: usize,
+        language: String,
+    },
+    Route {
+        from: String,
+        to: String,
+        edge_kind: Option<crate::lens::RouteKind>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -75,6 +92,16 @@ pub enum QueryResult {
         path: String,
         district: String,
         direction: Direction,
+    },
+    District {
+        name: String,
+        files: usize,
+        imports_in: usize,
+        imports_out: usize,
+    },
+    Step {
+        path: String,
+        district: String,
     },
 }
 

@@ -16,6 +16,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Summarize districts in a stored map (docs/QUERY.md).
+    Overview(tolmap::query::QueryOptions),
     /// Locate a file or symbol in a stored map (docs/QUERY.md).
     Where(tolmap::query::WhereArgs),
     /// Direct incoming/outgoing map imports (docs/QUERY.md).
@@ -609,6 +611,11 @@ fn wants_multi_source(pkg: &[String], lang: &[String], all_sources: bool) -> boo
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Overview(options) => {
+            std::process::exit(tolmap::query::run(&options, |snapshot| {
+                Ok(snapshot.overview(options.limit))
+            }))
+        }
         Command::Where(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
             snapshot.where_is(&args.target, args.options.limit)
         })),

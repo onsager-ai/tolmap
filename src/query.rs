@@ -42,6 +42,14 @@ pub struct DepsArgs {
     pub options: QueryOptions,
 }
 
+#[derive(Debug, Args)]
+pub struct RouteArgs {
+    pub from: String,
+    pub to: String,
+    #[command(flatten)]
+    pub options: QueryOptions,
+}
+
 pub struct Snapshot {
     pub map: MapDocument,
     pub identity: MapIdentity,
@@ -276,6 +284,49 @@ impl Snapshot {
         ))
     }
 
+    pub fn overview(&self, limit: usize) -> QueryResponse {
+        let mut counts = std::collections::BTreeMap::<usize, (usize, usize, usize)>::new();
+        for node in &self.map.nodes {
+            counts.entry(node.district()).or_default().0 += 1;
+        }
+        for &[a, b] in &self.map.edges {
+            let a = self.map.nodes[a].district();
+            let b = self.map.nodes[b].district();
+            if a != b {
+                counts.entry(a).or_default().2 += 1;
+                counts.entry(b).or_default().1 += 1;
+            }
+        }
+        let mut districts: Vec<_> = counts.into_iter().collect();
+        districts.sort_by(|(a, x), (b, y)| {
+            y.0.cmp(&x.0)
+                .then(self.map.names[&a.to_string()].cmp(&self.map.names[&b.to_string()]))
+                .then(a.cmp(b))
+        });
+        let results = districts
+            .into_iter()
+            .map(
+                |(id, (files, imports_in, imports_out))| QueryResult::District {
+                    name: self.map.names[&id.to_string()].clone(),
+                    files,
+                    imports_in,
+                    imports_out,
+                },
+            )
+            .collect();
+        self.response(
+            Query::Overview {
+                files: self.map.files.len(),
+                imports: self.map.edges.len(),
+                districts: self.map.districts.len(),
+                language: self.map.lang.clone(),
+            },
+            limit,
+            results,
+            None,
+        )
+    }
+
     pub fn deps(&self, path: &str, direction: Direction, limit: usize) -> QueryResponse {
         let mut hits = BTreeSet::new();
         if let Some(file) = self.map.files.iter().position(|p| p == path) {
@@ -369,6 +420,15 @@ pub fn text(report: &QueryResponse) -> String {
                 }
                 out.push('\n');
             }
+            QueryResult::District {
+                name,
+                files,
+                imports_in,
+                imports_out,
+            } => out.push_str(&format!(
+                "{name}: {files} files, {imports_in} imports in, {imports_out} out\n"
+            )),
+            QueryResult::Step { path, district } => out.push_str(&format!("{path} [{district}]\n")),
             QueryResult::Dependency {
                 path,
                 district,
