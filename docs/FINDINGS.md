@@ -3863,3 +3863,164 @@ initially. The complete map projection has the same underlying edge boundary.
   VS Code extensions and FastAPI/Transformers tests outside the package scope
   are excluded. No fixture/baseline refresh, extraction/query behavior change,
   semon/duhem pilot, merge or deployment is part of this sweep.
+
+## 77. Semon and duhem pilots give compact maintenance boundaries and impact summaries, with one explained re-export mismatch
+
+Issue [#303](https://github.com/onsager-ai/tolmap/issues/303). The successful
+[pilot run](https://github.com/onsager-ai/tolmap/actions/runs/43724708052)
+measures binary revision `e410f879b617bcad550359af81cc23d193968745`.
+`eval/agent_sweep.py` pins both repositories separately from the five unchanged
+size-sweep pins and parity fixtures. Artifacts `agent-sweep-semon` and
+`agent-sweep-duhem` retain raw maps/symbols, commands and exit codes, query
+stdout, source-audit evidence, projections and `measurements.json`. Reproduce
+with `gh workflow run remote-build.yml --ref <branch> -f command=agent-sweep
+-f repos=pilots`; the workflow builds its dispatch revision.
+
+### Method
+
+The four tasks and four approaches follow finding 76: orient around areas and
+a pinned CLI entry; inspect direct dependencies before editing; review one
+merged change against its first parent; and pick five hotspots plus up to five
+compact district cycles. Each independent recipe starts with built artifacts.
+Bytes are UTF-8 stdout/file bytes delivered, including newlines, not tokens or
+internal I/O. Calls count separate commands/reads/projections; build, audit and
+provenance setup are excluded. Each repo runs once on its own standard Ubuntu
+runner, with seed 7, resolution 1.1, default deterministic names, hand references,
+a depth-4000 history horizon, a roughly 14 GiB address-space cap and a
+30-minute timeout per tolmap command. Cold build times exclude cloning.
+
+Both use `--all-sources` for current and historical builds. The explicit CLI
+entries are `crates/semon-cli/src/main.rs` and
+`crates/duhem-cli/src/main.rs`. Before-edit targets are deliberately focused
+maintenance files rather than extreme hubs: semon's
+`crates/semon-sessions/src/received_registry.rs` validates and reads receiver
+machine records across enrollment and viewer consumers; duhem's
+`crates/duhem-schema/src/manifest_path.rs` centralizes path discipline used by
+manifest loading, composition, includes and filtering. They have seven and four
+audited inbound files respectively, plus local outbound use. Review uses semon
+[#682](https://github.com/onsager-ai/semon/pull/682), origin-generated machine
+identities, and duhem [#659](https://github.com/onsager-ai/duhem/pull/659), native
+run filtering. Both are feature changes at the selected main HEAD, exercising
+multiple production files and districts rather than release-only edits.
+
+The independent Rust audit resolves grouped imports, explicit qualified paths,
+`crate`/`super`/`self`, and Cargo package names mapped to conventional
+`src/lib.rs` module files. Namespace `mod` declarations are excluded from
+explicit-name-use recall, as in finding 75. It does not chase named or glob
+re-exports, expand macros, evaluate cfg, resolve dependency renames or `#[path]`,
+or fully model inline modules; strings can yield candidates. The original
+five pins keep their previous audit. Recall is restricted to scoped map `F`;
+source reads at the pin classify every observed miss and extra below.
+
+As before, full JSON plus projection includes a whole map (and symbols for
+orientation), while filtered-only assumes the agent knows the schema and omits
+contract metadata. Grep orientation reads the same README/manifests, a top-level
+listing and 120 entry lines; dependency grep retains literal candidates and the
+full target; review reads paths and patch; debt reads imports and the five
+largest files. These are deterministic recipes, not equivalent completed agent
+tasks. Review projections only locate changes in the base map; debt grep cannot
+supply equivalent history/complexity rankings or district cycles.
+
+### Results
+
+Both jobs completed successfully on the first dispatch.
+
+| Repo | Pinned main HEAD | Source flags | Scoped files | `crates/` files | Build wall s | Map / symbols / debt bytes |
+|---|---|---|---:|---:|---:|---:|
+| semon | `48497243b26030822218dfed877f25a12c99dd94` | `--all-sources` | 304 | 223 | 6.07 | 527,901 / 2,091,088 / 37,095 |
+| duhem | `9b566423b2aebddade07184dd4bba938b0a55d68` | `--all-sources` | 288 | 276 | 2.61 | 446,572 / 853,856 / 106,722 |
+
+Both `includes_main_source` fields are true. Semon includes 223 Rust files in
+`crates/` and 81 TypeScript/TSX files in `ui/`. Duhem includes 214 Rust and 74
+TypeScript/TSX files; its `crates/` prefix contains 276 files including dashboard
+web source, with 12 additional files in `xtask/`. Prefix counts are not language
+counts or every tracked repository file. Integration tests outside the selected
+source roots remain outside the graph.
+
+Every cost cell is **bytes / calls**, without cross-task artifact memory.
+
+| Repo | Task | Full JSON + projection | Default queries | Filtered-only projection | Grep/read |
+|---|---|---:|---:|---:|---:|
+| semon | Orient | 2,660,265 / 4 | 42,356 / 3 | 41,276 / 2 | 45,010 / 2 |
+| semon | Before edit | 528,769 / 2 | 1,593 / 1 | 868 / 1 | 8,557 / 2 |
+| semon | Review impact | 531,039 / 3 | 9,720 / 1 | 4,232 / 2 | 160,728 / 2 |
+| semon | Debt pick | 38,362 / 2 | 7,751 / 2 | 1,267 / 1 | 2,355,766 / 2 |
+| duhem | Orient | 1,315,052 / 4 | 15,607 / 3 | 14,624 / 2 | 18,928 / 2 |
+| duhem | Before edit | 447,046 / 2 | 1,113 / 1 | 474 / 1 | 8,616 / 2 |
+| duhem | Review impact | 443,875 / 3 | 3,409 / 1 | 1,660 / 2 | 39,455 / 2 |
+| duhem | Debt pick | 108,072 / 2 | 7,839 / 2 | 1,350 / 1 | 667,252 / 2 |
+
+Recall cells are matched / expected explicit source paths. Direction counts are
+**total / returned / omitted**, read from v3 `query.directions` in `deps.stdout`.
+The initial summary collector looked at the top level and did not copy these
+nested fields; the collector is corrected after the run without changing raw
+measurements. Both default limits are 25 per direction, with no truncation.
+
+| Repo / target | Default in | Default out | In counts | Out counts | Complete in / out | Complete bytes |
+|---|---:|---:|---:|---:|---|---:|
+| semon `received_registry.rs` | 7/7 | 2/2 | 7 / 7 / 0 | 2 / 2 / 0 | 7/7 / 2/2 | 1,594 |
+| duhem `manifest_path.rs` | 4/4 | 0/1 | 4 / 4 / 0 | 1 / 1 / 0 | 4/4 / 0/1 | 1,114 |
+
+- **Semon's selected boundary matches every audited path.** There are no misses
+  or extras in default, complete or full-map projection results. Seven consumers
+  span CLI, push enrollment and session reading/viewing; outbound dependencies
+  are `semon-sessions/src/lib.rs` and `machine_id.rs`. The default response is
+  5.4 times smaller than candidate grep plus target source and returns named
+  districts in one call. This is evidence for this maintenance boundary, not
+  exhaustive reference recall across semon.
+- **Duhem's sole miss and extra are a confirmed re-export mismatch.** At the pin,
+  [`manifest_path.rs:5`](https://github.com/onsager-ai/duhem/blob/9b566423b2aebddade07184dd4bba938b0a55d68/crates/duhem-schema/src/manifest_path.rs#L5)
+  imports `crate::manifest::LoadError`;
+  [`manifest.rs:17`](https://github.com/onsager-ai/duhem/blob/9b566423b2aebddade07184dd4bba938b0a55d68/crates/duhem-schema/src/manifest.rs#L17)
+  re-exports `crate::manifest_error::LoadError`; the enum is defined at
+  [`manifest_error.rs:16`](https://github.com/onsager-ai/duhem/blob/9b566423b2aebddade07184dd4bba938b0a55d68/crates/duhem-schema/src/manifest_error.rs#L16).
+  The literal audit therefore expects `manifest.rs`, while tolmap returns the
+  defining `manifest_error.rs`. Preserve the measured 0/1 plus one extra rather
+  than relabeling it 100%; source inspection explains it and does not demonstrate
+  a missing semantic dependency. All four inbound paths match, with no extras;
+  this pair is the only discrepancy across default, complete and projection.
+  Default dependency output is 7.7 times smaller than grep/read.
+- **Impact summaries help on these larger changes, with explicit limits.**
+  Semon's 39 changed paths yield 29 graph files across three districts, ten
+  outside-graph paths, and one unplaced added file (`machine_id.rs`). Duhem's
+  14 changed paths yield eight graph files across two districts and six
+  outside-graph paths. Reports retain the unsupported-language/not-in-scope
+  reasons, changed edges and lower-bound flag; `--report-only` passes are advisory.
+  Query payloads are 16.5 times and 11.6 times smaller than paths plus patch
+  (roughly 12–16 times), with one rather than two calls. Unlike the small sweep
+  diffs, these patches are 161 KB and 39 KB including paths. The advantage
+  depends on diff size, not repository size, and the summary cannot replace
+  reading the patch or checking outside/unplaced files.
+- **Orientation and debt add context, with modest or unequal comparisons.**
+  All five semon and six duhem districts are returned; neither overview nor
+  entry placement truncates. Shared README/manifests dominate orientation costs,
+  so savings over grep are only 2,654 and 3,321 bytes, with one extra call.
+  Debt returns five of 14 semon hotspots and five of 16 duhem hotspots, explicitly
+  omitting nine and eleven; each returns one of one compact cycles. Top-ranked
+  reading candidates include semon's `ui/src/app/catalogViewer.tsx` and duhem's
+  `crates/duhem-dashboard/web/src/views/CheckPage.tsx`. The 7.8 KB query recipes
+  are useful ranked structural context; the much larger grep heuristic is not
+  an equal-quality answer. Every filtered-only projection is smaller than its
+  query recipe, trading away envelope and coverage metadata.
+- **Per-repo verdict.** Tolmap helps on the selected semon task by cheaply exposing
+  a complete audited cross-crate boundary and a compact summary of a substantial
+  receiver change. It does not establish HTTP/runtime relationships: finding 62's
+  declared-hop limitation still applies. On duhem it helps locate the manifest
+  boundary and summarize native-filter impact, while the re-export example shows
+  why exact file recall needs source interpretation. Neither repo shows a strong
+  orientation byte advantage, proves that a refactor is warranted, or establishes
+  faster successful agent work. These are one target per repo and one run each.
+
+### Not verified
+
+- No randomized agent trial, completed edit/review outcome, token-cost study,
+  repeated timing, repeated-build determinism test or repository-size trend.
+- Recall is a lower-bound explicit-reference audit within selected source, not
+  typed callers, transitive impact, macro/cfg coverage or all repository files.
+  Namespace declarations are excluded. No other target was sampled; integration
+  tests outside scope are not silently counted as covered.
+- The collector's nested-direction correction is syntax-checked locally; this
+  run's direction counts come directly from retained raw v3 output. No second
+  sweep was needed to recover those counts.
+- No semon/duhem code changes, automatic indexing, impact enforcement, parity
+  fixture refresh, extraction/query/debt behavior change, merge or deployment.
