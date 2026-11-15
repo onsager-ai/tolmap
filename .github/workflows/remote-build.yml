@@ -63,6 +63,7 @@ on:
         options:
           - build
           - agent-pilot
+          - agent-sweep
           - dump-blend
           - stability
           - name-eval
@@ -129,7 +130,7 @@ jobs:
       - name: Checkout tolmap ref (primary)
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.command == 'agent-pilot' && github.sha || inputs.ref }}
+          ref: ${{ (inputs.command == 'agent-pilot' || inputs.command == 'agent-sweep') && github.sha || inputs.ref }}
           path: repo-primary
 
       - name: Checkout tolmap ref (compare)
@@ -247,7 +248,7 @@ jobs:
           if [ "$COMMAND" = "check-calibrate" ] && [[ "$REPOS_INPUT" != check-calibration* ]]; then
             REPOS_INPUT="check-calibration"
           fi
-          if [ "$COMMAND" = "agent-pilot" ]; then
+          if [ "$COMMAND" = "agent-pilot" ] || [ "$COMMAND" = "agent-sweep" ]; then
             matrix='{"include":[{"slug":"onsager-ai/tolmap"}]}'
           else
             matrix="$(python3 eval/remote_matrix.py --repos "$REPOS_INPUT")"
@@ -262,7 +263,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot'
+    if: inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot' && inputs.command != 'agent-sweep'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -695,7 +696,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot' && inputs.command != 'agent-sweep'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -761,6 +762,51 @@ jobs:
             ${{ runner.temp }}/agent-pilot/*.stderr
             ${{ runner.temp }}/agent-pilot/map/*.json
             ${{ runner.temp }}/agent-pilot/base-map/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # Five independent standard runners; no corpus clone shares a runner. Source
+  # pins live only in eval/agent_sweep.py, never fixtures/parity. Ignore ref,
+  # repos and extra_args; leave compare_ref empty. Build this dispatch's binary.
+  agent-sweep:
+    name: agent size sweep ${{ matrix.repo }}
+    needs: setup
+    if: inputs.command == 'agent-sweep'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        repo: [hono, fastapi, uv, transformers, vscode]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: sweep-bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+      - name: Install source-audit tool
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Measure four agent tasks
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+        run: |
+          chmod +x sweep-bin/tolmap
+          python3 -I eval/agent_sweep.py --binary sweep-bin/tolmap --repo "${{ matrix.repo }}" --out "${{ runner.temp }}/agent-sweep" --mem-bytes "$BUILD_MEM_BYTES"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-sweep-${{ matrix.repo }}
+          path: |
+            ${{ runner.temp }}/agent-sweep/*.json
+            ${{ runner.temp }}/agent-sweep/*.stdout
+            ${{ runner.temp }}/agent-sweep/*.stderr
+            ${{ runner.temp }}/agent-sweep/map/*.json
+            ${{ runner.temp }}/agent-sweep/base-map/*.json
           if-no-files-found: error
           retention-days: 14
 
