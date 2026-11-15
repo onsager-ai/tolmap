@@ -544,26 +544,36 @@ Viewers must reject mismatched repository/commit/lens identities and hide old
 results during revalidation. Deep links retain `lens`, `lens_compare`, `base`,
 `head` and optional `other_lens` alongside the existing comparison parameters.
 
-### `tolmap debt --map <map.json> [--format text|json|lens] [--kind <kind>...] [--path <prefix-or-glob>] [--district <name>] [--top <n>]`
+### `tolmap debt --map <map.json> [--format text|json|lens] [--kind <kind>...] [--path <prefix-or-glob>] [--district <name>] [--top <n>] [--cycle-evidence compact|full]`
 
 `--kind` is repeatable and accepts `cycle`, `misplaced`, `god`, `hotspot`,
 `unreached`, `undeclared-rust` or `hidden-coupling` (the CLI spellings of the
 finding kinds shown in the report).
 `--path` matches a path prefix unless it contains `*` or `?`, when it is a glob.
 `--district` matches the district name. `--top` limits ranked findings after
-other filters (god files and hotspots). Filters apply to text, JSON and lens TOML;
+other filters (cycles, god files and hotspots). Cycle order is unchanged:
+cross-package cycles first, then deterministic route order. Filters apply to text, JSON and lens TOML;
 all outputs identify the selections (lens TOML uses a leading comment, which is
 valid TOML and ignored by `tolmap lens check`). Filtered JSON keeps the normal
 DebtReport version and lower-bound evidence, with additive `unfiltered_counts`,
 `filtered_counts` and `filters` fields. These fields do not change the meaning of
-the DebtReport schema, so its version remains v6.
+the underlying finding semantics. DebtReport is now v7: `cycle_evidence` is
+`compact` by default for CLI text/JSON. Compact cycles retain member districts,
+`cross_edges`, one `route` and its `closing_edges`, package names and measurement
+flags. They omit `package_edges`, `mutual_pairs` and `cut` bundles.
+`--cycle-evidence full` restores those bundles. Lens output always uses full
+evidence because its areas and notes depend on bundles.
 
-`tolmap debt diff <before-report.json> <after-report.json>` compares two full,
-versioned DebtReports. It emits version 1 JSON with each finding marked `added`,
+`tolmap debt diff <before-report.json> <after-report.json>` compares two unfiltered,
+versioned DebtReports. It emits version 2 JSON with each finding marked `added`,
 `removed` or `shared`; shared findings include numeric metric deltas. Finding
 identity is its kind and path (or stable cycle/pair identity), so changing churn
 or complexity on an unchanged finding remains shared. Reports must have the
-current DebtReport version. This subcommand is used instead of a map comparison
+current DebtReport version. Cycles are compared using their compact summary,
+even when either input has full evidence; bundle-only changes are not reported.
+Cycle identity uses the closing route's file paths, so compact and full inputs
+for the same map compare equally. Filtered reports (including `--top`) are
+rejected. This subcommand is used instead of a map comparison
 because the requested input is a raw, reproducible comparison of two already
 computed reports.
 

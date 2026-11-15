@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const QUERY_SCHEMA: &str = "tolmap.query/v1";
+pub const QUERY_SCHEMA: &str = "tolmap.query/v2";
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct QueryEnvelope<T, M = MapIdentity> {
@@ -16,6 +16,8 @@ pub struct QueryEnvelope<T, M = MapIdentity> {
     pub limit: usize,
     pub total: usize,
     pub truncated: bool,
+    pub omitted: usize,
+    pub next_limit: Option<String>,
     pub results: Vec<T>,
 }
 

@@ -15,7 +15,9 @@ tolmap route src/main.rs src/schema.rs --map data/tolmap.json
 ## Inputs and flags
 
 All commands require `--map <file-or-directory>` and accept `--format json|text`
-(default `json`) and `--limit N` (default 8; zero requests totals alone). A map
+(default `json`) and `--limit N` (zero requests totals alone). `overview`
+returns every district by default; `where`, `deps` and `route` default to 25
+rows. An explicit limit bounds any command. A map
 file can have any name. A directory must contain exactly one top-level map JSON;
 this accepts `build --out`'s `<name>.json` beside `<name>.names.json` and
 `<name>.symbols.json`. Several maps require an explicit file, never a guess.
@@ -53,7 +55,7 @@ uses the same envelope, also available as generic `QueryEnvelope<T>` for future
 snapshot queries:
 
 ```json
-{"schema":"tolmap.query/v1","query":{"kind":"where","target":"src/main.rs","ambiguous":false},"map":{"repo":"tolmap","commit":null,"sha256":"<64 lowercase hex digits>"},"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":8,"total":1,"truncated":false,"results":[{"kind":"file","path":"src/main.rs","district":"<district name>","symbol":null}]}
+{"schema":"tolmap.query/v2","query":{"kind":"where","target":"src/main.rs","ambiguous":false},"map":{"repo":"tolmap","commit":null,"sha256":"<64 lowercase hex digits>"},"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":25,"total":1,"truncated":false,"omitted":0,"next_limit":null,"results":[{"kind":"file","path":"src/main.rs","district":"<district name>","symbol":null}]}
 ```
 
 The example's angle-bracket values are placeholders. JSON is compact UTF-8 with
@@ -61,7 +63,7 @@ one trailing newline. Paths and district names replace all internal indices.
 
 | Field | Meaning |
 |---|---|
-| `schema` | `tolmap.query/v1`. Breaking field or semantic changes require a new version. Consumers must tolerate additive fields and query/result kinds. |
+| `schema` | `tolmap.query/v2`. Breaking field or semantic changes require a new version. Consumers must tolerate additive fields and query/result kinds. |
 | `query` | Tagged by `kind`: `where`, `deps`, `overview`, or `route`; includes inputs and the command-specific facts below. |
 | `map.repo` | Repository label recorded by the map, not a recovered remote URL. |
 | `map.commit` | Stored top-level `commit`, otherwise a full 40/64 hex object ID from the map filename, otherwise a local `map.json`'s `snapshot.json` commit; otherwise `null`. Ordinary `build` and legacy fixtures do not record it. Never inferred from the caller's checkout. Renaming a file is not provenance verification. |
@@ -70,9 +72,11 @@ one trailing newline. Paths and district names replace all internal indices.
 | `coverage.zero_edge_files` | Map's recorded kept-edge coverage count; `null` when absent. |
 | `coverage.calls_total`, `calls_resolved`, `unresolved` | Counts from the full symbols sibling, only when loaded. `unresolved` is a map of reason to count. `null` means unknown/unread, never zero. Compact `S` does not measure them. |
 | `coverage.lower_bound` | Always `true`: unresolved/dynamic references can be absent. |
-| `limit` | Requested maximum result rows. |
+| `limit` | Maximum result rows; an unlimited overview uses its complete district count. |
 | `total` | All matching rows before limiting; route counts file steps including endpoints. |
 | `truncated` | Exactly `total > limit`. A truncated route is a prefix, not a complete connection to the destination. |
+| `omitted` | `total - results.length`: number of rows omitted. |
+| `next_limit` | `"--limit N"` with N equal to `total` when truncated, otherwise `null`. Repeating the same query with this flag returns all matching rows. Text prints the omitted count and this flag on a separate line. |
 | `results` | Ordered rows, length `min(limit,total)`. |
 
 ## Query and result shapes
@@ -105,7 +109,8 @@ Reverse paths are emitted from the requested `from` to `to`, labeled
 **This is a file import path, never a runtime call chain.** A missing path means
 none was found among extracted imports, not that no dependency exists.
 
-Typical default results target less than 2 KB on the tolmap self-map. The limit
+Small `where`/`deps` results target less than 2 KB on the tolmap self-map.
+Complete overviews and larger dependency boundaries can exceed that target. The limit
 bounds rows rather than bytes; very long paths, names or coverage reason maps
 can exceed that target. `total` remains complete when rows are omitted. Text
 is intended for people and is not a stable parsing contract.
@@ -160,14 +165,14 @@ detected source; a low-confidence detection fails with its evidence rather than
 silently indexing a guess. Explicit source flags express the selection directly.
 
 Responses reuse `QueryEnvelope<Status, Option<MapIdentity>>`, with schema
-`tolmap.query/v1`, `query:{"kind":"status"}`, `limit:1`, `total:1`,
+`tolmap.query/v2`, `query:{"kind":"status"}`, `limit:1`, `total:1`,
 `truncated:false` and exactly one status row. `map` is `null` before any complete
 snapshot; otherwise its repo/commit/SHA-256 match compact queries using `map_path`.
 Coverage is that map's reference coverage (unread symbols counts remain null).
 For example, before the first refresh (placeholder HEAD):
 
 ```json
-{"schema":"tolmap.query/v1","query":{"kind":"status"},"map":null,"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":1,"total":1,"truncated":false,"results":[{"checkout_commit":"<HEAD>","indexed_commit":null,"requested_commit":null,"freshness":"none","commits_behind":null,"error":null,"dirty":false,"changed_files":0,"sources":[],"all_sources":null,"extraction_cache":null,"previous_map_reused":null,"map_path":null}]}
+{"schema":"tolmap.query/v2","query":{"kind":"status"},"map":null,"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":1,"total":1,"truncated":false,"results":[{"checkout_commit":"<HEAD>","indexed_commit":null,"requested_commit":null,"freshness":"none","commits_behind":null,"error":null,"dirty":false,"changed_files":0,"sources":[],"all_sources":null,"extraction_cache":null,"previous_map_reused":null,"map_path":null}]}
 ```
 
 | Status row | Meaning |
