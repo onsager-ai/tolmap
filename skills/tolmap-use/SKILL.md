@@ -6,7 +6,7 @@ description: Use tolmap for repository orientation, change boundaries, diff impa
 # Using tolmap
 
 This skill ships with the tolmap CLI (currently 0.1.0). Use the skill from the
-same checkout/release as the binary. Compact query JSON uses `tolmap.query/v1`;
+same checkout/release as the binary. Compact query JSON uses `tolmap.query/v2`;
 check and debt have their own report versions. See [QUERY](../../docs/QUERY.md),
 [CHECK](../../docs/CHECK.md) and [API](../../docs/API.md) for the full contracts.
 

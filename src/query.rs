@@ -21,9 +21,9 @@ pub struct QueryOptions {
     pub map: PathBuf,
     #[arg(long, default_value = "json", value_parser = ["json", "text"])]
     pub format: String,
-    /// Maximum result rows (route: maximum file steps).
-    #[arg(long, default_value_t = 8)]
-    pub limit: usize,
+    /// Maximum result rows (route: file steps); default 25, overview: all districts.
+    #[arg(long)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -187,6 +187,8 @@ impl Snapshot {
             limit,
             total,
             truncated: total > limit,
+            omitted: total.saturating_sub(limit),
+            next_limit: (total > limit).then(|| format!("--limit {total}")),
             results,
         }
     }
@@ -462,6 +464,12 @@ pub fn text(report: &QueryResponse) -> String {
         report.total,
         if report.truncated { " (truncated)" } else { "" }
     );
+    if let Some(flag) = &report.next_limit {
+        out.push_str(&format!(
+            "{} rows omitted; repeat with {flag} to return all rows\n",
+            report.omitted
+        ));
+    }
     out.push_str(&format!(
         "{} commit={} sha256={} limit={}\n",
         report.schema,

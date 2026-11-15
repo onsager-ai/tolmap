@@ -552,15 +552,16 @@ finding kinds shown in the report).
 `--path` matches a path prefix unless it contains `*` or `?`, when it is a glob.
 `--district` matches the district name. `--top` limits ranked findings after
 other filters (cycles, god files and hotspots). Cycle order is unchanged:
-cross-package cycles first, then deterministic route order. Filters apply to text, JSON and lens TOML;
+cross-package cycles first, then deterministic route order. Filters apply to
+text, JSON and lens TOML;
 all outputs identify the selections (lens TOML uses a leading comment, which is
 valid TOML and ignored by `tolmap lens check`). Filtered JSON keeps the normal
 DebtReport version and lower-bound evidence, with additive `unfiltered_counts`,
-`filtered_counts` and `filters` fields. These fields do not change the meaning of
-the underlying finding semantics. DebtReport is now v7: `cycle_evidence` is
+`filtered_counts` and `filters` fields. DebtReport is now v7: `cycle_evidence` is
 `compact` by default for CLI text/JSON. Compact cycles retain member districts,
 `cross_edges`, one `route` and its `closing_edges`, package names and measurement
-flags. They omit `package_edges`, `mutual_pairs` and `cut` bundles.
+flags. Their `package_edges`, `mutual_pairs` and `cut` arrays are empty;
+`cycle_evidence` distinguishes omitted evidence from measured empty bundles.
 `--cycle-evidence full` restores those bundles. Lens output always uses full
 evidence because its areas and notes depend on bundles.
 

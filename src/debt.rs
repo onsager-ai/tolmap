@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 6;
+pub const DEBT_REPORT_VERSION: u32 = 7;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -284,10 +284,18 @@ pub struct DebtFilters {
     pub top: Option<usize>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, clap::ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CycleEvidence {
+    Compact,
+    Full,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DebtReport {
     pub version: u32,
+    pub cycle_evidence: CycleEvidence,
     pub repo: String,
     /// Counts before the selected CLI filters are applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1098,6 +1106,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     let strings = |s: &[&str]| -> Vec<String> { s.iter().map(|x| (*x).to_owned()).collect() };
     DebtReport {
         version: DEBT_REPORT_VERSION,
+        cycle_evidence: CycleEvidence::Full,
         repo: map.repo.clone(),
         unfiltered_counts: None,
         filters: None,
@@ -1563,6 +1572,9 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
         "debt findings for {} ({} files, {} edges); counts are lower bounds",
         report.repo, report.files, report.edges
     );
+    if report.cycle_evidence == CycleEvidence::Compact {
+        out.push_str("cycle evidence: compact (use --cycle-evidence full for bundles)\n");
+    }
     match &report.coverage {
         Some(c) => {
             let _ = writeln!(
@@ -1629,7 +1641,7 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
         out.push_str("hidden coupling not measured (map has no co-change sidecar)\n");
     }
     for c in &report.cycles {
-        let ids: Vec<String> = c.route.iter().map(usize::to_string).collect();
+        let ids: Vec<&str> = c.districts.iter().map(|d| d.name.as_str()).collect();
         let scope = if !c.package_scope_measured {
             "package scope not measured".to_owned()
         } else if c.crosses_package {
@@ -1643,7 +1655,7 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
         let _ = writeln!(
             out,
             "cycle districts {} ({} cross-district edges; {scope})",
-            ids.join(" -> "),
+            ids.join(", "),
             c.cross_edges
         );
         if c.package_scope_measured {
@@ -1672,7 +1684,9 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
                 pair.edges.len(),
             );
         }
-        let _ = writeln!(out, "  heuristic cut ({} bundles):", c.cut.len());
+        if report.cycle_evidence == CycleEvidence::Full {
+            let _ = writeln!(out, "  heuristic cut ({} bundles):", c.cut.len());
+        }
         for bundle in &c.cut {
             let _ = writeln!(
                 out,
@@ -1870,6 +1884,7 @@ fn apply_filters(
             })
     });
     if let Some(n) = top {
+        report.cycles.truncate(n);
         report.hotspots.truncate(n);
         report.god_files.truncate(n);
     }
@@ -1889,7 +1904,7 @@ fn apply_filters(
 // `tolmap debt`. Findings are informational: 0 on success, 2 on an
 // unreadable map.
 pub fn run(map: &std::path::Path, format: &str) -> i32 {
-    run_filtered(map, format, &[], None, None, None)
+    run_filtered(map, format, &[], None, None, None, CycleEvidence::Compact)
 }
 
 pub fn run_filtered(
@@ -1899,6 +1914,7 @@ pub fn run_filtered(
     path: Option<&str>,
     district: Option<&str>,
     top: Option<usize>,
+    cycle_evidence: CycleEvidence,
 ) -> i32 {
     let bytes = match std::fs::read(map) {
         Ok(bytes) => bytes,
@@ -1916,6 +1932,9 @@ pub fn run_filtered(
     };
     let mut report = findings(&doc);
     apply_filters(&mut report, &doc, kinds, path, district, top);
+    if format != "lens" && cycle_evidence == CycleEvidence::Compact {
+        compact_cycles(&mut report);
+    }
     let rendered = match format {
         "json" => render_json(&report),
         "lens" => {
@@ -1932,9 +1951,22 @@ pub fn run_filtered(
     0
 }
 
+fn compact_cycle(cycle: &mut DistrictCycle) {
+    cycle.package_edges.clear();
+    cycle.mutual_pairs.clear();
+    cycle.cut.clear();
+}
+
+fn compact_cycles(report: &mut DebtReport) {
+    report.cycle_evidence = CycleEvidence::Compact;
+    for cycle in &mut report.cycles {
+        compact_cycle(cycle);
+    }
+}
+
 // ---- machine-readable report comparison ------------------------------------
 
-pub const DEBT_DIFF_VERSION: u32 = 1;
+pub const DEBT_DIFF_VERSION: u32 = 2;
 #[derive(Serialize)]
 struct DebtDiff {
     version: u32,
@@ -1982,7 +2014,9 @@ fn report_items(report: &DebtReport) -> BTreeMap<(String, String), serde_json::V
     }
     for x in &report.cycles {
         let identity = cycle_path_name(&cycle_files(x));
-        let mut value = serde_json::to_value(x).unwrap();
+        let mut compact = x.clone();
+        compact_cycle(&mut compact);
+        let mut value = serde_json::to_value(&compact).unwrap();
         value["district_names"] = serde_json::Value::Array(
             x.districts
                 .iter()

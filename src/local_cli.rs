@@ -274,6 +274,8 @@ pub(super) fn report(s: &Local) -> Result<StatusResponse> {
         limit: 1,
         total: 1,
         truncated: false,
+        omitted: 0,
+        next_limit: None,
         results: vec![Status {
             checkout_commit,
             indexed_commit,
