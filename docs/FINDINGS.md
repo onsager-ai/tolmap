@@ -3572,3 +3572,111 @@ Issue [#285](https://github.com/onsager-ai/tolmap/issues/285). [Scratch run 4278
 
 - These three repositories do not establish how collapse behaves for generated files whose generator relationship is absent or stale; the report deliberately retains those edges unchanged.
 - CI resolved each debt lens but did not render it in a browser.
+
+## 75. Compact agent queries avoid full JSON reads on tolmap, but truncation and cycle evidence still need attention
+
+Issue [#303](https://github.com/onsager-ai/tolmap/issues/303). The on-demand
+[agent pilot](https://github.com/onsager-ai/tolmap/actions/runs/43695836601)
+builds binary revision `2a04ae738bee3767dcdcec011cb1b97f1b4a2a14` and measures
+source revision `58be4cb0147c9eadaca568ac0b9c67fdb6a208b2` with
+`build --all-sources`. Its impact task compares #304's merge
+`79089b356ee69933f20195a237e92c9af20d9782` to its first parent using
+`check --all-sources --report-only --format json`. The retained `agent-pilot`
+artifact contains command arguments, exit codes, stdout/stderr, raw maps and
+symbols, projections, and `measurements.json`. Reproduce on demand with
+`gh workflow run remote-build.yml --ref <task-branch> -f command=agent-pilot`;
+the workflow always builds its own dispatch revision. The script keeps source
+pins in `eval/agent_pilot.py`, so rerunning later measures the same source.
+
+### Method
+
+Each task starts from already-built artifacts. Bytes mean UTF-8 output/file
+bytes delivered to an agent, including trailing newlines, rather than disk I/O
+inside tolmap or model tokens. Calls count separate shell/tool invocations in
+the recorded recipe; an agent could batch them differently. Build, status and
+shared provenance inspection are setup excluded from both sides. Map builds
+are cold with default deterministic IDF names, seed 7 and resolution 1.1;
+there are no model calls. This pilot runs each recipe once and makes no timing
+or repeated-build determinism claim. Costs are per task, without assuming the
+agent remembers another task's raw map.
+
+The requested "before" recipe reads a full map/symbols/debt JSON, then a
+Python projection equivalent to a jq join. A second baseline records only the
+projection an agent could request if it already knows the schema. This avoids
+presenting full-file loading as unavoidable. Both orientation recipes read
+Cargo bin declarations: `overview` returns districts, not entry landmarks.
+The review baseline joins changed paths to a historical base map; it does not
+compute an equivalent modularity delta or changed-edge report. Baseline
+projections omit envelope/measurement metadata that the query contracts retain,
+so their smaller sizes are not equivalent coverage guarantees. The raw map
+includes default geometry/parcels, while compact queries read the same map
+internally and return only selected fields; the byte saving concerns agent
+context, not extraction or map storage.
+
+### Results
+
+The run succeeded; all 19 recorded commands exited 0. The self-map contains
+326 files, 937 import edges and 9 districts, with SHA-256
+`4389afb769ad9b066f438a878106bf0d560684126c642f14f524b560f44f1efc`.
+Raw map/symbols/debt sizes are 438,648 / 948,060 / 91,796 bytes.
+
+| Task | Full JSON + projection bytes / calls | Queries bytes / calls | Filtered-only baseline bytes / calls |
+|---|---:|---:|---:|
+| Orient: main areas + CLI | 1,387,282 / 4 | 1,669 / 3 | 574 / 2 |
+| Before editing `src/check.rs` (default limit) | 439,547 / 2 | 1,132 / 1 | 899 / 1 |
+| Review #304's merge diff | 433,400 / 3 | 2,034 / 1 | 657 / 2 |
+| Pick top 5 hotspots + district cycles | 121,223 / 2 | 62,749 / 2 | 29,427 / 1 |
+
+- **All query recipes return fewer bytes than full-file loading, but every
+  filtered-only baseline is smaller.** The compact dependency envelope is
+  larger than the complete 899-byte path/district projection despite returning
+  only 8 rows. The debt recipe does not save calls against full JSON plus a
+  join, and uses one more call than a combined filtered projection. Cycle
+  evidence dominates its output: hotspots are 3,612 bytes, cycles 59,137.
+  `--top` limits hotspots/god files, not cycles or their evidence bundles.
+- **Orientation is useful but incomplete at the default limit.** The largest
+  areas are `web & map` (71 files), `web` (58), `extract & service` (46) and
+  `bindings` (42). `overview` returns 8 of 9 districts with `truncated: true`;
+  it omits `bindings & comparison` (16 files). Cargo bin declarations identify
+  `src/main.rs`, and `where` places it in `extract & service`. Listing all
+  areas needs an increased limit; its retry cost is not measured here.
+- **The complete import boundary matches the audited source, while the
+  default response loses one third to truncation.** `deps` reports `total: 12`
+  and returns 8 rows. Default inbound and outbound recall are each 4/6 (66.7%),
+  with no false positives. Omitted importers are `src/service/debt.rs` and
+  `src/service/lens.rs`; omitted dependencies are `src/pipeline.rs` and
+  `src/schema.rs`. `--limit 1000` returns all 12 rows in 1,524 bytes / 1 call:
+  inbound 6/6, outbound 6/6, no misses and no false positives. Starting with
+  default then retrying costs 2,656 bytes / 2 calls. The full-map projection
+  reads the same edges and has the complete response's recall. Ground truth
+  is `rg` plus source inspection of six `crate::` imports and six referring
+  files; `src/local.rs` is test-only, and `src/lib.rs`'s `pub mod check` is a
+  namespace declaration excluded from import-edge truth. These are explicit
+  name-use boundaries, not type-aware callers.
+- **The historical impact report accounts for every changed path.** Seven
+  mapped paths cross 2 districts (`extract & service` and
+  `bindings & comparison`), with `delta_q: +0.001136`. The remaining two paths
+  are explicit: `docs/CHECK.md` is `unsupported_language` and
+  `tests/check_cli.rs` is `not_in_scope`. The report remains a lower bound,
+  exits 0 with `report_only` thresholds and does not establish that the
+  outside paths are safe. The baseline cannot place the newly added
+  `bindings/CheckOutsideGraph.ts`; check places it in district 8.
+- **Debt selection gives a concrete reading order, not a mandate to refactor.**
+  Top hotspot scores are `web/src/map/MapRenderer.ts` 95,876,
+  `src/extract.rs` 47,844, `web/src/routes/MapView.tsx` 35,774,
+  `src/service/workers.rs` 15,203 and `src/service/jobs.rs` 8,415. One district
+  cycle spans 8 districts and 267 cross edges; its contextual route closes via
+  `src/bin/generate_types.rs → src/catalogue.rs` and
+  `web/src/api/client.ts → src/org.rs` (the latter through a generated binding).
+  `crosses_package: false` identifies a clustering cycle rather than a cycle
+  in the projected package dependencies.
+
+### Not verified
+
+- This is a deterministic payload/recipe comparison, not a randomized agent
+  study, a token-cost measurement or evidence of faster successful edits.
+- Boundary recall audits explicit source references around `src/check.rs`,
+  including test-only references. It does not establish dynamic-call coverage,
+  transitive impact or precision across other languages or repositories.
+- No semon/duhem pilot, hub access, automatic refresh, viewer baseline change
+  or production deployment is part of this measurement.
