@@ -292,6 +292,14 @@ pub(super) fn report(s: &Local) -> Result<StatusResponse> {
     })
 }
 
+fn write_response(text: &str) -> Result<()> {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(text.as_bytes())?;
+    stdout.write_all(b"\n")?;
+    Ok(())
+}
+
 pub fn status(args: StatusArgs) -> i32 {
     let (checkout, data) = match paths(&args.repo, args.data.as_deref()) {
         Ok(paths) => paths,
@@ -302,13 +310,19 @@ pub fn status(args: StatusArgs) -> i32 {
     };
     match state(checkout, data, false).and_then(|s| report(&s)) {
         Ok(response) => {
-            if args.format == "text" {
+            let output = if args.format == "text" {
                 let value = &response.results[0];
-                println!("{}: HEAD={} indexed={} requested={} dirty={} changed_files={} behind={}\nmap={}\nsources={} all_sources={}\nextraction_cache={} previous_map_reused={}\nerror={}", value.freshness, value.checkout_commit, value.indexed_commit.as_deref().unwrap_or("none"), value.requested_commit.as_deref().unwrap_or("none"), value.dirty, value.changed_files, value.commits_behind.map(|n| n.to_string()).unwrap_or("unknown".into()), value.map_path.as_ref().map(|p| p.display().to_string()).unwrap_or("none".into()), serde_json::to_string(&value.sources).unwrap(), serde_json::to_string(&value.all_sources).unwrap(), serde_json::to_string(&value.extraction_cache).unwrap(), serde_json::to_string(&value.previous_map_reused).unwrap(), value.error.as_deref().unwrap_or("none"));
+                format!("{}: HEAD={} indexed={} requested={} dirty={} changed_files={} behind={}\nmap={}\nsources={} all_sources={}\nextraction_cache={} previous_map_reused={}\nerror={}", value.freshness, value.checkout_commit, value.indexed_commit.as_deref().unwrap_or("none"), value.requested_commit.as_deref().unwrap_or("none"), value.dirty, value.changed_files, value.commits_behind.map(|n| n.to_string()).unwrap_or("unknown".into()), value.map_path.as_ref().map(|p| p.display().to_string()).unwrap_or("none".into()), serde_json::to_string(&value.sources).unwrap(), serde_json::to_string(&value.all_sources).unwrap(), serde_json::to_string(&value.extraction_cache).unwrap(), serde_json::to_string(&value.previous_map_reused).unwrap(), value.error.as_deref().unwrap_or("none"))
             } else {
-                println!("{}", serde_json::to_string(&response).unwrap());
+                serde_json::to_string(&response).unwrap()
+            };
+            match write_response(&output) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("write status: {error:#}");
+                    3
+                }
             }
-            0
         }
         Err(error) => {
             eprintln!("{error:#}");
@@ -502,7 +516,7 @@ pub fn refresh(args: RefreshArgs) -> i32 {
         let _lock = lock_store(&data)?;
         let s = Arc::new(state(checkout, data, true)?);
         let result = refresh_snapshot(s.clone(), &args);
-        println!("{}", serde_json::to_string(&report(&s)?)?);
+        write_response(&serde_json::to_string(&report(&s)?)?)?;
         if let Err(error) = result {
             eprintln!("{error:#}");
             return Ok(if error.downcast_ref::<InputError>().is_some() {

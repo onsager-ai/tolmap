@@ -880,6 +880,10 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
                 Some("Indexing was interrupted; retry from the retained committed source.".into());
             value.failure_code = Some("interrupted".into());
             value.retryable = true;
+            crate::incremental::atomic_write(
+                &data.join("attempt.json"),
+                &serde_json::to_vec(value)?,
+            )?;
         }
     }
     let s = Arc::new(Local {
