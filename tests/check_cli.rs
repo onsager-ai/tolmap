@@ -1079,3 +1079,164 @@ async fn comparison_endpoint_matches_cli_and_persists_provenance() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+/// A UI-only change must be visible even when detection chooses Rust.
+#[test]
+fn polyglot_scope_and_stored_map_include_typescript_or_explain_its_omission() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write(
+        &repo,
+        "Cargo.toml",
+        "[package]\nname = \"polyglot\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &repo,
+        "src/lib.rs",
+        "pub mod service;\npub fn run() -> u32 { service::value() }\n",
+    );
+    write(&repo, "src/service.rs", "pub fn value() -> u32 { 1 }\n");
+    write(
+        &repo,
+        "web/package.json",
+        "{\"name\":\"ui\",\"private\":true}",
+    );
+    write(
+        &repo,
+        "web/src/a.ts",
+        "import { value } from './b';\nexport const result = value();\n",
+    );
+    write(
+        &repo,
+        "web/src/b.ts",
+        "export function value(): number { return 1; }\n",
+    );
+    // Both languages clear --all-sources' 25-file / 5% floor.
+    for i in 0..25 {
+        write(
+            &repo,
+            &format!("src/extra_{i}.rs"),
+            &format!("pub fn value_{i}() -> u32 {{ {i} }}\n"),
+        );
+        write(
+            &repo,
+            &format!("web/src/extra_{i}.ts"),
+            &format!("export const value_{i} = {i};\n"),
+        );
+    }
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "polyglot base"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    let out = dir.path().join("maps");
+    let built = Command::new(TOLMAP)
+        .arg("build")
+        .arg(&repo)
+        .args([
+            "--pkg", ".", "--lang", "rs", "--pkg", "web", "--lang", "ts", "--name", &base, "--out",
+        ])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let map = out.join(format!("{base}.json"));
+    write(
+        &repo,
+        "web/src/b.ts",
+        "export function value(): number { return 2; }\n",
+    );
+    write(
+        &repo,
+        "web/src/b.test.ts",
+        "export const testOnly = true;\n",
+    );
+    write(&repo, "README.md", "docs\n");
+    for scope in [
+        vec!["--pkg", ".", "--lang", "rs"],
+        vec![
+            "--base-map",
+            map.to_str().unwrap(),
+            "--pkg",
+            ".",
+            "--lang",
+            "rs",
+        ],
+        vec!["--all-sources"],
+        vec!["--pkg", ".", "--lang", "rs", "--pkg", "web", "--lang", "ts"],
+        vec!["--base-map", map.to_str().unwrap()],
+    ] {
+        let mut args = vec!["--base", &base, "--report-only", "--format", "json"];
+        args.extend(scope.iter().copied());
+        let run = check(&repo, &args);
+        expect_code(&run, 0);
+        let report = run.json();
+        let indexed = report["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"] == "web/src/b.ts");
+        let outside = report["outside_graph"].as_array().unwrap();
+        if scope.last() == Some(&"rs") {
+            assert!(!indexed);
+            assert!(outside
+                .iter()
+                .any(|f| f["path"] == "web/src/b.ts" && f["reason"] == "not_in_scope"));
+        } else {
+            assert!(indexed, "{report}");
+        }
+        assert!(outside
+            .iter()
+            .any(|f| f["path"] == "README.md" && f["reason"] == "unsupported_language"));
+        assert!(outside
+            .iter()
+            .any(|f| f["path"] == "web/src/b.test.ts" && f["reason"] == "not_in_scope"));
+        assert_eq!(run.stdout, check(&repo, &args).stdout);
+    }
+    // A stored snapshot can deliberately omit an otherwise supported file.
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&map).unwrap()).unwrap();
+    let omitted = document["F"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|p| p == "web/src/b.ts")
+        .unwrap();
+    document["F"].as_array_mut().unwrap().remove(omitted);
+    document["N"].as_array_mut().unwrap().remove(omitted);
+    let narrowed = dir.path().join("narrowed");
+    std::fs::create_dir(&narrowed).unwrap();
+    let narrowed_map = narrowed.join(format!("{base}.json"));
+    std::fs::write(&narrowed_map, serde_json::to_vec(&document).unwrap()).unwrap();
+    let narrowed_run = check(
+        &repo,
+        &[
+            "--base",
+            &base,
+            "--base-map",
+            narrowed_map.to_str().unwrap(),
+            "--report-only",
+            "--format",
+            "json",
+        ],
+    );
+    expect_code(&narrowed_run, 0);
+    assert!(narrowed_run.json()["outside_graph"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["path"] == "web/src/b.ts" && f["reason"] == "not_in_scope"));
+    for invalid in [
+        vec!["--all-sources", "--pkg", "."],
+        vec!["--pkg", ".", "--pkg", "web", "--lang", "rs"],
+        vec!["--lang", "unknown"],
+    ] {
+        let mut args = vec!["--base", &base];
+        args.extend(invalid);
+        expect_code(&check(&repo, &args), 2);
+    }
+}

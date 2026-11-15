@@ -1090,7 +1090,7 @@ pub enum FreshnessState {
     Stale,
 }
 
-// Comparison envelope adds provenance without changing CheckReport v1.
+// Comparison envelope adds provenance alongside CheckReport.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 pub struct Comparison {
     pub id: String,

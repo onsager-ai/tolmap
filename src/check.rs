@@ -321,7 +321,7 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
         let mut head_files = files
             .into_iter()
             .map(|file| history.renames.get(&file).cloned().unwrap_or(file))
-            .filter(|file| head_dir.join(file).is_file())
+            .filter(|file| source_language(file).is_some() && head_dir.join(file).is_file())
             .collect::<BTreeSet<_>>();
         // New files can enter the recorded languages/roots, but unchanged
         // files omitted by the stored snapshot cannot silently enter it.
@@ -344,13 +344,21 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
                 head_files.insert(path.clone());
             }
         }
-        extract::build_snapshot_graph(
+        extract::build_scoped_snapshot_graph(
             &head_dir,
             &head_files.into_iter().collect::<Vec<_>>(),
+            &sources,
             &history,
         )
         .map_err(internal)?
     } else {
+        for (pkg, _) in &sources {
+            if !head_dir.join(pkg).is_dir() {
+                return Err(input(format!(
+                    "source root {pkg} selected at base is not a directory at head"
+                )));
+            }
+        }
         extract_head_graph(&head_dir, &sources, &history)?
     };
     let head_graph_s = stage.elapsed().as_secs_f64();
@@ -535,6 +543,7 @@ fn compare(
 
     // Head nodes: a file the base map holds (under its base path, for a
     // rename) keeps its base district; anything else is new and is placed.
+    let base_index = file_index(&base_graph);
     let head_index = file_index(&head_graph);
     let head_files = head_graph
         .nodes
@@ -671,7 +680,9 @@ fn compare(
                 (to, Some(from), CheckFileStatus::Renamed, Some(from.clone()))
             }
         };
-        let in_base = base_path.and_then(|file| base_membership.get(file.as_str()).copied());
+        let in_base = base_path
+            .filter(|file| base_index.contains_key(*file))
+            .and_then(|file| base_membership.get(file.as_str()).copied());
         let in_head = if status == CheckFileStatus::Deleted {
             None
         } else {
@@ -1291,7 +1302,11 @@ fn resolve_sources(
             .zip(&options.lang)
             .map(|(pkg, lang)| {
                 Ok((
-                    pkg.clone(),
+                    if dir.join(pkg).is_dir() {
+                        pkg.clone()
+                    } else {
+                        return Err(input(format!("source root {pkg} is not a directory")));
+                    },
                     LanguageKind::parse(lang).map_err(|e| input(e.to_string()))?,
                 ))
             })
