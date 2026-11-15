@@ -60,6 +60,16 @@ fn pinned_deps_match_all_edges_and_keep_total() {
                 .collect();
             assert_eq!(report.total, expected.len());
             assert_eq!(report.truncated, expected.len() > 1);
+            assert_eq!(report.omitted, expected.len().saturating_sub(1));
+            assert_eq!(
+                report.next_limit,
+                (expected.len() > 1).then_some(expected.len())
+            );
+            if report.truncated {
+                let text = tolmap::query::text(&report);
+                assert!(text.contains(&format!("{} rows omitted", report.omitted)));
+                assert!(text.contains(&format!("--limit {}", report.next_limit.unwrap())));
+            }
             assert_eq!(report.results.len(), expected.len().min(1));
             assert_eq!(
                 serde_json::to_vec(&report).unwrap(),
@@ -125,6 +135,8 @@ fn overview_and_routes_on_pinned_maps() {
         let short = s.route(&s.map.files[a], &s.map.files[b], 1);
         assert_eq!(short.total, 2);
         assert!(short.truncated);
+        assert_eq!(short.omitted, 1);
+        assert_eq!(short.next_limit, Some(2));
         let same = s.route(&s.map.files[a], &s.map.files[a], 8);
         assert_eq!(same.total, 1);
         assert!(matches!(
@@ -182,7 +194,24 @@ fn cli_exit_codes_and_text() {
         assert_eq!(output.status.code(), Some(0));
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["schema"], QUERY_SCHEMA);
+        if report["query"]["kind"] == "overview" {
+            assert_eq!(
+                report["results"].as_array().unwrap().len(),
+                report["total"].as_u64().unwrap() as usize
+            );
+            assert_eq!(report["truncated"], false);
+        } else {
+            assert_eq!(report["limit"], 25);
+        }
     }
+    let limited = std::process::Command::new(binary)
+        .args(["overview", "--limit", "0", "--format", "text", "--map"])
+        .arg(&map)
+        .output()
+        .unwrap();
+    assert_eq!(limited.status.code(), Some(0));
+    let limited = String::from_utf8(limited.stdout).unwrap();
+    assert!(limited.contains("rows omitted; repeat with --limit"));
     let text = std::process::Command::new(binary)
         .args(["where", "main", "--format", "text", "--map"])
         .arg(&map)

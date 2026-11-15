@@ -6,7 +6,7 @@ description: Use tolmap for repository orientation, change boundaries, diff impa
 # Using tolmap
 
 This skill ships with the tolmap CLI (currently 0.1.0). Use the skill from the
-same checkout/release as the binary. Compact query JSON uses `tolmap.query/v1`;
+same checkout/release as the binary. Compact query JSON uses `tolmap.query/v2`;
 check and debt have their own report versions. See [QUERY](../../docs/QUERY.md),
 [CHECK](../../docs/CHECK.md) and [API](../../docs/API.md) for the full contracts.
 
@@ -67,7 +67,9 @@ entry paths. Paths are exact repository-relative paths, with `/`. JSON is the de
 that no runtime relationship exists.
 
 Every compact response includes map identity, `coverage`, `limit`, `total` and
-`truncated`. The default limit is 8. If truncated, raise `--limit` deliberately
+`truncated`, `omitted` and `next_limit`. `overview` returns all districts;
+`where`, `deps` and `route` default to 25 rows. If truncated, use the returned
+`next_limit` as `--limit` to get all rows
 or narrow the question; a truncated route is only a prefix. `where` can return
 several symbol candidates: inspect qualified names and line ranges.
 
@@ -95,7 +97,8 @@ failure. Compact queries also return 0 for no match, so read `total`.
 
 ```sh
 tolmap debt --map "$MAP" --kind hotspot --top 5 --format json
-tolmap debt --map "$MAP" --kind cycle --format json
+tolmap debt --map "$MAP" --kind cycle --top 5 --format json
+tolmap debt --map "$MAP" --kind cycle --cycle-evidence full --format json
 tolmap debt --map "$MAP" --kind hidden-coupling --path src/ --format json
 tolmap debt --map "$MAP" --district 'CLI · checking' --format json
 # Use actual district names returned by overview; the name above is illustrative.
@@ -103,8 +106,10 @@ tolmap debt diff before-debt.json after-debt.json
 ```
 
 `--kind` is repeatable; `--path` accepts a prefix or glob. `--top` limits ranked
-hotspot/god findings, not cycles or every report section. Keep totals, filter
+hotspot/god findings and cycles. Cycles default to compact summaries; use
+`--cycle-evidence full` for package, mutual-pair and cut bundles. Keep totals, filter
 counts, measurement flags and lower-bound wording with the findings. Missing
 history or generated-file evidence is unmeasured, not evidence of no debt.
-Use full current-version reports for `debt diff`; it compares raw findings and
-metric deltas, not maps. Read the files before proposing a structural edit.
+Use unfiltered current-version reports for `debt diff`; it compares raw findings
+and metric deltas, not maps. Cycles compare compact summaries in both evidence
+modes, so bundle-only differences are omitted. Read the files before proposing a structural edit.

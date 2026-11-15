@@ -327,7 +327,32 @@ fn debt_cli_formats_and_exit_codes() {
     assert!(text.contains("lower bounds"), "{text}");
     let (code, json) = run(&["--map", m, "--format", "json"]);
     assert_eq!(code, 0);
-    assert_eq!(json, debt::render_json(&debt::findings(&synthetic())));
+    let compact: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(compact["version"], 7);
+    assert_eq!(compact["cycle_evidence"], "compact");
+    assert_eq!(compact["cycles"][0]["cross_edges"], 3);
+    assert_eq!(
+        compact["cycles"][0]["closing_edges"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    for field in ["cut", "mutual_pairs", "package_edges"] {
+        assert!(compact["cycles"][0][field].as_array().unwrap().is_empty());
+    }
+    assert_eq!(json, run(&["--map", m, "--format", "json"]).1);
+    let (code, full) = run(&["--map", m, "--format", "json", "--cycle-evidence", "full"]);
+    assert_eq!(code, 0);
+    assert_eq!(full, debt::render_json(&debt::findings(&synthetic())));
+    let (code, bounded) = run(&[
+        "--map", m, "--kind", "cycle", "--top", "0", "--format", "json",
+    ]);
+    assert_eq!(code, 0);
+    let bounded: serde_json::Value = serde_json::from_str(&bounded).unwrap();
+    assert!(bounded["cycles"].as_array().unwrap().is_empty());
+    assert_eq!(bounded["unfiltered_counts"]["district cycle"], 1);
+    assert_eq!(bounded["filtered_counts"]["district cycle"], 0);
     let (code, toml) = run(&["--map", m, "--format", "lens"]);
     assert_eq!(code, 0);
     let lens_file = dir.path().join("debt.toml");
@@ -354,6 +379,31 @@ fn debt_cli_formats_and_exit_codes() {
     assert_eq!(filtered["filtered_counts"]["hotspot"], 1);
     assert_eq!(filtered["filters"]["path"], "src/c/*");
     assert_eq!(filtered["hotspots"][0]["path"], "src/c/hot.py");
+    let compact_report = dir.path().join("compact-report.json");
+    let full_report = dir.path().join("full-report.json");
+    std::fs::write(&compact_report, &json).unwrap();
+    std::fs::write(&full_report, &full).unwrap();
+    let diff = std::process::Command::new(env!("CARGO_BIN_EXE_tolmap"))
+        .args(["debt", "diff"])
+        .arg(&compact_report)
+        .arg(&full_report)
+        .output()
+        .unwrap();
+    assert_eq!(diff.status.code(), Some(0));
+    let diff: serde_json::Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(diff["version"], 2);
+    assert!(diff["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|f| f["status"] == "shared"));
+    let cycle = diff["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["kind"] == "district cycle")
+        .unwrap();
+    assert_eq!(cycle["before"], cycle["after"]);
     let before_report = dir.path().join("before-report.json");
     let after_report = dir.path().join("after-report.json");
     std::fs::write(
@@ -444,4 +494,46 @@ fn comparison_reads_findings_by_identity() {
         serde_json::to_string(&again.2).unwrap(),
         serde_json::to_string(&changes).unwrap()
     );
+}
+
+#[test]
+fn pinned_cycle_modes_and_top_are_deterministic() {
+    let binary = env!("CARGO_BIN_EXE_tolmap");
+    let map = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/flask.json");
+    let run = |mode: &str, top: Option<&str>| {
+        let mut command = std::process::Command::new(binary);
+        command.args([
+            "debt",
+            "--format",
+            "json",
+            "--kind",
+            "cycle",
+            "--cycle-evidence",
+            mode,
+            "--map",
+        ]);
+        command.arg(&map);
+        if let Some(top) = top {
+            command.args(["--top", top]);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        output.stdout
+    };
+    for mode in ["compact", "full"] {
+        let first = run(mode, None);
+        assert_eq!(first, run(mode, None));
+        let report: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        let limited: serde_json::Value = serde_json::from_slice(&run(mode, Some("1"))).unwrap();
+        assert_eq!(
+            limited["cycles"].as_array().unwrap().len(),
+            report["cycles"].as_array().unwrap().len().min(1)
+        );
+        assert_eq!(
+            limited["unfiltered_counts"]["district cycle"],
+            report["cycles"].as_array().unwrap().len()
+        );
+        let zero: serde_json::Value = serde_json::from_slice(&run(mode, Some("0"))).unwrap();
+        assert!(zero["cycles"].as_array().unwrap().is_empty());
+    }
 }

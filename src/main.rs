@@ -257,9 +257,12 @@ enum Command {
         /// Keep findings in this district.
         #[arg(long)]
         district: Option<String>,
-        /// Limit ranked finding kinds after filtering (god files and hotspots).
+        /// Limit cycles and ranked findings after filtering (god files and hotspots).
         #[arg(long)]
         top: Option<usize>,
+        /// Include full cycle evidence bundles instead of compact summaries.
+        #[arg(long, value_enum, default_value_t = tolmap::debt::CycleEvidence::Compact)]
+        cycle_evidence: tolmap::debt::CycleEvidence,
     },
 
     /// Lenses (issue #241, docs/API.md): named overlays of areas, paths and
@@ -648,18 +651,18 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Route(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
-            Ok(snapshot.route(&args.from, &args.to, args.options.limit))
+            Ok(snapshot.route(&args.from, &args.to, args.options.limit.unwrap_or(25)))
         })),
         Command::Overview(options) => {
             std::process::exit(tolmap::query::run(&options, |snapshot| {
-                Ok(snapshot.overview(options.limit))
+                Ok(snapshot.overview(options.limit.unwrap_or(snapshot.map.districts.len())))
             }))
         }
         Command::Where(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
-            snapshot.where_is(&args.target, args.options.limit)
+            snapshot.where_is(&args.target, args.options.limit.unwrap_or(25))
         })),
         Command::Deps(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
-            Ok(snapshot.deps(&args.path, args.direction, args.options.limit))
+            Ok(snapshot.deps(&args.path, args.direction, args.options.limit.unwrap_or(25)))
         })),
         Command::Status(args) => std::process::exit(tolmap::local::cli::status(args)),
         Command::Refresh(args) => std::process::exit(tolmap::local::cli::refresh(args)),
@@ -889,6 +892,7 @@ fn main() -> Result<()> {
             path,
             district,
             top,
+            cycle_evidence,
         } => {
             let code = match command {
                 Some(DebtCommand::Diff { before, after }) => {
@@ -902,6 +906,7 @@ fn main() -> Result<()> {
                         path.as_deref(),
                         district.as_deref(),
                         top,
+                        cycle_evidence,
                     ),
                     None => {
                         eprintln!("tolmap debt: provide --map or `debt diff`");
