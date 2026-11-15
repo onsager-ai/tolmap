@@ -62,6 +62,7 @@ on:
         type: choice
         options:
           - build
+          - agent-pilot
           - dump-blend
           - stability
           - name-eval
@@ -246,6 +247,9 @@ jobs:
           if [ "$COMMAND" = "check-calibrate" ] && [[ "$REPOS_INPUT" != check-calibration* ]]; then
             REPOS_INPUT="check-calibration"
           fi
+          if [ "$COMMAND" = "agent-pilot" ]; then
+            REPOS_INPUT="onsager-ai/tolmap"
+          fi
           matrix="$(python3 eval/remote_matrix.py --repos "$REPOS_INPUT")"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           if [ -n "$COMPARE_REF" ]; then
@@ -257,7 +261,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike'
+    if: inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot'
     runs-on: ubuntu-latest
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -690,7 +694,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -716,6 +720,44 @@ jobs:
           path: |
             results.json
             eta_accuracy.json
+
+  # Explicit dispatch only; build HEAD's binary and measure pinned main source.
+  agent-pilot:
+    name: agent payload pilot on tolmap
+    needs: setup
+    if: inputs.command == 'agent-pilot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: pilot-bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+      - name: Measure four agent tasks
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+        run: |
+          chmod +x pilot-bin/tolmap
+          python3 -I eval/agent_pilot.py --binary pilot-bin/tolmap --repo . --out "${{ runner.temp }}/agent-pilot"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-pilot
+          path: |
+            ${{ runner.temp }}/agent-pilot/*.json
+            ${{ runner.temp }}/agent-pilot/*.stdout
+            ${{ runner.temp }}/agent-pilot/*.stderr
+            ${{ runner.temp }}/agent-pilot/map/*.json
+            ${{ runner.temp }}/agent-pilot/base-map/*.json
+          if-no-files-found: error
+          retention-days: 14
 
   # Issue #170 PR 2: calibrate `tolmap check`'s default thresholds on real
   # history. Each job replays one shard of one repository's last 200
