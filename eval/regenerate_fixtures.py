@@ -52,6 +52,13 @@ def main():
         parity.check_returncode()
         before = json.loads(Path(f"data/{name}.json").read_text())
         after = json.loads((built / f"{name}.json").read_text())
+        # Entry selection must not affect extraction or partition inputs.
+        # Record every landmark row, including rank changes, for PR review.
+        for key in ("F", "E", "S", "U", "q"):
+            if before[key] != after[key]:
+                raise SystemExit(f"{name}: non-landmark {key} changed")
+        if [row[0] for row in before["N"]] != [row[0] for row in after["N"]]:
+            raise SystemExit(f"{name}: partition changed")
         if before["names"] != after["names"]:
             raise SystemExit(f"{name}: district names changed: {before['names']} -> {after['names']}")
         if "D" not in after:
@@ -59,12 +66,20 @@ def main():
         evidence.append({"fixture": name, "generator": spec["generator"],
                          "commit": spec["commit"], "before_names": before["names"],
                          "after_names": after["names"], "before_keys": sorted(before),
-                         "after_keys": sorted(after), "parity": parity.stdout,
+                         "after_keys": sorted(after),
+                         "before_landmarks": [
+                             {"file": before["F"][row[0]], "kind": row[1],
+                              "detail": row[2], "rank": row[3]} for row in before["L"]],
+                         "after_landmarks": [
+                             {"file": after["F"][row[0]], "kind": row[1],
+                              "detail": row[2], "rank": row[3]} for row in after["L"]],
+                         "parity": parity.stdout,
                          "parity_exit": parity.returncode})
         shutil.copyfile(built / f"{name}.json", args.out / f"{name}.json")
         print("::endgroup::", flush=True)
-    run("target/release/tolmap", "lens", "suggest", "--map", str(args.out / "flask.json"),
-        "--out", str(args.out / "lenses/flask-suggest"))
+    if (args.out / "flask.json").read_bytes() != Path("data/flask.json").read_bytes():
+        run("target/release/tolmap", "lens", "suggest", "--map", str(args.out / "flask.json"),
+            "--out", str(args.out / "lenses/flask-suggest"))
     (args.out / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
 
 

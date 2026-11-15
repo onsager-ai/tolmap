@@ -1027,6 +1027,15 @@ fn landmarks(membership: &[usize], data: &GraphData, graph: &WeightedGraph) -> V
         );
     }
 
+    // Manifest/convention entries have no LOC threshold or two-file cap:
+    // a small executable or a workspace package can still be a real entry.
+    // Path order, independent of map node order, makes ties deterministic.
+    for (path, reason) in &data.entry_points {
+        if let Some(index) = data.nodes.iter().position(|node| &node.file == path) {
+            add_landmark(&mut picks, index, "entry", reason.clone());
+        }
+    }
+
     let mut bridges = (0..data.nodes.len())
         .filter(|index| structural(*index))
         .collect::<Vec<_>>();
@@ -1377,6 +1386,7 @@ mod tests {
             semantic: 0.0,
         };
         GraphData {
+            entry_points: BTreeMap::new(),
             repo: "outlier".to_owned(),
             pkg: ".".to_owned(),
             lang: "py".to_owned(),
@@ -1402,6 +1412,46 @@ mod tests {
                 edge("x", "y", 1_000.0),
             ],
         }
+    }
+
+    #[test]
+    fn manifest_entries_keep_reasons_without_python_size_or_count_cap() {
+        let mut data = dominant_outlier_graph();
+        data.edges.clear();
+        data.nodes = ["c.ts", "b.ts", "a.ts"]
+            .into_iter()
+            .map(|file| crate::schema::SourceNode {
+                file: file.into(),
+                loc: 1,
+                code_lines: None,
+                complexity: 0,
+                churn: 0,
+                fanin: 0.0,
+                module: file.into(),
+                lang: "ts".into(),
+            })
+            .collect();
+        data.entry_points = ["a.ts", "b.ts", "c.ts", "unmapped.ts"]
+            .into_iter()
+            .map(|path| (path.into(), format!("package.json: bin {path}")))
+            .collect();
+        let graph = WeightedGraph {
+            node_count: 3,
+            edges: Vec::new(),
+        };
+        let picks = landmarks(&[0, 0, 0], &data, &graph);
+        let entries = picks
+            .iter()
+            .filter(|pick| pick.why == "entry")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|pick| data.nodes[pick.node].file.as_str())
+                .collect::<Vec<_>>(),
+            ["a.ts", "b.ts", "c.ts"]
+        );
+        assert_eq!(entries[0].detail, "package.json: bin a.ts");
     }
 
     fn edge_names(data: &GraphData) -> BTreeSet<(String, String)> {
@@ -1449,6 +1499,7 @@ mod tests {
     #[test]
     fn mass_normalization_assigns_each_signal_its_share() {
         let mut data = GraphData {
+            entry_points: BTreeMap::new(),
             repo: String::new(),
             pkg: String::new(),
             lang: "py".to_owned(),

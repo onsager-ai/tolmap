@@ -7,6 +7,7 @@ pub mod comparison;
 pub mod cycle_cut;
 pub mod debt;
 pub mod detect;
+mod entry_points;
 pub mod extract;
 pub mod geometry;
 pub(crate) mod go_build;

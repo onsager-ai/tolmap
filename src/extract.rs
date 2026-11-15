@@ -6801,7 +6801,7 @@ fn finish_graph(
     drop(semantic);
     drop(file_ids);
 
-    let nodes = files
+    let nodes: Vec<SourceNode> = files
         .iter()
         .enumerate()
         .map(|(file_id, file)| {
@@ -6832,7 +6832,9 @@ fn finish_graph(
         .map(|(file, value)| (file.clone(), value.symbols.clone()))
         .collect();
 
+    let entry_points = crate::entry_points::detect(repo, &nodes);
     Ok(GraphData {
+        entry_points,
         repo: repo
             .file_name()
             .unwrap_or_default()
