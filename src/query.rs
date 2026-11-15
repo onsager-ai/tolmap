@@ -460,6 +460,7 @@ pub fn text(report: &QueryResponse) -> String {
         out.push_str("ambiguous symbol: candidates follow\n");
     }
     match &report.query {
+        Query::Status {} => {}
         Query::Overview {
             files,
             imports,

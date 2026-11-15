@@ -24,6 +24,10 @@ enum Command {
     Deps(tolmap::query::DepsArgs),
     /// Find a file import path, never a runtime call chain (docs/QUERY.md).
     Route(tolmap::query::RouteArgs),
+    /// Inspect committed snapshot freshness without indexing.
+    Status(tolmap::local::cli::StatusArgs),
+    /// Explicitly refresh committed HEAD without a server or upload.
+    Refresh(tolmap::local::cli::RefreshArgs),
     /// Analyze a committed private checkout with a loopback-only viewer.
     Local {
         repo: PathBuf,
@@ -627,6 +631,8 @@ fn main() -> Result<()> {
         Command::Deps(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
             Ok(snapshot.deps(&args.path, args.direction, args.options.limit))
         })),
+        Command::Status(args) => std::process::exit(tolmap::local::cli::status(args)),
+        Command::Refresh(args) => std::process::exit(tolmap::local::cli::refresh(args)),
         Command::Local {
             repo,
             data,

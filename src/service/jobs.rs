@@ -3870,6 +3870,7 @@ mod tests {
                 gid,
                 allow_openrouter_key: false,
                 confirmed_scope: None,
+                local_sources: None,
             };
             let error = process_worker_exe(
                 &tx,

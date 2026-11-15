@@ -8,10 +8,10 @@ use ts_rs::TS;
 pub const QUERY_SCHEMA: &str = "tolmap.query/v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
-pub struct QueryEnvelope<T> {
+pub struct QueryEnvelope<T, M = MapIdentity> {
     pub schema: String,
     pub query: Query,
-    pub map: MapIdentity,
+    pub map: M,
     pub coverage: QueryCoverage,
     pub limit: usize,
     pub total: usize,
@@ -58,6 +58,7 @@ pub enum Direction {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Query {
+    Status {},
     Where {
         target: String,
         ambiguous: bool,

@@ -53,6 +53,7 @@ fn export_to(directory: &Path) -> Result<()> {
     tolmap::catalogue::BatchIndexResponse::export_all(&Config::default().with_out_dir(directory))?;
     tolmap::catalogue::BatchProgress::export_all(&Config::default().with_out_dir(directory))?;
     tolmap::query_contract::QueryResponse::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::local::cli::StatusResponse::export_all(&Config::default().with_out_dir(directory))?;
     MapDocument::export_all(&Config::default().with_out_dir(directory))?;
     SymbolsDocument::export_all(&Config::default().with_out_dir(directory))?;
     DistrictSymbols::export_all(&Config::default().with_out_dir(directory))?;

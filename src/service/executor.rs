@@ -175,7 +175,7 @@ pub fn execute(
     sink: &mut dyn EventSink,
     probe: &dyn CancelProbe,
 ) -> Result<Executed, ErrorBody> {
-    execute_inner(env, job_id, job, inputs, sink, probe, None)
+    execute_inner(env, job_id, job, inputs, sink, probe, None, None)
 }
 
 /// Only the loopback local UX may forward its pinned, owner-confirmed selection.
@@ -192,7 +192,32 @@ pub(crate) fn execute_confirmed_local(
     if !job.local || job.all_sources {
         return Err(ApiError::internal("confirmed scope requires a single local source").body);
     }
-    execute_inner(env, job_id, job, inputs, sink, probe, Some(confirmed_scope))
+    execute_inner(
+        env,
+        job_id,
+        job,
+        inputs,
+        sink,
+        probe,
+        Some(confirmed_scope),
+        None,
+    )
+}
+
+/// Headless local CLI source override; never accepted from the public job protocol.
+pub(crate) fn execute_local_sources(
+    env: &ExecEnv,
+    job_id: Uuid,
+    job: &JobSpec,
+    inputs: &JobInputs,
+    sink: &mut dyn EventSink,
+    probe: &dyn CancelProbe,
+    sources: &[(String, String)],
+) -> Result<Executed, ErrorBody> {
+    if !job.local {
+        return Err(ApiError::internal("source override requires a local job").body);
+    }
+    execute_inner(env, job_id, job, inputs, sink, probe, None, Some(sources))
 }
 
 fn execute_inner(
@@ -203,6 +228,7 @@ fn execute_inner(
     sink: &mut dyn EventSink,
     probe: &dyn CancelProbe,
     confirmed_scope: Option<&str>,
+    local_sources: Option<&[(String, String)]>,
 ) -> Result<Executed, ErrorBody> {
     let internal = |error: &dyn std::fmt::Display| ApiError::internal(error.to_string()).body;
     let repo_ref = RepoRef {
@@ -354,6 +380,7 @@ fn execute_inner(
         gid: env.worker_gid,
         allow_openrouter_key: env.allow_openrouter_key,
         confirmed_scope: confirmed_scope.map(str::to_owned),
+        local_sources: local_sources.map(|sources| sources.to_vec()),
     };
     let output = run_child(
         &env.worker_exe,
@@ -737,6 +764,7 @@ pub(crate) struct WorkerHardening {
     pub(crate) allow_openrouter_key: bool,
     /// Set only by the local confirmation entry point, never inherited.
     pub(crate) confirmed_scope: Option<String>,
+    pub(crate) local_sources: Option<Vec<(String, String)>>,
 }
 
 #[cfg(test)]
@@ -753,6 +781,7 @@ impl WorkerHardening {
             gid: current_gid(),
             allow_openrouter_key: false,
             confirmed_scope: None,
+            local_sources: None,
         }
     }
 }
@@ -941,6 +970,12 @@ pub(crate) fn run_child(
     }
     if let Some(scope) = &hardening.confirmed_scope {
         command.env("TOLMAP_WORKER_CONFIRMED_SCOPE", scope);
+    }
+    if let Some(sources) = &hardening.local_sources {
+        command.env(
+            "TOLMAP_WORKER_LOCAL_SOURCES",
+            serde_json::to_string(sources).expect("source pairs serialize"),
+        );
     }
     #[cfg(unix)]
     {
