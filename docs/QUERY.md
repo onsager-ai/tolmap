@@ -16,8 +16,9 @@ tolmap route src/main.rs src/schema.rs --map data/tolmap.json
 
 All commands require `--map <file-or-directory>` and accept `--format json|text`
 (default `json`) and `--limit N` (zero requests totals alone). `overview`
-returns every district by default; `where`, `deps` and `route` default to 25
-rows. An explicit limit bounds any command. A map
+returns every district by default. `deps` defaults to 25 rows per direction;
+`where` and `route` default to 25 rows overall.
+An explicit limit bounds any command. A map
 file can have any name. A directory must contain exactly one top-level map JSON;
 this accepts `build --out`'s `<name>.json` beside `<name>.names.json` and
 `<name>.symbols.json`. Several maps require an explicit file, never a guess.
@@ -45,6 +46,8 @@ identity with which to verify this association.
 `deps` defaults to `--direction both`; `in` lists importers and `out` lists
 imports, using map `E` edges only. A reciprocal relationship yields two rows,
 one per direction. Duplicate edges yield one row per path and direction.
+`--limit N` applies independently to each requested direction: `both` can return
+up to N inbound and N outbound rows, so a busy direction cannot hide the other.
 This is direct adjacency, not a transitive blast radius or symbol references.
 
 ## Versioned JSON
@@ -55,7 +58,7 @@ uses the same envelope, also available as generic `QueryEnvelope<T>` for future
 snapshot queries:
 
 ```json
-{"schema":"tolmap.query/v2","query":{"kind":"where","target":"src/main.rs","ambiguous":false},"map":{"repo":"tolmap","commit":null,"sha256":"<64 lowercase hex digits>"},"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":25,"total":1,"truncated":false,"omitted":0,"next_limit":null,"results":[{"kind":"file","path":"src/main.rs","district":"<district name>","symbol":null}]}
+{"schema":"tolmap.query/v3","query":{"kind":"where","target":"src/main.rs","ambiguous":false},"map":{"repo":"tolmap","commit":null,"sha256":"<64 lowercase hex digits>"},"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":25,"total":1,"truncated":false,"omitted":0,"next_limit":null,"results":[{"kind":"file","path":"src/main.rs","district":"<district name>","symbol":null}]}
 ```
 
 The example's angle-bracket values are placeholders. JSON is compact UTF-8 with
@@ -63,7 +66,7 @@ one trailing newline. Paths and district names replace all internal indices.
 
 | Field | Meaning |
 |---|---|
-| `schema` | `tolmap.query/v2`. Breaking field or semantic changes require a new version. Consumers must tolerate additive fields and query/result kinds. |
+| `schema` | `tolmap.query/v3`. Breaking field or semantic changes require a new version. Consumers must tolerate additive fields and query/result kinds. |
 | `query` | Tagged by `kind`: `where`, `deps`, `overview`, or `route`; includes inputs and the command-specific facts below. |
 | `map.repo` | Repository label recorded by the map, not a recovered remote URL. |
 | `map.commit` | Stored top-level `commit`, otherwise a full 40/64 hex object ID from the map filename, otherwise a local `map.json`'s `snapshot.json` commit; otherwise `null`. Ordinary `build` and legacy fixtures do not record it. Never inferred from the caller's checkout. Renaming a file is not provenance verification. |
@@ -72,12 +75,12 @@ one trailing newline. Paths and district names replace all internal indices.
 | `coverage.zero_edge_files` | Map's recorded kept-edge coverage count; `null` when absent. |
 | `coverage.calls_total`, `calls_resolved`, `unresolved` | Counts from the full symbols sibling, only when loaded. `unresolved` is a map of reason to count. `null` means unknown/unread, never zero. Compact `S` does not measure them. |
 | `coverage.lower_bound` | Always `true`: unresolved/dynamic references can be absent. |
-| `limit` | Maximum result rows; an unlimited overview uses its complete district count. |
+| `limit` | Maximum rows per requested direction for deps; maximum result rows otherwise. An unlimited overview uses its complete district count. |
 | `total` | All matching rows before limiting; route counts file steps including endpoints. |
-| `truncated` | Exactly `total > limit`. A truncated route is a prefix, not a complete connection to the destination. |
+| `truncated` | For deps, either requested direction has omitted rows; otherwise exactly `total > limit`. A truncated route is a prefix, not a complete connection to the destination. |
 | `omitted` | `total - results.length`: number of rows omitted. |
-| `next_limit` | `total` when truncated, otherwise `null`. Repeating the same query with `--limit <next_limit>` returns all matching rows. Text prints the omitted count and this flag on a separate line. |
-| `results` | Ordered rows, length `min(limit,total)`. |
+| `next_limit` | When truncated, the maximum requested direction total for deps, or `total` otherwise; `null` when complete. Repeating the same query with `--limit <next_limit>` returns all matching rows. Truncated deps text prints one accounting line per requested direction, including directions with zero omitted rows; other queries print one omitted-count line. |
+| `results` | Ordered rows. For deps, length is the sum of `min(limit,direction.total)` over requested directions; otherwise `min(limit,total)`. |
 
 ## Query and result shapes
 
@@ -87,7 +90,12 @@ one trailing newline. Paths and district names replace all internal indices.
   `{"name":...,"qualified_name":...,"start":...,"end":...}`.
   Line ranges are the stored one-based inclusive ranges. Symbol candidates sort
   by path, start line, qualified name, then end line.
-- **deps**: `query` has `path` and `direction` (`in`, `out`, `both`). Rows are
+- **deps**: `query` has `path`, `direction` (`in`, `out`, `both`), and
+  `directions:{"in":counts|null,"out":counts|null}`. Each requested direction has
+  `counts:{"total":N,"returned":N,"omitted":N}`; an unrequested direction is
+  `null`. Counts deduplicate paths within each direction. Envelope `total` is
+  the sum of direction totals, `omitted` is the sum omitted, and `next_limit`
+  is the maximum direction total when truncated. Rows are
   `{"kind":"dependency","path":...,"district":...,"direction":"in|out"}`,
   sorted by path then direction (`in` first).
 - **overview**: `query` includes `files`, `imports` (map edge rows), `districts`,
@@ -108,6 +116,17 @@ Reverse paths are emitted from the requested `from` to `to`, labeled
 `imported-by`. `same-file` has one step and implies no import edge.
 **This is a file import path, never a runtime call chain.** A missing path means
 none was found among extracted imports, not that no dependency exists.
+
+For example, a deps query with three importers and one import at `--limit 1`
+returns one row from each direction. Its accounting fields are:
+
+```json
+{"query":{"kind":"deps","path":"src/parity.rs","direction":"both","directions":{"in":{"total":3,"returned":1,"omitted":2},"out":{"total":1,"returned":1,"omitted":0}}},"limit":1,"total":4,"truncated":true,"omitted":2,"next_limit":3}
+```
+
+This fragment omits map identity, coverage and the two result rows for brevity.
+`tolmap.query/v3` changes deps limit semantics and adds direction accounting.
+`where`, `route`, `overview` and `status` keep their previous semantics.
 
 Small `where`/`deps` results target less than 2 KB on the tolmap self-map.
 Complete overviews and larger dependency boundaries can exceed that target. The limit
@@ -165,14 +184,14 @@ detected source; a low-confidence detection fails with its evidence rather than
 silently indexing a guess. Explicit source flags express the selection directly.
 
 Responses reuse `QueryEnvelope<Status, Option<MapIdentity>>`, with schema
-`tolmap.query/v2`, `query:{"kind":"status"}`, `limit:1`, `total:1`,
-`truncated:false` and exactly one status row. `map` is `null` before any complete
+`tolmap.query/v3`, `query:{"kind":"status"}`, `limit:1`, `total:1`,
+`truncated:false`, `omitted:0`, `next_limit:null` and exactly one status row. `map` is `null` before any complete
 snapshot; otherwise its repo/commit/SHA-256 match compact queries using `map_path`.
 Coverage is that map's reference coverage (unread symbols counts remain null).
 For example, before the first refresh (placeholder HEAD):
 
 ```json
-{"schema":"tolmap.query/v2","query":{"kind":"status"},"map":null,"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":1,"total":1,"truncated":false,"results":[{"checkout_commit":"<HEAD>","indexed_commit":null,"requested_commit":null,"freshness":"none","commits_behind":null,"error":null,"dirty":false,"changed_files":0,"sources":[],"all_sources":null,"extraction_cache":null,"previous_map_reused":null,"map_path":null}]}
+{"schema":"tolmap.query/v3","query":{"kind":"status"},"map":null,"coverage":{"refs":"hand","zero_edge_files":null,"calls_total":null,"calls_resolved":null,"unresolved":null,"lower_bound":true},"limit":1,"total":1,"truncated":false,"omitted":0,"next_limit":null,"results":[{"checkout_commit":"<HEAD>","indexed_commit":null,"requested_commit":null,"freshness":"none","commits_behind":null,"error":null,"dirty":false,"changed_files":0,"sources":[],"all_sources":null,"extraction_cache":null,"previous_map_reused":null,"map_path":null}]}
 ```
 
 | Status row | Meaning |

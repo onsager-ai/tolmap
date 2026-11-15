@@ -9,8 +9,8 @@ use clap::Args;
 use sha2::{Digest, Sha256};
 
 use crate::query_contract::{
-    Direction, MapIdentity, Query, QueryCoverage, QueryEnvelope, QueryResponse, QueryResult,
-    QuerySymbol, ReferenceMode, QUERY_SCHEMA,
+    DepsDirections, Direction, DirectionCounts, MapIdentity, Query, QueryCoverage, QueryEnvelope,
+    QueryResponse, QueryResult, QuerySymbol, ReferenceMode, QUERY_SCHEMA,
 };
 use crate::schema::{MapDocument, SymbolsDocument};
 
@@ -21,7 +21,7 @@ pub struct QueryOptions {
     pub map: PathBuf,
     #[arg(long, default_value = "json", value_parser = ["json", "text"])]
     pub format: String,
-    /// Maximum result rows (route: file steps); default 25, overview: all districts.
+    /// Maximum rows (deps: per direction; route: file steps); default 25, overview: all districts.
     #[arg(long)]
     pub limit: Option<usize>,
 }
@@ -405,8 +405,30 @@ impl Snapshot {
                 }
             }
         }
+        let mut totals = [0usize; 2];
+        for (_, d, _) in &hits {
+            totals[*d as usize] += 1;
+        }
+        let counts = |total: usize| DirectionCounts {
+            total,
+            returned: total.min(limit),
+            omitted: total.saturating_sub(limit),
+        };
+        let directions = DepsDirections {
+            inbound: (direction != Direction::Out).then(|| counts(totals[0])),
+            out: (direction != Direction::In).then(|| counts(totals[1])),
+        };
+        let mut returned = [0usize; 2];
         let results = hits
             .into_iter()
+            .filter(|(_, d, _)| {
+                let count = &mut returned[*d as usize];
+                if *count >= limit {
+                    return false;
+                }
+                *count += 1;
+                true
+            })
             .map(|(path, d, file)| QueryResult::Dependency {
                 path,
                 district: self.district(file),
@@ -417,15 +439,24 @@ impl Snapshot {
                 },
             })
             .collect();
-        self.response(
-            Query::Deps {
+        let total = totals.iter().sum();
+        let omitted = total - returned.iter().sum::<usize>();
+        QueryEnvelope {
+            schema: QUERY_SCHEMA.into(),
+            query: Query::Deps {
                 path: path.into(),
                 direction,
+                directions,
             },
+            map: self.identity.clone(),
+            coverage: self.coverage(None),
             limit,
+            total,
+            truncated: omitted > 0,
+            omitted,
+            next_limit: (omitted > 0).then_some(totals[0].max(totals[1])),
             results,
-            None,
-        )
+        }
     }
 }
 
@@ -465,10 +496,21 @@ pub fn text(report: &QueryResponse) -> String {
         if report.truncated { " (truncated)" } else { "" }
     );
     if let Some(n) = report.next_limit {
-        out.push_str(&format!(
-            "{} rows omitted; repeat with --limit {n} to return all rows\n",
-            report.omitted
-        ));
+        if let Query::Deps { directions, .. } = &report.query {
+            for (direction, counts) in [("in", &directions.inbound), ("out", &directions.out)] {
+                if let Some(counts) = counts {
+                    out.push_str(&format!(
+                        "{direction}: {} of {} results, {} rows omitted; repeat with --limit {n} to return all rows\n",
+                        counts.returned, counts.total, counts.omitted
+                    ));
+                }
+            }
+        } else {
+            out.push_str(&format!(
+                "{} rows omitted; repeat with --limit {n} to return all rows\n",
+                report.omitted
+            ));
+        }
     }
     out.push_str(&format!(
         "{} commit={} sha256={} limit={}\n",

@@ -58,19 +58,41 @@ fn pinned_deps_match_all_edges_and_keep_total() {
                     rows
                 })
                 .collect();
+            let totals = [
+                expected.iter().filter(|(_, d)| *d == 0).count(),
+                expected.iter().filter(|(_, d)| *d == 1).count(),
+            ];
+            let returned = totals.map(|n| n.min(1));
+            let omitted = expected.len() - returned.iter().sum::<usize>();
             assert_eq!(report.total, expected.len());
-            assert_eq!(report.truncated, expected.len() > 1);
-            assert_eq!(report.omitted, expected.len().saturating_sub(1));
+            assert_eq!(report.truncated, omitted > 0);
+            assert_eq!(report.omitted, omitted);
             assert_eq!(
                 report.next_limit,
-                (expected.len() > 1).then_some(expected.len())
+                (omitted > 0).then_some(totals[0].max(totals[1]))
             );
+            let Query::Deps { directions, .. } = &report.query else {
+                panic!("expected deps");
+            };
+            for (d, counts) in [&directions.inbound, &directions.out]
+                .into_iter()
+                .enumerate()
+            {
+                if (d == 0 && direction == Direction::Out) || (d == 1 && direction == Direction::In)
+                {
+                    assert!(counts.is_none());
+                } else {
+                    let counts = counts.as_ref().unwrap();
+                    assert_eq!(counts.total, totals[d]);
+                    assert_eq!(counts.returned, returned[d]);
+                    assert_eq!(counts.omitted, totals[d] - returned[d]);
+                }
+            }
             if report.truncated {
                 let text = tolmap::query::text(&report);
-                assert!(text.contains(&format!("{} rows omitted", report.omitted)));
                 assert!(text.contains(&format!("--limit {}", report.next_limit.unwrap())));
             }
-            assert_eq!(report.results.len(), expected.len().min(1));
+            assert_eq!(report.results.len(), returned.iter().sum::<usize>());
             assert_eq!(
                 serde_json::to_vec(&report).unwrap(),
                 serde_json::to_vec(&s.deps(path, direction, 1)).unwrap()
@@ -81,6 +103,67 @@ fn pinned_deps_match_all_edges_and_keep_total() {
     let report = s.deps("src/main.rs", Direction::Both, 8);
     assert!(serde_json::to_vec(&report).unwrap().len() < 2000);
     assert_eq!(s.deps("missing", Direction::Both, 8).total, 0);
+}
+
+#[test]
+fn pinned_both_directions_keep_smaller_boundary_and_account_for_zero_limit() {
+    let s = fixture("tolmap");
+    // Pinned src/parity.rs has three importers and one import. The inbound
+    // boundary used to consume the shared limit and hide the outbound row.
+    let path = "src/parity.rs";
+    for limit in [0, 1, 3] {
+        let report = s.deps(path, Direction::Both, limit);
+        let Query::Deps { directions, .. } = &report.query else {
+            panic!("expected deps");
+        };
+        let inbound = directions.inbound.as_ref().unwrap();
+        let outbound = directions.out.as_ref().unwrap();
+        assert_eq!((inbound.total, outbound.total), (3, 1));
+        assert_eq!(inbound.returned, 3.min(limit));
+        assert_eq!(outbound.returned, 1.min(limit));
+        assert_eq!(inbound.omitted, 3usize.saturating_sub(limit));
+        assert_eq!(outbound.omitted, 1usize.saturating_sub(limit));
+        assert_eq!(report.total, 4);
+        assert_eq!(report.omitted, inbound.omitted + outbound.omitted);
+        assert_eq!(report.truncated, limit < 3);
+        assert_eq!(report.next_limit, (limit < 3).then_some(3));
+        for (direction, count) in [(Direction::In, inbound), (Direction::Out, outbound)] {
+            assert_eq!(
+                report
+                    .results
+                    .iter()
+                    .filter(|r| matches!(r,
+                        QueryResult::Dependency { direction: d, .. } if *d == direction
+                    ))
+                    .count(),
+                count.returned
+            );
+        }
+        assert_eq!(
+            serde_json::to_vec(&report).unwrap(),
+            serde_json::to_vec(&s.deps(path, Direction::Both, limit)).unwrap()
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["schema"], "tolmap.query/v3");
+        assert_eq!(json["query"]["directions"]["in"]["total"], 3);
+        assert_eq!(json["query"]["directions"]["out"]["total"], 1);
+        if limit == 1 {
+            let text = tolmap::query::text(&report);
+            assert!(text.contains("in: 1 of 3 results, 2 rows omitted; repeat with --limit 3"));
+            assert!(text.contains("out: 1 of 1 results, 0 rows omitted; repeat with --limit 3"));
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.contains("rows omitted;"))
+                    .count(),
+                2
+            );
+        }
+    }
+    let missing = s.deps("missing", Direction::Both, 0);
+    assert!(!missing.truncated);
+    assert_eq!(missing.omitted, 0);
+    assert_eq!(missing.next_limit, None);
+    assert_eq!(missing.results.len(), 0);
 }
 
 #[test]

@@ -6,7 +6,7 @@ description: Use tolmap for repository orientation, change boundaries, diff impa
 # Using tolmap
 
 This skill ships with the tolmap CLI (currently 0.1.0). Use the skill from the
-same checkout/release as the binary. Compact query JSON uses `tolmap.query/v2`;
+same checkout/release as the binary. Compact query JSON uses `tolmap.query/v3`;
 check and debt have their own report versions. See [QUERY](../../docs/QUERY.md),
 [CHECK](../../docs/CHECK.md) and [API](../../docs/API.md) for the full contracts.
 
@@ -68,7 +68,10 @@ that no runtime relationship exists.
 
 Every compact response includes map identity, `coverage`, `limit`, `total` and
 `truncated`, `omitted` and `next_limit`. `overview` returns all districts;
-`where`, `deps` and `route` default to 25 rows. If truncated, use the returned
+`where` and `route` default to 25 rows; `deps` defaults to 25 rows per requested
+direction. With `--direction both`, each direction has its own limit, so up to
+50 rows can be returned. Read `query.directions.in` and `.out` for each direction's
+`total`, `returned` and `omitted` counts (an unrequested direction is null). If truncated, use the returned
 `next_limit` as `--limit` to get all rows
 or narrow the question; a truncated route is only a prefix. `where` can return
 several symbol candidates: inspect qualified names and line ranges.
